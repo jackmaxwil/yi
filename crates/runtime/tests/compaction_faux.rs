@@ -856,7 +856,7 @@ fn compaction_window(
 
 /// Answers each request with the next of `replies`, an OpenAI-style event stream, and hands
 /// back every request body it read, in order. It stands in for OpenRouter as the proxy.
-fn openrouter_stand_in(
+pub(crate) fn openrouter_stand_in(
     replies: Vec<String>,
 ) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
     use std::io::{BufRead, BufReader, Read, Write};
@@ -934,7 +934,7 @@ fn sse_reply_measured(content: &str) -> String {
 }
 
 /// One Anthropic Messages event stream holding `block`, a text or a `tool_use` block.
-fn anthropic_sse(block: &serde_json::Value, stop: &str) -> String {
+pub(crate) fn anthropic_sse(block: &serde_json::Value, stop: &str) -> String {
     let (start, delta) = match block["type"].as_str() {
         Some("text") => (
             serde_json::json!({"type": "text", "text": ""}),
@@ -2197,7 +2197,7 @@ async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
     let mut replies: Vec<String> = (0..8).map(call).collect();
     replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
     let (port, served) = openrouter_stand_in(replies)?;
-    let mut session = openrouter_session_with(port, 200_000, Settings::default())?;
+    let session = openrouter_session_with(port, 200_000, Settings::default())?;
     let mut model = session.model();
     (model.id, model.cost.input) = ("openai/gpt-5.5".to_owned(), serde_json::Number::from(1u64));
     session.set_model(model);
@@ -2242,7 +2242,7 @@ async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
         &serde_json::json!({"content": "ok"}),
         "stop",
     )])?;
-    let mut resumed = openrouter_session_with(port, 200_000, Settings::default())?;
+    let resumed = openrouter_session_with(port, 200_000, Settings::default())?;
     resumed.set_model(session.model());
     resumed.set_tools(vec![Arc::new(LongResult("read"))]);
     resumed.attach_store(store)?;
