@@ -44,6 +44,47 @@ async fn wait_for_assistants(session: &yi_runtime::ChildFeed, expected: usize) {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a FIFO holds the real read tool open while mail or a follow-up arrives"
+)]
+async fn hold_family(
+    label: &str,
+    initial: Option<&str>,
+    script: Vec<yi_types::message::AgentMessage>,
+) -> Result<(Family, yi_runtime::ChildFeed, std::path::PathBuf), Box<dyn std::error::Error>> {
+    let fifo = std::env::temp_dir().join(format!("yi-reader-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_file(&fifo);
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()?
+            .success()
+    );
+    let content = initial
+        .into_iter()
+        .map(yi_ai::faux::faux_text)
+        .chain(std::iter::once(yi_ai::faux::faux_tool_call(
+            "hold",
+            "read",
+            kwargs(json!({"path": &fifo})),
+        )))
+        .collect();
+    let hold = yi_ai::faux::faux_assistant_message(content, yi_types::message::StopReason::ToolUse);
+    let script = std::iter::once(hold).chain(script).collect();
+    let family = wired_family(4, Arc::new(Mutex::new(script)), Setup::default())?;
+    let args = json!({"name": "retry", "role": "reader", "schema": schema()});
+    family.host.spawn("answer".to_owned(), kwargs(args))?;
+    let session = family.host.children_view().pop().ok_or("no child")?.session;
+    for _ in 0..400 {
+        if session.status() == yi_runtime::Status::Running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    Ok((family, session, fifo))
+}
+
 /// #989's fence, a K3.1 reader's missing field, #992's empty last word, then prose twice.
 #[tokio::test]
 async fn schema_failure_gets_one_retry_and_a_second_failure_is_refused()
@@ -72,39 +113,15 @@ async fn schema_failure_gets_one_retry_and_a_second_failure_is_refused()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "a FIFO holds the real read tool open while ordinary mail arrives"
-)]
 async fn ordinary_mail_preserves_the_schema_answer_and_its_repair()
 -> Result<(), Box<dyn std::error::Error>> {
     for (initial, calls) in [(GOOD, 2), ("{}", 3)] {
-        let fifo = std::env::temp_dir().join(format!("yi-reader-retry-{}", std::process::id()));
-        let _ = std::fs::remove_file(&fifo);
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&fifo)
-                .status()?
-                .success()
-        );
-        let hold = yi_ai::faux::faux_assistant_message(
-            vec![
-                yi_ai::faux::faux_text(initial),
-                yi_ai::faux::faux_tool_call("hold", "read", kwargs(json!({"path": fifo}))),
-            ],
-            yi_types::message::StopReason::ToolUse,
-        );
-        let script = vec![hold, reply("mail prose"), reply(GOOD)];
-        let family = wired_family(4, Arc::new(Mutex::new(script)), Setup::default())?;
-        let args = json!({"name": "retry", "role": "reader", "schema": schema()});
-        family.host.spawn("answer".to_owned(), kwargs(args))?;
-        let session = family.host.children_view().pop().ok_or("no child")?.session;
-        for _ in 0..400 {
-            if session.status() == yi_runtime::Status::Running {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        let (family, session, fifo) = hold_family(
+            "retry",
+            Some(initial),
+            vec![reply("mail prose"), reply(GOOD)],
+        )
+        .await?;
         let sent = family
             .host
             .route("parent", "retry", "ordinary mail", false)?;
@@ -122,39 +139,10 @@ async fn ordinary_mail_preserves_the_schema_answer_and_its_repair()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "a FIFO holds the real read tool open while a follow-up arrives"
-)]
 async fn a_follow_up_delivered_mid_run_gets_its_own_repair()
 -> Result<(), Box<dyn std::error::Error>> {
-    let fifo = std::env::temp_dir().join(format!("yi-reader-followup-{}", std::process::id()));
-    let _ = std::fs::remove_file(&fifo);
-    assert!(
-        std::process::Command::new("mkfifo")
-            .arg(&fifo)
-            .status()?
-            .success()
-    );
-    let hold = yi_ai::faux::faux_assistant_message(
-        vec![yi_ai::faux::faux_tool_call(
-            "hold",
-            "read",
-            kwargs(json!({"path": fifo})),
-        )],
-        yi_types::message::StopReason::ToolUse,
-    );
-    let script = vec![hold, reply("{}"), reply(GOOD)];
-    let family = wired_family(4, Arc::new(Mutex::new(script)), Setup::default())?;
-    let args = json!({"name": "retry", "role": "reader", "schema": schema()});
-    family.host.spawn("answer".to_owned(), kwargs(args))?;
-    let session = family.host.children_view().pop().ok_or("no child")?.session;
-    for _ in 0..400 {
-        if session.status() == yi_runtime::Status::Running {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let (family, session, fifo) =
+        hold_family("followup", None, vec![reply("{}"), reply(GOOD)]).await?;
     family
         .host
         .route("parent", "retry", "another request", true)?;
