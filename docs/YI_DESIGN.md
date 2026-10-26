@@ -368,11 +368,18 @@ every one-mark deletion that parses names the same op. Three no-op edits in a ro
 
 ### 7.3 bash and jobs
 The interpreter is `bash` if `command -v bash` succeeds, else `sh`, probed once. Timeout 300 s
-default, 600 s cap. Jobs: ≤ 32, LRU with the 8 newest protected. `is_error` = exit ≠ 0 or
-cancelled. Output ≤ 8,192 bytes, or with `-v --verbose --nocapture --porcelain -la -C`, is whole;
-past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines, 3 a file; else head 80/tail
-40), kept only if shorter. Runs of passing-test lines become one counted row, and a line naming an
-error or failure in the cut middle is kept with 3 lines either side, 60 at most (`SIGNAL_ROWS`).
+default, 600 s cap. A job poll or `kill:true` reaches only the calling session's jobs; a bare poll
+chooses that session's newest. Per owner, LRU eviction keeps at most 32 announced results and
+protects the 8 newest jobs. Pending, poll-held and completion-queued results are never evicted.
+Session retirement kills its running jobs and removes all its registry entries.
+A running poll shows bounded live output and names dropped bytes, the absolute produced total,
+the live and view caps, and a recovery call. `is_error` = exit ≠ 0 or cancelled. Output ≤ 8,192
+bytes is whole; past it, cargo and test runners (`go test`, Python `-m pytest` or `-m unittest`)
+with `-v`, `--verbose` or `--nocapture`, git with `--porcelain`, and ls with `-la` stay whole;
+`-C` bypasses nothing. Other output is stripped of ANSI, compressed and filtered (cargo;
+grep/rg/ag 60 lines, 3 a file; else head 80/tail 40), kept only if shorter. Runs of passing-test
+lines become one counted row, and a line naming an error or failure in the cut middle is kept
+with 3 lines either side, 60 at most (`SIGNAL_ROWS`).
 With `models.selector` named, the lines of a cut output's full text (at most 4,000) that the cut
 does not show, never a passing-test line (the reducer's `is_pass`), go to that model in concurrent parts of 300 (`PART_LINES`), numbered as in the full output, and each answers 1-based line ranges
 only; within 5 s the unshown lines it names follow the cut verbatim under a row naming it, else a
@@ -813,7 +820,9 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
 - After every op, `dispatch_ready` applies `start` as `Actor::Engine` to each ready delegated
   todo admission allows; the plan timer's `dispatch_ready_in` is the backstop.
 - A plan child's end is the engine's: it stores the last answer and applies `submit`, `done`; a
-  `fail` verdict fails the todo `retained`. The owner gets one `plan: accepted|refused|failed`.
+  `fail` verdict fails the todo `retained`. The owner gets one `plan: accepted|refused|failed`
+  line naming the product's address (`plan://` on accept, the `history://` child on a failure),
+  never the product: `read`, `grep` and `rlm.fetch` open each address it prints.
 - The `todo` tool keeps a session list of `custom{todo}` entries whose items are plan `Todo`s: a
   session todo is a todo with no edges, with an optional `t<n>` id and `done` evidence. With a plan
   open at depth 0 the list is the plan's view, each plan todo cloned in by `Mirror` after each op,

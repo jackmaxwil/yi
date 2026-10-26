@@ -57,7 +57,7 @@ impl HostRegistry {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
                     })?;
                 let cancelled: CancelFlag = Arc::new(|| false);
-                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, sandbox.as_ref());
+                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, sandbox.as_ref())?;
                 lock(&spawned).push(id);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));

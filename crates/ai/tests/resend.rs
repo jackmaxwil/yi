@@ -4,6 +4,8 @@
 use yi_ai::request::{empty_assistant, note_resend, resend_dead_stream};
 use yi_types::message::AgentMessage;
 
+use crate::loopback_server::serve;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
@@ -66,24 +68,6 @@ fn the_resend_is_a_diagnostic_on_the_message() -> TestResult {
     Ok(())
 }
 
-/// Answers one request per reply in order, reading each request whole first.
-fn serve(replies: Vec<&'static str>) -> std::io::Result<(u16, std::thread::JoinHandle<()>)> {
-    use std::io::{BufReader, Write};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let handle = std::thread::spawn(move || {
-        for reply in replies {
-            let Ok((stream, _)) = listener.accept() else {
-                return;
-            };
-            let mut reader = BufReader::new(stream);
-            let _ = crate::loopback::read_request(&mut reader);
-            let _ = reader.get_mut().write_all(reply.as_bytes());
-        }
-    });
-    Ok((port, handle))
-}
-
 const REFUSED_402: &str = "HTTP/1.1 402 Payment Required\r\ncontent-type: application/json\r\ncontent-length: 55\r\n\r\n{\"error\":{\"message\":\"Insufficient credits\",\"code\":402}}";
 
 fn probe() -> yi_ai::breakpoints::Encoded {
@@ -109,7 +93,7 @@ fn unknown_after(text: &str) -> Option<bool> {
 /// come from a gateway after the upstream billed, so it stays unknown.
 #[test]
 fn a_refused_request_bills_a_known_zero() -> TestResult {
-    let (port, server) = serve(vec![REFUSED_402])?;
+    let (port, _, server) = serve(vec![REFUSED_402])?;
     let refused = yi_ai::request::send_with_retry(
         &format!("http://127.0.0.1:{port}/v1/chat/completions"),
         &[],
@@ -139,7 +123,7 @@ fn a_refused_request_bills_a_known_zero() -> TestResult {
 #[test]
 fn a_refused_resend_keeps_the_first_attempt_unknown() -> TestResult {
     let died = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 64\r\n\r\n";
-    let (port, server) = serve(vec![died, REFUSED_402])?;
+    let (port, _, server) = serve(vec![died, REFUSED_402])?;
     let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
     let body = probe();
     let failed = yi_ai::request::pump_sse_with_resend(
