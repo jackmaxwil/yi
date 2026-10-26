@@ -57,6 +57,66 @@ async fn schema_failure_gets_one_retry_and_a_second_failure_is_refused()
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a FIFO holds the real read tool open while ordinary mail arrives"
+)]
+async fn ordinary_mail_does_not_reopen_the_original_schema_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fifo = std::env::temp_dir().join(format!("yi-reader-retry-{}", std::process::id()));
+    let _ = std::fs::remove_file(&fifo);
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()?
+            .success()
+    );
+    let followup = yi_ai::faux::faux_assistant_message(
+        vec![
+            yi_ai::faux::faux_text(GOOD),
+            yi_ai::faux::faux_tool_call("hold", "read", kwargs(json!({"path": fifo}))),
+        ],
+        yi_types::message::StopReason::ToolUse,
+    );
+    let script = vec![reply(GOOD), followup, reply("mail prose"), reply(GOOD)];
+    let family = wired_family(4, Arc::new(Mutex::new(script)), Setup::default())?;
+    let args = json!({"name": "retry", "role": "reader", "schema": schema()});
+    family.host.spawn("answer".to_owned(), kwargs(args))?;
+    let initial = child_rows(&family, "retry").await?;
+    assert_eq!(assistants(&initial), 1, "{initial:?}");
+    let session = family.host.children_view().pop().ok_or("no child")?.session;
+    family
+        .host
+        .route("parent", "retry", "another request", true)?;
+    for _ in 0..400 {
+        if session.status() == yi_runtime::Status::Running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let sent = family
+        .host
+        .route("parent", "retry", "ordinary mail", false)?;
+    assert_eq!(sent["receipts"][0]["state"], "queued", "{sent:?}");
+    std::fs::write(&fifo, "held\n")?;
+    let rows = child_rows(&family, "retry").await?;
+    assert_eq!(assistants(&rows), 3, "{rows:?}");
+    assert!(
+        !rows
+            .iter()
+            .any(|(role, text)| { role == "user" && text.contains("schema retry:") }),
+        "{rows:?}"
+    );
+    let error = family
+        .host
+        .result("retry", Some(&schema()))
+        .err()
+        .ok_or_else(|| format!("mail prose unexpectedly satisfied the schema: {rows:?}"))?;
+    assert!(error.contains("mail prose"), "{error}");
+    Ok(())
+}
+
 /// A recorded reader turn with one read call, then its missing-field reply (#948's wire shape).
 #[tokio::test(flavor = "multi_thread")]
 async fn an_anthropic_retry_over_tool_blocks_is_one_cold_text_request()

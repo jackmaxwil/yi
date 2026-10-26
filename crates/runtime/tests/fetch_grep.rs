@@ -388,3 +388,28 @@ fn an_address_grep_names_its_page_and_line_cuts_one_past_each_limit() -> TestRes
     assert!(text.lines().nth(40) == Some(whole.as_str()), "{text}");
     Ok(())
 }
+
+#[test]
+fn an_agent_grep_follows_its_pin_and_keeps_the_history_wall() -> TestResult {
+    let family = family()?;
+    let agent: yi_types::url::Url = "agent://sibling".parse()?;
+    let pinned: yi_types::url::Url = "history://parent".parse()?;
+    let ask = json!({"pattern": "release_id =", "path": agent.to_string()});
+    let admitted = resolver(&family, &family.child, Wall::default());
+    admitted.log().register_pin(&agent, pinned.clone())?;
+    let (text, is_error) = tool_text(admitted, "grep", ask.clone())?;
+    assert!(
+        !is_error && text.contains("history://parent/") && text.contains("rel-09d88875"),
+        "{text}"
+    );
+
+    let wall = Wall {
+        deny_url: vec!["history://main".to_owned()],
+        ..Wall::default()
+    };
+    let denied = resolver(&family, &family.child, wall);
+    denied.log().register_pin(&agent, pinned)?;
+    let (text, is_error) = tool_text(denied, "grep", ask)?;
+    assert!(is_error && text.contains("denied"), "{text}");
+    Ok(())
+}
