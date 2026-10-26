@@ -544,8 +544,8 @@ impl ToolAdapter {
         Box::pin(async move {
             let cancel = Arc::clone(&context.cancelled);
             let mut template = template;
-            template.args.clone_from(&args);
             if hooks.as_ref().is_some_and(|hooks| {
+                template.args.clone_from(&args);
                 [
                     Event::PreToolUse,
                     Event::PostToolUse,

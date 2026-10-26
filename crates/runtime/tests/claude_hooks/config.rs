@@ -151,6 +151,35 @@ async fn matchers_refuse_what_they_do_not_name_and_one_bad_handler_spares_the_re
 }
 
 #[tokio::test]
+async fn execution_options_do_not_duplicate_a_hook_command() -> TestResult {
+    let case = Case::new("option-duplicates", json!({}), true)?;
+    let count = case.path("option-count.jsonl");
+    let hook = logging(&count);
+    let mut handlers = vec![hook.clone()];
+    for (key, value) in [
+        ("timeout", json!(1)),
+        ("onFailure", json!("block")),
+        ("async", json!(true)),
+        ("asyncRewake", json!(true)),
+    ] {
+        let mut changed = hook.clone();
+        changed
+            .as_object_mut()
+            .ok_or("a command handler must be an object")?
+            .insert(key.to_owned(), value);
+        handlers.push(changed);
+    }
+    case.user(&settings("PreToolUse", "Bash", handlers))?;
+    case.run("bash", json!({"command": "printf ran"})).await?;
+    assert_eq!(
+        read_lines(&count)?.len(),
+        1,
+        "execution options duplicated one hook command"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_if_condition_cannot_hide_a_matching_duplicate_handler() -> TestResult {
     let case = Case::new("conditional-duplicates", json!({}), true)?;
     let ran = case.path("conditional-ran");
