@@ -234,6 +234,7 @@ pub(super) fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> 
                     | "deny_read"
                     | "deny_url"
                     | "context"
+                    | "context_chars"
                     | "check"
                     | "deadline_s"
                     | "tokens"
