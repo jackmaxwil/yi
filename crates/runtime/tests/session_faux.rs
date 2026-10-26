@@ -451,7 +451,7 @@ fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> A
 }
 
 /// `session` wired the way `yi ask` is.
-fn attach_like_yi_ask(
+pub(crate) fn attach_like_yi_ask(
     session: &mut AgentSession,
     root: &std::path::Path,
     deadline: Option<Duration>,

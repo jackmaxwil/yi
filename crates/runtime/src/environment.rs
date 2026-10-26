@@ -32,7 +32,7 @@ pub fn git_summary(cwd: &Path) -> Summary {
 const WRITERS: [&str; 4] = ["bash", "edit", "write", "ipython"];
 
 /// [`git_summary`] read again only once a run starts or a writing tool ends: the model's own
-/// change shows at the next request, a change made outside Yi at the next run's start.
+/// change shows at the next request; a same-tree child's or one made outside Yi, later.
 pub struct GitSummary {
     cwd: PathBuf,
     held: Mutex<(broadcast::Receiver<AgentEvent>, Option<Summary>)>,
@@ -57,8 +57,14 @@ impl GitSummary {
         loop {
             match events.try_recv() {
                 Ok(AgentEvent::AgentStart) | Err(TryRecvError::Lagged(_)) => *cached = None,
-                Ok(AgentEvent::ToolExecutionEnd { tool_name, .. })
-                    if WRITERS.contains(&tool_name.as_str()) =>
+                Ok(AgentEvent::ToolExecutionEnd {
+                    tool_name, result, ..
+                }) if WRITERS.contains(&tool_name.as_str())
+                    || result
+                        .details
+                        .get("applied")
+                        .and_then(serde_json::Value::as_u64)
+                        > Some(0) =>
                 {
                     *cached = None;
                 }
@@ -66,7 +72,12 @@ impl GitSummary {
                 Err(TryRecvError::Empty | TryRecvError::Closed) => break,
             }
         }
-        cached.get_or_insert_with(|| git_summary(&self.cwd)).clone()
+        if let Some(summary) = cached.clone() {
+            return summary;
+        }
+        let read = git_summary(&self.cwd);
+        *cached = read.is_some().then(|| read.clone());
+        read
     }
 }
 
