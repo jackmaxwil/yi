@@ -6,13 +6,17 @@ use yi_types::plan::ledger::PlanOpRecord;
 use yi_types::todo::{PhaseName, TodoList, TodoPhase};
 
 use super::TodoStore;
-use crate::plan::ops::{Actor, Op, OpRequest, OpSink, PlanEngine};
+use crate::plan::ops::{Actor, Op, OpRequest, OpSink, PlanEngine, PlanOpError};
 use crate::plan::store::PlanStore;
 
 pub const ENGINE_ACTOR: &str = "engine";
 pub const PLAN_KEY: &str = "plan";
 /// Marks a mirrored row the session wrote before a plan absorbed it, so it outlives that plan.
 const OWN_KEY: &str = "own";
+/// Invariant: a wait job fires once, so the budget's expiry strands the blocked row until the
+/// agent unblocks it by hand; each stale-revision retry naps so a busy plan cannot spin the firer.
+const WAIT_RETRY_NAP: std::time::Duration = std::time::Duration::from_millis(100);
+const WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub fn plan_of(list: &TodoList) -> Option<&str> {
     list.extra.get(PLAN_KEY).and_then(Value::as_str)
@@ -104,7 +108,7 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
             super::Carried::Wait { plan, .. } => Some(plan.clone()),
             _ => None,
         };
-        let apply = |op: Op| {
+        let apply = |op: Op, expected_revision| {
             let request = OpRequest {
                 plan: plan.clone(),
                 actor: if matches!(op, Op::Unblock { .. }) {
@@ -114,12 +118,11 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
                 },
                 op: op.clone(),
                 request_id: None,
-                expected_revision: None,
+                expected_revision,
             };
             engine
                 .apply(request)
                 .map(|outcome| Some(crate::plan::render::render_outcome(&op, &outcome)))
-                .map_err(|error| error.to_string())
         };
         let start = Op::Start {
             label: label.clone(),
@@ -129,37 +132,66 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
             answer: None,
         };
         let pending = match carried {
-            super::Carried::Start => return apply(start),
+            super::Carried::Start => return apply(start, None).map_err(|error| error.to_string()),
             super::Carried::Block { on, note, ask } => {
                 let label = label.clone();
-                return apply(Op::Block {
-                    label,
-                    on,
-                    note,
-                    ask,
-                });
+                return apply(
+                    Op::Block {
+                        label,
+                        on,
+                        note,
+                        ask,
+                    },
+                    None,
+                )
+                .map_err(|error| error.to_string());
             }
             super::Carried::Wait { plan, address } => {
-                let read = engine
-                    .store()
-                    .read(&plan)
-                    .map_err(|error| error.to_string())?;
-                let waits = read.todos.iter().any(|todo| {
-                    todo.label == *label
-                        && matches!(&todo.state, doc::TodoState::Blocked { on, .. }
-                            if crate::schedule::clock::wait_of(on).is_some_and(|(at, _)| at == address))
-                });
-                return if waits { apply(unblock) } else { Ok(None) };
+                let mut pace = yi_types::backoff::backoff(WAIT_RETRY_NAP);
+                let deadline = std::time::Instant::now() + WAIT_BUDGET;
+                return loop {
+                    let read = engine
+                        .store()
+                        .read(&plan)
+                        .map_err(|error| error.to_string())?;
+                    let waits = read.todos.iter().any(|todo| {
+                        todo.label == *label
+                            && matches!(&todo.state, doc::TodoState::Blocked { on, .. }
+                                if crate::schedule::clock::waits_on(&address, on))
+                    });
+                    if !waits {
+                        break Ok(None);
+                    }
+                    match apply(unblock.clone(), Some(read.touched)) {
+                        Ok(rendered) => break Ok(rendered),
+                        Err(PlanOpError::StaleRevision { .. })
+                            if std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(pace());
+                        }
+                        Err(PlanOpError::StaleRevision { .. }) => {
+                            break Err(format!(
+                                "todo {label} still waits on {address}, but the plan kept \
+                                 changing for {WAIT_BUDGET:?}"
+                            ));
+                        }
+                        Err(error) => break Err(error.to_string()),
+                    }
+                };
             }
             super::Carried::Done { pending } => pending,
         };
         if pending {
-            apply(start)?;
+            apply(start, None).map_err(|error| error.to_string())?;
         }
-        apply(Op::Done {
-            label: label.clone(),
-            output: None,
-        })
+        apply(
+            Op::Done {
+                label: label.clone(),
+                output: None,
+            },
+            None,
+        )
+        .map_err(|error| error.to_string())
     })
 }
 

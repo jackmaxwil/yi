@@ -1,23 +1,14 @@
-use super::types::Cursor;
-
 pub const HL_FILE_PREFIX: &str = "[";
 pub const HL_FILE_SUFFIX: &str = "]";
-pub const HL_PAYLOAD_REPLACE: &str = "+";
 pub const HL_PUT_KEYWORD: &str = "PUT";
 pub const HL_CUT_KEYWORD: &str = "CUT";
 pub const HL_REM_KEYWORD: &str = "REM";
 pub const HL_MOVE_KEYWORD: &str = "MV";
 pub const HL_HEADER_COLON: &str = ":";
-pub const HL_GAP_BEFORE: &str = "<";
-pub const HL_GAP_AFTER: &str = ">";
-pub const HL_BLOCK_SUFFIX: &str = "*";
-pub const HL_EOF_ANCHOR: &str = "$";
-pub const HL_REGISTER_SIGIL: &str = "@";
 pub const HL_FILE_HASH_SEP: &str = "#";
 pub const HL_RANGE_SEP: &str = ".=";
 pub const HL_LINE_BODY_SEP: &str = ":";
 pub const HL_FILE_HASH_LENGTH: usize = 4;
-pub const HL_FILE_HASH_EXAMPLES: [&str; 3] = ["1A2B", "3C4D", "9F3E"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileTag(pub u16);
@@ -63,45 +54,6 @@ pub fn format_replace_header(start: u64, end: u64) -> String {
 
 pub fn format_cut_header(start: u64, end: u64) -> String {
     format!("{HL_CUT_KEYWORD} {start}{HL_RANGE_SEP}{end}")
-}
-
-pub fn format_gap_locator(cursor: &Cursor) -> String {
-    match cursor {
-        Cursor::BeforeAnchor { anchor } => format!("{HL_GAP_BEFORE}{}", anchor.line),
-        Cursor::AfterAnchor { anchor } => format!("{HL_GAP_AFTER}{}", anchor.line),
-        Cursor::Bof => format!("{HL_GAP_BEFORE}1"),
-        Cursor::Eof => format!("{HL_GAP_AFTER}{HL_EOF_ANCHOR}"),
-    }
-}
-
-pub fn format_insert_header(cursor: &Cursor) -> String {
-    format!(
-        "{HL_PUT_KEYWORD} {}{HL_HEADER_COLON}",
-        format_gap_locator(cursor)
-    )
-}
-
-pub fn format_register(name: &str) -> String {
-    format!("{HL_REGISTER_SIGIL}{name}")
-}
-
-pub fn describe_anchor_examples(line_prefix: &str) -> String {
-    let examples: Vec<String> = if line_prefix.is_empty() {
-        vec!["160".to_owned(), "42".to_owned(), "7".to_owned()]
-    } else {
-        let stem = &line_prefix[..line_prefix.len().saturating_sub(1)];
-        let second = if stem.is_empty() {
-            "4".to_owned()
-        } else {
-            stem.to_owned()
-        };
-        vec![line_prefix.to_owned(), format!("{second}2"), "7".to_owned()]
-    };
-    examples
-        .iter()
-        .map(|example| format!("\"{example}\""))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 pub fn format_hashline_header(file_path: &str, file_hash: FileTag) -> String {
