@@ -58,9 +58,27 @@ fn failed(class: FailClass, error: impl std::fmt::Display) -> (ChildExit, Option
     (ChildExit::Failed { class }, Some(error.to_string()))
 }
 
-fn schema_failure(session: &AgentSession, messages: &[AgentMessage]) -> Option<String> {
+fn schema_failure(
+    session: &AgentSession,
+    messages: &[AgentMessage],
+    start: usize,
+) -> Option<String> {
+    let run = messages.get(start..).unwrap_or_default();
+    let mut prompts = run.iter().filter(|message| {
+        matches!(
+            message,
+            AgentMessage::User { .. } | AgentMessage::Custom { .. }
+        )
+    });
+    prompts.next()?;
+    if prompts
+        .next_back()
+        .is_some_and(|message| !crate::mail::is_chase(message))
+    {
+        return None;
+    }
     let schema = crate::schema::Schema::from_value(session.request_shape()?.schema?).ok()?;
-    crate::schema::extract(&super::answer_text(messages).unwrap_or_default())
+    crate::schema::extract(&super::answer_text(run).unwrap_or_default())
         .map_or_else(Some, |value| schema.validate(&value).err())
 }
 
@@ -77,6 +95,7 @@ fn has_tool_blocks(messages: &[AgentMessage]) -> bool {
 async fn complete(
     session: &AgentSession,
     mut ended: Option<(ChildExit, Option<String>)>,
+    start: usize,
 ) -> (ChildExit, Option<String>) {
     if ended.is_none() {
         session.wait_idle().await;
@@ -87,7 +106,7 @@ async fn complete(
         return (exit, error);
     }
     let messages = session.messages();
-    let Some(error) = schema_failure(session, &messages) else {
+    let Some(error) = schema_failure(session, &messages, start) else {
         return (exit, error);
     };
     let repair = format!("schema retry: {error}; reply with JSON only.");
@@ -154,11 +173,12 @@ impl SubagentHost {
         {
             children.touch(&child_id, crate::family::Cause::Started);
         }
+        let start = session.messages().len();
         let outcome = session.prompt_requested(crate::session::task(&content), Some(requested));
         let ended = outcome
             .err()
             .map(|error| failed(FailClass::RefusedSpawn, error));
-        let (exit, error) = complete(&session, ended).await;
+        let (exit, error) = complete(&session, ended, start).await;
         self.conclude(&child_id, &session_name, &session, exit, error);
     }
 
@@ -282,8 +302,9 @@ impl SubagentHost {
         };
         self.publish(key);
         let (host, key) = (Arc::clone(self), key.to_owned());
+        let start = session.messages().len();
         tokio::spawn(async move {
-            let (exit, error) = complete(&session, None).await;
+            let (exit, error) = complete(&session, None, start).await;
             host.conclude(&key, &name, &session, exit, error);
         });
     }
