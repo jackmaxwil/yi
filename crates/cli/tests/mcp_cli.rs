@@ -47,6 +47,8 @@ fn yi(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_yi"))
         .args(args)
         .env("HOME", &home.home)
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("YI_CLAUDE_HOOKS_FILES")
         .output()?;
     Ok(Output {
         code: output.status.code().unwrap_or(-1),
@@ -64,6 +66,8 @@ fn yi_in(home: &McpHome, cwd: &std::path::Path, args: &[&str]) -> Result<Output,
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_yi"))
         .args(args)
         .env("HOME", &home.home)
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("YI_CLAUDE_HOOKS_FILES")
         .current_dir(cwd)
         .output()?;
     Ok(Output {

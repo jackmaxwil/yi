@@ -451,7 +451,7 @@ hooks a Claude Code user configured, around every tool call the adapter runs (mo
 calls, root sessions and children) and around a cell's MCP call inside `yi mcp @session tools-call`,
 named `mcp__<server>__<tool>` after the config entry. Shell the runtime runs for the model off the
 tool seam (goal and plan checks, a child result's check, a schedule's `exec://` source) passes the
-Bash PreToolUse hooks first, through a configuration loaded from that command's cwd: a deny or ask
+Bash PreToolUse hooks first, through the root session's frozen configuration: a deny or ask
 refuses it, and its notices and post hooks are not run. Shell a cell runs (`subprocess`, `!cmd`)
 passes no seam, so Bash hooks do not see it. The contract is code.claude.com/docs/en/hooks.
 
@@ -481,8 +481,8 @@ Configuration notices ride the session's first tool result once, and each `yi mc
 two variables. A hook inherits Yi's environment as Claude's does Claude's: the `OTEL_*` exporter
 variables are removed, and Yi's provider keys only under `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`.
 `CLAUDE_PLUGIN_DATA` is not set: Yi does not know
-a plugin's data dir. Matchers follow the doc's three forms, but the regex form is the Rust `regex`
-dialect (no lookaround, no backreferences), not JavaScript's. `if` takes one `Tool` or `Tool(glob)`
+a plugin's data dir. Every nonempty matcher except `*` is an unanchored, case-insensitive regex in
+the Rust `regex` dialect (no lookaround, no backreferences), not JavaScript's. `if` takes one `Tool` or `Tool(glob)`
 rule, the glob matched as Yi's own permission rules match: against each subcommand of a Bash input
 past its `VAR=value` assignments, else the file path relative to the cwd; an input it cannot judge (a
 command substitution, a tool with no path) runs the hook, as Claude's does. Matching handlers run at
@@ -495,8 +495,8 @@ never decide, and their output is dropped: Yi has no next-turn delivery and cann
 `asyncRewake` is held to its timeout, as in Claude; a detached hook outlives a Yi that exits.
 
 **Outcomes.** Exit 2 blocks (a pre hook denies with its stderr, a post or failure hook adds it as
-feedback); JSON is read only from stdout that is one `{…}` object, at any exit code, and on exit 2 it
-cannot lift the block; other stdout is ignored. A failure (no start, timeout, other exit without JSON,
+feedback); JSON is read only from stdout that is one `{…}` object at exit 0 or 2, and on exit 2 it
+cannot lift the block; other exit codes ignore stdout. A failure (no start, timeout, other exit,
 invalid JSON) is a notice, or blocks under `onFailure: block`. Stdout is parsed whole even when
 stderr passed its cap, so a noisy deny still denies. On exit 2 a post or failure hook's JSON block
 reason replaces its stderr. Pre verdicts combine deny > ask > allow; `defer` is ignored with a notice,
@@ -523,7 +523,7 @@ when it is that one file's; a file Yi could not prepare gets its path and a noti
 for Bash (`stdout` holding both streams as Yi shows them, `stderr` empty, `interrupted`, `isImage`)
 and Write (`filePath`); the doc is silent for the rest, so they get Yi's result text. A failure
 carries `error` (`Exit code N` first for bash) and `is_interrupt`; a child adds `agent_id`;
-`permission_mode` maps ask, auto and yolo to default, auto and bypassPermissions. Yi's own tools carry `mcp_server` `{name: yi, source: sdk}`, so a policy keyed on
+`permission_mode` maps ask, auto and yolo to default, acceptEdits and bypassPermissions. Yi's own tools carry `mcp_server` `{name: yi, source: sdk}`, so a policy keyed on
 `source` tells them from a real server's. Not sent: `prompt_id`, `effort`, `agent_type`,
 `duration_ms`, `scratchpad_dir`, and `mcp_server` for a real server through `yi mcp`.
 Caps: each `tool_response` string at `RESPONSE_CAP` (64 KiB); hook text (context, reasons, stderr,

@@ -177,6 +177,7 @@ pub struct AgentSession {
     schedule: Mutex<Option<Arc<crate::schedule::HeartbeatService>>>,
     advisor: Mutex<Option<Arc<crate::advisor::AdvisorRuntime>>>,
     permission: Mutex<Option<Arc<crate::permission::PermissionBroker>>>,
+    claude_hooks: OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
     memory: Mutex<Option<Arc<crate::memory::Activity>>>,
@@ -243,6 +244,7 @@ impl AgentSession {
             schedule: Mutex::new(None),
             advisor: Mutex::new(None),
             permission: Mutex::new(None),
+            claude_hooks: OnceLock::new(),
             goal: Mutex::new(None),
             plan: Mutex::new(None),
             memory: Mutex::new(None),
@@ -647,7 +649,7 @@ impl AgentSession {
         }
         let spills = self.spills.lock().ok().and_then(|dir| dir.clone());
         let selector = self.selector.lock().ok().and_then(|slot| slot.clone());
-        let hooks = crate::claude_hooks::Attached::of(permission.as_deref(), &cwd);
+        let hooks = crate::claude_hooks::Attached::of(self.claude_hooks(&cwd));
         let adapters = tools
             .into_iter()
             .map(|tool| {

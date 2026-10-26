@@ -343,11 +343,27 @@ impl AgentSession {
         })
     }
 
+    pub(crate) fn claude_hooks(
+        &self,
+        cwd: &std::path::Path,
+    ) -> Option<Arc<crate::claude_hooks::Hooks>> {
+        let broker = self.permission.lock().ok().and_then(|slot| slot.clone());
+        match broker {
+            Some(broker) => broker.claude_hooks(),
+            None => self
+                .claude_hooks
+                .get_or_init(|| crate::claude_hooks::Hooks::load(cwd))
+                .clone(),
+        }
+    }
+
     /// Invariant: an idle queue holds inboxed notices and held follow-ups waiting for another
     /// turn, so only a queue behind a running turn is pending work that defers a heartbeat.
     pub fn heartbeat_deliverer(&self) -> Arc<crate::schedule::DeliverFn> {
         let shared = Arc::clone(&self.shared);
         let compactor = self.compactor.clone();
+        let cwd = self.tool_cwd.lock().ok().and_then(|slot| slot.clone());
+        let hooks = self.claude_hooks(cwd.as_deref().unwrap_or_else(|| std::path::Path::new(".")));
         let (hook, quiet) = (self.heartbeat_hook(), self.deliver_hook());
         Arc::new(move |job, firing| {
             let is_streaming = shared
@@ -370,7 +386,8 @@ impl AgentSession {
                 .ok()
                 .and_then(|slot| slot.as_ref().map(Arc::clone))
                 .ok_or("a tick creates a todo, and this session has no todo list")?;
-            let fired = crate::schedule::clock::fire(&todos, job, firing)?;
+            let fired =
+                crate::schedule::clock::fire_with_hooks(&todos, job, firing, hooks.as_ref())?;
             let outcome = crate::schedule::clock::outcome(&fired);
             if let Some(wake) =
                 crate::schedule::clock::wake_message(job, &fired, yi_session::now_ms())

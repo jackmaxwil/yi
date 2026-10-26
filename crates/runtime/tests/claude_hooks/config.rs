@@ -162,6 +162,21 @@ async fn permission_mode_names_ask_and_auto_as_claude_code_does() -> TestResult 
     }
     let lines = read_lines(&log)?;
     let modes: Vec<&Value> = lines.iter().map(|line| &line["permission_mode"]).collect();
-    assert_eq!(modes, [&json!("default"), &json!("auto")]);
+    assert_eq!(modes, [&json!("default"), &json!("acceptEdits")]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn plain_matchers_are_unanchored_case_insensitive_regexes() -> TestResult {
+    let case = Case::new("plain-regex", json!({}), true)?;
+    let (prefix, lowercase) = (case.path("prefix-ran"), case.path("lower-ran"));
+    case.user(&json!({"hooks": {"PreToolUse": [
+        {"matcher": "mcp__yi", "hooks": [super::touching(&prefix)]},
+        {"matcher": "bash", "hooks": [super::touching(&lowercase)]},
+    ]}}))?;
+    case.run("ipython", json!({"code": "1 + 1"})).await?;
+    case.run("bash", json!({"command": "printf ran"})).await?;
+    assert!(prefix.exists(), "an unanchored MCP matcher did not run");
+    assert!(lowercase.exists(), "a case-insensitive matcher did not run");
     Ok(())
 }

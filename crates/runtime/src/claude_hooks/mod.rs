@@ -100,7 +100,7 @@ pub struct Call {
 pub fn mode_name(mode: yi_permission::PermissionMode) -> &'static str {
     match mode {
         yi_permission::PermissionMode::Ask => "default",
-        yi_permission::PermissionMode::Auto => "auto",
+        yi_permission::PermissionMode::Auto => "acceptEdits",
         yi_permission::PermissionMode::Yolo => "bypassPermissions",
     }
 }
@@ -129,6 +129,24 @@ fn capped(text: &str, what: &str, spills: Option<&Path>) -> String {
 fn raise(outcome: &mut Outcome, verdict: Verdict) {
     if verdict.rank() > outcome.verdict.rank() {
         outcome.verdict = verdict;
+    }
+}
+
+pub fn refusal(outcome: &Outcome) -> Option<String> {
+    refusal_unless_answerable(outcome, false)
+}
+
+pub(crate) fn refusal_unless_answerable(outcome: &Outcome, can_answer: bool) -> Option<String> {
+    if let Some(reason) = &outcome.stop {
+        return Some(format!("the run stops: {reason}"));
+    }
+    match &outcome.verdict {
+        Verdict::Deny(reason) => Some(reason.clone()),
+        Verdict::Ask(_) if can_answer => None,
+        Verdict::Ask(why) => Some(format!(
+            "asks to confirm this call ({why}), and no one can answer here"
+        )),
+        Verdict::Allow | Verdict::Silent => None,
     }
 }
 
@@ -305,12 +323,22 @@ impl Hooks {
         }
         outcome
     }
+
+    fn matches(&self, event: Event, call: &Call) -> bool {
+        let name = shape::claude_name(&call.tool, &call.args);
+        (self.handlers.iter())
+            .any(|handler| handler.event == event && handler.matcher.matches(&name))
+    }
+
+    pub(crate) fn needs_changes(&self, event: Event, call: &Call) -> bool {
+        call.tool == "edit" && self.matches(event, call)
+    }
 }
 
 /// A shell command the runtime runs for the model off the tool seam (a goal or plan check, a
 /// schedule's `exec://`) passes the Bash PreToolUse hooks first; Err is the refusal.
-pub(crate) fn guard_shell(command: &str, cwd: &Path) -> Result<(), String> {
-    let Some(hooks) = Hooks::load(cwd) else {
+pub(crate) fn guard_shell(hooks: Option<&Hooks>, command: &str, cwd: &Path) -> Result<(), String> {
+    let Some(hooks) = hooks else {
         return Ok(());
     };
     let call = Call {
@@ -321,19 +349,11 @@ pub(crate) fn guard_shell(command: &str, cwd: &Path) -> Result<(), String> {
     };
     let never: CancelFlag = Arc::new(|| false);
     let outcome = hooks.run(Event::PreToolUse, &call, &never);
-    let refused = |why: &str| {
+    refusal(&outcome).map_or(Ok(()), |why| {
         Err(format!(
             "Claude Code PreToolUse hook refused `{command}`: {why}"
         ))
-    };
-    match (&outcome.verdict, &outcome.stop) {
-        (_, Some(reason)) => refused(&format!("the run stops: {reason}")),
-        (Verdict::Deny(reason), None) => refused(reason),
-        (Verdict::Ask(why), None) => {
-            refused(&format!("it asks ({why}), and no one can answer a check"))
-        }
-        (Verdict::Allow | Verdict::Silent, None) => Ok(()),
-    }
+    })
 }
 
 #[derive(Clone)]
@@ -343,13 +363,14 @@ pub(crate) struct Attached {
 }
 
 impl Attached {
-    pub(crate) fn of(
-        broker: Option<&crate::permission::PermissionBroker>,
-        cwd: &Path,
-    ) -> Option<Self> {
-        let hooks = broker.map_or_else(|| Hooks::load(cwd), |broker| broker.claude_hooks())?;
+    pub(crate) fn of(hooks: Option<Arc<Hooks>>) -> Option<Self> {
+        let hooks = hooks?;
         let announced = Arc::new(AtomicBool::new(false));
         Some(Self { hooks, announced })
+    }
+
+    pub(crate) fn needs_changes(&self, event: Event, call: &Call) -> bool {
+        self.hooks.needs_changes(event, call)
     }
 
     pub(crate) async fn after(

@@ -42,6 +42,8 @@ struct Gate {
     child_of: Option<PathBuf>,
     holds: Vec<yi_permission::Hold>,
     journal: Option<Arc<dyn Fn(yi_types::permission::PermissionRecord) + Send + Sync>>,
+    count_edit_changes: bool,
+    kept: Vec<PathBuf>,
 }
 
 /// Returns its configured text, so a test sets the exact bytes a hook's `tool_response` holds.
@@ -70,7 +72,16 @@ impl Tool for FakeTool {
     fn execute(&self, _input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {
         yi_tools::text_output(self.output.clone())
     }
+
+    fn changes(&self, _input: &Map<String, Value>, _cwd: &Path) -> Vec<yi_tools::FileChange> {
+        if self.name == "edit" {
+            EDIT_CHANGES.fetch_add(1, Ordering::Relaxed);
+        }
+        Vec::new()
+    }
 }
+
+static EDIT_CHANGES: AtomicU32 = AtomicU32::new(0);
 
 fn faux_model() -> yi_types::model::Model {
     let zero = || serde_json::Number::from(0u64);
@@ -255,6 +266,20 @@ impl Case {
             for hold in gate.holds {
                 broker.insert_hold(hold);
             }
+            for dir in gate.kept {
+                let grant = yi_permission::write_grant(&dir);
+                broker.replay(
+                    vec![yi_types::permission::SessionPermissionRule {
+                        id: 0,
+                        kind: grant.kind,
+                        canonical: grant.canonical,
+                        display_identity: grant.label,
+                        decision: yi_types::permission::RuleDecision::Allow,
+                        generation: 0,
+                    }],
+                    &yi_runtime::wall::Wall::default(),
+                );
+            }
             if let Some(journal) = gate.journal {
                 broker.set_journal(journal);
             }
@@ -264,6 +289,13 @@ impl Case {
         for (name, output) in [("stub", stub_output), ("ipython", "cell ok")] {
             let output = output.to_owned();
             tools.push(Arc::new(FakeTool { name, output }));
+        }
+        if gate.count_edit_changes {
+            tools.retain(|tool| tool.name() != "edit");
+            tools.push(Arc::new(FakeTool {
+                name: "edit",
+                output: "edited".to_owned(),
+            }));
         }
         session.use_tools(tools, cwd, broker.map(Arc::new));
         session.prompt("run the tools")?;

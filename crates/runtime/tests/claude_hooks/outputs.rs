@@ -314,3 +314,31 @@ async fn invalid_json_and_a_failing_exit_are_notices_not_blocks() -> TestResult 
     assert!(outcome.text.contains(failed), "{}", outcome.text);
     Ok(())
 }
+
+#[tokio::test]
+async fn a_failed_hooks_json_decision_is_ignored() -> TestResult {
+    let deny = decision("deny");
+    let failing = command(&format!(
+        "{}; exit 3",
+        deny["command"].as_str().ok_or("command")?
+    ));
+    let case = Case::new(
+        "failed-json",
+        settings("PreToolUse", "Bash", vec![failing]),
+        true,
+    )?;
+    let marker = case.cwd.join("ran");
+    let outcome = case
+        .run(
+            "bash",
+            json!({"command": format!("touch {}", marker.display())}),
+        )
+        .await?;
+    assert!(
+        marker.exists(),
+        "a failed hook's JSON denied the call: {}",
+        outcome.text
+    );
+    assert!(outcome.text.contains("exit 3"), "{}", outcome.text);
+    Ok(())
+}
