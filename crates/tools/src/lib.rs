@@ -31,11 +31,11 @@ pub use builtins::{BashTool, WriteTool, list_files, wall_refusal, walled};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};
-pub use exec::{ExecTool, discover_exec_tools};
+pub use exec::discover_exec_tools;
 pub use grep::{GrepTool, line_matcher};
 pub use ipython::cell_output;
 pub use ipython::{CellCalls, CellSpill, IpythonTool, KernelBridge, KernelCellOutcome};
-pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, clamp_timeout, run_or_background};
+pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, run_or_background};
 pub use orient::GetContextTool;
 pub use process::{
     CommandCapture, OUTPUT_CAP, command, edit_file, git_root, keyless_command, run_captured,
@@ -44,7 +44,7 @@ pub use process::{
 pub use reduce::{Involuntary, Reduced, VIEW_CEILING, reduce, rerun, view};
 pub use sandbox::{
     Sandbox, SandboxRefusal, denial_hint, exit_zero_note, kernel_cell_note, nested_sandbox_note,
-    outcome_note, sandbox_refusal,
+    sandbox_refusal,
 };
 /// The spill root's name under `~/.yi`, one dir per session inside it, before spills moved into
 /// the family board; walled sessions still may not read it (D340).
