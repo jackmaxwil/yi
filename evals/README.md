@@ -606,12 +606,13 @@ python3 evals/kill.py report
   charged the whole cap, and a re-run is charged only the rows its own sweep appended. A line
   the sweep appended that does not parse (a torn final write) also charges the whole cap, and
   the row names it as `unreadable`; the next sweep ends that line first, so its rows never fuse
-  onto it. A
-  subscription family's harbor spec is written unrun, because the sweep spends OpenRouter on
-  its own model.
+  onto it. A subscription family's harbor spec is written unrun, because the sweep spends
+  OpenRouter on its own model.
 - **EXP-B3c** is `evals/kill/x-b3c.py`, ladder step 6: the 12-task slice through the sweep,
-  read by `stops_on_fail.py`. Its Kimi family reads unrun until the sweep can carry a Kimi
-  route, so until then its verdict is KILL (GLM flash under 2 of 12 tasks) or UNRESOLVED.
+  read by `stops_on_fail.py` from the job directories the harbor row names (`jobs`, from the
+  `job` each trial row is filed with), so a re-run reads each task's latest sweep. Its Kimi
+  family reads unrun until the sweep can carry a Kimi route, so until then its verdict is KILL
+  (GLM flash under 2 of 12 tasks) or UNRESOLVED.
 - **`kill/s5-kc-ab.py` (EXP-S5-E2)** runs three arms (solo; a parent with gathered `worker`
   children; the same with `root` children, which keep a kernel) over heat-pump-warranty,
   legacy-utility-triage and medical-claims-processing, three repeats each, one sweep per arm.
