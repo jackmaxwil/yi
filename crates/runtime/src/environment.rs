@@ -120,11 +120,13 @@ pub const FILES_SHOWN: usize = 20;
 /// The cwd's top level, sorted, hidden names skipped, capped: the oracle beside the spec.
 pub fn files_line(cwd: &Path) -> Option<String> {
     let entries = std::fs::read_dir(cwd).ok()?;
+    let mut hidden = 0usize;
     let mut names: Vec<String> = entries
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with('.') {
+                hidden = hidden.saturating_add(1);
                 return None;
             }
             let dir = entry.file_type().ok()?.is_dir();
@@ -143,7 +145,10 @@ pub fn files_line(cwd: &Path) -> Option<String> {
     names.truncate(FILES_SHOWN);
     let mut line = format!("files: {}", names.join(" "));
     if total > FILES_SHOWN {
-        line.push_str(&format!(" …(+{})", total.saturating_sub(FILES_SHOWN)));
+        let what = format!("top-level names, {hidden} hidden skipped");
+        let (cap, next) = ("FILES_SHOWN", "ls -A");
+        let row = crate::listed::cut_row(FILES_SHOWN, total, &what, cap, FILES_SHOWN, next);
+        line.push_str(&format!(" {row}"));
     }
     Some(line)
 }

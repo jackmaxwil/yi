@@ -771,12 +771,14 @@ impl Tool for BashTool {
         let placed = (context.container.as_deref())
             .map(|name| crate::jobs::in_container(name, &context.cwd, command));
         let (capture, timed_out) = match crate::jobs::run_or_background(
-            placed.as_ref().map_or(command, |(run, _)| run),
+            command,
             context,
             background_after,
             timeout,
             context.sandbox.as_ref().filter(|_| placed.is_none()),
-            placed.as_ref().map(|(_, sweep)| sweep.as_str()),
+            placed
+                .as_ref()
+                .map(|(run, sweep)| (run.as_str(), sweep.as_str())),
         ) {
             Ok(crate::jobs::Run::Finished(capture)) => (*capture, false),
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
@@ -808,23 +810,14 @@ impl Tool for BashTool {
             &capture.stdout,
             &capture.stderr,
             exit_code_for_reduce,
-            capture.spill.as_deref(),
+            capture.kept().as_deref(),
             context
                 .recovery_dir
                 .as_deref()
                 .filter(|_| !capture.truncated),
             max_lines,
         );
-        let body = match (&reduced.recovery, capture.truncated) {
-            (Some(note), true) => (reduced.text.strip_suffix(note.as_str()))
-                .map_or(reduced.text.as_str(), str::trim_end),
-            _ => reduced.text.as_str(),
-        };
-        if !body.is_empty() {
-            sections.push(body.to_owned());
-        }
-        sections.extend(capture.cut_row());
-        sections.extend(capture.cut_note());
+        sections.extend(capture.shown(&reduced));
         if timed_out {
             sections.extend(timed_out_notes(timeout, nudge.is_some(), asked_wait));
         } else if capture.cancelled {
@@ -947,7 +940,7 @@ fn poll_job(
         if report.finished {
             jobs.mark_delivered(id);
             let exit_code = report.exit_code.unwrap_or(-1);
-            let text = format!("{}\n{}", report.headline(), report.output);
+            let text = format!("{}\n{}", report.headline(), report.view());
             let killed =
                 report.state == crate::jobs::JobState::Settled(crate::jobs::Outcome::Killed);
             let details = json!({ "job": id.0, "exitCode": exit_code });

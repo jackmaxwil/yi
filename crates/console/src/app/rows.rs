@@ -4,10 +4,7 @@ use crate::model::SessionId;
 fn red_gate(app: &mut App, id: &str) {
     use yi_types::lane::{JobState, Landing, LandingJob, PrNumber};
     let id = SessionId(id.to_owned());
-    let Some(pane) = app.state.focused_pane_id() else {
-        return;
-    };
-    let mut chat = app.make_chat(pane, &id);
+    let mut chat = app.make_chat(&id);
     chat.app
         .reduce_agent(yi_types::event::AgentEvent::LandingState {
             landing: Landing::Open {

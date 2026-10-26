@@ -22,7 +22,13 @@ pub fn handle_terminal_event(
     app.bind_reply();
     match ct_event {
         CtEvent::Paste(text) => {
-            if !app.composer.search_active() {
+            if let Some(tree) = app.tree.as_mut() {
+                tree.paste(&text);
+            } else if let Some(view) = app.plan_tree.as_mut() {
+                view.paste(&text);
+            } else if let Some(bottom) = app.bottom.as_mut() {
+                paste_into(bottom, &text);
+            } else if !app.composer.search_active() {
                 app.composer.handle_paste(&text);
             }
             app.scheduler.request();
@@ -81,8 +87,7 @@ pub fn handle_terminal_event(
                             SLASH_COMMANDS.iter().map(|s| (*s).to_owned()).collect(),
                         )));
                     } else if key.code == KeyCodeValue::Char('@') && !key.ctrl && !key.alt {
-                        let files = walk_files(std::path::Path::new(&app.options.cwd), 100);
-                        app.bottom = Some(Bottom::File(ListPopup::new('@', files)));
+                        app.bottom = Some(Bottom::File(file_picker(&app.options.cwd)));
                     } else if key.code == KeyCodeValue::Backspace
                         && !key.ctrl
                         && !key.alt
@@ -97,6 +102,31 @@ pub fn handle_terminal_event(
         }
         _ => {}
     }
+}
+
+fn paste_into(bottom: &mut Bottom, text: &str) {
+    match bottom {
+        Bottom::Approval(view, _) => view.paste(text),
+        Bottom::Question(view) => view.paste(text),
+        Bottom::Command(popup) | Bottom::File(popup) => popup.paste(text),
+        Bottom::Agents(popup) => popup.paste(text),
+        Bottom::Model(popup) => popup.paste(text),
+    }
+}
+
+const PICKER_CAP: usize = 5_000;
+
+fn file_picker(cwd: &str) -> ListPopup {
+    let mut files = walk_files(std::path::Path::new(cwd), PICKER_CAP + 1);
+    let more = files.len() > PICKER_CAP;
+    files.truncate(PICKER_CAP);
+    let mut popup = ListPopup::new('@', files);
+    if more {
+        popup.note = Some(format!(
+            "[…] {PICKER_CAP} of {PICKER_CAP}+ files · picker cap {PICKER_CAP} · Esc, then type the path"
+        ));
+    }
+    popup
 }
 
 pub(crate) fn handle_tree_key(app: &mut App, key: &SingleKey) {
@@ -164,10 +194,7 @@ pub(crate) fn handle_bottom_key(
             Bottom::Command(_) | Bottom::File(_) | Bottom::Question(_) => {}
         },
         PopupResult::Insert(text) => match bottom {
-            Bottom::Command(_) => {
-                let command = text.trim_start_matches('/').to_owned();
-                handle_slash(app, &command);
-            }
+            Bottom::Command(_) => submit_line(app, cmd_tx, text),
             Bottom::File(_) => {
                 app.composer
                     .textarea
@@ -182,12 +209,30 @@ pub(crate) fn handle_bottom_key(
     }
 }
 
+/// Invariant: Enter in the composer and in the `/` popup both submit here, so `//word` prompts.
+fn submit_line(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
+    let text = match slash_line(text) {
+        Slash::Command(command) => return handle_slash(app, &command),
+        Slash::Prompt(text) => text,
+    };
+    if let Some(bound) = app.reply_bound.take() {
+        let (child_id, question) = (bound.child_id, bound.question);
+        let _ = cmd_tx.send(Command::Answer {
+            child_id,
+            question,
+            text,
+        });
+        return;
+    }
+    send_message(app, cmd_tx, text);
+}
+
 fn send_message(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
     if app.running {
         app.steering.push(text.clone());
         let _ = cmd_tx.send(Command::Steer(text));
     } else {
-        app.note_submission();
+        app.note_submission(&text);
         let _ = cmd_tx.send(Command::Prompt(text));
     }
 }
@@ -204,21 +249,7 @@ pub(crate) fn handle_action(
                 return;
             }
             if let Some(text) = app.composer.take_submission() {
-                // A typed line is a command only when its first word is one (a `/usr/...` path still prompts).
-                if let Some(command) = slash_line(&text) {
-                    handle_slash(app, &command);
-                    return;
-                }
-                if let Some(bound) = app.reply_bound.take() {
-                    let (child_id, question) = (bound.child_id, bound.question);
-                    let _ = cmd_tx.send(Command::Answer {
-                        child_id,
-                        question,
-                        text,
-                    });
-                    return;
-                }
-                send_message(app, cmd_tx, text);
+                submit_line(app, cmd_tx, text);
             }
         }
         Action::InsertNewline => app.composer.insert_newline(),
@@ -260,13 +291,26 @@ pub(crate) fn handle_action(
     }
 }
 
-fn slash_line(text: &str) -> Option<String> {
-    let line = text.trim();
-    let rest = line.strip_prefix('/')?;
-    let head = rest.split_whitespace().next()?;
-    SLASH_COMMANDS
-        .contains(&head)
-        .then(|| rest.trim().to_owned())
+enum Slash {
+    Command(String),
+    Prompt(String),
+}
+
+/// Invariant: `/word` is a command, a typo'd one included, and `//word` sends `/word` as a
+/// prompt. A `/usr/...` path or a `/*` comment is no word, so it still prompts.
+fn slash_line(text: String) -> Slash {
+    let word = |rest: &str| {
+        let head = rest.split(char::is_whitespace).next().unwrap_or_default();
+        !head.is_empty()
+            && head
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+    };
+    match text.trim().strip_prefix('/') {
+        Some(rest) if word(rest) => Slash::Command(rest.trim().to_owned()),
+        Some(rest) if rest.strip_prefix('/').is_some_and(word) => Slash::Prompt(rest.to_owned()),
+        _ => Slash::Prompt(text),
+    }
 }
 
 pub(crate) fn handle_slash(app: &mut App, line: &str) {
@@ -292,7 +336,9 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
             app.pending_slash = Some(line.trim().to_owned());
         }
         _ => app.commit_cell(&Cell::Notice {
-            text: format!("unknown command: /{command}"),
+            text: format!(
+                "unknown command: /{command} · start the line with // to send it as a prompt"
+            ),
         }),
     }
     app.scheduler.request();

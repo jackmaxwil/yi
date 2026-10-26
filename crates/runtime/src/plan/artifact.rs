@@ -57,6 +57,12 @@ impl Artifacts {
         Self { fs, ..self }
     }
 
+    /// Where a refused checker's whole output is kept: its verification tree is gone by the time
+    /// the author reads the refusal, so a rerun cannot be the recovery.
+    pub fn spill_dir(&self) -> PathBuf {
+        self.dir.join("spill")
+    }
+
     pub fn path(&self, digest: &Digest) -> PathBuf {
         self.dir.join(digest.hex())
     }

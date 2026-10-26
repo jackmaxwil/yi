@@ -28,6 +28,7 @@ fn started(cwd: &Path, home: &Path) -> Host {
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        can_delegate: true,
     });
     host.start(None, false);
     host
@@ -222,6 +223,7 @@ fn the_slot_table_survives_a_resume() -> TestResult {
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        can_delegate: true,
     });
     resumed.start(Some(&store), true);
     assert!(
@@ -294,6 +296,37 @@ fn the_prefilter_separates_a_question_from_a_program() {
         ),
         Route::Undecided
     );
+}
+
+/// A depth-1 root child under `max_depth` 1 cannot spawn, so a brief that triggers the protocol
+/// must not buy it the 11 KB the depth cap makes unusable; the root given it still does.
+#[test]
+fn a_session_that_cannot_delegate_is_not_sent_the_orchestrate_protocol() -> TestResult {
+    let dir = Scratch::new("yi-ext-leaf")?;
+    let named = "Orchestrate a tally of notes.txt.";
+    let scored = "refactor the loader, migrate the cache and standardize the retries";
+    assert_eq!(prefilter(scored, false, 0), Route::Complex);
+    for brief in [named, scored] {
+        let attached = |can_delegate: bool| {
+            let mut host = install(ExtOptions {
+                cwd: dir.to_path_buf(),
+                home: dir.to_path_buf(),
+                mode: yi_runtime::PermissionMode::Auto,
+                user_system: String::new(),
+                schema_instruction: None,
+                context_window: 128_000,
+                global_skills: Vec::new(),
+                can_delegate,
+            });
+            host.start(None, false);
+            host.dispatch(&host.prompt_event(brief), None);
+            host.state().has(&Slot::new(Rank::Protocol, "orchestrate"))
+                && host.system_prompt().contains("# Orchestrate")
+        };
+        assert!(attached(true), "the root is sent the protocol for {brief}");
+        assert!(!attached(false), "a leaf is not sent it for {brief}");
+    }
+    Ok(())
 }
 
 const BULLETED: &str = "Notes from the session, before the next step:\n\
@@ -617,6 +650,7 @@ fn fragment_examples_name_real_kernel_apis() -> TestResult {
         include_str!("../src/prompts/orchestrate.md"),
         include_str!("../src/prompts/identity.md"),
         include_str!("../src/prompts/doctrine.md"),
+        include_str!("../src/prompts/delegation.md"),
     ] {
         assert_eq!(
             unknown(fragment),
@@ -1050,6 +1084,7 @@ fn the_catalog_lists_a_home_skill_only_when_config_names_it() -> TestResult {
             schema_instruction: None,
             context_window: 128_000,
             global_skills,
+            can_delegate: true,
         });
         host.start(None, false);
         host.system_prompt()
@@ -1082,6 +1117,7 @@ fn the_memory_block_is_present_at_zero_notes() -> TestResult {
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        can_delegate: true,
     });
     let feed = std::sync::Arc::new(yi_runtime::memory::Activity::default());
     host.register(Box::new(yi_runtime::memory::MemoryExt::new(

@@ -281,3 +281,16 @@ fn the_refusal_messages_name_the_login_verb() {
         .to_string();
     assert!(text.contains("run: yi login fixture"), "{text}");
 }
+
+#[test]
+fn every_pkce_challenge_takes_the_rfc_7636_s256_form() -> Res {
+    // RFC 7636 4.2: a 32-byte digest is 43 unpadded base64url symbols. Sixteen draws make a
+    // standard-alphabet `+` or `/` all but certain to show.
+    for _ in 0..16 {
+        let challenge = yi_oauth::pkce::generate()?.challenge;
+        let url_safe = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
+        assert_eq!(challenge.len(), 43, "{challenge}");
+        assert!(challenge.bytes().all(url_safe), "{challenge}");
+    }
+    Ok(())
+}

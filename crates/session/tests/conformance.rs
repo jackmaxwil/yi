@@ -1361,3 +1361,24 @@ fn validates_the_default_fork_target() -> TestResult {
         Ok(())
     })
 }
+
+/// A session is named by its oldest message and a turn's saved entry is found from its lane's
+/// leaf, so each visitor must stop at the first match from its own end and never cross lanes.
+#[test]
+fn visitors_stop_at_the_first_match_from_their_own_end() -> TestResult {
+    for_each_backend(|repo| {
+        let session = create(repo, "visitors")?;
+        let mut session = lock_session(&session);
+        let first = session.append_message("main", user_message("first"))?;
+        let second = session.append_message("main", user_message("second"))?;
+        session.create_lane("thread", Some(&first))?;
+        let aside = session.append_message("thread", user_message("aside"))?;
+        let id = |entry: &Entry| Some(entry.id().to_owned());
+        assert_eq!(session.find_entry(id), Some(first.clone()));
+        assert_eq!(session.find_on_branch("main", id), Some(second));
+        assert_eq!(session.find_on_branch("thread", id), Some(aside));
+        assert_eq!(session.find_on_branch("thread", |_| None::<()>), None);
+        assert_eq!(session.find_on_branch("missing", id), None);
+        Ok(())
+    })
+}
