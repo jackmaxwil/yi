@@ -537,6 +537,7 @@ def _resolve_context(kwargs: dict[str, Any]) -> dict[str, Any]:
         raise TypeError("context_keys must be a list of variable names")
     namespace = get_ipython().user_ns if get_ipython is not None else {}
     context: dict[str, str] = {}
+    context_chars: dict[str, int] = {}
     for key in keys:
         if key not in namespace:
             raise KeyError(f"context_keys names {key!r}, which is not bound in this kernel")
@@ -544,8 +545,10 @@ def _resolve_context(kwargs: dict[str, Any]) -> dict[str, Any]:
             text = json.dumps(namespace[key], default=repr)
         except Exception:
             text = repr(namespace[key])
+        context_chars[key] = len(text)
         context[key] = text[: CONTEXT_VALUE_CAP + 1]
     kwargs["context"] = context
+    kwargs["context_chars"] = context_chars
     return kwargs
 
 

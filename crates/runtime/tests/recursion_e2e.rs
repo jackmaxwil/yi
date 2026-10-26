@@ -3124,15 +3124,14 @@ fn history_holds(harness: &Harness, name: &str, row: &str, answer: &str) -> Test
     Ok(())
 }
 
-/// The brief of a child spawned with `context` as the kernel sends it.
-async fn scoped_brief(context: Value) -> Result<String, String> {
+/// The brief of a child spawned with `context` as the kernel sends it, and its `context_chars`.
+async fn scoped_brief(context: Value, counted: Option<Value>) -> Result<String, String> {
     let harness = harness(0, 1, "ok").map_err(|error| error.to_string())?;
+    let mut pairs = vec![("context", context)];
+    pairs.extend(counted.map(|counted| ("context_chars", counted)));
     harness
         .host
-        .spawn(
-            "read them".to_owned(),
-            protocol_kwargs("scoped", &[("context", context)]),
-        )
+        .spawn("read them".to_owned(), protocol_kwargs("scoped", &pairs))
         .map_err(|error| error.to_string())?;
     Ok(child_brief(&harness).await)
 }
@@ -3141,7 +3140,11 @@ async fn scoped_brief(context: Value) -> Result<String, String> {
 async fn a_context_value_cut_names_what_was_kept_and_the_way_to_pass_the_rest() -> TestResult {
     let whole = kernel_value(4_096, true);
     let past = kernel_value(4_097, true);
-    let brief = scoped_brief(json!({"whole": whole, "past": past})).await?;
+    let brief = scoped_brief(
+        json!({"whole": whole, "past": past}),
+        Some(json!({"whole": 4_096, "past": 4_097})),
+    )
+    .await?;
     assert_eq!(
         context_row(&brief, "whole")?,
         format!("whole = {whole}"),
@@ -3154,7 +3157,7 @@ async fn a_context_value_cut_names_what_was_kept_and_the_way_to_pass_the_rest() 
         "one char past the cap keeps exactly the cap: {row:?}"
     );
     for fact in [
-        "kept 4096 of over 4096 chars",
+        "kept 4096 of 4097 chars",
         "cap mail.context_value = 4096",
         "local://<path> in partition",
     ] {
@@ -3163,11 +3166,12 @@ async fn a_context_value_cut_names_what_was_kept_and_the_way_to_pass_the_rest() 
 
     let brief = scoped_brief(
         json!({"far": kernel_value(4_097, true), "blind": kernel_value(4_097, true), "accent": kernel_value(4_097, false)}),
+        Some(json!({"far": 20_000, "accent": 4_097})),
     )
     .await?;
     assert!(
-        context_row(&brief, "far")?.contains("kept 4096 of over 4096 chars"),
-        "an uncounted value is not passed off as having an exact total: {brief:?}"
+        context_row(&brief, "far")?.contains("kept 4096 of 20000 chars"),
+        "the kernel's own count is the total: {brief:?}"
     );
     let blind = context_row(&brief, "blind")?;
     assert!(
@@ -3177,12 +3181,16 @@ async fn a_context_value_cut_names_what_was_kept_and_the_way_to_pass_the_rest() 
     let accent = context_row(&brief, "accent")?;
     let head: String = kernel_value(4_097, false).chars().take(4_096).collect();
     assert!(
-        accent.starts_with(&format!("accent = {head}… [kept 4096 of over 4096 chars")),
+        accent.starts_with(&format!("accent = {head}… [kept 4096 of 4097 chars")),
         "a non-ASCII value is cut on a char boundary: {accent:?}"
     );
 
     let mid = format!("x{}", "\u{e9}".repeat(4_096));
-    let brief = scoped_brief(json!({"low": kernel_value(4_097, true), "mid": mid})).await?;
+    let brief = scoped_brief(
+        json!({"low": kernel_value(4_097, true), "mid": mid}),
+        Some(json!({"low": 10, "mid": 4_097})),
+    )
+    .await?;
     let low = context_row(&brief, "low")?;
     assert!(
         low.contains("kept 4096 of over 4096 chars") && !low.contains("of 10 chars"),
@@ -3191,9 +3199,36 @@ async fn a_context_value_cut_names_what_was_kept_and_the_way_to_pass_the_rest() 
     );
     let head: String = mid.chars().take(4_096).collect();
     assert!(
-        context_row(&brief, "mid")?
-            .starts_with(&format!("mid = {head}… [kept 4096 of over 4096 chars")),
+        context_row(&brief, "mid")?.starts_with(&format!("mid = {head}… [kept 4096 of 4097 chars")),
         "byte 4096 sits inside a two-byte char and the cut does not panic there"
+    );
+    Ok(())
+}
+
+/// Dies with a count of the wrong shape ignored: a scalar or a float count is the sender's bug,
+/// and a row that quietly says `over 4096` hides it from the one run that could fix it.
+#[tokio::test]
+async fn a_context_count_of_the_wrong_shape_is_refused_not_ignored() -> TestResult {
+    for counted in [
+        json!(10_000),
+        json!([4_097]),
+        json!({"a": 1.5}),
+        json!({"a": -1}),
+        json!({"a": "9"}),
+    ] {
+        let refused = scoped_brief(json!({"a": "x"}), Some(counted.clone()))
+            .await
+            .err()
+            .ok_or(format!("{counted} was admitted"))?;
+        assert!(
+            refused.contains("context_chars must be an object of variable name to char count"),
+            "{counted}: {refused}"
+        );
+    }
+    let brief = scoped_brief(json!({"a": "x"}), Some(Value::Null)).await?;
+    assert!(
+        brief.contains("a = x\n"),
+        "a null count is no count: {brief:?}"
     );
     Ok(())
 }
@@ -3203,7 +3238,7 @@ async fn a_context_value_cut_names_what_was_kept_and_the_way_to_pass_the_rest() 
 #[tokio::test]
 async fn a_value_past_the_context_cap_reaches_a_child_whole_through_a_partition() -> TestResult {
     let value = kernel_value(4_097, true);
-    let cut = scoped_brief(json!({ "board": value })).await?;
+    let cut = scoped_brief(json!({ "board": value }), None).await?;
     let row = context_row(&cut, "board")?;
     let (address, kwarg) = (row.rsplit_once(" · write a value to a file and give "))
         .and_then(|(_, road)| road.strip_suffix(']')?.split_once(" in "))
@@ -3244,13 +3279,13 @@ async fn a_context_block_cut_names_what_was_kept_and_the_way_to_pass_the_rest() 
         }
         Value::Object(keys)
     };
-    let brief = scoped_brief(scope(4_059)).await?;
+    let brief = scoped_brief(scope(4_059), None).await?;
     assert!(
         !brief.contains("[kept") && brief.contains("\n</parent_context>"),
         "a block of exactly 16384 chars passes whole: {}",
         brief.len()
     );
-    let brief = scoped_brief(scope(4_060)).await?;
+    let brief = scoped_brief(scope(4_060), None).await?;
     for fact in [
         "kept 16384 of 16385 chars",
         "cap mail.context_total = 16384",

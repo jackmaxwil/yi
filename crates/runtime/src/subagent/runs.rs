@@ -64,21 +64,9 @@ fn schema_failure(
     start: usize,
 ) -> Option<String> {
     let run = messages.get(start..).unwrap_or_default();
-    let mut prompts = run.iter().filter(|message| {
-        matches!(
-            message,
-            AgentMessage::User { .. } | AgentMessage::Custom { .. }
-        )
-    });
-    prompts.next()?;
-    if prompts
-        .next_back()
-        .is_some_and(|message| !crate::mail::is_chase(message))
-    {
-        return None;
-    }
+    let answer = super::schema_answer(run)?;
     let schema = crate::schema::Schema::from_value(session.request_shape()?.schema?).ok()?;
-    crate::schema::extract(&super::answer_text(run).unwrap_or_default())
+    crate::schema::extract(&super::answer_text(answer).unwrap_or_default())
         .map_or_else(Some, |value| schema.validate(&value).err())
 }
 
