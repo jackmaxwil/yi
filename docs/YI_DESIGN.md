@@ -144,7 +144,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   `Entry { Message, ModelChange, ThinkingLevelChange, ActiveToolsChange, Compaction,
   BranchSummary, Custom }`; `Fact { Name, Label, Goal, Plan }`. Yi's `custom` entries:
   `checkpoint` (§7.7), `todo`, `todo_intercept`, `plan_op` (§13), `fetch` (§10), `agent_message`,
-  `agent_message_read`, `human_answer` (§12), `lease` (§11), `ext_state`, `ext_record`.
+  `agent_message_read`, `human_answer` (§12), `lease` (§11), `ext_state2` (v1 `ext_state`),
+  `ext_record`.
 - Shapes: [`wire.rs`](../crates/types/src/wire.rs), [`entry.rs`](../crates/types/src/entry.rs),
   [`record.rs`](../crates/types/src/record.rs); `~/.yi/sessions/--<cwd, / \ : as ->--/
   <createdAt>_<id>.jsonl`; a child's is a flat file in its own directory.
@@ -303,12 +304,15 @@ extension `Host` whose synchronous extensions turn session events into effects.
   comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
   granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
-- The table persists as `custom{ext_state}` when a slot's hash moves: the build's own slots (the
-  ones attached before the session starts) as rank, name and SHA-256, every slot an extension
-  attached and the yard with their text. A resume rebuilds the build's slots from the running
-  build, so its mode, identity and doctrine are current, and re-attaches the recorded ones it
-  lacks; a v1 snapshot carries text for every slot and restores the same way. Within one process
-  the first request's bytes stay frozen, and only the loop's read freezes them.
+- The table persists as `custom{ext_state2}` when an extension changes it: the build's own slots
+  (the ones attached before the session starts) as rank, name, SHA-256 and bytes, every slot an
+  extension attached and the yard with their text, a slot attached after the first request
+  marked `late`. Older builds read only the v1 `custom{ext_state}`, so they keep their own build
+  slots. A resume reads the newest of either, rebuilds the build's slots from the running build,
+  so its mode, identity and doctrine are current, and re-attaches the recorded ones it lacks; a
+  late one rejoins the late set, not the prompt, since the transcript carries it. A v1 snapshot
+  carries text for every slot and restores the same way. Within one process the first request's
+  bytes stay frozen, and only the loop's read freezes them.
 - The environment block is a `host_user` message appended per request by `transform_context`,
   never stored: `cwd`, `files` (20), `landing`, `todos`, `time` (per minute), `deadline`,
   `platform … · host <line>`, `model`, `context`, `kernel`, children. `host` comes from
