@@ -1,0 +1,42 @@
+{
+  "confirmedBy": "yi catalog refresh openrouter, 2026-10-24T19:22Z, 389 models",
+  "routes": {
+    "kimi": {
+      "model": "kimi/k3.1",
+      "kind": "subscription",
+      "enabled": true,
+      "confirmed": false,
+      "why": "the K3.1 id comes from the account's own /models after the owner's kimi login; K-kimi-login's live checks confirm it and set the model here"
+    },
+    "kimi-openrouter": {
+      "model": "openrouter/moonshotai/kimi-k3.1-pro",
+      "kind": "openrouter",
+      "enabled": false,
+      "confirmed": true,
+      "why": "about 40x flash's price; the owner enables it for a named test or Kimi runs park on the subscription quota"
+    },
+    "glm-flash": {
+      "model": "openrouter/z-ai/glm-5.3-flash",
+      "kind": "openrouter",
+      "enabled": true,
+      "confirmed": true,
+      "routing": {"ignore": ["inference-net"]},
+      "why": "the second family; inference-net drops nested tool arguments"
+    },
+    "glm": {
+      "model": "openrouter/z-ai/glm-5.3",
+      "kind": "openrouter",
+      "enabled": true,
+      "confirmed": true,
+      "routing": {"ignore": ["inference-net"]},
+      "why": "only where a test names it"
+    },
+    "deepseek": {
+      "model": "openrouter/deepseek/deepseek-v4.1-flash",
+      "kind": "openrouter",
+      "enabled": true,
+      "confirmed": true,
+      "why": "DeepSeek V4.1 is listed only as deepseek-v4.1-flash; only on a spiral episode or where a test names it"
+    }
+  }
+}
