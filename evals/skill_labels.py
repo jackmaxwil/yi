@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import record  # noqa: E402
+from adapters import yi_usage  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = Path.home() / ".yi" / "skill-labels"
@@ -177,11 +178,11 @@ def whole(row):
 def label(corpus_path, out, model, max_usd, limit, teacher=None):
     candidates = skills()
     names = {name for name, _ in candidates}
-    done, torn = set(), False
+    done = set()
     if out.exists():
         kept = out.read_text(errors="replace")
         done = {row["id"] for row in map(parsed, kept.splitlines()) if whole(row)}
-        torn = bool(kept) and not kept.endswith("\n")
+    yi_usage.end_torn(out)
     if teacher is None:
         key = os.environ.get("OPENROUTER_API_KEY")
         if not key:
@@ -189,8 +190,6 @@ def label(corpus_path, out, model, max_usd, limit, teacher=None):
         teacher = lambda text: ask_teacher(text, candidates, model, key)  # noqa: E731
     spent, labelled = 0.0, 0
     with out.open("a") as sink:
-        if torn:
-            sink.write("\n")
         for line in corpus_path.read_text(errors="replace").splitlines():
             row = json.loads(line)
             if row["id"] in done:

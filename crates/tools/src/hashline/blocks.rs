@@ -1,12 +1,11 @@
 use super::messages::{
-    AbsoluteRangeOp, BLOCK_RESOLVER_UNAVAILABLE, BlockDiagnosticSuggestions,
-    REPLACE_PAIR_COALESCED_WARNING, block_single_line_message, block_unresolved_message,
-    insert_after_block_closer_lowered_warning, insert_after_block_unresolved_message,
-    paste_after_block_closer_lowered_warning, paste_after_block_unresolved_message,
+    AbsoluteRangeOp, BlockDiagnosticSuggestions, REPLACE_PAIR_COALESCED_WARNING,
+    block_single_line_message, block_unresolved_message, insert_after_block_closer_lowered_warning,
+    insert_after_block_unresolved_message, paste_after_block_closer_lowered_warning,
+    paste_after_block_unresolved_message,
 };
 use super::types::{
-    Anchor, BlockMode, BlockResolution, BlockResolver, BlockSpan, Cursor, Edit, ParsedRange,
-    PasteTarget,
+    Anchor, BlockMode, BlockResolver, BlockSpan, Cursor, Edit, ParsedRange, PasteTarget,
 };
 
 /// The block opening at `line` spans to where the scanner returns to its prior depth. None
@@ -126,27 +125,23 @@ fn is_closer_line(text: &str, line: u64) -> bool {
 pub struct ResolvedBlocks {
     pub edits: Vec<Edit>,
     pub warnings: Vec<String>,
-    pub resolutions: Vec<BlockResolution>,
 }
 
 pub fn resolve_block_edits(
     edits: Vec<Edit>,
     path: &str,
     text: &str,
-    resolver: Option<&BlockResolver>,
+    resolver: &BlockResolver,
 ) -> Result<ResolvedBlocks, String> {
     if !edits.iter().any(|edit| matches!(edit, Edit::Block { .. })) {
         return Ok(ResolvedBlocks {
             edits,
             warnings: Vec::new(),
-            resolutions: Vec::new(),
         });
     }
     let file_lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
     let mut out: Vec<Edit> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
-    let mut resolutions: Vec<BlockResolution> = Vec::new();
-    let mut synth_index = edits.len();
     for edit in edits {
         let Edit::Block {
             anchor,
@@ -154,18 +149,15 @@ pub fn resolve_block_edits(
             mode,
             register,
             line_num,
-            ..
         } = edit
         else {
             out.push(edit);
             continue;
         };
-        let span = resolver.and_then(|resolve| {
-            resolve(&super::types::BlockResolverRequest {
-                path,
-                text,
-                line: anchor.line,
-            })
+        let span = resolver(&super::types::BlockResolverRequest {
+            path,
+            text,
+            line: anchor.line,
         });
         match mode {
             BlockMode::Replace | BlockMode::Cut => {
@@ -174,9 +166,6 @@ pub fn resolve_block_edits(
                     _ => AbsoluteRangeOp::Replace,
                 };
                 let Some(span) = span else {
-                    if resolver.is_none() {
-                        return Err(format!("line {line_num}: {BLOCK_RESOLVER_UNAVAILABLE}"));
-                    }
                     return Err(format!(
                         "line {line_num}: {}",
                         block_unresolved_message(
@@ -194,11 +183,6 @@ pub fn resolve_block_edits(
                         block_single_line_message(anchor.line, mode, None)
                     ));
                 }
-                resolutions.push(BlockResolution {
-                    start: span.start,
-                    end: span.end,
-                    op: mode,
-                });
                 let range = ParsedRange {
                     start: Anchor { line: span.start },
                     end: Anchor { line: span.end },
@@ -209,18 +193,13 @@ pub fn resolve_block_edits(
                         range,
                         register,
                         line_num,
-                        index: synth_index,
                     });
-                    synth_index += 1;
                 } else if let Some(register) = register {
                     out.push(Edit::Paste {
                         at: PasteTarget::Span { range },
                         register: Some(register),
                         line_num,
-                        index: synth_index,
-                        block_start: Some(span.start),
                     });
-                    synth_index += 1;
                 } else {
                     for text in &payloads {
                         out.push(Edit::Insert {
@@ -229,11 +208,8 @@ pub fn resolve_block_edits(
                             },
                             text: text.clone(),
                             line_num,
-                            index: synth_index,
                             replacement: true,
-                            block_start: Some(span.start),
                         });
-                        synth_index += 1;
                     }
                 }
                 if !(matches!(mode, BlockMode::Replace) && register_present) {
@@ -241,10 +217,7 @@ pub fn resolve_block_edits(
                         out.push(Edit::Delete {
                             anchor: Anchor { line },
                             line_num,
-                            index: synth_index,
-                            old_assertion: None,
                         });
-                        synth_index += 1;
                     }
                 }
             }
@@ -260,9 +233,6 @@ pub fn resolve_block_edits(
                             _ => insert_after_block_closer_lowered_warning(anchor.line),
                         }),
                     ),
-                    None if resolver.is_none() => {
-                        return Err(format!("line {line_num}: {BLOCK_RESOLVER_UNAVAILABLE}"));
-                    }
                     None => {
                         let message = match mode {
                             BlockMode::PasteAfter => {
@@ -275,12 +245,6 @@ pub fn resolve_block_edits(
                 };
                 if let Some(warning) = warning {
                     warnings.push(warning);
-                } else if let Some(span) = span {
-                    resolutions.push(BlockResolution {
-                        start: span.start,
-                        end: span.end,
-                        op: mode,
-                    });
                 }
                 let cursor = Cursor::AfterAnchor {
                     anchor: Anchor { line: landing },
@@ -290,21 +254,15 @@ pub fn resolve_block_edits(
                         at: PasteTarget::Gap { cursor },
                         register,
                         line_num,
-                        index: synth_index,
-                        block_start: span.map(|span| span.start),
                     });
-                    synth_index += 1;
                 } else {
                     for text in &payloads {
                         out.push(Edit::Insert {
                             cursor,
                             text: text.clone(),
                             line_num,
-                            index: synth_index,
                             replacement: false,
-                            block_start: span.map(|span| span.start),
                         });
-                        synth_index += 1;
                     }
                 }
             }
@@ -317,7 +275,6 @@ pub fn resolve_block_edits(
     Ok(ResolvedBlocks {
         edits: out,
         warnings,
-        resolutions,
     })
 }
 
