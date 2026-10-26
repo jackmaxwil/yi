@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use yi_types::plan::canonical::Digest;
 use yi_types::plan::contract::{
-    Decider, ItemVerdict, Outcome as ContractOutcome, Resolution, Verdict, VerificationToken, Vote,
+    Decider, ItemVerdict, Outcome as ContractOutcome, Resolution, Verdict, VerificationToken,
 };
 use yi_types::plan::doc::{BlockedOn, Plan, PlanId, TodoLabel, TodoState, TouchCount};
 use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, RequestId};
@@ -72,8 +72,6 @@ pub(super) struct Prepared {
     pub(super) contract: yi_types::plan::contract::Contract,
     pub(super) product: Option<String>,
     pub(super) effect: EffectId,
-    /// Juries this todo has convened at this plan version, and the model its child was given.
-    pub(super) jury: (u32, Option<String>),
 }
 
 enum Phase1 {
@@ -169,11 +167,6 @@ impl PlanEngine {
         };
         let todos = u32::try_from(current.todos.len()).unwrap_or(u32::MAX);
         let attempt = todo.attempt;
-        let owner_model = todo
-            .delegation
-            .as_ref()
-            .and_then(|delegation| delegation.spec.model.clone());
-        let convened = juries(&txn.records, label, current.version);
         match self.evidence(&txn, &id, label, output.as_ref(), &contract) {
             Ok((token, product)) => {
                 if let Some(settled) = txn.state.settled_verification(&token)
@@ -194,7 +187,7 @@ impl PlanEngine {
                     .state
                     .pending_verification(&id, label, &token)
                     .map(|(effect, pending)| (effect.clone(), pending.clone()));
-                let prepared = |effect, juries| {
+                let prepared = |effect| {
                     Box::new(Prepared {
                         id: id.clone(),
                         root: root.clone(),
@@ -203,7 +196,6 @@ impl PlanEngine {
                         contract: contract.clone(),
                         product: product.clone(),
                         effect,
-                        jury: (juries, owner_model.clone()),
                     })
                 };
                 if let Some((effect, pending)) = pending {
@@ -219,7 +211,7 @@ impl PlanEngine {
                     self.refuse_live_claim(label, &pending)?;
                     // Requested by a process that died or overran: this call adopts the effect.
                     let flight = self.flight_for(&token)?;
-                    return Ok(Phase1::Run(prepared(effect, convened), flight));
+                    return Ok(Phase1::Run(prepared(effect), flight));
                 }
                 let effect = EffectId::new(format!("e-{}", self.store.request_nonce())).map_err(
                     |error| PlanOpError::Verification {
@@ -250,10 +242,7 @@ impl PlanEngine {
                 // Invariant: the flight is registered before the lease drops, so no caller can
                 // see the committed effect with nothing in this process behind it.
                 let flight = self.flight_for(&token)?;
-                Ok(Phase1::Run(
-                    prepared(effect, convened.saturating_add(1)),
-                    flight,
-                ))
+                Ok(Phase1::Run(prepared(effect), flight))
             }
             Err(error) => {
                 if error.is_recordable() {
@@ -401,26 +390,11 @@ impl PlanEngine {
                 &format!("snapshot could not be materialized: {reason}"),
             );
         }
-        // A jury sits in the verification reserve, never the worker share (section 7.6); a full
-        // reserve abstains as infrastructure, and only a judged contract asks for it.
-        let judged = prepared
-            .contract
-            .items
-            .iter()
-            .any(|item| matches!(item.decider, Decider::Judge { .. }));
-        let permit = judged
-            .then(|| self.reserve_verification(&prepared.label).ok())
-            .flatten();
         let snapshot = Snapshot {
             id: &prepared.token.snapshot,
             root: &workspace.0,
             output: prepared.product.as_deref().map(str::as_bytes),
             artifacts: &artifacts,
-            jury: permit.as_ref().map(|permit| super::verify::Seat {
-                permit,
-                juries: prepared.jury.0,
-                owner_model: prepared.jury.1.as_deref(),
-            }),
         };
         self.verifier
             .run(&prepared.token, &prepared.contract, &snapshot)
@@ -552,19 +526,14 @@ impl PlanEngine {
             "effect_id".to_owned(),
             Value::String(prepared.effect.to_string()),
         );
-        if let Some(votes) = juror_votes(&verdict) {
-            record.record.extra.insert("jurors".to_owned(), votes);
-        }
         let record = fitted(txn, record, &verdict)?;
         let committed = self.commit(txn, record)?;
         self.emit(&committed);
         // The cap counts refused verdicts on this attempt: a refused transition, a stale
         // token and an abstention are not verdicts on the product.
         let refused = refused_verdicts(&txn.records, label, prepared.token.attempt);
-        // A jury cap reached is a question for the user at once, not after three more refusals.
-        let escalated = verdict.outcome == ContractOutcome::Escalate;
         let refusal_cap = crate::levers::get().plan_done_refusal_cap;
-        let capped = (escalated || refused >= refusal_cap)
+        let capped = refused >= refusal_cap
             && txn
                 .state
                 .plan(&prepared.id)?
@@ -574,16 +543,10 @@ impl PlanEngine {
                 });
         if capped {
             txn.request = txn.derived("block")?;
-            // An escalation arrives on its own refusal, so its note names the verdict that
-            // asked for the user rather than a count of refusals that never happened.
-            let note = if escalated {
-                format!("a verdict escalated to you: {}", verdict.lines())
-            } else {
-                format!(
-                    "{refusal_cap} refused verdicts; the last: {}",
-                    verdict.lines()
-                )
-            };
+            let note = format!(
+                "{refusal_cap} refused verdicts; the last: {}",
+                verdict.lines()
+            );
             let block = Op::Block {
                 label: label.clone(),
                 on: BlockedOn::User,
@@ -629,36 +592,6 @@ impl Drop for Workspace {
     fn drop(&mut self) {
         let _gone_or_never_made = std::fs::remove_dir_all(&self.0);
     }
-}
-
-/// Juror votes by outcome on the record a session sees; the lines stay in the journal's verdict.
-pub(super) fn juror_votes(verdict: &Verdict) -> Option<Value> {
-    let lines: Vec<_> = verdict.items.iter().flat_map(|item| &item.jurors).collect();
-    let count = |vote| lines.iter().filter(|line| line.vote == vote).count();
-    let unbacked = lines.iter().filter(|line| line.unbacked);
-    (!lines.is_empty()).then(|| {
-        json!({"pass": count(Vote::Pass), "fail": count(Vote::Fail),
-               "abstain": count(Vote::Abstain), "unbacked": unbacked.count()})
-    })
-}
-
-/// Verifications already requested on this todo at this plan version. Each one that reaches a
-/// judge item seats a jury, so this is what the jury cap counts (plan section 6.4).
-fn juries(
-    records: &[JournalRecord],
-    label: &TodoLabel,
-    version: yi_types::plan::PlanVersion,
-) -> u32 {
-    let version = json!(version);
-    let count = records
-        .iter()
-        .filter(|record| {
-            record.record.op == KIND_VERIFICATION_REQUESTED
-                && record.record.todo.as_ref() == Some(label)
-                && record.args.pointer("/token/version") == Some(&version)
-        })
-        .count();
-    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 /// The `done_refused` records on this todo's attempt whose verdict decided something about the

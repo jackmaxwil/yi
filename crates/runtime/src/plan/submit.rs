@@ -117,7 +117,6 @@ impl PlanEngine {
             root: lane.path(),
             output: product.map(str::as_bytes),
             artifacts: &artifacts,
-            jury: None,
         };
         let verdict = self.verifier.run(token, contract, &snapshot);
         lane.discard()
@@ -347,7 +346,6 @@ impl PlanEngine {
                 contract: run.contracted.contract.clone(),
                 product: run.contracted.product.clone(),
                 effect: run.effect.clone(),
-                jury: (0, None),
             };
             return match self.refuse(&mut txn, &prepared, op, verdict.clone()) {
                 Ok(_) => Err(verification(label, "a refusal returned an outcome")),
