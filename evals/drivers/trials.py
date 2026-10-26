@@ -6,7 +6,7 @@
 
 `rows` prints one JSON row per harbor trial, however many session files it wrote (a child
 session's tokens and cost are the trial's), and appends them to evals/trials/<run-id>.jsonl
-with `at` and `arm`. `caps` prints the hard cap in USD this call may spend, or exits 2 naming
+with `at`, `arm` and its `job` dir. `caps` prints the hard cap in USD this call may spend, or exits 2 naming
 the soft cap it would cross. A trial with an unpriced turn counts UNPRICED_USD, the watcher's
 per-trial cap it cannot pass: never $0 and never a price table (E14). Stdlib only.
 """
@@ -136,7 +136,7 @@ def main(argv=None):
     at = int(time.time())
     with (STORE / f"{args.run_id}.jsonl").open("a") as sink:
         for row in found:
-            sink.write(json.dumps({**row, "at": at, "arm": args.arm}, sort_keys=True) + "\n")
+            sink.write(json.dumps({**row, "at": at, "arm": args.arm, "job": str(args.job.resolve())}, sort_keys=True) + "\n")
     for row in found:
         print(json.dumps(row, sort_keys=True))
     return 0 if found else 2

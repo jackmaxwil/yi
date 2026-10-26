@@ -1079,10 +1079,6 @@ impl Tool for HashlineEditTool {
                 "syntax".to_owned(),
                 syntax.map_or(Value::Null, Value::String),
             );
-        }
-        // The op mix is what `yi stats` aggregates for the M3 register/move
-        // economics question; counts, never content.
-        if let Value::Object(details) = &mut output.result.details {
             let count = |op: SectionOp| results.iter().filter(|result| result.op == op).count();
             details.insert(
                 "ops".to_owned(),
