@@ -166,16 +166,21 @@ fn every_rlm_name_the_model_reads_is_public_in_the_package() -> TestResult {
 }
 
 /// Dogfood 2026-09-27: a cell's stream past 65,536 characters was cut, and no copy was kept.
-/// stdout and stderr each name the file that holds all of it.
+/// stdout, stderr and a displayed value each keep both ends and name the file with all of it.
 #[tokio::test]
 async fn a_cut_cell_stream_names_a_file_with_every_character() -> TestResult {
     let root = Scratch::new("yi-kernel-spill")?;
     let service = service();
+    let items: Vec<String> = (0..200_000).map(|n| n.to_string()).collect();
     let cells = [
         ("print('x' * 200_000)", "x".repeat(200_000) + "\n"),
         (
-            "import sys; sys.stderr.write('y' * 200_000)",
+            "import sys; _ = sys.stderr.write('y' * 200_000)",
             "y".repeat(200_000),
+        ),
+        (
+            "str(list(range(200_000)))",
+            format!("'[{}]'", items.join(", ")),
         ),
     ];
     for (code, whole) in cells {
@@ -194,7 +199,19 @@ async fn a_cut_cell_stream_names_a_file_with_every_character() -> TestResult {
         let path = (text.lines())
             .find_map(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
             .ok_or_else(|| format!("{code}: no pointer: {}", text.len()))?;
-        assert_eq!(std::fs::read_to_string(path)?, whole, "{code}");
+        let ends = [whole.get(..20), whole.get(whole.len().saturating_sub(20)..)];
+        let lost = ends.iter().flatten().find(|end| !text.contains(**end));
+        assert!(lost.is_none(), "{code}: lost {lost:?}");
+        let row = format!("[\u{2026} 65536 of {} chars kept", whole.chars().count());
+        assert!(
+            text.lines().any(|line| line.starts_with(&row)),
+            "{code}: no row"
+        );
+        assert!(
+            !text.contains("100000, 100001"),
+            "{code}: the middle was kept"
+        );
+        assert!(std::fs::read_to_string(path)? == whole, "{code}");
     }
     service.dispose().await;
     Ok(())
