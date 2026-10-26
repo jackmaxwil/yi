@@ -25,6 +25,7 @@ pub(crate) mod trail;
 pub use record::ChildFeed;
 pub(crate) use record::Step;
 use record::preview;
+pub(crate) use runs::schema_answer;
 pub(crate) use service::Standing;
 
 // A completed child holds its slot until closed: the cap forces the parent to
@@ -248,6 +249,7 @@ pub struct SubagentHost {
     /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
     pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
     kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
+    pub(crate) claude_hooks: std::sync::OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
 }
 
 impl SubagentHost {
@@ -489,6 +491,7 @@ impl SubagentHost {
             partitions: Mutex::default(),
             leads: Mutex::default(),
             check_gate: std::sync::OnceLock::new(),
+            claude_hooks: std::sync::OnceLock::new(),
             kernel: std::sync::OnceLock::new(),
         }
     }
@@ -511,6 +514,10 @@ impl SubagentHost {
 
     pub fn deadline(&self) -> Option<std::time::Instant> {
         self.deadline.lock().ok().and_then(|slot| *slot)
+    }
+
+    pub(crate) fn claude_hooks(&self) -> Option<Arc<crate::claude_hooks::Hooks>> {
+        self.claude_hooks.get().cloned().flatten()
     }
 
     /// Incident: a wait on an empty family exempted a repeated failing call from the breaker.

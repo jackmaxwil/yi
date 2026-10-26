@@ -2443,7 +2443,7 @@ mod accept {
             lane.path(),
             &never,
             None,
-        );
+        )?;
         let busy = yi_runtime::lane::settle::quiescence_of_jobs(lane.path());
         assert_eq!(busy.running_commands(), 1);
         let refused = lane.candidate(&busy, None);
@@ -2506,7 +2506,7 @@ mod accept {
             lane.path(),
             &never,
             None,
-        );
+        )?;
         let mut held_lane = Some(lane);
         let refused = yi_runtime::subagent::SubagentHost::settle_lane(&mut held_lane, None, None);
         assert!(
@@ -3176,7 +3176,7 @@ async fn a_job_that_ends_during_the_check_does_not_hold_the_lane() -> TestResult
         .home
         .join(Path::new(lane).strip_prefix(rig.home.canonicalize()?)?);
     let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
-    let _job = yi_tools::jobs::spawn_job("sleep 1", &lane, &never, None);
+    let _job = yi_tools::jobs::spawn_job("sleep 1", &lane, &never, None)?;
     let reply = checked_merge(&family, "sleep 3")?.await?;
     assert_eq!(reply["merged"], true, "{reply:?}");
     Ok(())

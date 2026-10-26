@@ -69,6 +69,8 @@ print(walled, nested, "alpha" in view.text, signed and "grep" in listed)
 "#;
 
 fn session(cwd: &Path, codes: &[&str]) -> AgentSession {
+    // SAFETY: nextest isolates each test in its own process.
+    unsafe { std::env::remove_var("YI_CLAUDE_HOOKS") };
     let provider = Arc::new(ProviderStream::new(None));
     let mut turns: Vec<_> = (codes.iter().enumerate())
         .map(|(at, code)| {

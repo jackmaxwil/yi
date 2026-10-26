@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use yi_types::message::{AgentMessage, StopReason};
+use yi_types::message::{AgentMessage, Attribution, Content, StopReason};
 use yi_types::subagent::{ChildExit, FailClass};
 
 use super::{INTERRUPTED, Standing, Step, SubagentHost, preview};
@@ -54,6 +54,126 @@ fn exit_of(session: &AgentSession) -> (ChildExit, Option<String>) {
     }
 }
 
+fn failed(class: FailClass, error: impl std::fmt::Display) -> (ChildExit, Option<String>) {
+    (ChildExit::Failed { class }, Some(error.to_string()))
+}
+
+pub(crate) fn schema_answer(messages: &[AgentMessage]) -> Option<&[AgentMessage]> {
+    let start = messages.iter().rposition(|message| {
+        matches!(
+            message,
+            AgentMessage::User {
+                attribution: Attribution::Task,
+                ..
+            }
+        ) || crate::mail::is_followup(message)
+    })?;
+    let answered = |message: &AgentMessage| match message {
+        AgentMessage::Assistant { stop_reason, .. } => {
+            !matches!(stop_reason, StopReason::ToolUse)
+                || super::last_assistant_text(std::slice::from_ref(message)).is_some()
+        }
+        _ => false,
+    };
+    let answer_start = start.saturating_add(1);
+    let first_end = messages
+        .iter()
+        .enumerate()
+        .skip(answer_start)
+        .find_map(|(index, message)| {
+            (matches!(message, AgentMessage::User { .. }) && !crate::mail::is_chase(message)
+                || crate::mail::envelope_id(message).is_some())
+            .then_some(index)
+        })
+        .unwrap_or(messages.len());
+    if messages
+        .get(answer_start..first_end)
+        .is_some_and(|run| run.iter().any(answered))
+    {
+        return messages.get(answer_start..first_end);
+    }
+    let end = messages
+        .iter()
+        .enumerate()
+        .skip(first_end)
+        .find_map(|(index, message)| answered(message).then_some(index.saturating_add(1)))
+        .unwrap_or(messages.len());
+    messages.get(answer_start..end)
+}
+
+fn schema_failure(
+    session: &AgentSession,
+    messages: &[AgentMessage],
+    start: usize,
+) -> Option<String> {
+    let run = messages.get(start..).unwrap_or_default();
+    let answer = super::schema_answer(run)?;
+    let schema = crate::schema::Schema::from_value(session.request_shape()?.schema?).ok()?;
+    crate::schema::extract(&super::answer_text(answer).unwrap_or_default())
+        .map_or_else(Some, |value| schema.validate(&value).err())
+}
+
+fn has_tool_blocks(messages: &[AgentMessage]) -> bool {
+    messages.iter().any(|message| match message {
+        AgentMessage::ToolResult { .. } => true,
+        AgentMessage::Assistant { content, .. } => content
+            .iter()
+            .any(|block| matches!(block, Content::ToolCall { .. })),
+        _ => false,
+    })
+}
+
+async fn complete(
+    session: &AgentSession,
+    mut ended: Option<(ChildExit, Option<String>)>,
+    start: usize,
+) -> (ChildExit, Option<String>) {
+    if ended.is_none() {
+        session.wait_idle().await;
+        ended = Some(exit_of(session));
+    }
+    let (exit, error) = ended.unwrap_or((ChildExit::Completed, None));
+    if exit != ChildExit::Completed {
+        return (exit, error);
+    }
+    let messages = session.messages();
+    let Some(error) = schema_failure(session, &messages, start) else {
+        return (exit, error);
+    };
+    let repair = format!("schema retry: {error}; reply with JSON only.");
+    let mut prompt = repair.clone();
+    let mut cold = false;
+    if session.model().api == "anthropic-messages" {
+        let converted = yi_context::convert_to_llm(&messages);
+        cold = has_tool_blocks(&converted);
+        if cold {
+            let history = yi_context::serialize_conversation(&converted);
+            prompt = format!("{history}\n\n{repair}");
+        }
+    }
+    let (tools, turn_cap) = (session.tools(), session.turn_cap());
+    if cold {
+        session.seed_messages(Vec::new());
+    }
+    session.set_turn_cap(1);
+    session.set_tools(Vec::new());
+    let mut repaired = session
+        .prompt_message(crate::session::task(&prompt))
+        .err()
+        .map(|error| failed(FailClass::Other, error));
+    if repaired.is_none() {
+        session.wait_idle().await;
+        repaired = Some(exit_of(session));
+    }
+    session.set_tools(tools);
+    session.restore_turn_cap(turn_cap);
+    if cold {
+        let repair_messages = session.messages();
+        session.seed_messages(messages.into_iter().chain(repair_messages).collect());
+    }
+    repaired.unwrap_or((ChildExit::Completed, None))
+}
+
 impl SubagentHost {
     pub(super) async fn run_child(
         self: Arc<Self>,
@@ -84,16 +204,12 @@ impl SubagentHost {
         {
             children.touch(&child_id, crate::family::Cause::Started);
         }
+        let start = session.messages().len();
         let outcome = session.prompt_requested(crate::session::task(&content), Some(requested));
-        let mut ended = outcome.err().map(|error| {
-            let class = FailClass::RefusedSpawn;
-            (ChildExit::Failed { class }, Some(error.to_string()))
-        });
-        if ended.is_none() {
-            session.wait_idle().await;
-            ended = Some(exit_of(&session));
-        }
-        let (exit, error) = ended.unwrap_or((ChildExit::Completed, None));
+        let ended = outcome
+            .err()
+            .map(|error| failed(FailClass::RefusedSpawn, error));
+        let (exit, error) = complete(&session, ended, start).await;
         self.conclude(&child_id, &session_name, &session, exit, error);
     }
 
@@ -173,7 +289,7 @@ impl SubagentHost {
             ChildExit::Completed if service => return,
             ChildExit::Completed => {
                 let answer = super::answer_text(&messages)
-                    .map(|text| preview(&text))
+                    .map(|text| preview(&text, session_name))
                     .unwrap_or_else(|| "(no final answer text)".to_owned());
                 let silent = if replied {
                     ""
@@ -217,9 +333,9 @@ impl SubagentHost {
         };
         self.publish(key);
         let (host, key) = (Arc::clone(self), key.to_owned());
+        let start = session.messages().len();
         tokio::spawn(async move {
-            session.wait_idle().await;
-            let (exit, error) = exit_of(&session);
+            let (exit, error) = complete(&session, None, start).await;
             host.conclude(&key, &name, &session, exit, error);
         });
     }
@@ -266,5 +382,40 @@ impl SubagentHost {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_types::message::UserContent;
+
+    #[test]
+    fn mail_before_the_task_answer_does_not_replace_it() -> Result<(), Box<dyn std::error::Error>> {
+        let mail = AgentMessage::Custom {
+            custom_type: crate::mail::INBOX_ENTRY.to_owned(),
+            content: UserContent::Text("ordinary mail".to_owned()),
+            display: true,
+            details: Some(serde_json::json!({"id": "parent-1"})),
+            timestamp: 0,
+        };
+        let answer = |text: &str| {
+            yi_ai::faux::faux_assistant_message(
+                vec![yi_ai::faux::faux_text(text)],
+                StopReason::Stop,
+            )
+        };
+        let messages = vec![
+            crate::session::task("answer"),
+            mail,
+            answer("{\"answer\":\"sea\"}"),
+            answer("mail prose"),
+        ];
+        let selected = crate::subagent::schema_answer(&messages).ok_or("no schema answer")?;
+        assert_eq!(
+            crate::subagent::answer_text(selected).as_deref(),
+            Some("{\"answer\":\"sea\"}")
+        );
+        Ok(())
     }
 }

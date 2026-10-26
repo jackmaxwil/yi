@@ -2332,6 +2332,7 @@ version = "0.2.0"
 dependencies = [
  "globset",
  "proptest",
+ "regex",
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
