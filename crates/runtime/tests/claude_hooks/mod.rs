@@ -43,6 +43,8 @@ struct Gate {
     holds: Vec<yi_permission::Hold>,
     journal: Option<Arc<dyn Fn(yi_types::permission::PermissionRecord) + Send + Sync>>,
     count_edit_changes: bool,
+    fail_stub: bool,
+    abort_after: Option<PathBuf>,
     kept: Vec<PathBuf>,
 }
 
@@ -50,6 +52,7 @@ struct Gate {
 struct FakeTool {
     name: &'static str,
     output: String,
+    fail: bool,
 }
 
 impl Tool for FakeTool {
@@ -70,7 +73,9 @@ impl Tool for FakeTool {
     }
 
     fn execute(&self, _input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {
-        yi_tools::text_output(self.output.clone())
+        let mut output = yi_tools::text_output(self.output.clone());
+        output.is_error = self.fail;
+        output
     }
 
     fn changes(&self, _input: &Map<String, Value>, _cwd: &Path) -> Vec<yi_tools::FileChange> {
@@ -286,19 +291,33 @@ impl Case {
             broker
         });
         let mut tools = yi_tools::builtin_tools();
-        for (name, output) in [("stub", stub_output), ("ipython", "cell ok")] {
+        for (name, output, fail) in [
+            ("stub", stub_output, gate.fail_stub),
+            ("ipython", "cell ok", false),
+        ] {
             let output = output.to_owned();
-            tools.push(Arc::new(FakeTool { name, output }));
+            tools.push(Arc::new(FakeTool { name, output, fail }));
         }
         if gate.count_edit_changes {
             tools.retain(|tool| tool.name() != "edit");
             tools.push(Arc::new(FakeTool {
                 name: "edit",
                 output: "edited".to_owned(),
+                fail: false,
             }));
         }
         session.use_tools(tools, cwd, broker.map(Arc::new));
         session.prompt("run the tools")?;
+        if let Some(started) = &gate.abort_after {
+            for _ in 0..200 {
+                if started.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert!(started.exists(), "the tool did not start");
+            session.abort();
+        }
         session.wait_idle().await;
         let results = session
             .messages()
@@ -663,6 +682,26 @@ async fn a_failure_hook_that_blocks_adds_its_reason_to_the_failed_result() -> Te
 }
 
 #[tokio::test]
+async fn an_interrupted_tool_reaches_post_failure_with_is_interrupt() -> TestResult {
+    let case = Case::new("interrupt", json!({}), true)?;
+    let log = case.path("interrupt.jsonl");
+    case.user(&settings("PostToolUseFailure", "Bash", vec![logging(&log)]))?;
+    let started = case.path("started");
+    let gate = Gate {
+        abort_after: Some(started.clone()),
+        ..Gate::default()
+    };
+    let command = format!("touch '{}'; sleep 5", started.display());
+    case.run_gated("bash", json!({"command": command}), gate)
+        .await?;
+    let lines = read_lines(&log)?;
+    let input = lines.first().ok_or("no interrupted failure input")?;
+    assert_eq!(input["hook_event_name"], "PostToolUseFailure");
+    assert_eq!(input["is_interrupt"], true);
+    Ok(())
+}
+
+#[tokio::test]
 async fn disable_all_hooks_follows_settings_precedence() -> TestResult {
     let case = Case::new("disable", json!({"disableAllHooks": true}), true)?;
     let marker = case.cwd.join("hook-ran");
@@ -824,6 +863,15 @@ async fn updated_input_is_applied_where_it_maps_back_and_refused_where_not() -> 
         refused.text
     );
     assert_eq!(std::fs::read_to_string(case.cwd.join("a.txt"))?, "one\n");
+    let malformed = printing(&json!({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "updatedInput": {"output_mode": true}
+    }}));
+    case.user(&settings("PreToolUse", "Grep", vec![malformed]))?;
+    let refused = case
+        .run("grep", json!({"pattern": "one", "path": "a.txt"}))
+        .await?;
+    assert!(refused.is_error, "{}", refused.text);
+    assert!(refused.text.contains("output_mode"), "{}", refused.text);
     Ok(())
 }
 

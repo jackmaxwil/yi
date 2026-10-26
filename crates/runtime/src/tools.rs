@@ -544,10 +544,16 @@ impl ToolAdapter {
         Box::pin(async move {
             let cancel = Arc::clone(&context.cancelled);
             let mut template = template;
-            if hooks
-                .as_ref()
-                .is_some_and(|hooks| hooks.needs_changes(Event::PreToolUse, &template))
-            {
+            template.args.clone_from(&args);
+            if hooks.as_ref().is_some_and(|hooks| {
+                [
+                    Event::PreToolUse,
+                    Event::PostToolUse,
+                    Event::PostToolUseFailure,
+                ]
+                .into_iter()
+                .any(|event| hooks.needs_changes(event, &template))
+            }) {
                 let (tool, args, cwd) = (Arc::clone(&tool), args.clone(), context.cwd.clone());
                 let edits = tokio::task::spawn_blocking(move || tool.changes(&args, &cwd));
                 template.edits = edits.await.unwrap_or_default();
@@ -781,9 +787,9 @@ impl ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
-                    if let Some(hooks) = hooks.as_ref().filter(|_| !cancel()) {
-                        let failed =
-                            yi_types::event::shown_failed(output.is_error, &output.result.details);
+                    let failed =
+                        yi_types::event::shown_failed(output.is_error, &output.result.details);
+                    if let Some(hooks) = hooks.as_ref().filter(|_| failed || !cancel()) {
                         let call = crate::claude_hooks::Call {
                             args: hook_args,
                             ..template
@@ -856,7 +862,7 @@ impl ToolAdapter {
                 Err(join_error) => {
                     let mut result =
                         error_tool_result(&format!("tool execution failed: {join_error}"));
-                    if let Some(hooks) = hooks.as_ref().filter(|_| !cancel()) {
+                    if let Some(hooks) = hooks.as_ref() {
                         let call = crate::claude_hooks::Call {
                             args: hook_args,
                             ..template
