@@ -44,11 +44,18 @@ def selfcheck(off=""):
     seen = [(name, size) for name, _, size in fn_sizes(code_lines(text, off))]
     if seen != [("with_auth", CEILING + 2)]:
         errs.append(f"below a mid-file test helper the scan saw {seen}, not [('with_auth', {CEILING + 2})]")
+    for shape in (
+        'const EXAMPLE: &str = r#"\n#[cfg(test)]\n"#;\nfn production() {}\n',
+        '/*\n#[cfg(test)]\n*/\nfn production() {}\n',
+    ):
+        seen = fn_sizes(code_lines(shape, off))
+        if seen != [("production", 4, 1)]:
+            errs.append(f"marker-shaped text inside a string or comment hid production code: {seen}")
     return errs
 
 if "--selfcheck" in sys.argv:
     errs = selfcheck()
-    for off in ("chars", "first"):
+    for off in ("chars", "first", "markers"):
         if not selfcheck(off):
             errs.append(f"selfcheck passes with the {off} mutant, so it refutes nothing")
     fail(errs, "fn_size selfcheck")
