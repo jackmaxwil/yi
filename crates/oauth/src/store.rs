@@ -62,7 +62,7 @@ pub fn now() -> SystemTime {
     SystemTime::now()
 }
 
-fn millis(at: SystemTime) -> u64 {
+pub(crate) fn millis(at: SystemTime) -> u64 {
     at.duration_since(SystemTime::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
@@ -179,9 +179,18 @@ impl Store {
     }
 
     pub fn expired_at(credential: &Credential, now: SystemTime) -> bool {
-        credential
-            .expires
-            .is_some_and(|at| now + EXPIRY_SLACK >= at)
+        !Self::valid_at(credential, EXPIRY_SLACK, now)
+    }
+
+    pub fn valid_for(credential: &Credential, lifetime: Duration) -> bool {
+        Self::valid_at(credential, lifetime.max(EXPIRY_SLACK), now())
+    }
+
+    fn valid_at(credential: &Credential, lifetime: Duration, now: SystemTime) -> bool {
+        credential.expires.is_none_or(|expires| {
+            now.checked_add(lifetime)
+                .is_some_and(|needed| expires >= needed)
+        })
     }
 
     pub fn with_refresh_lock<T>(

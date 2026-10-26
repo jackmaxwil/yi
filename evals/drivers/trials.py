@@ -89,7 +89,7 @@ def spend(store, now, run_id=None):
     return round(run, 6), round(total, 6)
 
 
-def caps(run_id, tasks, store=STORE, now=None, per_trial=TRIAL_USD):
+def caps(run_id, tasks, store=STORE, now=None, per_trial=TRIAL_USD, at_most=float("inf")):
     """(hard cap for this call, None) or (0, the soft cap it would cross). `per_trial` is the
     predicted cost of one trial: a slice trial's by default, an inner-loop runner passes its own."""
     now = time.time() if now is None else now
@@ -99,7 +99,7 @@ def caps(run_id, tasks, store=STORE, now=None, per_trial=TRIAL_USD):
         return 0.0, f"stage soft cap ${STAGE_SOFT:g}: {run_id} has spent ${run:.2f}, this call is predicted ${predicted:.2f}"
     if week + predicted > WEEK_SOFT:
         return 0.0, f"week soft cap ${WEEK_SOFT:g}: this week has spent ${week:.2f}, this call is predicted ${predicted:.2f}"
-    return round(min(STAGE_HARD - run, WEEK_HARD - week), 6), None
+    return round(min(STAGE_HARD - run, WEEK_HARD - week, at_most), 6), None
 
 
 def main(argv=None):
@@ -115,12 +115,13 @@ def main(argv=None):
     cap = verbs.add_parser("caps")
     cap.add_argument("--run-id", required=True)
     cap.add_argument("--tasks", type=int, required=True)
+    cap.add_argument("--at-most", type=float, default=float("inf"), help="a caller's own cap; the lower holds")
     args = parser.parse_args(argv)
     if args.verb == "unstarted":
         print(" ".join(unstarted(args.job)))
         return 0
     if args.verb == "caps":
-        hard, refused = caps(args.run_id, args.tasks)
+        hard, refused = caps(args.run_id, args.tasks, at_most=args.at_most)
         if refused:
             print(f"refused: {refused}", file=sys.stderr)
             return 2
