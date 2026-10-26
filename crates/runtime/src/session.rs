@@ -552,8 +552,7 @@ impl AgentSession {
         settings: yi_context::Settings,
         summarizer: Option<Model>,
     ) {
-        let window_id = format!("win-{}", yi_session::now_ms());
-        let mut compactor = crate::compaction::Compactor::new(window_id);
+        let mut compactor = crate::compaction::Compactor::default();
         compactor.settings = settings;
         compactor.summarizer = summarizer;
         self.compactor = Some(Arc::new(compactor));
