@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools};
@@ -1543,6 +1544,95 @@ fn a_poll_that_gives_up_leaves_the_job_to_its_report() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_failed_spawn_leaves_no_running_job() -> TestResult {
+    let dir = temp_dir("job-spawn-failure")?;
+    let missing = dir.join("removed");
+    fs::create_dir(&missing)?;
+    fs::remove_dir(&missing)?;
+    let mut context = ToolContext::new(missing);
+    context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+    let output = BashTool::default().execute(
+        args(&[("command", json!("printf ghost")), ("wait", json!(5))]),
+        &context,
+    );
+    assert!(output.is_error);
+    assert!(
+        yi_tools::jobs::registry().running_under(&dir).is_empty(),
+        "a failed spawn left a ghost job"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_running_poll_shows_output_and_kill_ends_the_job() -> TestResult {
+    let dir = temp_dir("job-running-poll")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+    let run = yi_tools::run_or_background(
+        "printf before; sleep 30",
+        &context,
+        Some(Duration::ZERO),
+        Duration::from_secs(60),
+        None,
+        None,
+    )?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the command did not become a job".into());
+    };
+    let running = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
+    let running_text = output_text(&running);
+    let killed = BashTool::default().execute(
+        args(&[
+            ("job", json!(id.0)),
+            ("kill", json!(true)),
+            ("wait", json!(5)),
+        ]),
+        &context,
+    );
+    let killed_text = output_text(&killed);
+    let _cleanup = yi_tools::jobs::registry().kill(id);
+    assert!(running_text.contains("before"), "{running_text}");
+    assert!(killed_text.contains("killed"), "{killed_text}");
+    Ok(())
+}
+
+#[test]
+fn a_poll_cannot_cross_job_owners() -> TestResult {
+    let dir = temp_dir("job-poll-owner")?;
+    let first = yi_tools::jobs::JobOwner::mint();
+    let second = yi_tools::jobs::JobOwner::mint();
+    let context = |owner| {
+        let mut context = ToolContext::new(dir.to_path_buf());
+        context.job_owner = Some(owner);
+        context
+    };
+    let start = |command: &str, context: &ToolContext| -> Result<yi_tools::JobId, String> {
+        let run = yi_tools::run_or_background(
+            command,
+            context,
+            Some(Duration::ZERO),
+            Duration::from_secs(60),
+            None,
+            None,
+        )?;
+        match run {
+            yi_tools::Run::Backgrounded(id) => Ok(id),
+            _ => Err("the command did not become a job".to_owned()),
+        }
+    };
+    let one = start("sleep 30", &context(first))?;
+    let two = start("sleep 30", &context(second))?;
+    let own = BashTool::default().execute(args(&[("job", json!(one.0))]), &context(first));
+    let other = BashTool::default().execute(args(&[("job", json!(one.0))]), &context(second));
+    let _cleanup = [
+        yi_tools::jobs::registry().kill(one),
+        yi_tools::jobs::registry().kill(two),
+    ];
+    assert!(!own.is_error, "{}", output_text(&own));
+    assert!(other.is_error, "{}", output_text(&other));
+    Ok(())
+}
 #[test]
 fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
     let tool = BashTool::default();
