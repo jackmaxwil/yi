@@ -34,9 +34,10 @@ def runs():
 
 def tasks_on_fail(jobs):
     """{task: stops taken over a FAIL} for every slice task with a root session in the harbor
-    jobs one sweep filed rows from (kill.py's row names them), so a re-run never reads an older one."""
+    jobs one sweep filed rows from (kill.py's row names them), so a re-run never reads an older one.
+    A job directory cleaned out of the runs root after its row was written reads as no sessions."""
     found = {}
-    for row in stops_on_fail.rows(jobs):
+    for row in stops_on_fail.rows([job for job in jobs if Path(job).exists()]):
         if row["task"] in SLICE:
             found[row["task"]] = found.get(row["task"], 0) + row["stopsOnFail"]
     return found
