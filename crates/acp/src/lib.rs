@@ -1012,6 +1012,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
             let line = match incoming {
                 attach::Incoming::Line(line) => line,
                 attach::Incoming::Built(session_id) => {
+                    state.reload(&session_id);
                     state.settle(&session_id);
                     continue;
                 }
