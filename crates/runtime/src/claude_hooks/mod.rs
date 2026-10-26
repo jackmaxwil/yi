@@ -273,14 +273,9 @@ impl Hooks {
     /// Every matching handler runs at once, for every file of the call, an identical one once.
     pub fn run(&self, event: Event, call: &Call, cancel: &CancelFlag) -> Outcome {
         let name = shape::claude_name(&call.tool, &call.args);
-        let mut matched: Vec<&config::Handler> = Vec::new();
-        for handler in (self.handlers.iter())
+        let matched: Vec<&config::Handler> = (self.handlers.iter())
             .filter(|handler| handler.event == event && handler.matcher.matches(&name))
-        {
-            if !matched.iter().any(|seen| seen.key() == handler.key()) {
-                matched.push(handler);
-            }
-        }
+            .collect();
         let mut outcome = Outcome::default();
         if matched.is_empty() {
             return outcome;
@@ -291,13 +286,18 @@ impl Hooks {
         for (input, notice) in &inputs {
             outcome.rows.extend(notice.clone());
             let stdin = shape::stdin(event, call, &name, input.clone());
-            let admitted = (matched.iter()).filter(|handler| {
+            let mut admitted: Vec<&config::Handler> = Vec::new();
+            for handler in matched.iter().filter(|handler| {
                 (handler.condition.as_ref()).is_none_or(|rule| rule.admits(&name, input, &call.cwd))
-            });
+            }) {
+                if !admitted.iter().any(|seen| seen.same(handler)) {
+                    admitted.push(handler);
+                }
+            }
             for handler in admitted {
                 match handler.detached {
                     true => exec::detach(handler, stdin.clone(), places.0, places.1),
-                    false => runs.push((*handler, stdin.clone())),
+                    false => runs.push((handler, stdin.clone())),
                 }
             }
         }
@@ -331,7 +331,7 @@ impl Hooks {
     }
 
     pub(crate) fn needs_changes(&self, event: Event, call: &Call) -> bool {
-        call.tool == "edit" && self.matches(event, call)
+        shape::claude_name(&call.tool, &call.args) == "Edit" && self.matches(event, call)
     }
 }
 
@@ -383,6 +383,11 @@ impl Attached {
     ) {
         let (tool, spills) = (call.tool.clone(), call.spills.clone());
         let (event, call) = shape::after(call, result, failed);
+        let cancel = if event == Event::PostToolUseFailure && cancel() {
+            Arc::new(|| false) as CancelFlag
+        } else {
+            cancel
+        };
         let post = self.run(event, call, cancel).await;
         if let Some(value) = &post.updated_output {
             match shape::replaced_output(&tool, value) {

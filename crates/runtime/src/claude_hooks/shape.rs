@@ -215,15 +215,17 @@ pub(crate) fn yi_args(
             let mut updated = updated;
             let mode = updated.remove("output_mode");
             let mut out = back(&GREP, updated);
-            match mode.as_ref().and_then(Value::as_str) {
-                None | Some("content") => {}
-                Some("files_with_matches") => {
+            match mode.as_ref() {
+                None => {}
+                Some(Value::String(mode)) if mode == "content" => {}
+                Some(Value::String(mode)) if mode == "files_with_matches" => {
                     out.insert("files_with_matches".to_owned(), Value::Bool(true));
                 }
-                Some("count") => {
+                Some(Value::String(mode)) if mode == "count" => {
                     out.insert("count".to_owned(), Value::Bool(true));
                 }
-                Some(other) => return refused(&format!("output_mode {other:?}")),
+                Some(Value::String(other)) => return refused(&format!("output_mode {other:?}")),
+                Some(_) => return refused("output_mode is not a string"),
             }
             Ok(out)
         }
@@ -231,7 +233,7 @@ pub(crate) fn yi_args(
     }
 }
 
-fn capped(value: &mut Value) {
+fn capped(value: &mut Value, field: &str) {
     match value {
         Value::String(text) if text.len() > RESPONSE_CAP => {
             let total = text.len();
@@ -241,11 +243,11 @@ fn capped(value: &mut Value) {
             }
             let head = text.get(..kept).unwrap_or_default();
             *text = format!(
-                "{head}\n[… kept {kept} of {total} bytes of this tool_response field (RESPONSE_CAP {RESPONSE_CAP}); a hook has no call that reads the rest]"
+                "{head}\n[… kept {kept} of {total} bytes of this {field} field (RESPONSE_CAP {RESPONSE_CAP}); a hook has no call that reads the rest]"
             );
         }
-        Value::Array(items) => items.iter_mut().for_each(capped),
-        Value::Object(fields) => fields.values_mut().for_each(capped),
+        Value::Array(items) => items.iter_mut().for_each(|value| capped(value, field)),
+        Value::Object(fields) => fields.values_mut().for_each(|value| capped(value, field)),
         _ => {}
     }
 }
@@ -285,7 +287,9 @@ pub(super) fn after(call: Call, result: &ToolResult, failed: bool) -> (Event, Ca
         Some(code) if call.tool == "bash" => format!("Exit code {code}\n{text}"),
         _ => text,
     };
-    let interrupted = result.details.get("errorKind") == Some(&Value::from("aborted"));
+    let interrupted = result.details.get("errorKind") == Some(&Value::from("aborted"))
+        || result.details.get("cancelled") == Some(&Value::Bool(true))
+            && result.details.get("timedOut") != Some(&Value::Bool(true));
     let call = Call {
         error: Some(error),
         interrupted,
@@ -344,12 +348,12 @@ pub(super) fn stdin(event: Event, call: &Call, name: &str, tool_input: Value) ->
     put("tool_use_id", Value::from(call.tool_use_id.as_str()));
     if let (Event::PostToolUse, Some(response)) = (event, &call.response) {
         let mut response = response.clone();
-        capped(&mut response);
+        capped(&mut response, "tool_response");
         put("tool_response", response);
     }
     if let (Event::PostToolUseFailure, Some(error)) = (event, &call.error) {
         let mut error = Value::from(error.as_str());
-        capped(&mut error);
+        capped(&mut error, "error");
         put("error", error);
         put("is_interrupt", Value::Bool(call.interrupted));
     }

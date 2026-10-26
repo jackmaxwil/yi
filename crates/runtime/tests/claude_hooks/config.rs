@@ -151,6 +151,27 @@ async fn matchers_refuse_what_they_do_not_name_and_one_bad_handler_spares_the_re
 }
 
 #[tokio::test]
+async fn an_if_condition_cannot_hide_a_matching_duplicate_handler() -> TestResult {
+    let case = Case::new("conditional-duplicates", json!({}), true)?;
+    let ran = case.path("conditional-ran");
+    let hook = super::touching(&ran);
+    let mut other = hook.clone();
+    other["if"] = Value::from("Bash(rm *)");
+    let mut matching = hook;
+    matching["if"] = Value::from("Bash(printf *)");
+    case.user(&json!({"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [other]},
+        {"matcher": "Bash", "hooks": [matching]},
+    ]}}))?;
+    case.run("bash", json!({"command": "printf ran"})).await?;
+    assert!(
+        ran.exists(),
+        "the first condition suppressed the matching handler"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn permission_mode_names_ask_and_auto_as_claude_code_does() -> TestResult {
     let case = Case::new("modes", json!({}), true)?;
     let log = case.path("modes.jsonl");
@@ -170,13 +191,25 @@ async fn permission_mode_names_ask_and_auto_as_claude_code_does() -> TestResult 
 async fn plain_matchers_are_unanchored_case_insensitive_regexes() -> TestResult {
     let case = Case::new("plain-regex", json!({}), true)?;
     let (prefix, lowercase) = (case.path("prefix-ran"), case.path("lower-ran"));
+    let (comma, piped, grouped) = (
+        case.path("comma-ran"),
+        case.path("pipe-ran"),
+        case.path("grouped-ran"),
+    );
     case.user(&json!({"hooks": {"PreToolUse": [
         {"matcher": "mcp__yi", "hooks": [super::touching(&prefix)]},
         {"matcher": "bash", "hooks": [super::touching(&lowercase)]},
+        {"matcher": "Edit, Write", "hooks": [super::touching(&comma)]},
+        {"matcher": "Bash | Edit", "hooks": [super::touching(&piped)]},
+        {"matcher": "^(Bash|Edit)$", "hooks": [super::touching(&grouped)]},
     ]}}))?;
     case.run("ipython", json!({"code": "1 + 1"})).await?;
     case.run("bash", json!({"command": "printf ran"})).await?;
+    case.run("edit", json!({"patch": "[a#ZZZZ]"})).await?;
     assert!(prefix.exists(), "an unanchored MCP matcher did not run");
     assert!(lowercase.exists(), "a case-insensitive matcher did not run");
+    assert!(comma.exists(), "a comma-separated matcher did not run");
+    assert!(piped.exists(), "a space-padded alternation did not run");
+    assert!(grouped.exists(), "a grouped regex alternation did not run");
     Ok(())
 }

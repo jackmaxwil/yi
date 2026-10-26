@@ -138,6 +138,30 @@ async fn an_updated_tool_output_past_the_cap_is_cut_loud() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_capped_failure_error_names_the_error_field() -> TestResult {
+    let case = Case::new("failure-error-cap", json!({}), true)?;
+    let log = case.path("failure-error.jsonl");
+    case.user(&settings(
+        "PostToolUseFailure",
+        "mcp__yi__stub",
+        vec![super::logging(&log)],
+    ))?;
+    let gate = Gate {
+        fail_stub: true,
+        ..Gate::default()
+    };
+    case.run_calls(vec![("stub", json!({}))], gate, &"e".repeat(65_537))
+        .await?;
+    let lines = super::read_lines(&log)?;
+    let error = lines.first().ok_or("no capped failure")?["error"]
+        .as_str()
+        .ok_or("no error text")?;
+    assert!(error.contains("of this error field"), "{error}");
+    assert!(!error.contains("tool_response"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_noisy_deny_hook_still_denies_past_the_stderr_cap() -> TestResult {
     let deny = json!({"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "zz denied"}});
     let hook = command(&format!(

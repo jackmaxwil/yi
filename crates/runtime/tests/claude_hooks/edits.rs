@@ -140,6 +140,42 @@ async fn edit_preparation_waits_for_a_matching_pre_hook() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_post_only_edit_hook_receives_the_real_changed_span() -> TestResult {
+    let case = Case::new("post-only-edit", json!({}), true)?;
+    let log = case.path("post-only-edit.jsonl");
+    case.user(&settings("PostToolUse", "Edit", vec![logging(&log)]))?;
+    let patch = replacing(&case, &[("a.txt", "one\ntwo\n", "deux")])?;
+    let outcome = edited(&case, &patch).await?;
+    assert!(!outcome.is_error, "{}", outcome.text);
+    let lines = read_lines(&log)?;
+    let input = lines.last().ok_or("no post-only edit input")?;
+    assert_eq!(input["tool_input"]["old_string"], "two\n");
+    assert_eq!(input["tool_input"]["new_string"], "deux\n");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_post_failure_edit_hook_prepares_changes_before_the_call() -> TestResult {
+    let case = Case::new(
+        "post-failure-edit-prep",
+        settings("PostToolUseFailure", "Edit", vec![command("printf ok")]),
+        true,
+    )?;
+    super::EDIT_CHANGES.store(0, std::sync::atomic::Ordering::Relaxed);
+    let gate = Gate {
+        count_edit_changes: true,
+        ..Gate::default()
+    };
+    case.run_gated("edit", json!({"patch": "[a#ZZZZ]"}), gate)
+        .await?;
+    assert_eq!(
+        super::EDIT_CHANGES.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_post_edit_hook_sees_the_span_after_a_pre_rewrite() -> TestResult {
     let case = Case::new("edit-rewrite-post", json!({}), true)?;
     std::fs::write(case.cwd.join("a.txt"), "one\ntwo\n")?;

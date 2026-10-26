@@ -37,7 +37,26 @@ impl Matcher {
         if text.is_empty() || text == "*" {
             return Ok(Self::Any);
         }
-        regex::RegexBuilder::new(text)
+        let plain =
+            (text.chars()).all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | ' ' | ',' | '|'));
+        let pattern = if plain {
+            let names: Vec<&str> = text
+                .split([',', '|'])
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .collect();
+            if names.is_empty() {
+                return Err("it names no tools".to_owned());
+            }
+            names
+                .into_iter()
+                .map(regex::escape)
+                .collect::<Vec<_>>()
+                .join("|")
+        } else {
+            text.to_owned()
+        };
+        regex::RegexBuilder::new(&pattern)
             .case_insensitive(true)
             .build()
             .map(Self::Regex)
@@ -127,13 +146,14 @@ pub(super) struct Handler {
 }
 
 impl Handler {
-    /// One handler defined in several settings files runs once; a plugin's copy stays separate.
-    pub(super) fn key(&self) -> (Option<&Path>, &str, Option<&[String]>) {
-        (
-            self.plugin_root.as_deref(),
-            &self.command,
-            self.args.as_deref(),
-        )
+    pub(super) fn same(&self, other: &Self) -> bool {
+        self.plugin_root == other.plugin_root
+            && self.command == other.command
+            && self.args == other.args
+            && self.timeout == other.timeout
+            && self.block_on_failure == other.block_on_failure
+            && self.detached == other.detached
+            && self.rewake == other.rewake
     }
 }
 
