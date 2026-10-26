@@ -21,6 +21,8 @@ TRIALS = ROOT / "evals/trials/ns-b1-exp-d.jsonl"
 sys.path.insert(0, str(ROOT / "python/yi_runtime/src"))
 sys.path.insert(0, str(ROOT / "evals/adapters"))
 import rlm  # noqa: E402
+import run  # noqa: E402
+import axes  # noqa: E402
 import yi_usage  # noqa: E402
 from yi.roles import verify_quotes  # noqa: E402
 
@@ -140,7 +142,7 @@ def normalized(value):
     return " ".join(str(value).casefold().split())
 
 
-async def score_answer(question, answer, commit):
+async def score_answer(question, answer):
     if not isinstance(answer, dict):
         return {"correct": False, "proseRefusal": True, "acceptedQuotes": []}
     kept = await verify_quotes(answer.get("quotes"), within=[question["url"]])
@@ -152,26 +154,11 @@ async def score_answer(question, answer, commit):
 def final_answer(row):
     path = Path(row.get("events") or "")
     if not path.is_absolute():
-        path = runs_root() / "b1-exp-d" / row.get("run", "") / "events.jsonl"
-    events, _ = yi_usage.json_lines(path)
-    text = ""
-    for event in events:
-        if event.get("type") != "message_end":
-            continue
-        message = event.get("message") or {}
-        if message.get("role") != "assistant":
-            continue
-        blocks = message.get("content") or []
-        text = "\n".join(b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+        path = axes.runs_root("EVAL_KILL_ROOT") / "b1-exp-d" / row.get("run", "") / "events.jsonl"
     try:
-        return json.loads(text)
+        return json.loads(run.final_answer(path))
     except (TypeError, ValueError):
         return None
-
-
-def runs_root():
-    import os
-    return Path(os.environ.get("EVAL_KILL_ROOT") or Path.home() / "Development/yi-runs")
 
 
 def child_evidence(row, question, arm, envelope):
@@ -186,7 +173,7 @@ def child_evidence(row, question, arm, envelope):
     child_id = handle.get("id")
     if not isinstance(child_id, str) or not child_id.startswith("sub-"):
         return invalid("child handle has no subagent id")
-    base = runs_root() / "b1-exp-d" / row.get("run", "") / "sessions"
+    base = axes.runs_root("EVAL_KILL_ROOT") / "b1-exp-d" / row.get("run", "") / "sessions"
     files = [p for p in base.rglob("*.jsonl") if any(part.startswith("sub-") for part in p.parts)] if base.is_dir() else []
     if len(files) != 1:
         return invalid(f"expected exactly one retained child session, found {len(files)}")
@@ -214,7 +201,7 @@ def child_evidence(row, question, arm, envelope):
         text = content if isinstance(content, str) else "\n".join(
             block.get("text", "") for block in content or [] if isinstance(block, dict) and block.get("type") == "text"
         )
-        prompted |= message.get("role") == "user" and text.startswith(prompt)
+        prompted |= message.get("role") == "user" and prompt in text
         if message.get("role") == "assistant":
             assistants.append((message, text))
     if not prompted:
@@ -310,7 +297,7 @@ def report(rows):
             envelope = final_answer(row)
             evidence = child_evidence(row, questions[qid], arm, envelope)
             answer = evidence.pop("answer")
-            outcome = asyncio.run(score_answer(questions[qid], answer, document["commit"])) if evidence["valid"] else {
+            outcome = asyncio.run(score_answer(questions[qid], answer)) if evidence["valid"] else {
                 "correct": False, "proseRefusal": False, "acceptedQuotes": [],
             }
             scored.append({
@@ -353,17 +340,17 @@ def selftest():
             right = {"answer": question["answer"], "quotes": [{
                 "url": question["url"], "line": question["line"], "text": question["quote"],
             }]}
-            accepted = asyncio.run(score_answer(question, right, document["commit"]))
+            accepted = asyncio.run(score_answer(question, right))
             assert accepted["correct"], f"keyed answer rejected: {question['id']}"
             page = source(document["commit"], question["url"]).splitlines()
             neighbour_line = question["line"] + 1 if question["line"] < len(page) else question["line"] - 1
             neighbour = {"answer": question["answer"], "quotes": [{
                 "url": question["url"], "line": neighbour_line, "text": page[neighbour_line - 1],
             }]}
-            rejected = asyncio.run(score_answer(question, neighbour, document["commit"]))
+            rejected = asyncio.run(score_answer(question, neighbour))
             assert not rejected["correct"], f"neighbour citation must not score: {question['id']}"
             wrong = {**right, "answer": "not the keyed answer"}
-            assert not asyncio.run(score_answer(question, wrong, document["commit"]))["correct"]
+            assert not asyncio.run(score_answer(question, wrong))["correct"]
     assert sign_p_value(0, 5) == 0.03125
     assert sign_p_value(0, 6) == 0.015625
     synthetic = lambda root_wins: [
@@ -379,7 +366,7 @@ def selftest():
         program = spec["prompt"].split("\n\n", 1)[1]
         compile(program, spec["id"], "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
     malformed = {"answer": "", "quotes": [], "proseRefusal": True}
-    outcome = asyncio.run(score_answer(document["questions"][0], malformed, document["commit"]))
+    outcome = asyncio.run(score_answer(document["questions"][0], malformed))
     assert outcome["proseRefusal"] and not outcome["correct"]
     def write_trial(root, children=1, usage=True, mismatch=False):
         question = document["questions"][0]
@@ -404,8 +391,12 @@ def selftest():
             directory = child_dir if index == 0 else child_dir.with_name(f"sub-{index}")
             directory.mkdir(exist_ok=True)
             child_header = {**header, "id": f"child-{index}", "parentSessionId": "root"}
+            partition = (
+                f'<<<yi-external 0123456789ab source="{question["url"]}" trust="untrusted">>>\n'
+                "1:pinned source\n<<<end-yi-external 0123456789ab>>>\n\n"
+            )
             user = {"kind": "entry", "type": "message", "message": {
-                "role": "user", "content": child_prompt(question),
+                "role": "user", "content": f"[task from parent]\n\n{partition}{child_prompt(question)}",
             }}
             tokens = {"input": 12, "output": 3, "cacheRead": 0, "cacheWrite": 0} if usage else None
             assistant = {"kind": "entry", "type": "message", "message": {
