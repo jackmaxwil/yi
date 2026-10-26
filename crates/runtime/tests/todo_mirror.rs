@@ -878,8 +878,61 @@ fn a_mirrored_row_leaves_the_delegation_and_note_to_the_plan() -> TestResult {
     Ok(())
 }
 
-/// A plan waiting at $0: its row blocked on a clock address arms a timer from the session's
-/// list, and the tick unblocks the row in the plan itself, as the host.
+const CLOCK_WAIT: &str = "clock://at 2026-09-29T09:00Z";
+
+fn blocked_gate(engine: &PlanEngine) -> Result<(TodoLabel, String), Box<dyn Error>> {
+    let gate = TodoLabel::new("gate")?;
+    let address = CLOCK_WAIT.to_owned();
+    engine.apply(owner(Op::Block {
+        label: gate.clone(),
+        on: BlockedOn::Channel {
+            address: address.clone(),
+            filter: None,
+        },
+        note: "approve at nine".to_owned(),
+        ask: None,
+    }))?;
+    Ok((gate, address))
+}
+
+fn churn(
+    engine: Arc<PlanEngine>,
+    row: TodoLabel,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    wrote: std::sync::mpsc::Sender<()>,
+) -> std::thread::JoinHandle<Result<(), String>> {
+    std::thread::spawn(move || -> Result<(), String> {
+        let mut wrote = Some(wrote);
+        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            engine
+                .apply(owner(Op::Block {
+                    label: row.clone(),
+                    on: BlockedOn::Channel {
+                        address: format!("channel://{row}"),
+                        filter: None,
+                    },
+                    note: "churn".to_owned(),
+                    ask: None,
+                }))
+                .map_err(|error| error.to_string())?;
+            engine
+                .apply(owner(Op::Unblock {
+                    label: row.clone(),
+                    answer: None,
+                }))
+                .map_err(|error| error.to_string())?;
+            if let Some(wrote) = wrote.take() {
+                wrote
+                    .send(())
+                    .map_err(|_| "the test stopped waiting for churn".to_owned())?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// A plan row's clock wait unblocks in the plan; competing deliveries of one tick unblock once,
+/// with the loser held instead of stepping the row from pending again.
 #[test]
 fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
     use yi_runtime::schedule::{Firing, HeartbeatService, JobStore, clock};
@@ -887,16 +940,7 @@ fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
     let (_session, todos, engine) = mirrored(&dir)?;
     let engine = Arc::new(engine);
     todos.set_carry(yi_runtime::todo::mirror::carry(Arc::downgrade(&engine)));
-    let gate = TodoLabel::new("gate")?;
-    engine.apply(owner(Op::Block {
-        label: gate.clone(),
-        on: BlockedOn::Channel {
-            address: "clock://at 2026-09-29T09:00Z".to_owned(),
-            filter: None,
-        },
-        note: "approve at nine".to_owned(),
-        ask: None,
-    }))?;
+    let (gate, _) = blocked_gate(&engine)?;
     let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
     let clock_service = HeartbeatService::new(Arc::clone(&store), "/tmp");
     clock_service.bind_session("mirror".to_owned());
@@ -912,6 +956,153 @@ fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
     assert_eq!(fired, clock::Fired::Unblocked(gate.clone()));
     let plan = engine.store().read(&engine.store().roots()?[0])?;
     let row = plan.todo(&gate).ok_or("gate")?;
+    assert!(
+        !matches!(row.state, TodoState::Blocked { .. }),
+        "the plan still waits: {:?}",
+        row.state
+    );
+    for round in 0..10 {
+        blocked_gate(&engine)?;
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let (first, second) = std::thread::scope(|scope| {
+            let first = {
+                let start = Arc::clone(&start);
+                let todos = Arc::clone(&todos);
+                let job = job.clone();
+                scope.spawn(move || {
+                    start.wait();
+                    clock::fire(&todos, &job, &Firing::at(job.next_run_at.unwrap_or(0)))
+                })
+            };
+            let second = {
+                let start = Arc::clone(&start);
+                let todos = Arc::clone(&todos);
+                let job = job.clone();
+                scope.spawn(move || {
+                    start.wait();
+                    clock::fire(&todos, &job, &Firing::at(job.next_run_at.unwrap_or(0)))
+                })
+            };
+            start.wait();
+            let first = first.join().map_err(|_| "first firing panicked")?;
+            let second = second.join().map_err(|_| "second firing panicked")?;
+            Ok::<_, Box<dyn Error>>((first, second))
+        })?;
+        let mut states = Vec::new();
+        for fired in [first, second] {
+            match fired {
+                Ok(clock::Fired::Unblocked(_)) => states.push("unblocked"),
+                Ok(clock::Fired::Held(_)) => states.push("held"),
+                Ok(other) => return Err(format!("round {round}: {other:?}").into()),
+                Err(error) => return Err(format!("round {round}: {error}").into()),
+            }
+        }
+        states.sort_unstable();
+        assert_eq!(states, ["held", "unblocked"], "round {round}");
+    }
+    Ok(())
+}
+/// Dies with the 2s wait budget expiring under plan churn: a stale armed unblock used to
+/// retry until it won; now it refuses and the blocked row stays blocked for a later fire.
+#[test]
+fn a_wait_under_constant_plan_churn_refuses_at_the_budget() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-budget")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let engine = Arc::new(engine);
+    todos.set_carry(yi_runtime::todo::mirror::carry(Arc::downgrade(&engine)));
+    let (gate, address) = blocked_gate(&engine)?;
+    let plan = engine.store().read(&engine.store().roots()?[0])?;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (wrote, first_writes) = std::sync::mpsc::channel();
+    let churners: Vec<_> = (0..16)
+        .map(|round| {
+            let engine = Arc::clone(&engine);
+            let row = TodoLabel::new(format!("churn-{round}"))?;
+            engine.apply(owner(Op::Append {
+                todos: vec![spec(&format!("churn-{round}"), false)?],
+            }))?;
+            Ok::<_, Box<dyn Error>>(churn(engine, row, Arc::clone(&stop), wrote.clone()))
+        })
+        .collect::<Result<_, Box<dyn Error>>>()?;
+    for _ in &churners {
+        first_writes.recv_timeout(std::time::Duration::from_secs(5))?;
+    }
+    let timer = Arc::clone(&stop);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(2600));
+        timer.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let carried = todos.unblock_in(&plan.id, &gate, &address);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let churned = churners
+        .into_iter()
+        .map(|thread| {
+            thread
+                .join()
+                .map_err(|_| "a churn thread panicked".to_owned())?
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let error = match carried {
+        Err(error) => error,
+        Ok(_) => {
+            return Err(
+                format!("the carry unblocked the row under constant churn: {churned:?}").into(),
+            );
+        }
+    };
+    assert!(
+        error.contains("still waits on clock://at 2026-09-29T09:00Z")
+            && error.contains("the plan kept changing for 2s"),
+        "{error}"
+    );
+    let fresh = engine.store().read(&engine.store().roots()?[0])?;
+    let row = fresh.todo(&gate).ok_or("gate")?;
+    assert!(
+        matches!(row.state, TodoState::Blocked { .. }),
+        "the plan forgot the block: {:?}",
+        row.state
+    );
+    Ok(())
+}
+
+/// Dies with the stale retry still unblocking once the churn stops: the budget refuses only
+/// while the plan keeps changing, and a fresh revision carries the unblock through.
+#[test]
+fn a_wait_unblocks_once_the_plan_churn_stops() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-churn-stops")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let engine = Arc::new(engine);
+    todos.set_carry(yi_runtime::todo::mirror::carry(Arc::downgrade(&engine)));
+    let (gate, address) = blocked_gate(&engine)?;
+    engine.apply(owner(Op::Append {
+        todos: vec![spec("churn", false)?],
+    }))?;
+    let plan = engine.store().read(&engine.store().roots()?[0])?;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (wrote, first_write) = std::sync::mpsc::channel();
+    let churn = churn(
+        Arc::clone(&engine),
+        TodoLabel::new("churn")?,
+        Arc::clone(&stop),
+        wrote,
+    );
+    first_write.recv_timeout(std::time::Duration::from_secs(5))?;
+    let timer = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        })
+    };
+    let carried = todos.unblock_in(&plan.id, &gate, &address);
+    timer.join().map_err(|_| "the churn timer panicked")?;
+    churn
+        .join()
+        .map_err(|_| "the churn thread panicked".to_string())??;
+    assert!(carried?, "the row stopped waiting on its address");
+    let fresh = engine.store().read(&engine.store().roots()?[0])?;
+    let row = fresh.todo(&gate).ok_or("gate")?;
     assert!(
         !matches!(row.state, TodoState::Blocked { .. }),
         "the plan still waits: {:?}",
