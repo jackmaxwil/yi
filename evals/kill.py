@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
 sys.path.insert(0, str(ROOT / "drivers"))
 
+import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import trials  # noqa: E402
 import watch  # noqa: E402
@@ -46,12 +47,8 @@ ASK_ENV = ("PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "HTTPS_PROXY", 
            "SSL_CERT_FILE", "SSL_CERT_DIR")
 
 
-def runs_root():
-    return Path(os.environ.get("EVAL_KILL_ROOT") or Path.home() / "Development" / "yi-runs")
-
-
 def shape_dir():
-    return runs_root() / "next-shape"
+    return axes.runs_root("EVAL_KILL_ROOT") / "next-shape"
 
 
 def micro(usd):
@@ -92,7 +89,7 @@ def state(rows):
         elif row["kind"] == "settle":
             spent += micro(row["usd"])
             held.pop(row["key"], None)
-            if any(r.get("status") != "crash" for r in row["rows"]):
+            if row.get("closed") or any(r.get("status") != "crash" for r in row["rows"]):
                 done.add((row["test"], row["family"]))
             if any(r.get("status") not in NOT_RUN for r in row["rows"]):
                 ran.add((row["test"], row["family"]))
@@ -212,11 +209,12 @@ def seed_home(home, binary, route, need_sec):
     central = kimi_home() / ".yi"
     if (central / "catalog").is_dir():
         shutil.copytree(central / "catalog", yi / "catalog")
-    for token in sorted((central / "providers" / "tokens").glob("*.json")):
-        if json.loads(token.read_text()).get("kind") == "key":
-            write_0600(yi / "providers" / "tokens" / token.name, json.loads(token.read_text()))
+    provider = route["model"].split("/", 1)[0]
+    # A --yolo run can read its HOME, so it gets its own route's key and no other provider's.
+    key = central / "providers" / "tokens" / f"{provider}.json"
+    if paid(route) and key.is_file() and json.loads(key.read_text()).get("kind") == "key":
+        write_0600(yi / "providers" / "tokens" / key.name, json.loads(key.read_text()))
     if not paid(route):
-        provider = route["model"].split("/", 1)[0]
         write_0600(yi / "providers" / "tokens" / f"{provider}.json", access_token(binary, provider, need_sec))
         (yi / "oauth").mkdir()
         shutil.copy(central / "oauth" / f"{provider}.json", yi / "oauth" / f"{provider}.json")
@@ -259,7 +257,7 @@ def ask_env(home):
 
 def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
     run = f"{family}-{spec['id']}-{uuid.uuid4().hex[:8]}"
-    base = runs_root() / test / run
+    base = axes.runs_root("EVAL_KILL_ROOT") / test / run
     home, repo, events = base / "home", base / "repo", base / "events.jsonl"
     deadline = int(spec.get("deadline", 600))
     row = {"test": test, "family": family, "id": spec["id"], "run": run, "model": route["model"], "startedAt": clock()}
@@ -348,8 +346,6 @@ def ask(test, family, spec, binary, stop_usd, until=None, estimate_usd=0.0, ceil
     return row
 
 
-
-
 def harbor(test, family, spec, stop_usd):
     """A harbor sweep holds its own caps (watch.py); its hard cap is what is left of the reserve.
     Only `tbv4_sweep.sh --runner` files rows, so a sweep that filed none is charged that cap."""
@@ -360,7 +356,7 @@ def harbor(test, family, spec, stop_usd):
     env = {**os.environ, "TBV4_HARD_CAP": f"{max(stop_usd, 0):.2f}", "EVAL_RUN_ID": run}
     store = TRIALS / f"{run}.jsonl"
     rows, bad = yi_usage.json_lines(store)
-    yi_usage.end_torn_line(store)
+    yi_usage.end_torn(store)
     done = subprocess.run(spec["harbor"], cwd=ROOT.parent, env=env)
     # The store is appended per run id, so a re-run charges only the rows its own sweep filed.
     after, bad_after = yi_usage.json_lines(store)
@@ -491,8 +487,8 @@ def cmd_budget(args):
                 return 2
             # Its run may have spent up to the whole reserve before it died, so that is the charge.
             test, family, usd = held.pop(args.close)
-            write({"kind": "settle", "key": args.close, "test": test, "family": family, "usd": usd / 1e6, "rows": [],
-                   "why": "closed by hand: its runner died without settling"})
+            write({"kind": "settle", "key": args.close, "test": test, "family": family, "usd": usd / 1e6,
+                   "rows": [], "closed": True, "why": "closed by hand: its runner died without settling"})
             spent += usd
     ladder = [{"step": mod.STEP, "test": name, "family": f, "reserveUsd": reserve_of(mod, f, table[f]),
                "settled": (name, f) in done} for name, mod in tests().items() for f in mod.FAMILIES if f in table]

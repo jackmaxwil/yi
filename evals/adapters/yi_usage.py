@@ -7,7 +7,6 @@ Contracts: evals/README.md (gates E1-E9, emission map, adapters).
 
 import hashlib
 import json
-import os
 import re
 import shlex
 from pathlib import Path
@@ -37,6 +36,38 @@ TASK_TIMEOUT_SEC = 28800
 ROUTING_ENV = "EVAL_ROUTING"
 LEVERS_ENV = "YI_LEVERS"
 PLUGINS_ENV = "EVAL_PLUGINS"
+# A text file appended to every trial's instruction: the one thing two arms of an A/B differ in.
+ARM_ENV = "EVAL_ARM_FILE"
+
+
+def with_arm(instruction, environ):
+    """The arm's text after the task's own. A named file that is missing raises: the trial would
+    otherwise run the wrong arm and be scored as the right one."""
+    path = environ.get(ARM_ENV)
+    if not path:
+        return instruction
+    return instruction.rstrip("\n") + "\n\n" + Path(path).read_text().strip() + "\n"
+
+
+def arm_label(environ):
+    """The arm text's hash as it rides the fingerprint's mode: two arms are two configs, and
+    one text is one config wherever its file lives."""
+    path = environ.get(ARM_ENV)
+    return "+arm" + hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12] if path else ""
+
+
+def end_torn(path):
+    try:
+        with open(path, "rb") as handle:
+            if handle.seek(0, 2) == 0:
+                return
+            handle.seek(-1, 2)
+            if handle.read(1) == b"\n":
+                return
+    except OSError:
+        return
+    with path.open("a") as sink:
+        sink.write("\n")
 
 
 def with_budget(instruction, deadline_sec):
@@ -200,23 +231,6 @@ def _add_tokens(totals, usage):
         value = usage.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             totals[key] += value
-
-
-def end_torn_line(path):
-    """End a killed writer's final line before an append; return whether a newline was needed."""
-    try:
-        handle = Path(path).open("rb")
-    except OSError:
-        return False
-    with handle:
-        if handle.seek(0, os.SEEK_END) == 0:
-            return False
-        handle.seek(-1, os.SEEK_END)
-        torn = handle.read(1) != b"\n"
-    if torn:
-        with Path(path).open("a") as sink:
-            sink.write("\n")
-    return torn
 
 
 def json_lines(path):

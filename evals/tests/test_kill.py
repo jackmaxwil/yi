@@ -202,14 +202,19 @@ class Ledger(unittest.TestCase):
             with kill.ledger() as (_, write):
                 write({"kind": "reserve", "key": "hung/flash/dead", "test": "hung", "family": "flash", "usd": 0.4,
                        "pid": dead.pid})
-                write({"kind": "reserve", "key": "hung/flash/live", "test": "hung", "family": "flash", "usd": 0.3,
+                write({"kind": "reserve", "key": "hung/flash/live", "test": "other", "family": "flash", "usd": 0.3,
                        "pid": os.getpid()})
             self.assertEqual(quiet(["budget", "--close", "hung/flash/live"]),
                              (2, f"refused: hung/flash/live's runner, pid {os.getpid()}, is alive and settles it itself\n"))
+            with kill.ledger() as (rows, _):
+                before = kill.admit(rows, "later", "flash", 1.0, [("hung", "flash", 0.4)])
             code, out = quiet(["budget", "--close", "hung/flash/dead"])
             self.assertEqual(code, 0, out)
             shown = json.loads(out)
             self.assertEqual((shown["spentUsd"], shown["heldUsd"], shown["open"]), (0.4, 0.3, ["hung/flash/live"]))
+            with kill.ledger() as (rows, _):
+                after = kill.admit(rows, "later", "flash", 1.0, [("hung", "flash", 0.4)])
+            self.assertEqual(after, before, "closing a dead reserve must not charge its reserve twice")
             self.assertEqual(quiet(["budget", "--close", "hung/flash/dead"])[0], 2, "a closed reserve closes once")
             self.assertEqual(quiet(["report"])[1].strip(), "hung: unrun: needs $0.40", "a closed reserve never ran")
 
@@ -469,6 +474,23 @@ class Isolation(unittest.TestCase):
                 self.assertFalse(Path(n["home"]).exists() or Path(n["ask"]).exists(), "settled runs leave nothing")
             central = json.loads((kill.kimi_home() / ".yi" / "providers" / "tokens" / "kimi.json").read_text())
             self.assertEqual(central["refresh"], "rotated", "the rotated refresh token stays central")
+
+
+class Credentials(unittest.TestCase):
+    def test_a_run_home_holds_its_own_routes_credential_and_no_other_providers_key(self):
+        # Failure: a --yolo model reads the owner's other API keys out of its HOME and spends them
+        # outside the ledger's cap; a Kimi run needs no OpenRouter key at all.
+        with rig() as r:
+            tokens = kill.kimi_home() / ".yi" / "providers" / "tokens"
+            for name in ("openrouter", "deepseek"):
+                kill.write_0600(tokens / f"{name}.json", {"version": 1, "kind": "key", "key": f"{name}-secret"})
+            r.kimi_login(expires_in=10 ** 9)
+            seeded = {}
+            for family in ("flash", "kimi"):
+                home = r.tmp / family
+                kill.seed_home(home, str(r.yi), kill.routes()[family], 60)
+                seeded[family] = sorted(p.name for p in (home / ".yi" / "providers" / "tokens").glob("*.json"))
+            self.assertEqual(seeded, {"flash": ["openrouter.json"], "kimi": ["kimi.json"]})
 
 
 class Runs(unittest.TestCase):
