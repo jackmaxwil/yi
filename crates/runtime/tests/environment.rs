@@ -409,16 +409,23 @@ fn status_runs(shim: &Scratch) -> usize {
 }
 
 fn tool_end(tool_name: &str) -> Result<yi_types::event::AgentEvent, serde_json::Error> {
+    tool_end_with(tool_name, serde_json::Value::Null)
+}
+
+fn tool_end_with(
+    tool_name: &str,
+    details: serde_json::Value,
+) -> Result<yi_types::event::AgentEvent, serde_json::Error> {
     serde_json::from_value(serde_json::json!({
         "type": "tool_execution_end", "toolCallId": "c1", "toolName": tool_name,
-        "result": {"content": [], "details": null}, "isError": false
+        "result": {"content": [], "details": details}, "isError": false
     }))
 }
 
-/// Dies with the control: read `git status` in the block's closure and a ten-request run that
-/// only reads runs it ten times.
+/// Dies with the control: read `git status` in the production block per request and a
+/// ten-request run that only reads, its empty-stop re-drive included, runs it eleven times.
 #[tokio::test]
-async fn a_ten_request_run_that_writes_nothing_runs_git_status_once() -> TestResult {
+async fn a_run_that_writes_nothing_runs_git_status_once_redrive_included() -> TestResult {
     let (dir, shim) = counted_repo("yi-env-once", 0)?;
     let provider = Arc::new(ProviderStream::new(None));
     let mut script = Vec::new();
@@ -435,11 +442,15 @@ async fn a_ten_request_run_that_writes_nothing_runs_git_status_once() -> TestRes
         ));
     }
     script.push(faux_assistant_message(
+        vec![faux_text("")],
+        StopReason::Stop,
+    ));
+    script.push(faux_assistant_message(
         vec![faux_text("read it")],
         StopReason::Stop,
     ));
     provider.queue_faux(script);
-    let session = AgentSession::new(
+    let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
             model: faux_model(),
@@ -448,11 +459,7 @@ async fn a_ten_request_run_that_writes_nothing_runs_git_status_once() -> TestRes
         },
         provider,
     );
-    let summary = yi_runtime::environment::GitSummary::new(dir.to_path_buf(), session.subscribe());
-    session.set_environment(Arc::new(move || {
-        let (branch, modified, untracked) = summary.read()?;
-        Some(render(&[git_line(&branch, modified, untracked)]))
-    }));
+    crate::session_faux::attach_like_yi_ask(&mut session, &dir, None);
     session.prompt("read a.py ten times")?;
     session.wait_idle().await;
     let replies = session
@@ -460,7 +467,7 @@ async fn a_ten_request_run_that_writes_nothing_runs_git_status_once() -> TestRes
         .iter()
         .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
         .count();
-    assert_eq!(replies, 10, "the run made ten requests");
+    assert_eq!(replies, 11, "ten requests and the empty stop's re-drive");
     assert_eq!(status_runs(&shim), 1, "git status ran once for the run");
     Ok(())
 }
@@ -498,6 +505,36 @@ fn an_edit_that_keeps_the_mtime_still_moves_the_count() -> TestResult {
         Some(("main".to_owned(), 1, 0)),
         "the edit shows"
     );
+    std::fs::write(dir.join("b.py"), "from a import greet\n")?;
+    events.send(tool_end_with("grep", serde_json::json!({"applied": 0}))?)?;
+    assert_eq!(
+        summary.read(),
+        Some(("main".to_owned(), 1, 0)),
+        "a search moves nothing"
+    );
+    events.send(tool_end_with("grep", serde_json::json!({"applied": 1}))?)?;
+    assert_eq!(
+        summary.read(),
+        Some(("main".to_owned(), 1, 1)),
+        "a grep that applied a rewrite wrote the tree"
+    );
+    Ok(())
+}
+
+/// Dies with the control: keep a failed read and a directory that becomes a repository
+/// shows no git clause for the rest of the run.
+#[test]
+fn a_failed_read_is_tried_again_at_the_next_request() -> TestResult {
+    let dir = Scratch::new("yi-env-none")?;
+    let (_events, receiver) = tokio::sync::broadcast::channel(16);
+    let summary = yi_runtime::environment::GitSummary::new(dir.to_path_buf(), receiver);
+    assert_eq!(summary.read(), None, "not a repository yet");
+    let init = yi_tools::command("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&dir)
+        .status()?;
+    assert!(init.success());
+    assert_eq!(summary.read(), Some(("main".to_owned(), 0, 0)));
     Ok(())
 }
 
