@@ -31,51 +31,36 @@ pub const REDUCE_FLOOR: usize = 8_192;
 
 /// The user asked for the whole thing; reducing answers a different question.
 fn skip_reduction(command: &str) -> bool {
-    let command = first_invocation(command);
-    let words: Vec<&str> = command.split_whitespace().collect();
-    let has = |flags: &[&str]| words.iter().any(|word| flags.contains(word));
-    const TEST_RAW: [&str; 3] = ["-v", "--verbose", "--nocapture"];
-    match program(command) {
-        Some("git") => has(&["--porcelain"]),
-        Some("ls") => has(&["-la"]),
-        Some("go") => words.get(1) == Some(&"test") && has(&TEST_RAW),
-        Some("cargo" | "pytest" | "py.test" | "nextest" | "jest" | "vitest") => has(&TEST_RAW),
-        Some("python" | "python3")
-            if words
-                .windows(2)
-                .any(|pair| pair == ["-m", "pytest"] || pair == ["-m", "unittest"]) =>
-        {
-            has(&TEST_RAW)
-        }
-        _ => false,
-    }
-}
-
-fn first_invocation(command: &str) -> &str {
-    let mut quote = None;
-    let mut escaped = false;
-    for (index, character) in command.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if character == '\\' && quote != Some('\'') {
-            escaped = true;
-            continue;
-        }
-        if let Some(delimiter) = quote {
-            if character == delimiter {
-                quote = None;
+    yi_permission::command_segments(command)
+        .iter()
+        .any(|segment| {
+            let words: Vec<&str> = segment.iter().map(String::as_str).collect();
+            let has = |flags: &[&str]| words.iter().any(|word| flags.contains(word));
+            let Some(at) = words.iter().position(|word| !word.contains('=')) else {
+                return false;
+            };
+            let Some(program) = words
+                .get(at)
+                .map(|word| word.rsplit('/').next().unwrap_or(word))
+            else {
+                return false;
+            };
+            const TEST_RAW: [&str; 3] = ["-v", "--verbose", "--nocapture"];
+            match program {
+                "git" => has(&["--porcelain"]),
+                "ls" => has(&["-la"]),
+                "go" => words.get(at.saturating_add(1)) == Some(&"test") && has(&TEST_RAW),
+                "cargo" | "pytest" | "py.test" | "nextest" | "jest" | "vitest" => has(&TEST_RAW),
+                "python" | "python3"
+                    if words
+                        .windows(2)
+                        .any(|pair| pair == ["-m", "pytest"] || pair == ["-m", "unittest"]) =>
+                {
+                    has(&TEST_RAW)
+                }
+                _ => false,
             }
-            continue;
-        }
-        if matches!(character, '\'' | '"') {
-            quote = Some(character);
-        } else if matches!(character, ';' | '|' | '&') {
-            return command.get(..index).unwrap_or(command);
-        }
-    }
-    command
+        })
 }
 
 /// Every path runs through [`never_worse`]; a lossy result points at `kept` (a cut capture's

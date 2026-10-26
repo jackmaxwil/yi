@@ -1001,6 +1001,14 @@ fn reducer_bypass_flags_are_scoped_to_their_programs() -> TestResult {
         assert_eq!(reduced.text, raw, "{command}");
     }
     for command in [
+        "cd /tmp && cargo test -- --nocapture",
+        "cd repo; git status --porcelain",
+        "cd /tmp && /usr/bin/cargo test \"--nocapture\"",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert_eq!(reduced.text, raw, "{command}");
+    }
+    for command in [
         "grep -v needle",
         "git -C repo status",
         "ls -C",

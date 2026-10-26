@@ -95,3 +95,51 @@ fn running(jobs: &Jobs, id: JobId, report: &JobReport, context: &ToolContext) ->
     output.value = context.program.then(|| crate::values::job(id));
     output
 }
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use super::super::{JobOwner, Reaper, registry};
+    use crate::Tool;
+
+    #[test]
+    fn kill_and_poll_share_one_deadline() -> Result<(), Box<dyn Error>> {
+        let cwd = Path::new("/yi-jobs-test/kill-deadline");
+        let owner = JobOwner::mint();
+        let killed = Arc::new(AtomicBool::new(false));
+        let id = registry().insert(
+            "sleep 30",
+            (cwd, None),
+            Reaper::Poller {
+                reported: false,
+                owner: Some(owner),
+            },
+            Arc::default(),
+            Arc::clone(&killed),
+        );
+        let input = serde_json::Map::from_iter([
+            ("job".to_owned(), serde_json::json!(id.0)),
+            ("kill".to_owned(), serde_json::json!(true)),
+            ("wait".to_owned(), serde_json::json!(5)),
+        ]);
+        let mut context = crate::ToolContext::new(cwd.to_path_buf());
+        context.job_owner = Some(owner);
+        let started = Instant::now();
+        let output = crate::BashTool::default().execute(input, &context);
+        let elapsed = started.elapsed();
+        assert_eq!(output.result.details["running"], true, "{output:?}");
+        assert!(
+            killed.load(Ordering::SeqCst),
+            "kill was ignored while the poll waited"
+        );
+        assert!(
+            elapsed < Duration::from_secs(7),
+            "returned after {elapsed:?}"
+        );
+        Ok(())
+    }
+}
