@@ -36,8 +36,8 @@
 //! `plan_ops.rs`, because what it pins is the engine's refusal path rather than the
 //! checker's process shape.
 //!
-//! Not here. The judge tier is F3a and lives in `tests/judge.rs`: every `Snapshot` below
-//! seats no jury (`jury: None`), which is the path where a `judge` item abstains.
+//! Not here. A `judge` item is refused at `start` and abstains `no judge` if an old journal
+//! started one; both are driven from `plan_ops.rs`, through the engine.
 
 use crate::RED_PYTEST;
 use crate::scratch;
@@ -180,7 +180,6 @@ fn the_checker_sees_no_provider_key() -> TestResult {
             root: &temp,
             output: None,
             artifacts: &artifacts,
-            jury: None,
         },
     );
     assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.lines());
@@ -228,7 +227,6 @@ fn failing_detail(
         root: &temp,
         output: None,
         artifacts: &artifacts,
-        jury: None,
     };
     let verdict = Verifier::new(5_000).run(&token(&contract)?, &contract, &snapshot);
     let ItemVerdict::Fail { detail } = &verdict.items[0].verdict else {
@@ -299,7 +297,6 @@ fn a_checkers_grandchild_is_killed_at_the_deadline() -> TestResult {
             root: &temp,
             output: None,
             artifacts: &artifacts,
-            jury: None,
         },
     );
     assert!(
@@ -627,7 +624,6 @@ fn example_failures_are_distinct_by_kind() -> TestResult {
                 root: &temp,
                 output: None,
                 artifacts: &artifacts,
-                jury: None,
             },
         );
         if why.is_empty() {
@@ -665,7 +661,6 @@ fn a_checker_that_edits_a_protected_path_fails() -> TestResult {
         root: &temp,
         output: None,
         artifacts: &artifacts,
-        jury: None,
     };
     let contract = cmd_contract(put(&artifacts, &editing)?, 5_000)?;
     let verdict = Verifier::new(5_000).run(&token(&contract)?, &contract, &snapshot);
@@ -704,7 +699,6 @@ fn the_session_deadline_bounds_the_verification() -> TestResult {
                 root: &temp,
                 output: None,
                 artifacts: &artifacts,
-                jury: None,
             },
         );
     assert_eq!(verdict.outcome, Outcome::Abstain, "{}", verdict.lines());
@@ -750,7 +744,6 @@ fn an_examples_runner_that_cannot_spawn_abstains() -> TestResult {
             root: &temp,
             output: None,
             artifacts: &artifacts,
-            jury: None,
         },
     );
     assert_eq!(verdict.outcome, Outcome::Abstain, "{}", verdict.lines());

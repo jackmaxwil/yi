@@ -10,8 +10,6 @@
  "plan.long_prompt_words": 30,
  "plan.enumerated_min": 2,
  "plan.done_refusal_cap": 3,
- "plan.judge_cap": 3,
- "plan.jury": 1,
  "plan.scatter_rounds": 3,
  "todo.nudge_work": 12,
  "todo.quiet_turns": 3,
