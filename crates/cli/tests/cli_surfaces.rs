@@ -2717,7 +2717,6 @@ fn memory_imports_lists_checks_and_forgets() -> TestResult {
 
 type Stamped = (PathBuf, Vec<u8>, std::time::SystemTime);
 
-/// Every file under `dir` with its bytes and mtime, so a read-only verb can be held to it.
 fn files_at(dir: &std::path::Path) -> Result<Vec<Stamped>, Box<dyn Error>> {
     let mut found = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -2736,8 +2735,6 @@ fn files_at(dir: &std::path::Path) -> Result<Vec<Stamped>, Box<dyn Error>> {
     Ok(found)
 }
 
-/// `yi memory list` reads: a note written by hand after the import, with no journal record
-/// and no index line, is listed, and no file in the store changes until a session reconciles.
 #[test]
 fn yi_memory_list_changes_no_file() -> TestResult {
     let workspace = Workspace::new("memory-list")?;

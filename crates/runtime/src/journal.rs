@@ -251,11 +251,12 @@ impl Journal {
         let Some(body) = bytes.strip_suffix(b"\n") else {
             return Ok(None);
         };
-        Ok(match body.iter().rposition(|byte| *byte == b'\n') {
+        let line = match body.iter().rposition(|byte| *byte == b'\n') {
             Some(at) => body.get(at.saturating_add(1)..).map(<[u8]>::to_vec),
             None if window == len => Some(body.to_vec()),
             None => None,
-        })
+        };
+        Ok(line.filter(|line| line.len() < RECORD_CAP))
     }
 
     pub fn read(&self) -> Result<Reading, JournalError> {

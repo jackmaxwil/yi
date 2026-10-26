@@ -6,6 +6,8 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
+use yi_runtime::journal::RECORD_CAP;
 use yi_runtime::memory::Store;
 use yi_types::memory::MemoryRecord;
 use yi_types::plan::canonical::Chained;
@@ -99,5 +101,36 @@ fn a_broken_chain_is_still_named_at_rebuild_and_the_next_append_chains_on() -> T
     assert_eq!(read.op, "read");
     assert_eq!(read.digest_of(Some(&before.digest)).ok(), Some(read.digest));
     assert_eq!(store.rebuild()?.broken, Some(1));
+    Ok(())
+}
+
+#[test]
+fn an_over_cap_only_record_does_not_parent_the_next_append() -> TestResult {
+    let (_dir, store) = imported("over-cap-only-record")?;
+    let mut oversized = records(&store)?
+        .into_iter()
+        .next()
+        .ok_or("no imported record")?;
+    oversized
+        .extra
+        .insert("padding".to_owned(), Value::String(String::new()));
+    oversized = oversized.seal(None).map_err(|error| format!("{error:?}"))?;
+    let base = oversized.line().map_err(|error| format!("{error:?}"))?;
+    let target = RECORD_CAP.saturating_add(1);
+    let padding = target
+        .checked_sub(base.len())
+        .ok_or("record already over cap")?;
+    oversized
+        .extra
+        .insert("padding".to_owned(), Value::String("x".repeat(padding)));
+    oversized = oversized.seal(None).map_err(|error| format!("{error:?}"))?;
+    let line = oversized.line().map_err(|error| format!("{error:?}"))?;
+    assert_eq!(line.len(), target);
+    std::fs::write(journal(&store), line)?;
+    let note = store.resolve("fgj-forge-cli").ok_or("no such note")?;
+    store.mark_read(&note.name)?;
+    let chain = records(&store)?;
+    let read = chain.last().ok_or("no appended record")?;
+    assert_eq!(read.digest_of(None).ok(), Some(read.digest));
     Ok(())
 }
