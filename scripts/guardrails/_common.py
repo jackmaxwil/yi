@@ -27,7 +27,7 @@ RAW = re.compile(r'b?r(#*)"')
 CHAR = re.compile(r"b?'(?:\\.|[^\\'])'")
 STRING = re.compile(r'(?:\\.|[^"\\])*"', re.S)
 
-def normal_code(text):
+def normal_code(text, off=""):
     chars, at = list(text), 0
     while at < len(text):
         ch, word = text[at], at > 0 and (text[at - 1].isalnum() or text[at - 1] == "_")
@@ -44,7 +44,7 @@ def normal_code(text):
         elif ch == '"':
             close = STRING.match(text, at + 1)
             end = len(text) if close is None else close.end()
-        elif not word and ch in "b'" and (lit := CHAR.match(text, at)):
+        elif off != "chars" and not word and ch in "b'" and (lit := CHAR.match(text, at)):
             end = lit.end()
         if end is None:
             at += 1
@@ -60,7 +60,7 @@ def test_mask(text, off=""):
     it, to its matching brace or its `;`. Incident: stopping at the first marker hid 2,285 production
     lines below mid-file test helpers from every gate that reads production code."""
     mask, done = [False] * len(text.splitlines()), 0
-    visible = text if off == "markers" else normal_code(text)
+    visible = text if off == "markers" else normal_code(text, off)
     for marker in re.finditer(r"^[ \t]*#\[cfg\(test\)\]", visible, re.M):
         if marker.start() < done:
             continue

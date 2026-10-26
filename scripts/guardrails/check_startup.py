@@ -14,8 +14,10 @@ that is the number that blocked a push in a path `--version` never touches.
 scratch cwd under target/, never /tmp, whose whole tree the checkpointer would add, with git's
 discovery stopped above it, so no lane is claimed in the checkout around it."""
 import json, os, shutil, subprocess, sys, tempfile, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import BASE, DIST_BIN, fail
+from scratch_home import scratch_config
 
 VERSION = "yi --version"
 ASK = "yi ask --model faux/faux-1 hi"
@@ -25,8 +27,7 @@ def scratch():
     target = DIST_BIN.parent.parent
     target.mkdir(parents=True, exist_ok=True)
     root = pathlib.Path(tempfile.mkdtemp(prefix="startup-", dir=target))
-    (root / "home/.yi").mkdir(parents=True)
-    (root / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false}}')
+    scratch_config(root)
     (root / "cwd").mkdir()
     return root
 
