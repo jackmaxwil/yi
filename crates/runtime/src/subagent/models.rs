@@ -9,7 +9,7 @@ use crate::provider::{ProviderStream, available_models};
 impl SubagentHost {
     pub fn find_models(&self, query: &str, limit: usize) -> Map<String, Value> {
         let needle = query.to_lowercase();
-        let models: Vec<Value> = credentialed_models(&self.options.provider)
+        let matched: Vec<Model> = credentialed_models(&self.options.provider)
             .into_iter()
             .filter(|model| {
                 needle.is_empty()
@@ -17,6 +17,10 @@ impl SubagentHost {
                     || model.name.to_lowercase().contains(&needle)
                     || model.provider.to_lowercase().contains(&needle)
             })
+            .collect();
+        let total = matched.len();
+        let models: Vec<Value> = matched
+            .into_iter()
             .take(limit)
             .map(|model| {
                 json!({
@@ -30,6 +34,13 @@ impl SubagentHost {
             .collect();
         let mut reply = Map::new();
         reply.insert("models".to_owned(), Value::Array(models));
+        if total > limit {
+            let query = Value::from(query);
+            let next = format!("await rlm.find_models({query}, limit={total})");
+            let row =
+                crate::listed::cut_row(limit, total, "matching models", "limit", limit, &next);
+            reply.insert("cut".to_owned(), Value::String(row));
+        }
         reply
     }
 }

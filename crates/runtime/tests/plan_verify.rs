@@ -25,6 +25,8 @@
 //! | `example_json_equality_ignores_whitespace_and_key_order` | T0 | The five cases of `fixtures/plans/contracts/cases.json`. Cases 0, 1 and 2 pass on three spellings of the same value, the second with its keys reordered and the third with padding; case 3 answers wrongly and case 4 prints prose after its JSON, and those two fail for reasons the item's detail distinguishes. Stdout must be one complete JSON value: several values, non-finite numbers, a timeout and output overflow are their own failures, not near misses. | Structural comparison over the parsed values, and the one-complete-value rule on the far side of it. Compare bytes and cases 1 and 2 fail, which makes the runner's formatter part of the contract; take the first JSON value and ignore the rest and case 4 passes, which teaches a model that a summary line after the answer is free. |
 //! | `a_checker_that_edits_a_protected_path_fails` | T0 | A manifest lists `runner.sh` as protected and its command rewrites that file to `exit 0`: the item fails naming the path, even though the command itself exited 0. The same manifest with a command that leaves the path alone passes. | `protecting` in `verify.rs`, the digests of every protected path taken before and after the run. Drop the comparison and a checker that rewrites its own script mid-run passes on the rewritten script, which is the edit `contracts.md`'s `protected` row exists against. |
 //! | `the_session_deadline_bounds_the_verification` | T0 | A verifier whose own clock allows a minute but whose session deadline (D177) has already passed abstains every item with the deadline reason and runs no command. | `Verifier::with_deadline` folded into the whole-verification deadline in `run`. Read only `timeout_ms` and a checker launched at the wire runs ten minutes past the run's own clock. |
+//! | `a_failing_checkers_reduced_output_names_the_file_that_holds_the_rest` | T0 | A checker that prints a real 32,955 B `pytest -v` run and exits 1 fails its item with the reducer's view of it (the head, the FAILED row, the verdict line) and a `[full output: …]` pointer to a file under the plan that holds the passing lines the view omitted. | `check_view` in `verdict_of` given the plan's spill directory. Pass none and the reducer has nowhere to recover from, returns the run whole, and the view cuts its middle blind. |
+//! | `a_failing_checkers_output_past_the_ceiling_names_a_file_not_a_rerun` | T0 | A checker whose output stays past `VIEW_CEILING` after the reducer fails its item with a row naming the cap and `read <file>`, and the file holds the rows the detail cut. | The spill directory in `verdict_of`. Name a rerun instead and it points at a verification tree that is removed before the author reads the refusal. |
 //! | `example_failures_are_distinct_by_kind` | T0 | One case, ten runners. A right answer passes; a wrong one, prose after the JSON, two values, a non-finite number, unparsable output, no output, a non-zero exit, output past the capture cap and a runner that outruns its deadline each fail with their own reason in the item's detail. | The distinct reasons `one_json_value` and `run_case` return. Fold them into one "failed" and the detail stops naming what to repair, which is the only thing a refused author can act on; read the first value and drop the rest and `trailing_output` becomes a pass. |
 //!
 //! Fixtures this file reads: `fixtures/plans/contracts/examples-runner.json` and its
@@ -37,6 +39,7 @@
 //! Not here. A `judge` item is refused at `start` and abstains `no judge` if an old journal
 //! started one; both are driven from `plan_ops.rs`, through the engine.
 
+use crate::RED_PYTEST;
 use crate::scratch;
 use scratch::Scratch;
 
@@ -48,7 +51,7 @@ use serde_json::{Value, json};
 use yi_runtime::plan::artifact::Artifacts;
 use yi_runtime::plan::ops::{Actor, Op, OpRequest, PlanEngine, PlanOpError, TodoSpec};
 use yi_runtime::plan::store::PlanStore;
-use yi_runtime::plan::verify::{CheckerManifest, Snapshot, Verifier, freeze};
+use yi_runtime::plan::verify::{CheckerManifest, Snapshot, Verifier, freeze, session_has};
 use yi_types::plan::PlanVersion;
 use yi_types::plan::canonical::{ArtifactRef, Digest};
 use yi_types::plan::contract::{Contract, ItemVerdict, Outcome, VerificationToken};
@@ -211,13 +214,79 @@ fn the_checker_sees_no_provider_key() -> TestResult {
     Ok(())
 }
 
+/// Runs `command` as a failing `cmd` item and returns the refused item's detail.
+fn failing_detail(
+    name: &str,
+    command: &str,
+) -> Result<(Scratch, Artifacts, String), Box<dyn Error>> {
+    let temp = Scratch::new(name)?;
+    let artifacts = Artifacts::under(&temp);
+    let contract = cmd_contract(put(&artifacts, &manifest(command, 5_000, &[]))?, 5_000)?;
+    let snapshot = Snapshot {
+        id: "tree:test",
+        root: &temp,
+        output: None,
+        artifacts: &artifacts,
+    };
+    let verdict = Verifier::new(5_000).run(&token(&contract)?, &contract, &snapshot);
+    let ItemVerdict::Fail { detail } = &verdict.items[0].verdict else {
+        return Err(format!("not a failure: {}", verdict.lines()).into());
+    };
+    Ok((temp, artifacts, detail.clone()))
+}
+
+/// The file a detail's pointer row names, which must sit under the plan's spill directory: the
+/// verification tree is removed before the author reads the refusal, so no rerun can be named.
+fn spilled(artifacts: &Artifacts, detail: &str) -> Result<String, Box<dyn Error>> {
+    let (_, rest) = detail.split_once("[full output: ").ok_or(detail)?;
+    let (path, _) = rest.split_once(']').ok_or(rest)?;
+    assert!(path.starts_with(artifacts.spill_dir().to_string_lossy().as_ref()));
+    Ok(std::fs::read_to_string(path)?)
+}
+
+// Dies with `check_view` in `verdict_of` passing no spill directory: the reducer then has
+// nowhere to recover from, returns the output whole, and the view cuts it blind.
+#[test]
+fn a_failing_checkers_reduced_output_names_the_file_that_holds_the_rest() -> TestResult {
+    let (_temp, artifacts, detail) =
+        failing_detail("yi-verify-view", &format!("cat '{RED_PYTEST}'; exit 1"))?;
+    for shown in [
+        "collected 400 items",
+        "FAILED test_ledger.py::test_case_217 - AssertionError: ledger total drifted",
+        "1 failed, 399 passed",
+    ] {
+        assert!(detail.contains(shown), "{shown}: {detail}");
+    }
+    let omitted = "test_case_150 PASSED";
+    assert!(!detail.contains(omitted) && spilled(&artifacts, &detail)?.contains(omitted));
+    Ok(())
+}
+
+// Dies with the ceiling row naming a rerun: the tree it would run in is gone.
+#[test]
+fn a_failing_checkers_output_past_the_ceiling_names_a_file_not_a_rerun() -> TestResult {
+    let line = "printf 'row %03d ' $i; head -c 300 /dev/zero | tr '\\0' x; echo";
+    let command = format!("i=0; while [ $i -lt 400 ]; do {line}; i=$((i+1)); done; exit 1");
+    let (_temp, artifacts, detail) = failing_detail("yi-verify-wide", &command)?;
+    assert!(
+        detail.contains("bytes kept (VIEW_CEILING 16384); the rest: read "),
+        "{detail:.300}"
+    );
+    assert!(!detail.contains("view.log"), "{detail:.300}");
+    let kept = spilled(&artifacts, &detail)?;
+    assert!(kept.contains("row 040 ") && !detail.contains("row 040 "));
+    Ok(())
+}
+
 // Dies with the process group and `kill_tree` behind `run_captured`, driven by the deadline in
 // the cancel flag: drop the group and the shell dies while its backgrounded sleep survives.
 #[test]
 fn a_checkers_grandchild_is_killed_at_the_deadline() -> TestResult {
     let temp = Scratch::new("yi-verify-grandchild")?;
     let artifacts = Artifacts::under(&temp);
-    let checker = put(&artifacts, &manifest("sleep 5993 &", 30_000, &[]))?;
+    // The fraction is this process's own, so a sibling suite's sleeper is never counted here.
+    let sleeper = format!("sleep 5993.{}", std::process::id());
+    let checker = put(&artifacts, &manifest(&format!("{sleeper} &"), 30_000, &[]))?;
     let contract = cmd_contract(checker, 30_000)?;
     let started = std::time::Instant::now();
     let verdict = Verifier::new(1_000).run(
@@ -249,7 +318,8 @@ fn a_checkers_grandchild_is_killed_at_the_deadline() -> TestResult {
         let survivors = yi_tools::run_captured(
             {
                 let mut ps = yi_tools::command("/bin/sh");
-                ps.args(["-c", "ps -axo command | grep -c '^sleep 5993' || true"]);
+                let count = format!("ps -axo command | grep -cx '{sleeper}' || true");
+                ps.args(["-c", &count]);
                 ps
             },
             None,
@@ -306,12 +376,15 @@ fn checker_cannot_gain_permission_through_contract() -> TestResult {
         ),
     ];
     for (value, expected) in bad {
-        let refusal = CheckerManifest::parse(&serde_json::to_vec(&value)?)
+        let refusal = CheckerManifest::parse(&serde_json::to_vec(&value)?, session_has)
             .err()
             .ok_or_else(|| format!("{value} was accepted"))?;
         assert!(refusal.contains(expected), "{value}: {refusal}");
     }
-    CheckerManifest::parse(&serde_json::to_vec(&manifest("true", 1000, &["PATH"]))?)?;
+    CheckerManifest::parse(
+        &serde_json::to_vec(&manifest("true", 1000, &["PATH"]))?,
+        session_has,
+    )?;
     // Through the engine: the refusal lands at start, when the contract is frozen, never at done.
     let temp = Scratch::new("yi-verify-freeze")?;
     let store = PlanStore::open(temp.join("plans"))?;
@@ -680,4 +753,189 @@ fn an_examples_runner_that_cannot_spawn_abstains() -> TestResult {
     };
     assert!(reason.starts_with("failed to spawn"), "{reason}");
     Ok(())
+}
+
+/// A cut the plan makes in what the model reads names kept over total, the cap, and the call
+/// that returns the rest; at the limit nothing is cut and no row is written.
+mod caps {
+    use super::*;
+    use yi_runtime::plan::tool::PlanTool;
+    use yi_tools::{Tool, ToolContext};
+    use yi_types::subagent::{ChildExit, FailClass};
+
+    fn rig(name: &str) -> Result<(Scratch, Arc<PlanEngine>), Box<dyn Error>> {
+        let temp = Scratch::new(&format!("yi-plan-caps-{name}"))?;
+        let engine = PlanEngine::new(
+            PlanStore::open(temp.to_path_buf())?,
+            Arc::new(crate::plan_e2e::Named),
+        )
+        .with_width(std::num::NonZeroUsize::MIN);
+        Ok((temp, Arc::new(engine)))
+    }
+
+    fn todos(n: usize) -> Result<Vec<TodoSpec>, Box<dyn Error>> {
+        (0..n)
+            .map(|at| {
+                crate::plan_e2e::delegated(&format!("step {at}")).map(|mut spec| {
+                    spec.delegation = None;
+                    spec
+                })
+            })
+            .collect()
+    }
+
+    fn opened(
+        engine: &PlanEngine,
+        specs: Vec<TodoSpec>,
+    ) -> Result<yi_types::plan::doc::Plan, Box<dyn Error>> {
+        let goal = GoalText::new("ship the widget")?;
+        Ok(engine
+            .apply(owner(None, Op::Init { goal, todos: specs }))?
+            .plan)
+    }
+
+    /// Non-ASCII on purpose: the cut counts chars, and a byte cut would split a character.
+    #[test]
+    fn a_child_failure_cause_past_its_cap_keeps_the_rest_at_the_address_it_names() -> TestResult {
+        for total in [500, 501] {
+            let (temp, engine) = rig(&format!("cause-{total}"))?;
+            let plan = opened(&engine, vec![crate::plan_e2e::delegated("build")?])?;
+            let cause: String = "編譯失敗 ".chars().cycle().take(total).collect();
+            let failed = ChildExit::Failed {
+                class: FailClass::Other,
+            };
+            engine.finish_child("build", failed, Some(cause.clone()), None);
+            let todo = engine
+                .store()
+                .read(&plan.id)?
+                .todos
+                .into_iter()
+                .next()
+                .ok_or("no todo")?;
+            let TodoState::Failed { cause: kept, .. } = &todo.state else {
+                return Err(format!("{total}: not failed: {:?}", todo.state).into());
+            };
+            if total == 500 {
+                assert_eq!(kept, &cause, "at the limit the cause is whole");
+                continue;
+            }
+            let (head, row) = kept.split_once('\n').ok_or(kept.clone())?;
+            assert_eq!(head.chars().count(), 500, "{kept}");
+            let prefix = format!(
+                "[… 500 of 501 chars (CAUSE_CHARS 500); the rest: read plan://{}/artifacts/",
+                plan.id
+            );
+            let address = row
+                .strip_prefix(&prefix)
+                .and_then(|hex| hex.strip_suffix(']'))
+                .ok_or(row.to_owned())?;
+            let url = format!("plan://{}/artifacts/{address}", plan.id).parse()?;
+            let resolver =
+                yi_runtime::fetch::Resolver::new(temp.to_path_buf(), yi_runtime::Wall::default())
+                    .with_plans_dir(temp.to_path_buf());
+            assert_eq!(
+                resolver.fetch(&url)?.text,
+                cause,
+                "the address holds the whole cause"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_frontier_and_a_directive_past_their_cap_name_it_and_the_view_call() -> TestResult {
+        let call = r#"the rest: plan {"op": "view", "full": true}]"#;
+        for total in [16, 17] {
+            let (_temp, engine) = rig(&format!("frontier-{total}"))?;
+            let plan = opened(&engine, todos(total)?)?;
+            let frontier = yi_runtime::plan::frontier_text(&plan);
+            let directive = yi_runtime::plan::compaction_directive(&plan).ok_or("no directive")?;
+            let rows = frontier
+                .lines()
+                .filter(|line| line.starts_with("- step"))
+                .count();
+            assert_eq!(rows, 16, "{frontier}");
+            let cut = format!("[… 16 of {total} rows (FRONTIER 16); {call}");
+            assert_eq!(frontier.contains(&cut), total == 17, "{frontier}");
+            let cut = format!("[… 16 of {total} todos (FRONTIER 16); {call}");
+            assert_eq!(directive.contains(&cut), total == 17, "{directive}");
+            assert!(!directive.contains("step 16"), "{directive}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_windowed_view_names_its_cap_at_one_past_the_window() -> TestResult {
+        for total in [8, 9] {
+            let (_temp, engine) = rig(&format!("window-{total}"))?;
+            opened(&engine, todos(total)?)?;
+            let tool = PlanTool::new(Arc::clone(&engine), Actor::Owner);
+            let view = tool.execute(
+                serde_json::Map::from_iter([("op".to_owned(), json!("view"))]),
+                &ToolContext::new(std::env::temp_dir()),
+            );
+            let text = yi_types::message::join_text(&view.result.content, "\n");
+            let cut = format!(
+                "[… 8 of {total} todos: the window shows ready, running and blocked ones (WINDOW 8); the rest: plan {{\"op\": \"view\", \"full\": true}}]"
+            );
+            assert_eq!(text.contains(&cut), total == 9, "{text}");
+            assert_eq!(text.contains("[…"), total == 9, "{text}");
+        }
+        Ok(())
+    }
+
+    /// Dies with the frontier's cut taking the running row, the one that says what is in flight,
+    /// and keeping a ready one in its place.
+    #[test]
+    fn a_frontier_past_its_cap_keeps_the_running_row() -> TestResult {
+        let (_temp, engine) = rig("frontier-running")?;
+        opened(&engine, todos(18)?)?;
+        let label = TodoLabel::new("step 0")?;
+        let plan = engine.apply(owner(None, Op::Start { label }))?.plan;
+        let frontier = yi_runtime::plan::frontier_text(&plan);
+        let running = frontier
+            .lines()
+            .any(|line| line.starts_with("In progress: step 0"));
+        assert!(running, "{frontier}");
+        assert!(
+            frontier.contains("[… 16 of 18 rows (FRONTIER 16);"),
+            "{frontier}"
+        );
+        Ok(())
+    }
+
+    /// Dies with the owner-row filter dropping every row: a delegated row admitted while no child
+    /// is hosted is still named as dispatched.
+    #[test]
+    fn dispatched_names_an_admitted_delegated_row() -> TestResult {
+        let temp = Scratch::new("yi-plan-caps-dispatched-child")?;
+        let store = PlanStore::open(temp.to_path_buf())?;
+        let engine = PlanEngine::new(store, Arc::new(crate::plan_e2e::NoChildren)).unhosted();
+        let tool = PlanTool::new(Arc::new(engine), Actor::Owner);
+        let child =
+            json!({"label": "child", "delegation": {"spec": {}, "accept": {"command": "true"}}});
+        let init = json!({"op": "init", "goal": "ship it", "todos": [{"label": "mine"}, child]});
+        let input = init.as_object().cloned().unwrap_or_default();
+        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
+        let text = yi_types::message::join_text(&output.result.content, "\n");
+        let line = text.lines().find(|line| line.starts_with("dispatched:"));
+        assert_eq!(line, Some("dispatched: child"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn dispatched_never_names_a_row_the_owner_runs() -> TestResult {
+        let (_temp, engine) = rig("dispatched")?;
+        let tool = PlanTool::new(Arc::clone(&engine), Actor::Owner);
+        let child =
+            json!({"label": "child", "delegation": {"spec": {}, "accept": {"command": "true"}}});
+        let init = json!({"op": "init", "goal": "ship it", "todos": [{"label": "mine"}, child]});
+        let input = init.as_object().cloned().unwrap_or_default();
+        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
+        let text = yi_types::message::join_text(&output.result.content, "\n");
+        let line = text.lines().find(|line| line.starts_with("dispatched:"));
+        assert_eq!(line, None, "an owner's row is never dispatched: {text}");
+        assert!(text.contains("spawned agent://ship-it/child"), "{text}");
+        Ok(())
+    }
 }

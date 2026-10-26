@@ -56,7 +56,7 @@ pub enum StoreError {
         source: serde_json::Error,
     },
     #[error(
-        "plan {id} is {bytes} bytes, {over} over the {cap} cap; nothing was written",
+        "plan {id} is {bytes} bytes, {over} over the {cap} cap; nothing was written: send the change with fewer or shorter rows",
         over = bytes.saturating_sub(*cap)
     )]
     PlanOverCap {
@@ -85,7 +85,7 @@ pub enum StoreError {
         reason: String,
     },
     #[error(
-        "{path} was changed behind the engine ({detail}); the journal is authoritative and a view is never folded in"
+        "{path} was changed behind the engine ({detail}); the journal is authoritative and a view is never folded in: delete {path} and the next op rebuilds it from the journal"
     )]
     ExternalEdit {
         id: PlanId,

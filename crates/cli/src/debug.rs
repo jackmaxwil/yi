@@ -56,10 +56,7 @@ fn select(args: &Args, rest: &[&str]) -> i32 {
     let provider = yi_runtime::ProviderStream::new(None).with_routing(config().routing.clone());
     let selector = yi_runtime::select::Selector::new(std::sync::Arc::new(provider), model);
     let lines: Vec<&str> = output.lines().collect();
-    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    else {
+    let Ok(runtime) = crate::current_thread() else {
         return 2;
     };
     let started = std::time::Instant::now();

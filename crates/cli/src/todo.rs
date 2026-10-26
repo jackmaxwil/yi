@@ -1,14 +1,9 @@
-use std::path::Path;
-
-use yi_runtime::session_store::{JsonlRepo, SessionRepo};
+use yi_runtime::session_store::SessionRepo;
 use yi_runtime::todo::{latest_record, text};
 use yi_types::todo::TodoRecord;
 
-fn newest_record(session_dir: &Path, cwd: &Path) -> Option<TodoRecord> {
-    let mut repo = JsonlRepo::new(
-        session_dir.to_path_buf(),
-        cwd.to_string_lossy().into_owned(),
-    );
+fn newest_record(args: &crate::Args) -> Option<TodoRecord> {
+    let mut repo = crate::session_repo(args);
     let mut listed = SessionRepo::list(&mut repo).ok()?;
     listed.sort_by_key(|metadata| std::cmp::Reverse(metadata.created_at));
     listed.iter().find_map(|metadata| {
@@ -21,7 +16,7 @@ pub fn run(args: &crate::Args) -> i32 {
     let cwd = crate::effective_cwd(args);
     match args.prompt.trim() {
         "" | "list" => {
-            let Some(record) = newest_record(&crate::default_session_dir(args), &cwd) else {
+            let Some(record) = newest_record(args) else {
                 println!("no todo list in any session under {}", cwd.display());
                 return 0;
             };
