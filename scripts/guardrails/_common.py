@@ -35,10 +35,10 @@ def normal_code(text, off=""):
         if text.startswith("//", at):
             end = text.find("\n", at)
             end = len(text) if end < 0 else end
-        elif text.startswith("/*", at):
+        elif off != "literals" and text.startswith("/*", at):
             close = text.find("*/", at + 2)
             end = len(text) if close < 0 else close + 2
-        elif not word and (raw := RAW.match(text, at)):
+        elif off != "literals" and not word and (raw := RAW.match(text, at)):
             close = text.find('"' + raw.group(1), raw.end())
             end = len(text) if close < 0 else close + 1 + len(raw.group(1))
         elif ch == '"':
