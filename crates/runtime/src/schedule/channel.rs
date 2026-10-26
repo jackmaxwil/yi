@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -372,15 +373,25 @@ pub(super) fn idle(job: &Job) -> bool {
 /// A channel tick: the batch past the job's ack, filtered, delivered to its target, then acked,
 /// so a crash between the two redelivers and the stamp's ids keep it from creating twice.
 pub fn fire(todos: &TodoStore, job: &Job, sub: &ChannelSub) -> Result<Fired, String> {
+    fire_with_hooks(todos, job, sub, None)
+}
+
+pub(crate) fn fire_with_hooks(
+    todos: &TodoStore,
+    job: &Job,
+    sub: &ChannelSub,
+    hooks: Option<&Arc<crate::claude_hooks::Hooks>>,
+) -> Result<Fired, String> {
     let channel = Channel::at(&sub.path);
     let meta = channel.meta()?;
     let cadence = job.schedule.interval_ms.unwrap_or(DEFAULT_CADENCE_MS);
-    if let Err(stopped) = super::adapter::ensure(
+    if let Err(stopped) = super::adapter::ensure_with_hooks(
         &meta.source,
         &channel,
         Path::new(&job.cwd),
         cadence,
         job.unblocks.is_none(),
+        hooks,
     ) {
         return Ok(Fired::Stopped(stopped));
     }

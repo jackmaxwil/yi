@@ -246,6 +246,9 @@ impl RuntimeWiring {
         let mut sandbox = crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())?;
         sandbox.host_owned.extend(self.sessions_dir.clone());
         sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
+        sandbox
+            .deny_write
+            .extend(crate::permission::claude_dir(self.broker.as_deref()));
         sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
         if !self.wall.is_empty() {
             let roots = crate::tools::walled_roots(&self.wall, self.broker.as_deref());
@@ -552,7 +555,8 @@ fn wire_plan_request(
         .with_owner_words(session.store_handle());
     // Invariant: a verification never outlives the run (D177): the verifier and every lane
     // settle read the session's deadline too.
-    let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS);
+    let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
+        .with_claude_hooks(session.claude_hooks(&cwd));
     if let Some(deadline) = session.deadline()
         && let Some(ends) = deadline.started.checked_add(deadline.total)
     {
@@ -741,15 +745,22 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
 pub(crate) fn wire_job_completions(session: &AgentSession) {
     let (report, owner) = (session.job_report_hook(), session.job_owner());
     tokio::spawn(crate::session::until(job_settled(), move || {
-        let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();
-        let texts = reports.map(|report| {
-            let (job, headline, body) = (report.id, report.headline(), report.view());
-            let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
-            let unread: crate::session::StillNews =
-                Arc::new(move || !yi_tools::jobs::registry().delivered(job));
-            (text, unread)
-        });
-        if report(texts.collect()) {
+        let (ids, texts): (Vec<_>, Vec<_>) = yi_tools::jobs::registry()
+            .take_finished(owner)
+            .into_iter()
+            .map(|report| {
+                let (job, headline, body) = (report.id, report.headline(), report.view());
+                let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
+                let unread: crate::session::StillNews =
+                    Arc::new(move || !yi_tools::jobs::registry().delivered(job));
+                (job, (text, unread))
+            })
+            .unzip();
+        let queued = report(texts);
+        for id in ids {
+            yi_tools::jobs::registry().mark_announced(id, queued);
+        }
+        if queued {
             std::ops::ControlFlow::Continue(None)
         } else {
             std::ops::ControlFlow::Break(())
@@ -983,6 +994,7 @@ fn subagent_host(
         plans_dir: plans_dir.to_path_buf(),
         family_live: Arc::clone(&wiring.kernels),
     }));
+    let _first_wins = host.claude_hooks.set(session.claude_hooks(&wiring.cwd));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
     let (handle, own) = (session.rules_handle(), wiring.own_paths(session));

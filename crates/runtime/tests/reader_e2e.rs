@@ -13,7 +13,7 @@ use yi_types::model::{Effort, Model, ModelCost, Reuse};
 type TestResult = Result<(), Box<dyn Error>>;
 type Script = Arc<Mutex<Vec<AgentMessage>>>;
 
-fn faux_model(context_window: u64) -> Model {
+pub(crate) fn faux_model(context_window: u64) -> Model {
     let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
@@ -38,9 +38,9 @@ fn faux_model(context_window: u64) -> Model {
     }
 }
 
-struct Family {
+pub(crate) struct Family {
     root: Scratch,
-    host: Arc<SubagentHost>,
+    pub(crate) host: Arc<SubagentHost>,
     children: Arc<Mutex<Vec<Vec<String>>>>,
     notices: Arc<Mutex<Vec<String>>>,
     shapes: Arc<Mutex<Vec<Shape>>>,
@@ -50,16 +50,17 @@ struct Family {
 
 type Shape = (Option<yi_runtime::session::RequestShape>, Reuse);
 
+pub(crate) type Hook = Arc<dyn Fn() + Send + Sync>;
 type Rules = Option<Arc<yi_runtime::rules::RuleEngine>>;
-type Hook = Arc<dyn Fn() + Send + Sync>;
 
-/// `during` runs inside a reader's build, while its reservation is held.
-struct Setup {
-    rules: Rules,
-    during: Option<Hook>,
-    broker: Option<Arc<yi_runtime::PermissionBroker>>,
-    window: u64,
-    parent: Option<yi_session::SharedSession>,
+pub(crate) struct Setup {
+    pub(crate) rules: Rules,
+    pub(crate) during: Option<Hook>,
+    pub(crate) broker: Option<Arc<yi_runtime::PermissionBroker>>,
+    pub(crate) window: u64,
+    pub(crate) parent: Option<yi_session::SharedSession>,
+    pub(crate) provider: Option<Arc<ProviderStream>>,
+    pub(crate) model: Option<Model>,
 }
 
 impl Default for Setup {
@@ -70,23 +71,33 @@ impl Default for Setup {
             broker: None,
             window: 128_000,
             parent: None,
+            provider: None,
+            model: None,
         }
     }
 }
 
-fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
+pub(crate) fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
     family_with(max_children, script, Setup::default())
 }
 
 /// A reader is built by the runtime's own `reader::session`; any other child is a plain one.
-fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Result<Family> {
+pub(crate) fn family_with(
+    max_children: usize,
+    script: Script,
+    setup: Setup,
+) -> std::io::Result<Family> {
     let Setup {
         rules,
         during,
         broker,
         window,
         parent,
+        provider,
+        model,
     } = setup;
+    let model = model.unwrap_or_else(|| faux_model(window));
+    let fresh = || Arc::new(ProviderStream::new(None));
     let root = Scratch::new("yi-reader")?;
     let workspace = root.join("ws");
     std::fs::create_dir_all(&workspace)?;
@@ -114,10 +125,10 @@ fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Re
         cwd: workspace.clone(),
         home: home.clone(),
         lane_slots: 1,
-        provider: Arc::new(ProviderStream::new(None)),
-        defaults: Arc::new(move || (faux_model(window), Effort::Medium)),
+        provider: provider.clone().unwrap_or_else(fresh),
+        defaults: Arc::new(move || (model.clone(), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
-            let provider = Arc::new(ProviderStream::new(None));
+            let provider = provider.clone().unwrap_or_else(fresh);
             let queued = script.lock().map(|mut s| std::mem::take(&mut *s));
             provider.queue_faux(queued.unwrap_or_default());
             let Some(reader) = build.reader.clone() else {
@@ -189,17 +200,22 @@ fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Re
         prompts,
     })
 }
+pub(crate) use family_with as wired_family;
+pub(crate) use transcript as child_rows;
 
-fn kwargs(value: Value) -> Map<String, Value> {
+pub(crate) fn kwargs(value: Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
 }
 
-fn reply(text: &str) -> AgentMessage {
+pub(crate) fn reply(text: &str) -> AgentMessage {
     faux_assistant_message(vec![faux_text(text)], StopReason::Stop)
 }
 
 /// The child's whole transcript as the texts of its messages, read from its own file.
-async fn transcript(family: &Family, name: &str) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+pub(crate) async fn transcript(
+    family: &Family,
+    name: &str,
+) -> Result<Vec<(String, String)>, Box<dyn Error>> {
     for _ in 0..400 {
         let states = family.host.states();
         let settled = states
