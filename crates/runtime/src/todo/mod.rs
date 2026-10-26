@@ -225,6 +225,7 @@ pub struct TodoStore {
     on_change: Mutex<Vec<ChangeHook>>,
     resync: Mutex<Option<Arc<ResyncFn>>>,
     carry: Mutex<Option<Arc<CarryFn>>>,
+    history: Mutex<claims::History>,
 }
 
 pub struct Applied {
@@ -245,6 +246,7 @@ impl TodoStore {
             on_change: Mutex::new(Vec::new()),
             resync: Mutex::new(None),
             carry: Mutex::new(None),
+            history: Mutex::new(claims::History::default()),
         });
         this.rehydrate();
         this

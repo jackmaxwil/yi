@@ -133,7 +133,7 @@ impl MissTracker {
                 self.reset();
                 None
             }
-            Entry::Custom { custom_type, .. } if custom_type == "ext_state" => {
+            Entry::Custom { custom_type, .. } if crate::ext::is_state_entry(custom_type) => {
                 self.system_moved = self.last.is_some();
                 None
             }
