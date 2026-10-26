@@ -6,18 +6,18 @@ use std::path::PathBuf;
 
 use yi_types::memory::MemoryRecord;
 use yi_types::plan::canonical::{Chained, Digest};
-use yi_types::plan::ledger::JournalRecord as J;
+use yi_types::plan::ledger::JournalRecord;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn fixture(name: &str) -> Result<String, Box<dyn Error>> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/journals")
-        .join(format!("{name}-v1.jsonl"));
+        .join("tests/fixtures")
+        .join(name);
     Ok(std::fs::read_to_string(path)?)
 }
 
-fn check<T>(name: &str, digest: impl Fn(&T) -> Digest) -> TestResult
+fn chain_keeps_bytes<T>(name: &str, digest: impl Fn(&T) -> Digest) -> TestResult
 where
     T: Chained + serde::de::DeserializeOwned,
 {
@@ -36,12 +36,16 @@ where
 
 #[test]
 fn a_plan_journal_verifies_and_keeps_its_bytes() -> TestResult {
-    check::<J>("plan-ops", |r| r.digest)?;
-    check::<J>("plan-judge-verdict", |r| r.digest)?;
+    for name in [
+        "journals/plan-ops-v1.jsonl",
+        "journals/plan-judge-verdict-v1.jsonl",
+    ] {
+        chain_keeps_bytes::<JournalRecord>(name, |record| record.digest)?;
+    }
     Ok(())
 }
 
 #[test]
 fn a_memory_journal_verifies_and_keeps_its_bytes() -> TestResult {
-    check::<MemoryRecord>("memory-ops", |r| r.digest)
+    chain_keeps_bytes::<MemoryRecord>("journals/memory-ops-v1.jsonl", |record| record.digest)
 }
