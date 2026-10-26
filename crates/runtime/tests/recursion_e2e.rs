@@ -3037,7 +3037,7 @@ async fn a_scoped_child_reads_the_named_keys_and_nothing_else() -> TestResult {
         "a named key reaches the child with its value: {brief:?}"
     );
     assert!(
-        brief.contains("[truncated to 4096 chars]"),
+        brief.contains("[kept 4096 of over 4096 chars"),
         "an oversized value is capped with a named marker, never silently cut: {brief:?}"
     );
     assert!(
@@ -3068,6 +3068,330 @@ async fn a_scoped_child_reads_the_named_keys_and_nothing_else() -> TestResult {
             .is_some_and(|error| error.contains("at most 8 are scoped")),
         "an unbounded brief is refused at admission"
     );
+    Ok(())
+}
+
+/// A value as the kernel's `_resolve_context` sends a list of dicts: `json.dumps` text, or the
+/// `repr` text it falls back to (non-ASCII kept) when the structure will not serialize.
+fn kernel_value(chars: usize, dumped: bool) -> String {
+    let item = |id: usize| {
+        if dumped {
+            format!("{{\"id\": {id}, \"name\": \"na\\u00efve\"}}")
+        } else {
+            format!("{{'id': {id}, 'name': 'na\u{ef}ve'}}")
+        }
+    };
+    let items: Vec<String> = (0..chars / 20 + 1).map(item).collect();
+    format!("[{}]", items.join(", "))
+        .chars()
+        .take(chars)
+        .collect()
+}
+
+fn context_row<'a>(brief: &'a str, name: &str) -> Result<&'a str, String> {
+    let head = format!("{name} = ");
+    (brief.lines().find(|line| line.starts_with(&head))).ok_or(format!("no {name} row: {brief:?}"))
+}
+
+/// The road a loud `row` names, read off the row as the model would: the `history://` address in
+/// it serves the child's `answer`, as its JSONL transcript escapes it, live and after the reap.
+fn history_holds(harness: &Harness, name: &str, row: &str, answer: &str) -> TestResult {
+    let (_, tail) = row
+        .split_once("read history://")
+        .ok_or("the row names no address")?;
+    let child: String = tail
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '_'))
+        .collect();
+    let url: yi_types::url::Url = format!("history://{child}").parse()?;
+    let desk =
+        yi_runtime::fetch::SessionTranscripts::new(Arc::clone(&harness.host), None, &harness.root);
+    let resolver =
+        yi_runtime::fetch::Resolver::new(harness.root.to_path_buf(), yi_runtime::Wall::default())
+            .with_transcripts(Arc::new(desk));
+    let escaped = serde_json::to_string(answer)?;
+    let needle = escaped.trim_matches('"');
+    for reaped in [false, true] {
+        if reaped {
+            harness.host.reap(name)?;
+        }
+        let served = resolver.fetch(&url)?.text;
+        assert!(
+            served.contains(needle),
+            "{url} lacks the answer (reaped: {reaped}): {served:.400}"
+        );
+    }
+    Ok(())
+}
+
+/// The brief of a child spawned with `context` as the kernel sends it, and its `context_chars`.
+async fn scoped_brief(context: Value, counted: Option<Value>) -> Result<String, String> {
+    let harness = harness(0, 1, "ok").map_err(|error| error.to_string())?;
+    let mut pairs = vec![("context", context)];
+    pairs.extend(counted.map(|counted| ("context_chars", counted)));
+    harness
+        .host
+        .spawn("read them".to_owned(), protocol_kwargs("scoped", &pairs))
+        .map_err(|error| error.to_string())?;
+    Ok(child_brief(&harness).await)
+}
+
+#[tokio::test]
+async fn a_context_value_cut_names_what_was_kept_and_the_way_to_pass_the_rest() -> TestResult {
+    let whole = kernel_value(4_096, true);
+    let past = kernel_value(4_097, true);
+    let brief = scoped_brief(
+        json!({"whole": whole, "past": past}),
+        Some(json!({"whole": 4_096, "past": 4_097})),
+    )
+    .await?;
+    assert_eq!(
+        context_row(&brief, "whole")?,
+        format!("whole = {whole}"),
+        "a value at its cap passes whole"
+    );
+    let row = context_row(&brief, "past")?;
+    let head: String = past.chars().take(4_096).collect();
+    assert!(
+        row.starts_with(&format!("past = {head}… [")),
+        "one char past the cap keeps exactly the cap: {row:?}"
+    );
+    for fact in [
+        "kept 4096 of 4097 chars",
+        "cap mail.context_value = 4096",
+        "local://<path> in partition",
+    ] {
+        assert!(row.contains(fact), "the cut row names {fact:?}: {row:?}");
+    }
+
+    let brief = scoped_brief(
+        json!({"far": kernel_value(4_097, true), "blind": kernel_value(4_097, true), "accent": kernel_value(4_097, false)}),
+        Some(json!({"far": 20_000, "accent": 4_097})),
+    )
+    .await?;
+    assert!(
+        context_row(&brief, "far")?.contains("kept 4096 of 20000 chars"),
+        "the kernel's own count is the total: {brief:?}"
+    );
+    let blind = context_row(&brief, "blind")?;
+    assert!(
+        blind.contains("kept 4096 of over 4096 chars") && !blind.contains("4097"),
+        "a cut the sender did not count is not passed off as its length: {blind:?}"
+    );
+    let accent = context_row(&brief, "accent")?;
+    let head: String = kernel_value(4_097, false).chars().take(4_096).collect();
+    assert!(
+        accent.starts_with(&format!("accent = {head}… [kept 4096 of 4097 chars")),
+        "a non-ASCII value is cut on a char boundary: {accent:?}"
+    );
+
+    let mid = format!("x{}", "\u{e9}".repeat(4_096));
+    let brief = scoped_brief(
+        json!({"low": kernel_value(4_097, true), "mid": mid}),
+        Some(json!({"low": 10, "mid": 4_097})),
+    )
+    .await?;
+    let low = context_row(&brief, "low")?;
+    assert!(
+        low.contains("kept 4096 of over 4096 chars") && !low.contains("of 10 chars"),
+        "a count under the chars received is not believed: {}",
+        low.chars().skip(4_090).collect::<String>()
+    );
+    let head: String = mid.chars().take(4_096).collect();
+    assert!(
+        context_row(&brief, "mid")?.starts_with(&format!("mid = {head}… [kept 4096 of 4097 chars")),
+        "byte 4096 sits inside a two-byte char and the cut does not panic there"
+    );
+    Ok(())
+}
+
+/// Dies with a count of the wrong shape ignored: a scalar or a float count is the sender's bug,
+/// and a row that quietly says `over 4096` hides it from the one run that could fix it.
+#[tokio::test]
+async fn a_context_count_of_the_wrong_shape_is_refused_not_ignored() -> TestResult {
+    for counted in [
+        json!(10_000),
+        json!([4_097]),
+        json!({"a": 1.5}),
+        json!({"a": -1}),
+        json!({"a": "9"}),
+    ] {
+        let refused = scoped_brief(json!({"a": "x"}), Some(counted.clone()))
+            .await
+            .err()
+            .ok_or(format!("{counted} was admitted"))?;
+        assert!(
+            refused.contains("context_chars must be an object of variable name to char count"),
+            "{counted}: {refused}"
+        );
+    }
+    let brief = scoped_brief(json!({"a": "x"}), Some(Value::Null)).await?;
+    assert!(
+        brief.contains("a = x\n"),
+        "a null count is no count: {brief:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the road the row names leading nowhere: the address and kwarg read off a cut value's
+/// row, with the value written to that file, reach the child whole.
+#[tokio::test]
+async fn a_value_past_the_context_cap_reaches_a_child_whole_through_a_partition() -> TestResult {
+    let value = kernel_value(4_097, true);
+    let cut = scoped_brief(json!({ "board": value }), None).await?;
+    let row = context_row(&cut, "board")?;
+    let (address, kwarg) = (row.rsplit_once(" · write a value to a file and give "))
+        .and_then(|(_, road)| road.strip_suffix(']')?.split_once(" in "))
+        .ok_or(format!(
+            "the cut row names no road: {}",
+            row.chars().skip(4_096).collect::<String>()
+        ))?;
+    let address = address.replace("<path>", "board.json");
+    let harness = harness(0, 1, "ok")?;
+    std::fs::write(harness.root.join("board.json"), &value)?;
+    harness
+        .host
+        .set_resolver(Arc::new(yi_runtime::fetch::Resolver::new(
+            harness.root.to_path_buf(),
+            yi_runtime::Wall::default(),
+        )));
+    harness
+        .host
+        .spawn(
+            "read it".to_owned(),
+            protocol_kwargs("scoped", &[(kwarg, json!([address]))]),
+        )
+        .map_err(|error| error.to_string())?;
+    let brief = child_brief(&harness).await;
+    assert!(
+        brief.contains(&value),
+        "the partition carries the value whole: {brief:.300}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_context_block_cut_names_what_was_kept_and_the_way_to_pass_the_rest() -> TestResult {
+    let scope = |last: usize| {
+        let mut keys = Map::new();
+        for (name, chars) in [("a", 4_096), ("b", 4_096), ("c", 4_096), ("d", last)] {
+            keys.insert(name.to_owned(), Value::String(kernel_value(chars, true)));
+        }
+        Value::Object(keys)
+    };
+    let brief = scoped_brief(scope(4_059), None).await?;
+    assert!(
+        !brief.contains("[kept") && brief.contains("\n</parent_context>"),
+        "a block of exactly 16384 chars passes whole: {}",
+        brief.len()
+    );
+    let brief = scoped_brief(scope(4_060), None).await?;
+    for fact in [
+        "kept 16384 of 16385 chars",
+        "cap mail.context_total = 16384",
+        "local://<path> in partition]</parent_context>",
+    ] {
+        assert!(brief.contains(fact), "the cut row names {fact:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_schema_refusal_carries_the_head_of_the_answer_and_names_the_rest() -> TestResult {
+    let schema = json!({"type": "object", "properties": {"outcome": {"type": "string"}}, "required": ["outcome"]});
+    for chars in [2_000, 2_001, 10_000] {
+        let reader_prose =
+            "Voil\u{e0} la r\u{e9}ponse:\n```\nnot json\n```\n".repeat(chars / 30 + 1);
+        let mut answer: String = reader_prose.chars().take(chars - 1).collect();
+        answer.push('.');
+        let answer: &'static str = answer.leak();
+        let harness = harness(0, 1, answer)?;
+        harness
+            .host
+            .spawn("answer in prose".to_owned(), kwargs(&[("name", "reader")]))
+            .map_err(|error| error.to_string())?;
+        assert!(wait_for_status_named(&harness, "reader").await);
+        let refused = harness
+            .host
+            .result("reader", Some(&schema))
+            .err()
+            .ok_or("prose passed a schema")?;
+        assert!(refused.contains("text, not JSON"), "{chars}: {refused}");
+        if chars == 2_000 {
+            assert!(
+                refused.ends_with(answer) && !refused.contains("[kept"),
+                "an answer at the cap rides whole: {refused:?}"
+            );
+            continue;
+        }
+        assert!(
+            refused.chars().count() <= 2_300,
+            "{chars} chars refused with {}",
+            refused.chars().count()
+        );
+        for fact in [
+            format!("kept 2000 of {chars} chars"),
+            "cap RESULT_TAIL_CHARS = 2000".to_owned(),
+            "read history://reader".to_owned(),
+        ] {
+            assert!(
+                refused.contains(&fact),
+                "{chars}: names {fact:?}: {refused:?}"
+            );
+        }
+        history_holds(&harness, "reader", &refused, answer)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_child_answer_preview_past_its_cap_names_the_transcript_that_holds_the_rest() -> TestResult
+{
+    for chars in [240, 241] {
+        let words = "r\u{e9}ponse ".repeat(chars / 8 + 1);
+        let mut answer: String = words.chars().take(chars - 1).collect();
+        answer.push('\u{e9}');
+        let answer: &'static str = answer.leak();
+        let harness = harness(0, 1, answer)?;
+        let mut events = harness.events.subscribe();
+        harness
+            .host
+            .spawn(
+                "answer at length".to_owned(),
+                kwargs(&[("name", "answerer")]),
+            )
+            .map_err(|error| error.to_string())?;
+        let updates = collect_updates(&mut events).await;
+        let preview = updates
+            .last()
+            .and_then(|update| update.answer_preview.clone())
+            .ok_or("no preview")?;
+        let notices = harness.notices.lock().map_err(|_| "poisoned")?.clone();
+        let notice = notices.first().ok_or("no completion notice")?;
+        assert!(
+            notice.contains(&format!("Last answer: {preview}\n")),
+            "the notice and the status carry one preview: {notice:?}"
+        );
+        if chars == 240 {
+            assert_eq!(preview, answer, "an answer at the cap rides whole");
+            continue;
+        }
+        assert!(
+            preview.starts_with(&format!(
+                "{}… [",
+                answer.chars().take(240).collect::<String>()
+            )),
+            "{preview:?}"
+        );
+        for fact in [
+            "kept 240 of 241 chars",
+            "cap PREVIEW_CHARS = 240",
+            "read history://answerer",
+        ] {
+            assert!(preview.contains(fact), "names {fact:?}: {preview:?}");
+        }
+        history_holds(&harness, "answerer", &preview, answer)?;
+    }
     Ok(())
 }
 

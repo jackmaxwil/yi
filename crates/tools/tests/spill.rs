@@ -275,3 +275,22 @@ fn each_streams_open_last_line_stays_its_own_line() -> Fallible {
     assert_eq!(kept, "compiled 3 crates\nout tail\nerr tail");
     Ok(())
 }
+
+#[test]
+fn a_full_spill_stops_redacting_and_still_names_its_clip() -> Fallible {
+    let root = Scratch::new("yi-spill-redaction-ceiling")?;
+    let mut spill = Spill::new(Some(&root));
+    spill.ceiling = 1 << 20;
+    spill.write(&vec![b'x'; 1 << 20]);
+    let at_ceiling = spill.redactions;
+    spill.write(b"y");
+    assert_eq!(spill.redactions, at_ceiling);
+    let note = spill.keep().ok_or("not kept")?;
+    assert!(note.starts_with("[full output, first 1 MiB: "), "{note}");
+    let path = note
+        .strip_prefix("[full output, first 1 MiB: ")
+        .and_then(|rest| rest.strip_suffix(']'))
+        .ok_or_else(|| note.clone())?;
+    assert_eq!(fs::metadata(path)?.len(), 1 << 20);
+    Ok(())
+}
