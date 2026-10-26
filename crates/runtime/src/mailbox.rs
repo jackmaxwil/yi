@@ -24,8 +24,8 @@ pub(crate) const CONTEXT_MAX_KEYS: usize = 8;
 pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;
 pub(crate) const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
-const ROUTE: &str = "write a value to a file and give local://<path> in partition";
 const COUNT_SHAPE: &str = "rlm.run context_chars must be an object of variable name to char count";
+const ROUTE: &str = "write a value to a file and give local://<path> in partition";
 
 pub(crate) type Retired = (
     String,
@@ -419,8 +419,7 @@ impl SubagentHost {
         let envelope = desk.seal((from, &name), between, draft);
         crate::mail::inbox(&store, &envelope)?;
         let answered = desk.resolve(&envelope);
-        let message = crate::mail::present(&envelope);
-        // `followup` only wakes an idle receiver; a late reply wakes nobody, its asker returned.
+        let message = crate::mail::present_for_delivery(&envelope, draft.followup);
         let wakes = envelope.kind != Kind::Cancel
             && (draft.followup
                 || !matches!(envelope.kind, Kind::Inform | Kind::Progress | Kind::Reply));
@@ -697,7 +696,7 @@ impl SubagentHost {
             (
                 record.session_name.clone(),
                 record.check.clone(),
-                last_assistant_text(&record.session.messages()).unwrap_or_default(),
+                crate::mail::result_answer(&record.session.messages(), schema),
             )
         };
         let json = Self::json_answer(&text);
@@ -745,11 +744,16 @@ impl SubagentHost {
                     "child \"{target}\" result held back; its check is refused: {refused}"
                 ));
             }
-            crate::goal::run_check(&check, &cwd, crate::goal::DEFAULT_CHECK_TIMEOUT_MS).map_err(
-                |evidence| {
-                    format!("child \"{target}\" result held back; its check is red: {evidence}")
-                },
-            )?;
+            let hooks = self.claude_hooks();
+            crate::goal::run_check(
+                &check,
+                &cwd,
+                crate::goal::DEFAULT_CHECK_TIMEOUT_MS,
+                hooks.as_deref(),
+            )
+            .map_err(|evidence| {
+                format!("child \"{target}\" result held back; its check is red: {evidence}")
+            })?;
             self.route_discoveries(&name, &result.discoveries)
                 .map_err(|error| format!("child \"{target}\" result held back; {error}"))?;
             reply.insert(
@@ -791,7 +795,13 @@ impl SubagentHost {
                     .entry(id)
                     .or_insert_with(|| {
                         let timeout = crate::goal::DISCOVERY_CHECK_TIMEOUT_MS;
-                        crate::goal::run_check(&check, &self.options.cwd, timeout).err()
+                        crate::goal::run_check(
+                            &check,
+                            &self.options.cwd,
+                            timeout,
+                            self.claude_hooks().as_deref(),
+                        )
+                        .err()
                     })
                     .clone()
                     .map(|evidence| (id, evidence))

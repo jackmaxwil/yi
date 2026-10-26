@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde_json::Value;
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::plan::doc::{BlockedOn, Note, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState};
@@ -150,8 +152,17 @@ fn stamp(item: &Todo) -> Option<ClockStamp> {
 
 /// A tick never runs saved code: it appends a todo or unblocks one, and the woken agent decides.
 pub fn fire(todos: &TodoStore, job: &Job, firing: &Firing) -> Result<Fired, String> {
+    fire_with_hooks(todos, job, firing, None)
+}
+
+pub fn fire_with_hooks(
+    todos: &TodoStore,
+    job: &Job,
+    firing: &Firing,
+    hooks: Option<&Arc<crate::claude_hooks::Hooks>>,
+) -> Result<Fired, String> {
     match (&job.channel, &job.unblocks) {
-        (Some(sub), _) => super::channel::fire(todos, job, sub),
+        (Some(sub), _) => super::channel::fire_with_hooks(todos, job, sub, hooks),
         (None, Some(label)) => unblock(todos, job, label, CLOCK_ACTOR),
         (None, None) => create(todos, job, firing),
     }

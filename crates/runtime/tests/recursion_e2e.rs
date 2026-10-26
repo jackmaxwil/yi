@@ -1083,7 +1083,7 @@ async fn mail_queued_as_a_run_stops_early_starts_the_next_turn() -> TestResult {
         vec![yi_ai::faux::faux_tool_call("p", "poke", Map::new())],
         StopReason::ToolUse,
     );
-    let mut session = parent_session_scripted(vec![call; 6], &["heard the kid"]);
+    let session = parent_session_scripted(vec![call; 6], &["heard the kid"]);
     let poke = Poke {
         calls: AtomicU32::new(0),
         deliver: session.heartbeat_hook(),
@@ -1632,7 +1632,7 @@ async fn a_finish_the_parent_already_collected_is_not_presented() -> TestResult 
             vec![yi_ai::faux::faux_tool_call("c", "collect", Map::new())],
             StopReason::ToolUse,
         );
-        let mut parent = parent_session_scripted(vec![call], &["kid said done", "spare"]);
+        let parent = parent_session_scripted(vec![call], &["kid said done", "spare"]);
         let collect = Collect {
             host: Arc::clone(&slot),
             road,
