@@ -18,6 +18,8 @@ mod kimi_wire;
 mod leak;
 #[path = "../../types/tests/support/loopback.rs"]
 mod loopback;
+#[path = "../../types/tests/support/loopback_server.rs"]
+mod loopback_server;
 mod model_headers;
 mod oauth;
 mod openai_mapper;
