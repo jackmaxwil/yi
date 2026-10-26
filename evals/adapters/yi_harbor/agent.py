@@ -26,6 +26,7 @@ from yi_usage import (
     LEVERS_ENV,
     REMOTE_LEVERS_PATH,
     SESSIONS_SUBDIR,
+    arm_label,
     config_fingerprint,
     eval_config,
     kernel_broken,
@@ -37,6 +38,7 @@ from yi_usage import (
     routing_label,
     run_command,
     TASK_TIMEOUT_SEC,
+    with_arm,
     with_budget,
 )
 
@@ -92,7 +94,8 @@ def mode_label():
     defaults must never share a fingerprint (plan §4, E16)."""
     mult = os.environ.get(TIMEOUT_MULT_ENV)
     return ("yolo" + (f"+t{mult}" if mult else "") + routing_label(os.environ)
-            + levers_label(os.environ) + skills_label() + plugins_label(carried_plugins()))
+            + levers_label(os.environ) + skills_label() + plugins_label(carried_plugins())
+            + arm_label(os.environ))
 
 
 def carried_plugins():
@@ -258,8 +261,9 @@ class Yi(BaseInstalledAgent):
         return int(TASK_TIMEOUT_SEC * float(os.environ.get(TIMEOUT_MULT_ENV) or 1))
 
     def render_instruction(self, instruction: str) -> str:
-        """The task's own last line names all 28800 seconds; the trial gets the multiplier's share."""
-        return with_budget(super().render_instruction(instruction), self.deadline_sec())
+        """The task's own last line names all 28800 seconds; the trial gets the multiplier's share.
+        EVAL_ARM_FILE's text, if any, follows the task's own."""
+        return with_arm(with_budget(super().render_instruction(instruction), self.deadline_sec()), os.environ)
 
     def write_trajectory(self):
         """The synced session file as ATIF, beside the event stream in logs_dir."""
