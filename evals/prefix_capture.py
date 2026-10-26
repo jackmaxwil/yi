@@ -28,13 +28,15 @@ SKILL_DIRS = (".yi", ".agents", ".pi", ".claude")
 
 
 def opening(path):
-    """The first ext_state of a session file: (slot, bytes) and (source, trust, bytes)."""
+    """The first ext_state of a session file: (slot, bytes) and (source, trust, bytes).
+    A v2 entry (ext_state2) stores a build slot's size and hash without its text."""
     for line in pathlib.Path(path).read_text().splitlines():
         entry = json.loads(line)
-        if entry.get("customType") != "ext_state":
+        if entry.get("customType") not in ("ext_state", "ext_state2"):
             continue
         data = entry.get("data") or {}
-        slots = [(f"{slot['rank']}/{slot['name']}", len(slot["text"].encode()))
+        slots = [(f"{slot['rank']}/{slot['name']}",
+                  slot["bytes"] if "bytes" in slot else len(slot["text"].encode()))
                  for slot in data.get("slots", [])]
         sources = [(item["source"], item.get("trust", ""), len(item["text"].encode()))
                    for item in data.get("yard", [])]

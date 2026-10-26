@@ -228,7 +228,7 @@ the checkout's untracked CLAUDE.md (or the one `--claude` names) and its gitigno
 directories (`.claude/skills`, `.pi/skills`, `.agents/skills`, `.yi/skills`), printing each
 copy. Then it runs `yi ask --model faux/faux-1` twice under a scratch HOME and the caller's
 PATH: once claiming a lane, once with `--here`. For each run it prints the bytes of every
-prompt slot and every instruction source in the session's opening `ext_state` entry, with the
+prompt slot and every instruction source in the session's opening `ext_state2` (or v1 `ext_state`) entry, with the
 source's trust. A lane checks out tracked files only, so the copies reach the `--here` run
 alone. A CLAUDE.md with AGENTS.md's rules is deduped by content and never shows, so pass
 `--claude AGENTS.md` to measure a checkout whose CLAUDE.md was regenerated from .ruler. The

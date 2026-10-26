@@ -383,40 +383,6 @@ fn parse_fork(kwargs: &Map<String, Value>) -> Result<Fork, String> {
     }
 }
 
-/// The seed budget is the child's window less the reserve compaction needs.
-fn seed_for_fork(parent: &[AgentMessage], fork: Fork, window: u64) -> Vec<AgentMessage> {
-    let start = match fork {
-        Fork::None => return Vec::new(),
-        Fork::All => 0,
-        Fork::LastN(turns) => {
-            let boundaries: Vec<usize> = parent
-                .iter()
-                .enumerate()
-                .filter(|(_, message)| matches!(message, AgentMessage::User { .. }))
-                .map(|(index, _)| index)
-                .collect();
-            let wanted = usize::try_from(turns).unwrap_or(usize::MAX);
-            boundaries
-                .len()
-                .checked_sub(wanted)
-                .and_then(|index| boundaries.get(index).copied())
-                .unwrap_or(0)
-        }
-    };
-    let budget = window.saturating_sub(yi_context::Settings::default().reserve_tokens.0);
-    let mut kept: Vec<AgentMessage> = Vec::new();
-    let mut used = 0_u64;
-    for message in parent[start.min(parent.len())..].iter().rev() {
-        used = used.saturating_add(yi_context::estimate_message(message).0);
-        if used > budget {
-            break;
-        }
-        kept.push(message.clone());
-    }
-    kept.reverse();
-    kept
-}
-
 fn optional_string(kwargs: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
     match kwargs.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -710,15 +676,9 @@ impl SubagentHost {
         cast.2.container = container.as_ref().map(|held| held.name().to_owned());
         let child = self.build(cast, &session_name, &session_dir, cwd, &lease, None)?;
         let trail = self.trail_spawned(&session_name, &child_id, &child, &prompt);
-        reader::seed(&child, seed);
-        if fork != Fork::None {
-            let seed = seed_for_fork(
-                &(self.options.parent_messages)(),
-                fork,
-                child.model().context_window,
-            );
-            child.seed_messages(seed);
-        }
+        let window = child.model().context_window;
+        let forked = reader::seed_for_fork(&*self.options.parent_messages, fork, window);
+        reader::seed(&child, forked, seed);
         let session = Arc::new(child);
         self.options.family_live.enroll(&session);
         let lead = stagger.and_then(|stagger| stagger.arm(&session));
