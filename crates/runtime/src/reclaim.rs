@@ -534,11 +534,35 @@ mod tests {
         Ok(messages)
     }
 
-    /// Dies with a memo keyed wrongly: every request of the largest recorded session, after
-    /// reclaim, is the bytes a fresh parse gives, and each result names its own paths.
+    /// The recording with an edit of README.md spliced in after its first reads, in the shape
+    /// the edit tool printed in `01a129b6`, and every reply stamped 1 ms, a lapsed cache.
+    fn recorded_with_an_edit() -> Result<Vec<AgentMessage>, Box<dyn std::error::Error>> {
+        let mut messages = recorded()?;
+        for message in &mut messages {
+            if let AgentMessage::Assistant { timestamp, .. } = message {
+                *timestamp = 1;
+            }
+        }
+        // README.md's read is answered just before docs/ARCHITECTURE.md's, the batch's last.
+        let readme = messages.iter().position(|message| {
+            matches!(message, AgentMessage::ToolResult { content, .. }
+                if yi_types::message::join_text(content, "").starts_with("[README.md#"))
+        });
+        let after = readme.ok_or("no README.md read")?.saturating_add(2);
+        let patch = json!({"patch": "[README.md#DDA9]\nPUT 3.=3:\n+Personal coding agent."});
+        let edited = serde_json::from_value(json!({"role": "toolResult", "toolCallId": "c-edit",
+            "toolName": "edit", "isError": false, "timestamp": 0, "content": [{"type": "text",
+            "text": "[README.md#2D18]\nupdated; first change at line 3\n3:Personal coding agent."}]}))?;
+        let edit = assistant(&[("c-edit".to_owned(), "edit", patch)], 1);
+        messages.splice(after..after, [edit, edited]);
+        Ok(messages)
+    }
+
+    /// Dies with a memo keyed wrongly: the newest read of the edited README.md is cut, or a
+    /// request's bytes differ from a parse made fresh for each request.
     #[test]
     fn a_memo_leaves_every_request_of_a_recorded_session_byte_identical() -> Fallible {
-        let messages = recorded()?;
+        let messages = recorded_with_an_edit()?;
         let ends = (0..messages.len())
             .filter(|at| matches!(messages.get(*at), Some(AgentMessage::Assistant { .. })));
         let ends: Vec<usize> = ends.collect();
@@ -555,7 +579,17 @@ mod tests {
             }
             Ok(sent)
         };
-        assert_eq!(views(false)?, views(true)?);
+        let sent = views(false)?;
+        assert_eq!(sent, views(true)?);
+        let last = serde_json::to_string(sent.last().ok_or("no request")?)?;
+        assert!(
+            last.contains("[reclaimed: read `docs/ARCHITECTURE.md`"),
+            "an aged read is cut"
+        );
+        assert!(
+            last.contains(r"[README.md#DDA9]\n1:# Yi"),
+            "the edited file's newest read stays whole"
+        );
         let (memo, mut named) = (super::Sections::default(), 0);
         for message in &messages {
             if let AgentMessage::ToolResult { content, .. } = message {
@@ -565,8 +599,8 @@ mod tests {
             }
         }
         assert_eq!(
-            named, 9,
-            "nine of ten reads name a file; one read past the end prints none"
+            named, 10,
+            "the edit and nine of ten reads name a file; one read past the end prints none"
         );
         Ok(())
     }
