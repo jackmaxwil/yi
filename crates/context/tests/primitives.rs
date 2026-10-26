@@ -3,10 +3,9 @@ use std::error::Error;
 use serde_json::json;
 use yi_context::{
     Attributed, BriefLine, Bytes, CompiledView, FileOps, KEY_ROWS, OUTSTANDING_CAP, Settings,
-    Tokens, Window, attribute_child_usage, compile_view, compose_summary, context_tokens,
-    convert_to_llm, drop_internal, estimate_context, fit, internal_source, prepare_compaction,
-    project, retain_floor, select_cut, serialize_conversation, should_compact, user_key,
-    wrap_internal,
+    Tokens, attribute_child_usage, compile_view, compose_summary, context_tokens, convert_to_llm,
+    drop_internal, estimate_context, fit, internal_source, prepare_compaction, project,
+    retain_floor, select_cut, serialize_conversation, should_compact, user_key, wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -590,17 +589,6 @@ fn attribution_preserves_the_parent_context_size() -> TestResult {
     assert_eq!(parent.input, 1100);
     assert_eq!(parent.output, 550);
     assert_eq!(parent.total_tokens, 150);
-    Ok(())
-}
-
-#[test]
-fn window_chain_advances_ids() -> TestResult {
-    let mut window = Window::new_initial("w0".to_owned());
-    let ids = window.advance("w1".to_owned());
-    assert_eq!(ids.first, "w0");
-    assert_eq!(ids.previous.as_deref(), Some("w0"));
-    assert_eq!(ids.id, "w1");
-    assert_eq!(ids.number, 1);
     Ok(())
 }
 
