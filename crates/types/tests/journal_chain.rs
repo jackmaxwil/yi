@@ -36,15 +36,11 @@ where
 
 #[test]
 fn a_plan_journal_verifies_and_keeps_its_bytes() -> TestResult {
-    for name in [
-        "journals/plan-ops-v1.jsonl",
-        "journals/plan-judge-verdict-v1.jsonl",
-    ] {
-        chain_keeps_bytes::<JournalRecord>(name, |record| record.digest)?;
-    }
-    Ok(())
+    chain_keeps_bytes::<JournalRecord>("journals/plan-ops-v1.jsonl", |record| record.digest)?;
+    chain_keeps_bytes::<JournalRecord>("journals/plan-judge-verdict-v1.jsonl", |record| {
+        record.digest
+    })
 }
-
 #[test]
 fn a_memory_journal_verifies_and_keeps_its_bytes() -> TestResult {
     chain_keeps_bytes::<MemoryRecord>("journals/memory-ops-v1.jsonl", |record| record.digest)
