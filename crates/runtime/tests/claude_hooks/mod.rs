@@ -309,13 +309,7 @@ impl Case {
         session.use_tools(tools, cwd, broker.map(Arc::new));
         session.prompt("run the tools")?;
         if let Some(started) = &gate.abort_after {
-            for _ in 0..200 {
-                if started.exists() {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-            assert!(started.exists(), "the tool did not start");
+            crate::support::wait_for_path(started, "the tool did not start").await?;
             session.abort();
         }
         session.wait_idle().await;

@@ -252,16 +252,19 @@ fn capped(value: &mut Value, field: &str) {
     }
 }
 
+fn flag(details: &Value, key: &str) -> bool {
+    details.get(key) == Some(&Value::Bool(true))
+}
+
 /// The doc gives Bash's and Write's result objects; for every other tool it is silent, so
 /// the response is Yi's result text.
 fn tool_response(tool: &str, args: &Map<String, Value>, result: &ToolResult, cwd: &Path) -> Value {
     let text = yi_types::message::join_text(&result.content, "\n");
-    let flag = |key: &str| result.details.get(key) == Some(&Value::Bool(true));
     match tool {
         "bash" => json!({
             "stdout": text,
             "stderr": "",
-            "interrupted": flag("cancelled") || flag("timedOut"),
+            "interrupted": flag(&result.details, "cancelled") || flag(&result.details, "timedOut"),
             "isImage": false,
         }),
         "write" => {
@@ -288,8 +291,7 @@ pub(super) fn after(call: Call, result: &ToolResult, failed: bool) -> (Event, Ca
         _ => text,
     };
     let interrupted = result.details.get("errorKind") == Some(&Value::from("aborted"))
-        || result.details.get("cancelled") == Some(&Value::Bool(true))
-            && result.details.get("timedOut") != Some(&Value::Bool(true));
+        || flag(&result.details, "cancelled") && !flag(&result.details, "timedOut");
     let call = Call {
         error: Some(error),
         interrupted,

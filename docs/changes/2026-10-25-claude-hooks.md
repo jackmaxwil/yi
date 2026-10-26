@@ -1,7 +1,7 @@
 ---
 issue: Closes #1657
 growth: +2004 the hand-rolled tokio child runner was deleted for yi_tools::run_captured, a separate broker verdict enum for the hook's own Verdict, a second loader in yi-cli for the runtime's Hooks::load, a hand-rolled glob for `if` for Yi's own PathGlob and command parser, a new spill writer for CellSpill, and a second patch preparer for the edit tool's own preview, which now reads the same per-file changes the hooks do; next-turn delivery of async output and the http, prompt, agent and mcp_tool handler types were weighed and not built (each is skipped with a notice); what remains is trust-gated loading with Claude's scope precedence, the two-way argument mapping, the `.claude` write guard and the `yi mcp` seam
-raise: crate runtime +1840, crate cli +103, crate types +15, crate mcp-cli +35, crate tools +23, tests +2346, comments +45
+raise: crate runtime +1838, crate cli +103, crate types +15, crate mcp-cli +35, crate tools +23, tests +2368, comments +45
 decision: Keep configured hooks and their failure payloads accurate at the tool seam | post-only edits, conditional duplicates and interrupted calls silently bypassed the contract | revert the focused dispatch and shaping repairs
 ---
 With `YI_CLAUDE_HOOKS=1`, a Yi agent obeys the `PreToolUse`, `PostToolUse` and `PostToolUseFailure` command hooks of the Claude Code user who launched it, the same ones a Claude subagent runs. They fire around every tool call in root sessions and children, around a cell's MCP call through `yi mcp`, and, for Bash hooks, before the shell checks a goal, plan or schedule runs, under Claude's tool names and argument shapes. An edit reaches an Edit hook once per file, with the changed text as `old_string` and `new_string`.

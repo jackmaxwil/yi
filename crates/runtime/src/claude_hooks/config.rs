@@ -150,10 +150,6 @@ impl Handler {
         self.plugin_root == other.plugin_root
             && self.command == other.command
             && self.args == other.args
-            && self.timeout == other.timeout
-            && self.block_on_failure == other.block_on_failure
-            && self.detached == other.detached
-            && self.rewake == other.rewake
     }
 }
 
