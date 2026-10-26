@@ -18,12 +18,11 @@ fn ok<T>(what: &str, got: Result<T, (i64, String)>) -> Result<T, String> {
 
 /// A task that never finishes on its own, so the queue sees it as still running and only
 /// an abort can end it.
-fn pending_cell(call_id: &str) -> (UserCell, Arc<AtomicBool>) {
+fn pending_cell() -> (UserCell, Arc<AtomicBool>) {
     let cancelled = Arc::new(AtomicBool::new(false));
     let task = tokio::spawn(std::future::pending::<()>());
     (
         UserCell {
-            call_id: call_id.to_owned(),
             cancelled: Arc::clone(&cancelled),
             task,
         },
@@ -58,7 +57,7 @@ async fn the_queue_refuses_a_ninth_cell_and_a_finished_one_makes_room() -> TestR
     for n in 1..=MAX_QUEUED_CELLS {
         let id = ok("admit", cells.admit("s1"))?;
         assert_eq!(id, format!("user-{n}"), "call ids count up");
-        let (cell, _) = pending_cell(&id);
+        let (cell, _) = pending_cell();
         cells.track("s1", cell);
     }
     let (code, message) = cells
@@ -79,7 +78,6 @@ async fn the_queue_refuses_a_ninth_cell_and_a_finished_one_makes_room() -> TestR
     cells.track(
         "s3",
         UserCell {
-            call_id: "user-done".to_owned(),
             cancelled: Arc::new(AtomicBool::new(false)),
             task: done,
         },
@@ -91,27 +89,10 @@ async fn the_queue_refuses_a_ninth_cell_and_a_finished_one_makes_room() -> TestR
 }
 
 #[tokio::test]
-async fn a_cancel_reaches_only_the_named_cell() -> TestResult {
-    let mut cells = UserCells::default();
-    let (first, first_flag) = pending_cell("user-1");
-    let (second, second_flag) = pending_cell("user-2");
-    cells.track("s1", first);
-    cells.track("s1", second);
-
-    assert!(cells.cancel("s1", "user-1"));
-    assert!(first_flag.load(Ordering::SeqCst));
-    assert!(!second_flag.load(Ordering::SeqCst), "its neighbour runs on");
-    assert!(!cells.cancel("s1", "user-9"), "an unknown cell is not ours");
-    assert!(!cells.cancel("s9", "user-1"), "nor is another session's");
-    cells.close("s1");
-    Ok(())
-}
-
-#[tokio::test]
 async fn closing_a_session_cancels_and_aborts_every_cell_it_owns() -> TestResult {
     let mut cells = UserCells::default();
-    let (mine, my_flag) = pending_cell("user-1");
-    let (theirs, their_flag) = pending_cell("user-2");
+    let (mine, my_flag) = pending_cell();
+    let (theirs, their_flag) = pending_cell();
     let my_task = mine.task.abort_handle();
     cells.track("s1", mine);
     cells.track("s2", theirs);
