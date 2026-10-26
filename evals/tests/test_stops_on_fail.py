@@ -71,6 +71,8 @@ class StopsOnFail(unittest.TestCase):
             self.assertTrue(B3C.verdict([run("kimi", 2), run("glm-flash", 1)]).startswith("KILL: "))
             refused = {"family": "glm-flash", "run": "refused-before-harbor", "status": "error", "jobs": []}
             self.assertEqual(B3C.verdict([run("kimi", 2), refused]), "UNRESOLVED: kimi 2/12 tasks, glm-flash 0/0 tasks")
+            gone = {"family": "glm-flash", "run": "job-dir-cleaned", "jobs": [str(Path(tmp) / "cleaned" / "job")]}
+            self.assertEqual(B3C.verdict([run("kimi", 2), gone]), "UNRESOLVED: kimi 2/12 tasks, glm-flash 0/0 tasks")
             self.assertTrue(B3C.verdict([run("kimi", 2)]).startswith("UNRESOLVED: kimi 2/12 tasks, glm-flash 0/0"))
             self.assertEqual(B3C.verdict([run("kimi", 2, B3C.SLICE[:11]), run("glm-flash", 2)]),
                              "UNRESOLVED: kimi 2/11 tasks, glm-flash 2/12 tasks")

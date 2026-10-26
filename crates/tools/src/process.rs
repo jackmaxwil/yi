@@ -290,19 +290,20 @@ pub fn run_captured(
 }
 
 pub(crate) fn run_captured_live(
-    mut command: Command,
+    command: Command,
     stdin: Option<Vec<u8>>,
     cancelled: &CancelFlag,
     cap: usize,
     live: Option<Arc<LiveOutput>>,
     spill_dir: Option<&std::path::Path>,
 ) -> Result<CommandCapture, String> {
+    let (child, program) = spawn_captured(command, stdin.is_some())?;
+    run_child_captured_live(child, &program, stdin, cancelled, cap, live, spill_dir)
+}
+
+pub(crate) fn spawn_captured(mut command: Command, stdin: bool) -> Result<(Child, String), String> {
     command
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // The group `kill_tree` signals: descendants inherit it, and killing the
@@ -314,10 +315,22 @@ pub(crate) fn run_captured_live(
     }
     let program = command.get_program().to_string_lossy().into_owned();
     let spawned = yi_types::trace::span("proc.spawn").arg("program", program.clone());
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|error| format!("failed to spawn: {error}"))?;
     drop(spawned);
+    Ok((child, program))
+}
+
+pub(crate) fn run_child_captured_live(
+    mut child: Child,
+    program: &str,
+    stdin: Option<Vec<u8>>,
+    cancelled: &CancelFlag,
+    cap: usize,
+    live: Option<Arc<LiveOutput>>,
+    spill_dir: Option<&std::path::Path>,
+) -> Result<CommandCapture, String> {
     let _running = yi_types::trace::span("proc.run").arg("program", program);
 
     let stdin_writer = match (stdin, child.stdin.take()) {

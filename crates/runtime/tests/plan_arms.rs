@@ -81,12 +81,7 @@ async fn fire_armed(session: &AgentSession, allowed: &Path) -> Result<Vec<String
     for job in &jobs {
         clock::fire(&todos, job, &Firing::at(yi_session::now_ms()))?;
     }
-    for _ in 0..200 {
-        if allowed.exists() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    crate::support::wait_for_path(allowed, "the control never ran").await?;
     Ok(jobs.into_iter().filter_map(|job| job.label).collect())
 }
 

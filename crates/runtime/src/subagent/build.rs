@@ -46,8 +46,8 @@ impl SubagentHost {
             .children
             .lock()
             .map_err(|_| "subagent state poisoned")?;
-        // Jurors sit in the verification reserve (plan section 7.6) and a service is never
-        // reaped while it serves: neither fills the worker cap nor is refused by it.
+        // A service is never reaped while it serves, so it neither fills the worker cap nor is
+        // refused by it.
         let building_readers = children
             .building
             .iter()
@@ -234,6 +234,7 @@ pub(super) fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> 
                     | "deny_read"
                     | "deny_url"
                     | "context"
+                    | "context_chars"
                     | "check"
                     | "deadline_s"
                     | "tokens"
