@@ -16,7 +16,7 @@ pub mod tokens;
 
 use std::path::PathBuf;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use yi_types::mcp::{McpServerSpec, McpSessionState};
 
 use args::{Command, Flags, SchemaMode, SessionOp};
@@ -51,6 +51,15 @@ Commands:
 
 Options: --json (MCP-spec JSON on stdout), --max-chars <n> (truncate non-JSON)
 Exit codes: 0 ok, 1 grep-no-match, 2 usage, 3 server failure";
+
+pub type Arguments = Result<Map<String, Value>, String>;
+pub type Outcome = Result<Value, String>;
+
+/// What runs around one `tools-call`; yi-cli implements it with Yi's Claude Code hooks.
+pub trait CallHooks {
+    fn before(&self, server: &str, tool: &str, arguments: Map<String, Value>) -> Arguments;
+    fn after(&self, call: (&str, &str, &Map<String, Value>), outcome: Outcome) -> Outcome;
+}
 
 fn fail(message: &str, code: i32) -> i32 {
     eprintln!("error: {message}");
@@ -118,6 +127,9 @@ fn do_connect(
     };
     let name = session.unwrap_or_else(|| sessions::default_session_name(&entry_name));
     let mut record = sessions::new_record(&name, spec.clone());
+    record
+        .extra
+        .insert("server".to_owned(), Value::String(entry_name.clone()));
     if let Some(profile) = profile {
         record
             .extra
@@ -235,6 +247,7 @@ fn do_session_op(
     session: &str,
     op: SessionOp,
     flags: &Flags,
+    hooks: Option<&dyn CallHooks>,
     version: &str,
 ) -> i32 {
     let record = match store.get(session) {
@@ -294,7 +307,24 @@ fn do_session_op(
             })
         }
         SessionOp::ToolsCall { name, args } => match callargs::resolve(&args) {
-            Ok(arguments) => run(store, Op::ToolsCall { name, arguments }),
+            Ok(arguments) => match hooks {
+                None => run(store, Op::ToolsCall { name, arguments }),
+                Some(hooks) => {
+                    let server = record.extra.get("server").and_then(Value::as_str);
+                    let server = server.unwrap_or(&record.name).to_owned();
+                    (hooks.before(&server, &name, arguments)).and_then(|sent| {
+                        let (tool, arguments) = (name.clone(), sent.clone());
+                        let outcome = run(
+                            store,
+                            Op::ToolsCall {
+                                name: tool,
+                                arguments,
+                            },
+                        );
+                        hooks.after((&server, &name, &sent), outcome)
+                    })
+                }
+            },
             Err(error) => return fail(&error, 2),
         },
         SessionOp::ResourcesList => run(store, Op::ResourcesList),
@@ -340,7 +370,12 @@ fn do_grep(
 
 /// Entry point for the `yi mcp` subcommand. The `mcp.enabled` gate lives in
 /// the caller (yi-cli) — this crate assumes it was consulted.
-pub fn run(raw_args: &[String], configured_token_store: Option<&str>, version: &str) -> i32 {
+pub fn run(
+    raw_args: &[String],
+    configured_token_store: Option<&str>,
+    hooks: Option<&dyn CallHooks>,
+    version: &str,
+) -> i32 {
     let _already_set = TOKEN_STORE.set(configured_token_store.map(str::to_owned));
     let parsed = match args::parse(raw_args) {
         Ok(parsed) => parsed,
@@ -476,7 +511,7 @@ pub fn run(raw_args: &[String], configured_token_store: Option<&str>, version: &
             do_grep(&store, &names, &pattern, max_results, &parsed.flags)
         }
         Command::Session { session, op } => {
-            do_session_op(&mut store, &session, op, &parsed.flags, version)
+            do_session_op(&mut store, &session, op, &parsed.flags, hooks, version)
         }
     }
 }
