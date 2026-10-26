@@ -15,3 +15,9 @@
 "yi-console" = ["yi-types", "yi-tui", "yi-browser"]
 "yi-browser" = ["yi-types"]
 "yi-cli" = ["yi-types", "yi-runtime", "yi-acp", "yi-tui", "yi-console", "yi-mcp-cli", "yi-browser"]
+
+# Test-only edges, each one a dev-dependency the crate's tests reach past its own row above.
+[dev]
+"yi-loop" = ["yi-ai", "yi-context"]
+"yi-ai" = ["yi-loop"]
+"yi-cli" = ["yi-tools"]
