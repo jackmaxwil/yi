@@ -57,12 +57,8 @@ pub(crate) fn pinned(handle: &SessionHandle) -> bool {
             .host
             .children_view()
             .iter()
-            .any(|child| child_pins(&child.update))
+            .any(|child| child.update.status == ChildStatus::Running)
         || kernel_pins(session.kernel_service().as_deref())
-}
-
-pub(crate) fn child_pins(update: &yi_types::subagent::ChildUpdate) -> bool {
-    update.status == ChildStatus::Running
 }
 
 pub(crate) fn kernel_pins(kernel: Option<&yi_runtime::KernelService>) -> bool {
@@ -152,38 +148,6 @@ mod tests {
         assert!(!owed("never-evicted", &weak));
         forget("two-due");
         Ok(())
-    }
-
-    fn child_update(status: yi_types::subagent::ChildStatus) -> yi_types::subagent::ChildUpdate {
-        use yi_types::subagent::{ChildActivity, ChildId, ChildUpdate};
-        ChildUpdate {
-            id: ChildId("c1".to_owned()),
-            name: "c1".to_owned(),
-            status,
-            activity: ChildActivity::Waiting,
-            tool_use_count: 0,
-            token_count: 0,
-            cost: None,
-            answer_preview: None,
-            error: None,
-            exit: None,
-            flag: None,
-        }
-    }
-
-    #[test]
-    fn only_a_running_child_pins_its_session() {
-        use yi_types::subagent::ChildStatus;
-        assert!(child_pins(&child_update(ChildStatus::Running)));
-        assert!(!child_pins(&child_update(ChildStatus::Completed)));
-        assert!(
-            !child_pins(&child_update(ChildStatus::Error)),
-            "a failed child holds nothing an eviction could lose"
-        );
-        assert!(
-            !child_pins(&child_update(ChildStatus::Other("paused".to_owned()))),
-            "a status a newer Yi wrote is not known to be running"
-        );
     }
 
     #[tokio::test]
