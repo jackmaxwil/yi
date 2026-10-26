@@ -19,8 +19,17 @@ const RELOAD_RETRY_MS: u64 = 30_000;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Away {
     Evicted,
+    WakePending,
     Loading,
     Failed { retry_at: u64 },
+}
+
+fn due(state: Away, now: u64) -> bool {
+    match state {
+        Away::Evicted => true,
+        Away::WakePending | Away::Loading => false,
+        Away::Failed { retry_at } => retry_at <= now,
+    }
 }
 
 /// Sessions this worker unloaded while idle, absent once one is loaded again.
@@ -42,13 +51,8 @@ fn owed(id: &str, wake: &WeakUnboundedSender<Incoming>) -> bool {
     let Some(state) = states.get_mut(id) else {
         return false;
     };
-    let due = match *state {
-        Away::Evicted => true,
-        Away::Loading => false,
-        Away::Failed { retry_at } => retry_at <= crate::daemon::now_ms(),
-    };
-    if due {
-        *state = Away::Loading;
+    if due(*state, crate::daemon::now_ms()) {
+        *state = Away::WakePending;
         if let Some(wake) = wake.upgrade() {
             let _worker_gone = wake.send(Incoming::Built(id.to_owned()));
         }
@@ -127,11 +131,7 @@ impl AcpState {
         let Some(state) = states.get_mut(id) else {
             return;
         };
-        let due = match *state {
-            Away::Evicted => true,
-            Away::Loading => false,
-            Away::Failed { retry_at } => retry_at <= crate::daemon::now_ms(),
-        };
+        let due = matches!(*state, Away::WakePending) || due(*state, crate::daemon::now_ms());
         if !due {
             return;
         }
