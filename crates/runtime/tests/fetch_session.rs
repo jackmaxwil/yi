@@ -3,10 +3,10 @@ use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 
 use serde_json::Number;
-use yi_runtime::fetch::{FETCH_ENTRY_TYPE, FetchError, Page, Resolver};
+use yi_runtime::fetch::{FETCH_ENTRY_TYPE, FetchError, FetchLog, FetchRecord, Page, Resolver};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Wall};
 use yi_types::model::{Model, ModelCost};
 use yi_types::url::Url;
@@ -123,6 +123,44 @@ fn a_repeated_read_of_an_unchanged_file_adds_no_session_row() -> TestResult {
     std::fs::write(&file, "def greet(name):\n    return f\"hi {name}\"\n")?;
     resolver.fetch(&url)?;
     assert_eq!(rows()?, 2, "the edited file's new hash is a row of its own");
+    Ok(())
+}
+
+#[test]
+fn concurrent_unchanged_reads_write_one_session_row() -> TestResult {
+    let store = memory_store();
+    let log = Arc::new(FetchLog::new());
+    log.attach_session(store.clone());
+    let url: Url = "local://a.py".parse()?;
+    let record = FetchRecord {
+        url: url.to_string(),
+        hash: "deadbeef".to_owned(),
+        served_by: "test".to_owned(),
+    };
+    let barrier = Arc::new(Barrier::new(16));
+    let readers: Vec<_> = (0..16)
+        .map(|_| {
+            let (log, barrier, url, record) = (
+                Arc::clone(&log),
+                Arc::clone(&barrier),
+                url.clone(),
+                record.clone(),
+            );
+            std::thread::spawn(move || {
+                barrier.wait();
+                log.record(&url, record);
+            })
+        })
+        .collect();
+    for reader in readers {
+        reader.join().map_err(|_| "a reader panicked")?;
+    }
+    let rows = yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery {
+        entry_type: Some("custom"),
+        custom_type: Some(FETCH_ENTRY_TYPE.to_owned()),
+        ..yi_session::EntryQuery::default()
+    })?;
+    assert_eq!(rows.len(), 1, "sixteen readers wrote duplicate fetch rows");
     Ok(())
 }
 
