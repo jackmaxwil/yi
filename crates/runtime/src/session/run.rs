@@ -538,6 +538,7 @@ fn emit_event(
         if let Some(telemetry) = shared.telemetry.lock().ok().and_then(|slot| slot.clone()) {
             telemetry.on_event(&event);
         }
+        crate::environment::GitSummary::note_event(&shared.tree_generation, &event);
         let _ = shared.events.send(event);
     }
 }

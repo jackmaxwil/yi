@@ -8,7 +8,6 @@ use crate::AgentSession;
 #[derive(Default)]
 pub struct History {
     scanned_seq: u64,
-    records: Vec<(String, String)>,
     seen: String,
     written: Vec<(String, String)>,
     touched: Option<u64>,
@@ -16,7 +15,10 @@ pub struct History {
 }
 
 impl History {
-    pub fn observe(&mut self, store: &yi_session::SharedSession) -> usize {
+    fn observe_records(
+        &mut self,
+        store: &yi_session::SharedSession,
+    ) -> (usize, Vec<(String, String)>) {
         let mut after = self.scanned_seq;
         let mut entries = Vec::new();
         yi_session::lock_session(store).find_on_branch("main", |entry| {
@@ -32,12 +34,13 @@ impl History {
         });
         let count = entries.len();
         entries.reverse();
+        let mut records = Vec::new();
         for entry in entries {
             self.scanned_seq = self.scanned_seq.max(entry.seq());
             let Entry::Message { message, .. } = entry else {
                 continue;
             };
-            self.records.extend(
+            records.extend(
                 records_of(&message)
                     .into_iter()
                     .map(|(id, text)| (id.to_owned(), text.to_owned())),
@@ -49,6 +52,7 @@ impl History {
                     ..
                 } => {
                     if attribution == Attribution::User {
+                        self.seen.clear();
                         self.written.clear();
                     }
                     self.seen.push_str(&text);
@@ -85,19 +89,43 @@ impl History {
                 _ => {}
             }
         }
-        count
+        (count, records)
     }
+
+    pub fn observe(&mut self, store: &yi_session::SharedSession) -> usize {
+        self.observe_records(store).0
+    }
+
     pub fn claims_cached(
         &mut self,
         list: &TodoList,
         store: &yi_session::SharedSession,
         touched: u64,
     ) -> Vec<Claim> {
-        if self.touched == Some(touched) {
+        if self.touched != Some(touched) {
+            self.scanned_seq = 0;
+            self.seen.clear();
+            self.written.clear();
+            self.claims.clear();
+        }
+        let previous = std::mem::take(&mut self.claims);
+        let (_, records) = self.observe_records(store);
+        if self.touched == Some(touched) && records.is_empty() {
+            self.claims = previous;
             return self.claims.clone();
         }
-        self.observe(store);
-        self.claims = claims_from_records(list, &self.records);
+        self.claims = claims_from_records(list, &records)
+            .into_iter()
+            .map(|mut claim| {
+                if claim.observed.is_none() {
+                    claim.observed = previous
+                        .iter()
+                        .find(|old| old.label == claim.label)
+                        .and_then(|old| old.observed.clone());
+                }
+                claim
+            })
+            .collect();
         self.touched = Some(touched);
         self.claims.clone()
     }
@@ -196,5 +224,39 @@ fn records_of(message: &AgentMessage) -> Vec<(&str, &str)> {
             })
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seen_text_covers_only_the_current_typed_prompt() -> Result<(), Box<dyn std::error::Error>> {
+        let store = std::sync::Arc::new(std::sync::Mutex::new(
+            yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
+                id: "bounded-claims".to_owned(),
+                created_at: 0,
+                parent_session_id: None,
+                name: None,
+            }),
+        ));
+        for (seq, text) in [(1, "old prompt"), (2, "current prompt")] {
+            let entry = Entry::Message {
+                id: format!("e{seq}"),
+                message: serde_json::from_value(serde_json::json!({
+                    "role": "user", "content": text, "attribution": "user", "timestamp": seq
+                }))?,
+                terminate: None,
+                parent_id: None,
+                seq,
+                timestamp: seq,
+            };
+            yi_session::lock_session(&store).append_entry(entry, "main")?;
+        }
+        let mut history = History::default();
+        assert_eq!(history.observe(&store), 2);
+        assert_eq!(history.seen(), "current prompt\n");
+        Ok(())
     }
 }

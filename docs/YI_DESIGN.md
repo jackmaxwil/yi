@@ -317,10 +317,11 @@ extension `Host` whose synchronous extensions turn session events into effects.
   never stored: `cwd`, `files` (20), `landing`, `todos`, `time` (per minute), `deadline`,
   `platform … · host <line>`, `model`, `context`, `kernel`, children. `host` comes from
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
-  The `cwd` line's git counts (`environment::GitSummary`) are read at a run's start and after a
-  `bash`, `edit`, `write` or `ipython` call or a `grep` that `applied` a rewrite ends, not per
-  request, and a failed read is retried; a change made outside Yi or by a same-tree child
-  mid-run shows later. The review pane's git reads live in `review_git`.
+  The `cwd` line's git counts (`environment::GitSummary`) are read when a shared generation
+  moves at a run's start and after a `bash`, `edit`, `write` or `ipython` call or a `grep` that
+  `applied` a rewrite ends, not per request or after a lagged broadcast replay, and a failed read
+  is retried; a change made outside Yi or by a same-tree child mid-run shows later. The review
+  pane's git reads live in `environment`.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
   `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers
@@ -841,9 +842,10 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
 - A done todo's evidence is held against the ledger for display only: it is observed when a span
   it quotes in backticks appears verbatim in a recorded call's arguments or output, and claimed
   otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows. `TodoStore`
-  keeps one incremental history for those claims and the stop re-drives: a list change reads only
-  entries past the last consumed sequence, a clean stop only entries appended in this prompt cycle,
-  and a typed prompt starts a fresh artifact-write set without dropping older evidence.
+  keeps one history for those claims and the stop re-drives: an unchanged list reads only entries
+  past the last consumed sequence, late evidence refreshes the claims, a list change rebuilds
+  older observations without retaining transcript copies, and a typed prompt starts a fresh
+  artifact-write set and source-text window.
 - Owner: [`schedule.rs`](../crates/runtime/src/plan/schedule.rs). Settled by: D224, D225, D226,
   D229, D275, D282.
 

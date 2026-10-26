@@ -801,7 +801,7 @@ impl AcpState {
                     return Err((INVALID_PARAMS, "at most 64 paths per call".to_owned()));
                 }
                 let root = std::path::Path::new(text("root"));
-                Ok(json!({"tracked": yi_runtime::review_git::tracked(root, &paths)}))
+                Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
             }
             "_yi/why" => {
                 let (session, _) = found?;
@@ -810,7 +810,7 @@ impl AcpState {
             "_yi/branch_diff" => {
                 let (session, _) = found?;
                 let root = crate::review::root(&session, &self.cwd);
-                let value = serde_json::to_value(yi_runtime::review_git::branch_diff(&root));
+                let value = serde_json::to_value(yi_runtime::environment::branch_diff(&root));
                 Ok(value.unwrap_or(Value::Null))
             }
             "_yi/slash" => {

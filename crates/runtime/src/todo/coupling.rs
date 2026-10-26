@@ -589,7 +589,7 @@ fn claim_redrive(
     }
     let mut history = todos.history.lock().ok();
     if let (Some(session), Some(history)) = (store(), history.as_deref_mut()) {
-        history.observe(&session);
+        let _ = history.claims_cached(&todos.list(), &session, todos.touched());
     }
     if !cycle.artifact
         && let Some(history) = history.as_deref()
