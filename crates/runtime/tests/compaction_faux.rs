@@ -134,11 +134,7 @@ async fn auto_compaction_fires_at_the_message_boundary_and_persists() -> Result<
         )),
         "retention floor must keep the first user message verbatim"
     );
-    let details = details.clone().ok_or("expected details")?;
-    let parsed: yi_types::compaction::CompactionDetails = serde_json::from_value(details)?;
-    let window = parsed.window.ok_or("expected window ids")?;
-    assert_eq!(window.number, 1);
-    assert!(window.previous.is_some());
+    assert!(details.is_some(), "a compaction entry carries its details");
 
     let in_memory = session.messages();
     assert!(matches!(
@@ -549,29 +545,6 @@ async fn the_prompt_after_an_idle_compaction_does_not_compact_again() -> Result<
     Ok(())
 }
 
-fn window_numbers(store: &yi_session::SharedSession) -> Vec<u64> {
-    let entries = yi_session::lock_session(store)
-        .find_entries_on_branch(
-            "main",
-            &yi_session::EntryQuery {
-                order: yi_session::EntryOrder::OldestFirst,
-                ..yi_session::EntryQuery::default()
-            },
-            &yi_session::BranchBounds::default(),
-        )
-        .unwrap_or_default();
-    entries
-        .iter()
-        .filter_map(|entry| match entry {
-            Entry::Compaction {
-                details: Some(details),
-                ..
-            } => details["window"]["number"].as_u64(),
-            _ => None,
-        })
-        .collect()
-}
-
 async fn compacted(session: &AgentSession) -> bool {
     session
         .compact_now()
@@ -623,63 +596,7 @@ async fn the_first_prompt_after_resuming_a_compacted_session_does_not_compact()
         .pending_response_count();
     assert_eq!(left, 1, "one request: the prompt's own, no second summary");
     assert!(compacted(&resumed).await);
-    assert_eq!(
-        window_numbers(&repo.open("compact-resume")?),
-        vec![1, 2, 3],
-        "the window chain continues"
-    );
     Ok(())
-}
-
-/// A rewind past a compaction re-attaches the same session: the abandoned compaction's window
-/// must not number the next one.
-#[tokio::test]
-async fn a_rewind_past_a_compaction_restarts_the_window_chain() -> Result<(), Box<dyn Error>> {
-    let root = Scratch::new("yi-compact-rewind")?;
-    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-rewind");
-    let store = repo.create(CreateOptions {
-        id: Some("compact-rewind".to_owned()),
-        ..CreateOptions::default()
-    })?;
-    let summary = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
-    let provider = Arc::new(ProviderStream::new(None));
-    provider.queue_faux(vec![
-        reply_with_usage(&"answer ".repeat(20), 1_400, 1_500),
-        summary("## Goal\nFIRST"),
-        reply_with_usage(&"again ".repeat(20), 1_400, 1_500),
-        summary("## Goal\nSECOND"),
-    ]);
-    let session = session_for_compaction(provider);
-    session.attach_store(Arc::clone(&store))?;
-    session.prompt("ask")?;
-    session.wait_idle().await;
-    let user_id = compaction_user_id(&store)?;
-    assert!(compacted(&session).await);
-    yi_runtime::rewind::rewind_to(&session, &user_id)?;
-    session.prompt("ask again")?;
-    session.wait_idle().await;
-    assert!(compacted(&session).await);
-    assert_eq!(
-        window_numbers(&store),
-        vec![1],
-        "a fresh chain on the new lane"
-    );
-    Ok(())
-}
-
-fn compaction_user_id(store: &yi_session::SharedSession) -> Result<String, Box<dyn Error>> {
-    yi_session::lock_session(store)
-        .find_entries(&yi_session::EntryQuery::default())?
-        .into_iter()
-        .find_map(|entry| match entry {
-            Entry::Message {
-                id,
-                message: AgentMessage::User { .. },
-                ..
-            } => Some(id),
-            _ => None,
-        })
-        .ok_or_else(|| "no user entry".into())
 }
 
 #[tokio::test]
@@ -807,7 +724,7 @@ async fn a_compaction_announces_itself_and_closes() -> Result<(), Box<dyn Error>
 #[tokio::test]
 async fn a_request_that_is_not_due_assembles_nothing() -> Result<(), Box<dyn Error>> {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let mut compactor = yi_runtime::Compactor::new("w".to_owned());
+    let mut compactor = yi_runtime::Compactor::default();
     compactor.settings = tight_settings();
     let asked = Arc::new(AtomicUsize::new(0));
     let (requests, stores) = (Arc::clone(&asked), Arc::clone(&asked));
@@ -1273,7 +1190,7 @@ async fn compaction_is_due_while_the_warm_summary_still_fits() -> Result<(), Box
 /// chars/4 this history sits under window − reserve (110 + 750 of 1,000); at bytes/3 it is over.
 #[tokio::test]
 async fn text_after_the_last_usage_counts_at_bytes_per_three() -> Result<(), Box<dyn Error>> {
-    let mut compactor = yi_runtime::Compactor::new("w".to_owned());
+    let mut compactor = yi_runtime::Compactor::default();
     compactor.settings = tight_settings();
     let messages = vec![
         AgentMessage::user_input(UserContent::Text("ask".to_owned()), 0),
@@ -1412,7 +1329,7 @@ async fn a_cold_attempt_on_anthropic_sends_no_tool_block_without_tools()
             None,
             None,
         )?);
-    let mut compactor = yi_runtime::Compactor::new("w".to_owned());
+    let mut compactor = yi_runtime::Compactor::default();
     compactor.settings = tight_settings();
     compactor.schedule();
     let [step, result] = tool_step("toolu_1");
@@ -1772,7 +1689,7 @@ async fn rescue(
     system: &str,
     opening: Option<&AgentMessage>,
 ) -> Result<Option<yi_runtime::compaction::Replacement>, yi_runtime::compaction::CompactError> {
-    let mut compactor = yi_runtime::Compactor::new("w".to_owned());
+    let mut compactor = yi_runtime::Compactor::default();
     compactor.settings = Settings {
         enabled: true,
         reserve_tokens: Tokens(1_000),
@@ -2156,7 +2073,7 @@ async fn an_in_loop_compaction_sends_the_effort_of_the_request_before_it()
     model.context_window = 100_000;
     let provider = Arc::clone(session.provider_arc());
     let compactor = Arc::new({
-        let mut compactor = yi_runtime::Compactor::new("w".to_owned());
+        let mut compactor = yi_runtime::Compactor::default();
         compactor.settings = Settings {
             keep_recent_tokens: Tokens(1_500),
             ..tight_settings()
