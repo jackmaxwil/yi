@@ -11,6 +11,11 @@ use yi_tools::{
 use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
+fn d_bindings(args: &[String]) -> Vec<(&str, &str)> {
+    args.iter()
+        .filter_map(|arg| arg.strip_prefix("-D")?.split_once('='))
+        .collect()
+}
 
 fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
     let root = Scratch::new(&format!("yi-sandbox-{tag}"))?;
@@ -61,10 +66,7 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
         "loopback is the one network, for every profile: {policy}"
     );
 
-    let params: Vec<(&str, &str)> = args
-        .iter()
-        .filter_map(|arg| arg.strip_prefix("-D")?.split_once('='))
-        .collect();
+    let params = d_bindings(&args);
     assert!(params.iter().any(|(key, _)| *key == "WRITABLE_ROOT_0"));
     assert!(params.iter().any(|(key, _)| *key == "DENY_READ_0"));
     assert!(
@@ -905,11 +907,10 @@ fn a_linked_worktree_sandbox_writes_its_gitdir_and_common_dir() -> TestResult {
     let sandbox = Sandbox::for_workspace(&lane, &home, None);
     let common = trunk.join(".git").canonicalize()?;
     let gitdir = PathBuf::from(git(&lane, &["rev-parse", "--absolute-git-dir"])?).canonicalize()?;
-    let roots: Vec<PathBuf> = sandbox
-        .wrap("true", &[])
-        .1
-        .iter()
-        .filter_map(|arg| arg.strip_prefix("-DWRITABLE_ROOT_")?.split_once('='))
+    let (_, args) = sandbox.wrap("true", &[]);
+    let roots: Vec<PathBuf> = d_bindings(&args)
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("WRITABLE_ROOT_"))
         .map(|(_, path)| PathBuf::from(path))
         .collect();
     for wanted in [&gitdir, &common] {

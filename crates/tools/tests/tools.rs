@@ -2189,6 +2189,7 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
         "{}",
         output_text(&piped)
     );
+    assert_eq!(piped.result.details["bridge"], json!("compound"));
     Ok(())
 }
 
