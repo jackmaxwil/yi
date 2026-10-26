@@ -18,18 +18,20 @@ pub(crate) fn poll_job(input: &Map<String, Value>, context: &ToolContext) -> Too
             report.id
         }
     };
-    let deadline = input
+    let requested_wait = input
         .get("wait")
         .and_then(Value::as_u64)
         .map(super::clamp_wait);
-    if input.get("kill").and_then(Value::as_bool) == Some(true) {
-        if let Err(error) = jobs.kill(id) {
-            return error_output(error.to_string());
-        }
-        jobs.wait_settled(Some(id), deadline.unwrap_or_else(|| Duration::from_secs(5)));
+    let kill = input.get("kill").and_then(Value::as_bool) == Some(true);
+    let deadline = match (requested_wait, kill) {
+        (None, true) => Some(Duration::from_secs(5)),
+        (deadline, _) => deadline,
+    };
+    let started = std::time::Instant::now();
+    if kill && let Err(error) = jobs.kill(id) {
+        return error_output(error.to_string());
     }
     jobs.set_reported(id, true);
-    let started = std::time::Instant::now();
     let _span = yi_types::trace::span("wait.job");
     loop {
         let Some(report) = jobs.report_for(id, context.job_owner) else {
@@ -66,12 +68,24 @@ fn running(jobs: &Jobs, id: JobId, report: &JobReport, context: &ToolContext) ->
     if let Ok(chunk) = jobs.output_since(id, 0)
         && !chunk.text.is_empty()
     {
-        let viewed = crate::reduce::view(
-            crate::reduce::Involuntary::Job(&report.command),
+        let total = usize::try_from(chunk.next).unwrap_or(usize::MAX);
+        if chunk.dropped > 0 {
+            let kept =
+                usize::try_from(chunk.next.saturating_sub(chunk.dropped)).unwrap_or(usize::MAX);
+            let next = crate::reduce::rerun("bash", &report.command, "view.log");
+            sections.push(crate::tool::cut_row(
+                kept,
+                total,
+                "bytes of live output kept",
+                "OUTPUT_CAP",
+                crate::process::OUTPUT_CAP,
+                &next,
+            ));
+        }
+        let viewed = crate::reduce::view_running(
+            &report.command,
             &chunk.text,
-            "",
-            -1,
-            None,
+            total,
             context.recovery_dir.as_deref(),
         );
         sections.push(viewed.text);
