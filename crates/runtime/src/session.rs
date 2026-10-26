@@ -86,7 +86,7 @@ struct Shared {
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     deadline: OnceLock<Deadline>,
-    turn_cap: OnceLock<u32>,
+    turn_cap: Mutex<Option<u32>>,
     shape: OnceLock<RequestShape>,
     turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
@@ -177,6 +177,7 @@ pub struct AgentSession {
     schedule: Mutex<Option<Arc<crate::schedule::HeartbeatService>>>,
     advisor: Mutex<Option<Arc<crate::advisor::AdvisorRuntime>>>,
     permission: Mutex<Option<Arc<crate::permission::PermissionBroker>>>,
+    claude_hooks: OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
     memory: Mutex<Option<Arc<crate::memory::Activity>>>,
@@ -226,7 +227,7 @@ impl AgentSession {
                 answer: Mutex::default(),
                 waits: Mutex::new(None),
                 deadline: OnceLock::new(),
-                turn_cap: OnceLock::new(),
+                turn_cap: Mutex::new(None),
                 shape: OnceLock::new(),
                 turn_time: Mutex::new((None, None)),
                 cancelled: false.into(),
@@ -243,6 +244,7 @@ impl AgentSession {
             schedule: Mutex::new(None),
             advisor: Mutex::new(None),
             permission: Mutex::new(None),
+            claude_hooks: OnceLock::new(),
             goal: Mutex::new(None),
             plan: Mutex::new(None),
             memory: Mutex::new(None),
@@ -314,7 +316,19 @@ impl AgentSession {
     }
 
     pub fn set_turn_cap(&self, turns: u32) {
-        self.shared.turn_cap.get_or_init(|| turns);
+        self.restore_turn_cap(Some(turns));
+    }
+
+    pub(crate) fn turn_cap(&self) -> Option<u32> {
+        self.shared.turn_cap.lock().ok().and_then(|cap| *cap)
+    }
+
+    pub(crate) fn restore_turn_cap(&self, turns: Option<u32>) {
+        *self
+            .shared
+            .turn_cap
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = turns;
     }
 
     pub fn set_request_shape(&self, shape: RequestShape) {
@@ -327,12 +341,6 @@ impl AgentSession {
 
     pub(crate) fn deadline(&self) -> Option<Deadline> {
         self.shared.deadline.get().copied()
-    }
-
-    pub fn set_environment(&self, hook: Arc<EnvironmentFn>) {
-        if let Ok(mut slot) = self.shared.environment.lock() {
-            *slot = Some(hook);
-        }
     }
 
     /// A session whose one prompt is never continued (the auto-reviewer) says so, and its
@@ -597,7 +605,7 @@ impl AgentSession {
     }
 
     /// Incident: a wake handle minted before the tools landed woke a turn that could call nothing.
-    pub fn set_tools(&mut self, tools: Vec<Arc<dyn yi_loop::AgentTool>>) {
+    pub fn set_tools(&self, tools: Vec<Arc<dyn yi_loop::AgentTool>>) {
         if let Ok(mut slot) = self.shared.tools.lock() {
             *slot = tools;
         }
@@ -646,6 +654,7 @@ impl AgentSession {
         }
         let spills = self.spills.lock().ok().and_then(|dir| dir.clone());
         let selector = self.selector.lock().ok().and_then(|slot| slot.clone());
+        let hooks = crate::claude_hooks::Attached::of(self.claude_hooks(&cwd));
         let adapters = tools
             .into_iter()
             .map(|tool| {
@@ -668,7 +677,8 @@ impl AgentSession {
                     .with_selector(selector.clone())
                     .with_transcript(self.store_handle())
                     .with_job_owner(self.shared.job_owner)
-                    .with_extensions(Some(self.ext_hook())),
+                    .with_extensions(Some(self.ext_hook()))
+                    .with_claude_hooks(hooks.clone()),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
             .collect();
@@ -935,7 +945,7 @@ impl AgentSession {
         }
     }
 
-    /// Invariant: pre-first-turn only (§11) — mid-run it races the appending turn.
+    /// Invariant: idle only (§11) — mid-run it races the appending turn.
     pub fn seed_messages(&self, seed: Vec<AgentMessage>) {
         if let Ok(mut messages) = self.shared.messages.lock() {
             *messages = seed;

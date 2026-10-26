@@ -28,6 +28,7 @@ struct Supervisor {
     eager_until: Mutex<Instant>,
     stop: AtomicBool,
     dead: Mutex<Option<String>>,
+    hooks: Mutex<Option<Arc<crate::claude_hooks::Hooks>>>,
 }
 
 #[derive(Default)]
@@ -134,6 +135,17 @@ pub fn ensure(
     cadence_ms: u64,
     eager: bool,
 ) -> Result<(), String> {
+    ensure_with_hooks(uri, channel, cwd, cadence_ms, eager, None)
+}
+
+pub(crate) fn ensure_with_hooks(
+    uri: &str,
+    channel: &Channel,
+    cwd: &Path,
+    cadence_ms: u64,
+    eager: bool,
+    hooks: Option<&Arc<crate::claude_hooks::Hooks>>,
+) -> Result<(), String> {
     let lease = Duration::from_millis(cadence_ms.saturating_mul(3)).max(Duration::from_secs(30));
     let now = Instant::now();
     let deadline = now.checked_add(lease).unwrap_or(now);
@@ -146,6 +158,7 @@ pub fn ensure(
         return Ok(());
     }
     if let Some(running) = registry.running.get(channel.path()) {
+        *held(&running.hooks) = hooks.cloned();
         if let Some(why) = held(&running.dead).clone() {
             return Err(why);
         }
@@ -160,6 +173,7 @@ pub fn ensure(
         eager_until: Mutex::new(eager_until),
         stop: AtomicBool::new(false),
         dead: Mutex::new(None),
+        hooks: Mutex::new(hooks.cloned()),
     });
     registry
         .running
@@ -223,7 +237,10 @@ fn supervise(uri: &str, channel: &Channel, cwd: &Path, supervisor: &Arc<Supervis
                     uri,
                     channel,
                     supervisor,
-                    || exec(&command, cwd),
+                    || {
+                        let hooks = held(&supervisor.hooks).clone();
+                        exec(&command, cwd, hooks.as_deref())
+                    },
                     |data| data.get("ok").cloned().unwrap_or_default(),
                 )
             }
@@ -313,7 +330,10 @@ fn poll(
 
 /// Emits on a change of exit status, not per output line: a check is a level, red or green,
 /// and a line stream would re-send the same log on every run of an unchanged check.
-fn exec(command: &str, cwd: &Path) -> Value {
+fn exec(command: &str, cwd: &Path, hooks: Option<&crate::claude_hooks::Hooks>) -> Value {
+    if let Err(refused) = crate::claude_hooks::guard_shell(hooks, command, cwd) {
+        return json!({"ok": false, "output": refused});
+    }
     let mut shell = yi_tools::keyless_command("sh");
     shell.arg("-c").arg(command).current_dir(cwd);
     let deadline = Instant::now()

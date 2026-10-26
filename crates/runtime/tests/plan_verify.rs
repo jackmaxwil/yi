@@ -36,8 +36,8 @@
 //! `plan_ops.rs`, because what it pins is the engine's refusal path rather than the
 //! checker's process shape.
 //!
-//! Not here. The judge tier is F3a and lives in `tests/judge.rs`: every `Snapshot` below
-//! seats no jury (`jury: None`), which is the path where a `judge` item abstains.
+//! Not here. A `judge` item is refused at `start` and abstains `no judge` if an old journal
+//! started one; both are driven from `plan_ops.rs`, through the engine.
 
 use crate::RED_PYTEST;
 use crate::scratch;
@@ -180,7 +180,6 @@ fn the_checker_sees_no_provider_key() -> TestResult {
             root: &temp,
             output: None,
             artifacts: &artifacts,
-            jury: None,
         },
     );
     assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.lines());
@@ -215,6 +214,49 @@ fn the_checker_sees_no_provider_key() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_plan_check_passes_the_frozen_bash_hooks_before_it_runs() -> TestResult {
+    let temp = Scratch::new("yi-verify-claude-hook")?;
+    let home = temp.join("home");
+    let settings = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().ok_or("settings parent")?)?;
+    std::fs::write(
+        &settings,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo 'plan hook denied' >&2; exit 2"}]}]}}"#,
+    )?;
+    // SAFETY: nextest isolates each test in its own process.
+    unsafe {
+        std::env::set_var("HOME", &home);
+        std::env::set_var("YI_CLAUDE_HOOKS", "1");
+    }
+    let hooks = yi_runtime::claude_hooks::Hooks::load(&temp);
+    std::fs::write(&settings, "{}")?;
+    let artifacts = Artifacts::under(&temp);
+    let marker = temp.join("checked");
+    let check = put(
+        &artifacts,
+        &manifest(&format!("touch {}", marker.display()), 5_000, &[]),
+    )?;
+    let contract = cmd_contract(check, 5_000)?;
+    let verdict = Verifier::new(5_000).with_claude_hooks(hooks).run(
+        &token(&contract)?,
+        &contract,
+        &Snapshot {
+            id: "tree:test",
+            root: &temp,
+            output: None,
+            artifacts: &artifacts,
+        },
+    );
+    assert!(
+        verdict.lines().contains("plan hook denied"),
+        "{}",
+        verdict.lines()
+    );
+    assert!(!marker.exists(), "a refused plan check ran");
+    Ok(())
+}
+
 /// Runs `command` as a failing `cmd` item and returns the refused item's detail.
 fn failing_detail(
     name: &str,
@@ -228,7 +270,6 @@ fn failing_detail(
         root: &temp,
         output: None,
         artifacts: &artifacts,
-        jury: None,
     };
     let verdict = Verifier::new(5_000).run(&token(&contract)?, &contract, &snapshot);
     let ItemVerdict::Fail { detail } = &verdict.items[0].verdict else {
@@ -299,7 +340,6 @@ fn a_checkers_grandchild_is_killed_at_the_deadline() -> TestResult {
             root: &temp,
             output: None,
             artifacts: &artifacts,
-            jury: None,
         },
     );
     assert!(
@@ -627,7 +667,6 @@ fn example_failures_are_distinct_by_kind() -> TestResult {
                 root: &temp,
                 output: None,
                 artifacts: &artifacts,
-                jury: None,
             },
         );
         if why.is_empty() {
@@ -665,7 +704,6 @@ fn a_checker_that_edits_a_protected_path_fails() -> TestResult {
         root: &temp,
         output: None,
         artifacts: &artifacts,
-        jury: None,
     };
     let contract = cmd_contract(put(&artifacts, &editing)?, 5_000)?;
     let verdict = Verifier::new(5_000).run(&token(&contract)?, &contract, &snapshot);
@@ -704,7 +742,6 @@ fn the_session_deadline_bounds_the_verification() -> TestResult {
                 root: &temp,
                 output: None,
                 artifacts: &artifacts,
-                jury: None,
             },
         );
     assert_eq!(verdict.outcome, Outcome::Abstain, "{}", verdict.lines());
@@ -750,7 +787,6 @@ fn an_examples_runner_that_cannot_spawn_abstains() -> TestResult {
             root: &temp,
             output: None,
             artifacts: &artifacts,
-            jury: None,
         },
     );
     assert_eq!(verdict.outcome, Outcome::Abstain, "{}", verdict.lines());

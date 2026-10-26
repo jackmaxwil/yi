@@ -52,8 +52,8 @@ pub const SPILLS: &str = "spills";
 /// The dir beside it every session shared before spills were per session (D316).
 pub const FLAT_SPILLS: &str = "tool-output";
 pub use tool::{
-    CancelFlag, DETAIL_CAP, Fuse, Tool, ToolContext, ToolKind, ToolOutput, cut_row, error_output,
-    error_output_kind, glob_head, text_output,
+    CancelFlag, DETAIL_CAP, FileChange, Fuse, Tool, ToolContext, ToolKind, ToolOutput, cut_row,
+    error_output, error_output_kind, glob_head, text_output,
 };
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {

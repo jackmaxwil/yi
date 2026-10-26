@@ -796,7 +796,15 @@ impl SubagentHost {
         let deadline = self.deadline();
         let budget = Duration::from_millis(crate::goal::DEFAULT_CHECK_TIMEOUT_MS);
         let red = check
-            .map(|check| red_check(lane.path(), check, deadline, budget))
+            .map(|check| {
+                red_check(
+                    lane.path(),
+                    check,
+                    deadline,
+                    budget,
+                    self.claude_hooks().as_deref(),
+                )
+            })
             .transpose()?
             .flatten();
         let quiescence = quiescence_of_jobs(lane.path());
@@ -965,10 +973,11 @@ fn red_check(
     check: &str,
     deadline: Option<Instant>,
     budget: Duration,
+    hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> Result<Option<(yi_tools::CommandCapture, String)>, String> {
     let until = deadline.or_else(|| Instant::now().checked_add(budget));
     let until = until.unwrap_or_else(Instant::now);
-    let capture = crate::goal::run_check_in(path, check, &[], None, until, None)?;
+    let capture = crate::goal::run_check_in(path, check, &[], None, until, None, hooks)?;
     if capture.exit_code == Some(0) && !capture.cancelled {
         return Ok(None);
     }
@@ -1013,7 +1022,7 @@ mod tests {
     fn a_check_with_no_session_deadline_is_cut_at_its_budget()
     -> Result<(), Box<dyn std::error::Error>> {
         let budget = Duration::from_millis(300);
-        let red = super::red_check(&std::env::temp_dir(), "sleep 30", None, budget)?;
+        let red = super::red_check(&std::env::temp_dir(), "sleep 30", None, budget, None)?;
         let (capture, cap) = red.ok_or("a cut check passed")?;
         let parent = std::env::temp_dir();
         let verdict = super::verdict(&capture, &cap, &parent, "sleep 30", "abc");
