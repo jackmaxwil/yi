@@ -122,8 +122,13 @@ impl<'a> Journal<'a> {
         session: Option<&str>,
         extra: Map<String, Value>,
     ) -> Result<MemoryRecord, StoreError> {
-        let replay = self.replay()?;
-        let prev = replay.records.last().map(|record| record.digest);
+        // Invariant: only rebuild names a broken chain, so an append reads just the last record;
+        // a tail that is not one whole record takes the full replay, which sets a torn tail aside.
+        let last = self.log().tail().map_err(journal)?;
+        let prev = match last.and_then(|line| serde_json::from_slice::<MemoryRecord>(&line).ok()) {
+            Some(last) => Some(last.digest),
+            None => self.replay()?.records.last().map(|record| record.digest),
+        };
         let unsealed = MemoryRecord {
             op: op.to_owned(),
             name: name.to_owned(),

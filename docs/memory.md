@@ -21,7 +21,9 @@ Invariants:
 - Each store keeps `ops.jsonl`, a journal of `save`, `edit`, `adopt`, `forget` and `read` records
   appended under that lock in the same critical section as the file change, each carrying
   `sha256(previous digest ‖ canonical record)` as the plan journal does. It names versions by
-  hash and never holds a body; append order is the one order across lanes.
+  hash and never holds a body; append order is the one order across lanes. An append reads only
+  the last record for the previous digest, and the whole journal when the file does not end in one
+  whole record; `yi memory rebuild` replays the whole chain and names a break.
 - Every version's text is `objects/<sha256 hex>`. `memory.forget` deletes all of a note's objects,
   so no copy stays in the store. The save call's own arguments stay in the transcript of the
   session that made it, where `history.grep` still finds them.
