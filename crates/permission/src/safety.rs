@@ -143,7 +143,7 @@ const RIPWIRE_READ: [&str; 136] = [
 
 /// Incident: ripwire clones a git-URL root, and its setup verbs (`ripwire wrap`) are positional,
 /// so a read has at most one bare word and it must look like a local directory.
-pub fn ripwire_reads<'w>(args: impl Iterator<Item = &'w str>) -> bool {
+fn ripwire_reads<'w>(args: impl Iterator<Item = &'w str>) -> bool {
     let mut roots = 0_u8;
     args.into_iter().all(|word| match word.strip_prefix("--") {
         Some(flag) => RIPWIRE_READ.contains(&flag.split('=').next().unwrap_or(flag)),
@@ -821,14 +821,6 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
 
 /// Programs a contained run cannot serve, having no network beyond loopback.
 const HOST_PROGRAMS: [&str; 7] = ["curl", "http", "rsync", "scp", "sftp", "ssh", "wget"];
-
-/// Whether an approval of `command` must run it outside the sandbox: a network program, a git
-/// network verb, or a package install, none of which works without the network.
-pub fn needs_host(command: &str) -> bool {
-    command_segments(command)
-        .iter()
-        .any(|argv| host_need(argv).is_some())
-}
 
 /// The command's segments, split leniently where the strict parse gives up.
 pub fn command_segments(command: &str) -> Vec<Vec<String>> {

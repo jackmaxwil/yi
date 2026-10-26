@@ -393,14 +393,8 @@ impl AcpState {
                 eprintln!("user cell {id}: the session closed before its output");
             }
         });
-        self.user_cells.track(
-            &session_id,
-            crate::cells::UserCell {
-                call_id: call_id.clone(),
-                cancelled,
-                task,
-            },
-        );
+        self.user_cells
+            .track(&session_id, crate::cells::UserCell { cancelled, task });
         Ok(json!({ "callId": call_id }))
     }
 
@@ -790,14 +784,6 @@ impl AcpState {
                     .ok_or((INTERNAL_ERROR, "no kernel is attached".to_owned()))?;
                 let events = session.events_sender();
                 self.spawn_user_cell(session_id, service, events, code)
-            }
-            "_yi/kernel_cancel" => {
-                let (_, session_id) = found?;
-                let call = text("callId");
-                if self.user_cells.cancel(&session_id, call) {
-                    return Ok(json!({}));
-                }
-                Err((INVALID_PARAMS, format!("no running user cell {call}")))
             }
             "_yi/tracked" => {
                 let paths: Vec<String> = params

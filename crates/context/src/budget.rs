@@ -9,7 +9,6 @@ pub struct Bytes(pub usize);
 pub struct SourceBudgets {
     pub project_instructions: Bytes,
     pub skills_meta: Bytes,
-    pub ledger: Bytes,
     pub memory: Bytes,
 }
 
@@ -18,7 +17,6 @@ impl Default for SourceBudgets {
         Self {
             project_instructions: Bytes(49_152),
             skills_meta: Bytes(16_384),
-            ledger: Bytes(16_384),
             memory: Bytes(32_768),
         }
     }

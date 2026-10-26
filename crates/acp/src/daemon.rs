@@ -9,7 +9,7 @@ use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
 use yi_types::acp::{DaemonLedger, DaemonLedgerEntry};
 
-use crate::{PROTOCOL_VERSION, negotiate};
+use crate::negotiate;
 
 pub struct DaemonOptions {
     pub socket: PathBuf,
@@ -947,10 +947,6 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
         let _ = std::fs::remove_file(&socket);
         0
     })
-}
-
-pub fn daemon_protocol_version() -> u16 {
-    PROTOCOL_VERSION
 }
 
 #[cfg(test)]

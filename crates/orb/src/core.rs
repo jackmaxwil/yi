@@ -19,7 +19,7 @@ pub struct OrbFrame {
 }
 
 /// Stable directions on a unit sphere (Fibonacci lattice).
-pub fn fib_dir(i: f64, n: f64) -> (f64, f64, f64) {
+pub(crate) fn fib_dir(i: f64, n: f64) -> (f64, f64, f64) {
     let golden = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
     let y = 1.0 - (2.0 * (i + 0.5)) / n;
     let rad = (1.0 - y * y).sqrt();
@@ -28,7 +28,7 @@ pub fn fib_dir(i: f64, n: f64) -> (f64, f64, f64) {
 }
 
 /// Drop invisible dots, clamp radii to the floor, z-sort far→near.
-pub fn finalize_frame(dots: Vec<Dot>, r_min: f64) -> OrbFrame {
+pub(crate) fn finalize_frame(dots: Vec<Dot>, r_min: f64) -> OrbFrame {
     let mut visible: Vec<Dot> = dots
         .into_iter()
         .filter(|d| d.a >= 0.02)
@@ -43,6 +43,6 @@ pub fn finalize_frame(dots: Vec<Dot>, r_min: f64) -> OrbFrame {
 
 /// Dot radii were tuned for a 300pt frame; sub-linear scaling keeps small
 /// spinners legible.
-pub fn radius_scale(size: f64, pow: f64) -> f64 {
+pub(crate) fn radius_scale(size: f64, pow: f64) -> f64 {
     (size / 300.0).powf(pow)
 }
