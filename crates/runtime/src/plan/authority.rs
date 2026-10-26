@@ -5,7 +5,6 @@
 //! daemon fans a worker's ask to every attached client, so only a tty asker's process confirms.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 use yi_session::{SharedSession, lock_session};
@@ -20,8 +19,6 @@ use super::render::render_outcome;
 use super::table::{check_actor, op_name};
 use super::tool::{ArgError, request};
 use crate::permission::{AskOutcome, PermissionAsk, PermissionBroker};
-
-pub const CONFIRM_TTL: Duration = Duration::from_secs(300);
 
 /// The process that owns the human's prompt: its broker asks, its transcript keeps the answer.
 pub struct Confirmer {
@@ -78,7 +75,7 @@ impl Applied {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SubmitError {
-    #[error("{0}")]
+    #[error("{}", super::tool::ops_spelling(&.0.to_string()))]
     Arg(#[from] ArgError),
     #[error(
         "{op} needs the user's confirmation, and nothing in this session can ask for it: say in your answer what you ran and its exit line, and leave the todo open"
@@ -86,15 +83,9 @@ pub enum SubmitError {
     NoConfirmer { op: &'static str },
     #[error("the user declined {op} on plan {plan}")]
     Declined { op: &'static str, plan: PlanId },
-    #[error("the answer to {op} on plan {plan} came after {ttl_ms} ms; ask again")]
-    Expired {
-        op: &'static str,
-        plan: PlanId,
-        ttl_ms: u128,
-    },
     #[error("the confirmation could not be cited: {0}")]
     Citation(String),
-    #[error(transparent)]
+    #[error("{}", super::tool::ops_spelling(&.0.to_string()))]
     Op(#[from] PlanOpError),
 }
 
@@ -139,7 +130,7 @@ pub fn submit(
     request.expected_revision = expected_revision;
     let Err(refused) = check_actor(actor, &request.op) else {
         let op = request.op.clone();
-        let outcome = engine.apply(request)?;
+        let outcome = super::apply::apply_set(engine, request, &[])?;
         return Ok(Applied { op, outcome });
     };
     if *actor != Actor::Owner {
@@ -191,7 +182,6 @@ fn confirmed(
         reason: "the plan owner asks to close a todo its check did not verify",
         cwd: &cwd,
     });
-    let asked_at = Instant::now();
     let (answer, classified) = confirmer.broker.confirm_judged(
         &PermissionAsk {
             title: &format!("yi plan {op} asks for your confirmation"),
@@ -211,13 +201,6 @@ fn confirmed(
             plan: current.id,
         });
     }
-    if asked_at.elapsed() > CONFIRM_TTL {
-        return Err(SubmitError::Expired {
-            op,
-            plan: current.id,
-            ttl_ms: CONFIRM_TTL.as_millis(),
-        });
-    }
     request.actor = if classified {
         Actor::Classifier
     } else {
@@ -226,8 +209,8 @@ fn confirmed(
             &format!("confirmed: {description}"),
         )?)
     };
-    // Invariant: the answer binds the root the human saw; unnamed resolution runs before the
-    // ask, never again after it.
+    // Invariant: the answer binds the root and revision the human saw, however late it comes;
+    // unnamed resolution runs before the ask, never again after it.
     request.plan = Some(current.id.clone());
     request.expected_revision = Some(revision);
     if request.request_id.is_none() {

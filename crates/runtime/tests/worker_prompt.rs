@@ -53,6 +53,7 @@ async fn a_worker_is_sent_its_role_and_the_project_rules_and_nothing_of_the_root
     for root_only in [
         yi_runtime::identity_fragment(),
         yi_runtime::doctrine_fragment(),
+        yi_runtime::delegation_fragment(),
     ] {
         for line in root_only.lines().filter(|line| line.len() > 40) {
             assert!(!text.contains(line), "{line} reached the worker: {text}");
@@ -75,7 +76,7 @@ async fn a_worker_is_sent_its_role_and_the_project_rules_and_nothing_of_the_root
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_worker_in_its_own_lane_is_told_the_committed_rules_its_mode_and_the_rust_pack()
+async fn a_worker_in_its_own_lane_is_told_the_committed_rules_and_the_rust_pack_but_not_the_mode()
 -> TestResult {
     let scratch = Scratch::new("yi-worker-lane")?;
     let (port, from) = stand_in(String::new())?;
@@ -113,6 +114,11 @@ async fn a_worker_in_its_own_lane_is_told_the_committed_rules_its_mode_and_the_r
         "Rename the probe crate to kite.".to_owned(),
         kwargs.as_object().cloned().unwrap_or_default(),
     )?;
+    let kwargs = json!({"role": "root"});
+    host.spawn(
+        "Tally the lines of notes.txt.".to_owned(),
+        kwargs.as_object().cloned().unwrap_or_default(),
+    )?;
     let mut bodies = Vec::new();
     let body = body_asking(&mut bodies, &from, "crate to kite").await?;
     let system = body["system"].to_string();
@@ -124,7 +130,14 @@ async fn a_worker_in_its_own_lane_is_told_the_committed_rules_its_mode_and_the_r
         system.contains("Indent with tabs") && !system.contains("Indent with spaces"),
         "the lane's committed rules, not the parent's edit: {system}"
     );
-    assert!(system.contains("Permission mode: ask."), "{system}");
+    assert!(system.contains("You make one change."), "{system}");
     assert!(system.contains("# Rust discipline"), "{system}");
+    assert!(!system.contains("Permission mode:"), "{system}");
+    let child = body_asking(&mut bodies, &from, "Tally the lines").await?;
+    let child = child["system"].to_string();
+    assert!(
+        child.contains("Permission mode: ask."),
+        "a root child under the same broker still hears the mode: {child}"
+    );
     Ok(())
 }

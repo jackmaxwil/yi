@@ -184,7 +184,6 @@ fn an_edit_cell_renders_its_diff_in_normal_mode() -> TestResult {
     let cell = ToolCell {
         name: "edit".to_owned(),
         call_id: String::new(),
-        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of("edit", "src/lib.rs"),
         digest: Some("updated; first change at line 2".to_owned()),

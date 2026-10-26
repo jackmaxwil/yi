@@ -24,6 +24,6 @@ pub use rules::{
     write_grant_dir,
 };
 pub use safety::{
-    Class, Parsed, Verdict, classify, command_segments, host_need, needs_host, parse,
-    refused_scopes, ripwire_reads, verdict, write_targets,
+    Class, Parsed, Verdict, classify, command_segments, host_need, parse, refused_scopes, verdict,
+    write_targets,
 };

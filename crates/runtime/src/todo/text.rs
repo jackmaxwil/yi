@@ -129,6 +129,14 @@ pub fn merge(old: &TodoList, mut new: TodoList) -> TodoList {
 
 /// The prior row is the one the row's id names among those with its label, else the first.
 fn carry(old: &TodoList, row: &mut Todo) {
+    // A rendered row sent back carries its label's `…` cut mark; read it as that label again.
+    let shown =
+        (row.note.as_ref().filter(|_| row.is_cut())).map_or(row.label.as_str(), |n| n.as_str());
+    let cut = (shown.strip_suffix('…').map(str::trim_end))
+        .and_then(|head| old.items().find(|prior| prior.label.as_str() == head));
+    if let Some(prior) = cut.filter(|prior| prior.label != row.label) {
+        (row.label, row.note) = (prior.label.clone(), None);
+    }
     let named = |prior: &&Todo| prior.label == row.label && row.id.is_some() && prior.id == row.id;
     let Some(prior) = old
         .items()

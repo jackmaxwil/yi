@@ -2,7 +2,7 @@
 """Named kill tests against a built yi, under one spend ledger.
 
     python3 evals/kill.py run <test> --binary <yi> [--family F] [--until ISO] [--dry]
-    python3 evals/kill.py budget
+    python3 evals/kill.py budget [--close KEY]
     python3 evals/kill.py report
 
 A test is its own module, evals/kill/<test>.py: THRESHOLD (the pre-registered text), FAMILIES
@@ -21,7 +21,7 @@ ledger is ~/Development/yi-runs/next-shape/ledger.jsonl, flock'd and shared by e
 Stdlib only.
 """
 import argparse, contextlib, datetime, fcntl, hashlib, importlib.util, json, os, shutil
-import subprocess, sys, threading, time, urllib.parse, urllib.request, uuid
+import subprocess, sys, threading, time, uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -166,30 +166,14 @@ def write_0600(path, value):
     os.replace(tmp, path)
 
 
-def access_token(provider, need_sec):
-    """The central credential's access token, refreshed under the lock yi's own refresh takes
-    when it would expire inside need_sec. Copies of a rotating refresh token in parallel HOMEs
-    would invalidate each other, so a run HOME gets the access token alone."""
-    yi = kimi_home() / ".yi"
-    path = yi / "providers" / "tokens" / f"{provider}.json"
-    with flocked(yi / "providers" / "locks" / f"{provider}.lock"):
-        cred = json.loads(path.read_text())
-        if cred.get("expires_ms") and cred["expires_ms"] / 1000 - clock() < need_sec:
-            profile = json.loads((yi / "oauth" / f"{provider}.json").read_text())
-            form = {"grant_type": "refresh_token", "refresh_token": cred["refresh"], "client_id": profile["client_id"]}
-            if profile.get("client_secret"):
-                form["client_secret"] = profile["client_secret"]
-            request = urllib.request.Request(profile["token"], data=urllib.parse.urlencode(form).encode(),
-                                             headers={"Accept": "application/json"})
-            with urllib.request.urlopen(request, timeout=60) as response:
-                got = json.load(response)
-            cred = {**cred, "access": got["access_token"], "refresh": got.get("refresh_token") or cred["refresh"],
-                    "expires_ms": int((clock() + float(got["expires_in"])) * 1000)}
-            write_0600(path, cred)
-    left = cred["expires_ms"] / 1000 - clock() if cred.get("expires_ms") else float("inf")
-    if left < need_sec:
-        raise RuntimeError(f"the {provider} access token lives {left:.0f} s and a run needs {need_sec} s")
-    return {"version": 1, "kind": "oauth", "access": cred["access"], "expires_ms": cred.get("expires_ms", 0)}
+def access_token(binary, provider, need_sec):
+    """Yi owns the central refresh grant, lock and private store; stdout never carries the refresh token."""
+    done = subprocess.run([binary, "login", provider, "--refresh", str(need_sec)],
+                          env={**os.environ, "HOME": str(kimi_home())}, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, timeout=120)
+    if done.returncode:
+        raise RuntimeError(done.stderr.strip() or f"yi login {provider} --refresh exited {done.returncode}")
+    return json.loads(done.stdout)
 
 
 _SEEDS, _SEEDS_LOCK = {}, threading.Lock()
@@ -231,7 +215,7 @@ def seed_home(home, binary, route, need_sec):
     if paid(route) and key.is_file() and json.loads(key.read_text()).get("kind") == "key":
         write_0600(yi / "providers" / "tokens" / key.name, json.loads(key.read_text()))
     if not paid(route):
-        write_0600(yi / "providers" / "tokens" / f"{provider}.json", access_token(provider, need_sec))
+        write_0600(yi / "providers" / "tokens" / f"{provider}.json", access_token(binary, provider, need_sec))
         (yi / "oauth").mkdir()
         shutil.copy(central / "oauth" / f"{provider}.json", yi / "oauth" / f"{provider}.json")
 
@@ -358,6 +342,18 @@ def ask(test, family, spec, binary, stop_usd, until=None, estimate_usd=0.0, ceil
     return row
 
 
+def torn_tail(path):
+    """Whether a store's last line lacks its newline, read from the end: a store is never read whole."""
+    try:
+        with open(path, "rb") as handle:
+            if handle.seek(0, os.SEEK_END) == 0:
+                return False
+            handle.seek(-1, os.SEEK_END)
+            return handle.read(1) != b"\n"
+    except OSError:
+        return False
+
+
 def harbor(test, family, spec, stop_usd):
     """A harbor sweep holds its own caps (watch.py); its hard cap is what is left of the reserve.
     Only `tbv4_sweep.sh --runner` files rows, so a sweep that filed none is charged that cap."""
@@ -367,14 +363,22 @@ def harbor(test, family, spec, stop_usd):
                 "needsUsd": 0.0, "why": "a harbor sweep spends OpenRouter on its own model, never a subscription"}
     env = {**os.environ, "TBV4_HARD_CAP": f"{max(stop_usd, 0):.2f}", "EVAL_RUN_ID": run}
     store = TRIALS / f"{run}.jsonl"
-    stored = lambda: [json.loads(line) for line in store.read_text().splitlines() if line.strip()] if store.exists() else []
-    before = len(stored())
+    rows, bad = yi_usage.json_lines(store)
+    if torn_tail(store):
+        # As skill_labels.py does: end a killed sweep's torn line, or this sweep's first row fuses onto it.
+        with store.open("a") as sink:
+            sink.write("\n")
     done = subprocess.run(spec["harbor"], cwd=ROOT.parent, env=env)
     # The store is appended per run id, so a re-run charges only the rows its own sweep filed.
-    filed = stored()[before:]
-    charged = sum(trials.cost(row) for row in filed) if filed else stop_usd
-    return {"test": test, "family": family, "run": run, "status": "ok" if done.returncode == 0 else "error",
-            "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6)}
+    after, bad_after = yi_usage.json_lines(store)
+    filed, torn = after[len(rows):], bad_after - bad
+    # A line this sweep filed that does not parse is spend nobody can read: charge the cap.
+    charged = sum(trials.cost(row) for row in filed) if filed and not torn else stop_usd
+    row = {"test": test, "family": family, "run": run, "status": "ok" if done.returncode == 0 else "error",
+           "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6)}
+    if torn:
+        row.update(unreadable=torn, why=f"{torn} line(s) this sweep filed in {store.name} do not parse; charged its cap")
+    return row
 
 
 def tests():
@@ -469,10 +473,33 @@ def cmd_run(args):
     return code
 
 
-def cmd_budget(_args):
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+def cmd_budget(args):
     table = routes()
-    with ledger() as (rows, _):
+    with ledger() as (rows, write):
         spent, held, done, _ = state(rows)
+        if args.close:
+            if args.close not in held:
+                print(f"no open reserve {args.close}; open: {', '.join(sorted(held)) or 'none'}", file=sys.stderr)
+                return 2
+            pid = next(row["pid"] for row in rows if row["kind"] == "reserve" and row["key"] == args.close)
+            if alive(pid):
+                print(f"refused: {args.close}'s runner, pid {pid}, is alive and settles it itself", file=sys.stderr)
+                return 2
+            # Its run may have spent up to the whole reserve before it died, so that is the charge.
+            test, family, usd = held.pop(args.close)
+            write({"kind": "settle", "key": args.close, "test": test, "family": family, "usd": usd / 1e6, "rows": [],
+                   "why": "closed by hand: its runner died without settling"})
+            spent += usd
     ladder = [{"step": mod.STEP, "test": name, "family": f, "reserveUsd": reserve_of(mod, f, table[f]),
                "settled": (name, f) in done} for name, mod in tests().items() for f in mod.FAMILIES if f in table]
     print(json.dumps({"capUsd": CAP_USD, "spentUsd": spent / 1e6, "heldUsd": sum(m for *_, m in held.values()) / 1e6,
@@ -514,7 +541,8 @@ def main(argv=None):
     run.add_argument("--until", help="ISO time; a Kimi quota reset past it writes the run unrun")
     run.add_argument("--dry", action="store_true", help="check routes and the ladder, spend nothing")
     run.add_argument("--without-kimi", action="store_true", help="run a paid family before Kimi is confirmed or has run")
-    verbs.add_parser("budget")
+    budget = verbs.add_parser("budget")
+    budget.add_argument("--close", metavar="KEY", help="charge an open reserve whose runner died in full and close it")
     verbs.add_parser("report")
     args = parser.parse_args(argv)
     os.environ.setdefault("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv"))

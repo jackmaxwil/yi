@@ -304,16 +304,18 @@ impl App {
             }
             (Verb::Inspect, _) => {
                 let source = inspect(entry);
+                let workdir = self.session_dir();
                 let opened = self.beside(
                     pane,
                     PaneContent::Markdown {
                         path: format!("entry {id}"),
                         source,
+                        workdir,
+                        drawn: None,
                     },
                 );
-                // The pane clamps the offset, so the largest one opens it at its top.
                 if let Some(opened) = opened.and_then(|id| self.state.panes.get_mut(&id)) {
-                    opened.scroll_from_bottom = usize::MAX;
+                    opened.scroll_from_bottom = crate::panes::TOP;
                 }
             }
             (Verb::Rewind { .. }, _) if self.pane_running(pane) => {
