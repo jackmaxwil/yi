@@ -117,3 +117,51 @@ async fn a_multi_file_edits_hooks_run_at_once_and_its_rows_are_capped_together()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn edit_preparation_waits_for_a_matching_pre_hook() -> TestResult {
+    let case = Case::new(
+        "edit-prep",
+        settings("PreToolUse", "Bash", vec![command("printf ok")]),
+        true,
+    )?;
+    super::EDIT_CHANGES.store(0, std::sync::atomic::Ordering::Relaxed);
+    let gate = Gate {
+        count_edit_changes: true,
+        ..Gate::default()
+    };
+    case.run_gated("edit", json!({"patch": "[a#ZZZZ]"}), gate)
+        .await?;
+    assert_eq!(
+        super::EDIT_CHANGES.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_post_edit_hook_sees_the_span_after_a_pre_rewrite() -> TestResult {
+    let case = Case::new("edit-rewrite-post", json!({}), true)?;
+    std::fs::write(case.cwd.join("a.txt"), "one\ntwo\n")?;
+    let tag = yi_tools::hashline::format::compute_file_hash("one\ntwo\n");
+    let before = format!("[a.txt#{tag}]\nPUT 2.=2:\n+deux\n");
+    let after = format!("[a.txt#{tag}]\nPUT 2.=2:\n+trois\n");
+    let log = case.path("post-edit.jsonl");
+    let updated = printing(&json!({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "updatedInput": {"patch": after}
+    }}));
+    case.user(&json!({"hooks": {
+        "PreToolUse": [{"matcher": "Edit", "hooks": [updated]}],
+        "PostToolUse": [{"matcher": "Edit", "hooks": [logging(&log)]}],
+    }}))?;
+    let outcome = edited(&case, &before).await?;
+    assert!(!outcome.is_error, "{}", outcome.text);
+    assert_eq!(
+        std::fs::read_to_string(case.cwd.join("a.txt"))?,
+        "one\ntrois\n"
+    );
+    let lines = read_lines(&log)?;
+    let input = lines.last().ok_or("no post edit input")?;
+    assert_eq!(input["tool_input"]["new_string"], "trois\n");
+    Ok(())
+}

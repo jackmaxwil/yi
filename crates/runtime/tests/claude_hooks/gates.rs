@@ -159,12 +159,75 @@ fn a_goal_check_passes_the_bash_hooks_before_it_runs() -> TestResult {
         Arc::new(move || Some(store.clone())),
         Arc::new(|_, _: yi_types::schedule::DeliveryMode| {}),
         case.cwd.clone(),
-    );
+    )
+    .with_claude_hooks(yi_runtime::claude_hooks::Hooks::load(&case.cwd));
     let marker = case.cwd.join("checked");
     let check = format!("touch {}", marker.display());
     service.create("checked", None, Some(check), None)?;
     let error = service.update("complete").err().ok_or("must reject")?;
     assert!(error.contains("checks may not touch"), "{error}");
+    assert!(!marker.exists(), "a refused goal check ran");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_hook_allow_keeps_an_already_granted_write() -> TestResult {
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
+    let allow = settings("PreToolUse", "Write", vec![decision("allow")]);
+    let case = Case::new("allow-kept-write", allow, true)?;
+    let granted = case.home.join("granted");
+    std::fs::create_dir_all(&granted)?;
+    let target = granted.join("inside.txt");
+    let gate = Gate {
+        sandbox: true,
+        kept: vec![granted],
+        ..asking(PermissionMode::Ask)
+    };
+    let args = json!({"path": target.to_string_lossy(), "content": "x"});
+    let outcome = case.run_gated("write", args, gate).await?;
+    assert!(
+        target.exists(),
+        "the kept grant was vetoed: {}",
+        outcome.text
+    );
+    Ok(())
+}
+
+#[test]
+fn a_goal_check_keeps_the_configuration_frozen_at_attachment() -> TestResult {
+    let refusal = super::command("echo 'frozen goal denial' >&2; exit 2");
+    let case = Case::new(
+        "goal-frozen",
+        settings("PreToolUse", "Bash", vec![refusal]),
+        true,
+    )?;
+    let hooks = yi_runtime::claude_hooks::Hooks::load(&case.cwd);
+    case.user(&json!({}))?;
+    let store: yi_session::SharedSession = Arc::new(Mutex::new(
+        yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
+            id: "goal-frozen-test".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        }),
+    ));
+    let service = yi_runtime::goal::GoalService::new(
+        Arc::new(move || Some(store.clone())),
+        Arc::new(|_, _: yi_types::schedule::DeliveryMode| {}),
+        case.cwd.clone(),
+    )
+    .with_claude_hooks(hooks);
+    let marker = case.cwd.join("checked");
+    service.create(
+        "checked",
+        None,
+        Some(format!("touch {}", marker.display())),
+        None,
+    )?;
+    let error = service.update("complete").err().ok_or("must reject")?;
+    assert!(error.contains("frozen goal denial"), "{error}");
     assert!(!marker.exists(), "a refused goal check ran");
     Ok(())
 }

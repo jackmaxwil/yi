@@ -29,7 +29,6 @@ enum Scope {
 #[derive(Clone)]
 pub(super) enum Matcher {
     Any,
-    Names(Vec<String>),
     Regex(regex::Regex),
 }
 
@@ -38,14 +37,9 @@ impl Matcher {
         if text.is_empty() || text == "*" {
             return Ok(Self::Any);
         }
-        let plain =
-            (text.chars()).all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | ' ' | ',' | '|'));
-        if plain {
-            let names = text.split([',', '|']).map(str::trim);
-            let names = names.filter(|name| !name.is_empty()).map(str::to_owned);
-            return Ok(Self::Names(names.collect()));
-        }
-        regex::Regex::new(text)
+        regex::RegexBuilder::new(text)
+            .case_insensitive(true)
+            .build()
             .map(Self::Regex)
             .map_err(|error| error.to_string())
     }
@@ -53,7 +47,6 @@ impl Matcher {
     pub(super) fn matches(&self, name: &str) -> bool {
         match self {
             Self::Any => true,
-            Self::Names(names) => names.iter().any(|candidate| candidate == name),
             Self::Regex(regex) => regex.is_match(name),
         }
     }

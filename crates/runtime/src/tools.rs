@@ -544,7 +544,10 @@ impl ToolAdapter {
         Box::pin(async move {
             let cancel = Arc::clone(&context.cancelled);
             let mut template = template;
-            if hooks.is_some() {
+            if hooks
+                .as_ref()
+                .is_some_and(|hooks| hooks.needs_changes(Event::PreToolUse, &template))
+            {
                 let (tool, args, cwd) = (Arc::clone(&tool), args.clone(), context.cwd.clone());
                 let edits = tokio::task::spawn_blocking(move || tool.changes(&args, &cwd));
                 template.edits = edits.await.unwrap_or_default();
@@ -585,13 +588,14 @@ impl ToolAdapter {
                     aborted,
                 ));
             }
-            if let Some(reason) = &pre.stop {
-                let mut result = denied(&format!("the run stops: {reason}"));
-                result.terminate = Some(true);
+            if let Some(reason) =
+                crate::claude_hooks::refusal_unless_answerable(&pre, permission.is_some())
+            {
+                let mut result = denied(&reason);
+                if pre.stop.is_some() {
+                    result.terminate = Some(true);
+                }
                 return refuse(result);
-            }
-            if let Verdict::Deny(reason) = &pre.verdict {
-                return refuse(denied(reason));
             }
             let mut args = args;
             if let Some(updated) = pre.updated_input.clone() {
@@ -607,9 +611,15 @@ impl ToolAdapter {
                     Err(why) => return refuse(denied(&why)),
                 }
             }
-            if let (Verdict::Ask(why), None) = (&pre.verdict, &permission) {
-                let why = format!("asks to confirm this call ({why}), and no one can answer here");
-                return refuse(denied(&why));
+            if pre.updated_input.is_some()
+                && hooks.as_ref().is_some_and(|hooks| {
+                    hooks.needs_changes(Event::PostToolUse, &template)
+                        || hooks.needs_changes(Event::PostToolUseFailure, &template)
+                })
+            {
+                let (tool, args, cwd) = (Arc::clone(&tool), args.clone(), context.cwd.clone());
+                let edits = tokio::task::spawn_blocking(move || tool.changes(&args, &cwd));
+                template.edits = edits.await.unwrap_or_default();
             }
             if let Some(ext) = &ext {
                 ext(crate::ext::Event::ToolCall {
@@ -679,7 +689,7 @@ impl ToolAdapter {
                 .await;
                 // A hook's allow never widens what the sandbox lets an in-process write reach.
                 let ran = outcome.as_ref().is_ok_and(|outcome| outcome.allowed);
-                let profile = (reporter.sandbox_for(&context.cwd, &wall, &[]))
+                let profile = (reporter.sandbox_for(&context.cwd, &wall, &reporter.kept_writes()))
                     .filter(|_| ran && allowed_by_hook && tool.name() != "bash");
                 let escapes = (profile.as_ref()).and_then(|profile| {
                     let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write).then(|| {

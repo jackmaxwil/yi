@@ -556,7 +556,8 @@ fn wire_plan_request(
     // This session's host seats the juries (plan section 6.4). A verification never outlives
     // the run (D177): the verifier and every lane settle read the session's deadline too.
     let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
-        .with_judge(Arc::new(crate::plan::judge::Jury::new(Arc::clone(host))));
+        .with_judge(Arc::new(crate::plan::judge::Jury::new(Arc::clone(host))))
+        .with_claude_hooks(session.claude_hooks(&cwd));
     if let Some(deadline) = session.deadline()
         && let Some(ends) = deadline.started.checked_add(deadline.total)
     {
@@ -987,6 +988,7 @@ fn subagent_host(
         plans_dir: plans_dir.to_path_buf(),
         family_live: Arc::clone(&wiring.kernels),
     }));
+    let _first_wins = host.claude_hooks.set(session.claude_hooks(&wiring.cwd));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
     let (handle, own) = (session.rules_handle(), wiring.own_paths(session));

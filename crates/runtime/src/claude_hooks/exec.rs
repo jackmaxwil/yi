@@ -128,8 +128,7 @@ pub(super) fn run(
         },
         (Some(0), Some(Ok(value))) => Said::Json(value),
         (Some(0), None) => Said::Quiet,
-        (_, Some(Ok(value))) if !handler.block_on_failure => Said::Json(value),
-        (_, Some(Err(error))) => failure(format!("[{label}]: invalid JSON output: {error}")),
+        (Some(0), Some(Err(error))) => failure(format!("[{label}]: invalid JSON output: {error}")),
         (code, _) => {
             let first = stderr.lines().next().unwrap_or_default();
             let code = code.map_or_else(|| "a signal".to_owned(), |code| format!("exit {code}"));

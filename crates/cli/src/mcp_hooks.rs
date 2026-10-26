@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
-use yi_runtime::claude_hooks::{Call, Event, Hooks, Outcome, Verdict};
+use yi_runtime::claude_hooks::{Call, Event, Hooks, Outcome, refusal};
 
 /// Claude Code hooks around a cell's MCP call, which never passes the tool adapter; one-shot,
 /// so the configuration loads per call, from this process's cwd.
@@ -50,13 +50,8 @@ impl yi_mcp_cli::CallHooks for McpHooks {
             .map(|row| format!("\n{row}"))
             .collect();
         let refused = |why: &str| Err(format!("Claude Code PreToolUse hook: {why}{rows}"));
-        if let Some(reason) = &outcome.stop {
-            return refused(&format!("the run stops: {reason}"));
-        }
-        match &outcome.verdict {
-            Verdict::Deny(reason) => return refused(reason),
-            Verdict::Ask(why) => return refused(&format!("asks ({why}), and a cell cannot ask")),
-            Verdict::Allow | Verdict::Silent => {}
+        if let Some(why) = refusal(&outcome) {
+            return refused(&why);
         }
         if let Ok(mut pending) = self.rows.lock() {
             pending.extend(outcome.rows);

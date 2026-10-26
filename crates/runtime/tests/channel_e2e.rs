@@ -420,6 +420,46 @@ async fn red_message_of(
     Ok(entry.data)
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_schedule_exec_passes_the_frozen_bash_hooks_before_it_runs() -> TestResult {
+    let dir = Scratch::new("yi-channel-claude-hook")?;
+    let home = dir.join("home");
+    let settings = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().ok_or("settings parent")?)?;
+    std::fs::write(
+        &settings,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo 'schedule hook denied' >&2; exit 2"}]}]}}"#,
+    )?;
+    // SAFETY: nextest isolates each test in its own process.
+    unsafe {
+        std::env::set_var("HOME", &home);
+        std::env::set_var("YI_CLAUDE_HOOKS", "1");
+    }
+    let hooks = yi_runtime::claude_hooks::Hooks::load(&dir);
+    std::fs::write(&settings, "{}")?;
+    let marker = dir.join("checked");
+    script(&dir, "red.sh", &format!("touch {}", marker.display()))?;
+    let channel = Channel::at(dir.join("channels/red.jsonl"));
+    let address = "exec://./red.sh?every=1s";
+    channel.open(address, None)?;
+    let (_session, todos) = session(&[])?;
+    let mut job = subscription(&channel, "sub-claude-hook", None)?;
+    job.cwd = dir.to_string_lossy().into_owned();
+    clock::fire_with_hooks(&todos, &job, &Firing::at(0), hooks.as_ref())?;
+    assert!(wait_until(8_000, || !channel.entries().is_empty()).await);
+    let entry = channel.entries().remove(0);
+    adapter::halt(true);
+    adapter::halt(false);
+    assert_eq!(entry.data["ok"], false);
+    assert!(
+        entry.data["output"]
+            .as_str()
+            .is_some_and(|text| text.contains("schedule hook denied"))
+    );
+    assert!(!marker.exists(), "a refused schedule check ran");
+    Ok(())
+}
+
 /// Dies with the view's 16 KiB text pushing a red level past the channel cap: the message is
 /// refused whole, so a filter on `ok=false` never matches and the todo is never made. Dies too
 /// with the fix dropping the output whole: the verdict sits at the end and must survive.
