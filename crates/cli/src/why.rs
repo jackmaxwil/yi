@@ -67,7 +67,7 @@ fn print(resolved: &Answer) {
 }
 
 fn reverse(address: &str, options: &Options) -> i32 {
-    let found = match commits_for(&options.cwd, address) {
+    let (found, cut) = match commits_for(&options.cwd, address) {
         Ok(found) => found,
         Err(error) => {
             eprintln!("error: {error}");
@@ -81,7 +81,7 @@ fn reverse(address: &str, options: &Options) -> i32 {
             .collect();
         println!(
             "{}",
-            serde_json::json!({ "todo": address, "commits": rows })
+            serde_json::json!({ "todo": address, "commits": rows, "cut": cut })
         );
         return 0;
     }
@@ -92,5 +92,6 @@ fn reverse(address: &str, options: &Options) -> i32 {
     for (commit, subject) in &found {
         println!("{}  {subject}", commit.get(..12).unwrap_or(commit));
     }
+    cut.iter().for_each(|row| println!("{row}"));
     0
 }

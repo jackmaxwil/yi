@@ -8,14 +8,11 @@ fn truncate_for_summary(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_owned();
     }
-    let mut end = max_chars;
-    while end > 0 && !text.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
+    let end = text.floor_char_boundary(max_chars);
     let truncated_chars = text.len().saturating_sub(end);
     format!(
         "{}\n\n[... {truncated_chars} more characters truncated]",
-        &text[..end]
+        text.get(..end).unwrap_or_default()
     )
 }
 

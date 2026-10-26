@@ -44,7 +44,9 @@ pub enum JournalError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("journal record of {bytes} bytes exceeds the {cap} byte cap; nothing was written")]
+    #[error(
+        "journal record of {bytes} bytes exceeds the {cap} byte cap; nothing was written: send fewer rows per call, or shorter fields"
+    )]
     RecordOverCap { bytes: usize, cap: usize },
     #[error("journal record: {0}")]
     Canonical(#[from] CanonicalError),

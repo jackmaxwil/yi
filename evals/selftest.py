@@ -242,7 +242,7 @@ def check_eval_config():
         assert "routing_label(" in source, f"{name}'s fingerprint cannot tell two routings apart"
     # The ledger judges a PR's live run by main's runs of the same routing: one pin, three workflows.
     pins = {name: re.findall(r"^\s*EVAL_ROUTING: (.+)$", (ROOT.parent / ".forgejo" / "workflows" / name).read_text(), re.M)
-            for name in ("pr.yml", "postmerge.yml", "tracking-hygiene.yml")}
+            for name in ("pr.yml", "postmerge.yml", "live-weekly.yml")}
     assert len({pin for found in pins.values() for pin in found}) == 1 and all(pins.values()), pins
     # The fixtures lane leaves a caller's --home config alone, so a label there names a routing never sent.
     with tempfile.TemporaryDirectory() as home:
