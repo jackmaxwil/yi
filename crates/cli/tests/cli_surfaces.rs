@@ -2076,6 +2076,97 @@ fn doctor_without_fix_reports_the_uv_fetch_instead_of_running_it() -> TestResult
     Ok(())
 }
 
+/// A socket explicitly named on the command line is the one both daemon rows judge.
+#[test]
+fn doctor_judges_the_socket_named_on_the_command_line() -> TestResult {
+    let workspace = Workspace::new("doctor-socket")?;
+    let socket = workspace.0.join("home/.yi/chosen.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+    std::fs::write(
+        socket.with_extension("ledger.json"),
+        r#"{"sessions":{"s-gone":{"cwd":"/nonexistent/yi-gone-root","unseen":0,"lastEventMs":1}}}"#,
+    )?;
+    let path = socket.display().to_string();
+    let live = workspace.yi_env(&["doctor", "--json", "--socket", &path], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&live))?;
+    let row = |name: &str| {
+        rows.as_array()
+            .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+            .cloned()
+            .ok_or_else(|| format!("no {name} row: {rows}"))
+    };
+    assert_eq!(row("daemon-socket")?["detail"], "daemon answers", "{rows}");
+    assert!(
+        row("daemon-ledger")?["detail"]
+            .as_str()
+            .is_some_and(|row| row.contains("s-gone")),
+        "{rows}"
+    );
+    drop(listener);
+    let dead = workspace.yi_env(&["doctor", "--json", "--socket", &path], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&dead))?;
+    let dead_row = |name: &str| {
+        rows.as_array()
+            .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+            .cloned()
+            .ok_or_else(|| format!("no {name} row: {rows}"))
+    };
+    assert!(
+        dead_row("daemon-socket")?["detail"]
+            .as_str()
+            .is_some_and(|row| row.contains("dead socket file")),
+        "{rows}"
+    );
+    Ok(())
+}
+
+/// The configured pool bound, not the default, decides which stale slots doctor judges.
+#[test]
+fn doctor_judges_only_the_configured_lane_slots() -> TestResult {
+    use yi_runtime::lane::{ClaimBase, Pool};
+    let workspace = Workspace::new("doctor-lanes")?;
+    write_config(&workspace, r#"{"lanes":{"slots":1}}"#)?;
+    crate::repo::init_repo(&workspace.project())?;
+    let home = workspace.0.join("home");
+    let pool = Pool::open(&home, &workspace.project(), 2)?;
+    let first = pool.claim("first", ClaimBase::Main)?;
+    let second = pool.claim("second", ClaimBase::Main)?;
+    let stale = second.slot();
+    drop((first, second));
+    let git = |cwd: &std::path::Path, args: &[&str]| -> TestResult {
+        let output = yi_tools::command("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    };
+    git(&workspace.project(), &["branch", "-q", "yi/stale", "HEAD"])?;
+    let tree = pool.dir().join(stale.to_string());
+    git(&tree, &["checkout", "-q", "yi/stale"])?;
+    let state_path = pool.dir().join(format!("{stale}.json"));
+    let mut state: yi_types::lane::SlotState =
+        serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    state.session = Some("stale".to_owned());
+    std::fs::write(state_path, serde_json::to_vec(&state)?)?;
+    let seen = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&seen))?;
+    let lanes = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "lanes"))
+        .ok_or("no lanes row")?;
+    assert_eq!(
+        (lanes["status"].as_str(), lanes["detail"].as_str()),
+        (Some("ok"), Some("1 slot(s) consistent")),
+        "{rows}"
+    );
+    Ok(())
+}
+
 /// A config that will not parse is what `doctor` exists to say; it must not die of it first.
 #[test]
 fn doctor_runs_over_a_broken_config_and_names_the_key() -> TestResult {

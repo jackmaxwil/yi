@@ -37,6 +37,8 @@ struct Site {
     cwd: PathBuf,
     sessions: PathBuf,
     fix: bool,
+    lane_slots: u8,
+    socket: PathBuf,
 }
 
 type Check = fn(&Site) -> Finding;
@@ -182,20 +184,16 @@ fn kernel_boot(site: &Site) -> Finding {
     }
 }
 
-fn socket_path(site: &Site) -> PathBuf {
-    site.home.join(".yi/daemon.sock")
-}
-
 fn socket_alive_or_absent(site: &Site) -> Finding {
-    let path = socket_path(site);
+    let path = &site.socket;
     if !path.exists() {
         return ok("no daemon");
     }
-    if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+    if std::os::unix::net::UnixStream::connect(path).is_ok() {
         return ok("daemon answers");
     }
     if site.fix {
-        return match std::fs::remove_file(&path) {
+        return match std::fs::remove_file(path) {
             Ok(()) => Finding {
                 status: Status::Fixed,
                 detail: "dead socket file removed".to_owned(),
@@ -209,7 +207,7 @@ fn socket_alive_or_absent(site: &Site) -> Finding {
 /// Invariant: a ledger row names a cwd a session can be resumed in; the daemon owns the file
 /// (D118), so a gone root is reported here and pruned there.
 fn ledger_roots_exist(site: &Site) -> Finding {
-    let path = socket_path(site).with_extension("ledger.json");
+    let path = site.socket.with_extension("ledger.json");
     let Ok(raw) = std::fs::read(&path) else {
         return ok("no ledger");
     };
@@ -235,7 +233,7 @@ fn ledger_roots_exist(site: &Site) -> Finding {
 
 fn lanes_consistent(site: &Site) -> Finding {
     use yi_runtime::lane::{LaneError, Pool, SlotView, TreeState, land::lane_line};
-    let pool = match Pool::open(&site.home, &site.cwd, crate::lanes::lane_slots()) {
+    let pool = match Pool::open(&site.home, &site.cwd, site.lane_slots) {
         Ok(pool) => pool,
         Err(LaneError::NotARepo(_)) => return ok("not a repository"),
         Err(error) => return fail(error.to_string()),
@@ -382,11 +380,17 @@ pub(crate) fn early() {
 }
 
 pub(crate) fn run(args: &Args) -> i32 {
+    let home = crate::home().to_path_buf();
+    let config = read_config(&home)
+        .map(|(config, _)| config)
+        .unwrap_or_default();
     let site = Site {
-        home: crate::home().to_path_buf(),
         cwd: effective_cwd(args),
         sessions: crate::default_session_dir(args),
         fix: args.fix,
+        lane_slots: crate::lanes::lane_slots_from(&config),
+        socket: crate::shells::daemon_socket(args),
+        home,
     };
     let findings: Vec<(&str, Finding)> = ROWS
         .iter()
