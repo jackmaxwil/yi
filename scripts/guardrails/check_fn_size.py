@@ -41,25 +41,22 @@ def selfcheck(off=""):
     seen = [(name, size) for name, _, size in fn_sizes(code_lines(text, off))]
     if seen != [("with_auth", CEILING + 2)]:
         errs.append(f"below a mid-file test helper the scan saw {seen}, not [('with_auth', {CEILING + 2})]")
-    for shape in (
-        'const EXAMPLE: &str = r#"\n#[cfg(test)]\n"#;\nfn production() {}\n',
-        '/*\n#[cfg(test)]\n*/\nfn production() {}\n',
+    for shape, expected in (
+        ('const EXAMPLE: &str = r#"\n#[cfg(test)]\n"#;\nfn production() {}\n', [("production", 4, 1)]),
+        ('/*\n#[cfg(test)]\n*/\nfn production() {}\n', [("production", 4, 1)]),
+        ('fn production() {\n    let text = r#"\n{\n"#;\n}\nfn after() {}\n',
+         [("production", 1, 5), ("after", 6, 1)]),
+        ('fn production() {\n    /*\n    {\n    */\n}\nfn after() {}\n',
+         [("production", 1, 5), ("after", 6, 1)]),
     ):
         seen = fn_sizes(code_lines(shape, off))
-        if seen != [("production", 4, 1)]:
-            errs.append(f"marker-shaped text inside a string or comment hid production code: {seen}")
-    for shape in (
-        'fn production() {\n    let text = r#"\n{\n"#;\n}\nfn after() {}\n',
-        'fn production() {\n    /*\n    {\n    */\n}\nfn after() {}\n',
-    ):
-        seen = fn_sizes(shape.splitlines(), off)
-        if seen != [("production", 1, 5), ("after", 6, 1)]:
-            errs.append(f"braces inside a multiline string or comment changed function sizes: {seen}")
+        if seen != expected:
+            errs.append(f"string or comment changed production function sizes: {seen}, not {expected}")
     return errs
 
 if "--selfcheck" in sys.argv:
     errs = selfcheck()
-    for off in ("chars", "first", "markers"):
+    for off in ("chars", "first", "markers", "literals"):
         if not selfcheck(off):
             errs.append(f"selfcheck passes with the {off} mutant, so it refutes nothing")
     fail(errs, "fn_size selfcheck")
