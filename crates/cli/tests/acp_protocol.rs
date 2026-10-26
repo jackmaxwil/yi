@@ -754,7 +754,7 @@ fn yi_event_stream_is_lossless_for_a_faux_turn() -> TestResult {
         app.reduce_agent(event);
     }
     assert!(!app.is_running(), "solo's reducer must see the turn end");
-    assert!(app.has_run(), "solo's reducer must see the turn start");
+    assert!(app.turn_idle(), "solo's reducer must see the turn start");
     let text: String = app
         .reflowed(200)
         .iter()
@@ -886,6 +886,81 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
     assert_eq!(
         after[0]["params"]["update"]["leafId"], response["result"]["leafId"],
         "the replay after a rewind names the same leaf the result does"
+    );
+    client.finish()
+}
+
+/// Dies with the history replaced under a turn: a `_yi/rewind` without `files` reached the
+/// session while its bash call ran, and only the `files` form answered `still running`. The
+/// bash ask may land before a reply (no sandbox off macOS), so each reply is read allowing it.
+#[test]
+fn a_rewind_is_refused_while_a_turn_runs_a_tool() -> TestResult {
+    let dir = temp_dir("rewind-running")?;
+    let go = dir.join("go");
+    let wait = format!(
+        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
+        go.display()
+    );
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"text": "first answer"}),
+            json!({"tool": "bash", "args": {"command": wait}}),
+            json!({"text": "done"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    prompt(
+        &mut client,
+        "first",
+        &session_id,
+        json!([{"type": "text", "text": "first turn"}]),
+    )?;
+    let first = read_allowing(&mut client, is_idle)?;
+    let asked = committed(&first)?
+        .first()
+        .map(|entry| entry.id().to_owned())
+        .ok_or("no committed entry")?;
+    prompt(
+        &mut client,
+        "second",
+        &session_id,
+        json!([{"type": "text", "text": "wait for it"}]),
+    )?;
+    read_allowing(&mut client, |frame| {
+        frame["params"]["update"]["sessionUpdate"] == "tool_call_update"
+            && frame["params"]["update"]["status"] == "in_progress"
+    })?;
+
+    for (id, files) in [("plain", false), ("files", true)] {
+        let params = json!({"sessionId": session_id, "entryId": asked, "files": files});
+        client
+            .send(&json!({"jsonrpc": "2.0", "id": id, "method": "_yi/rewind", "params": params}))?;
+        let frames = read_allowing(&mut client, |frame| {
+            frame["id"] == id && frame.get("method").is_none()
+        })?;
+        let answer = frames.last().ok_or("no rewind response")?;
+        assert_eq!(answer["error"]["code"], -32602, "{id}: {answer}");
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("still running")),
+            "{id}: {answer}"
+        );
+    }
+
+    std::fs::write(&go, "")?;
+    read_allowing(&mut client, is_idle)?;
+    let rewound = client.request(
+        "after",
+        "_yi/rewind",
+        json!({"sessionId": session_id, "entryId": asked}),
+    )?;
+    let answer = rewound.last().ok_or("no rewind response")?;
+    assert_eq!(
+        answer["result"]["unsent"], "first turn",
+        "the turn ended, so the rewind lands: {answer}"
     );
     client.finish()
 }
@@ -1790,5 +1865,325 @@ fn a_committed_answer_forks_into_a_session_that_ends_at_it() -> TestResult {
         refused["error"]["message"], "position is before or at, not sideways",
         "an unknown position is named, not read as before: {refused}"
     );
+    Ok(())
+}
+
+/// The review pane asks `_yi/why` for each hunk it shows; a router that lost the method
+/// refused every chain with METHOD_NOT_FOUND while its handler sat one call away.
+#[test]
+fn why_answers_for_a_committed_edit_and_an_unknown_extension_is_not_found() -> TestResult {
+    let dir = temp_dir("why")?;
+    git_in(&dir, &["init", "-q", "-b", "main"])?;
+    // The file as session 01a129b6 (tui fixtures) left it after its one edit.
+    std::fs::write(
+        dir.join("a.py"),
+        "def greet(name):\n    return f\"hi {name}\"\n",
+    )?;
+    git_in(&dir, &["add", "a.py"])?;
+    let subject = "Drop the greeting parameter";
+    git_in(
+        &dir,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            subject,
+        ],
+    )?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    let why = client.request(
+        "3",
+        "_yi/why",
+        json!({"sessionId": session_id, "path": "a.py", "lines": [1, 2]}),
+    )?;
+    let reply = why.last().ok_or("no reply")?;
+    assert!(reply.get("error").is_none(), "_yi/why must route: {reply}");
+    let answers = reply["result"]["answers"].as_array().ok_or("no answers")?;
+    assert_eq!(answers.len(), 2, "one answer per asked line: {reply}");
+    for (answer, line) in answers.iter().zip([1, 2]) {
+        assert_eq!(answer["line"], line, "{reply}");
+        assert_eq!(answer["subject"], subject, "the line's commit: {reply}");
+    }
+    assert_eq!(reply["result"]["path"], "a.py");
+    assert_eq!(reply["result"]["cap"], 8);
+    let nope = client.request("4", "_yi/nope", json!({}))?;
+    let refused = nope.last().ok_or("no reply")?;
+    assert_eq!(
+        refused["error"]["code"], -32601,
+        "an extension nothing handles is not found, even with no session named: {refused}"
+    );
+    client.finish()
+}
+
+/// The `read` result recorded in tui fixture session 01a129b6, its text repeated past `bytes`.
+fn recorded_result(bytes: usize) -> Result<yi_types::message::AgentMessage, Box<dyn Error>> {
+    let result = crate::recorded_read::recorded_read(|t| t.repeat(bytes / t.len().max(1) + 1));
+    Ok(serde_json::from_value(result?)?)
+}
+
+type ReplayLine = (usize, u64, u64, Option<String>);
+
+/// Appends `messages` to a closed session, resumes it, and returns the entries held before and
+/// each `_yi/replay` line's length, `from`, `replayedTo` and session name.
+fn replay_lines(
+    messages: &[yi_types::message::AgentMessage],
+) -> Result<(u64, Vec<ReplayLine>), Box<dyn Error>> {
+    use yi_runtime::session_store::{EntryQuery, JsonlRepo, SessionRepo, lock_session};
+    let dir = temp_dir("replay-bytes")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    client.request("3", "session/close", json!({"sessionId": session_id}))?;
+    let held = {
+        let mut repo = JsonlRepo::new(dir.join("sessions"), dir.display().to_string());
+        let store = repo.open(&session_id)?;
+        let mut session = lock_session(&store);
+        let held = session.find_entries(&EntryQuery::default())?.len() as u64;
+        for message in messages {
+            session.append_message("main", message.clone())?;
+        }
+        held
+    };
+    let meta = json!({"yi": {"replayUpdates": false}});
+    let params = json!({"sessionId": session_id, "replayFrom": 0, "_meta": meta});
+    client.send(
+        &json!({"jsonrpc": "2.0", "id": "4", "method": "session/resume", "params": params}),
+    )?;
+    let mut frames = Vec::new();
+    for line in client.lines.by_ref() {
+        let line = line?;
+        let frame: Value = serde_json::from_str(&line)?;
+        if frame["id"] == "4" {
+            break;
+        }
+        let update = &frame["params"]["update"];
+        if update["sessionUpdate"] == "_yi/replay" {
+            let at = |key: &str| update[key].as_u64().ok_or(format!("no {key}"));
+            let name = update["name"].as_str().map(str::to_owned);
+            frames.push((line.len(), at("from")?, at("replayedTo")?, name));
+        }
+    }
+    client.finish()?;
+    Ok((held, frames))
+}
+
+/// The console reads at most 32 MiB a line and re-dials past it; 512 entries of 64 KiB, the
+/// entry limit, once went out as one 35.6 MB frame.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_session_of_large_tool_results_replays_in_frames_a_reader_can_hold() -> TestResult {
+    const READER_CAP: usize = 32 * 1024 * 1024;
+    let results: Vec<_> = std::iter::repeat_n(recorded_result(64 * 1024)?, 512).collect();
+    let (held, frames) = replay_lines(&results)?;
+    let mut next = 0;
+    for (bytes, from, to, _) in frames {
+        assert!(bytes < READER_CAP, "a {bytes}-byte replay frame");
+        assert_eq!(from, next, "frames are contiguous");
+        next = to;
+    }
+    assert_eq!(next, held + 512, "every entry arrives");
+    Ok(())
+}
+
+fn user_text(text: &str) -> yi_types::message::AgentMessage {
+    use yi_types::message::{AgentMessage, Content, UserContent};
+    let text = text.to_owned();
+    let block = Content::Text {
+        text,
+        text_signature: None,
+    };
+    AgentMessage::user_input(UserContent::Blocks(vec![block]), 1)
+}
+
+/// Resume cuts past 8 MiB as well as past 512 entries: 144 recorded 64 KiB results, about
+/// 9 MiB, arrive in frames under the budget, each naming the session by its first ask.
+#[test]
+fn a_resume_past_the_byte_budget_replays_in_frames_under_it() -> TestResult {
+    use yi_acp::replay::REPLAY_BYTES;
+    let mut messages = vec![user_text("first ask"), user_text("second ask")];
+    messages.extend(std::iter::repeat_n(recorded_result(64 * 1024)?, 144));
+    let (held, frames) = replay_lines(&messages)?;
+    assert!(frames.len() >= 2, "{} replay frames", frames.len());
+    let mut next = 0;
+    for (bytes, from, to, name) in frames {
+        assert!(
+            bytes < REPLAY_BYTES + 64 * 1024,
+            "a {bytes}-byte replay frame"
+        );
+        assert_eq!(from, next, "frames are contiguous");
+        assert_eq!(
+            name.as_deref(),
+            Some("first ask"),
+            "named by the oldest ask"
+        );
+        next = to;
+    }
+    assert_eq!(next, held + messages.len() as u64, "every entry arrives");
+    Ok(())
+}
+
+/// What the request carried that this agent does not read is named where the user and the
+/// model see it: an image block as a row in the prompt, MCP servers in the first notice.
+#[test]
+fn a_dropped_prompt_block_and_unread_mcp_servers_are_named() -> TestResult {
+    let dir = temp_dir("dropped")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let servers = json!([{"name": "fs", "command": "mcp-fs", "args": [], "env": []}]);
+    let new = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string(), "mcpServers": servers.clone()}),
+    )?;
+    let unread = json!(
+        "[…] 0 of 1 mcpServers attached: this agent does not take MCP servers over ACP; set \
+         mcp.enabled in ~/.yi/config.json and list them in ~/.yi/mcp.json"
+    );
+    let notice = updates_of(&new, "_yi/notice");
+    assert_eq!(
+        notice
+            .first()
+            .map(|frame| &frame["params"]["update"]["text"]),
+        Some(&unread),
+        "{new:?}"
+    );
+    let session_id = new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .ok_or("missing sessionId")?
+        .to_owned();
+    prompt(
+        &mut client,
+        "3",
+        &session_id,
+        json!([
+            {"type": "text", "text": "what is in this screenshot?"},
+            {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="},
+            {"type": "text"},
+            {"type": "resource_link", "name": "a.py"},
+        ]),
+    )?;
+    let frames = read_allowing(&mut client, is_idle)?;
+    let inserted = updates_of(&frames, "user_message");
+    assert_eq!(
+        inserted
+            .first()
+            .map(|frame| &frame["params"]["update"]["content"][0]["text"]),
+        Some(&json!(
+            "what is in this screenshot?\n[…] prompt block 2 of 4 (image) was \
+                     dropped: this agent reads text and resource_link blocks; send the file \
+                     as a resource_link\n[…] prompt block 3 of 4 (text) was dropped: it has \
+                     no text field\n[…] prompt block 4 of 4 (resource_link) was dropped: it \
+                     has no uri field"
+        )),
+        "{frames:?}"
+    );
+    let resumed = client.request(
+        "4",
+        "session/resume",
+        json!({"sessionId": session_id, "mcpServers": servers}),
+    )?;
+    let notices = updates_of(&resumed, "_yi/notice");
+    assert!(
+        notices
+            .iter()
+            .any(|frame| frame["params"]["update"]["text"] == unread),
+        "a resume names its mcpServers too: {resumed:?}"
+    );
+    client.finish()
+}
+
+/// The committed entry is found by walking back from the leaf to the message it holds, so a
+/// long branch still names the entry the turn just saved, not an older one.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_five_thousand_message_session_names_each_committed_entry() -> TestResult {
+    use yi_runtime::session_store::{JsonlRepo, SessionRepo, lock_session};
+    let dir = temp_dir("committed-long")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    client.request("3", "session/close", json!({"sessionId": session_id}))?;
+    let recorded: Vec<yi_types::message::AgentMessage> =
+        include_str!("../../tui/tests/fixtures/sessions/01a129b6.jsonl")
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|line| serde_json::from_value(line["message"].clone()).ok())
+            .collect();
+    let open = || {
+        let mut repo = JsonlRepo::new(dir.join("sessions"), dir.display().to_string());
+        repo.open(&session_id)
+    };
+    {
+        let store = open()?;
+        let mut session = lock_session(&store);
+        for message in recorded.iter().cycle().take(5_000) {
+            session.append_message("main", message.clone())?;
+        }
+    }
+    client.request(
+        "4",
+        "session/resume",
+        json!({"sessionId": session_id, "replayFrom": 0, "_meta": {"yi": {"replayUpdates": false}}}),
+    )?;
+    let frames = prompt_until_idle(&mut client, "5", &session_id, "edit a.py")?;
+    let named: Vec<String> = committed(&frames)?
+        .iter()
+        .map(|entry| entry.id().to_owned())
+        .collect();
+    client.finish()?;
+    let store = open()?;
+    let session = lock_session(&store);
+    let saved: Vec<String> = session
+        .find_entries(&yi_runtime::session_store::EntryQuery {
+            order: yi_runtime::session_store::EntryOrder::OldestFirst,
+            ..Default::default()
+        })?
+        .iter()
+        .filter(|entry| matches!(entry, yi_types::entry::Entry::Message { .. }))
+        .map(|entry| entry.id().to_owned())
+        .collect();
+    assert!(
+        saved.len() > 5_000,
+        "the history was written: {}",
+        saved.len()
+    );
+    assert_eq!(
+        named,
+        saved[saved.len() - 2..],
+        "the turn's prompt and reply, the newest two messages saved"
+    );
+    Ok(())
+}
+
+/// No client cancels a user cell by call id (`Yi.close` waits instead), so a worker answers
+/// the method like any name it does not know.
+#[test]
+fn a_kernel_cancel_frame_is_an_unknown_method() -> TestResult {
+    let dir = temp_dir("kernel-cancel")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let new = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    let session_id = new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .ok_or("missing sessionId")?
+        .to_owned();
+    let params = json!({"sessionId": session_id, "callId": "user-1"});
+    let refused = client.request("3", "_yi/kernel_cancel", params)?;
+    let refused = refused.last().ok_or("no response")?;
+    assert_eq!(refused["error"]["code"], -32601, "{refused}");
+    assert_eq!(
+        refused["error"]["message"], "unknown method _yi/kernel_cancel",
+        "{refused}"
+    );
+    client.finish()?;
     Ok(())
 }

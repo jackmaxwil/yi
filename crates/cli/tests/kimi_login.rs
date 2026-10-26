@@ -298,3 +298,55 @@ fn listing_profiles_refreshes_nothing() -> TestResult {
     assert_eq!(seen.lock().map_err(|_| "fake lock")?.len(), 0);
     Ok(())
 }
+
+#[test]
+fn a_refresh_for_a_run_uses_the_profile_and_never_prints_the_refresh_token() -> TestResult {
+    let (port, seen) = fake_kimi(false)?;
+    let account = Account::new("refresh-for-run", port)?;
+    let tokens = account.home.join(".yi/providers/tokens");
+    std::fs::create_dir_all(&tokens)?;
+    std::fs::write(
+        tokens.join("kimi.json"),
+        r#"{"version":1,"kind":"oauth","access":"old-access","refresh":"old-refresh","expires_ms":1}"#,
+    )?;
+    let profile = account.home.join(".yi/oauth/kimi.json");
+    let mut value: Value = serde_json::from_str(&std::fs::read_to_string(&profile)?)?;
+    value["refresh_headers"] = json!({"x-fixture-refresh": "present"});
+    std::fs::write(profile, value.to_string())?;
+
+    let refreshed = account.yi(&["login", "kimi", "--refresh", "1800"])?;
+    assert_eq!(refreshed.status.code(), Some(0), "{}", text(&refreshed));
+    let access: Value = serde_json::from_slice(&refreshed.stdout)?;
+    assert_eq!(access["access"], "kimi-test-access");
+    assert!(access.get("refresh").is_none(), "{access}");
+    let central: Value = serde_json::from_str(&std::fs::read_to_string(tokens.join("kimi.json"))?)?;
+    assert_eq!(central["refresh"], "kimi-test-refresh");
+    let requests = seen
+        .lock()
+        .map_err(|_| "fake lock")?
+        .iter()
+        .map(|(start, head)| format!("{start}\n{head}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        requests.contains("x-fixture-refresh: present"),
+        "{requests}"
+    );
+    assert!(
+        requests.contains("grant_type=refresh_token&refresh_token=old-refresh"),
+        "{requests}"
+    );
+    assert!(
+        !requests.contains("/models"),
+        "a token refresh does not refresh the catalog: {requests}"
+    );
+
+    let too_short = account.yi(&["login", "kimi", "--refresh", "7200"])?;
+    assert_eq!(too_short.status.code(), Some(1), "{}", text(&too_short));
+    assert!(
+        text(&too_short).contains("does not live 7200 s"),
+        "{}",
+        text(&too_short)
+    );
+    Ok(())
+}

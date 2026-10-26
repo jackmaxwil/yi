@@ -160,7 +160,7 @@ fn ctrl_c_closes_the_agents_popup_without_stopping_a_row() -> TestResult {
         default_keymap(),
         80,
     );
-    app.adopt(&child_update(), None);
+    app.adopt(&child_update(), None, None);
     app.open_agents();
     assert!(app.bottom_open(), "the roster never opened");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
