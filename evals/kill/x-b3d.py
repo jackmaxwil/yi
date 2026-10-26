@@ -11,6 +11,7 @@ from pathlib import Path
 EVALS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EVALS))
 
+import axes  # noqa: E402
 import checker_screen  # noqa: E402
 
 THRESHOLD = ("kill the checker recipe (no skill, no S5-E4) if on either family the share of checks passing on "
@@ -49,8 +50,7 @@ def runs():
 def scored(row):
     """A settled row's score, cached in score.json; a run that kept no checks.py caught nothing.
     Raises Unscorable, OSError or SubprocessError, caching nothing, when the harness failed."""
-    import kill
-    base = kill.runs_root() / "x-b3d" / row["run"]
+    base = axes.runs_root("EVAL_KILL_ROOT") / "x-b3d" / row["run"]
     cache, checks, events = base / "score.json", base / "checks.py", base / "events.jsonl"
     if cache.is_file():
         return json.loads(cache.read_text())

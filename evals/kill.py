@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
 sys.path.insert(0, str(ROOT / "drivers"))
 
+import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import trials  # noqa: E402
 import watch  # noqa: E402
@@ -43,12 +44,8 @@ GRACE_SEC = 60
 clock, sleep = time.time, time.sleep
 
 
-def runs_root():
-    return Path(os.environ.get("EVAL_KILL_ROOT") or Path.home() / "Development" / "yi-runs")
-
-
 def shape_dir():
-    return runs_root() / "next-shape"
+    return axes.runs_root("EVAL_KILL_ROOT") / "next-shape"
 
 
 def micro(usd):
@@ -253,7 +250,7 @@ def park_file():
 
 def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
     run = f"{family}-{spec['id']}-{uuid.uuid4().hex[:8]}"
-    base = runs_root() / test / run
+    base = axes.runs_root("EVAL_KILL_ROOT") / test / run
     home, repo, events = base / "home", base / "repo", base / "events.jsonl"
     deadline = int(spec.get("deadline", 600))
     row = {"test": test, "family": family, "id": spec["id"], "run": run, "model": route["model"], "startedAt": clock()}
