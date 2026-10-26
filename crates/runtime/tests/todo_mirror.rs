@@ -940,7 +940,7 @@ fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
     let (_session, todos, engine) = mirrored(&dir)?;
     let engine = Arc::new(engine);
     todos.set_carry(yi_runtime::todo::mirror::carry(Arc::downgrade(&engine)));
-    let (gate, address) = blocked_gate(&engine)?;
+    let (gate, _) = blocked_gate(&engine)?;
     let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
     let clock_service = HeartbeatService::new(Arc::clone(&store), "/tmp");
     clock_service.bind_session("mirror".to_owned());
@@ -962,15 +962,7 @@ fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
         row.state
     );
     for round in 0..10 {
-        engine.apply(owner(Op::Block {
-            label: gate.clone(),
-            on: BlockedOn::Channel {
-                address: address.clone(),
-                filter: None,
-            },
-            note: "approve at nine".to_owned(),
-            ask: None,
-        }))?;
+        blocked_gate(&engine)?;
         let start = Arc::new(std::sync::Barrier::new(3));
         let (first, second) = std::thread::scope(|scope| {
             let first = {
@@ -1035,6 +1027,11 @@ fn a_wait_under_constant_plan_churn_refuses_at_the_budget() -> TestResult {
     for _ in &churners {
         first_writes.recv_timeout(std::time::Duration::from_secs(5))?;
     }
+    let timer = Arc::clone(&stop);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(2600));
+        timer.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
     let carried = todos.unblock_in(&plan.id, &gate, &address);
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let churned = churners
