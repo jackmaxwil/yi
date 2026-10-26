@@ -10,7 +10,7 @@ A test is its own module, evals/kill/<test>.py: THRESHOLD (the pre-registered te
 the plan's reserve, already plus 25%; a subscription family's figure is what the run would cost
 on OpenRouter, reported when it cannot run), STEP (its place on the paid ladder), optional
 DEADLINE (ISO time; a quota reset past it writes the run unrun), runs() (a list of run specs:
-{"id", "prompt", "deadline", "args", "repo", "rev"}, or {"id", "harbor": argv}) and verdict(rows),
+{"id", "prompt", "deadline", "args", "repo", "rev", "keep"}, or {"id", "harbor": argv}) and verdict(rows),
 which sees only rows that ran: a row whose status is in NOT_RUN never reaches it.
 
 Owner, 2026-10-23: "you can use my entire kimi subscription. then $30 openrouter cap". Every run
@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
 sys.path.insert(0, str(ROOT / "drivers"))
 
+import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import trials  # noqa: E402
 import watch  # noqa: E402
@@ -43,12 +44,8 @@ GRACE_SEC = 60
 clock, sleep = time.time, time.sleep
 
 
-def runs_root():
-    return Path(os.environ.get("EVAL_KILL_ROOT") or Path.home() / "Development" / "yi-runs")
-
-
 def shape_dir():
-    return runs_root() / "next-shape"
+    return axes.runs_root("EVAL_KILL_ROOT") / "next-shape"
 
 
 def micro(usd):
@@ -209,11 +206,12 @@ def seed_home(home, binary, route, need_sec):
     central = kimi_home() / ".yi"
     if (central / "catalog").is_dir():
         shutil.copytree(central / "catalog", yi / "catalog")
-    for token in sorted((central / "providers" / "tokens").glob("*.json")):
-        if json.loads(token.read_text()).get("kind") == "key":
-            write_0600(yi / "providers" / "tokens" / token.name, json.loads(token.read_text()))
+    provider = route["model"].split("/", 1)[0]
+    # A --yolo run can read its HOME, so it gets its own route's key and no other provider's.
+    key = central / "providers" / "tokens" / f"{provider}.json"
+    if paid(route) and key.is_file() and json.loads(key.read_text()).get("kind") == "key":
+        write_0600(yi / "providers" / "tokens" / key.name, json.loads(key.read_text()))
     if not paid(route):
-        provider = route["model"].split("/", 1)[0]
         write_0600(yi / "providers" / "tokens" / f"{provider}.json", access_token(binary, provider, need_sec))
         (yi / "oauth").mkdir()
         shutil.copy(central / "oauth" / f"{provider}.json", yi / "oauth" / f"{provider}.json")
@@ -252,10 +250,10 @@ def park_file():
 
 def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
     run = f"{family}-{spec['id']}-{uuid.uuid4().hex[:8]}"
-    base = runs_root() / test / run
+    base = axes.runs_root("EVAL_KILL_ROOT") / test / run
     home, repo, events = base / "home", base / "repo", base / "events.jsonl"
     deadline = int(spec.get("deadline", 600))
-    row = {"test": test, "family": family, "run": run, "model": route["model"], "startedAt": clock()}
+    row = {"test": test, "family": family, "id": spec["id"], "run": run, "model": route["model"], "startedAt": clock()}
     try:
         seed_home(home, binary, route, deadline + 600)
         subprocess.run(["git", "clone", "--shared", "-q", str(spec.get("repo") or ROOT.parent), str(repo)], check=True)
@@ -292,6 +290,9 @@ def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
                     watch.kill_group(proc, 5)
         exit_code = proc.wait()
         timer.cancel()
+        for name in spec.get("keep", ()):
+            if (repo / name).is_file():
+                shutil.copy(repo / name, base / name)
         usage = yi_usage.parse_events(events)
         unpriced = bool(usage["costUnknownTurns"])
         status = status or ("timeout" if fired else "quota" if quota_hit(events)

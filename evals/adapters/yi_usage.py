@@ -36,6 +36,24 @@ TASK_TIMEOUT_SEC = 28800
 ROUTING_ENV = "EVAL_ROUTING"
 LEVERS_ENV = "YI_LEVERS"
 PLUGINS_ENV = "EVAL_PLUGINS"
+# A text file appended to every trial's instruction: the one thing two arms of an A/B differ in.
+ARM_ENV = "EVAL_ARM_FILE"
+
+
+def with_arm(instruction, environ):
+    """The arm's text after the task's own. A named file that is missing raises: the trial would
+    otherwise run the wrong arm and be scored as the right one."""
+    path = environ.get(ARM_ENV)
+    if not path:
+        return instruction
+    return instruction.rstrip("\n") + "\n\n" + Path(path).read_text().strip() + "\n"
+
+
+def arm_label(environ):
+    """The arm text's hash as it rides the fingerprint's mode: two arms are two configs, and
+    one text is one config wherever its file lives."""
+    path = environ.get(ARM_ENV)
+    return "+arm" + hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12] if path else ""
 
 
 
