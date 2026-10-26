@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use yi_types::message::{AgentMessage, Content, StopReason};
+use yi_types::message::{AgentMessage, Attribution, Content, StopReason};
 use yi_types::subagent::{ChildExit, FailClass};
 
 use super::{INTERRUPTED, Standing, Step, SubagentHost, preview};
@@ -56,6 +56,49 @@ fn exit_of(session: &AgentSession) -> (ChildExit, Option<String>) {
 
 fn failed(class: FailClass, error: impl std::fmt::Display) -> (ChildExit, Option<String>) {
     (ChildExit::Failed { class }, Some(error.to_string()))
+}
+
+pub(crate) fn schema_answer(messages: &[AgentMessage]) -> Option<&[AgentMessage]> {
+    let start = messages.iter().rposition(|message| {
+        matches!(
+            message,
+            AgentMessage::User {
+                attribution: Attribution::Task,
+                ..
+            }
+        ) || crate::mail::is_followup(message)
+    })?;
+    let answered = |message: &AgentMessage| match message {
+        AgentMessage::Assistant { stop_reason, .. } => {
+            !matches!(stop_reason, StopReason::ToolUse)
+                || super::last_assistant_text(std::slice::from_ref(message)).is_some()
+        }
+        _ => false,
+    };
+    let answer_start = start.saturating_add(1);
+    let first_end = messages
+        .iter()
+        .enumerate()
+        .skip(answer_start)
+        .find_map(|(index, message)| {
+            (matches!(message, AgentMessage::User { .. }) && !crate::mail::is_chase(message)
+                || crate::mail::envelope_id(message).is_some())
+            .then_some(index)
+        })
+        .unwrap_or(messages.len());
+    if messages
+        .get(answer_start..first_end)
+        .is_some_and(|run| run.iter().any(answered))
+    {
+        return messages.get(answer_start..first_end);
+    }
+    let end = messages
+        .iter()
+        .enumerate()
+        .skip(first_end)
+        .find_map(|(index, message)| answered(message).then_some(index.saturating_add(1)))
+        .unwrap_or(messages.len());
+    messages.get(answer_start..end)
 }
 
 fn schema_failure(
@@ -339,5 +382,40 @@ impl SubagentHost {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_types::message::UserContent;
+
+    #[test]
+    fn mail_before_the_task_answer_does_not_replace_it() -> Result<(), Box<dyn std::error::Error>> {
+        let mail = AgentMessage::Custom {
+            custom_type: crate::mail::INBOX_ENTRY.to_owned(),
+            content: UserContent::Text("ordinary mail".to_owned()),
+            display: true,
+            details: Some(serde_json::json!({"id": "parent-1"})),
+            timestamp: 0,
+        };
+        let answer = |text: &str| {
+            yi_ai::faux::faux_assistant_message(
+                vec![yi_ai::faux::faux_text(text)],
+                StopReason::Stop,
+            )
+        };
+        let messages = vec![
+            crate::session::task("answer"),
+            mail,
+            answer("{\"answer\":\"sea\"}"),
+            answer("mail prose"),
+        ];
+        let selected = crate::subagent::schema_answer(&messages).ok_or("no schema answer")?;
+        assert_eq!(
+            crate::subagent::answer_text(selected).as_deref(),
+            Some("{\"answer\":\"sea\"}")
+        );
+        Ok(())
     }
 }
