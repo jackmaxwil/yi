@@ -278,13 +278,6 @@ fn goal_json(goal: &Goal) -> Value {
     value
 }
 
-/// Uncached input plus output.
-pub(crate) fn usage_delta(usage: &yi_types::message::Usage) -> u64 {
-    let uncached = usage.input.saturating_sub(usage.cache_read).max(0);
-    let output = usage.output.max(0);
-    u64::try_from(uncached.saturating_add(output)).unwrap_or(0)
-}
-
 /// State machine over the session store fact, idle continuation and budget
 /// accounting. One per session.
 pub struct GoalService {
@@ -577,7 +570,7 @@ impl GoalService {
         if !matches!(goal.status, GoalStatus::Active | GoalStatus::BudgetLimited) {
             return;
         }
-        goal.tokens_used = goal.tokens_used.saturating_add(usage_delta(usage));
+        goal.tokens_used = goal.tokens_used.saturating_add(usage.fresh());
         if let Ok(mut mark) = self.wall_mark.lock() {
             if let Some(started) = mark.take() {
                 goal.time_used_seconds = goal
