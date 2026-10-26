@@ -748,9 +748,10 @@ impl Tool for BashTool {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Shell command to run. Omit it to check on a background job instead."},
-                "job": {"type": "integer", "description": "Background job to check on; defaults to the most recent"},
+                "job": {"type": "integer", "description": "Background job from this session to check on; defaults to this session's most recent"},
                 "wait": {"type": "integer", "description": "With command: seconds, below timeout_secs, before a still-running command becomes a background job. Without: seconds to wait for that job. Clamped 5-300."},
                 "timeout_secs": {"type": "integer", "description": "Wall-clock limit in seconds, default 300, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."},
+                "kill": {"type": "boolean", "description": "With job and no command: end this session's job and report how it stopped"},
                 "max_output_lines": {"type": "integer", "description": "Per-call reducer line budget, for when the full output matters"}
             }
         })
@@ -780,7 +781,7 @@ impl Tool for BashTool {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if command.trim().is_empty() {
-            return poll_job(&input, &context.cancelled, context.program);
+            return crate::jobs::poll_job(&input, context);
         }
         if let Some(refusal) = broad_search(command) {
             return error_output(refusal);
@@ -942,61 +943,6 @@ fn timed_out_notes(timeout: std::time::Duration, nudged: bool, asked: Option<u64
         ));
     }
     notes
-}
-
-/// The same tool with no command; it holds the job's report so what it returns is not resent.
-fn poll_job(
-    input: &Map<String, Value>,
-    cancelled: &crate::CancelFlag,
-    program: bool,
-) -> ToolOutput {
-    let jobs = crate::jobs::registry();
-    let requested = input
-        .get("job")
-        .and_then(Value::as_u64)
-        .map(crate::jobs::JobId);
-    let deadline = input
-        .get("wait")
-        .and_then(Value::as_u64)
-        .map(crate::jobs::clamp_wait);
-    let started = std::time::Instant::now();
-    let _span = yi_types::trace::span("wait.job");
-    let Some(id) = requested.or_else(|| jobs.latest().map(|report| report.id)) else {
-        return error_output("no background job to check on".to_owned());
-    };
-    jobs.set_reported(id, true);
-    loop {
-        let Some(report) = jobs.report(id) else {
-            return error_output("no background job to check on".to_owned());
-        };
-        if report.finished {
-            jobs.mark_delivered(id);
-            let exit_code = report.exit_code.unwrap_or(-1);
-            let text = format!("{}\n{}", report.headline(), report.view());
-            let killed =
-                report.state == crate::jobs::JobState::Settled(crate::jobs::Outcome::Killed);
-            let details = json!({ "job": id.0, "exitCode": exit_code });
-            let value = program
-                .then(|| crate::values::polled(id, report.exit_code, &report.output, killed));
-            let mut output = crate::tool::ran_output(text, details, killed);
-            output.value = value;
-            return output;
-        }
-        match deadline {
-            // In slices, so an interrupt (Esc, the deadline) ends the wait within a second.
-            Some(limit) if started.elapsed() < limit && !cancelled() => {
-                let left = limit.saturating_sub(started.elapsed());
-                jobs.wait_settled(Some(id), left.min(std::time::Duration::from_secs(1)));
-            }
-            _ => {
-                jobs.set_reported(id, false);
-                let mut output = text_output(report.headline());
-                output.result.details = json!({ "job": id.0, "running": true });
-                output.value = program.then(|| crate::values::job(id));
-                return output;
-            }
-        }
-    }
 }
 
 /// Gitignore-filtered and sorted, for surfaces offering a file picker.
