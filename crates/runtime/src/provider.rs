@@ -393,7 +393,6 @@ impl ProviderStream {
             extra_headers: openai_extra(model, &credential),
             oauth,
             settle: self.settle.lock().ok().and_then(|hook| hook.clone()),
-            ..OpenAiOptions::default()
         };
         match api {
             ProviderApi::AnthropicMessages => {
