@@ -13,10 +13,11 @@ Header keys, each optional:
   growth: +212 <memo>           net src growth past the free band, and what was weighed for deletion
   raise: tests +140, comments +12, over-cap +1, crate runtime +60
   decision: <decision> | <why> | <reversible via>      repeatable; numbered by the recorder
-The recorder adds `version:` and `decisions:` when it records the file."""
+scripts/record_changes.py adds `version:` and `decisions:` when it records the file, and its own
+diff, exactly what it writes from the fork's tree, is the one view edit a branch may carry."""
 import functools, pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, fail, fork, git, no_fork
+from _common import ROOT, fail, fork, git, no_fork, scratch_repo
 
 DIR = "docs/changes"
 NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md$")
@@ -147,6 +148,18 @@ def tree_edits(base):
     return errs
 
 
+def recorded(base):
+    """The recorder's own diff is the one a branch may carry into the views: every path it writes
+    from the fork's tree holds exactly that text here, and nothing else under those paths changed."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import record_changes
+    writes, fork_names = record_changes.expected_at(ROOT, base), held(base)
+    changed = {p for p in git("diff", "--name-only", "--no-renames", base, "--", "docs/CHANGELOG.md", "docs/ARCHITECTURE.md",
+                              "docs/solutions", DIR).stdout.split() if not p.startswith(f"{DIR}/") or p[len(DIR) + 1:] in fork_names}
+    return bool(writes) and changed <= writes.keys() and all(
+        (ROOT / p).is_file() and (ROOT / p).read_text() == text for p, text in writes.items())
+
+
 def file_errors(names_texts, recorded=()):
     errs = []
     for name, text in names_texts:
@@ -159,9 +172,11 @@ def file_errors(names_texts, recorded=()):
     return errs
 
 
+GOOD = "---\nissue: Closes #974\ngrowth: +212 weighed X\nraise: tests +140, crate runtime +60\ndecision: a | b | c\n---\nProse.\n"
+
+
 def cases():
     """Each case a refusal the gate owes; returns the ones that did not hold."""
-    good = "---\nissue: Closes #974\ngrowth: +212 weighed X\nraise: tests +140, crate runtime +60\ndecision: a | b | c\n---\nProse.\n"
     log = "# Changelog\n\nprose\n\n| ver | date | change |\n|---|---|---|\n| 0.2.0 | d | two |\n"
     arch = f"version: 0.2.0  # x\n\n## Decisions\n\n{DECISIONS}\n|---|---|---|---|\n| D2 | a | b | c |\n\n## Next\n"
     was = {"docs/CHANGELOG.md": log, "docs/ARCHITECTURE.md": arch}
@@ -174,8 +189,8 @@ def cases():
         "a growth memo that weighs nothing": parse("---\ngrowth: +212\n---\nx\n")[1],
         "a key twice": parse("---\nissue: #1\nissue: #2\n---\nx\n")[1],
         "a file without prose": parse("---\nissue: Closes #1\n---\n\n")[1],
-        "a name without its date": file_errors([("change-files.md", good)]),
-        "a branch stamping its own version": file_errors([("2026-10-01-x.md", good.replace("---\nissue", "---\nversion: 0.9.0\nissue"))]),
+        "a name without its date": file_errors([("change-files.md", GOOD)]),
+        "a branch stamping its own version": file_errors([("2026-10-01-x.md", GOOD.replace("---\nissue", "---\nversion: 0.9.0\nissue"))]),
         "a raise past the measured growth": raise_errors("tests", 110, 100, 50),
         "growth past the raise": raise_errors("tests", 160, 100, 50),
         "an added changelog row": edit("docs/CHANGELOG.md", "| 0.2.0 |", "| 0.3.0 | d | three |\n| 0.2.0 |"),
@@ -183,8 +198,8 @@ def cases():
         "an added decision": edit("docs/ARCHITECTURE.md", "| D2 | a", "| D3 | z | y | x |\n| D2 | a"),
     }
     passed = {
-        "a good file": file_errors([("2026-10-01-change-files.md", good)]),
-        "a recorded file's stamp": file_errors([("2026-10-01-x.md", good.replace("---\nissue", "---\nversion: 0.9.0\nissue"))], {"2026-10-01-x.md"}),
+        "a good file": file_errors([("2026-10-01-change-files.md", GOOD)]),
+        "a recorded file's stamp": file_errors([("2026-10-01-x.md", GOOD.replace("---\nissue", "---\nversion: 0.9.0\nissue"))], {"2026-10-01-x.md"}),
         "a raise equal to the growth": raise_errors("tests", 150, 100, 50),
         "no raise and no growth": raise_errors("tests", 90, 100, 0),
         "changelog prose": edit("docs/CHANGELOG.md", "prose", "new prose"),
@@ -193,7 +208,7 @@ def cases():
     }
     bad = [f"not refused: {name}" for name, errs in refused.items() if not errs]
     bad += [f"refused: {name}: {errs}" for name, errs in passed.items() if errs]
-    fields = parse(good)[0]
+    fields = parse(GOOD)[0]
     if fields["raise"] != {"tests": 140, "crate runtime": 60} or fields["body"] != "Prose.":
         bad.append(f"a good file read as {fields}")
     if parse("---\nraise: tests +1\nraise: tests +2\n---\nx\n")[0]["raise"] != {"tests": 3}:
@@ -204,21 +219,8 @@ def cases():
 def fork_cases():
     """The size gates themselves, run in a scratch repo cut from main: growth goes red, the exact
     raise greens it, and a raise past the growth is refused. Fork blobs come through cat-file."""
-    import shutil, subprocess, tempfile
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-changes-"))
-    run = lambda *a: subprocess.run(a, cwd=tmp, capture_output=True, text=True)
-    git_ = lambda *a: run("git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
     bad = []
-    try:
-        shutil.copytree(pathlib.Path(__file__).parent, tmp / "scripts/guardrails", ignore=shutil.ignore_patterns("baselines", "__pycache__"))
-        (tmp / "crates/a/src").mkdir(parents=True)
-        (tmp / "crates/a/tests").mkdir()
-        (tmp / "crates/a/src/lib.rs").write_text("// one\nfn a() {}\n")
-        (tmp / "crates/a/tests/t.rs").write_text("fn t() {}\n")
-        git_("init", "-q", "-b", "main")
-        git_("add", "-A")
-        git_("commit", "-q", "-m", "seed")
-        git_("checkout", "-q", "-b", "topic")
+    with scratch_repo("yi-changes-", {"crates/a/src/lib.rs": "// one\nfn a() {}\n", "crates/a/tests/t.rs": "fn t() {}\n"}) as (tmp, run):
         with open(tmp / "crates/a/src/lib.rs", "a") as f:
             f.write("// two\n// three\n// four\n" + "".join(f"fn g{i}() {{}}\n" for i in range(200)))
         (tmp / "crates/a/tests/t.rs").write_text("fn t() {}\nfn u() {}\n")
@@ -237,8 +239,6 @@ def fork_cases():
         (tmp / DIR / "2026-10-01-grow.md").write_text(change.replace("---\nGrow.", "---\n"))
         if verdict()["test_size"] != 1:
             bad.append("a change file this gate refuses still lent its raise")
-    finally:
-        shutil.rmtree(tmp)
     return bad
 
 
@@ -246,9 +246,8 @@ def scan_cases():
     """Every size gate asks pending() once per crate or key; the fork's listing is read once a process."""
     global git, files
     calls, real = [], (git, files)
-    text = "---\nissue: Closes #974\ngrowth: +212 weighed X\nraise: tests +140, crate runtime +60\ndecision: a | b | c\n---\nProse.\n"
     listing = lambda *a: calls.append(a) or type("Run", (), {"stdout": "", "returncode": 0})()
-    git, files = listing, lambda: [(f"2026-10-{1 + i % 28:02d}-change-{i}.md", text) for i in range(187)]
+    git, files = listing, lambda: [(f"2026-10-{1 + i % 28:02d}-change-{i}.md", GOOD) for i in range(187)]
     pending.cache_clear()
     try:
         asks = [raised("fork", key) for key in ("tests", "comments", "over-cap", "crate runtime")]
@@ -279,8 +278,8 @@ def main():
         no_fork("changes")
     views = ("docs/CHANGELOG.md", "docs/ARCHITECTURE.md")
     errs = file_errors(files(), held(base))
-    errs += view_edits({p: at(base, p) for p in views}, {p: (ROOT / p).read_text() for p in views})
-    errs += tree_edits(base)
+    edits = view_edits({p: at(base, p) for p in views}, {p: (ROOT / p).read_text() for p in views}) + tree_edits(base)
+    errs += edits if edits and not recorded(base) else []
     fail(errs, f"changes ({len(pending(base))} pending in this branch, fork {base[:8]})")
 
 

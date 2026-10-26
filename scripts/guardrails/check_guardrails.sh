@@ -114,6 +114,13 @@ run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
 # Change files are the one place a branch records a change; the format and the view-edit
 # refusals are rules over text, so only this flag proves each refusal fires.
 run "$PY" scripts/guardrails/check_changes.py --selfcheck
+# The recorder numbers versions and decisions on main, where a wrong order is a renumbering
+# nobody can undo; only this flag runs it over real change files in their real landing order.
+if [ "$FAST" -eq 1 ]; then
+  run echo "skip record selfcheck (--fast: replays two record branches and ten gate runs)"
+else
+  run "$PY" scripts/record_changes.py --selfcheck
+fi
 # A baseline edit that rides beside code is how growth hid before the ratchets had their own
 # commits; the deletion carve-out is a rule over file statuses, so only this flag proves it.
 run "$PY" scripts/guardrails/check_commit_style.py --selfcheck

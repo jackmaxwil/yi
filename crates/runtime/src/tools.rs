@@ -9,6 +9,7 @@ use yi_tools::{CancelFlag, Tool, ToolContext};
 use yi_types::model::ToolDef;
 
 use crate::permission::{Containment, PermissionBroker};
+use crate::rules::RuleEngine;
 
 pub struct ToolAdapter {
     tool: Arc<dyn Tool>,
@@ -120,7 +121,10 @@ async fn gate_armed(
     walled: (&[PathBuf], &[PathBuf]),
     context: &ToolContext,
 ) -> Option<String> {
-    let refused = host_wall(command, rules.as_deref(), wall, walled, &context.cwd);
+    let rules = rules
+        .as_deref()
+        .map(|rules| (rules, RuleEngine::check_tool as RuleScan));
+    let refused = host_wall(command, rules, wall, walled, &context.cwd);
     if refused.is_some() {
         return refused;
     }
@@ -131,11 +135,14 @@ async fn gate_armed(
         .unwrap_or_else(|join_error| Some(format!("permission check failed: {join_error}")))
 }
 
-/// The gate of a heartbeat's `exec://` source: it runs on the host, so it meets what an armed
-/// todo command does. The spares are read per call: a child's store attaches after its wiring.
-pub(crate) fn heartbeat_gate(
+pub(crate) type RuleScan = fn(&RuleEngine, &str, &str) -> Option<String>;
+
+/// The gate of a heartbeat's `exec://` source and a spawn's `check`: each runs later on the host,
+/// so it meets what an armed todo command does. Spares are read per call: a store attaches late.
+pub(crate) fn host_gate(
     wiring: &crate::wiring::RuntimeWiring,
-    rules: Arc<dyn Fn() -> Option<Arc<crate::rules::RuleEngine>> + Send + Sync>,
+    rules: Arc<dyn Fn() -> Option<Arc<RuleEngine>> + Send + Sync>,
+    scan: RuleScan,
     own: Option<crate::wiring::OwnPathsFn>,
 ) -> Arc<crate::schedule::GateFn> {
     let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
@@ -144,7 +151,8 @@ pub(crate) fn heartbeat_gate(
     Arc::new(move |command: &str| {
         let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
         let rules = rules();
-        host_wall(command, rules.as_deref(), &wall, (&roots, &spared), &cwd)
+        let rules = rules.as_deref().map(|rules| (rules, scan));
+        host_wall(command, rules, &wall, (&roots, &spared), &cwd)
             .or_else(|| refuse_armed(command, contained, broker.as_deref(), ""))
     })
 }
@@ -153,14 +161,14 @@ pub(crate) fn heartbeat_gate(
 /// alone: the wall's own lists, and its walled roots save a spare (#1001).
 pub(crate) fn host_wall(
     command: &str,
-    rules: Option<&crate::rules::RuleEngine>,
+    rules: Option<(&RuleEngine, RuleScan)>,
     wall: &crate::wall::Wall,
     (roots, spared): (&[PathBuf], &[PathBuf]),
     cwd: &std::path::Path,
 ) -> Option<String> {
     let args = bash(command);
     let json = serde_json::to_string(&args).unwrap_or_default();
-    let walled = (rules.and_then(|rules| rules.check_tool("bash", &json)))
+    let walled = (rules.and_then(|(rules, scan)| scan(rules, "bash", &json)))
         .or_else(|| wall.check("bash", yi_tools::ToolKind::Exec, &args, cwd));
     walled.or_else(|| walled_root_refusal(command, roots, spared, cwd))
 }
@@ -183,7 +191,7 @@ fn walled_root_refusal(
     // Every `cd` target joins the dirs a word is resolved from, scoped or not: fail closed.
     let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
     for word in words.filter(|word| !word.is_empty() && !roots.is_empty()) {
-        let glued = word.find('/').filter(|at| *at > 0).map(|at| &word[at..]);
+        let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
         for spelled in std::iter::once(word).chain(glued) {
             let head: String = (spelled.split_inclusive('/'))
                 .take_while(|part| !part.contains(['*', '?', '[']))
@@ -235,12 +243,12 @@ pub fn refuse_armed(
 ) -> Option<String> {
     if in_container {
         return Some(format!(
-            "an exec:// source runs `{command}` on the host, and this session's commands run in a container"
+            "`{command}` runs later on the host, and this session's commands run in a container"
         ));
     }
     if broker.is_some_and(PermissionBroker::confines_walled) {
         return Some(crate::gate::walled_host_refusal(
-            "an exec:// source runs on the host",
+            "it runs later on the host",
         ));
     }
     let outcome = broker?.decide_call(
@@ -257,14 +265,14 @@ pub fn refuse_armed(
             gate_allowed: false,
             ..
         } => Some(format!(
-            "an exec:// source runs `{command}` outside the sandbox, which allows it only contained: run it with bash in a turn, or allow it by a permission rule"
+            "`{command}` runs later outside the sandbox, which allows it only contained: run it yourself with bash, or allow it by a permission rule"
         )),
         Containment::Contained { .. } | Containment::Uncontained => None,
     }
 }
 
 type Gates<'a> = (
-    &'a Option<Arc<crate::rules::RuleEngine>>,
+    &'a Option<Arc<RuleEngine>>,
     &'a crate::wall::Wall,
     Option<&'a Arc<PermissionBroker>>,
 );

@@ -33,7 +33,7 @@ pub(super) const TARGETED: [&str; 10] = [
 ];
 
 pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<String>) {
-    let mut args = unleak(&unstring_todos(args));
+    let mut args = unstring_todos(args).into_owned();
     let mut said = Vec::new();
     infer_op(&mut args);
     let rows =
@@ -246,23 +246,6 @@ pub(super) fn blocks(args: &mut Map<String, Value>) -> Vec<Map<String, Value>> {
         .filter_map(Value::as_object_mut)
         .filter_map(block)
         .collect()
-}
-
-/// Incident: GLM's call markup leaked into a key, `{"block<arg_key>note": …}`, or a value,
-/// `{"done": "evidence</arg_key><arg_value>…"}`; the field reads back and the op is the leaked name.
-fn unleak(args: &Map<String, Value>) -> Map<String, Value> {
-    let leaked = args
-        .iter()
-        .find_map(|(key, value)| match key.split_once("<arg_key>") {
-            Some((op, _)) => Some(op),
-            None => (value.as_str()?.contains("</arg_key><arg_value>")).then_some(key.as_str()),
-        });
-    let leaked = leaked.filter(|op| ALL_OPS.iter().any(|kind| op_name(*kind) == *op));
-    let mut fixed = crate::todo::tool::unleak(args).into_owned();
-    if let Some(op) = leaked {
-        fixed.entry("op").or_insert_with(|| json!(op));
-    }
-    fixed
 }
 
 /// A string of rows that parses is the rows. Incident: glm-5.3-flash stringified rich rows and

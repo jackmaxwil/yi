@@ -1,10 +1,11 @@
-import json, os, pathlib, re, subprocess, sys
+import contextlib, json, os, pathlib, re, shutil, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 # Net src lines a version may add unpriced (040). Here rather than in check_growth
 # because check_pr_metadata prices the same band on a PR's own diff, and two
 # copies of a budget is two budgets.
 FREE_BAND = 150
+BLOB_CAP, BLOB_ALLOW = 512_000, "scripts/guardrails/baselines/blob_allowlist.txt"
 BASE = ROOT / "scripts/guardrails/baselines"
 # Cargo builds under CARGO_TARGET_DIR when it is set; a fixed target/ path measured a stale binary.
 DIST_BIN = ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "dist/yi"
@@ -105,6 +106,24 @@ def texts(pattern, rev=None):
         out[name] = batch[head_end + 1:head_end + 1 + size].decode(errors="replace")
         at = head_end + 1 + size + 1
     return out
+
+@contextlib.contextmanager
+def scratch_repo(prefix, seed):
+    """A git repo holding these guardrails and `seed` ({path: text or bytes}) on main, checked out on
+    `topic`; yields (dir, run), run being a command in it with CARGO_TARGET_DIR unset; removed after."""
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
+    env = {k: v for k, v in os.environ.items() if k != "CARGO_TARGET_DIR"}
+    run = lambda *a: subprocess.run(a, cwd=tmp, capture_output=True, text=True, env=env)
+    try:
+        shutil.copytree(pathlib.Path(__file__).parent, tmp / "scripts/guardrails", ignore=shutil.ignore_patterns("baselines", "__pycache__"))
+        for name, body in seed.items():
+            (tmp / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / name).write_bytes(body if isinstance(body, bytes) else body.encode())
+        for args in (("init", "-q", "-b", "main"), ("add", "-A"), ("commit", "-q", "-m", "seed"), ("checkout", "-q", "-b", "topic")):
+            run("git", "-c", "user.name=t", "-c", "user.email=t@t", *args)
+        yield tmp, run
+    finally:
+        shutil.rmtree(tmp)
 
 def no_fork(name):
     fail(["no origin/main or main to find this branch's fork point; a shallow clone cannot run this gate"], name)
