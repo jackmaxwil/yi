@@ -175,7 +175,15 @@ pub fn view(
         (None, ShellCell(command)) => rerun("a %%bash cell running", command, "view.log"),
         (None, Job(command)) => rerun("bash", command, "view.log"),
     };
-    let mut text = ceiling(body, reduced.raw_bytes, room(pointer.as_deref()), &next);
+    let cut_text = ceiling(body, reduced.raw_bytes, room(pointer.as_deref()), &next);
+    // Incident: with no file to name, this middle cut swallowed the kernel's own cut row.
+    let swallowed = (raw.lines()).filter(|line| line.starts_with("[\u{2026} "));
+    let kernel = matches!(producer, ShellCell(_)) && pointer.is_none();
+    let swallowed = swallowed.filter(|row| kernel && !cut_text.contains(*row));
+    let mut text = std::iter::once(cut_text.as_str())
+        .chain(swallowed)
+        .collect::<Vec<_>>()
+        .join("\n");
     if let Some(note) = &pointer {
         text = format!("{text}\n{note}");
     }
