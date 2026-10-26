@@ -42,13 +42,6 @@ fn needs_json(todo: &Todo) -> bool {
     declared || schema_item
 }
 
-fn clip(text: String) -> String {
-    if text.chars().count() <= CAUSE_CHARS {
-        return text;
-    }
-    text.chars().take(CAUSE_CHARS).collect()
-}
-
 fn failed_items(verdict: &Verdict) -> String {
     let items: Vec<String> = verdict
         .items
@@ -61,10 +54,27 @@ fn failed_items(verdict: &Verdict) -> String {
     if items.is_empty() {
         return "the verdict was fail".to_owned();
     }
-    clip(items.join("; "))
+    items.join("; ")
 }
 
 impl PlanEngine {
+    /// A cause past [`CAUSE_CHARS`] keeps its whole text as a plan artifact, named at the cut.
+    fn clip(&self, plan: &PlanId, text: String) -> String {
+        let all = text.chars().count();
+        if all <= CAUSE_CHARS {
+            return text;
+        }
+        let kept: String = text.chars().take(CAUSE_CHARS).collect();
+        let stored =
+            (self.store.artifacts(plan)).put(text.as_bytes(), "text/plain", &self.store.nonce());
+        let rest = match stored {
+            Ok(stored) => format!("read plan://{plan}/artifacts/{}", stored.digest.hex()),
+            Err(error) => format!("lost, the artifact store refused it: {error}"),
+        };
+        let row = yi_tools::cut_row(CAUSE_CHARS, all, "chars", "CAUSE_CHARS", CAUSE_CHARS, &rest);
+        format!("{kept}\n{row}")
+    }
+
     fn names_plan(&self, agent: &str) -> bool {
         let root = agent
             .split_once('/')
@@ -330,7 +340,8 @@ impl PlanEngine {
         let label = held.label.as_str();
         if exit != ChildExit::Completed {
             let cause =
-                clip(error.unwrap_or_else(|| crate::family::read_exit(Some(exit)).verb.to_owned()));
+                error.unwrap_or_else(|| crate::family::read_exit(Some(exit)).verb.to_owned());
+            let cause = self.clip(&held.plan, cause);
             return Some(match self.fail_finish(&held, cause.clone()) {
                 Ok(()) => format!("plan: failed {label:?}: {cause}"),
                 Err(refused) => {
@@ -365,7 +376,7 @@ impl PlanEngine {
         if verdict.outcome != ContractOutcome::Fail {
             return Some(self.left_notice(&held, &refusal));
         }
-        let items = failed_items(verdict);
+        let items = self.clip(&held.plan, failed_items(verdict));
         let unparsed = verdict.items.iter().any(|line| {
             matches!(line.verdict, ItemVerdict::Fail { .. }) && held.schemas.contains(&line.id)
         });
@@ -738,8 +749,8 @@ mod tests {
             .ok_or("no kept transcript")?;
         let kept = yi_session::lock_session(&kept);
         for told in [
-            "Answer with only a JSON value",
-            "Schema: {",
+            "Reply with one JSON object matching this schema",
+            r#"{"type":"object","required":["findings"]}"#,
             "previous attempt failed: contract refused: schema1: answer contains no JSON value",
         ] {
             assert!(!kept.grep(told, 1).is_empty(), "the brief lacks {told:?}");

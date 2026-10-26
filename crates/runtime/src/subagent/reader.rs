@@ -35,7 +35,7 @@ impl Role {
         }
     }
 
-    const fn allowed_tools(self) -> &'static [&'static str] {
+    pub(crate) const fn allowed_tools(self) -> &'static [&'static str] {
         match self {
             Self::Reader => &["read", "grep"],
             Self::Worker => &["read", "grep", "edit", "write", "bash", "get_context"],
@@ -189,10 +189,7 @@ pub fn session(
         provider,
     );
     if reader.role == Role::Worker {
-        let mode = broker
-            .as_ref()
-            .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode());
-        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER_PROMPT, mode));
+        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER_PROMPT));
         child.enable_compaction();
     }
     child.set_turn_cap(reader.turns);
