@@ -40,6 +40,7 @@ pub mod post;
 pub mod provider;
 mod reclaim;
 pub mod retention;
+pub mod review_git;
 pub mod rewind;
 pub mod rollup;
 pub mod rules;
