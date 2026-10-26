@@ -162,7 +162,7 @@ impl LlmReviewer {
             system.push_str("\n\n");
             system.push_str(attention);
         }
-        let mut session = AgentSession::new(
+        let session = AgentSession::new(
             SessionConfig {
                 system_prompt: system,
                 model: self.model.clone(),

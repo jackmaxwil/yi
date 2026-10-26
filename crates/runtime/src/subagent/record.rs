@@ -67,14 +67,12 @@ fn red_check() -> ChildExit {
     }
 }
 
-pub(super) fn preview(text: &str) -> String {
+const PREVIEW_CHARS: usize = 240;
+
+pub(super) fn preview(text: &str, name: &str) -> String {
     let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() > 240 {
-        let capped: String = compact.chars().take(240).collect();
-        format!("{capped}…")
-    } else {
-        compact
-    }
+    let next = format!("read history://{name}");
+    crate::mailbox::clamp(&compact, PREVIEW_CHARS, "PREVIEW_CHARS", &next)
 }
 
 impl ChildRecord {
@@ -200,7 +198,7 @@ impl ChildRecord {
                 self.activity = ChildActivity::Waiting;
                 let text: String = yi_types::message::join_text(content, "\n");
                 if !text.is_empty() {
-                    self.answer_preview = Some(preview(&text));
+                    self.answer_preview = Some(preview(&text, &self.session_name));
                 }
             }
             _ => return false,

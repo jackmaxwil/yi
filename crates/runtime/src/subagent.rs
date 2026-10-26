@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::args::Args;
 use serde_json::{Map, Value, json};
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Usage};
+use yi_types::message::{AgentMessage, Attribution, Usage};
 use yi_types::model::{Effort, Model};
 pub use yi_types::subagent::{ChildActivity, ChildExit, ChildId, ChildStatus, ChildUpdate};
 
@@ -248,6 +248,7 @@ pub struct SubagentHost {
     /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
     pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
     kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
+    pub(crate) claude_hooks: std::sync::OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
 }
 
 impl SubagentHost {
@@ -457,6 +458,29 @@ pub(crate) fn answer_text(messages: &[AgentMessage]) -> Option<String> {
     answer
 }
 
+pub(crate) fn schema_answer(messages: &[AgentMessage]) -> Option<&[AgentMessage]> {
+    let start = messages.iter().rposition(|message| {
+        matches!(
+            message,
+            AgentMessage::User {
+                attribution: Attribution::Task,
+                ..
+            }
+        ) || crate::mail::is_followup(message)
+    })?;
+    let end = messages
+        .iter()
+        .enumerate()
+        .skip(start.saturating_add(1))
+        .find_map(|(index, message)| {
+            (matches!(message, AgentMessage::User { .. }) && !crate::mail::is_chase(message)
+                || crate::mail::envelope_id(message).is_some())
+            .then_some(index)
+        })
+        .unwrap_or(messages.len());
+    messages.get(start.saturating_add(1)..end)
+}
+
 pub(crate) fn last_assistant_text(messages: &[AgentMessage]) -> Option<String> {
     messages.iter().rev().find_map(|message| match message {
         AgentMessage::Assistant { content, .. } => {
@@ -489,6 +513,7 @@ impl SubagentHost {
             partitions: Mutex::default(),
             leads: Mutex::default(),
             check_gate: std::sync::OnceLock::new(),
+            claude_hooks: std::sync::OnceLock::new(),
             kernel: std::sync::OnceLock::new(),
         }
     }
@@ -511,6 +536,10 @@ impl SubagentHost {
 
     pub fn deadline(&self) -> Option<std::time::Instant> {
         self.deadline.lock().ok().and_then(|slot| *slot)
+    }
+
+    pub(crate) fn claude_hooks(&self) -> Option<Arc<crate::claude_hooks::Hooks>> {
+        self.claude_hooks.get().cloned().flatten()
     }
 
     /// Incident: a wait on an empty family exempted a repeated failing call from the breaker.
