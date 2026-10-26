@@ -49,6 +49,8 @@ elif argv[:1] == ["ask"]:
          config=json.loads((home / ".yi" / "config.json").read_text()),
          token=json.loads(token.read_text()) if token.exists() else None,
          mode=oct(token.stat().st_mode & 0o777) if token.exists() else None)
+    if os.environ.get("FAKE_WRITE"):
+        Path(os.environ["FAKE_WRITE"]).write_text("print('PASS kept')\n")
     sys.stderr.write("fake stderr: " + "x" * 3000 + " the tail\n")
     streams = os.environ["FAKE_STREAMS"].split(os.pathsep)
     for line in open(streams[min(asked, len(streams) - 1)]):
@@ -193,14 +195,19 @@ class Ledger(unittest.TestCase):
             with kill.ledger() as (_, write):
                 write({"kind": "reserve", "key": "hung/flash/dead", "test": "hung", "family": "flash", "usd": 0.4,
                        "pid": dead.pid})
-                write({"kind": "reserve", "key": "hung/flash/live", "test": "hung", "family": "flash", "usd": 0.3,
+                write({"kind": "reserve", "key": "hung/flash/live", "test": "other", "family": "flash", "usd": 0.3,
                        "pid": os.getpid()})
             self.assertEqual(quiet(["budget", "--close", "hung/flash/live"]),
                              (2, f"refused: hung/flash/live's runner, pid {os.getpid()}, is alive and settles it itself\n"))
+            with kill.ledger() as (rows, _):
+                before = kill.admit(rows, "later", "flash", 1.0, [("hung", "flash", 0.4)])
             code, out = quiet(["budget", "--close", "hung/flash/dead"])
             self.assertEqual(code, 0, out)
             shown = json.loads(out)
             self.assertEqual((shown["spentUsd"], shown["heldUsd"], shown["open"]), (0.4, 0.3, ["hung/flash/live"]))
+            with kill.ledger() as (rows, _):
+                after = kill.admit(rows, "later", "flash", 1.0, [("hung", "flash", 0.4)])
+            self.assertEqual(after, before, "closing a dead reserve must not charge its reserve twice")
             self.assertEqual(quiet(["budget", "--close", "hung/flash/dead"])[0], 2, "a closed reserve closes once")
             self.assertEqual(quiet(["report"])[1].strip(), "hung: unrun: needs $0.40", "a closed reserve never ran")
 
@@ -450,6 +457,23 @@ class Isolation(unittest.TestCase):
             self.assertEqual(central["refresh"], "rotated", "the rotated refresh token stays central")
 
 
+class Credentials(unittest.TestCase):
+    def test_a_run_home_holds_its_own_routes_credential_and_no_other_providers_key(self):
+        # Failure: a --yolo model reads the owner's other API keys out of its HOME and spends them
+        # outside the ledger's cap; a Kimi run needs no OpenRouter key at all.
+        with rig() as r:
+            tokens = kill.kimi_home() / ".yi" / "providers" / "tokens"
+            for name in ("openrouter", "deepseek"):
+                kill.write_0600(tokens / f"{name}.json", {"version": 1, "kind": "key", "key": f"{name}-secret"})
+            r.kimi_login(expires_in=10 ** 9)
+            seeded = {}
+            for family in ("flash", "kimi"):
+                home = r.tmp / family
+                kill.seed_home(home, str(r.yi), kill.routes()[family], 60)
+                seeded[family] = sorted(p.name for p in (home / ".yi" / "providers" / "tokens").glob("*.json"))
+            self.assertEqual(seeded, {"flash": ["openrouter.json"], "kimi": ["kimi.json"]})
+
+
 class Runs(unittest.TestCase):
     def test_an_empty_seed_boots_its_own_venv_and_the_row_says_so_with_the_stderr_tail(self):
         with rig() as r:
@@ -458,6 +482,15 @@ class Runs(unittest.TestCase):
             row = kill.ask("t", "flash", r.spec, str(r.yi), 1.0)
             self.assertTrue(row["venvRebuilt"] is True, row)
             self.assertEqual((len(row["stderr"]), row["stderr"][-9:]), (2000, "the tail\n"), row)
+
+    def test_a_kept_file_outlives_the_clone_in_the_run_directory_and_the_row_names_its_spec(self):
+        with rig() as r:
+            os.environ["FAKE_WRITE"] = "checks.py"
+            r.streams(EVENTS)
+            row = kill.ask("t", "flash", {**r.spec, "keep": ["checks.py", "absent.py"]}, str(r.yi), 1.0)
+            base = r.root / "t" / row["run"]
+            self.assertEqual((row["id"], (base / "checks.py").read_text()), ("one", "print('PASS kept')\n"))
+            self.assertFalse((base / "repo").exists() or (base / "absent.py").exists(), sorted(base.iterdir()))
 
     def test_a_run_past_its_deadline_is_killed_as_a_timeout(self):
         with rig() as r:
@@ -472,14 +505,15 @@ class Runs(unittest.TestCase):
             kill.TRIALS.mkdir()
             sweep = [sys.executable, "-c", (
                 "import json, os, sys\n"
-                "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP']}\n"
+                "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP'], 'job': sys.argv[2]}\n"
                 "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write(json.dumps(row) + '\\n')\n"),
                 str(kill.TRIALS)]
-            row = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": [*sweep, "first"]}, 1.0)
             filed = json.loads((kill.TRIALS / "ns-tb-flash-one.jsonl").read_text())
-            self.assertEqual((row["status"], row["chargedUsd"], filed["cap"]), ("ok", 0.12, "1.00"), row)
-            again = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
-            self.assertEqual((again["chargedUsd"], again["trials"]), (0.12, 1), "a re-run pays only its own rows")
+            self.assertEqual((row["status"], row["chargedUsd"], filed["cap"], row["jobs"]), ("ok", 0.12, "1.00", ["first"]), row)
+            again = kill.harbor("tb", "flash", {"id": "one", "harbor": [*sweep, "again"]}, 1.0)
+            self.assertEqual((again["chargedUsd"], again["trials"], again["jobs"]), (0.12, 1, ["again"]),
+                             "a re-run pays for and names only its own rows")
             silent = kill.harbor("tb", "flash", {"id": "two", "harbor": [sys.executable, "-c", "pass"]}, 0.7)
             self.assertEqual(silent["chargedUsd"], 0.7, "a sweep that filed nothing is charged its cap")
             self.assertEqual(kill.harbor("tb", "kimi", {"id": "three", "harbor": sweep}, float("inf"))["status"], "unrun")
