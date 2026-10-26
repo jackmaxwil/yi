@@ -2298,6 +2298,61 @@ fn memory_imports_lists_checks_and_forgets() -> TestResult {
     Ok(())
 }
 
+type Stamped = (PathBuf, Vec<u8>, std::time::SystemTime);
+
+/// Every file under `dir` with its bytes and mtime, so a read-only verb can be held to it.
+fn files_at(dir: &std::path::Path) -> Result<Vec<Stamped>, Box<dyn Error>> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let modified = std::fs::metadata(&path)?.modified()?;
+                found.push((path.clone(), std::fs::read(&path)?, modified));
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// `yi memory list` reads: a note written by hand after the import, with no journal record
+/// and no index line, is listed, and no file in the store changes until a session reconciles.
+#[test]
+fn yi_memory_list_changes_no_file() -> TestResult {
+    let workspace = Workspace::new("memory-list")?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runtime/tests/fixtures/memory/claude");
+    workspace.yi(&["memory", "import", &fixture.to_string_lossy()])?;
+    let projects = workspace.0.join("home/.yi/projects");
+    let store = std::fs::read_dir(&projects)?
+        .next()
+        .ok_or("the import made no project store")??
+        .path()
+        .join("memory");
+    std::fs::write(
+        store.join("harbor-json-stderr.md"),
+        "---\nname: harbor-json-stderr\ndescription: harbor exec merges stderr; parse --json from the first [ line\ntype: project\n---\nA --json command under harbor arrives with its stderr first.\n",
+    )?;
+    let before = files_at(&store)?;
+    let list = workspace.yi(&["memory", "list"])?;
+    let text = String::from_utf8_lossy(&list.stdout);
+    assert!(text.contains("memory · 4 repo · 0 global"), "{text}");
+    assert!(text.contains("  harbor-json-stderr "), "{text}");
+    let after = files_at(&store)?;
+    let changed: Vec<_> = after
+        .iter()
+        .filter(|file| !before.contains(file))
+        .map(|(path, _, _)| path.display().to_string())
+        .collect();
+    assert!(changed.is_empty(), "yi memory list wrote {changed:?}");
+    assert_eq!(before.len(), after.len());
+    Ok(())
+}
+
 /// A `--faux` script: a bash call running `command`, then `after` if given.
 fn bash_script(
     workspace: &Workspace,
