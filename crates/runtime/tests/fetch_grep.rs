@@ -356,7 +356,7 @@ fn an_address_grep_names_its_page_and_line_cuts_one_past_each_limit() -> TestRes
         )
     };
     let (at, refused) = grep("at.txt", 40, 200, 0)?;
-    let rows = at.lines().filter(|row| row.starts_with("local://at.txt:"));
+    let rows = at.lines().filter(|r| r.starts_with("local://at.txt line "));
     assert!(!refused && rows.count() == 40 && !at.contains("[…"), "{at}");
     let (past, _) = grep("past.txt", 41, 201, 0)?;
     let notices: Vec<&str> = past.lines().skip(40).collect();
@@ -380,9 +380,10 @@ fn an_address_grep_names_its_page_and_line_cuts_one_past_each_limit() -> TestRes
         "{clipped:?}"
     );
     let (rest, _) = grep("past.txt", 41, 201, 40)?;
-    assert!(rest.starts_with("local://past.txt:41: hit "), "{rest}");
+    assert!(rest.starts_with("local://past.txt line 41: hit "), "{rest}");
+    let token = rest.split(' ').next().unwrap_or_default();
     let resolver = Resolver::new(ws.to_path_buf(), Wall::default());
-    let (text, _) = tool_text(resolver, "read", json!({"path": "local://past.txt"}))?;
+    let (text, _) = tool_text(resolver, "read", json!({"path": token}))?;
     let whole = format!("hit {}", "é".repeat(197));
     assert!(text.lines().nth(40) == Some(whole.as_str()), "{text}");
     Ok(())
