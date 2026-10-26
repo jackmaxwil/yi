@@ -1009,6 +1009,23 @@ fn reducer_bypass_flags_are_scoped_to_their_programs() -> TestResult {
         let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
         assert!(reduced.out_bytes < reduced.raw_bytes, "{command}");
     }
+    for command in [
+        "go test -v",
+        "python3 -m pytest -v",
+        "python -m unittest --verbose",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert_eq!(reduced.text, raw, "{command}");
+    }
+    for command in [
+        "go build -v",
+        "cargo test; grep -v needle file",
+        "python -c 'print(\"pytest\")' -v",
+        "python3 -c 'print(\"unittest\")' --verbose",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert!(reduced.out_bytes < reduced.raw_bytes, "{command}");
+    }
     Ok(())
 }
 
@@ -1601,7 +1618,7 @@ fn a_running_poll_shows_output_and_kill_ends_the_job() -> TestResult {
     let mut context = ToolContext::new(dir.to_path_buf());
     context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
     let run = yi_tools::run_or_background(
-        "printf before; sleep 30",
+        "printf before; touch ready; sleep 30",
         &context,
         Some(Duration::ZERO),
         Duration::from_secs(60),
@@ -1611,6 +1628,13 @@ fn a_running_poll_shows_output_and_kill_ends_the_job() -> TestResult {
     let yi_tools::Run::Backgrounded(id) = run else {
         return Err("the command did not become a job".into());
     };
+    for _ in 0..500 {
+        if dir.join("ready").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(dir.join("ready").exists(), "producer did not print before");
     let running = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
     let running_text = output_text(&running);
     let killed = BashTool::default().execute(
@@ -1669,6 +1693,43 @@ fn a_running_poll_view_names_its_ceiling_only_one_byte_past_it() -> TestResult {
             "{bytes}: {text}"
         );
     }
+    Ok(())
+}
+#[test]
+fn a_running_poll_names_output_dropped_from_its_live_buffer() -> TestResult {
+    let dir = temp_dir("job-running-live-cap")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+    let run = yi_tools::run_or_background(
+        "head -c 55000 /dev/zero | tr '\\0' x; touch ready; sleep 30",
+        &context,
+        Some(Duration::ZERO),
+        Duration::from_secs(60),
+        None,
+        None,
+    )?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the command did not become a job".into());
+    };
+    for _ in 0..500 {
+        if dir.join("ready").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        dir.join("ready").exists(),
+        "producer did not emit 55,000 bytes"
+    );
+    let polled = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
+    let text = output_text(&polled);
+    let _cleanup = yi_tools::jobs::registry().kill(id);
+    assert!(text.contains("30000 of 55000"), "{text}");
+    assert!(text.contains("(OUTPUT_CAP 30000)"), "{text}");
+    assert!(
+        text.contains("of 55000 bytes kept (VIEW_CEILING 16384)"),
+        "{text}"
+    );
     Ok(())
 }
 

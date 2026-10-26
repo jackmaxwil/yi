@@ -31,21 +31,51 @@ pub const REDUCE_FLOOR: usize = 8_192;
 
 /// The user asked for the whole thing; reducing answers a different question.
 fn skip_reduction(command: &str) -> bool {
-    let has = |flags: &[&str]| command.split_whitespace().any(|word| flags.contains(&word));
+    let command = first_invocation(command);
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let has = |flags: &[&str]| words.iter().any(|word| flags.contains(word));
     const TEST_RAW: [&str; 3] = ["-v", "--verbose", "--nocapture"];
     match program(command) {
         Some("git") => has(&["--porcelain"]),
         Some("ls") => has(&["-la"]),
-        Some("cargo" | "pytest" | "py.test" | "nextest" | "jest" | "vitest" | "go") => {
-            has(&TEST_RAW)
-        }
+        Some("go") => words.get(1) == Some(&"test") && has(&TEST_RAW),
+        Some("cargo" | "pytest" | "py.test" | "nextest" | "jest" | "vitest") => has(&TEST_RAW),
         Some("python" | "python3")
-            if command.contains("pytest") || command.contains("unittest") =>
+            if words
+                .windows(2)
+                .any(|pair| pair == ["-m", "pytest"] || pair == ["-m", "unittest"]) =>
         {
             has(&TEST_RAW)
         }
         _ => false,
     }
+}
+
+fn first_invocation(command: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, character) in command.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if character == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(character, '\'' | '"') {
+            quote = Some(character);
+        } else if matches!(character, ';' | '|' | '&') {
+            return command.get(..index).unwrap_or(command);
+        }
+    }
+    command
 }
 
 /// Every path runs through [`never_worse`]; a lossy result points at `kept` (a cut capture's
@@ -155,7 +185,6 @@ pub fn rerun(how: &str, command: &str, log: &str) -> String {
     }
 }
 
-/// [`reduce`], then cut in the middle to [`VIEW_CEILING`] bytes, one row naming the rest.
 pub fn view(
     producer: Involuntary<'_>,
     stdout: &str,
@@ -164,12 +193,42 @@ pub fn view(
     kept: Option<&str>,
     tee_dir: Option<&Path>,
 ) -> Reduced {
+    view_inner(producer, stdout, stderr, exit_code, kept, tee_dir, None)
+}
+
+pub(crate) fn view_running(
+    command: &str,
+    output: &str,
+    total: usize,
+    tee_dir: Option<&Path>,
+) -> Reduced {
+    view_inner(
+        Involuntary::Job(command),
+        output,
+        "",
+        -1,
+        None,
+        tee_dir,
+        Some(total),
+    )
+}
+
+fn view_inner(
+    producer: Involuntary<'_>,
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+    kept: Option<&str>,
+    tee_dir: Option<&Path>,
+    produced: Option<usize>,
+) -> Reduced {
     use Involuntary::{Job, ShellCell, Traceback};
     let command = match producer {
         Job(command) | ShellCell(command) => command,
         Traceback => "",
     };
-    let reduced = reduce(command, stdout, stderr, exit_code, kept, tee_dir, None);
+    let mut reduced = reduce(command, stdout, stderr, exit_code, kept, tee_dir, None);
+    reduced.raw_bytes = produced.unwrap_or(reduced.raw_bytes);
     let raw = join_streams(stdout, stderr);
     let room = |pointer: Option<&str>| {
         VIEW_CEILING.saturating_sub(pointer.map_or(0, |note| note.len().saturating_add(1)))
