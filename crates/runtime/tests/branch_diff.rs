@@ -47,7 +47,7 @@ fn the_branch_diff_is_against_the_merge_base_with_main() -> TestResult {
     git(&["commit", "-q", "-am", "work"])?;
     std::fs::write(root.join("kept.rs"), "one\ntwo\nthree\n")?;
     std::fs::write(root.join("loose.rs"), "new\n")?;
-    let branch = yi_runtime::environment::branch_diff(&root).ok_or("no base")?;
+    let branch = yi_runtime::review_git::branch_diff(&root).ok_or("no base")?;
     assert_eq!(branch.files, vec![("kept.rs".to_owned(), 1, 0)]);
     assert_eq!(branch.untracked, 1);
     assert!(branch.patch.contains("+two"), "{}", branch.patch);
@@ -75,15 +75,15 @@ fn a_big_branch_diff_is_whole_and_a_cut_one_ends_on_a_file_and_says_so() -> Test
     }
     git(&["add", "."])?;
     git(&["commit", "-q", "-m", "work"])?;
-    let whole = yi_runtime::environment::branch_diff(&root).ok_or("no base")?;
+    let whole = yi_runtime::review_git::branch_diff(&root).ok_or("no base")?;
     assert_eq!(whole.files.len(), 3);
     assert!(whole.patch.len() > 60_000, "{}", whole.patch.len());
     assert_eq!(whole.patch.matches("diff --git ").count(), 3);
     assert!(!whole.patch.contains("omitted") && !whole.patch.contains("[…"));
     let at_cap =
-        yi_runtime::environment::branch_diff_capped(&root, whole.patch.len()).ok_or("no base")?;
+        yi_runtime::review_git::branch_diff_capped(&root, whole.patch.len()).ok_or("no base")?;
     assert_eq!(at_cap.patch, whole.patch);
-    let cut = yi_runtime::environment::branch_diff_capped(&root, whole.patch.len() - 1)
+    let cut = yi_runtime::review_git::branch_diff_capped(&root, whole.patch.len() - 1)
         .ok_or("no base")?;
     let (kept, notice) = cut.patch.rsplit_once("[… ").ok_or("no cut row")?;
     assert!(whole.patch.starts_with(kept), "the cut keeps a prefix");

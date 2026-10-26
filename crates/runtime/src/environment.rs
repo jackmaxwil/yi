@@ -1,17 +1,21 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::sync::broadcast;
+use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, ENVIRONMENT_TAG};
 
 use crate::session::{AgentSession, EnvironmentFn};
 use crate::subagent::SubagentHost;
 use crate::wiring::RuntimeWiring;
 
-const PROBE: Duration = Duration::from_secs(5);
+pub(crate) const PROBE: Duration = Duration::from_secs(5);
+
+type Summary = Option<(String, usize, usize)>;
 
 /// The branch from the one HEAD reader, and the (modified, untracked) counts from `git status`.
-pub fn git_summary(cwd: &Path) -> Option<(String, usize, usize)> {
+pub fn git_summary(cwd: &Path) -> Summary {
     let head = crate::lane::head(cwd).ok()?;
     let out = crate::lane::capture(cwd, "git", &["status", "--porcelain"], PROBE).ok()?;
     let (mut modified, mut untracked) = (0usize, 0usize);
@@ -23,6 +27,47 @@ pub fn git_summary(cwd: &Path) -> Option<(String, usize, usize)> {
         }
     }
     Some((sanitize(&head.label()), modified, untracked))
+}
+
+const WRITERS: [&str; 4] = ["bash", "edit", "write", "ipython"];
+
+/// [`git_summary`] read again only once a run starts or a writing tool ends: the model's own
+/// change shows at the next request, a change made outside Yi at the next run's start.
+pub struct GitSummary {
+    cwd: PathBuf,
+    held: Mutex<(broadcast::Receiver<AgentEvent>, Option<Summary>)>,
+}
+
+impl GitSummary {
+    pub fn new(cwd: PathBuf, events: broadcast::Receiver<AgentEvent>) -> Self {
+        Self {
+            cwd,
+            held: Mutex::new((events, None)),
+        }
+    }
+
+    /// Invariant: the lock is held across the read, so callers at once run `git status` once.
+    /// ponytail: a reply past the channel's capacity lags the receiver and costs one more read.
+    pub fn read(&self) -> Summary {
+        use broadcast::error::TryRecvError;
+        let Ok(mut held) = self.held.lock() else {
+            return git_summary(&self.cwd);
+        };
+        let (events, cached) = &mut *held;
+        loop {
+            match events.try_recv() {
+                Ok(AgentEvent::AgentStart) | Err(TryRecvError::Lagged(_)) => *cached = None,
+                Ok(AgentEvent::ToolExecutionEnd { tool_name, .. })
+                    if WRITERS.contains(&tool_name.as_str()) =>
+                {
+                    *cached = None;
+                }
+                Ok(_) => {}
+                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+            }
+        }
+        cached.get_or_insert_with(|| git_summary(&self.cwd)).clone()
+    }
 }
 
 /// The cwd line's trailing git clause: zero counts are omitted, but a clean tree keeps the
@@ -82,37 +127,6 @@ fn tokens(count: u64) -> String {
         n if n >= 1000 => format!("{:.1}K", n as f64 / 1000.0),
         n => n.to_string(),
     }
-}
-
-pub fn tracked(root: &Path, paths: &[String]) -> Vec<bool> {
-    let Ok(root) = std::fs::canonicalize(root) else {
-        return vec![false; paths.len()];
-    };
-    let rels: Vec<Option<String>> = paths
-        .iter()
-        .map(|path| {
-            let canonical = std::fs::canonicalize(path).ok()?;
-            let rel = canonical.strip_prefix(&root).ok()?;
-            Some(rel.to_string_lossy().into_owned())
-        })
-        .collect();
-    let mut args = vec!["ls-files", "-z", "--"];
-    args.extend(rels.iter().flatten().map(String::as_str));
-    if args.len() == 3 {
-        return vec![false; paths.len()];
-    }
-    let listed: std::collections::HashSet<String> =
-        crate::lane::capture(&root, "git", &args, PROBE)
-            .map(|out| {
-                out.split('\0')
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
-    rels.iter()
-        .map(|rel| rel.as_deref().is_some_and(|rel| listed.contains(rel)))
-        .collect()
 }
 
 pub const FILES_SHOWN: usize = 20;
@@ -220,11 +234,12 @@ pub fn hook(
     let deadline = session.deadline();
     let kernel = session.kernel_state_handle();
     let clock = Mutex::new(None);
+    let summary = GitSummary::new(cwd.clone(), session.subscribe());
     Arc::new(move || {
         let mut lines = Vec::new();
         let git = {
             let _span = yi_types::trace::span("env.git_summary");
-            git_summary(&cwd)
+            summary.read()
         }
         .map(|(branch, modified, untracked)| git_line(&branch, modified, untracked))
         .unwrap_or_default();
@@ -306,80 +321,4 @@ pub fn hook(
         }
         Some(render(&lines))
     })
-}
-
-pub fn branch_diff(root: &Path) -> Option<yi_types::lane::BranchDiff> {
-    branch_diff_capped(root, 4 << 20)
-}
-
-/// The committed branch only: `/land` pushes commits, so an uncommitted edit is not in it.
-/// `cap` bounds the patch in bytes, and a cut ends it on a whole file with a `[…]` row.
-pub fn branch_diff_capped(root: &Path, cap: usize) -> Option<yi_types::lane::BranchDiff> {
-    let git = |args: &[&str]| crate::lane::capture(root, "git", args, PROBE).ok();
-    let whole = |args: &[&str]| {
-        let label = format!("git {}", args.join(" "));
-        crate::lane::capture_named(
-            root,
-            &label,
-            "git",
-            args,
-            PROBE,
-            cap.saturating_mul(2),
-            None,
-        )
-        .ok()
-    };
-    let base = git(&["merge-base", "HEAD", "origin/main"])
-        .or_else(|| git(&["merge-base", "HEAD", "main"]))?
-        .trim()
-        .to_owned();
-    let numstat = whole(&["diff", "--numstat", &base, "HEAD"])?;
-    let listed = if numstat.truncated {
-        let head = prefix(&numstat.stdout, cap);
-        head.rfind('\n')
-            .and_then(|end| head.get(..end))
-            .unwrap_or("")
-    } else {
-        numstat.stdout.as_str()
-    };
-    let files: Vec<(String, u64, u64)> = listed
-        .lines()
-        .filter_map(|line| {
-            let (path, added, removed) = crate::lane::settle::numstat_row(line)?;
-            Some((path.to_owned(), added, removed))
-        })
-        .collect();
-    let mut patch = whole(&["diff", "--no-color", &base, "HEAD"])?.stdout;
-    if patch.len() > cap {
-        // Invariant: a patch line is prefixed, so only a file header starts a line with `diff --git `.
-        let head = prefix(&patch, cap);
-        let head = head
-            .rfind("\ndiff --git ")
-            .and_then(|end| head.get(..=end))
-            .unwrap_or("");
-        let shown = head
-            .lines()
-            .filter(|line| line.starts_with("diff --git "))
-            .count();
-        let over = if numstat.truncated { "over " } else { "" };
-        patch = format!(
-            "{head}[… {shown} of {over}{} files shown: the review's patch cap is {cap} bytes; `git diff {base} HEAD` in the lane has the rest]\n",
-            files.len()
-        );
-    }
-    Some(yi_types::lane::BranchDiff {
-        base: base.chars().take(8).collect(),
-        files,
-        patch,
-        untracked: git(&["ls-files", "--others", "--exclude-standard"])
-            .map_or(0, |listed| listed.lines().count()),
-    })
-}
-
-fn prefix(text: &str, cap: usize) -> &str {
-    let end = (0..=cap.min(text.len()))
-        .rev()
-        .find(|at| text.is_char_boundary(*at))
-        .unwrap_or(0);
-    text.get(..end).unwrap_or("")
 }

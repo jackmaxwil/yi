@@ -313,6 +313,9 @@ extension `Host` whose synchronous extensions turn session events into effects.
   never stored: `cwd`, `files` (20), `landing`, `todos`, `time` (per minute), `deadline`,
   `platform … · host <line>`, `model`, `context`, `kernel`, children. `host` comes from
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
+  The `cwd` line's git counts (`environment::GitSummary`) are read at a run's start and after a
+  `bash`, `edit`, `write` or `ipython` call ends, not per request; a change made outside Yi
+  mid-run shows at the next run. The review pane's git reads live in `review_git`.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
   `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers

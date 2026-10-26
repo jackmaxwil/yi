@@ -1,7 +1,8 @@
 ---
 issue: Closes #1490, Refs #1048, Refs #1442
-raise: tests +321, comments +6, crate runtime +42
+raise: tests +492, comments +10, crate runtime +92
 decision: A resumed session rebuilds its base prompt slots from the current build and re-attaches its late ones; within one process the prompt stays frozen (amends D310) | the saved snapshot overwrote the current mode, identity and doctrine, and every session file carried the whole prompt | reversible via restoring the snapshot wholesale in Host::start
+decision: The environment block's git counts refresh at turn start and after a tool that can change the tree, not per request | git status ran synchronously on every model request and up to twice per stop | reversible via calling git_summary in the closure
 ---
 A forked child is seeded the way compaction would cut the parent. `fork=N` used to count every user-role message as a turn, host notices included, so a parent whose last messages were lifecycle notices handed a `fork=2` child two notices and none of the request. It now counts only messages whose attribution reads as typed. The seed is walked newest first with compaction's bytes/3 estimator against the child's window less the compaction reserve, and it opens at the first cut point that fits (`compaction::fitting_start`), so a budget that cut right after a tool call no longer opens the seed on that call's orphaned result. The seed is appended to the child's session file before it is set in memory, as a partition is, so a service that crashes and is respawned from its kept transcript still opens on it. `seed_for_fork` moved from `subagent.rs` to `subagent/reader.rs`, beside `reader::seed`, which now takes the fork seed and the partition together.
 
@@ -9,6 +10,8 @@ A resumed session's system prompt is rebuilt from the running build. The `ext_st
 
 `AgentSession::system_prompt` no longer freezes the prompt; only the loop's read does. `compact_now` read it before the first prompt, which froze a prompt the session start had not yet given its project instructions (a debug build panicked on the external attach that followed; a release build sent the first request without AGENTS.md). The D310 byte check in `session/run.rs` and its `first_system_prompt` field are now compiled into debug builds only.
 
-Docs: YI_DESIGN section 11 (Child) says what `fork=N` counts and that the seed is kept, and section 6 (Prompt) says what the snapshot keeps and how a resume rebuilds it; the ARCHITECTURE feature-ledger rows for kernel, ipython and `rlm()` subagents and for the extension system name the new journey tests.
+The environment block runs `git status` once per change instead of once per request. `environment::GitSummary` holds the last branch and counts behind the session's event stream: it reads again after `AgentStart` (a run's start) or a `ToolExecutionEnd` from `bash`, `edit`, `write` or `ipython`, and a receiver that lagged the stream reads again too. Every request of a run reads the same cache, the last-word and claim re-drives at a stop included, so a ten-request run that only reads runs `git status` once where it ran it ten times. The lock is held across the read, so sixteen readers at once run git once. The cache is keyed on events, not timestamps: an edit that leaves a file's mtime as it was still shows at the next request. A change made outside Yi in the middle of a run shows at the next run's start; `grep` with `apply` writes the tree without moving the counts until then. `tracked` and `branch_diff`, the review pane's git reads that ACP serves as `_yi/tracked` and `_yi/branch_diff`, moved from `environment` to a `review_git` module.
 
-Members: HB-fork-seed, HB-prompt-state.
+Docs: YI_DESIGN section 11 (Child) says what `fork=N` counts and that the seed is kept, and section 6 (Prompt) says what the snapshot keeps and how a resume rebuilds it and when the environment block's git counts are read; the ARCHITECTURE feature-ledger rows for kernel, ipython and `rlm()` subagents and for the extension system name the new journey tests.
+
+Members: HB-fork-seed, HB-prompt-state, HB-env-cache.
