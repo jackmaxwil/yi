@@ -30,7 +30,32 @@ const GREP_PER_FILE: usize = 3;
 pub const REDUCE_FLOOR: usize = 8_192;
 
 /// The user asked for the whole thing; reducing answers a different question.
-const RAW_FLAGS: [&str; 6] = ["-v", "--verbose", "--nocapture", "--porcelain", "-la", "-C"];
+fn skip_reduction(command: &str) -> bool {
+    yi_permission::command_segments(command)
+        .iter()
+        .any(|segment| {
+            let words: Vec<&str> = segment.iter().map(String::as_str).collect();
+            let has = |flags: &[&str]| words.iter().any(|word| flags.contains(word));
+            let Some((at, program)) = program(words.iter().copied()) else {
+                return false;
+            };
+            const TEST_RAW: [&str; 3] = ["-v", "--verbose", "--nocapture"];
+            match program {
+                "git" => has(&["--porcelain"]),
+                "ls" => has(&["-la"]),
+                "go" => words.get(at.saturating_add(1)) == Some(&"test") && has(&TEST_RAW),
+                "cargo" | "pytest" | "py.test" | "nextest" | "jest" | "vitest" => has(&TEST_RAW),
+                "python" | "python3"
+                    if words
+                        .windows(2)
+                        .any(|pair| pair == ["-m", "pytest"] || pair == ["-m", "unittest"]) =>
+                {
+                    has(&TEST_RAW)
+                }
+                _ => false,
+            }
+        })
+}
 
 /// Every path runs through [`never_worse`]; a lossy result points at `kept` (a cut capture's
 /// spill) or at a tee under `tee_dir`. `max_lines` moves the line caps, never the byte ceiling.
@@ -139,7 +164,6 @@ pub fn rerun(how: &str, command: &str, log: &str) -> String {
     }
 }
 
-/// [`reduce`], then cut in the middle to [`VIEW_CEILING`] bytes, one row naming the rest.
 pub fn view(
     producer: Involuntary<'_>,
     stdout: &str,
@@ -148,12 +172,42 @@ pub fn view(
     kept: Option<&str>,
     tee_dir: Option<&Path>,
 ) -> Reduced {
+    view_inner(producer, stdout, stderr, exit_code, kept, tee_dir, None)
+}
+
+pub(crate) fn view_running(
+    command: &str,
+    output: &str,
+    total: usize,
+    tee_dir: Option<&Path>,
+) -> Reduced {
+    view_inner(
+        Involuntary::Job(command),
+        output,
+        "",
+        -1,
+        None,
+        tee_dir,
+        Some(total),
+    )
+}
+
+fn view_inner(
+    producer: Involuntary<'_>,
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+    kept: Option<&str>,
+    tee_dir: Option<&Path>,
+    produced: Option<usize>,
+) -> Reduced {
     use Involuntary::{Job, ShellCell, Traceback};
     let command = match producer {
         Job(command) | ShellCell(command) => command,
         Traceback => "",
     };
-    let reduced = reduce(command, stdout, stderr, exit_code, kept, tee_dir, None);
+    let mut reduced = reduce(command, stdout, stderr, exit_code, kept, tee_dir, None);
+    reduced.raw_bytes = produced.unwrap_or(reduced.raw_bytes);
     let raw = join_streams(stdout, stderr);
     let room = |pointer: Option<&str>| {
         VIEW_CEILING.saturating_sub(pointer.map_or(0, |note| note.len().saturating_add(1)))
@@ -297,7 +351,7 @@ fn select(
         return diagnostics(&stripped, budget, numbering);
     }
     let rows = compress(&stripped, 0);
-    match program(command) {
+    match program(command.split_whitespace()).map(|(_, program)| program) {
         Some("cargo") => cargo(&rows, exit_code, budget, numbering),
         Some("grep" | "rg" | "ag") => {
             let rows = per_file(&rows, numbering);
@@ -325,17 +379,12 @@ fn join_streams(stdout: &str, stderr: &str) -> String {
     }
 }
 
-fn skip_reduction(command: &str) -> bool {
-    command
-        .split_whitespace()
-        .any(|word| RAW_FLAGS.contains(&word))
-}
-
-fn program(command: &str) -> Option<&str> {
-    command
-        .split_whitespace()
-        .find(|word| !word.contains('='))
-        .map(|word| word.rsplit('/').next().unwrap_or(word))
+fn program<'a>(words: impl IntoIterator<Item = &'a str>) -> Option<(usize, &'a str)> {
+    words
+        .into_iter()
+        .enumerate()
+        .find(|(_, word)| !word.contains('='))
+        .map(|(at, word)| (at, word.rsplit('/').next().unwrap_or(word)))
 }
 
 /// A green cargo run is a progress log with one line that matters; a red one

@@ -742,15 +742,22 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
 pub(crate) fn wire_job_completions(session: &AgentSession) {
     let (report, owner) = (session.job_report_hook(), session.job_owner());
     tokio::spawn(crate::session::until(job_settled(), move || {
-        let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();
-        let texts = reports.map(|report| {
-            let (job, headline, body) = (report.id, report.headline(), report.view());
-            let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
-            let unread: crate::session::StillNews =
-                Arc::new(move || !yi_tools::jobs::registry().delivered(job));
-            (text, unread)
-        });
-        if report(texts.collect()) {
+        let (ids, texts): (Vec<_>, Vec<_>) = yi_tools::jobs::registry()
+            .take_finished(owner)
+            .into_iter()
+            .map(|report| {
+                let (job, headline, body) = (report.id, report.headline(), report.view());
+                let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
+                let unread: crate::session::StillNews =
+                    Arc::new(move || !yi_tools::jobs::registry().delivered(job));
+                (job, (text, unread))
+            })
+            .unzip();
+        let queued = report(texts);
+        for id in ids {
+            yi_tools::jobs::registry().mark_announced(id, queued);
+        }
+        if queued {
             std::ops::ControlFlow::Continue(None)
         } else {
             std::ops::ControlFlow::Break(())
