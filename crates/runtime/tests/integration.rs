@@ -33,6 +33,7 @@ mod child_trail;
 mod child_transcript;
 mod claims;
 mod classifier_e2e;
+mod claude_hooks;
 mod compaction_faux;
 mod documents;
 mod effort_session;
