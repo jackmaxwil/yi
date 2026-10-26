@@ -691,10 +691,16 @@ async fn a_fork_budget_never_opens_on_a_tool_result() -> TestResult {
         )
         .map_err(|error| error.to_string())?;
     let messages = first_child_messages(&forked).await;
+    let notice = user_texts(&messages).into_iter().next().unwrap_or_default();
     assert!(
-        matches!(messages.first(), Some(AgentMessage::Assistant { .. })),
-        "the seed opens on the answer, the first cut point that fits: {:?}",
-        messages.first()
+        notice.contains("[… fork kept 1 of 4 messages")
+            && notice.contains("history://parent/since/0"),
+        "the cut is named where it is made: {notice}"
+    );
+    assert!(
+        matches!(messages.get(1), Some(AgentMessage::Assistant { .. })),
+        "then the answer, the first cut point that fits: {:?}",
+        messages.get(1)
     );
     Ok(())
 }

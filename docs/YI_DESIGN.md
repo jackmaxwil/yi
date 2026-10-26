@@ -630,8 +630,9 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns,
   schema`;
   `fork=all` refuses a model. `fork=N` counts typed turns only, never host notices, and
-  keeps what fits from the first cut point compaction would take; the seed is appended to the
-  child's transcript, so a respawned service keeps it.
+  keeps what fits from the first cut point compaction would take, behind a `[… fork kept K of N`
+  row when the budget cut; the seed is appended to the child's transcript, so a respawned
+  service keeps it.
 - A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line

@@ -501,9 +501,22 @@ pub(super) fn seed_for_fork(
     });
     let tail = parent.get(start..).unwrap_or_default();
     let reserve = yi_context::Settings::default().reserve_tokens.0;
-    let budget = yi_context::Tokens(window.saturating_sub(reserve));
-    crate::compaction::fitting_start(tail, budget)
-        .map_or_else(Vec::new, |first| tail.iter().skip(first).cloned().collect())
+    let budget = window.saturating_sub(reserve);
+    let first = crate::compaction::fitting_start(tail, yi_context::Tokens(budget));
+    let kept = tail.get(first.unwrap_or(tail.len())..).unwrap_or_default();
+    if kept.len() == tail.len() {
+        return kept.to_vec();
+    }
+    // The notice also keeps a cut seed from opening on an assistant turn.
+    let notice = format!(
+        "[… fork kept {} of {} messages: the child's window less the compaction reserve is {budget} tokens; history://parent/since/0 has the rest]",
+        kept.len(),
+        tail.len()
+    );
+    let notice = crate::session::host_text(yi_types::message::HostSource::Notice, &notice);
+    std::iter::once(notice)
+        .chain(kept.iter().cloned())
+        .collect()
 }
 
 /// Invariant: store before memory, so a respawn that reloads the store still opens on it.
