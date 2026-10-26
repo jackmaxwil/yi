@@ -42,7 +42,7 @@ NOT_RUN = ("unrun", "crash", "quota")
 GRACE_SEC = 60
 # Injected by the selftest: a park is hours of wall clock.
 clock, sleep = time.time, time.sleep
-ASK_ENV = ("PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "HTTPS_PROXY", "https_proxy",
+ASK_ENV = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "HTTPS_PROXY", "https_proxy",
            "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
            "SSL_CERT_FILE", "SSL_CERT_DIR")
 

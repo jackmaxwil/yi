@@ -434,11 +434,13 @@ class Isolation(unittest.TestCase):
         with rig() as r:
             os.environ["UNRELATED_SECRET"] = "do-not-leak"
             os.environ["HTTPS_PROXY"] = "http://proxy.test:3128"
+            os.environ["TMPDIR"] = "/host-temp"
             r.streams(EVENTS)
             kill.ask("t", "flash", r.spec, str(r.yi), 1.0)
             note = next(n for n in r.notes() if "ask" in n)
             self.assertNotIn("UNRELATED_SECRET", note["env"])
             self.assertNotIn("FAKE_LOG", note["env"])
+            self.assertNotIn("TMPDIR", note["env"])
             self.assertEqual(note["env"]["HTTPS_PROXY"], "http://proxy.test:3128")
             self.assertEqual(note["env"]["HOME"], note["home"])
 
