@@ -878,8 +878,8 @@ fn a_mirrored_row_leaves_the_delegation_and_note_to_the_plan() -> TestResult {
     Ok(())
 }
 
-/// A plan waiting at $0: its row blocked on a clock address arms a timer from the session's
-/// list, and the tick unblocks the row in the plan itself, as the host.
+/// A plan row's clock wait unblocks in the plan; competing deliveries of one tick unblock once,
+/// with the loser held instead of stepping the row from pending again.
 #[test]
 fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
     use yi_runtime::schedule::{Firing, HeartbeatService, JobStore, clock};
@@ -917,6 +917,53 @@ fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
         "the plan still waits: {:?}",
         row.state
     );
+    for round in 0..10 {
+        engine.apply(owner(Op::Block {
+            label: gate.clone(),
+            on: BlockedOn::Channel {
+                address: "clock://at 2026-09-29T09:00Z".to_owned(),
+                filter: None,
+            },
+            note: "approve at nine".to_owned(),
+            ask: None,
+        }))?;
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let (first, second) = std::thread::scope(|scope| {
+            let first = {
+                let start = Arc::clone(&start);
+                let todos = Arc::clone(&todos);
+                let job = job.clone();
+                scope.spawn(move || {
+                    start.wait();
+                    clock::fire(&todos, &job, &Firing::at(job.next_run_at.unwrap_or(0)))
+                })
+            };
+            let second = {
+                let start = Arc::clone(&start);
+                let todos = Arc::clone(&todos);
+                let job = job.clone();
+                scope.spawn(move || {
+                    start.wait();
+                    clock::fire(&todos, &job, &Firing::at(job.next_run_at.unwrap_or(0)))
+                })
+            };
+            start.wait();
+            let first = first.join().map_err(|_| "first firing panicked")?;
+            let second = second.join().map_err(|_| "second firing panicked")?;
+            Ok::<_, Box<dyn Error>>((first, second))
+        })?;
+        let mut states = Vec::new();
+        for fired in [first, second] {
+            match fired {
+                Ok(clock::Fired::Unblocked(_)) => states.push("unblocked"),
+                Ok(clock::Fired::Held(_)) => states.push("held"),
+                Ok(other) => return Err(format!("round {round}: {other:?}").into()),
+                Err(error) => return Err(format!("round {round}: {error}").into()),
+            }
+        }
+        states.sort_unstable();
+        assert_eq!(states, ["held", "unblocked"], "round {round}");
+    }
     Ok(())
 }
 
