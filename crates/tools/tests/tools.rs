@@ -1629,6 +1629,50 @@ fn a_running_poll_shows_output_and_kill_ends_the_job() -> TestResult {
 }
 
 #[test]
+fn a_running_poll_view_names_its_ceiling_only_one_byte_past_it() -> TestResult {
+    let dir = temp_dir("job-running-view-ceiling")?;
+    for (bytes, cut) in [
+        (yi_tools::VIEW_CEILING, false),
+        (yi_tools::VIEW_CEILING + 1, true),
+    ] {
+        let mut context = ToolContext::new(dir.to_path_buf());
+        context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+        let command = format!("head -c {bytes} /dev/zero | tr '\\0' x; touch ready; sleep 30");
+        let run = yi_tools::run_or_background(
+            &command,
+            &context,
+            Some(Duration::ZERO),
+            Duration::from_secs(60),
+            None,
+            None,
+        )?;
+        let yi_tools::Run::Backgrounded(id) = run else {
+            return Err("the command did not become a job".into());
+        };
+        for _ in 0..500 {
+            if dir.join("ready").exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            dir.join("ready").exists(),
+            "producer did not finish {bytes} bytes"
+        );
+        fs::remove_file(dir.join("ready"))?;
+        let polled = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
+        let text = output_text(&polled);
+        let _cleanup = yi_tools::jobs::registry().kill(id);
+        assert_eq!(
+            text.contains("(VIEW_CEILING 16384)"),
+            cut,
+            "{bytes}: {text}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_poll_cannot_cross_job_owners() -> TestResult {
     let dir = temp_dir("job-poll-owner")?;
     let first = yi_tools::jobs::JobOwner::mint();
