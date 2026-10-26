@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::args::Args;
 use serde_json::{Map, Value, json};
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Usage};
+use yi_types::message::{AgentMessage, Attribution, Usage};
 use yi_types::model::{Effort, Model};
 pub use yi_types::subagent::{ChildActivity, ChildExit, ChildId, ChildStatus, ChildUpdate};
 
@@ -53,7 +53,7 @@ pub(crate) struct ChildRecord {
     /// Dispatched by the plan engine: its worktree goes through `submit` or a journaled
     /// disposition, never the kernel's merge or discard.
     pub(crate) managed: bool,
-    /// A juror or a service stands outside the worker cap and the owner's lifecycle notice.
+    /// A reader or a service stands outside the worker cap.
     pub(crate) standing: Standing,
     /// `None` while the run is live; every status, state and notice is read from it.
     pub(crate) exit: Option<ChildExit>,
@@ -458,6 +458,29 @@ pub(crate) fn answer_text(messages: &[AgentMessage]) -> Option<String> {
     answer
 }
 
+pub(crate) fn schema_answer(messages: &[AgentMessage]) -> Option<&[AgentMessage]> {
+    let start = messages.iter().rposition(|message| {
+        matches!(
+            message,
+            AgentMessage::User {
+                attribution: Attribution::Task,
+                ..
+            }
+        ) || crate::mail::is_followup(message)
+    })?;
+    let end = messages
+        .iter()
+        .enumerate()
+        .skip(start.saturating_add(1))
+        .find_map(|(index, message)| {
+            (matches!(message, AgentMessage::User { .. }) && !crate::mail::is_chase(message)
+                || crate::mail::envelope_id(message).is_some())
+            .then_some(index)
+        })
+        .unwrap_or(messages.len());
+    messages.get(start.saturating_add(1)..end)
+}
+
 pub(crate) fn last_assistant_text(messages: &[AgentMessage]) -> Option<String> {
     messages.iter().rev().find_map(|message| match message {
         AgentMessage::Assistant { content, .. } => {
@@ -612,38 +635,16 @@ impl SubagentHost {
         prompt: String,
         kwargs: Map<String, Value>,
     ) -> Result<Map<String, Value>, String> {
-        self.spawn_seated(prompt, kwargs, None)
+        self.admit(prompt, kwargs, Standing::Worker)
     }
 
-    /// [`Self::spawn`], or a juror's seat when `seat` holds the verification reserve: a leaf
-    /// above the worker cap and the depth limit, still under the family cap and the lease.
-    pub(crate) fn spawn_seated(
-        self: &Arc<Self>,
-        prompt: String,
-        kwargs: Map<String, Value>,
-        seat: Option<&crate::plan::capacity::Permit>,
-    ) -> Result<Map<String, Value>, String> {
-        let juror =
-            seat.is_some_and(|seat| seat.purpose() == crate::plan::capacity::Purpose::Verification);
-        let standing = if juror {
-            Standing::Juror
-        } else {
-            Standing::Worker
-        };
-        self.admit(prompt, kwargs, standing)
-    }
-
-    /// Only a juror is above the depth limit; a juror and a service are above the worker cap.
     fn admit(
         self: &Arc<Self>,
         prompt: String,
         kwargs: Map<String, Value>,
         standing: Standing,
     ) -> Result<Map<String, Value>, String> {
-        let (juror, family_cap) = (
-            matches!(standing, Standing::Juror),
-            crate::levers::get().family_cap,
-        );
+        let family_cap = crate::levers::get().family_cap;
         build::require_kwargs(&kwargs)?;
         let mut kwargs = kwargs;
         if matches!(standing, Standing::Worker) && !kwargs.contains_key("role") {
@@ -690,7 +691,7 @@ impl SubagentHost {
                 "the family holds {family_cap} live sessions; reap one with rlm.delete_subagent before spawning"
             ));
         }
-        if !juror && self.options.depth >= self.options.max_depth {
+        if self.options.depth >= self.options.max_depth {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",
                 self.options.depth, self.options.max_depth

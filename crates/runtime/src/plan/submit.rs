@@ -117,7 +117,6 @@ impl PlanEngine {
             root: lane.path(),
             output: product.map(str::as_bytes),
             artifacts: &artifacts,
-            jury: None,
         };
         let verdict = self.verifier.run(token, contract, &snapshot);
         lane.discard()
