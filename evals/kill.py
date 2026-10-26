@@ -86,7 +86,7 @@ def state(rows):
         elif row["kind"] == "settle":
             spent += micro(row["usd"])
             held.pop(row["key"], None)
-            if any(r.get("status") != "crash" for r in row["rows"]):
+            if row.get("closed") or any(r.get("status") != "crash" for r in row["rows"]):
                 done.add((row["test"], row["family"]))
             if any(r.get("status") not in NOT_RUN for r in row["rows"]):
                 ran.add((row["test"], row["family"]))
@@ -339,18 +339,6 @@ def ask(test, family, spec, binary, stop_usd, until=None, estimate_usd=0.0, ceil
     return row
 
 
-def torn_tail(path):
-    """Whether a store's last line lacks its newline, read from the end: a store is never read whole."""
-    try:
-        with open(path, "rb") as handle:
-            if handle.seek(0, os.SEEK_END) == 0:
-                return False
-            handle.seek(-1, os.SEEK_END)
-            return handle.read(1) != b"\n"
-    except OSError:
-        return False
-
-
 def harbor(test, family, spec, stop_usd):
     """A harbor sweep holds its own caps (watch.py); its hard cap is what is left of the reserve.
     Only `tbv4_sweep.sh --runner` files rows, so a sweep that filed none is charged that cap."""
@@ -361,10 +349,7 @@ def harbor(test, family, spec, stop_usd):
     env = {**os.environ, "TBV4_HARD_CAP": f"{max(stop_usd, 0):.2f}", "EVAL_RUN_ID": run}
     store = TRIALS / f"{run}.jsonl"
     rows, bad = yi_usage.json_lines(store)
-    if torn_tail(store):
-        # As skill_labels.py does: end a killed sweep's torn line, or this sweep's first row fuses onto it.
-        with store.open("a") as sink:
-            sink.write("\n")
+    yi_usage.end_torn(store)
     done = subprocess.run(spec["harbor"], cwd=ROOT.parent, env=env)
     # The store is appended per run id, so a re-run charges only the rows its own sweep filed.
     after, bad_after = yi_usage.json_lines(store)
@@ -372,7 +357,8 @@ def harbor(test, family, spec, stop_usd):
     # A line this sweep filed that does not parse is spend nobody can read: charge the cap.
     charged = sum(trials.cost(row) for row in filed) if filed and not torn else stop_usd
     row = {"test": test, "family": family, "run": run, "status": "ok" if done.returncode == 0 else "error",
-           "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6)}
+           "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6),
+           "jobs": sorted({r["job"] for r in filed if r.get("job")})}
     if torn:
         row.update(unreadable=torn, why=f"{torn} line(s) this sweep filed in {store.name} do not parse; charged its cap")
     return row
@@ -494,8 +480,8 @@ def cmd_budget(args):
                 return 2
             # Its run may have spent up to the whole reserve before it died, so that is the charge.
             test, family, usd = held.pop(args.close)
-            write({"kind": "settle", "key": args.close, "test": test, "family": family, "usd": usd / 1e6, "rows": [],
-                   "why": "closed by hand: its runner died without settling"})
+            write({"kind": "settle", "key": args.close, "test": test, "family": family, "usd": usd / 1e6,
+                   "rows": [], "closed": True, "why": "closed by hand: its runner died without settling"})
             spent += usd
     ladder = [{"step": mod.STEP, "test": name, "family": f, "reserveUsd": reserve_of(mod, f, table[f]),
                "settled": (name, f) in done} for name, mod in tests().items() for f in mod.FAMILIES if f in table]

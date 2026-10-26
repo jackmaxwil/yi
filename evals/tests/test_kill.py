@@ -195,14 +195,19 @@ class Ledger(unittest.TestCase):
             with kill.ledger() as (_, write):
                 write({"kind": "reserve", "key": "hung/flash/dead", "test": "hung", "family": "flash", "usd": 0.4,
                        "pid": dead.pid})
-                write({"kind": "reserve", "key": "hung/flash/live", "test": "hung", "family": "flash", "usd": 0.3,
+                write({"kind": "reserve", "key": "hung/flash/live", "test": "other", "family": "flash", "usd": 0.3,
                        "pid": os.getpid()})
             self.assertEqual(quiet(["budget", "--close", "hung/flash/live"]),
                              (2, f"refused: hung/flash/live's runner, pid {os.getpid()}, is alive and settles it itself\n"))
+            with kill.ledger() as (rows, _):
+                before = kill.admit(rows, "later", "flash", 1.0, [("hung", "flash", 0.4)])
             code, out = quiet(["budget", "--close", "hung/flash/dead"])
             self.assertEqual(code, 0, out)
             shown = json.loads(out)
             self.assertEqual((shown["spentUsd"], shown["heldUsd"], shown["open"]), (0.4, 0.3, ["hung/flash/live"]))
+            with kill.ledger() as (rows, _):
+                after = kill.admit(rows, "later", "flash", 1.0, [("hung", "flash", 0.4)])
+            self.assertEqual(after, before, "closing a dead reserve must not charge its reserve twice")
             self.assertEqual(quiet(["budget", "--close", "hung/flash/dead"])[0], 2, "a closed reserve closes once")
             self.assertEqual(quiet(["report"])[1].strip(), "hung: unrun: needs $0.40", "a closed reserve never ran")
 
@@ -500,14 +505,15 @@ class Runs(unittest.TestCase):
             kill.TRIALS.mkdir()
             sweep = [sys.executable, "-c", (
                 "import json, os, sys\n"
-                "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP']}\n"
+                "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP'], 'job': sys.argv[2]}\n"
                 "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write(json.dumps(row) + '\\n')\n"),
                 str(kill.TRIALS)]
-            row = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": [*sweep, "first"]}, 1.0)
             filed = json.loads((kill.TRIALS / "ns-tb-flash-one.jsonl").read_text())
-            self.assertEqual((row["status"], row["chargedUsd"], filed["cap"]), ("ok", 0.12, "1.00"), row)
-            again = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
-            self.assertEqual((again["chargedUsd"], again["trials"]), (0.12, 1), "a re-run pays only its own rows")
+            self.assertEqual((row["status"], row["chargedUsd"], filed["cap"], row["jobs"]), ("ok", 0.12, "1.00", ["first"]), row)
+            again = kill.harbor("tb", "flash", {"id": "one", "harbor": [*sweep, "again"]}, 1.0)
+            self.assertEqual((again["chargedUsd"], again["trials"], again["jobs"]), (0.12, 1, ["again"]),
+                             "a re-run pays for and names only its own rows")
             silent = kill.harbor("tb", "flash", {"id": "two", "harbor": [sys.executable, "-c", "pass"]}, 0.7)
             self.assertEqual(silent["chargedUsd"], 0.7, "a sweep that filed nothing is charged its cap")
             self.assertEqual(kill.harbor("tb", "kimi", {"id": "three", "harbor": sweep}, float("inf"))["status"], "unrun")
