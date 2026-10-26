@@ -140,3 +140,43 @@ fn incremental_history_scans_only_new_entries_and_keeps_older_evidence()
     );
     Ok(())
 }
+
+#[test]
+fn late_evidence_upgrades_a_claim_without_another_todo_write() -> Result<(), Box<dyn Error>> {
+    let store = std::sync::Arc::new(std::sync::Mutex::new(yi_session::SessionStore::in_memory(
+        yi_session::SessionMetadata {
+            id: "late-claims".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        },
+    )));
+    let list: TodoList = serde_json::from_value(json!({"phases": [{"name": "Tasks", "items": [
+        {"label": "prove it", "state": "done", "evidence": "`proof arrived`"}
+    ]}]}))?;
+    let mut history = History::default();
+    assert_eq!(
+        history.claims_cached(&list, &store, 7),
+        vec![Claim {
+            label: "prove it".to_owned(),
+            observed: None,
+        }]
+    );
+    yi_session::lock_session(&store).append_entry(
+        entry(
+            3,
+            json!({"role": "toolResult", "toolCallId": "c3", "toolName": "bash",
+                "isError": false, "timestamp": 3,
+                "content": [{"type": "text", "text": "proof arrived"}]}),
+        )?,
+        "main",
+    )?;
+    assert_eq!(
+        history.claims_cached(&list, &store, 7),
+        vec![Claim {
+            label: "prove it".to_owned(),
+            observed: Some("c3".to_owned()),
+        }]
+    );
+    Ok(())
+}

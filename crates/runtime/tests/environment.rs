@@ -3,6 +3,7 @@ use scratch::Scratch;
 
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
@@ -286,7 +287,7 @@ fn tracked_reports_only_paths_git_knows() -> TestResult {
         .display()
         .to_string();
     assert_eq!(
-        yi_runtime::review_git::tracked(&dir, &[inside, loose, outside]),
+        yi_runtime::environment::tracked(&dir, &[inside, loose, outside]),
         vec![true, false, false]
     );
     Ok(())
@@ -477,8 +478,9 @@ async fn a_run_that_writes_nothing_runs_git_status_once_redrive_included() -> Te
 #[test]
 fn an_edit_that_keeps_the_mtime_still_moves_the_count() -> TestResult {
     let (dir, _shim) = counted_repo("yi-env-edit", 0)?;
-    let (events, receiver) = tokio::sync::broadcast::channel(16);
-    let summary = yi_runtime::environment::GitSummary::new(dir.to_path_buf(), receiver);
+    let generation = Arc::new(AtomicU64::new(0));
+    let summary =
+        yi_runtime::environment::GitSummary::new(dir.to_path_buf(), Arc::clone(&generation));
     assert_eq!(summary.read(), Some(("main".to_owned(), 0, 0)));
     let file = dir.join("a.py");
     std::fs::copy(&file, dir.join("stamp"))?;
@@ -493,26 +495,32 @@ fn an_edit_that_keeps_the_mtime_still_moves_the_count() -> TestResult {
         .status()?;
     assert!(touched.success());
     std::fs::remove_file(dir.join("stamp"))?;
-    events.send(tool_end("read")?)?;
+    yi_runtime::environment::GitSummary::note_event(&generation, &tool_end("read")?);
     assert_eq!(
         summary.read(),
         Some(("main".to_owned(), 0, 0)),
         "a read moves nothing"
     );
-    events.send(tool_end("edit")?)?;
+    yi_runtime::environment::GitSummary::note_event(&generation, &tool_end("edit")?);
     assert_eq!(
         summary.read(),
         Some(("main".to_owned(), 1, 0)),
         "the edit shows"
     );
     std::fs::write(dir.join("b.py"), "from a import greet\n")?;
-    events.send(tool_end_with("grep", serde_json::json!({"applied": 0}))?)?;
+    yi_runtime::environment::GitSummary::note_event(
+        &generation,
+        &tool_end_with("grep", serde_json::json!({"applied": 0}))?,
+    );
     assert_eq!(
         summary.read(),
         Some(("main".to_owned(), 1, 0)),
         "a search moves nothing"
     );
-    events.send(tool_end_with("grep", serde_json::json!({"applied": 1}))?)?;
+    yi_runtime::environment::GitSummary::note_event(
+        &generation,
+        &tool_end_with("grep", serde_json::json!({"applied": 1}))?,
+    );
     assert_eq!(
         summary.read(),
         Some(("main".to_owned(), 1, 1)),
@@ -526,8 +534,8 @@ fn an_edit_that_keeps_the_mtime_still_moves_the_count() -> TestResult {
 #[test]
 fn a_failed_read_is_tried_again_at_the_next_request() -> TestResult {
     let dir = Scratch::new("yi-env-none")?;
-    let (_events, receiver) = tokio::sync::broadcast::channel(16);
-    let summary = yi_runtime::environment::GitSummary::new(dir.to_path_buf(), receiver);
+    let summary =
+        yi_runtime::environment::GitSummary::new(dir.to_path_buf(), Arc::new(AtomicU64::new(0)));
     assert_eq!(summary.read(), None, "not a repository yet");
     let init = yi_tools::command("git")
         .args(["init", "-q", "-b", "main"])
@@ -543,10 +551,9 @@ fn a_failed_read_is_tried_again_at_the_next_request() -> TestResult {
 #[test]
 fn sixteen_readers_at_once_run_git_status_once() -> TestResult {
     let (dir, shim) = counted_repo("yi-env-sixteen", 300)?;
-    let (_events, receiver) = tokio::sync::broadcast::channel(16);
     let summary = Arc::new(yi_runtime::environment::GitSummary::new(
         dir.to_path_buf(),
-        receiver,
+        Arc::new(AtomicU64::new(0)),
     ));
     let gate = Arc::new(std::sync::Barrier::new(16));
     let readers: Vec<_> = (0..16)
@@ -563,5 +570,20 @@ fn sixteen_readers_at_once_run_git_status_once() -> TestResult {
         assert_eq!(read, Some(("main".to_owned(), 0, 0)));
     }
     assert_eq!(status_runs(&shim), 1, "sixteen readers, one git status");
+    Ok(())
+}
+
+#[test]
+fn a_busy_event_stream_does_not_invalidate_an_unchanged_tree() -> TestResult {
+    let (dir, shim) = counted_repo("yi-env-lag", 0)?;
+    let generation = Arc::new(AtomicU64::new(0));
+    let summary =
+        yi_runtime::environment::GitSummary::new(dir.to_path_buf(), Arc::clone(&generation));
+    assert_eq!(summary.read(), Some(("main".to_owned(), 0, 0)));
+    for _ in 0..=1024 {
+        yi_runtime::environment::GitSummary::note_event(&generation, &tool_end("read")?);
+    }
+    assert_eq!(summary.read(), Some(("main".to_owned(), 0, 0)));
+    assert_eq!(status_runs(&shim), 1, "unchanged tree stays cached");
     Ok(())
 }

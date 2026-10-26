@@ -70,6 +70,7 @@ struct Shared {
     store: Mutex<Option<yi_session::SharedSession>>,
     store_error: Mutex<Option<String>>,
     events: broadcast::Sender<AgentEvent>,
+    tree_generation: Arc<std::sync::atomic::AtomicU64>,
     idle: tokio::sync::Notify,
     signal: InterruptSignal,
     on_turn_start: Mutex<Option<Arc<TurnHook>>>,
@@ -212,6 +213,7 @@ impl AgentSession {
                 store: Mutex::new(None),
                 store_error: Mutex::new(None),
                 events,
+                tree_generation: Arc::default(),
                 idle: tokio::sync::Notify::new(),
                 signal: InterruptSignal::default(),
                 on_turn_start: Mutex::new(None),
@@ -582,6 +584,10 @@ impl AgentSession {
 
     pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.shared.events.subscribe()
+    }
+
+    pub(crate) fn tree_generation(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.shared.tree_generation)
     }
 
     pub fn status(&self) -> Status {
