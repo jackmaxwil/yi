@@ -13,6 +13,10 @@ pub const ENGINE_ACTOR: &str = "engine";
 pub const PLAN_KEY: &str = "plan";
 /// Marks a mirrored row the session wrote before a plan absorbed it, so it outlives that plan.
 const OWN_KEY: &str = "own";
+/// Invariant: a wait job fires once, so the budget's expiry strands the blocked row until the
+/// agent unblocks it by hand; each stale-revision retry naps so a busy plan cannot spin the firer.
+const WAIT_RETRY_NAP: std::time::Duration = std::time::Duration::from_millis(100);
+const WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub fn plan_of(list: &TodoList) -> Option<&str> {
     list.extra.get(PLAN_KEY).and_then(Value::as_str)
@@ -143,6 +147,8 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
                 .map_err(|error| error.to_string());
             }
             super::Carried::Wait { plan, address } => {
+                let mut pace = yi_types::backoff::backoff(WAIT_RETRY_NAP);
+                let deadline = std::time::Instant::now() + WAIT_BUDGET;
                 return loop {
                     let read = engine
                         .store()
@@ -151,14 +157,24 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
                     let waits = read.todos.iter().any(|todo| {
                         todo.label == *label
                             && matches!(&todo.state, doc::TodoState::Blocked { on, .. }
-                                if crate::schedule::clock::wait_of(on).is_some_and(|(at, _)| at == address))
+                                if crate::schedule::clock::waits_on(&address, on))
                     });
                     if !waits {
                         break Ok(None);
                     }
                     match apply(unblock.clone(), Some(read.touched)) {
                         Ok(rendered) => break Ok(rendered),
-                        Err(PlanOpError::StaleRevision { .. }) => {}
+                        Err(PlanOpError::StaleRevision { .. })
+                            if std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(pace());
+                        }
+                        Err(PlanOpError::StaleRevision { .. }) => {
+                            break Err(format!(
+                                "todo {label} still waits on {address}, but the plan kept \
+                                 changing for {WAIT_BUDGET:?}"
+                            ));
+                        }
                         Err(error) => break Err(error.to_string()),
                     }
                 };
