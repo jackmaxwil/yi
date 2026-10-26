@@ -1,4 +1,5 @@
-//! A plan Reader delegation dispatched as a reader child, and the delegations that stay root.
+//! A plan Reader delegation dispatched as a reader child, the delegations that stay root, and
+//! the one line each plan child's ending leaves its owner.
 
 use crate::scratch;
 use scratch::Scratch;
@@ -322,5 +323,250 @@ async fn each_part_a_reader_cannot_take_keeps_a_root_child() -> TestResult {
         built.len() == 4 && built.iter().all(|(_, reader, _)| !reader),
         "{built:?}"
     );
+    Ok(())
+}
+
+/// A failed child's product as the incident's children left it: past the 2,000-char block the
+/// reap once inlined, multi-byte throughout, the needle in its last sentence.
+fn paragraph() -> String {
+    let sentence = "Die Prüfung des Parsers schlug fehl: über die Grenze geschoben, naïve Bytes. ";
+    let mut text = sentence.repeat(39);
+    text.push_str("Zuletzt stand der Prüfstand beim Lexer.");
+    text
+}
+
+fn hung_up(text: &str) -> AgentMessage {
+    let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut message {
+        *error_message = Some("the provider hung up".to_owned());
+    }
+    message
+}
+
+/// A root wired as `yi` wires one, its kernel on the real HOME's venv.
+fn wired(root: &Scratch) -> Result<(AgentSession, Arc<ProviderStream>), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None));
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: crate::support::faux_model(),
+            thinking_level: None,
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    session.attach_store(crate::support::memory_store("plan-endings"))?;
+    let home = std::env::var_os("HOME").ok_or("HOME is unset")?;
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider: Arc::clone(&provider),
+            system_prompt: "sys".to_owned(),
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            home: home.into(),
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    Ok((session, provider))
+}
+
+/// One session tool call, as the model makes it; its text and whether it was refused.
+async fn call(
+    session: &AgentSession,
+    name: &str,
+    args: Value,
+) -> Result<(String, bool), Box<dyn Error>> {
+    let tool = session
+        .tools()
+        .into_iter()
+        .find(|tool| tool.definition().name == name);
+    let tool = tool.ok_or(format!("the root has no {name} tool"))?;
+    let args = args.as_object().cloned().ok_or("args")?;
+    let signal = yi_loop::interrupt::InterruptSignal::default();
+    let out = tool.execute(name, args, &signal).await;
+    Ok((
+        yi_types::message::join_text(&out.result.content, "\n"),
+        out.is_error,
+    ))
+}
+
+/// The child of `label` runs on `reply`; what the owner was told when it ended, once idle.
+async fn ended(
+    session: &AgentSession,
+    provider: &ProviderStream,
+    op: Value,
+    label: &str,
+    reply: AgentMessage,
+) -> Result<String, Box<dyn Error>> {
+    provider.queue_faux(vec![reply, self::reply("noted")]);
+    let (said, refused) = call(session, "plan", op).await?;
+    if refused {
+        return Err(said.into());
+    }
+    let named = format!("{label:?}");
+    for _ in 0..500 {
+        let line = session
+            .messages()
+            .into_iter()
+            .find_map(|message| match message {
+                AgentMessage::Custom {
+                    custom_type,
+                    content: UserContent::Text(text),
+                    ..
+                } if custom_type == "plan_relevance" && text.contains(&named) => Some(text),
+                _ => None,
+            });
+        if let Some(line) = line {
+            session.wait_idle().await;
+            return Ok(line);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Err(format!("no ending line for {label}").into())
+}
+
+fn delegated(label: &str, check: &str) -> Value {
+    let item = json!({"id": "tests", "critical": true, "weight": 1, "decider": {"cmd": check}});
+    json!({"label": label, "delegation": {"spec": {"role": "worker"}, "accept": {"command": "true"}},
+        "contract": {"class": "inline", "items": [item]}})
+}
+
+/// Dies with the reap block back on the verdict: the owner's line carries 2,000 chars of the
+/// child's product, every later request pays for it, and no address says where the rest lives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_plan_childs_ending_is_one_short_line_naming_its_transcript() -> TestResult {
+    let root = Scratch::new("yi-plan-ending-failed")?;
+    let (session, provider) = wired(&root)?;
+    let op = json!({"op": "init", "goal": "land the patch", "todos": [delegated("write the patch", "true")]});
+    let line = ended(
+        &session,
+        &provider,
+        op,
+        "write the patch",
+        hung_up(&paragraph()),
+    )
+    .await?;
+    let address = format!(
+        "history://{}/write-the-patch",
+        PlanId::slug("land the patch")?
+    );
+    assert!(
+        !line.contains('\n') && line.len() < 300 && line.contains(&address),
+        "{} bytes: {line}",
+        line.len()
+    );
+    let (read, refused) = call(&session, "read", json!({"path": address})).await?;
+    assert!(!refused && read.contains("Prüfstand beim Lexer"), "{read}");
+    Ok(())
+}
+
+async fn fetched(session: &AgentSession, url: &str) -> Result<String, Box<dyn Error>> {
+    use yi_tools::KernelBridge;
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let code = format!("print(await rlm.fetch({url:?}))");
+    let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
+    let ran = tokio::task::spawn_blocking(move || kernel.execute_cell(&code, "", &cancelled, None))
+        .await??;
+    Ok(format!("{}{:?}", ran.result.stdout, ran.result.error))
+}
+
+/// Dies with any address form a finish line prints that `read`, `grep` or `rlm.fetch` cannot
+/// open: the owner is told where the product is and the next call it makes is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_address_a_finish_line_prints_opens_in_read_grep_and_fetch() -> TestResult {
+    let root = Scratch::new("yi-plan-ending-addresses")?;
+    let (session, provider) = wired(&root)?;
+    let init = json!({"op": "init", "goal": "ship the widget", "todos": [delegated("cut the seam", "echo 12 passed")]});
+    let accepted = ended(
+        &session,
+        &provider,
+        init,
+        "cut the seam",
+        reply("the cut holds at the parser seam"),
+    )
+    .await?;
+    let append = json!({"op": "append", "todos": [delegated("write the patch", "true")]});
+    let failed = ended(
+        &session,
+        &provider,
+        append,
+        "write the patch",
+        hung_up(&paragraph()),
+    )
+    .await?;
+    let append =
+        json!({"op": "append", "todos": [delegated("check the seam", "echo broken; exit 1")]});
+    let rejected = ended(
+        &session,
+        &provider,
+        append,
+        "check the seam",
+        reply("the seam check found a gap"),
+    )
+    .await?;
+    let mut schemes = Vec::new();
+    let lines = [
+        (&accepted, "parser seam"),
+        (&failed, "beim Lexer"),
+        (&rejected, "found a gap"),
+    ];
+    for (line, needle) in lines {
+        let addresses = line
+            .split([' ', '\n', '(', ')', ',', ';'])
+            .filter(|word| word.contains("://"));
+        for address in addresses {
+            schemes.extend(
+                address
+                    .split_once("://")
+                    .map(|(scheme, _)| scheme.to_owned()),
+            );
+            let (read, refused) = call(&session, "read", json!({"path": address})).await?;
+            assert!(!refused && read.contains(needle), "read {address}: {read}");
+            let (hits, refused) = call(
+                &session,
+                "grep",
+                json!({"path": address, "pattern": needle}),
+            )
+            .await?;
+            let at = hits.lines().find(|row| !row.starts_with('['));
+            let at = at.and_then(|row| row.split(' ').next()).unwrap_or_default();
+            let (entry, unopened) = call(&session, "read", json!({"path": at})).await?;
+            let opens = !unopened && entry.contains(needle);
+            assert!(!refused && opens, "grep {address}: {hits}");
+            let text = fetched(&session, address).await?;
+            assert!(text.contains(needle), "rlm.fetch {address}: {text}");
+        }
+    }
+    schemes.sort();
+    assert_eq!(
+        schemes,
+        ["agent", "history", "history", "plan"],
+        "{accepted}\n{failed}\n{rejected}"
+    );
+    if let Some(kernel) = session.kernel_service() {
+        kernel.dispose().await;
+    }
     Ok(())
 }
