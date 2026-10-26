@@ -149,7 +149,7 @@ impl SubagentHost {
         // A retired child has no record left: `retire` already published its terminal update,
         // so a second one, a notice or a bill would only echo a closed slot.
         let messages = session.messages();
-        let (mut ended, mut juror) = (None, false);
+        let mut ended = None;
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(child_id)
         {
@@ -159,7 +159,6 @@ impl SubagentHost {
             if record.step(Step::Exit(exit, error.clone())) {
                 let service = matches!(record.standing, Standing::Service(_));
                 let (replied, cause) = (record.replied, Cause::ended(exit));
-                juror = matches!(record.standing, Standing::Juror);
                 let trail = (record.token_count(), record.trail.clone());
                 let ending = (record.exit.unwrap_or(exit), record.error.clone());
                 let epoch = children.touch(child_id, cause);
@@ -190,9 +189,6 @@ impl SubagentHost {
             self.resume(child_id);
         }
         if steered {
-            return;
-        }
-        if juror {
             return;
         }
         let taken = match exit {
