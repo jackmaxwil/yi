@@ -169,15 +169,6 @@ fn measure(mut served: Vec<String>, supplied: &[Url]) -> Relevance {
     }
 }
 
-/// A workspace file's text and hash exactly as `local://` serves them whole, so a blob named
-/// by digest can be matched against the row a read of it left.
-pub fn as_served(raw: &str) -> (String, String) {
-    use yi_tools::hashline::normalize::{normalize_to_lf, strip_bom};
-    let text = normalize_to_lf(strip_bom(raw).text);
-    let hash = super::content_hash(&text);
-    (text, hash)
-}
-
 /// The fetch rows a transcript carries: a child's fetches are durable custom entries, so
 /// they outlive the child and answer "was this read, and at which hash" after it is gone.
 pub fn rows_of(session: &yi_session::SharedSession) -> Vec<FetchRecord> {
