@@ -7,8 +7,10 @@ import ast
 import asyncio
 import json
 import math
+import os
 import sys
 import subprocess
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +26,7 @@ from yi.roles import verify_quotes  # noqa: E402
 
 ALPHA = 0.025
 ARMS = ("root", "reader")
+REQUIRED_FAMILIES = ("kimi", "glm-flash")
 SCHEMA = {
     "type": "object",
     "required": ["answer", "quotes"],
@@ -91,15 +94,21 @@ def run_specs():
         for arm in ARMS:
             prompt = child_prompt(question)
             partition = [question["url"]]
-            extra = {"turns": 5, "schema": SCHEMA} if arm == "reader" else {}
+            extra = {"name": f"{question['id']}-{arm}"}
+            if arm == "reader":
+                extra.update({"turns": 5, "schema": SCHEMA})
             code = (
                 "import json\n"
                 f"role = {arm!r}\n"
                 f"child_prompt = {prompt!r}\n"
                 f"partition = {partition!r}\n"
                 f"extra = {extra!r}\n"
-                "handle = await rlm.run(child_prompt, role=role, partition=partition, **extra)\n"
+                "handle = None\n"
+                "child = {}\n"
                 "try:\n"
+                "    handle = await rlm.run(child_prompt, role=role, partition=partition, **extra)\n"
+                "    child = {'id': handle.rlm_child_id, 'name': handle.name,\n"
+                "             'sessionDir': str(handle.session_dir), 'model': handle.model}\n"
                 "    result = await handle.result(timeout=540)\n"
                 "    payload = result.get('json')\n"
                 "    if payload is None:\n"
@@ -108,8 +117,9 @@ def run_specs():
                 "    payload = {'answer': '', 'quotes': [], 'proseRefusal': True,\n"
                 "               'error': f'{type(error).__name__}: {error}'}\n"
                 "finally:\n"
-                "    await rlm.delete_subagent(handle)\n"
-                "print(json.dumps(payload, sort_keys=True))\n"
+                "    if handle is not None:\n"
+                "        await rlm.delete_subagent(handle)\n"
+                "print(json.dumps({'child': child, 'payload': payload}, sort_keys=True))\n"
             )
             outer = (
                 "Run exactly one child with the ipython code below. Do not answer the question "
@@ -164,20 +174,76 @@ def runs_root():
     return Path(os.environ.get("EVAL_KILL_ROOT") or Path.home() / "Development/yi-runs")
 
 
-def child_usage(row):
+def child_evidence(row, question, arm, envelope):
+    def invalid(reason):
+        return {"valid": False, "answer": None, "childTokens": None, "evidenceError": reason}
+
+    if not isinstance(envelope, dict) or not isinstance(envelope.get("child"), dict):
+        return invalid("outer answer has no child handle")
+    handle = envelope["child"]
+    if handle.get("name") != f"{question['id']}-{arm}" or handle.get("model") != row.get("model"):
+        return invalid("child handle does not match the requested arm and model")
+    child_id = handle.get("id")
+    if not isinstance(child_id, str) or not child_id.startswith("sub-"):
+        return invalid("child handle has no subagent id")
     base = runs_root() / "b1-exp-d" / row.get("run", "") / "sessions"
+    files = [p for p in base.rglob("*.jsonl") if any(part.startswith("sub-") for part in p.parts)] if base.is_dir() else []
+    if len(files) != 1:
+        return invalid(f"expected exactly one retained child session, found {len(files)}")
+    path = files[0]
+    if path.parent.name != child_id or Path(handle.get("sessionDir") or "") != path.parent:
+        return invalid("child handle does not name the retained session")
+    entries, malformed = yi_usage.json_lines(path)
+    if malformed or not entries:
+        return invalid("child session is unreadable")
+    header = entries[0]
+    if header.get("kind") != "header" or header.get("version") != 4 or not header.get("parentSessionId"):
+        return invalid("child session has no valid parent header")
+    roots = [p for p in base.rglob("*.jsonl") if not any(part.startswith("sub-") for part in p.parts)]
+    root_entries, root_malformed = yi_usage.json_lines(roots[0]) if len(roots) == 1 else ([], 1)
+    if root_malformed or not root_entries or root_entries[0].get("id") != header["parentSessionId"]:
+        return invalid("child session does not belong to this outer run")
+    prompt = child_prompt(question)
+    prompted = False
+    assistants = []
+    for entry in entries:
+        message = entry.get("message") if entry.get("kind") == "entry" else None
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        text = content if isinstance(content, str) else "\n".join(
+            block.get("text", "") for block in content or [] if isinstance(block, dict) and block.get("type") == "text"
+        )
+        prompted |= message.get("role") == "user" and text.startswith(prompt)
+        if message.get("role") == "assistant":
+            assistants.append((message, text))
+    if not prompted:
+        return invalid("child session does not contain the requested question")
+    if not assistants:
+        return invalid("child session has no assistant answer")
     totals = {key: 0 for key in yi_usage.TOKEN_KEYS}
-    files = [p for p in base.rglob("*.jsonl") if "sub-" in str(p)] if base.is_dir() else []
-    messages = 0
-    for path in files:
-        entries, _ = yi_usage.json_lines(path)
-        for entry in entries:
-            message = entry.get("message") if entry.get("kind") == "entry" else None
-            if not isinstance(message, dict) or message.get("role") != "assistant":
-                continue
-            messages += 1
-            yi_usage._add_tokens(totals, message.get("usage"))
-    return {**totals, "assistantMessages": messages, "sessionFiles": len(files)}
+    for message, _ in assistants:
+        usage = message.get("usage")
+        if not isinstance(usage, dict) or usage.get("unknown") is True or any(
+            not isinstance(usage.get(key), (int, float)) or isinstance(usage.get(key), bool)
+            for key in yi_usage.TOKEN_KEYS
+        ):
+            return invalid("child assistant usage is missing or unknown")
+        yi_usage._add_tokens(totals, usage)
+    text = assistants[-1][1]
+    try:
+        answer = json.loads(text)
+    except (TypeError, ValueError):
+        answer = None
+    payload = envelope.get("payload")
+    if answer is None:
+        if not isinstance(payload, dict) or not payload.get("proseRefusal"):
+            return invalid("outer payload does not match the child answer")
+        answer = {"answer": "", "quotes": [], "proseRefusal": True}
+    elif payload != answer:
+        return invalid("outer payload does not match the child answer")
+    usage = {**totals, "assistantMessages": len(assistants), "sessionFiles": 1}
+    return {"valid": True, "answer": answer, "childTokens": usage, "evidenceError": None}
 
 
 def run_key(row):
@@ -210,12 +276,12 @@ def family_verdict(scored):
     by_question = defaultdict(dict)
     for row in scored:
         by_question[row["question"]][row["arm"]] = row
-    complete = [pair for pair in by_question.values() if set(pair) == set(ARMS)]
+    complete = [pair for pair in by_question.values() if set(pair) == set(ARMS) and all(row.get("valid", True) for row in pair.values())]
     improved = sum(pair["reader"]["correct"] and not pair["root"]["correct"] for pair in complete)
     regressed = sum(pair["root"]["correct"] and not pair["reader"]["correct"] for pair in complete)
     root_correct = sum(pair["root"]["correct"] for pair in complete)
     reader_correct = sum(pair["reader"]["correct"] for pair in complete)
-    prose_refusals = sum(row["proseRefusal"] for row in scored if row["arm"] == "reader")
+    prose_refusals = sum(row["proseRefusal"] for row in scored if row["arm"] == "reader" and row.get("valid", True))
     p_value = sign_p_value(improved, regressed)
     return {
         "questions": len(complete),
@@ -225,7 +291,7 @@ def family_verdict(scored):
         "regressed": regressed,
         "signP": p_value,
         "readerProseRefusals": prose_refusals,
-        "kill": len(complete) == 25 and (p_value <= ALPHA or root_correct - reader_correct > 3),
+        "kill": len(complete) == 25 and (p_value <= ALPHA or root_correct - reader_correct > 3 or prose_refusals > 0),
         "complete": len(complete) == 25,
     }
 
@@ -241,8 +307,12 @@ def report(rows):
     scored = []
     with patch.object(rlm, "fetch", fetch):
         for (family, qid, arm), row in latest_pairs(rows).items():
-            answer = final_answer(row)
-            outcome = asyncio.run(score_answer(questions[qid], answer, document["commit"]))
+            envelope = final_answer(row)
+            evidence = child_evidence(row, questions[qid], arm, envelope)
+            answer = evidence.pop("answer")
+            outcome = asyncio.run(score_answer(questions[qid], answer, document["commit"])) if evidence["valid"] else {
+                "correct": False, "proseRefusal": False, "acceptedQuotes": [],
+            }
             scored.append({
                 "family": family,
                 "question": qid,
@@ -250,7 +320,7 @@ def report(rows):
                 "run": row.get("run"),
                 "answer": answer,
                 **outcome,
-                "childTokens": child_usage(row),
+                **evidence,
             })
     families = {}
     for family in sorted({row["family"] for row in scored}):
@@ -260,8 +330,8 @@ def report(rows):
 
 def summarize(rows):
     result = report(rows)
-    verdicts = [v for v in result["families"].values() if v["complete"]]
-    verdict = "KILL" if any(v["kill"] for v in verdicts) else "KEEP" if verdicts else "UNRESOLVED"
+    complete = all(result["families"].get(family, {}).get("complete") for family in REQUIRED_FAMILIES)
+    verdict = "KILL" if any(v["kill"] for v in result["families"].values()) else "KEEP" if complete else "UNRESOLVED"
     details = "; ".join(
         f"{family}: root {v['rootCorrect']}, reader {v['readerCorrect']}, "
         f"discordant {v['improved']}/{v['regressed']}, p={v['signP']:.6g}, "
@@ -311,6 +381,62 @@ def selftest():
     malformed = {"answer": "", "quotes": [], "proseRefusal": True}
     outcome = asyncio.run(score_answer(document["questions"][0], malformed, document["commit"]))
     assert outcome["proseRefusal"] and not outcome["correct"]
+    def write_trial(root, children=1, usage=True, mismatch=False):
+        question = document["questions"][0]
+        answer = {"answer": question["answer"], "quotes": [{
+            "url": question["url"], "line": question["line"], "text": question["quote"],
+        }]}
+        run = "kimi-q01-root-12345678"
+        base = root / "b1-exp-d" / run
+        child_dir = base / "sessions/root/children/sub-0"
+        child_dir.mkdir(parents=True)
+        envelope = {
+            "child": {"id": "sub-0", "name": "q01-root", "sessionDir": str(child_dir), "model": "kimi/k3.1"},
+            "payload": {"answer": "outer mismatch", "quotes": []} if mismatch else answer,
+        }
+        outer = {"type": "message_end", "message": {"role": "assistant", "content": [{
+            "type": "text", "text": json.dumps(envelope),
+        }]}}
+        (base / "events.jsonl").write_text(json.dumps(outer) + "\n")
+        header = {"kind": "header", "version": 4, "id": "root", "createdAt": 0, "cwd": "/work"}
+        (base / "sessions/root.jsonl").write_text(json.dumps(header) + "\n")
+        for index in range(children):
+            directory = child_dir if index == 0 else child_dir.with_name(f"sub-{index}")
+            directory.mkdir(exist_ok=True)
+            child_header = {**header, "id": f"child-{index}", "parentSessionId": "root"}
+            user = {"kind": "entry", "type": "message", "message": {
+                "role": "user", "content": child_prompt(question),
+            }}
+            tokens = {"input": 12, "output": 3, "cacheRead": 0, "cacheWrite": 0} if usage else None
+            assistant = {"kind": "entry", "type": "message", "message": {
+                "role": "assistant", "content": [{"type": "text", "text": json.dumps(answer)}],
+                **({"usage": tokens} if tokens else {}),
+            }}
+            (directory / "child.jsonl").write_text("".join(
+                json.dumps(entry) + "\n" for entry in (child_header, user, assistant)
+            ))
+        return {"id": "q01-root", "family": "kimi", "run": run, "model": "kimi/k3.1"}
+
+    def scored_trial(**kwargs):
+        with tempfile.TemporaryDirectory() as scratch, patch.dict(os.environ, {"EVAL_KILL_ROOT": scratch}):
+            row = write_trial(Path(scratch), **kwargs)
+            return report([row])["children"][0]
+
+    retained = scored_trial()
+    assert retained["valid"] and retained["correct"], retained["evidenceError"]
+    assert retained["childTokens"]["input"] == 12 and retained["childTokens"]["sessionFiles"] == 1
+    for kwargs in ({"children": 0}, {"children": 2}, {"usage": False}, {"mismatch": True}):
+        refused = scored_trial(**kwargs)
+        assert not refused["valid"] and not refused["correct"] and refused["childTokens"] is None, kwargs
+    prose = [dict(row, proseRefusal=row["arm"] == "reader" and row["question"] == "q01") for row in synthetic(25)]
+    assert family_verdict(prose)["kill"], "one reader prose refusal crosses the kill boundary"
+    clean = family_verdict([dict(row, correct=True) for row in synthetic(25)])
+    one_family = {"families": {"kimi": clean}}
+    with patch.object(sys.modules[__name__], "report", return_value=one_family):
+        assert summarize([]).startswith("UNRESOLVED"), "one complete family is not enough for KEEP"
+    both_families = {"families": {family: clean for family in REQUIRED_FAMILIES}}
+    with patch.object(sys.modules[__name__], "report", return_value=both_families):
+        assert summarize([]).startswith("KEEP"), "two complete clean families keep the route"
     print("ok   reader_vs_root selftest (25 keyed answers, 25 neighbour citations, sign-test boundaries)")
 
 

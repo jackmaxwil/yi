@@ -10,7 +10,7 @@ THRESHOLD = ("Withdraw B1-reader-route if an exact one-sided sign test over disc
              "is more than 3 below root's. Score only correct answers with verify_quotes-accepted "
              "quotes on the keyed line; also require zero reader answers refused as prose.")
 FAMILIES = ("kimi", "glm-flash")
-PREDICTED_USD = {"kimi": 0.0, "glm-flash": 2.0}
+PREDICTED_USD = {"kimi": 0.0, "glm-flash": 0.72}
 STEP = 5
 
 
