@@ -164,6 +164,28 @@ fn oversized_skeleton_layer_names_its_truncation() -> TestResult {
     Ok(())
 }
 
+/// The walk stopped at 2,000 source files with no word, and the footer's total read as the whole
+/// tree. Dies with 2,001 files reported as "of 2000", or 2,000 files claiming a stop.
+#[test]
+fn the_skeleton_scan_names_where_it_stopped() -> TestResult {
+    let footer = |extra: usize| -> Result<String, Box<dyn Error>> {
+        let dir = fixture(&format!("scan-{extra}"))?;
+        for index in 0..extra {
+            fs::write(dir.join(format!("g{index:04}.rs")), "pub fn g() {}\n")?;
+        }
+        let packet = run(&dir, Map::new());
+        let row = skeleton_layer(&packet)
+            .lines()
+            .find(|row| row.starts_with("[skeletons"));
+        Ok(row.ok_or("no footer")?.to_owned())
+    };
+    let cap = "files at the 40-file cap;";
+    assert!(footer(1_998)?.starts_with(&format!("[skeletons truncated: 40 of 2000 {cap} read")));
+    let scan = "scan stopped at SKELETON_SCAN 2000; read";
+    assert!(footer(1_999)?.starts_with(&format!("[skeletons truncated: 40 of 2000+ {cap} {scan}")));
+    Ok(())
+}
+
 /// The 4 KB layer clamp cut the skeleton layer mid-entry and dropped its own footer, the one
 /// row that says how to see the rest.
 #[test]
