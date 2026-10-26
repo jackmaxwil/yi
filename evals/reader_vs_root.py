@@ -156,7 +156,7 @@ def final_answer(row):
     if not path.is_absolute():
         path = axes.runs_root("EVAL_KILL_ROOT") / "b1-exp-d" / row.get("run", "") / "events.jsonl"
     try:
-        return json.loads(run.final_answer(path, last_nonempty=False, separator="\n"))
+        return json.loads(run.final_answer(path, last_nonempty=False))
     except (TypeError, ValueError):
         return None
 
@@ -427,8 +427,8 @@ def selftest():
         events.write_text("".join(json.dumps(message) + "\n" for message in messages))
         assert final_answer({"events": str(events)}) is None, "an empty final assistant must not reuse stale prose"
         messages[1]["message"]["content"] = [
-            {"type": "text", "text": '{"answer":"ear'},
-            {"type": "text", "text": 'lier"}'},
+            {"type": "text", "text": '{"answer":'},
+            {"type": "text", "text": '"x"}'},
         ]
         events.write_text("".join(json.dumps(message) + "\n" for message in messages))
         assert final_answer({"events": str(events)}) is None, "separate text blocks must not concatenate into an envelope"
