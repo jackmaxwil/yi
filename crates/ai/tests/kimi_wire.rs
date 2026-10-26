@@ -2,14 +2,13 @@
 //! reasoning echoed across tool turns, and Yi's own name.
 
 use std::error::Error;
-use std::io::{BufReader, Write};
 
 use serde_json::{Map, Value, json};
 use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::model::{Effort, LlmContext, Model};
 
-use crate::loopback::read_request;
+use crate::loopback_server::serve;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -227,28 +226,6 @@ fn the_recorded_tool_turn_maps_to_thinking_a_call_and_its_usage() -> TestResult 
     Ok(())
 }
 
-/// Answers each request with `reply` in turn and hands back every request it read, head and body.
-pub(crate) fn record(
-    replies: Vec<String>,
-) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let handle = std::thread::spawn(move || {
-        let mut seen = Vec::new();
-        for reply in replies {
-            let Ok((stream, _)) = listener.accept() else {
-                break;
-            };
-            let mut reader = BufReader::new(stream);
-            let request = read_request(&mut reader);
-            let _ = reader.get_mut().write_all(reply.as_bytes());
-            seen.push(request);
-        }
-        seen
-    });
-    Ok((port, handle))
-}
-
 pub(crate) fn json_reply(status: &str, body: &str) -> String {
     format!(
         "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -268,7 +245,7 @@ fn user_agent(request: &str) -> Option<String> {
 /// all say `yi/<version>`, and a profile's `stream_headers` user-agent still wins on the stream.
 #[test]
 fn every_agent_identifies_as_yi_and_a_profile_header_replaces_it() -> TestResult {
-    let (port, handle) = record(vec![
+    let (port, _, handle) = serve(vec![
         json_reply("200 OK", "{}"),
         json_reply("200 OK", "{}"),
         json_reply("200 OK", "{}"),
@@ -361,7 +338,7 @@ fn a_non_moonshot_route_is_byte_identical() -> TestResult {
 /// `?beta=true` included, off the same `api_base` the chat models use.
 #[test]
 fn an_anthropic_protocol_kimi_model_posts_to_beta_messages() -> TestResult {
-    let (port, handle) = record(vec![json_reply("200 OK", "{}")])?;
+    let (port, _, handle) = serve(vec![json_reply("200 OK", "{}")])?;
     let base = format!("http://127.0.0.1:{port}/coding/v1");
     let list =
         json!({"data": [{"id": "k3-a", "protocol": "anthropic", "limit": {"context": 262144}}]});

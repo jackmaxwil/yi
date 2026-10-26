@@ -902,7 +902,9 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
 - After every op, `dispatch_ready` applies `start` as `Actor::Engine` to each ready delegated
   todo admission allows; the plan timer's `dispatch_ready_in` is the backstop.
 - A plan child's end is the engine's: it stores the last answer and applies `submit`, `done`; a
-  `fail` verdict fails the todo `retained`. The owner gets one `plan: accepted|refused|failed`.
+  `fail` verdict fails the todo `retained`. The owner gets one `plan: accepted|refused|failed`
+  line naming the product's address (`plan://` on accept, the `history://` child on a failure),
+  never the product: `read`, `grep` and `rlm.fetch` open each address it prints.
 - The `todo` tool keeps a session list of `custom{todo}` entries whose items are plan `Todo`s: a
   session todo is a todo with no edges, with an optional `t<n>` id and `done` evidence. With a plan
   open at depth 0 the list is the plan's view, each plan todo cloned in by `Mirror` after each op,

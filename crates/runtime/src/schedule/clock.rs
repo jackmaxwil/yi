@@ -113,6 +113,12 @@ pub fn wait_of(on: &BlockedOn) -> Option<(String, Option<String>)> {
     }
 }
 
+/// One definition of "waits on this address" for the session list's unblock and a plan carry's
+/// retry gate, so the two layers of the same once-only firing cannot drift apart.
+pub fn waits_on(address: &str, on: &BlockedOn) -> bool {
+    wait_of(on).is_some_and(|(at, _)| at == address)
+}
+
 pub fn armed_command(on: &BlockedOn) -> Option<String> {
     wait_of(on).and_then(|(address, _)| super::adapter::exec_command(&address))
 }
@@ -180,7 +186,7 @@ pub(super) fn unblock(
                     item.label == *label
                         && crate::todo::mirror::row_plan(item).is_none()
                         && matches!(&item.state, TodoState::Blocked { on, .. }
-                        if wait_of(on).map(|(address, _)| address).as_ref() == job.label.as_ref())
+                        if job.label.as_deref().is_some_and(|address| waits_on(address, on)))
                 })
                 .map(crate::todo::id_needle);
             if let Some(row) = &waiting {
