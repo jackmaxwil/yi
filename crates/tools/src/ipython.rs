@@ -190,13 +190,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome, dir: Option<&Path>) -
         let streams = sections.join("\n");
         let shell = view(ShellCell(&command), &streams, "", exit, kept, dir);
         notes.retain(|note| shell.recovery.as_ref() != Some(note));
-        // Incident: with no file to name, the view's middle cut swallowed the kernel's cut row.
-        let swallowed: Vec<String> = (streams.lines())
-            .filter(|line| shell.recovery.is_none() && line.starts_with("[\u{2026} "))
-            .filter(|line| !shell.text.contains(*line))
-            .map(str::to_owned)
-            .collect();
-        sections = std::iter::once(shell.text).chain(swallowed).collect();
+        sections = vec![shell.text];
     }
     if let Some(value) = &result.result {
         sections.push(value.clone());
