@@ -41,6 +41,9 @@ NOT_RUN = ("unrun", "crash", "quota")
 GRACE_SEC = 60
 # Injected by the selftest: a park is hours of wall clock.
 clock, sleep = time.time, time.sleep
+ASK_ENV = ("PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "HTTPS_PROXY", "https_proxy",
+           "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+           "SSL_CERT_FILE", "SSL_CERT_DIR")
 
 
 def runs_root():
@@ -250,6 +253,10 @@ def park_file():
     return shape_dir() / "kimi-park.json"
 
 
+def ask_env(home):
+    return {**{name: os.environ[name] for name in ASK_ENV if name in os.environ}, "HOME": str(home)}
+
+
 def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
     run = f"{family}-{spec['id']}-{uuid.uuid4().hex[:8]}"
     base = runs_root() / test / run
@@ -266,7 +273,7 @@ def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
                    str(base / "sessions"), "--deadline", str(deadline), *spec.get("args", ()), spec["prompt"]]
         started = time.monotonic()
         with (base / "stderr.txt").open("w") as errors:
-            proc = subprocess.Popen(command, cwd=repo, env={**os.environ, "HOME": str(home)}, text=True,
+            proc = subprocess.Popen(command, cwd=repo, env=ask_env(home), text=True,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors,
                                     start_new_session=True)
         fired = []
@@ -341,16 +348,6 @@ def ask(test, family, spec, binary, stop_usd, until=None, estimate_usd=0.0, ceil
     return row
 
 
-def torn_tail(path):
-    """Whether a store's last line lacks its newline, read from the end: a store is never read whole."""
-    try:
-        with open(path, "rb") as handle:
-            if handle.seek(0, os.SEEK_END) == 0:
-                return False
-            handle.seek(-1, os.SEEK_END)
-            return handle.read(1) != b"\n"
-    except OSError:
-        return False
 
 
 def harbor(test, family, spec, stop_usd):
@@ -363,10 +360,7 @@ def harbor(test, family, spec, stop_usd):
     env = {**os.environ, "TBV4_HARD_CAP": f"{max(stop_usd, 0):.2f}", "EVAL_RUN_ID": run}
     store = TRIALS / f"{run}.jsonl"
     rows, bad = yi_usage.json_lines(store)
-    if torn_tail(store):
-        # As skill_labels.py does: end a killed sweep's torn line, or this sweep's first row fuses onto it.
-        with store.open("a") as sink:
-            sink.write("\n")
+    yi_usage.end_torn_line(store)
     done = subprocess.run(spec["harbor"], cwd=ROOT.parent, env=env)
     # The store is appended per run id, so a re-run charges only the rows its own sweep filed.
     after, bad_after = yi_usage.json_lines(store)

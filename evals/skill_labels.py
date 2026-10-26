@@ -22,6 +22,8 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "adapters"))
+import yi_usage  # noqa: E402
 import record  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -177,20 +179,18 @@ def whole(row):
 def label(corpus_path, out, model, max_usd, limit, teacher=None):
     candidates = skills()
     names = {name for name, _ in candidates}
-    done, torn = set(), False
+    done = set()
     if out.exists():
         kept = out.read_text(errors="replace")
         done = {row["id"] for row in map(parsed, kept.splitlines()) if whole(row)}
-        torn = bool(kept) and not kept.endswith("\n")
     if teacher is None:
         key = os.environ.get("OPENROUTER_API_KEY")
         if not key:
             sys.exit("label: export OPENROUTER_API_KEY first; this run spends money (see --max-usd)")
         teacher = lambda text: ask_teacher(text, candidates, model, key)  # noqa: E731
     spent, labelled = 0.0, 0
+    yi_usage.end_torn_line(out)
     with out.open("a") as sink:
-        if torn:
-            sink.write("\n")
         for line in corpus_path.read_text(errors="replace").splitlines():
             row = json.loads(line)
             if row["id"] in done:
