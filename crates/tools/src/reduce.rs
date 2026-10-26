@@ -30,7 +30,23 @@ const GREP_PER_FILE: usize = 3;
 pub const REDUCE_FLOOR: usize = 8_192;
 
 /// The user asked for the whole thing; reducing answers a different question.
-const RAW_FLAGS: [&str; 6] = ["-v", "--verbose", "--nocapture", "--porcelain", "-la", "-C"];
+fn skip_reduction(command: &str) -> bool {
+    let has = |flags: &[&str]| command.split_whitespace().any(|word| flags.contains(&word));
+    const TEST_RAW: [&str; 3] = ["-v", "--verbose", "--nocapture"];
+    match program(command) {
+        Some("git") => has(&["--porcelain"]),
+        Some("ls") => has(&["-la"]),
+        Some("cargo" | "pytest" | "py.test" | "nextest" | "jest" | "vitest" | "go") => {
+            has(&TEST_RAW)
+        }
+        Some("python" | "python3")
+            if command.contains("pytest") || command.contains("unittest") =>
+        {
+            has(&TEST_RAW)
+        }
+        _ => false,
+    }
+}
 
 /// Every path runs through [`never_worse`]; a lossy result points at `kept` (a cut capture's
 /// spill) or at a tee under `tee_dir`. `max_lines` moves the line caps, never the byte ceiling.
@@ -315,12 +331,6 @@ fn join_streams(stdout: &str, stderr: &str) -> String {
         (true, false) => stderr.to_owned(),
         (false, false) => format!("{stdout}\n{stderr}"),
     }
-}
-
-fn skip_reduction(command: &str) -> bool {
-    command
-        .split_whitespace()
-        .any(|word| RAW_FLAGS.contains(&word))
 }
 
 fn program(command: &str) -> Option<&str> {

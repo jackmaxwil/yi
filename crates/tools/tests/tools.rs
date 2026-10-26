@@ -901,9 +901,15 @@ fn a_cut_bash_stream_names_a_file_with_every_byte() -> TestResult {
             "{command}"
         );
     }
-    // Kept only where a pointer names it: a 13,893-byte output left whole leaves no file.
-    let whole =
-        BashTool::default().execute(args(&[("command", json!("seq 1 3000 # -v"))]), &context);
+    // Real ls output past the floor stays whole under its own -la bypass and leaves no file.
+    fs::create_dir(dir.join("many"))?;
+    for n in 0..200 {
+        fs::write(
+            dir.join(format!("many/file-{n:03}-abcdefghijklmnopqrstuvwxyz")),
+            "",
+        )?;
+    }
+    let whole = BashTool::default().execute(args(&[("command", json!("ls -la many"))]), &context);
     assert!(!output_text(&whole).contains("[full output:"));
     // `seq 1 8000` twice is one file: equal bytes share their name.
     assert_eq!(
@@ -978,6 +984,31 @@ fn a_verbose_command_is_left_alone() -> TestResult {
     let reduced = yi_tools::reduce("cargo test -- --nocapture", &raw, "", 0, None, None, None);
     assert_eq!(reduced.text, raw);
     assert!(reduced.recovery.is_none());
+    Ok(())
+}
+
+#[test]
+fn reducer_bypass_flags_are_scoped_to_their_programs() -> TestResult {
+    let dir = temp_dir("reduce-flag-programs")?;
+    let raw = fs::read_to_string(reduce_fixture("rg-many-files.txt"))?;
+    for command in [
+        "cargo test -- --nocapture",
+        "pytest -v",
+        "git status --porcelain",
+        "ls -la",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert_eq!(reduced.text, raw, "{command}");
+    }
+    for command in [
+        "grep -v needle",
+        "git -C repo status",
+        "ls -C",
+        "cargo -C repo test",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert!(reduced.out_bytes < reduced.raw_bytes, "{command}");
+    }
     Ok(())
 }
 
