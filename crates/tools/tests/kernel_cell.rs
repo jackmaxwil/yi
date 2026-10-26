@@ -321,3 +321,44 @@ fn a_python_print_is_read_as_printed() -> TestResult {
     }
     Ok(())
 }
+
+/// The kernel now hands a long shell cell over as its head, its own cut row and its tail. The
+/// verdict reads inline either way, and with no file to name the kernel's row is still there,
+/// so the first cut is not hidden behind the view's.
+#[test]
+fn a_shell_cell_reads_the_kernels_head_and_tail_capture() -> TestResult {
+    let dir = temp_dir("cell-headtail")?;
+    let fixture = |name: &str| std::fs::read_to_string(view_fixture(name));
+    let stdout = fixture("view/cargo-test-3000-cell-stdout-headtail.txt")?;
+    let spill = dir.join("7d1c2e3f4a5b6c7d8e9f0a1b2c3d4e5f.txt");
+    std::fs::write(&spill, fixture("view/cargo-test-3000-cell-spill.txt")?)?;
+    let pointer = format!("[full output: {}]", spill.display());
+    let path: &std::path::Path = &dir;
+    let called = "CalledProcessError: Command 'b'cargo test --color never\\n'' returned non-zero exit status 101.";
+    for code in [
+        "%%bash\ncargo test --color never",
+        "!cargo test --color never",
+    ] {
+        for kept in [Some(path), None] {
+            let notes = kept.map(|_| pointer.clone()).into_iter().collect();
+            let outcome = match code.starts_with("%%bash") {
+                true => failed_cell(&stdout, "", &[called], notes)?,
+                false => ran_cell(&stdout, "", notes)?,
+            };
+            let text = output_text(&yi_tools::cell_output(code, outcome, kept));
+            for verdict in ["    tests::balance_1370", "test result: FAILED."] {
+                assert!(
+                    text.lines().any(|line| line.starts_with(verdict)),
+                    "{code:?} {kept:?}: lost {verdict}"
+                );
+            }
+            let row = "[\u{2026} 65536 of 96614 chars kept, the middle cut";
+            let named = match kept {
+                Some(_) => text.matches(&pointer).count() == 1,
+                None => text.lines().any(|line| line.starts_with(row)),
+            };
+            assert!(named, "{code:?} {kept:?}: the cut is not named: {text}");
+        }
+    }
+    Ok(())
+}
