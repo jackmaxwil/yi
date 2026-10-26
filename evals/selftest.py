@@ -874,6 +874,9 @@ def check_prefix_capture():
     assert [(source, trust) for source, trust, _ in prefix["sources"]] == [
         ("memory", "untrusted")], prefix["sources"]
     assert prefix["sources"][0][2] == 1068, prefix["sources"]
+    # A v2 build slot keeps its size and hash, never its text.
+    v2 = prefix_capture.opening(next((FIXTURES / "prefix").glob("*_01a170fa-*.jsonl")))
+    assert ("doctrine/doctrine", 18862) in v2["slots"], v2["slots"]
 
 
 def check_rule_fires():

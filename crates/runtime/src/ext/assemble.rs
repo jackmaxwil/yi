@@ -124,12 +124,18 @@ impl PromptState {
     }
 
     pub fn assemble(&self) -> String {
+        self.assemble_except(&BTreeSet::new())
+    }
+
+    /// The prompt without the `late` slots, whose text the transcript already carries.
+    pub fn assemble_except(&self, late: &BTreeSet<Slot>) -> String {
         let mut blocks: Vec<String> = Vec::new();
-        let universal = self.render_slots(|rank| rank <= Rank::Doctrine);
+        let base = |slot: &Slot| !late.contains(slot);
+        let universal = self.render_slots(|slot| base(slot) && slot.rank <= Rank::Doctrine);
         if !universal.is_empty() {
             blocks.push(universal);
         }
-        let trusted = self.render_slots(|rank| rank > Rank::Doctrine);
+        let trusted = self.render_slots(|slot| base(slot) && slot.rank > Rank::Doctrine);
         if !trusted.is_empty() {
             blocks.push(trusted);
         }
@@ -140,10 +146,10 @@ impl PromptState {
         blocks.join(SYSTEM_BLOCK_SEPARATOR)
     }
 
-    fn render_slots(&self, keep: impl Fn(Rank) -> bool) -> String {
+    fn render_slots(&self, keep: impl Fn(&Slot) -> bool) -> String {
         self.slots
             .iter()
-            .filter(|(slot, _)| keep(slot.rank))
+            .filter(|(slot, _)| keep(slot))
             .map(|(_, text)| text.trim_end())
             .collect::<Vec<_>>()
             .join("\n\n")
@@ -165,18 +171,26 @@ impl PromptState {
         self.built = self.slots.keys().cloned().collect();
     }
 
-    /// A build slot keeps only its hash; a slot attached since keeps its text.
-    pub fn snapshot(&self) -> Value {
+    /// A build slot keeps its hash and size, never its text; a slot attached since keeps its
+    /// text, and one attached after the first request is marked late.
+    pub fn snapshot(&self, late: &BTreeSet<Slot>) -> Value {
         let slots: Vec<Value> = self
             .slots
             .iter()
             .map(|(slot, text)| {
                 let (rank, name) = (slot.rank.label(), &slot.name);
                 let sha256 = super::project::content_hash(text);
-                match self.built.contains(slot) {
-                    true => json!({"rank": rank, "name": name, "sha256": sha256}),
-                    false => json!({"rank": rank, "name": name, "sha256": sha256, "text": text}),
+                let mut entry =
+                    json!({"rank": rank, "name": name, "sha256": sha256, "bytes": text.len()});
+                if let Value::Object(map) = &mut entry {
+                    if !self.built.contains(slot) {
+                        map.insert("text".into(), json!(text));
+                    }
+                    if late.contains(slot) {
+                        map.insert("late".into(), json!(true));
+                    }
                 }
+                entry
             })
             .collect();
         let yard: Vec<Value> = self
@@ -189,8 +203,10 @@ impl PromptState {
         json!({"version": 2, "slots": slots, "yard": yard})
     }
 
-    /// Re-attaches the yard and each recorded slot with text this build lacks (v1: every slot).
-    pub fn restore(&mut self, snapshot: &Value) {
+    /// Re-attaches the yard and each recorded slot with text this build lacks (v1: every slot),
+    /// and returns the restored slots marked late: their text rides the transcript.
+    pub fn restore(&mut self, snapshot: &Value) -> BTreeSet<Slot> {
+        let mut late = BTreeSet::new();
         for entry in snapshot
             .get("slots")
             .and_then(Value::as_array)
@@ -206,6 +222,9 @@ impl PromptState {
             if let (Some(rank), Some(name), Some(text)) = (rank, name, text)
                 && !self.has(&Slot::new(rank, name))
             {
+                if entry.get("late") == Some(&Value::Bool(true)) {
+                    late.insert(Slot::new(rank, name));
+                }
                 self.attach(Slot::new(rank, name), text.to_owned());
             }
         }
@@ -225,6 +244,7 @@ impl PromptState {
                 self.attach_external(source, trust, text);
             }
         }
+        late
     }
 }
 

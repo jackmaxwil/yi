@@ -367,7 +367,7 @@ fn ext_states(store: &yi_session::SharedSession) -> Result<Vec<String>, Box<dyn 
         .ok_or("no session file")?;
     Ok(std::fs::read_to_string(file)?
         .lines()
-        .filter(|line| line.contains("\"customType\":\"ext_state\""))
+        .filter(|line| line.contains("\"customType\":\"ext_state2\""))
         .map(str::to_owned)
         .collect())
 }
@@ -402,6 +402,48 @@ fn a_resume_under_the_same_build_sends_the_same_prompt_and_stores_hashes() -> Te
         states.iter().all(|line| !line.contains(doctrine)),
         "the doctrine is the build's: the file keeps its hash, never its text"
     );
+    Ok(())
+}
+
+/// Dies with the control: restore a slot attached after the first request into the base
+/// prompt and a resume sends other bytes; a compaction still redelivers it.
+#[test]
+fn a_resume_after_a_late_attach_sends_the_frozen_bytes() -> TestResult {
+    let (dir, store) = project("yi-prompt-late")?;
+    let mut first = installed(&dir, yi_runtime::PermissionMode::Auto);
+    first.start(Some(&store), false);
+    let sent = first.system_prompt();
+    let trigger = first.prompt_event("refactor and migrate and split crates/a and crates/b");
+    first.dispatch(&trigger, Some(&store));
+    assert!(
+        !sent.contains("# Orchestrate"),
+        "the protocol attached late"
+    );
+    let delivered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&delivered);
+    let mut resumed = installed(&dir, yi_runtime::PermissionMode::Auto);
+    resumed.set_deliver(std::sync::Arc::new(move |message| {
+        if let Ok(mut sink) = sink.lock() {
+            sink.push(message);
+        }
+    }));
+    resumed.start(Some(&store), true);
+    assert_eq!(
+        resumed.system_prompt(),
+        sent,
+        "a resume sends the frozen bytes"
+    );
+    resumed.dispatch(&yi_runtime::ext::Event::Compacted, Some(&store));
+    let redelivered = delivered
+        .lock()
+        .map_err(|_| "poisoned")?
+        .iter()
+        .any(|message| {
+            matches!(message, yi_types::message::AgentMessage::Custom {
+            content: yi_types::message::UserContent::Text(text), ..
+        } if text.contains("# Orchestrate"))
+        });
+    assert!(redelivered, "a compaction redelivers the late protocol");
     Ok(())
 }
 
