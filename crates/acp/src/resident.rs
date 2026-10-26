@@ -14,11 +14,13 @@ use crate::{AcpState, SessionHandle};
 
 /// Idle sessions a worker keeps loaded, the console's own count of parked chats.
 pub(crate) const RESIDENT_MAX: usize = 8;
+const RELOAD_RETRY_MS: u64 = 30_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Away {
     Evicted,
     Loading,
+    Failed { retry_at: u64 },
 }
 
 /// Sessions this worker unloaded while idle, absent once one is loaded again.
@@ -33,18 +35,25 @@ pub(crate) fn forget(id: &str) {
     away().remove(id);
 }
 
-/// A job came due for `id`: true while it is unloaded or loading again. The first sends the one
-/// wake that loads it, so a second due together defers instead of queueing a wake that blocks.
+/// A job came due for `id`: true while it is unloaded or loading again. A failed load
+/// retries on the scheduler's cadence, not on every request that names the session.
 fn owed(id: &str, wake: &WeakUnboundedSender<Incoming>) -> bool {
-    let was = away()
-        .get_mut(id)
-        .map(|state| std::mem::replace(state, Away::Loading));
-    if was == Some(Away::Evicted)
-        && let Some(wake) = wake.upgrade()
-    {
-        let _worker_gone = wake.send(Incoming::Built(id.to_owned()));
+    let mut states = away();
+    let Some(state) = states.get_mut(id) else {
+        return false;
+    };
+    let due = match *state {
+        Away::Evicted => true,
+        Away::Loading => false,
+        Away::Failed { retry_at } => retry_at <= crate::daemon::now_ms(),
+    };
+    if due {
+        *state = Away::Loading;
+        if let Some(wake) = wake.upgrade() {
+            let _worker_gone = wake.send(Incoming::Built(id.to_owned()));
+        }
     }
-    was.is_some()
+    true
 }
 
 /// Whether dropping the session would stop or lose something, so it stays past [`RESIDENT_MAX`].
@@ -118,10 +127,23 @@ impl AcpState {
         let Some(state) = states.get_mut(id) else {
             return;
         };
+        let due = match *state {
+            Away::Evicted => true,
+            Away::Loading => false,
+            Away::Failed { retry_at } => retry_at <= crate::daemon::now_ms(),
+        };
+        if !due {
+            return;
+        }
         *state = Away::Loading;
         drop(states);
         if self.open_later(id).is_err() {
-            forget(id);
+            away().insert(
+                id.to_owned(),
+                Away::Failed {
+                    retry_at: crate::daemon::now_ms().saturating_add(RELOAD_RETRY_MS),
+                },
+            );
         }
     }
 }
@@ -148,6 +170,21 @@ mod tests {
         assert!(!owed("never-evicted", &weak));
         forget("two-due");
         Ok(())
+    }
+
+    #[test]
+    fn a_failed_reload_waits_for_its_retry_instead_of_waking_on_every_job() {
+        let (sender, mut wakes) = tokio::sync::mpsc::unbounded_channel();
+        let weak = sender.downgrade();
+        away().insert("retry".to_owned(), Away::Failed { retry_at: u64::MAX });
+
+        assert!(owed("retry", &weak));
+        assert!(wakes.try_recv().is_err(), "a failed load retried at once");
+        away().insert("retry".to_owned(), Away::Failed { retry_at: 0 });
+        assert!(owed("retry", &weak) && owed("retry", &weak));
+        assert!(wakes.try_recv().is_ok(), "the due retry sent no wake");
+        assert!(wakes.try_recv().is_err(), "one retry sent two wakes");
+        forget("retry");
     }
 
     #[tokio::test]

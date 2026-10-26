@@ -653,14 +653,18 @@ impl HeartbeatService {
 
     /// A session loaded again for a wake reads its subscriptions now, not a retry later.
     pub fn rearm_channels(&self) {
-        let (session, now) = (self.session_id(), yi_session::now_ms());
-        self.store().mutate(|state| {
-            for job in (state.jobs.iter_mut()).filter(|job| {
-                job.session_id == session && job.channel.is_some() && super::claimable(job)
-            }) {
-                job.next_run_at = Some(job.next_run_at.map_or(now, |at| at.min(now)));
-            }
-        });
+        let session = self.session_id();
+        let paths: std::collections::HashSet<String> = self
+            .store()
+            .snapshot()
+            .jobs
+            .into_iter()
+            .filter(|job| job.session_id == session && super::claimable(job))
+            .filter_map(|job| job.channel.map(|sub| sub.path))
+            .collect();
+        for path in paths {
+            super::shared::poke_now(std::path::Path::new(&path));
+        }
     }
 
     /// A durable root reads its mail through one subscription, made at its first bind and kept:
