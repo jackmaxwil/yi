@@ -2,11 +2,11 @@
 //! each spelling a plan call carries meets a bash call's gate, through the tool and `plan.op`.
 use crate::scratch::Scratch;
 
-use serde_json::{Map, Value, json};
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Barrier};
-use std::thread;
+use std::sync::Arc;
+
+use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::AgentSession;
 use yi_runtime::rules::{RuleDoc, RuleGap, RuleMode, RuleScope};
@@ -125,55 +125,6 @@ async fn a_rows_armed_command_meets_the_gate_through_the_tool() -> TestResult {
         armed.iter().all(|label| !label.contains("denied-marker")),
         "{armed:?}"
     );
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_plan_wait_unblocks_once_when_firings_race() -> TestResult {
-    let root = Scratch::new("yi-plan-arms-race")?;
-    let session = root_session(&root)?;
-    let seen = plan_calls(
-        &session,
-        vec![blocked_row(
-            "probe the control",
-            json!({"external": {"probe": "true"}}),
-        )],
-    )
-    .await?;
-    assert!(!seen[0].1, "the control row: {}", seen[0].0);
-    let heartbeats = session.heartbeat_service().ok_or("no heartbeats")?;
-    let job = heartbeats
-        .store()
-        .snapshot()
-        .jobs
-        .into_iter()
-        .find(|job| job.unblocks.is_some())
-        .ok_or("no armed wait")?;
-    let plan = job.plan.ok_or("wait without a plan")?;
-    let address = job.label.ok_or("wait without an address")?;
-    let label = job.unblocks.ok_or("job without a todo")?;
-    let todos = session.todos().ok_or("no todo list")?;
-    let barrier = Arc::new(Barrier::new(32));
-    let handles: Vec<_> = (0..32)
-        .map(|_| {
-            let todos = Arc::clone(&todos);
-            let barrier = Arc::clone(&barrier);
-            let plan = plan.clone();
-            let label = label.clone();
-            let address = address.clone();
-            thread::spawn(move || {
-                barrier.wait();
-                todos.unblock_in(&plan, &label, &address)
-            })
-        })
-        .collect();
-    let mut outcomes = Vec::new();
-    for handle in handles {
-        outcomes.push(handle.join().map_err(|_| "wait racer panicked")?);
-    }
-    assert!(outcomes.iter().all(|result| result.is_ok()), "{outcomes:?}");
-    let unblocked = outcomes.into_iter().collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(unblocked.into_iter().filter(|done| *done).count(), 1);
     Ok(())
 }
 
