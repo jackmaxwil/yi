@@ -375,9 +375,6 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if let Some(max_tokens) = options.max_tokens {
         params["max_output_tokens"] = json!(max_tokens);
     }
-    if let Some(temperature) = options.temperature {
-        params["temperature"] = json!(temperature);
-    }
     if let Some(tools) = &context.tools
         && !tools.is_empty()
     {
@@ -1048,6 +1045,7 @@ pub fn stream(
             stop: options.stop.clone(),
             extra: options.extra_headers.clone(),
             oauth: options.oauth,
+            settle: None,
         },
         run_request,
     )

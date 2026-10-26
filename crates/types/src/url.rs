@@ -228,9 +228,14 @@ impl std::str::FromStr for Url {
             Some(fragment) => Some(HashlineFragment::parse(fragment)?),
             None => None,
         };
+        // ponytail: `%20` alone decodes, so a literal `%20` in a file name has no spelling.
+        let path = match scheme {
+            Scheme::Local => path.replace("%20", " "),
+            _ => path.to_owned(),
+        };
         Ok(Self {
             scheme,
-            path: path.to_owned(),
+            path,
             fragment,
         })
     }
@@ -238,7 +243,11 @@ impl std::str::FromStr for Url {
 
 impl std::fmt::Display for Url {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}://{}", self.scheme, self.path)?;
+        let path = match self.scheme {
+            Scheme::Local => std::borrow::Cow::Owned(self.path.replace(' ', "%20")),
+            _ => std::borrow::Cow::Borrowed(self.path.as_str()),
+        };
+        write!(formatter, "{}://{path}", self.scheme)?;
         match &self.fragment {
             Some(fragment) => write!(formatter, "#{fragment}"),
             None => Ok(()),
@@ -374,5 +383,93 @@ mod tests {
             assert!(bad.parse::<Url>().is_err(), "{bad} parsed");
         }
         Ok(())
+    }
+}
+
+/// The authority of a URL under any scheme: Chrome's WHATWG parser ends it at '/', '?', '#'
+/// or '\', and userinfo before the last '@' is not part of it.
+pub fn url_authority(url: &str) -> Option<&str> {
+    Some(
+        url.split_once("://")?
+            .1
+            .split(['/', '?', '#', '\\'])
+            .next()
+            .unwrap_or("")
+            .rsplit('@')
+            .next()
+            .unwrap_or(""),
+    )
+}
+
+/// The host and port of an `http://` URL's authority when the host is a loopback address
+/// (`localhost`, `127.0.0.1`, `::1`); userinfo cannot move the host off this machine.
+pub fn http_loopback_host_and_port(url: &str) -> Option<(&str, Option<&str>)> {
+    url.strip_prefix("http://")?;
+    let authority = url_authority(url).unwrap_or("");
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(v6) => {
+            let (host, rest) = v6.split_once(']')?;
+            (host, rest.split_once(':').map(|(_, port)| port))
+        }
+        None => match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        },
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1").then_some((host, port))
+}
+
+#[cfg(test)]
+mod loopback_tests {
+    use super::{http_loopback_host_and_port, url_authority};
+
+    /// The authority Chrome connects to ends at a backslash, so a remote host cannot pose
+    /// as userinfo in front of a loopback one.
+    #[test]
+    fn a_backslash_ends_the_authority_and_a_posing_host_is_the_host() {
+        assert_eq!(
+            url_authority("http://evil.com\\@localhost:8080/"),
+            Some("evil.com")
+        );
+        assert_eq!(
+            url_authority("https://a.example@b.example:8443/x"),
+            Some("b.example:8443")
+        );
+        assert_eq!(url_authority("about:blank"), None);
+    }
+
+    #[test]
+    fn a_loopback_host_with_any_port_is_local_and_userinfo_stays_local() {
+        assert_eq!(
+            http_loopback_host_and_port("http://localhost:3000/"),
+            Some(("localhost", Some("3000")))
+        );
+        assert_eq!(
+            http_loopback_host_and_port("http://127.0.0.1"),
+            Some(("127.0.0.1", None))
+        );
+        assert_eq!(
+            http_loopback_host_and_port("http://[::1]:8080/x"),
+            Some(("::1", Some("8080")))
+        );
+        assert_eq!(
+            http_loopback_host_and_port("http://user:pw@localhost:1/a?b#c"),
+            Some(("localhost", Some("1")))
+        );
+        assert_eq!(http_loopback_host_and_port("http://localhostx"), None);
+        assert_eq!(
+            http_loopback_host_and_port("http://localhost:3000@evil.com/"),
+            None
+        );
+        assert_eq!(http_loopback_host_and_port("https://localhost:1/"), None);
+        assert_eq!(http_loopback_host_and_port("http://evil.com/"), None);
+        assert_eq!(
+            http_loopback_host_and_port("http://evil.com\\@localhost:8080/"),
+            None
+        );
+        assert_eq!(
+            http_loopback_host_and_port("http://127.0.0.1:8080\\help"),
+            Some(("127.0.0.1", Some("8080")))
+        );
     }
 }

@@ -28,17 +28,7 @@ fn key(code: KeyCodeValue) -> SingleKey {
 
 fn text(popup: &ModelPopup) -> String {
     let theme = Theme::new(ColorTier::TrueColor, true);
-    popup
-        .lines(80, &theme)
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::common::flat(&popup.lines(80, &theme)).join("\n")
 }
 
 #[test]

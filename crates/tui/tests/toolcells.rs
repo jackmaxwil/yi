@@ -1,8 +1,9 @@
 use crate::common;
 
+use crate::common::flat_trimmed as flat;
+use crate::scratch::Scratch;
 use std::error::Error;
 
-use ratatui::text::Line;
 use serde_json::json;
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
@@ -36,25 +37,11 @@ fn app() -> App {
     )
 }
 
-fn flat(lines: &[Line<'static>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .collect()
-}
-
 fn started(app: &mut App, id: &str, tool: &str, arg: &str) {
     app.reduce_agent(AgentEvent::ToolExecutionStart {
         tool_call_id: id.to_owned(),
         tool_name: tool.to_owned(),
-        args: json!({ "path": arg, "pattern": arg, "cmd": arg }),
+        args: json!({ "path": arg, "pattern": arg, "command": arg }),
     });
 }
 
@@ -92,13 +79,9 @@ fn ended_with(
 #[test]
 fn a_run_of_read_only_calls_commits_as_one_cell() -> TestResult {
     let mut app = app();
-    for (index, (tool, arg)) in [
-        ("read", "src/lib.rs"),
-        ("grep", "ToolCell"),
-        ("glob", "**/*.rs"),
-    ]
-    .into_iter()
-    .enumerate()
+    for (index, (tool, arg)) in [("read", "src/lib.rs"), ("grep", "ToolCell")]
+        .into_iter()
+        .enumerate()
     {
         let id = format!("t{index}");
         started(&mut app, &id, tool, arg);
@@ -112,10 +95,9 @@ fn a_run_of_read_only_calls_commits_as_one_cell() -> TestResult {
     });
     let committed = flat(&app.take_commits());
     let joined = committed.join("\n");
-    assert!(joined.contains("✱ Explored ×3"), "{joined}");
+    assert!(joined.contains("✱ Explored ×2"), "{joined}");
     assert!(joined.contains("Read   src/lib.rs"), "{joined}");
     assert!(joined.contains("Search"), "{joined}");
-    assert!(joined.contains("List"), "{joined}");
     // One bullet, not three.
     assert_eq!(committed.iter().filter(|row| row.contains('✱')).count(), 1);
     Ok(())
@@ -164,37 +146,24 @@ fn a_writing_call_closes_the_run_in_order() -> TestResult {
 fn a_call_held_at_the_permission_gate_says_so() -> TestResult {
     let mut app = app();
     started(&mut app, "t0", "bash", "rm -rf build");
+    let held = |app: &mut App| -> Result<bool, Box<dyn Error>> {
+        Ok(common::live_rows(app)?
+            .iter()
+            .any(|row| row.contains("rm -rf build") && row.contains('△')))
+    };
+    assert!(!held(&mut app)?, "a running call is not yet held");
     app.reduce_agent(AgentEvent::PermissionRequested {
         tool_call_id: "t0".to_owned(),
         title: "bash".to_owned(),
         description: "rm -rf build".to_owned(),
     });
-    assert_eq!(
-        app.live_tool_status("t0").ok_or("no live tool")?,
-        ToolStatus::Awaiting
-    );
-    let rendered = flat(
-        &Cell::Tool(ToolCell {
-            name: String::new(),
-            call_id: String::new(),
-            intent: None,
-            status: ToolStatus::Awaiting,
-            summary: ToolCell::summary_of("bash", "rm -rf build"),
-            digest: None,
-            preview: Vec::new(),
-            elapsed_ms: 0,
-            calls: 1,
-            details: json!({}),
-        })
-        .lines(80, &theme(), TranscriptMode::Normal, 0),
-    );
-    assert!(rendered.join("").contains('△'), "{rendered:?}");
+    assert!(held(&mut app)?, "{:#?}", common::live_rows(&mut app)?);
 
     app.reduce_agent(AgentEvent::PermissionResolved {
         tool_call_id: "t0".to_owned(),
         allowed: true,
     });
-    assert_eq!(app.live_tool_status("t0"), Some(ToolStatus::Running));
+    assert!(!held(&mut app)?, "{:#?}", common::live_rows(&mut app)?);
     Ok(())
 }
 
@@ -202,7 +171,6 @@ fn edit_cell(path: &str) -> ToolCell {
     ToolCell {
         name: "edit".to_owned(),
         call_id: String::new(),
-        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of("edit", path),
         digest: Some("updated".to_owned()),
@@ -353,7 +321,7 @@ fn a_failed_card_opens_with_a_cross_and_keeps_its_reason() -> TestResult {
         json!({}),
     );
     let rows = flat(&app.take_commits());
-    assert!(rows.iter().any(|row| row.contains("✕ ⚙ Todo")), "{rows:?}");
+    assert!(rows.iter().any(|row| row.contains("✕ ≡ Todo")), "{rows:?}");
     assert!(
         rows.iter().any(|row| row.contains("done needs evidence")),
         "{rows:?}"
@@ -483,7 +451,12 @@ fn a_compaction_notice_reads_as_a_plain_host_line() -> TestResult {
 /// before a header's timestamp reached the card. Producer: Apple diff (FreeBSD), exit 1.
 #[test]
 fn a_failed_digest_shows_no_control_character() {
-    let digest = ToolCell::digest_of("bash", include_str!("fixtures/diff-u.txt"), true);
+    let digest = ToolCell::digest_of(
+        "bash",
+        include_str!("fixtures/diff-u.txt"),
+        &serde_json::Value::Null,
+        true,
+    );
     assert_eq!(digest.as_deref(), Some("--- a.txt    2026-09-28 10:00:00"));
 }
 
@@ -630,5 +603,154 @@ fn every_syntax_error_row_under_a_diff_carries_the_error_colour() -> TestResult 
         spans.iter().any(|(text, _)| text.contains("b.py")),
         "second file's verdict row missing: {spans:?}"
     );
+    Ok(())
+}
+
+/// Dies with a generic gear and the fallback hue on tools the registry has: the tables named
+/// `ls`, `glob` and `fetch`, so `todo`, `answer` and `get_context` fell through to `_`. The
+/// names come from the recorded sessions, so a tool a real run calls cannot go unlisted.
+#[test]
+fn every_tool_a_recorded_session_calls_has_its_own_glyph_and_hue() -> TestResult {
+    let theme = theme();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sessions");
+    let mut called = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(dir)? {
+        for line in std::fs::read_to_string(entry?.path())?.lines() {
+            let row: serde_json::Value = serde_json::from_str(line)?;
+            if let Some(name) = row
+                .pointer("/message/toolName")
+                .and_then(|name| name.as_str())
+            {
+                called.insert(name.to_owned());
+            }
+        }
+    }
+    for registered in ["todo", "answer", "get_context"] {
+        assert!(
+            called.contains(registered),
+            "no recorded session calls {registered}"
+        );
+    }
+    for name in &called {
+        let head = ToolCell::summary_of(name, "");
+        assert!(
+            !head.starts_with('⚙'),
+            "{name} draws the generic gear: {head}"
+        );
+        assert_ne!(
+            yi_tui::card::tool_hue(&theme, name),
+            theme.warning,
+            "{name} has no hue"
+        );
+    }
+    Ok(())
+}
+
+/// The session `source` with every result's `[path#TAG]` header spread over two lines: the same
+/// results worded differently, as a token-saving change to the model-facing text would.
+fn reworded(source: &std::path::Path, into: &std::path::Path) -> TestResult {
+    let mut out = String::new();
+    for line in std::fs::read_to_string(source)?.lines() {
+        let mut row: serde_json::Value = serde_json::from_str(line)?;
+        if row.pointer("/message/role").and_then(|role| role.as_str()) == Some("toolResult")
+            && let Some(text) = row.pointer_mut("/message/content/0/text")
+            && let Some(old) = text.as_str().map(str::to_owned)
+        {
+            let header = |row: &str| {
+                let inner = row.strip_prefix('[')?.strip_suffix(']')?;
+                let (path, tag) = inner.split_once('#')?;
+                Some(format!("file: {path}\ntag: {tag}"))
+            };
+            let rows: Vec<String> = old
+                .lines()
+                .map(|row| header(row).unwrap_or_else(|| row.to_owned()))
+                .collect();
+            *text = serde_json::Value::String(rows.join("\n"));
+        }
+        out.push_str(&row.to_string());
+        out.push('\n');
+    }
+    std::fs::write(into, out)?;
+    Ok(())
+}
+
+/// The first 24 characters of the first line of each bash result in a recorded session: what the
+/// card's digest says of a command, taken from the file and not from anything Yi drew.
+fn bash_first_lines(session: &std::path::Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut heads = Vec::new();
+    for line in std::fs::read_to_string(session)?.lines() {
+        let row: serde_json::Value = serde_json::from_str(line)?;
+        if row
+            .pointer("/message/toolName")
+            .and_then(|name| name.as_str())
+            == Some("bash")
+            && let Some(text) = row
+                .pointer("/message/content/0/text")
+                .and_then(|t| t.as_str())
+            && let Some(first) = text.lines().find(|line| !line.trim().is_empty())
+        {
+            heads.push(first.chars().take(24).collect());
+        }
+    }
+    Ok(heads)
+}
+
+/// Dies with a digest read off the model's own words: a grep recorded from the real tool drew
+/// `0 hits` for six, because its rows are `N:text` under a `[path#TAG]` header and not
+/// `path:N:text`, and an edit's digest was whatever line two of its text became once the header
+/// moved. Producer: `yi ask --faux` over a three-file tree (grep) and a five-line file (an
+/// insert-after edit), the older sessions (edit, read, bash).
+#[test]
+fn digests_come_from_the_typed_details_and_survive_rewording_the_text() -> TestResult {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sessions");
+    let scratch = Scratch::new("yi-digest")?;
+    let mut missing = Vec::new();
+    let bash_heads = bash_first_lines(&fixtures.join("01a0d6e4.jsonl"))?;
+    assert_eq!(bash_heads.len(), 4, "the session ran four commands");
+    for (session, wanted) in [
+        (
+            "01a129b6",
+            vec![
+                "2 lines".to_owned(),
+                "updated; first change at line 1".to_owned(),
+            ],
+        ),
+        ("01a16f24", vec!["6 hits".to_owned()]),
+        // An insert after line 2: the tool reports its anchor, 2, where the patch's first
+        // changed row is 3.
+        (
+            "01a16f6f",
+            vec![
+                "5 lines".to_owned(),
+                "updated; first change at line 2".to_owned(),
+            ],
+        ),
+        ("01a0d6e4", bash_heads),
+    ] {
+        let original = fixtures.join(format!("{session}.jsonl"));
+        let spread = scratch.join(format!("{session}.jsonl"));
+        reworded(&original, &spread)?;
+        for path in [&original, &spread] {
+            let mut app = app();
+            common::replay_stream(&mut app, path)?;
+            let shown = app
+                .reflowed(500)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let name = path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into());
+            let reworded = if path == &original { "" } else { " reworded" };
+            missing.extend(
+                wanted
+                    .iter()
+                    .filter(|digest| !shown.contains(digest.as_str()))
+                    .map(|digest| format!("{name}{reworded}: no `{digest}`")),
+            );
+        }
+    }
+    assert_eq!(missing, Vec::<String>::new());
     Ok(())
 }

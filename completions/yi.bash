@@ -1,7 +1,7 @@
 # yi(1) bash completion. Static: lexopt has no generator (X10).
 _yi() {
-    local commands='ask sessions undo rpc acp serve tui mcp version update'
-    local flags='--model --system --thinking --json --yolo --confirm --session --session-dir --continue --schema --cwd --socket --headless --keys --frames --version'
+    local commands='ask rpc acp undo lanes trust gate fetch catalog doctor gc debug why plan todo memory sessions stats serve console tui version update plugin login logout setup mcp'
+    local flags='--help --version --model --system --thinking --json --no-deltas --yolo --auto --confirm --session-dir --cwd --here --fix --socket --headless --lanes --solo --keys --control --frames --faux --record --snap --size --eval --deadline --continue --session --schema --since --by --top'
     local word=${COMP_WORDS[COMP_CWORD]}
     if [[ $word == -* ]]; then
         COMPREPLY=($(compgen -W "$flags" -- "$word"))

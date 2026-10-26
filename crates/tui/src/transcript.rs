@@ -120,6 +120,11 @@ pub(crate) fn todo_finished(text: &str) -> Option<String> {
 }
 
 pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
+    if tool == "ask_user"
+        && let Some(question) = crate::question::Question::from_args(args)
+    {
+        return question.row();
+    }
     if tool == "edit" {
         let targets = args
             .get("patch")
@@ -131,14 +136,10 @@ pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
         }
     }
     let arg = match tool {
-        "bash" => args.get("cmd").or_else(|| args.get("command")),
-        "read" | "edit" | "write" => args.get("path").or_else(|| args.get("file_path")),
-        "grep" | "glob" | "find" => args
-            .get("pattern")
-            .or_else(|| args.get("query"))
-            .or_else(|| args.get("glob")),
+        "bash" => args.get("command"),
+        "read" | "edit" | "write" => args.get("path"),
+        "grep" => args.get("pattern"),
         "ipython" => args.get("code"),
-        "fetch" | "web_search" => args.get("url").or_else(|| args.get("query")),
         _ => None,
     };
     match arg.and_then(Value::as_str) {
@@ -152,10 +153,6 @@ pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
         }
         None => String::new(),
     }
-}
-
-pub(crate) fn intent_of(args: &Value) -> Option<String> {
-    args.get("i").and_then(Value::as_str).map(str::to_owned)
 }
 
 /// A slice renders under the context it continues and keeps only its own rows; the rail header

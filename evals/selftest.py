@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT))
 
 import orient_census  # noqa: E402
+import prefix_capture  # noqa: E402
 import rule_fires  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
@@ -45,6 +46,7 @@ import test_inner  # noqa: E402
 import test_mutate  # noqa: E402
 import test_revert  # noqa: E402
 import test_judge_replay  # noqa: E402
+import test_kill  # noqa: E402
 import test_improve  # noqa: E402
 import test_skill_labels  # noqa: E402
 
@@ -239,7 +241,7 @@ def check_eval_config():
         assert "routing_label(" in source, f"{name}'s fingerprint cannot tell two routings apart"
     # The ledger judges a PR's live run by main's runs of the same routing: one pin, three workflows.
     pins = {name: re.findall(r"^\s*EVAL_ROUTING: (.+)$", (ROOT.parent / ".forgejo" / "workflows" / name).read_text(), re.M)
-            for name in ("pr.yml", "postmerge.yml", "tracking-hygiene.yml")}
+            for name in ("pr.yml", "postmerge.yml", "live-weekly.yml")}
     assert len({pin for found in pins.values() for pin in found}) == 1 and all(pins.values()), pins
     # The fixtures lane leaves a caller's --home config alone, so a label there names a routing never sent.
     with tempfile.TemporaryDirectory() as home:
@@ -862,6 +864,18 @@ def check_orient_census():
     orient_census.selftest()
 
 
+def check_prefix_capture():
+    """Bet 4 (a): the opening prompt of a real recorded session, read slot by slot and
+    source by source, so a parse that drops the yard undercounts every instruction file."""
+    session = next((FIXTURES / "replay" / "yi").glob("1790472350067_01a0e077-*.jsonl"))
+    prefix = prefix_capture.opening(session)
+    names = [slot for slot, _ in prefix["slots"]]
+    assert names == ["identity/identity", "doctrine/doctrine", "mode/permission"], names
+    assert [(source, trust) for source, trust, _ in prefix["sources"]] == [
+        ("memory", "untrusted")], prefix["sources"]
+    assert prefix["sources"][0][2] == 1068, prefix["sources"]
+
+
 def check_rule_fires():
     """The corpus is labelled; the engine that reads it is pinned in rules_e2e."""
     report = rule_fires.measure(FIXTURES / "rules" / "lanes.jsonl")
@@ -963,11 +977,14 @@ def check_mutate():
 
 def check_plugins():
     """#1041: the plugins `yi plugin add` installed ride into the container by EVAL_PLUGINS, the
-    fingerprint names each with its version, and an arm with none says `+plugins{}`."""
+    fingerprint names each with its version, and an arm with none says `+plugins{}`. A tree
+    (the console's Chrome) is no program the model runs, so it never rides (#1379)."""
     report = json.dumps([
         {"name": "ripwire", "version": "0.6.5", "state": "installed",
          "path": "/home/yi/.yi/plugins/ripwire/0.6.5/ripwire"},
         {"name": "other", "version": "0.6.5", "state": "missing", "path": None},
+        {"name": "chrome", "version": "155.0.8059.39", "state": "installed", "shape": "tree",
+         "path": "/home/yi/.yi/plugins/chrome/155.0.8059.39/chrome-headless-shell-linux64/x"},
     ])
     carried = yi_usage.local_plugins({}, report)
     assert [(n, v) for n, v, _ in carried] == [("ripwire", "0.6.5")], carried
@@ -1145,7 +1162,18 @@ def check_judge_replay():
     assert result.testsRun >= 20 and result.wasSuccessful(), report.getvalue()
 
 
+def check_kill():
+    """The kill-test runner: the $30 cap at the limit and a cent past it, the live kill, the
+    unpriced ceiling, the flock across threads and processes, the Kimi quota park, run isolation
+    and a report that lists every test."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_kill)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 10 and result.wasSuccessful(), report.getvalue()
+
+
 CHECKS = (
+    check_kill,
     check_surface,
     check_surface_compare,
     check_judge_replay,
@@ -1162,6 +1190,7 @@ CHECKS = (
     check_pin_probe,
     check_cost_cap,
     check_orient_census,
+    check_prefix_capture,
     check_rule_fires,
     check_command,
     check_install,

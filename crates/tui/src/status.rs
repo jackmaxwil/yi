@@ -13,7 +13,7 @@ pub struct StatusInput {
     pub thinking: Option<String>,
     pub mode: Option<String>,
     pub cwd: String,
-    /// `repo ⎇ lane N`: shown instead of `path@branch` when the session is on a lane.
+    /// The repo a lane checks out, shown instead of the slot's `path@branch`.
     pub lane: Option<String>,
     pub branch: Option<String>,
     pub landing: Option<String>,
@@ -74,11 +74,7 @@ pub(crate) struct TokenTally {
 
 impl TokenTally {
     pub(crate) fn record(&mut self, usage: &yi_types::message::Usage) {
-        let read = usage
-            .input
-            .saturating_add(usage.cache_read)
-            .saturating_add(usage.cache_write);
-        self.input = bump(self.input, read);
+        self.input = self.input.saturating_add(usage.context());
         self.output = bump(self.output, usage.output);
         self.cached = bump(self.cached, usage.cache_read);
     }
@@ -339,7 +335,7 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
 
 /// `text` less at least `over` cells, whole characters only, ending in `…`. Measures the
 /// string, not the characters: `⚠️` is 1 + 0 cells apart and 2 together.
-fn clip_cells(text: &str, over: usize) -> String {
+pub(crate) fn clip_cells(text: &str, over: usize) -> String {
     let keep = text.width().saturating_sub(over + 1);
     let cells = crate::wrap::flatten_spans(&[Span::raw(text)]);
     let kept = crate::wrap::take_cells(&cells, keep);
@@ -382,15 +378,15 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
     Line::from(spans)
 }
 
-/// Spinner + the current tool's `i` intent + interrupt hint.
+/// Spinner + the working label + interrupt hint.
 pub fn working_line(
-    intent: Option<&str>,
+    label: Option<&str>,
     spinner_phase: usize,
     esc_armed: bool,
     theme: &Theme,
 ) -> Line<'static> {
     let glyph = spinner_frame(spinner_phase);
-    let text = intent.unwrap_or("Working…");
+    let text = label.unwrap_or("Working…");
     let hint = if esc_armed {
         "esc again to interrupt"
     } else {

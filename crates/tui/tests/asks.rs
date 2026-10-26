@@ -1,5 +1,6 @@
 //! A child's question, stall and second run as the human sees them, and the reply box.
 use crate::common;
+use crate::common::flat;
 
 use std::error::Error;
 use std::sync::Arc;
@@ -57,20 +58,12 @@ fn update(status: ChildStatus, flag: Option<ChildFlag>) -> ChildUpdate {
         flag,
     }
 }
-
-fn flat(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
-        .collect()
-}
-
 /// Dies with the card reading only the child's status: a child blocked on a question drew as a
 /// plain running card, a stalled one the same, and a woken one stayed `done` in scrollback.
 #[test]
 fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
     let mut app = app();
-    app.adopt(&update(ChildStatus::Running, None), None);
+    app.adopt(&update(ChildStatus::Running, None), None, None);
     let note = "asks writer-1: Which file name? notes.md or hello.txt";
     let asking = Some(ChildFlag::NeedsYou {
         note: note.to_owned(),
@@ -215,7 +208,7 @@ fn asks(id: &str) -> Option<ChildFlag> {
 #[test]
 fn a_draft_answers_the_question_open_when_it_started() -> TestResult {
     let mut app = app();
-    app.adopt(&update(ChildStatus::Running, None), None);
+    app.adopt(&update(ChildStatus::Running, None), None, None);
     app.set_focus(Some("sub-writer".to_owned()));
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let key = |c| {

@@ -8,7 +8,9 @@ use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
-use crate::compat::{compat_bool, developer_role, nested_reasoning, replays_reasoning_content};
+use crate::compat::{
+    compat_bool, developer_role, moonshot, nested_reasoning, replays_reasoning_content,
+};
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::transform::{system_text, transform_messages};
 
@@ -17,7 +19,6 @@ const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasonin
 #[derive(Debug, Clone, Default)]
 pub struct OpenAiOptions {
     pub max_tokens: Option<u64>,
-    pub temperature: Option<f64>,
     pub reasoning_effort: Option<Effort>,
     pub session_id: Option<String>,
     pub proxy: Option<crate::request::ProxyConfig>,
@@ -27,6 +28,9 @@ pub struct OpenAiOptions {
     pub oauth: bool,
     /// The loop's cut of this request (D163): set, the pump stops at the next event.
     pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Set, a turn owed a settlement ends at once and its usage reaches here once the record
+    /// lands; unset, the turn waits for the record as before.
+    pub settle: Option<crate::settle::Settle>,
 }
 
 /// OpenRouter routes by default: Auto Exacto ranks hosts on tool calls and `session_id` keeps a
@@ -70,9 +74,9 @@ pub fn normalize_openai_tool_call_id(id: &str) -> String {
             })
             .collect()
     };
-    if let Some(separator) = id.find('|') {
-        let call_id = sanitize(&id[..separator]);
-        let item_id = sanitize(&id[separator.saturating_add(1)..]);
+    if let Some((call, item)) = id.split_once('|') {
+        let call_id = sanitize(call);
+        let item_id = sanitize(item);
         let combined = if item_id.is_empty() {
             call_id.clone()
         } else {
@@ -342,7 +346,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         params["store"] = json!(false);
     }
     if let Some(session_id) = &options.session_id {
-        if model.base_url.contains("api.openai.com") {
+        if model.base_url.contains("api.openai.com") || moonshot(model) {
             params["prompt_cache_key"] = json!(session_id);
         } else if model.base_url.contains("openrouter.ai") {
             params["session_id"] = json!(session_id);
@@ -359,9 +363,6 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     }
     if let Some(max_tokens) = options.max_tokens {
         params["max_completion_tokens"] = json!(max_tokens);
-    }
-    if let Some(temperature) = options.temperature {
-        params["temperature"] = json!(temperature);
     }
     if let Some(tools) = &context.tools
         && !tools.is_empty()
@@ -425,6 +426,23 @@ fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut V
                     json!({"effort": off.and_then(Value::as_str).unwrap_or("none")});
             }
             None => {}
+        }
+    } else if moonshot(model) {
+        let can_stop = !matches!(
+            model
+                .thinking_level_map
+                .as_ref()
+                .and_then(|map| map.get("off")),
+            Some(Value::Null)
+        );
+        match options
+            .reasoning_effort
+            .map(|effort| mapped_effort(model, effort))
+        {
+            Some(Some("on")) => params["thinking"] = json!({"type": "enabled"}),
+            Some(Some(effort)) => params["thinking"] = json!({"type": "enabled", "effort": effort}),
+            None if can_stop => params["thinking"] = json!({"type": "disabled"}),
+            Some(None) | None => {}
         }
     } else if let Some(effort) = options.reasoning_effort
         && let Some(mapped) = mapped_effort(model, effort)
@@ -825,26 +843,48 @@ impl ChunkMapper {
 }
 
 /// A turn whose stream never reached its usage chunk, settled from the generation record
-/// when a chunk carried the id and the usage is still unknown (D163).
+/// (D163); with a hook, the fetch is returned as a job to start once the turn has ended.
 fn settle_from_record(
     output: &mut AgentMessage,
     model: &Model,
-    api_key: &str,
-    proxy: Option<&crate::request::ProxyConfig>,
-) {
-    if let AgentMessage::Assistant {
+    wire: &crate::request::Wire<'_>,
+) -> Option<crate::settle::Job> {
+    let AgentMessage::Assistant {
         usage,
         response_id: Some(id),
         ..
     } = output
-        && usage.unknown
-        && let Some((settled, upstream)) =
-            crate::settle::generation_usage(model, api_key, proxy, id)
+    else {
+        return None;
+    };
+    if !usage.unknown || !crate::settle::settles(model) {
+        return None;
+    }
+    if let Some(hook) = wire.settle {
+        let (hook, model, id) = (hook.clone(), model.clone(), id.clone());
+        let (key, proxy) = (wire.api_key.to_owned(), wire.proxy.cloned());
+        return Some(crate::settle::job(move || {
+            if let Some((settled, upstream)) =
+                crate::settle::generation_usage(&model, &key, proxy.as_ref(), &id)
+            {
+                (hook.0)(settled, upstream);
+            }
+        }));
+    }
+    if let Some((settled, upstream)) =
+        crate::settle::generation_usage(model, wire.api_key, wire.proxy, id)
     {
         *usage = settled;
         if let Some(upstream) = upstream {
             crate::request::note_upstream(output, &upstream);
         }
+    }
+    None
+}
+
+fn detach_settlement(job: Option<crate::settle::Job>) {
+    if let Some(job) = job {
+        crate::settle::detach(job);
     }
 }
 
@@ -860,6 +900,7 @@ fn run_request(
         stop,
         extra,
         oauth,
+        settle: _,
     } = wire;
     let url = format!("{}/chat/completions", model.base_url);
     let mut mapper = ChunkMapper::new(model);
@@ -886,7 +927,7 @@ fn run_request(
         // error turn is settled from the record (D79, #331); one that died before any chunk
         // has no record and stays unknown
         Err(message) => {
-            settle_from_record(&mut mapper.output, model, api_key, proxy);
+            detach_settlement(settle_from_record(&mut mapper.output, model, &wire));
             let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
                 &message,
                 oauth,
@@ -900,20 +941,23 @@ fn run_request(
     }
     // a cut dropped the stream before its finish and usage chunks: the turn ends as a length
     // stop and is settled from the generation record (D163)
-    if stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
+    let cut = stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
+    if cut {
         mapper.cut();
-        settle_from_record(&mut mapper.output, model, api_key, proxy);
     }
     // an in-band error chunk ends the stream before its usage chunk: settled the same way (D175)
-    if matches!(
+    let failed = matches!(
         mapper.output,
         AgentMessage::Assistant {
             stop_reason: StopReason::Error,
             ..
         }
-    ) {
-        settle_from_record(&mut mapper.output, model, api_key, proxy);
-    }
+    );
+    detach_settlement(
+        (cut || failed)
+            .then(|| settle_from_record(&mut mapper.output, model, &wire))
+            .flatten(),
+    );
     for event in mapper.finish() {
         let _ = sender.blocking_send(event);
     }
@@ -936,6 +980,7 @@ pub fn stream(
             stop: options.stop.clone(),
             extra: options.extra_headers.clone(),
             oauth: options.oauth,
+            settle: options.settle.clone(),
         },
         run_request,
     )

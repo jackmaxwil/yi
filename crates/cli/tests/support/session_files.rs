@@ -14,3 +14,12 @@ pub fn session_files(sessions: &Path) -> std::io::Result<Vec<PathBuf>> {
     }
     Ok(files)
 }
+
+#[allow(dead_code)]
+pub fn session_text(sessions: &Path) -> std::io::Result<String> {
+    session_files(sessions)?
+        .iter()
+        .map(std::fs::read_to_string)
+        .collect::<std::io::Result<Vec<_>>>()
+        .map(|lines| lines.join("\n"))
+}

@@ -95,6 +95,7 @@ struct Shared {
     runs: std::sync::atomic::AtomicU64,
     job_owner: yi_tools::jobs::JobOwner,
     retired: std::sync::atomic::AtomicBool,
+    ended: Mutex<Vec<String>>,
 }
 
 pub type PromptChoiceFn =
@@ -117,17 +118,33 @@ pub type TurnHook = dyn Fn() + Send + Sync;
 
 pub type EnvironmentFn = dyn Fn() -> Option<String> + Send + Sync;
 
-fn persist_message(shared: &Shared, message: &AgentMessage) {
+fn persist_message(shared: &Shared, message: &AgentMessage, terminate: Option<bool>) {
     let store = shared
         .store
         .lock()
         .map(|handle| handle.clone())
         .unwrap_or_default();
     if let Some(store) = store
-        && let Err(error) = yi_session::lock_session(&store).append_message("main", message.clone())
+        && let Err(error) = yi_session::lock_session(&store).append_message_with_terminate(
+            "main",
+            message.clone(),
+            terminate,
+        )
     {
         record_store_error(shared, &error);
     }
+}
+
+fn take_ended(shared: &Shared, tool_call_id: &str) -> Option<bool> {
+    shared
+        .ended
+        .lock()
+        .ok()
+        .and_then(|mut ended| {
+            let pos = ended.iter().position(|id| id == tool_call_id)?;
+            Some(ended.remove(pos))
+        })
+        .map(|_| true)
 }
 
 fn record_store_error(shared: &Shared, error: &yi_session::SessionError) {
@@ -174,7 +191,7 @@ pub struct AgentSession {
 impl AgentSession {
     pub fn new(config: SessionConfig, provider: Arc<ProviderStream>) -> Self {
         let (events, _) = broadcast::channel(1024);
-        Self {
+        let session = Self {
             shared: Arc::new(Shared {
                 ext: Mutex::new(None),
                 model: Mutex::new(config.model.clone()),
@@ -217,6 +234,7 @@ impl AgentSession {
                 runs: 0.into(),
                 job_owner: yi_tools::jobs::JobOwner::mint(),
                 retired: false.into(),
+                ended: Mutex::new(Vec::new()),
             }),
             config,
             provider,
@@ -234,7 +252,11 @@ impl AgentSession {
             selector: Mutex::new(None),
             kernel: Arc::new(Mutex::new(None)),
             on_attach: Mutex::new(Vec::new()),
-        }
+        };
+        session
+            .provider()
+            .settle_unless_wired(session.settle_hook(None));
+        session
     }
 
     pub fn set_kernel_service(&self, service: Arc<crate::kernel::KernelService>) {
@@ -530,8 +552,7 @@ impl AgentSession {
         settings: yi_context::Settings,
         summarizer: Option<Model>,
     ) {
-        let window_id = format!("win-{}", yi_session::now_ms());
-        let mut compactor = crate::compaction::Compactor::new(window_id);
+        let mut compactor = crate::compaction::Compactor::default();
         compactor.settings = settings;
         compactor.summarizer = summarizer;
         self.compactor = Some(Arc::new(compactor));
@@ -1104,6 +1125,7 @@ fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {
             &store,
             yi_context::attribution::CHILD_USAGE_CAUSE.to_owned(),
             child.clone(),
+            None,
         );
         if let Err(error) = recorded {
             record_store_error(shared, &error);

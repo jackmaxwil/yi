@@ -1,8 +1,8 @@
 use std::error::Error;
 
+use crate::common::flat;
 use crate::common::test_model;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::text::Line;
 use yi_tui::agents::{AgentRow, AgentState, AgentsPopup};
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::colors::{ColorTier, Theme};
@@ -15,18 +15,6 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn theme() -> Theme {
     Theme::new(ColorTier::TrueColor, true)
-}
-
-fn flat(lines: &[Line<'static>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect()
 }
 
 fn key(code: KeyCodeValue) -> SingleKey {
@@ -172,7 +160,7 @@ fn ctrl_c_closes_the_agents_popup_without_stopping_a_row() -> TestResult {
         default_keymap(),
         80,
     );
-    app.adopt(&child_update(), None);
+    app.adopt(&child_update(), None, None);
     app.open_agents();
     assert!(app.bottom_open(), "the roster never opened");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();

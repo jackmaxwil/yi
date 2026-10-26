@@ -62,6 +62,7 @@ pub struct UserConfig {
     /// `open`: the apps a console message's Open in submenu lists, each a name and a command
     /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
     pub open: Option<Vec<OpenApp>>,
+    pub browser: Option<BrowserConfig>,
 }
 
 /// `mail.hopLimit`: the longest chain of letters between sessions, each sent by a turn another
@@ -70,6 +71,14 @@ pub struct UserConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MailConfig {
     pub hop_limit: Option<u32>,
+}
+
+/// `browser.path`: the Chrome or Chromium the console's browser pane runs; unset, the installed
+/// one is found.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserConfig {
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -248,7 +257,7 @@ pub struct CatalogConfig {
 }
 
 /// `console.titleIntro`: draw the title field at console start (on);
-/// `console.titleWeights`: scene name to weight, the draw's odds; absent or empty, Kali four in five.
+/// `console.titleWeights`: scene name to weight, the draw's odds; absent or empty, Kali 8, every other scene 2.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConsoleConfig {

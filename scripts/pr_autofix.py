@@ -127,9 +127,11 @@ def points(heavy, light):
     return 3 * heavy + light
 
 
-def tier_for(score, tried=0):
-    """The tier for a fix of `score` points, one up for each earlier try that did not clear it."""
-    return TIERS[min(sum(score >= at for at in TIER_AT) + tried, len(TIERS) - 1)]
+def tier_for(score, tried=0, floor=0):
+    """The tier for a fix of `score` points, one up for each earlier try that did not clear it, and
+    never under `floor`. Incident: #1415's and #1416's Opus fixes were followed by GLM ones, scored
+    on a smaller round, that left the Opus findings standing or undid its design."""
+    return TIERS[min(max(sum(score >= at for at in TIER_AT) + tried, floor), len(TIERS) - 1)]
 
 
 def misses(notes):
@@ -542,15 +544,16 @@ def prior_fixes(repo, sha, stopped=0.0, signed=SIGNED):
 STOP_AT = 4
 
 
-def stalled(before, rnd, prev):
-    """Why a findings fix stops for a person, or None: two fixes in a row whose last left as many
-    held findings as the round before it, or STOP_AT in a row. Incident: #1386 went from seven
-    held findings to three to two and was stopped at two fixes all the same."""
-    if before >= STOP_AT:
-        return f"{before} fixes in a row did not clear the review; a person is next"
-    if before >= 2 and not (prev and len(pr_review.holding(rnd)) < len(pr_review.holding(prev))):
-        return "two fixes in a row did not clear the review, and the last held as much as the one before; a person is next"
-    return None
+def last_tier(repo, sha):
+    """The tier index of the newest findings fix at the head of `sha`, from its signature, or -1."""
+    log = sh(repo, "git", "log", "--first-parent", "-n", "16", "--format=%B%x1e", sha, check=False).stdout
+    names = [model for model, _ in TIERS]
+    for body in log.split("\x1e"):
+        # The signature closes the body; a summary that quotes one comes before it. A model the
+        # tier list no longer names was a tier this streak paid for, so it holds the top one.
+        if SIGNED in body and (found := re.findall(r"Made by the autofixer with (\S+);", body)):
+            return names.index(found[-1]) if found[-1] in names else len(names) - 1
+    return -1
 
 
 def round_on(rounds, head, holds=pr_review.on_head):
@@ -684,7 +687,7 @@ def gate_in(clone, pr, lanes, answer, tried=0):
     raise Missed("the lanes still fail after the fix and one more turn:\n" + refused)
 
 
-def findings_in(clone, pr, rnd, answer, tried=0):
+def findings_in(clone, pr, rnd, answer, tried=0, floor=0):
     """Answer a round's high and medium findings in the clone: a blocked round's, or a clean one's
     mediums. Returns (summary, model, touched, declined highs)."""
     todo = [f for f in pr_review.holding(rnd) if answers(f)]
@@ -697,7 +700,7 @@ def findings_in(clone, pr, rnd, answer, tried=0):
         why = [f"{', '.join(lenses)} (the PR body's template, a duplicate)"] if lenses else []
         why += [f"findings on {', '.join(walled)}, which the fixer may not touch"] if walled else []
         raise RuntimeError(f"round {rnd['n']} is blocked by findings the fixer does not answer; a person does: {'; '.join(why) or 'none'}")
-    model = tier_for(points(len(highs), len(todo) - len(highs)), tried)
+    model = tier_for(points(len(highs), len(todo) - len(highs)), tried, floor)
     before = snapshot(clone)
     said = answer(findings_prompt(pr, rnd["n"], todo), model, FINDINGS_SCHEMA)
     own = set(sh(clone, "git", "diff", "--name-only", f"origin/{pr['base']['ref']}...HEAD").stdout.split())
@@ -739,7 +742,7 @@ def findings_in(clone, pr, rnd, answer, tried=0):
     return summary, model, touched, declined_highs
 
 
-def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, meter=None, stopped=0.0, lanes=(), prev=None):
+def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, meter=None, stopped=0.0, lanes=()):
     """One attempt on one PR: a conflict with its base, or the findings of a round that blocked its
     head. Returns the ledger fields; raises RuntimeError with the reason a person reads."""
     sha, ref, base_ref = pr["head"]["sha"], pr["head"]["ref"], pr["base"]["ref"]
@@ -762,9 +765,11 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             subject, signed = f"Fix what the {' and '.join(lanes)} gate refused", f"{GATE_SIGNED} {sha[:12]} of #{pr['number']}.\n"
         else:
             before = prior_fixes(root, sha, stopped)
-            if why := stalled(before, rnd, prev):
-                raise RuntimeError(why)
-            summary, model, touched, declined_highs = findings_in(clone, pr, rnd, answer, tried + before)
+            if before >= STOP_AT:
+                raise RuntimeError(f"{before} fixes in a row did not clear the review; a person is next")
+            # A fix after a fix the review did not clear goes up from that fix's tier, never down.
+            floor = last_tier(root, sha) + 1 if before else 0
+            summary, model, touched, declined_highs = findings_in(clone, pr, rnd, answer, tried + before, floor)
             subject, signed = f"Answer the findings review round {rnd['n']} confirmed", f"{SIGNED} {rnd['n']} on #{pr['number']}.\n"
         reprice(clone, "MERGE_HEAD" if kind == "conflict" else f"origin/{base_ref}")
         settle = remeasure if kind == "conflict" else measured
@@ -854,7 +859,7 @@ def render(n, fields, verdict, reason="", status="", meter=None):
     elif verdict == "deferred":
         lines += ["**Autofix deferred**: the model's provider was busy, so the next pass tries again.", "", "```", reason.strip(), "```"]
     elif verdict == "missed":
-        lines += ["**Autofix missed**; the next pass tries one model tier up, and a miss on the top tier stops it.",
+        lines += ["**Autofix missed**; the next pass tries again a tier up while one is left, and a miss on the top tier stops it.",
                   "", "```", reason.strip(), "```"]
     else:
         lines += ["**Autofix failed**; `autofix:failed` stops it until the label is removed.", "", "```", reason.strip(), "```"]
@@ -945,8 +950,7 @@ def attempt(repo, pr, ids, asked=False):
     set_label(repo, number, ids, "autofix:working", True)
     fields, verdict, reason, meter = {}, "failed", "", bot_meter.Meter()
     try:
-        prev = rounds[-2] if rnd and len(rounds) > 1 and rounds[-1] is rnd else None
-        fields = fix(pr, kind=KINDS[said], rnd=rnd, tried=misses(notes), meter=meter, stopped=last_stop(notes), lanes=lanes, prev=prev)
+        fields = fix(pr, kind=KINDS[said], rnd=rnd, tried=misses(notes), meter=meter, stopped=last_stop(notes), lanes=lanes)
         verdict = "pushed"
     except Flaky as err:
         # One rerun per head: a lane that fails again on the same head is a person's to read.
@@ -1289,7 +1293,7 @@ def selfcheck():
             {"lens": "correctness", "severity": "high", "claim": "a false alarm", "path": "a.txt", "line": 1},
             {"lens": "duplicate", "severity": "high", "claim": "a twin", "path": "", "line": 0}]}
 
-        def findings_run(write, declined=(), prev=None):
+        def findings_run(write, declined=()):
             def model(prompt, schema, cwd, **kw):
                 asked.append(kw["model"])
                 for path, text in write.items():
@@ -1298,7 +1302,7 @@ def selfcheck():
             head = sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()
             pr_f = {"number": 7, "title": "t", "head": {"sha": head, "ref": "topic"}, "base": {"ref": "main"}}
             try:
-                return fix(pr_f, ask=model, root=tmp, kind="findings", rnd=rnd, prev=prev)
+                return fix(pr_f, ask=model, root=tmp, kind="findings", rnd=rnd)
             except RuntimeError as err:
                 return str(err)
 
@@ -1339,6 +1343,8 @@ def selfcheck():
             errs.append("a findings fix rewrote a change file main holds")
         if prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 1:
             errs.append("the fixer's own commit at the head is not counted as one prior fix")
+        if last_tier(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 0:
+            errs.append("the tier of the newest findings fix was not read from its signature")
         head_now = sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()
         stop = [dict(bot, created_at="2099-01-01T00:00:00Z", body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=7 verdict=failed -->\n")]
         if prior_fixes(tmp, head_now, last_stop(stop)) != 0 or last_stop(notes) != 0.0:
@@ -1354,22 +1360,22 @@ def selfcheck():
         if not (isinstance(second, dict) and "Refused once (the fix deletes a test" in second["summary"]):
             errs.append(f"a fix refused for deleting a test got no turn to restore it: {second if isinstance(second, str) else 'pushed'}")
         third = findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n    assert!(g());\n    assert!(h());\n    assert!(i());\n}\n"})
-        if asked[first] != TIERS[0][0] or asked[-1] != TIERS[1][0]:
-            errs.append(f"the first fix took {asked[first]} and the one after it {asked[-1]}: a fix the review did not clear moves up a tier")
-        if not isinstance(second, dict) or "two fixes in a row" not in str(third):
-            errs.append(f"a third fix in a row was not stopped: second={'pushed' if isinstance(second, dict) else second}, third={third}")
-        # A third fix goes on while the review shrinks, and a fix that moves what the gates measure
-        # lands its edit with the re-measured baselines in a Ratchet commit of their own after it.
-        fourth = findings_run({"a.txt": "main and topic and more\n"}, prev=dict(rnd, findings=rnd["findings"] * 3))
+        if asked[first] != TIERS[0][0] or asked[first + 1] != TIERS[1][0] or asked[-1] != TIERS[2][0] or not isinstance(third, dict):
+            errs.append(f"fixes in a row took {asked[first:]}, third={'pushed' if isinstance(third, dict) else third}: each one the review did not clear moves up a tier")
+        # A fourth fix goes on at the top tier, and a fix that moves what the gates measure lands its
+        # edit with the re-measured baselines in a Ratchet commit of their own after it.
+        fourth = findings_run({"a.txt": "main and topic and more\n"})
         sh(tmp, "git", "fetch", "-q", "origin")
         subjects = sh(tmp, "git", "log", "-2", "--format=%s", "origin/topic").stdout.splitlines()
         code = sh(tmp, "git", "show", "--name-only", "--format=", "origin/topic~1").stdout.split()
         tip = sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()
         if not (isinstance(fourth, dict) and subjects[:1] == ["Ratchet: request budget 15 -> 24"]
                 and subjects[1:2] == ["Answer the findings review round 4 confirmed"] and "a.txt" in code
-                and not any("baselines" in path for path in code) and prior_fixes(tmp, tip) == 3
+                and not any("baselines" in path for path in code) and prior_fixes(tmp, tip) == 4
                 and pr_review.answered(sh(tmp, "git", "log", "-1", "--format=%B", tip).stdout, 4, 7)):
             errs.append(f"a fix that moved the request budget read {fourth if isinstance(fourth, str) else subjects}, code={code}")
+        if f"{STOP_AT} fixes in a row" not in str(findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n}\n"})):
+            errs.append(f"a fix after {STOP_AT} in a row was not stopped for a person")
     finally:
         shutil.rmtree(tmp)
         shutil.rmtree(tmp.parent / (tmp.name + "-remote.git"), ignore_errors=True)
@@ -1534,10 +1540,8 @@ def selfcheck():
             errs.append(f"a model's baseline edits were not put back beside its fix: touched={touched}, staged={staged}")
     finally:
         shutil.rmtree(repo)
-    held = lambda n: {"n": 4, "verdict": "blocked", "findings": [{"severity": "high", "lens": "tests"}] * n}
-    for before, now, prev, stops in ((1, 3, None, False), (2, 3, None, True), (2, 2, 3, False), (2, 3, 3, True), (4, 1, 3, True)):
-        if bool(stalled(before, held(now), prev and held(prev))) != stops:
-            errs.append(f"{before} fixes in a row, {now} held after {prev} before: stopped={not stops}, want {stops}")
+    if tier_for(1, 0, 2) != TIERS[2] or tier_for(20, 0, 0) != TIERS[2] or tier_for(1, 1, 0) != TIERS[1]:
+        errs.append("a tier floor does not hold a fix at or above the tier of the fix before it")
     # Three baselines moving at once still make a subject the commit-style gate passes.
     repo = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-ratchet-"))
     try:
@@ -1564,9 +1568,10 @@ def selfcheck():
         sh(bare, "git", "init", "-q")
         class Asked(Exception):
             pass
-        prompts = []
+        prompts, models = [], []
         def asked(prompt, *a, **k):
             prompts.append(prompt)
+            models.append(a[0] if a else k.get("model"))
             raise Asked()
         for found, want in (([{"severity": "medium", "lens": "correctness", "claim": "c"}], "asked"),
                             ([{"severity": "medium", "lens": "template", "claim": "c"}], "refused"),
@@ -1586,6 +1591,13 @@ def selfcheck():
                 errs.append(f"a clean round's {found[0]['lens']} medium was {got} by findings_in, not {want}")
             if got == "asked" and "baselines/" in prompts[-1]:
                 errs.append("findings_in handed the model a finding on a file the fixer may not touch")
+        try:
+            findings_in(bare, {"number": 1, "title": "t", "base": {"ref": "main"}},
+                        {"n": 2, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness", "claim": "c"}]}, asked, 0, 2)
+        except Asked:
+            pass
+        if models[-1:] != [TIERS[2]]:
+            errs.append(f"a one-medium fix under a top-tier floor asked {models[-1:]}, not {TIERS[2]}")
         base = bare / "scripts/guardrails/baselines"
         base.mkdir(parents=True)
         (base / "schemas.lock").write_text('{\n "b": "y",\n "a": "x"\n}\n')
