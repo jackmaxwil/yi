@@ -48,6 +48,13 @@ def selfcheck(off=""):
         seen = fn_sizes(code_lines(shape, off))
         if seen != [("production", 4, 1)]:
             errs.append(f"marker-shaped text inside a string or comment hid production code: {seen}")
+    for shape in (
+        'fn production() {\n    let text = r#"\n{\n"#;\n}\nfn after() {}\n',
+        'fn production() {\n    /*\n    {\n    */\n}\nfn after() {}\n',
+    ):
+        seen = fn_sizes(shape.splitlines(), off)
+        if seen != [("production", 1, 5), ("after", 6, 1)]:
+            errs.append(f"braces inside a multiline string or comment changed function sizes: {seen}")
     return errs
 
 if "--selfcheck" in sys.argv:
