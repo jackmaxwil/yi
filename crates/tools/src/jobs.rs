@@ -647,7 +647,7 @@ const KILL_GRACE: Duration = Duration::from_secs(5);
 pub const MAX_TIMEOUT_SECS: u64 = 600;
 
 /// Absent or zero is the default; the ceiling holds whatever the model asks.
-pub fn clamp_timeout(seconds: Option<u64>) -> Duration {
+pub(crate) fn clamp_timeout(seconds: Option<u64>) -> Duration {
     Duration::from_secs(
         seconds
             .filter(|seconds| *seconds > 0)

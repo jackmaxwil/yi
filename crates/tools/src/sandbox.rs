@@ -101,10 +101,6 @@ impl Sandbox {
 
     /// `-D` bindings keep paths out of the policy text. A denied path binds twice: as spelled,
     /// which a link itself is judged by, and resolved, since the kernel checks an open's target.
-    pub fn params(&self) -> Vec<(String, PathBuf)> {
-        self.params_for(&self.denied_parents(), None)
-    }
-
     fn params_for(&self, parents: &[PathBuf], own: Option<&Path>) -> Vec<(String, PathBuf)> {
         let mut params = Vec::new();
         if let Some(own) = own {
@@ -157,10 +153,6 @@ impl Sandbox {
             params.push((format!("WRITABLE_ROOT_{index}"), resolve_aliases(root)));
         }
         params
-    }
-
-    pub fn policy(&self) -> String {
-        self.policy_for(self.denied_parents().len(), false, true)
     }
 
     fn policy_for(&self, parents: usize, own: bool, network: bool) -> String {
@@ -702,7 +694,7 @@ pub fn exit_zero_note(output: &str, command: &str) -> Option<String> {
 
 /// The note under a bash result that has no refusal to record: a nested apply failure, or a
 /// network refusal behind exit 0.
-pub fn outcome_note(output: &str, command: &str, exit_code: i32) -> Option<String> {
+pub(crate) fn outcome_note(output: &str, command: &str, exit_code: i32) -> Option<String> {
     nested_sandbox_note(output).or_else(|| {
         (exit_code == 0)
             .then(|| exit_zero_note(output, command))

@@ -196,9 +196,6 @@ pub const ABORT_MARKER: &str = "*** Abort";
 
 pub const REPLACE_PAIR_COALESCED_WARNING: &str = "Multiple hunks targeted the same exact range; kept only the last. Issue one `PUT` or `CUT` hunk per range.";
 
-pub const REPLACEMENT_INDENT_AUTO_SHIFT_WARNING: &str =
-    "Auto-indented a replacement body to match unchanged structural rows in its source range.";
-
 pub const BARE_BODY_ROW_REFUSED: &str = "body row has no `+`. Every body row is `+TEXT` (a literal `-`/`+` start is `+- item` / `++ item`); the range removes the old lines, so context rows are never written.";
 
 pub const BLANK_BODY_ROW_REFUSED: &str =
@@ -304,8 +301,6 @@ The next multi-line block begins at line {} and ends at line {}. Retry `{retry}`
     message
 }
 
-pub const BLOCK_RESOLVER_UNAVAILABLE: &str = "Block locators (`N*` in `PUT N*:`, `PUT >N*`, `CUT N*`) are not available here (no block resolver configured). Use a concrete line range.";
-
 fn closer_lowered_warning(block_form: &str, plain_form: &str) -> String {
     format!(
         "`{block_form}` anchors on a closing delimiter, so it was applied as plain `{plain_form}`. Anchor on the line that OPENS the construct."
@@ -402,22 +397,7 @@ pub const CLIPBOARD_INTERLEAVED_SECTIONS: &str = "`CUT`/register-`PUT` ops canno
 
 pub const EMPTY_INSERT: &str = "`PUT <N:` / `PUT >N:` promises body rows and got none. Write `+TEXT` rows, or drop the `:` to paste a register (`PUT >N` = anonymous, `PUT >N @name` = named).";
 
-pub const RECOVERY_EXTERNAL_WARNING: &str = "Recovered from a stale file hash using a previous read snapshot (file changed externally between read and edit).";
-
-pub const RECOVERY_SESSION_CHAIN_WARNING: &str = "Recovered from a stale file hash using an earlier in-session snapshot (a prior edit in this session advanced the hash).";
-
-pub const RECOVERY_LINE_REMAP_WARNING: &str = "Recovered by remapping stale line anchors to unchanged current lines (file changed since the tagged read). Verify the diff matches your intent.";
-
 pub const HEADTAIL_DRIFT_WARNING: &str = "Applied the `PUT <1:`/`PUT >$:` edit despite a stale snapshot tag (file changed since your read) — head/tail position is content-independent. Re-read if the drift was unexpected.";
-
-pub fn write_drift_warning(path: &str) -> String {
-    format!(
-        "{path}: the file on disk after this write differs from what was sent — the client \
-(editor/IDE) likely reformatted it on save (e.g. format-on-save, tab/space settings). \
-The returned snapshot reflects the actual file; re-read before further edits if the \
-extra changes were unexpected."
-    )
-}
 
 pub fn missing_snapshot_tag_message(
     section_path: &str,
