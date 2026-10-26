@@ -34,6 +34,7 @@ impl PermissionBroker {
                 self.prompts_close_on_settle.load(Ordering::Relaxed),
             ),
             walled: self.walled || !wall.is_empty(),
+            claude_hooks: self.claude_hooks.clone(),
             ..Self::new(
                 self.mode(),
                 self.cwd.clone(),
