@@ -19,15 +19,20 @@ fn fixture(name: &str) -> Result<String, Box<dyn Error>> {
 
 #[test]
 fn a_plan_journal_verifies_and_keeps_its_bytes() -> TestResult {
-    let text = fixture("journals/plan-ops-v1.jsonl")?;
-    let mut prev = None;
-    for line in text.lines() {
-        let record: JournalRecord = serde_json::from_str(line)?;
-        assert_eq!(record.digest_of(prev.as_ref())?, record.digest, "{line}");
-        assert_eq!(record.line()?, format!("{line}\n").into_bytes());
-        prev = Some(record.digest);
+    for name in [
+        "journals/plan-ops-v1.jsonl",
+        "journals/plan-judge-verdict-v1.jsonl",
+    ] {
+        let text = fixture(name)?;
+        let mut prev = None;
+        for line in text.lines() {
+            let record: JournalRecord = serde_json::from_str(line)?;
+            assert_eq!(record.digest_of(prev.as_ref())?, record.digest, "{line}");
+            assert_eq!(record.line()?, format!("{line}\n").into_bytes());
+            prev = Some(record.digest);
+        }
+        assert!(prev.is_some(), "{name} holds records");
     }
-    assert!(prev.is_some(), "the fixture holds records");
     Ok(())
 }
 
