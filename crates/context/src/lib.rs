@@ -14,7 +14,6 @@ pub mod project;
 pub mod prompts;
 pub mod serialize;
 pub mod view;
-pub mod window;
 pub mod wrapper;
 
 pub use account::{
@@ -34,5 +33,4 @@ pub use view::{
     Attributed, BRIEF_LINE_CAP, BRIEF_LINE_CHARS, BriefLine, CompiledView, EARLIER_CAP,
     OUTSTANDING_CAP, compile_view, view_extra, view_from_extra,
 };
-pub use window::Window;
 pub use wrapper::{drop_internal, internal_source, wrap_content, wrap_internal};

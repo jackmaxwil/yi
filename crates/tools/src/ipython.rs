@@ -37,13 +37,13 @@ pub trait KernelBridge: Send + Sync {
 
 type StreamSink = dyn FnMut(&str, &str) + Send;
 
-/// A cell's stdout and stderr as they arrived, and each stream's characters (D316).
+/// A cell's stdout, stderr and displayed value as they arrived, and each one's characters (D316).
 #[derive(Clone)]
-pub struct CellSpill(Arc<Mutex<(Spill, [usize; 2])>>);
+pub struct CellSpill(Arc<Mutex<(Spill, [usize; 3])>>);
 
 impl CellSpill {
     pub fn new(dir: Option<&Path>) -> Self {
-        Self(Arc::new(Mutex::new((Spill::new(dir), [0; 2]))))
+        Self(Arc::new(Mutex::new((Spill::new(dir), [0; 3]))))
     }
 
     /// The kernel's uncapped `on_stream` hook.
@@ -53,6 +53,7 @@ impl CellSpill {
             let (slot, stream) = match name {
                 "stdout" => (0, Stream::Out),
                 "stderr" => (1, Stream::Err),
+                "execute_result" => (2, Stream::Out),
                 _ => return,
             };
             if let Ok(mut held) = spill.0.lock()
@@ -64,8 +65,7 @@ impl CellSpill {
         })
     }
 
-    /// The pointer when a stream passed `cap`. ponytail: an `execute_result` repr past it has no
-    /// stream hook, so it stays cut with no file; add one when it matters.
+    /// The pointer when a stream or the displayed value passed `cap`.
     pub fn note(&self, cap: usize) -> Option<String> {
         let mut held = self.0.lock().ok()?;
         let cut = held.1.iter().any(|chars| *chars > cap);
@@ -106,7 +106,7 @@ impl Tool for IpythonTool {
     }
 
     fn description(&self) -> &str {
-        "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `yi.tools.read(path=...)`, `yi.tools.edit(patch=...)` and the rest call your own tools from a cell, judged and recorded as your calls are; `%%bash` runs a shell in the kernel's env (on macOS loopback only, so `%pip install` fails); pandas (with openpyxl) reads spreadsheets, and `anydoc` and `pdf_inspector` (`extract_text`) read documents read cannot show. A cell's stdout or stderr past 65,536 characters is cut, and the cut names [full output: path], a file with all of it (the first 256 MiB), which read opens; a displayed value past that is cut with no file; a cell is interrupted after 600 s, so split longer work across cells. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`."
+        "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `yi.tools.read(path=...)`, `yi.tools.edit(patch=...)` and the rest call your own tools from a cell, judged and recorded as your calls are; `%%bash` runs a shell in the kernel's env (on macOS loopback only, so `%pip install` fails); pandas (with openpyxl) reads spreadsheets, and `anydoc` and `pdf_inspector` (`extract_text`) read documents read cannot show. A cell's stdout, stderr or displayed value past 65,536 characters keeps its first and last halves, and the cut names [full output: path], a file with all of it (the first 256 MiB), which read opens; a cell is interrupted after 600 s, so split longer work across cells. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`."
     }
 
     fn schema(&self) -> Value {
@@ -190,7 +190,13 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome, dir: Option<&Path>) -
         let streams = sections.join("\n");
         let shell = view(ShellCell(&command), &streams, "", exit, kept, dir);
         notes.retain(|note| shell.recovery.as_ref() != Some(note));
-        sections = vec![shell.text];
+        // Incident: with no file to name, the view's middle cut swallowed the kernel's cut row.
+        let swallowed: Vec<String> = (streams.lines())
+            .filter(|line| shell.recovery.is_none() && line.starts_with("[\u{2026} "))
+            .filter(|line| !shell.text.contains(*line))
+            .map(str::to_owned)
+            .collect();
+        sections = std::iter::once(shell.text).chain(swallowed).collect();
     }
     if let Some(value) = &result.result {
         sections.push(value.clone());
