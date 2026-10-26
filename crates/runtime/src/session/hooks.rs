@@ -10,8 +10,8 @@ use yi_types::wire::SessionStats;
 
 use super::run::{self, Queued};
 use super::{
-    AgentSession, ExtHook, Shared, Status, StillNews, attribute_to_shared, dispatch_ext, host_text,
-    record_store_error, store_of,
+    AgentSession, EnvironmentFn, ExtHook, Shared, Status, StillNews, attribute_to_shared,
+    dispatch_ext, host_text, record_store_error, store_of,
 };
 
 pub(super) type LedgerFold = dyn FnMut(&str, &[Entry], &SessionStats) + Send;
@@ -41,6 +41,12 @@ impl Drop for AgentSession {
 }
 
 impl AgentSession {
+    pub fn set_environment(&self, hook: Arc<EnvironmentFn>) {
+        if let Ok(mut slot) = self.shared.environment.lock() {
+            *slot = Some(hook);
+        }
+    }
+
     /// Invariant: a resumed session's state is a fold of its ledger, never a count from zero;
     /// `fold` reads each store attached after this call (id, branch, totals) before a request.
     pub(crate) fn on_attach(
