@@ -1,7 +1,7 @@
 use serde_json::Value;
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::{AssistantMessageEvent, Wait};
-use yi_types::message::{AgentMessage, StopReason, Usage};
+use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::Model;
 
 use crate::retry::{RetryPolicy, is_retryable_status, quota_exhausted, retry_delay};
@@ -26,6 +26,58 @@ pub fn empty_assistant(model: &Model) -> AgentMessage {
         end_turn: None,
         timestamp: 0,
     }
+}
+
+pub(crate) fn assistant_content_mut(message: &mut AgentMessage) -> Option<&mut Vec<Content>> {
+    match message {
+        AgentMessage::Assistant { content, .. } => Some(content),
+        _ => None,
+    }
+}
+
+pub(crate) fn assistant_block_mut(
+    message: &mut AgentMessage,
+    index: usize,
+) -> Option<&mut Content> {
+    assistant_content_mut(message)?.get_mut(index)
+}
+
+pub(crate) fn push_assistant_block(message: &mut AgentMessage, block: Content) -> usize {
+    let Some(content) = assistant_content_mut(message) else {
+        return 0;
+    };
+    content.push(block);
+    content.len().saturating_sub(1)
+}
+
+pub(crate) fn content_end_events(
+    output: &mut AgentMessage,
+    mut include_tool: impl FnMut(usize) -> bool,
+) -> Vec<AssistantMessageEvent> {
+    crate::leak::recover_in(output);
+    assistant_content_mut(output)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .filter_map(|(content_index, block)| match block {
+            Content::Text { text, .. } => Some(AssistantMessageEvent::TextEnd {
+                content_index,
+                content: text.clone(),
+            }),
+            Content::Thinking { thinking, .. } => Some(AssistantMessageEvent::ThinkingEnd {
+                content_index,
+                content: thinking.clone(),
+            }),
+            Content::ToolCall { .. } if include_tool(content_index) => {
+                Some(AssistantMessageEvent::ToolCallEnd {
+                    content_index,
+                    tool_call: block.clone(),
+                })
+            }
+            Content::ToolCall { .. } | Content::Image { .. } => None,
+        })
+        .collect()
 }
 
 /// Invariant: a configured proxy is applied or startup fails — degrading to a

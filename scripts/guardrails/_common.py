@@ -19,14 +19,85 @@ def src_files():
 def prod_lines(path):
     return code_lines(path.read_text())
 
-def code_lines(text):
-    """Lines before a #[cfg(test)] marker; inline test mods sit at file bottom by convention."""
-    out = []
-    for line in text.splitlines():
-        if line.strip().startswith("#[cfg(test)]"):
-            break
-        out.append(line)
-    return out
+def code_lines(text, off=""):
+    """The file's lines with every #[cfg(test)] item blanked, so a line number still names the file's line."""
+    return [("" if test else line) for line, test in zip(text.splitlines(), test_mask(text, off))]
+
+RAW = re.compile(r'b?r(#*)"')
+CHAR = re.compile(r"b?'(?:\\.|[^\\'])'")
+STRING = re.compile(r'(?:\\.|[^"\\])*"', re.S)
+
+def normal_code(text, off=""):
+    chars, at = list(text), 0
+    while at < len(text):
+        ch, word = text[at], at > 0 and (text[at - 1].isalnum() or text[at - 1] == "_")
+        end = None
+        if text.startswith("//", at):
+            end = text.find("\n", at)
+            end = len(text) if end < 0 else end
+        elif off != "literals" and text.startswith("/*", at):
+            close = text.find("*/", at + 2)
+            end = len(text) if close < 0 else close + 2
+        elif off != "literals" and not word and (raw := RAW.match(text, at)):
+            close = text.find('"' + raw.group(1), raw.end())
+            end = len(text) if close < 0 else close + 1 + len(raw.group(1))
+        elif ch == '"':
+            close = STRING.match(text, at + 1)
+            end = len(text) if close is None else close.end()
+        elif off != "chars" and not word and ch in "b'" and (lit := CHAR.match(text, at)):
+            end = lit.end()
+        if end is None:
+            at += 1
+            continue
+        for index in range(at, end):
+            if chars[index] != "\n":
+                chars[index] = " "
+        at = end
+    return "".join(chars)
+
+def test_mask(text, off=""):
+    """Per line, whether a #[cfg(test)] attribute covers it: the attribute covers the one item after
+    it, to its matching brace or its `;`. Incident: stopping at the first marker hid 2,285 production
+    lines below mid-file test helpers from every gate that reads production code."""
+    mask, done = [False] * len(text.splitlines()), 0
+    visible = text if off == "markers" else normal_code(text, off)
+    for marker in re.finditer(r"^[ \t]*#\[cfg\(test\)\]", visible, re.M):
+        if marker.start() < done:
+            continue
+        done = len(text) if off == "first" else item_end(text, marker.end())
+        first, last = text.count("\n", 0, marker.start()), text.count("\n", 0, done)
+        mask[first:last + 1] = [True] * (last + 1 - first)
+    return mask
+
+def item_end(text, at):
+    """The offset of the `}` or `;` that ends the item starting at `at`, read past strings, raw
+    strings, char literals and comments, so a brace in a test's JSON fixture counts for nothing."""
+    # ponytail: block comments do not nest here; none in the tree sits inside a test item.
+    depth, opened = 0, False
+    while 0 <= at < len(text):
+        ch, word = text[at], at > 0 and (text[at - 1].isalnum() or text[at - 1] == "_")
+        if text.startswith("//", at):
+            at = text.find("\n", at)
+        elif text.startswith("/*", at):
+            at = text.find("*/", at) + 1 or -1
+        elif not word and (raw := RAW.match(text, at)):
+            at = text.find('"' + raw.group(1), raw.end())
+            at = at + len(raw.group(1)) if at >= 0 else -1
+        elif ch == '"':
+            close = STRING.match(text, at + 1)
+            at = close.end() - 1 if close else -1
+        elif not word and ch in "b'" and (lit := CHAR.match(text, at)):
+            at = lit.end() - 1
+        elif ch in "{([":
+            depth, opened = depth + 1, opened or ch == "{"
+        elif ch in "})]":
+            depth -= 1
+            if depth <= 0 and opened:
+                return at
+        elif ch == ";" and depth == 0:
+            return at
+        at = at + 1 if at >= 0 else -1
+    return len(text)
 
 def git(*args):
     return subprocess.run(("git", "-C", str(ROOT)) + args, capture_output=True, text=True, check=False)

@@ -52,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 SCENES = ROOT / "scripts" / "proof" / "tui_see"
 sys.path.insert(0, str(ROOT / "evals"))
 import record  # noqa: E402  the record-time scrub (§10) harvest must apply before a seed lands
+from scratch_home import scratch_config  # noqa: E402
 # Loud caps: a cut names what it kept, the cap and the call that gets the rest (045-loud-caps).
 MAX_REGIONS = 6
 MAX_CROP_PX = 1200
@@ -86,13 +87,12 @@ def encoded(cwd: Path) -> str:
     return "--" + str(cwd).strip("/").replace("/", "-").replace(":", "-") + "--"
 
 
-def scene_config(extra: list[str]) -> str:
-    """The run's `config.json`: the two keys every scene needs, then a header's `--config <json>`
-    laid over them key by key (a scene that turns a console feature on names it there)."""
-    config = {"kernel": {"prewarm": False}, "lanes": {"enabled": False}}
+def scene_config(extra: list[str]) -> dict:
+    """The scene's extra config, laid over the shared offline defaults key by key."""
+    config = {"lanes": {"enabled": False}}
     for patch in take(extra, "--config", 1):
         config.update(json.loads(patch))
-    return json.dumps(config, separators=(",", ":"))
+    return config
 
 
 NAME = re.compile(r"^[a-z0-9_-]+$")
@@ -125,11 +125,11 @@ def play(scene: Path, surface: str, extra: list[str], run_dir: Path, binary: Pat
          stderr=None, stub: bool = False) -> tuple[int, list[str]]:
     """Plays a scene headless in a fresh run dir; returns the exit code and the flags left over."""
     shutil.rmtree(run_dir, ignore_errors=True)
-    for sub in ("frames", "sessions", "home/.yi"):
+    for sub in ("frames", "sessions"):
         (run_dir / sub).mkdir(parents=True)
     # Incident: a console scene's session claimed a lane, a `git worktree add` in the shared
     # .git that outlived the run dir and refused the next run as "missing but locked".
-    (run_dir / "home/.yi/config.json").write_text(scene_config(extra))
+    scratch_config(run_dir, scene_config(extra))
     # ctrl-g hands the draft to $EDITOR; a scene that replays must never open a real vi.
     env = {**os.environ, "HOME": str(run_dir / "home"), "YI_FIXED_IDS": "1",
            "EDITOR": "true", "VISUAL": "true"}
@@ -484,10 +484,9 @@ def start_stub(reply: Path, rate: str, home: Path, env: dict[str, str]) -> subpr
 def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -> None:
     """Inside the yi-term image: Xvfb, then the terminal running the real binary behind `proxy`."""
     shutil.rmtree(out, ignore_errors=True)
-    (out / "home/.yi").mkdir(parents=True)
+    scratch_config(out, scene_config(extra))
     terminal = (take(extra, "--terminal", 1) or ["ghostty"])[0]
     (out / "terminal").write_text(terminal)
-    (out / "home/.yi/config.json").write_text(scene_config(extra))
     video = "--video" in extra
     extra = [arg for arg in extra if arg != "--video"]
     cols, rows = "80", "24"
