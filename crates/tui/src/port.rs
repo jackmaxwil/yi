@@ -119,16 +119,12 @@ impl Dirty {
     }
 
     /// The first idle draw after a turn starts one `git status`, so twenty tool rounds cost one.
-    /// A lane shows its name where the badge would be, so it reads nothing and counts 0.
     pub fn count(self: &Arc<Self>, running: bool, lane: bool, cwd: &str) -> u32 {
         use std::sync::atomic::Ordering::Relaxed;
-        if lane {
-            return 0;
-        }
         if running {
             self.read_while_idle.store(false, Relaxed);
         } else if !self.read_while_idle.swap(true, Relaxed) {
-            self.refresh(cwd);
+            self.refresh(lane, cwd);
         }
         self.get()
     }
@@ -139,8 +135,13 @@ impl Dirty {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// An unanswered read leaves the badge off rather than claiming a clean tree.
-    pub fn refresh(self: &Arc<Self>, cwd: &str) {
+    /// An unanswered read leaves the badge off rather than claiming a clean tree. A lane shows
+    /// its name where the badge would be, so it reads nothing and counts 0.
+    pub fn refresh(self: &Arc<Self>, lane: bool, cwd: &str) {
+        if lane {
+            self.count.store(0, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
         let mut reading = self.lock();
         reading.wanted = Some(std::path::PathBuf::from(cwd));
         if std::mem::replace(&mut reading.running, true) {
@@ -709,7 +710,7 @@ impl crate::app::App {
             return;
         }
         self.branch = git_branch(&cwd);
-        self.dirty.refresh(&cwd);
+        self.dirty.refresh(lane.is_some(), &cwd);
         self.options.cwd = cwd;
         self.options.lane = lane;
         self.scheduler.request();

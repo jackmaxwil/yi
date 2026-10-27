@@ -3635,15 +3635,16 @@ fn a_dirty_count_follows_the_directory_asked_for_last() -> TestResult {
     }
     std::fs::write(second.join("new"), "x")?;
     let dirty = Arc::new(yi_tui::port::Dirty::default());
-    dirty.refresh(&first.to_string_lossy());
-    dirty.refresh(&second.to_string_lossy());
+    dirty.refresh(false, &first.to_string_lossy());
+    dirty.refresh(false, &second.to_string_lossy());
     wait_for("the second tree's count", || dirty.get() == 1)?;
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(dirty.get(), 1, "a late read of the first tree overwrote it");
     Ok(())
 }
 
-/// Dies with a `git status` per lane draw, whose count the lane's status row never shows.
+/// Dies with a `git status` per lane draw or directory change, whose count the lane's status
+/// row never shows.
 #[test]
 fn a_lane_draw_reads_no_dirty_count() -> TestResult {
     let root = Scratch::new("yi-dirty-lane")?;
@@ -3653,11 +3654,11 @@ fn a_lane_draw_reads_no_dirty_count() -> TestResult {
     let cwd = repo.to_string_lossy().into_owned();
     let dirty = Arc::new(yi_tui::port::Dirty::default());
     assert_eq!(dirty.count(false, true, &cwd), 0);
+    dirty.refresh(true, &cwd);
     std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(dirty.get(), 0, "a lane draw read the tree");
-    wait_for("the count outside a lane", || {
-        dirty.count(false, false, &cwd) == 1
-    })
+    assert_eq!(dirty.get(), 0, "a lane read the tree");
+    dirty.refresh(false, &cwd);
+    wait_for("the count outside a lane", || dirty.get() == 1)
 }
 
 /// Dies with a `git status` per draw, or per tool round: the count is read once when a turn
