@@ -150,7 +150,7 @@ pub(crate) fn headless_split(why: &str) -> String {
 }
 
 /// A headless refusal gains an exact `permissions.allow` entry when its display names one call.
-/// A pathless tool display would allow every call, so it names interactive approval instead.
+/// A pathless non-bash display would allow every call, so it names interactive approval instead.
 pub(crate) fn named_rule(
     mut outcome: CallOutcome,
     headless: bool,
@@ -158,9 +158,9 @@ pub(crate) fn named_rule(
 ) -> CallOutcome {
     if headless {
         let said = std::mem::take(&mut outcome.reason);
-        outcome.reason = match display == tool {
+        outcome.reason = match display == tool && tool != "bash" {
             true => format!(
-                "{said} No single permissions.allow entry names only this call; rerun interactively to approve it."
+                "{said} No single allow rule names only this call; rerun interactively to approve it."
             ),
             false => {
                 let entry = Value::String(format!("{tool} {}", globset::escape(display)));
