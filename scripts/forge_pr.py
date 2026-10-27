@@ -327,7 +327,7 @@ def cmd_check(args):
         title, body = pr["title"], pr.get("body") or ""
     else:
         title = args.title or ""
-        body = cite(pathlib.Path(args.body).read_text() if args.body else "", args)
+        body = body_text(args)
     errs = check_problems(title, body)
     for err in errs:
         print(err)
@@ -351,13 +351,17 @@ def dedupe_counted(body, counted):
     return "\n".join(out).strip()
 
 
+def body_text(args):
+    return cite(pathlib.Path(args.body).read_text().strip() if args.body else "", args)
+
+
 def cite(body, args):
     cites = [f"Closes #{n}" for n in args.closes] + [f"Refs #{n}" for n in args.refs]
     return ", ".join(cites) + ("\n\n" + body if body else "") if cites else body
 
 
 def compose_body(args):
-    body = cite(pathlib.Path(args.body).read_text().strip() if args.body else "", args)
+    body = body_text(args)
     counted = subprocess.run(
         (sys.executable, str(ROOT / "scripts/pr_body.py")), capture_output=True, text=True, check=False
     ).stdout.strip()
