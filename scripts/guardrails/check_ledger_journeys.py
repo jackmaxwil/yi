@@ -11,7 +11,7 @@ FILE, ARCH = "docs/ledger-journeys.txt", "docs/ARCHITECTURE.md"
 CELL = re.compile(r"(?<!\\)\|")
 
 
-def ledger_keys(arch):
+def ledger_rows(arch):
     keys, inside, started = [], False, False
     for line in arch.splitlines():
         if line.startswith("#"):
@@ -20,12 +20,19 @@ def ledger_keys(arch):
             if not set(line) - set("|-: "):
                 started = True
             elif started:
-                keys.append(CELL.split(line)[1].strip())
+                keys.append((CELL.split(line)[1].strip(), line))
     return keys
+
+
+def ledger_keys(arch):
+    return [k for k, _ in ledger_rows(arch)]
 
 
 def problems(arch, journeys, off=""):
     keys, out, named = ledger_keys(arch), [], set()
+    if off != "inline":
+        out += [f"feature-ledger row `{k}` keeps a journey: clause in its note; move it to {FILE}"
+                for k, row in ledger_rows(arch) if re.search(r"journeys?:", row)]
     for n, line in enumerate(journeys.splitlines(), 1):
         key, sep, test = line.partition(" | ")
         if not sep or "`" not in test:
@@ -70,13 +77,15 @@ def selfcheck(off=""):
         bad.append("a journey line for a row that is not in the ledger is not refused")
     if len(problems(arch, ok + "loop: a::one\n", off)) != 1:
         bad.append("a malformed line is not refused")
+    if len(problems(arch.replace("| 5 |", "| 5 | journey: `x::y` |"), ok, off)) != 1:
+        bad.append("a journey: clause left in a ledger note is not refused")
     return bad
 
 
 if __name__ == "__main__":
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
-        for off in ("bare", "stale"):
+        for off in ("bare", "stale", "inline"):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} check disabled, so it refutes nothing")
         attrs = (ROOT / ".gitattributes").read_text()
