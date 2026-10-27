@@ -39,6 +39,7 @@ complete -c yi -l no-deltas -d 'with ask --json: drop the per-token message_upda
 complete -c yi -l yolo -d 'run without permission prompts'
 complete -c yi -l auto -d 'let the policy judge each call (the default)'
 complete -c yi -l confirm -d 'ask before every write or command'
+complete -c yi -l allow-write -r -F -d 'let the sandbox write dir too; repeatable'
 complete -c yi -l session-dir -r -F -d 'session storage root'
 complete -c yi -l cwd -r -F -d 'working directory'
 complete -c yi -l here -d 'work in this directory and claim no lane'
