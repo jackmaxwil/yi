@@ -139,7 +139,7 @@ plan: git-tracked document + step table + dispatch | `plan_authority::a_plan_edi
 plan: git-tracked document + step table + dispatch | `plan_readers::a_plan_reader_with_a_schema_contract_runs_as_a_reader_and_is_accepted` (T1)
 plan: git-tracked document + step table + dispatch | `plan_readers::every_address_a_finish_line_prints_opens_in_read_grep_and_fetch` (T1)
 plan: git-tracked document + step table + dispatch | `plan_ops::contracts::a_judge_item_is_refused_at_start_and_names_the_deciders_that_run` (T1)
-plan: git-tracked document + step table + dispatch | `plan_ops::contracts::a_contract_naming_covers_is_refused_at_start` (T1)
+plan: git-tracked document + step table + dispatch | `plan_ops::contracts::a_pending_covered_contract_from_an_old_journal_still_starts` (T1)
 plan: git-tracked document + step table + dispatch | `plan_ops::contracts::a_covered_write_gets_no_preview_line` (T1)
 plan: git-tracked document + step table + dispatch | `plan_walkthrough::every_fixture_replays_identically_through_plan_op` (T1)
 plan: git-tracked document + step table + dispatch | `journeys::a_hand_written_plan_lints_resolves_and_answers_why` (T2)

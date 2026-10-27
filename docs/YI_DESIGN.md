@@ -901,7 +901,7 @@ field still decodes so an old contract keeps its frozen digest.
   `plan.done_refusal_cap`-th refusal (default 3) derives `block{on: User}`.
 - `start` refuses a `judge` item and names the deciders that run (`cmd`, `schema`, `example`);
   the variant decodes so old journals replay, and a started one abstains `no judge`.
-- `start` refuses a new contract naming `covers`; the cmd items run at done.
+- A legacy contract's retired `covers` globs are inert; its cmd items run at done.
 - `Resolution { VerifiedDone, AcceptedByUser, LegacyUnverified }`. A todo with a contract or a
   stated acceptance completes only beside one, on every path (`set`, `import`, `repair`,
   `supersede` share the validator); any other on the caller's word.

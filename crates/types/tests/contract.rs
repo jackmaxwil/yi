@@ -452,12 +452,8 @@ fn a_contract_without_covers_keeps_its_digest() -> TestResult {
     Ok(())
 }
 
-/// A contract carrying the retired preview globs keeps the digest its start record froze.
-#[test]
-fn a_journal_with_covers_keeps_its_contract_digest() -> TestResult {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/plan-covers-contract.jsonl");
-    let mut found = 0;
+fn journal_contracts(path: &std::path::Path) -> Result<Vec<Contract>, Box<dyn Error>> {
+    let mut contracts = Vec::new();
     for line in std::fs::read_to_string(path)?.lines() {
         let record: JournalRecord = serde_json::from_str(line)?;
         let todos = record
@@ -471,17 +467,30 @@ fn a_journal_with_covers_keeps_its_contract_digest() -> TestResult {
         {
             let contract: Contract = serde_json::from_value(raw.clone())?;
             assert_eq!(
-                contract.digest()?.to_string(),
-                "sha256:2c0b4a0b109a3f9bd7336fc7a38fd2fc15a44b5b71c54e4cc6ac553ddc653986"
-            );
-            assert_eq!(
-                canonical_bytes(&serde_json::to_value(contract)?)?,
+                canonical_bytes(&serde_json::to_value(&contract)?)?,
                 canonical_bytes(raw)?
             );
-            found += 1;
+            contracts.push(contract);
         }
     }
-    assert_eq!(found, 1, "the recorded init carries one covered contract");
+    Ok(contracts)
+}
+
+/// A contract carrying the retired preview globs keeps the digest its start record froze.
+#[test]
+fn a_journal_with_covers_keeps_its_contract_digest() -> TestResult {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/journals/plan-covers-contract.jsonl");
+    let contracts = journal_contracts(&path)?;
+    assert_eq!(contracts.len(), 1, "the recorded init carries one contract");
+    assert_eq!(
+        contracts
+            .first()
+            .ok_or("the covered contract")?
+            .digest()?
+            .to_string(),
+        "sha256:2c0b4a0b109a3f9bd7336fc7a38fd2fc15a44b5b71c54e4cc6ac553ddc653986"
+    );
     Ok(())
 }
 
@@ -491,27 +500,18 @@ fn a_journal_with_covers_keeps_its_contract_digest() -> TestResult {
 fn a_journal_with_a_judge_item_and_a_juror_line_keeps_its_bytes() -> TestResult {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/journals/plan-judge-verdict-v1.jsonl");
+    let contracts = journal_contracts(&path)?;
+    let judged = |item: &&ContractItem| matches!(item.decider, Decider::Judge { .. });
+    let judges = contracts
+        .iter()
+        .map(|contract| contract.items.iter().filter(judged).count())
+        .sum::<usize>();
     let text = |value: &serde_json::Value| -> Result<String, Box<dyn Error>> {
         Ok(String::from_utf8(canonical_bytes(value)?)?)
     };
-    let (mut judges, mut jurors) = (0, 0);
+    let mut jurors = 0;
     for line in std::fs::read_to_string(path)?.lines() {
         let record: JournalRecord = serde_json::from_str(line)?;
-        let todos = record
-            .args
-            .get("todos")
-            .and_then(serde_json::Value::as_array);
-        for raw in todos
-            .into_iter()
-            .flatten()
-            .filter_map(|todo| todo.get("contract"))
-        {
-            let contract: Contract = serde_json::from_value(raw.clone())?;
-            let typed = serde_json::to_value(&contract)?;
-            assert_eq!(text(&typed)?, text(raw)?);
-            let judged = |item: &&ContractItem| matches!(item.decider, Decider::Judge { .. });
-            judges += contract.items.iter().filter(judged).count();
-        }
         if let Some(raw) = &record.verdict {
             let verdict: Verdict = serde_json::from_value(raw.clone())?;
             let typed = serde_json::to_value(&verdict)?;

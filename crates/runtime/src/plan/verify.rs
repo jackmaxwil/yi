@@ -44,9 +44,6 @@ pub fn session_has(name: &str) -> bool {
 /// # Errors
 /// The contract fails validation or names a criterion the store cannot serve as declared.
 pub fn freeze(artifacts: &Artifacts, contract: &Contract) -> Result<Frozen, String> {
-    if !contract.covers.is_empty() {
-        return Err("contract `covers` is retired; the cmd items run at done".to_owned());
-    }
     contract.validate().map_err(|error| error.to_string())?;
     for item in &contract.items {
         for artifact in item.decider.criteria() {
