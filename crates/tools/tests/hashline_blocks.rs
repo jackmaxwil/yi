@@ -100,3 +100,26 @@ fn non_rust_single_quoted_strings_do_not_change_block_depth() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn non_rust_block_comment_apostrophes_do_not_hide_delimiters() -> TestResult {
+    let dir = temp_dir("hashline-non-rust-block-comments")?;
+    for (name, source) in [
+        (
+            "closer.js",
+            "function f() {\n    if (ready) {\n        /* don't */ }\n    return ready;\n}\n",
+        ),
+        (
+            "opener.js",
+            "function f() {\n    /* user's */ return {\n        value: true\n    };\n}\n",
+        ),
+    ] {
+        fs::write(dir.join(name), source)?;
+        let output = find(&dir, name, "function f()");
+        assert!(
+            output.contains("[find: block at lines 1-5 of"),
+            "{name}: {output}"
+        );
+    }
+    Ok(())
+}

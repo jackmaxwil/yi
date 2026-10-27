@@ -125,6 +125,19 @@ fn strip_line_noise(line: &str, rust_lifetimes: bool) -> Vec<u8> {
             {
                 out.push(byte)
             }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                let Some(rest) = bytes.get(index.saturating_add(2)..) else {
+                    break;
+                };
+                let Some(end) = rest.windows(2).position(|pair| pair == b"*/") else {
+                    break;
+                };
+                index = index
+                    .saturating_add(2)
+                    .saturating_add(end)
+                    .saturating_add(2);
+                continue;
+            }
             b'"' | b'\'' | b'`' => in_string = Some(byte),
             b'/' if bytes.get(index + 1) == Some(&b'/') => break,
             b'#' if index == 0 || bytes[index - 1].is_ascii_whitespace() => break,
