@@ -41,7 +41,8 @@ BASELINES = ROOT / "scripts/guardrails/baselines"
 BINARY = {"binary_size_budget": "dist binary", "binary_size_budget_linux": "Linux dist binary"}
 SUBJECT_LIMIT = 72
 POLL = 20
-WEB = "https://git.example.invalid"
+GATES = ("gate (guardrails)", "gate (lint)", "gate (test)")
+WEB ="https://git.example.invalid"
 HOST = WEB.removeprefix("https://")
 
 
@@ -459,11 +460,15 @@ def is_behind(pr):
 
 
 def required():
+    """Invariant: a merge waits on the three gates whatever the protection rule lists, because the
+    rule is a setting someone can shorten and the merge verb is where red must stop."""
     protections = fgj_api("GET", f"repos/{repo()}/branch_protections") or []
+    protected = ["size-report", "title"]
     for protection in protections:
         if protection.get("branch_name") == "main":
-            return required_jobs(protection.get("status_check_contexts") or [])
-    return ["gate (guardrails)", "gate (lint)", "gate (test)", "size-report", "title"]
+            protected = required_jobs(protection.get("status_check_contexts") or [])
+    return list(dict.fromkeys([*GATES, *protected]))
+
 
 def jobs_of(pr):
     tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
@@ -553,7 +558,9 @@ def cmd_merge(args):
                     print(f"  {err}")
                 print(f"merge: refused — #{number} needs two review rounds clean on its head")
                 return 1
-            answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/merge", {"Do": "merge"})
+            # The head the gates were read on: the forge refuses a head that moved since.
+            answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/merge",
+                             {"Do": "merge", "head_commit_id": pr["head"]["sha"]})
             if answer and answer.get("message"):
                 print(f"merge refused: {answer['message']}")
                 if "behind" not in answer["message"]:
@@ -731,6 +738,43 @@ def selfcheck():
     finally:
         globals().update(fakes)
     assert refused == 1 and "refused to update" in conflicted.getvalue(), "a refused update stops the merge loop"
+
+    def merge_on_fake_forge(protected, statuses):
+        """cmd_merge for #7 against a forge whose rule lists `protected` and whose head `abc1234` ran
+        `statuses`: (exit code, the bodies posted to /merge)."""
+        posts = []
+        tasks = [{"name": job, "status": status, "run_number": 1, "head_sha": "abc1234", "updated_at": "1"}
+                 for job, status in statuses.items()]
+
+        def forge(method, path, payload=None):
+            if path.endswith("/merge"):
+                posts.append(payload)
+                return {}
+            if path.endswith("/branch_protections"):
+                return [{"branch_name": "main", "status_check_contexts": protected}]
+            if "/actions/tasks" in path:
+                return {"workflow_runs": tasks}
+            return {"number": 7, "title": "Keep the gate", "state": "closed" if posts else "open", "merged": bool(posts),
+                    "head": {"sha": "abc1234", "ref": "x"}, "base": {"ref": "main"}}
+
+        saved = {name: globals()[name] for name in ("fgj_api", "repo", "is_behind", "unreviewed", "POLL")}
+        globals().update(fgj_api=forge, repo=lambda: "apex/yi", is_behind=lambda pr: False,
+                         unreviewed=lambda n, pr: [], POLL=0)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = cmd_merge(argparse.Namespace(number=7, timeout=1, wait=False))
+        finally:
+            globals().update(saved)
+        return code, posts
+
+    green = {"gate (guardrails)": "success", "gate (lint)": "success", "gate (test)": "success", "title": "success"}
+    listed = ["pr / title (pull_request)"]
+    code, posts = merge_on_fake_forge(listed, green)
+    assert code == 0 and posts == [{"Do": "merge", "head_commit_id": "abc1234"}], ("the merge names the head the gates ran on", posts)
+    code, posts = merge_on_fake_forge(listed, dict(green, **{"gate (test)": "failure"}))
+    assert code == 1 and not posts, "a red gate (test) on the head is not merged even when the rule does not list it"
+    code, posts = merge_on_fake_forge(listed, {job: s for job, s in green.items() if job != "gate (lint)"})
+    assert code == 2 and not posts, "a gate that has not run on the head is not merged"
     assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
     real_measure = gate.measure
     gate.measure = lambda: (([], [], 0, ([], [])), None)
