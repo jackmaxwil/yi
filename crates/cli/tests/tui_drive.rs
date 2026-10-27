@@ -2,24 +2,9 @@ use std::error::Error;
 use std::process::Command;
 
 use crate::scratch::Scratch;
-use crate::session_files::session_files;
+use crate::session_files::{frame_entries, frames_text, session_files};
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn frames_text(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    let last = entries.pop();
-    assert!(last.is_some(), "at least one frame must be dumped");
-    let mut frames = String::new();
-    for entry in entries {
-        frames.push_str(&std::fs::read_to_string(entry.path())?);
-    }
-    if let Some(last) = last {
-        frames.push_str(&std::fs::read_to_string(last.path())?);
-    }
-    Ok(frames)
-}
 
 #[test]
 fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
@@ -121,8 +106,7 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let entries = frame_entries(&frames)?;
     let last = entries.last().ok_or("no frames dumped")?;
     let final_frame = std::fs::read_to_string(last.path())?;
 
@@ -243,8 +227,7 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let entries = frame_entries(&frames)?;
     let rendered: Vec<String> = entries
         .iter()
         .map(|entry| std::fs::read_to_string(entry.path()))
@@ -316,8 +299,7 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let entries = frame_entries(&frames)?;
     let last = entries.last().ok_or("no frames dumped")?;
     let final_frame = std::fs::read_to_string(last.path())?;
     for needle in [
@@ -391,12 +373,8 @@ fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    let mut all_frames = String::new();
-    for entry in &entries {
-        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
-    }
+    let entries = frame_entries(&frames)?;
+    let all_frames = frames_text(&frames)?;
     assert!(
         all_frames.contains("reverse-i-search: findme"),
         "frames must show the query on a hit: {all_frames}"
@@ -497,8 +475,7 @@ fn a_headless_drive_renders_at_the_size_it_is_given() -> TestResult {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let entries = frame_entries(&frames)?;
     let last = std::fs::read_to_string(entries.last().ok_or("no frames dumped")?.path())?;
     let widest = last
         .lines()
@@ -1042,8 +1019,7 @@ fn a_todo_row_wider_than_the_screen_ends_in_an_ellipsis_at_the_edge() -> TestRes
         "drive run must exit 0: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let entries = frame_entries(&frames)?;
     let last = entries.last().ok_or("no frame")?;
     let screen = std::fs::read_to_string(last.path())?;
     let row = screen
@@ -1228,11 +1204,8 @@ fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
         .env("HOME", &home)
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let mut dumps: Vec<_> = std::fs::read_dir(&frames)?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .collect();
-    dumps.sort();
-    let last = std::fs::read_to_string(dumps.last().ok_or("no frames dumped")?)?;
+    let dumps = frame_entries(&frames)?;
+    let last = std::fs::read_to_string(dumps.last().ok_or("no frames dumped")?.path())?;
     let landed = last.matches('x').count();
 
     assert_eq!(output.status.code(), Some(1), "{stderr}");
@@ -1636,8 +1609,7 @@ fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult 
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let entries = frame_entries(&frames)?;
     let last = std::fs::read_to_string(entries.last().ok_or("no frames dumped")?.path())?;
     let row = last.lines().next().ok_or("an empty frame")?;
     assert_eq!(row.trim_matches(['"', ',', ' ']), "/treex[31mredy\u{2588}");
@@ -1736,8 +1708,7 @@ fn a_typo_and_pr_answer_locally_without_a_model_turn() -> TestResult {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let entries = frame_entries(&frames)?;
     let last = std::fs::read_to_string(entries.last().ok_or("no frames dumped")?.path())?;
     assert!(
         !last.contains("faux:"),
