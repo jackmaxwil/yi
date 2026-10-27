@@ -92,7 +92,7 @@ fn carried(summary: &str) -> &str {
 }
 
 /// The earliest cut point from which the rest of `messages` fits `budget`.
-fn fitting_start(messages: &[AgentMessage], budget: Tokens) -> Option<usize> {
+pub(crate) fn fitting_start(messages: &[AgentMessage], budget: Tokens) -> Option<usize> {
     let (mut kept, mut found) = (Tokens(0), None);
     for (index, message) in messages.iter().enumerate().rev() {
         kept = kept.saturating_add(wide(estimate_message(message)));

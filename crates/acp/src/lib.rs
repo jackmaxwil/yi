@@ -460,16 +460,6 @@ impl AcpState {
         None
     }
 
-    fn drop_session(&mut self, session_id: &str) {
-        if let Some(handle) = self.sessions.remove(session_id) {
-            // Incident: the turn and its queued follow-ups ran on after a close told the client
-            // they were cancelled.
-            handle.session.stop();
-            let closed = "the session closed before this prompt was inserted";
-            refuse(&self.sink, &handle.prompts, REQUEST_CANCELLED, closed);
-        }
-    }
-
     fn emit_config(&self, session_id: &str) {
         let Some(handle) = self.sessions.get(session_id) else {
             return;
@@ -924,13 +914,6 @@ fn submit_plan(
         .ok_or((INVALID_PARAMS, "params must be an object".to_owned()))?;
     yi_runtime::plan::authority::submit_request(service, payload, None)
         .map_err(|error| (INVALID_PARAMS, error))
-}
-
-fn refuse(sink: &LineSink, prompts: &PendingPrompts, code: i64, why: &str) {
-    let waiting = std::mem::take(&mut *crate::update::queued(prompts));
-    for prompt in waiting {
-        respond(sink, prompt.request, Err((code, why.to_owned())));
-    }
 }
 
 fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {

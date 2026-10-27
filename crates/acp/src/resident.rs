@@ -10,7 +10,8 @@ use tokio::sync::mpsc::WeakUnboundedSender;
 use yi_types::subagent::ChildStatus;
 
 use crate::attach::Incoming;
-use crate::{AcpState, SessionHandle};
+use crate::update::PendingPrompts;
+use crate::{AcpState, LineSink, SessionHandle, respond};
 
 /// Idle sessions a worker keeps loaded, the console's own count of parked chats.
 pub(crate) const RESIDENT_MAX: usize = 8;
@@ -78,11 +79,32 @@ pub(crate) fn kernel_pins(kernel: Option<&yi_runtime::KernelService>) -> bool {
     kernel.is_some_and(|kernel| kernel.unsaved() || kernel.user_cell_running())
 }
 
+pub(crate) fn refuse(sink: &LineSink, prompts: &PendingPrompts, code: i64, why: &str) {
+    let waiting = std::mem::take(&mut *crate::update::queued(prompts));
+    for prompt in waiting {
+        respond(sink, prompt.request, Err((code, why.to_owned())));
+    }
+}
 impl AcpState {
     /// A session closed or deleted without a loaded lane: its parked schedule timer
     /// would otherwise be held forever by the eviction that unloaded it.
     pub(crate) fn release_parked(&self, id: &str) {
         yi_runtime::schedule::release_unloaded(&self.schedules_root, id);
+    }
+
+    pub(crate) fn drop_session(&mut self, session_id: &str) {
+        if let Some(handle) = self.sessions.remove(session_id) {
+            // Incident: the turn and its queued follow-ups ran on after a close told the client
+            // they were cancelled.
+            handle.session.stop();
+            let closed = "the session closed before this prompt was inserted";
+            refuse(
+                &self.sink,
+                &handle.prompts,
+                crate::REQUEST_CANCELLED,
+                closed,
+            );
+        }
     }
 
     pub(crate) fn session_id(params: &Value) -> Result<String, (i64, String)> {

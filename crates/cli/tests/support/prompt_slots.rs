@@ -10,7 +10,7 @@ pub fn prompt_slots(sessions: &Path) -> Result<Vec<Vec<String>>, Box<dyn Error>>
         let mut names = Vec::new();
         for line in std::fs::read_to_string(&path)?.lines() {
             let entry: Value = serde_json::from_str(line)?;
-            if entry["customType"] == "ext_state" {
+            if entry["customType"] == "ext_state" || entry["customType"] == "ext_state2" {
                 let slots = entry["data"]["slots"]
                     .as_array()
                     .cloned()
