@@ -4693,23 +4693,37 @@ mod contracts {
         let journal = rig.store.journal_path(&plan);
         std::fs::create_dir_all(journal.parent().ok_or("journal parent")?)?;
         std::fs::write(journal, std::fs::read(fixture)?)?;
+        rig.store.write(&rig.store.read(&plan)?)?;
         let todo = todo_of(&rig.store, &plan, "alpha")?;
         assert!(matches!(todo.state, TodoState::Running { .. }));
         assert_eq!(
             todo.contract.as_ref().ok_or("contract")?.covers,
             ["src/*.rs"]
         );
-        let adapter = yi_runtime::tools::ToolAdapter::new(
-            Arc::new(yi_tools::WriteTool::default()),
-            rig.ws.clone(),
-            Arc::new(|| false),
-            None,
+        let provider = Arc::new(yi_runtime::ProviderStream::new(None));
+        let mut session = yi_runtime::AgentSession::new(
+            yi_runtime::SessionConfig {
+                system_prompt: String::new(),
+                model: crate::support::faux_model(),
+                thinking_level: None,
+                tool_execution: yi_runtime::ExecutionMode::Sequential,
+            },
+            provider,
         );
+        let service = yi_runtime::plan::attach_plan(&session, None, rig.store.dir().to_path_buf());
+        service.set_engine(Arc::clone(&rig.engine), Actor::Owner);
+        session.set_plan_service(service);
+        session.use_tools_with_background(yi_tools::builtin_tools(), rig.ws.clone(), None, None);
+        let adapter = session
+            .tools()
+            .into_iter()
+            .find(|tool| tool.definition().name == "write")
+            .ok_or("no wired write tool")?;
         let mut args = Map::new();
         args.insert("path".to_owned(), json!("src/lib.rs"));
         args.insert("content".to_owned(), json!("fn a() {}\n"));
         let signal = yi_loop::interrupt::InterruptSignal::default();
-        let written = yi_loop::AgentTool::execute(&adapter, "call-1", args, &signal).await;
+        let written = adapter.execute("call-1", args, &signal).await;
         let text = serde_json::to_string(&written.result.content)?;
         assert!(!text.contains("contract \\\"alpha\\\" check:"), "{text}");
         Ok(())
