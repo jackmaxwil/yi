@@ -22,20 +22,20 @@ pub(super) fn run(args: &Args) -> i32 {
     let prompt = match args.prompt.as_str() {
         "-" => match std::io::read_to_string(std::io::stdin()) {
             Ok(text) if !text.is_empty() => text,
-            Ok(_) => {
-                eprintln!("error: no prompt on stdin");
-                return 2;
-            }
+            Ok(_) => return refuse(args.json, 2, "no prompt on stdin"),
             Err(error) => {
-                eprintln!("error: reading the prompt from stdin: {error}");
-                return 2;
+                return refuse(
+                    args.json,
+                    2,
+                    &format!("reading the prompt from stdin: {error}"),
+                );
             }
         },
         given => given.to_owned(),
     };
     let runtime = match crate::current_thread() {
         Ok(runtime) => runtime,
-        Err(code) => return code,
+        Err(code) => return early_final(args.json, code, "the async runtime did not start"),
     };
     // Session wiring spawns runtime tasks, so the runtime context must exist before it.
     let target = session_target(args);
@@ -46,7 +46,10 @@ pub(super) fn run(args: &Args) -> i32 {
         // Every spelling of a headless ask (`ask`, bare prompt words) lands here: no tty, no asker.
         match build_session(args, asker, Some(&target.id), false, !interactive) {
             Ok(built) => built,
-            Err(refused) => return exit_refused(refused),
+            Err(refused) => {
+                let reason = refused.reason.clone();
+                return early_final(args.json, exit_refused(refused), &reason);
+            }
         }
     };
     let attaching = yi_types::trace::span("ask.attach_store");
@@ -59,17 +62,11 @@ pub(super) fn run(args: &Args) -> i32 {
         Err(error) if args.resume == Resume::Fresh => {
             eprintln!("warning: session store unavailable: {error}");
         }
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
+        Err(error) => return refuse(args.json, 1, &error.to_string()),
     }
     let schema = match crate::schema(args) {
         Some(Ok(schema)) => Some(schema),
-        Some(Err(error)) => {
-            eprintln!("error: {error}");
-            return 2;
-        }
+        Some(Err(error)) => return refuse(args.json, 2, &error),
         None => None,
     };
     let lane = session.lane();
@@ -82,13 +79,13 @@ pub(super) fn run(args: &Args) -> i32 {
         eval: args.eval,
         no_deltas: args.no_deltas,
     };
+    let json = args.json;
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
             .is_err()
         {
-            eprintln!("error: session busy");
-            return 1;
+            return refuse(json, 1, "session busy");
         }
         stream(&session, &host, modes, schema.as_ref(), (ends, deadline)).await
     });
@@ -96,6 +93,20 @@ pub(super) fn run(args: &Args) -> i32 {
     runtime.shutdown_timeout(left(deadline));
     yi_runtime::spend::drain_settled(deadline);
     code
+}
+
+/// Invariant: a `--json` run that ends before the loop still closes with a `final` line.
+fn early_final(json: bool, code: i32, message: &str) -> i32 {
+    if json {
+        let line = serde_json::json!({"type": "final", "kind": "error", "class": "refusal", "message": message});
+        println!("{line}");
+    }
+    code
+}
+
+fn refuse(json: bool, code: i32, message: &str) -> i32 {
+    eprintln!("error: {message}");
+    early_final(json, code, message)
 }
 
 /// D10: `--schema` answers are JSON or a non-zero exit, never prose. The answer is the newest
@@ -272,6 +283,27 @@ fn reset_instant(text: &str) -> Option<&str> {
     })
 }
 
+/// Best effort: the first window the text names, whole words only (`15h` and `17d` name nothing).
+fn quota_window(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    let unit_next = |at: usize, units: [&str; 2]| {
+        words
+            .get(at.saturating_add(1))
+            .is_some_and(|next| units.contains(next))
+    };
+    words.iter().enumerate().find_map(|(at, word)| match *word {
+        "5h" => Some("5h"),
+        "7d" | "week" | "weekly" => Some("7d"),
+        "5" if unit_next(at, ["hour", "hours"]) => Some("5h"),
+        "7" if unit_next(at, ["day", "days"]) => Some("7d"),
+        _ => None,
+    })
+}
+
 /// The last event of a json run: why it stopped, in one closed vocabulary a driver can branch on.
 fn final_event(finished: bool, answered: bool, error: Option<&str>) -> serde_json::Value {
     use yi_types::telemetry::ErrorClass;
@@ -292,16 +324,7 @@ fn final_event(finished: bool, answered: bool, error: Option<&str>) -> serde_jso
     if kind == "quota"
         && let Some(text) = error
     {
-        let lower = text.to_lowercase();
-        let has = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
-        let window = if has(&["week", "7d", "7 day"]) {
-            Some("7d")
-        } else if has(&["5h", "5 hour", "5-hour"]) {
-            Some("5h")
-        } else {
-            None
-        };
-        line["window"] = window.into();
+        line["window"] = quota_window(text).into();
         line["reset"] = reset_instant(text).into();
     }
     line
@@ -322,7 +345,7 @@ async fn follow(
     let (mut answer, mut said, mut exit) = (String::new(), Vec::new(), 0);
     let (mut holding, mut ended) = (false, false);
     let (mut last_stop, mut said_anything, mut due) = (None, false, false);
-    let (mut last_error, mut finished) = (None, false);
+    let (mut last_error, mut finished, mut schema_failed) = (None, false, false);
     loop {
         let next = match patience(holding, ends) {
             None => yi_runtime::next_event(&mut events).await,
@@ -427,6 +450,7 @@ async fn follow(
     }
     if ended && let Some(schema) = schema {
         exit = emit_structured(schema, &said, json);
+        schema_failed = exit != 0;
     } else if ended && !json {
         println!();
     }
@@ -446,7 +470,11 @@ async fn follow(
     } else if !json && matches!(last_stop, Some((StopReason::Error, _))) {
         exit = 1;
     }
-    let line = final_event(finished, final_answer, last_error.as_deref());
+    let mut line = final_event(finished, final_answer, last_error.as_deref());
+    // The final line describes the run's exit, so a clean stop whose answer broke the schema is an error.
+    if schema_failed && matches!(line["kind"].as_str(), Some("stop" | "no_answer")) {
+        line = serde_json::json!({"type": "final", "kind": "error", "class": "schema", "message": "answer does not match --schema"});
+    }
     if line["kind"] == "quota" {
         exit = EXIT_QUOTA;
     }
@@ -632,6 +660,12 @@ mod tests {
         assert_eq!(line["kind"], "quota");
         assert_eq!(line["window"], "5h");
         assert_eq!(line["reset"], "2026-10-27T18:00:00Z");
+        let both = "quota exhausted: the 5 hour limit is spent; the weekly limit is fine";
+        assert_eq!(super::quota_window(both), Some("5h"));
+        assert_eq!(
+            super::quota_window("quota exhausted, retry in 15h or 17d"),
+            None
+        );
         let timeout = super::final_event(
             true,
             false,
@@ -660,6 +694,42 @@ mod tests {
         };
         let run = super::follow(receiver, [&never, &never], modes, None, None);
         assert_eq!(runtime.block_on(run).0, super::EXIT_QUOTA);
+        Ok(())
+    }
+
+    /// Dies with `final` built from the loop alone: a clean stop whose answer broke `--schema`
+    /// exited 1 yet closed as `stop`, which a driver branching on `kind` read as success.
+    #[test]
+    fn a_schema_failure_closes_the_run_as_an_error() -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::faux::{faux_assistant_message, faux_text};
+        use yi_types::message::StopReason;
+        let path =
+            std::env::temp_dir().join(format!("yi-final-schema-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"type":"object","required":["n"]}"#)?;
+        let schema = yi_runtime::schema::Schema::load(&path.to_string_lossy())?;
+        std::fs::remove_file(&path)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let never = || false;
+        let answer = faux_assistant_message(vec![faux_text("{\"m\":1}")], StopReason::Stop);
+        let (events, receiver) = tokio::sync::broadcast::channel(8);
+        events.send(AgentEvent::MessageEnd { message: answer })?;
+        events.send(AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        })?;
+        let modes = super::Modes {
+            json: true,
+            eval: false,
+            no_deltas: false,
+        };
+        let run = super::follow(receiver, [&never, &never], modes, Some(&schema), None);
+        let (code, line) = runtime.block_on(run);
+        assert_ne!(code, 0);
+        assert_eq!(
+            (&line["kind"], &line["class"]),
+            (&"error".into(), &"schema".into())
+        );
         Ok(())
     }
 
