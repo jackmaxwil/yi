@@ -67,13 +67,7 @@ fn unsent_empties(schema: &Value, mut args: Map<String, Value>) -> Map<String, V
 /// so it reaches the model unflagged and keeps its `details.errorKind`.
 fn verdict_is_a_result(output: &mut yi_tools::ToolOutput) {
     let verdict = Some(yi_types::event::ToolErrorKind::Verdict.as_str());
-    if output
-        .result
-        .details
-        .get("errorKind")
-        .and_then(Value::as_str)
-        == verdict
-    {
+    if yi_types::event::ToolErrorKind::from_details(&output.result.details) == verdict {
         output.is_error = false;
     }
 }
@@ -86,11 +80,7 @@ fn result_text(result: &yi_types::event::ToolResult) -> String {
 /// producers branched on, and one ipython needle wins, in the order they were tried.
 fn facts_of(tool: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
     let text = result_text(&output.result);
-    let kind = output
-        .result
-        .details
-        .get("errorKind")
-        .and_then(Value::as_str);
+    let kind = yi_types::event::ToolErrorKind::from_details(&output.result.details);
     let kind = kind.unwrap_or(yi_types::event::ToolErrorKind::ToolError.as_str());
     let mut holds = vec![match output.is_error {
         true => format!("{}({kind})", yi_types::graph::RESULT_ERROR),

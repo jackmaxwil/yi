@@ -427,6 +427,16 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
         assert_eq!(run.status.code(), Some(2), "{dir}: {stderr}");
         assert!(stderr.contains("allow-write"), "{stderr}");
     }
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [missing]}}).to_string(),
+    )?;
+    let configured = ask(&workspace, "look", &[])?;
+    assert_eq!(configured.status.code(), Some(2), "{configured:?}");
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [workspace.project()]}}).to_string(),
+    )?;
     let run = ask(
         &workspace,
         "look",
@@ -3029,6 +3039,10 @@ fn a_run_ending_on_a_scope_refusal_exits_4_and_a_bad_scope_is_refused_up_front()
 #[test]
 fn a_run_past_its_deadline_answers_and_exits_inside_it() -> TestResult {
     let workspace = Workspace::new("deadline-last-word")?;
+    write_config(
+        &workspace,
+        r#"{"permissions":{"allow":["bash sleep 100"]}}"#,
+    )?;
     let script = bash_script(&workspace, "sleep 100", Some("the last word"))?;
     let started = std::time::Instant::now();
     let answered = ask(
