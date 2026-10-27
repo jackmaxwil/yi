@@ -150,8 +150,8 @@ impl PermissionBroker {
         protected(Some(sandbox), &dir).then(|| crate::gate::walled_refusal(path))
     }
 
-    /// Makes `dir` writable to every contained run, as an "always" on a widened retry would;
-    /// refused where that retry is, a credential store, the session ledger or a missing path.
+    /// Makes `dir` writable to every contained run, as an "always" on a widened retry would, but
+    /// never journaled (it runs before the session store attaches): `--continue` names it again.
     pub fn grant_write(&self, dir: &Path) -> Result<(), String> {
         let real = dir
             .canonicalize()
