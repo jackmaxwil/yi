@@ -1,3 +1,4 @@
 scripts/guardrails/baselines/*.json merge=baseline
 scripts/guardrails/baselines/schemas.lock merge=baseline
 crates/tools/tests/fixtures/endings/* -text
+docs/ledger-journeys.txt merge=union
