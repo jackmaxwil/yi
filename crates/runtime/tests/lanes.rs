@@ -3344,9 +3344,13 @@ fn gc_removes_only_the_merged_clean_worktree_and_says_why_it_kept_the_rest() -> 
         )),
         "{report}"
     );
+    let base = git(&rig.repo, &["rev-parse", "main"])?;
     for (name, why) in [
-        ("locked", "locked, a session holds it"),
-        ("atbase", "atbase is at main, no commits of its own"),
+        ("locked", "locked, a session holds it".to_owned()),
+        (
+            "atbase",
+            format!("atbase is at {base}, no commits of its own"),
+        ),
     ] {
         assert!(tree(name).is_dir(), "{report}");
         assert!(
@@ -3379,5 +3383,80 @@ fn gc_keeps_a_slot_a_live_session_holds_even_when_git_sees_it_merged() -> TestRe
     let report = pool.gc(&rig.repo, false)?.join("\n");
     assert!(lane.path().is_dir(), "{report}");
     assert!(report.contains("a live session holds the slot"), "{report}");
+    Ok(())
+}
+
+/// Dies when `judge` refuses a detached HEAD: release leaves merged and unmerged lanes alike
+/// detached, and only the commit's ancestry says which tree still holds work.
+#[test]
+fn gc_judges_a_released_lane_by_its_detached_head() -> TestResult {
+    let rig = Rig::new("gc-detached")?;
+    let pool = rig.pool(2)?;
+    let merged = pool.claim("s-merged", ClaimBase::Main)?;
+    let unmerged = pool.claim("s-unmerged", ClaimBase::Main)?;
+    for (lane, name) in [(&merged, "merged"), (&unmerged, "unmerged")] {
+        std::fs::write(lane.path().join(format!("{name}.txt")), "work\n")?;
+        git(lane.path(), &["add", "."])?;
+        git(lane.path(), &["commit", "-qm", name])?;
+    }
+    git(
+        &rig.repo,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            "merged",
+            merged.branch().as_str(),
+        ],
+    )?;
+    let merged_path = merged.path().to_path_buf();
+    let unmerged_path = unmerged.path().to_path_buf();
+    merged.release()?;
+    unmerged.release()?;
+    assert!(matches!(head(&merged_path)?, Head::Detached(_)));
+    assert!(matches!(head(&unmerged_path)?, Head::Detached(_)));
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(!merged_path.exists(), "{report}");
+    assert!(unmerged_path.is_dir(), "{report}");
+    assert!(
+        report.contains("detached HEAD is not merged into"),
+        "{report}"
+    );
+    Ok(())
+}
+
+/// Dies when a stale git lock outranks the free `.held` flock: a crashed session leaves no
+/// live holder, so its merged lane can be unlocked and removed.
+#[test]
+fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
+    let rig = Rig::new("gc-stale-lock")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-crashed", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("work.txt"), "work\n")?;
+    git(lane.path(), &["add", "."])?;
+    git(lane.path(), &["commit", "-qm", "work"])?;
+    git(
+        &rig.repo,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            "merged",
+            lane.branch().as_str(),
+        ],
+    )?;
+    let path = lane.path().canonicalize()?;
+    drop(lane);
+    git(&rig.repo, &["worktree", "lock", &path.to_string_lossy()])?;
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(!path.exists(), "{report}");
+    assert!(
+        report.contains(&format!("removed {}", path.display())),
+        "{report}"
+    );
     Ok(())
 }
