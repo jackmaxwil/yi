@@ -739,7 +739,10 @@ fn an_anchor_past_the_end_is_not_called_unseen() -> TestResult {
     assert!(edit.is_error);
     let text = output_text(&edit);
     assert!(!text.contains("never displayed"), "{text}");
-    assert!(text.contains("136 lines"), "{text}");
+    assert!(text.contains("135 lines"), "{text}");
+    let phantom = fixture.edit(&format!("[rot.py#{tag}]\nPUT >136:\n+phantom\n"));
+    assert!(phantom.is_error, "{}", output_text(&phantom));
+    assert!(output_text(&phantom).contains("135 lines"));
     Ok(())
 }
 
@@ -812,19 +815,19 @@ fn an_unknown_tag_rejection_displays_only_its_anchored_lines() -> TestResult {
 
 /// A read that shows no rows recorded an empty seen set, which the guard read as unrestricted.
 #[test]
-fn a_read_that_shows_no_rows_displays_nothing() -> TestResult {
+fn a_zero_limit_read_is_refused_without_unlocking_lines() -> TestResult {
     let fixture = Fixture::new("empty-view-seen")?;
     fixture.write("a.txt", &ten_lines())?;
     let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
         args(&[("path", json!("a.txt")), ("limit", json!(0))]),
         &fixture.context,
     );
-    assert!(!read.is_error, "{}", output_text(&read));
+    assert!(read.is_error, "{}", output_text(&read));
 
     let blind = fixture.edit("[a.txt]\nPUT 7.=7:\n+seven\n");
     let text = output_text(&blind);
     assert!(blind.is_error, "{text}");
-    assert!(text.contains("never displayed"), "{text}");
+    assert!(text.contains("No version of a.txt is on record"), "{text}");
     assert_eq!(fixture.content("a.txt")?, ten_lines());
     Ok(())
 }
@@ -1130,5 +1133,26 @@ fn an_anchor_past_the_end_of_a_never_read_file_names_the_length() -> TestResult 
         "{text}"
     );
     assert!(!text.contains("re-issue with this header"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_clipped_row_anchors_an_adjacent_insert_but_not_its_replacement() -> TestResult {
+    let fixture = Fixture::new("clipped-gap")?;
+    let wide = "x".repeat(600);
+    fixture.write("ledger.md", &format!("| head |\n| {wide} |\n| tail |\n"))?;
+    let tag = fixture.tag_of("ledger.md")?;
+    let inserted = fixture.edit(&format!("[ledger.md#{tag}]\nPUT >2:\n+| inserted |\n"));
+    assert!(!inserted.is_error, "{}", output_text(&inserted));
+    assert!(fixture.content("ledger.md")?.contains("| inserted |"));
+
+    let replacement = Fixture::new("clipped-replacement")?;
+    replacement.write("ledger.md", &format!("| head |\n| {wide} |\n| tail |\n"))?;
+    let tag = replacement.tag_of("ledger.md")?;
+    let replaced = replacement.edit(&format!("[ledger.md#{tag}]\nPUT 2.=2:\n+| short |\n"));
+    let text = output_text(&replaced);
+    assert!(replaced.is_error, "{text}");
+    assert!(text.contains("a replacement cannot anchor one"), "{text}");
+    assert!(text.contains("grep"), "{text}");
     Ok(())
 }

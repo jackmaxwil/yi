@@ -481,7 +481,7 @@ impl<'a> Patcher<'a> {
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         let read = |line: &u64| self.program && snapshot.program_lines.contains(line);
         let unseen: Vec<u64> = section
-            .collect_anchor_lines()?
+            .collect_seen_anchor_lines()?
             .into_iter()
             .filter(|line| *line <= total && !seen.contains(line) && !read(line))
             .collect();

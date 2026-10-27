@@ -354,6 +354,14 @@ impl PatchSection {
     }
 
     pub fn collect_anchor_lines(&self) -> Result<Vec<u64>, PatchError> {
+        self.anchor_lines(false)
+    }
+
+    pub fn collect_seen_anchor_lines(&self) -> Result<Vec<u64>, PatchError> {
+        self.anchor_lines(true)
+    }
+
+    fn anchor_lines(&self, seen_only: bool) -> Result<Vec<u64>, PatchError> {
         use super::types::{Cursor, Edit, PasteTarget};
         let parsed = self.parse()?;
         let mut lines: Vec<u64> = Vec::new();
@@ -365,13 +373,13 @@ impl PatchSection {
                     PasteTarget::Span { range } => lines.extend(range.start.line..=range.end.line),
                     PasteTarget::Gap {
                         cursor: Cursor::BeforeAnchor { anchor } | Cursor::AfterAnchor { anchor },
-                    } => lines.push(anchor.line),
+                    } if !seen_only => lines.push(anchor.line),
                     PasteTarget::Gap { .. } => {}
                 },
                 Edit::Insert {
                     cursor: Cursor::BeforeAnchor { anchor } | Cursor::AfterAnchor { anchor },
                     ..
-                } => lines.push(anchor.line),
+                } if !seen_only => lines.push(anchor.line),
                 Edit::Insert { .. } => {}
             }
         }
