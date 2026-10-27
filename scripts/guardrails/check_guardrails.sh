@@ -59,6 +59,8 @@ run "$PY" scripts/guardrails/check_env_surface.py
 run "$PY" scripts/guardrails/check_duplication.py
 run "$PY" scripts/guardrails/check_test_size.py
 run "$PY" scripts/guardrails/check_test_tiers.py
+run "$PY" scripts/guardrails/check_ledger_journeys.py
+run "$PY" scripts/guardrails/check_ledger_journeys.py --selfcheck
 run "$PY" scripts/guardrails/check_blob_size.py
 run "$PY" scripts/guardrails/check_public_surface.py
 run "$PY" scripts/guardrails/check_deps_budget.py
