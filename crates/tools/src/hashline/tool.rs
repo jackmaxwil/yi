@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Map, Value, json};
 
 use super::format::{FileTag, format_hashline_header, format_numbered_line};
-use super::input::Patch;
+use super::input::{Patch, PatchError};
 use super::normalize::{normalize_to_lf, strip_bom};
 use super::patcher::{PatchSectionResult, Patcher, SectionOp};
 use super::snapshots::SnapshotStore;
@@ -1003,18 +1003,16 @@ impl Tool for HashlineEditTool {
         *clipboard = host_clipboard;
         let results = match results {
             Ok(results) => results,
-            Err(message) => {
-                let stale = message.starts_with(super::mismatch::EDIT_REJECTED_PREFIX);
-                let grammar = message
-                    .strip_prefix("line ")
-                    .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+            Err(error) => {
+                let stale = matches!(&error, PatchError::Stale(_));
+                let grammar = matches!(&error, PatchError::Grammar { line: Some(_), .. });
                 let kind = if stale {
                     yi_types::event::ToolErrorKind::StaleTag
                 } else {
                     yi_types::event::ToolErrorKind::ToolError
                 };
                 let pointer = if stale || grammar { GUIDE_POINTER } else { "" };
-                return crate::tool::error_output_kind(format!("{message}{pointer}"), kind);
+                return crate::tool::error_output_kind(format!("{error}{pointer}"), kind);
             }
         };
 

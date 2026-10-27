@@ -40,9 +40,11 @@ pub(crate) struct Sections(Mutex<BTreeMap<u64, Vec<String>>>);
 impl Sections {
     pub(crate) fn paths(&self, content: &[Content]) -> Vec<String> {
         self.memo(content, |text| {
-            let patch = yi_tools::hashline::input::Patch::parse(text, None);
-            let sections = patch.map(|patch| patch.sections).unwrap_or_default();
-            sections.into_iter().map(|section| section.path).collect()
+            text.lines()
+                .filter_map(yi_tools::hashline::tokenizer::try_parse_header)
+                .filter(|header| header.file_hash.is_some())
+                .map(|header| header.path)
+                .collect()
         })
     }
 
@@ -644,6 +646,17 @@ mod tests {
         );
         assert_eq!(sections.paths(&text("[src/main.rs#11AA]")), ["src/main.rs"]);
         assert_eq!(sections.paths(&text("[src/lib.rs#BDF3]")), ["src/lib.rs"]);
+        Ok(())
+    }
+
+    #[test]
+    fn read_notices_are_not_patch_sections() -> Fallible {
+        let content = vec![Content::Text {
+            text: "[src/lib.rs#ABCD]\n1:fn tidy() {}\n[showing lines 1-40 of 90; cap 40 — read with offset=41]\n41:fn later() {}\n[skeleton: 8 of 20 heads]\n1:fn tidy() {}"
+                .to_owned(),
+            text_signature: None,
+        }];
+        assert_eq!(super::Sections::default().paths(&content), ["src/lib.rs"]);
         Ok(())
     }
 

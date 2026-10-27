@@ -7,6 +7,38 @@ use super::parser::{Executor, ParsedSection};
 use super::tokenizer::{TokenKind, classify_line, split_hashline_lines, tokenize_all};
 use super::types::FileOp;
 
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PatchError {
+    #[error("{0}")]
+    Stale(String),
+    #[error("{message}")]
+    Grammar { line: Option<u64>, message: String },
+    #[error("{message}")]
+    Unreadable {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+    #[error("{0}")]
+    Refused(String),
+}
+
+impl From<String> for PatchError {
+    fn from(message: String) -> Self {
+        let line = message
+            .strip_prefix("line ")
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(digits, _)| digits.parse().ok());
+        match line {
+            Some(line) => Self::Grammar {
+                line: Some(line),
+                message,
+            },
+            None => Self::Refused(message),
+        }
+    }
+}
+
 fn unquote_hashline_path(path_text: &str) -> &str {
     if path_text.len() < 2 {
         return path_text;
@@ -295,7 +327,7 @@ pub struct PatchSection {
 }
 
 impl PatchSection {
-    pub fn parse(&self) -> Result<ParsedSection, String> {
+    pub fn parse(&self) -> Result<ParsedSection, PatchError> {
         let mut executor = Executor::new();
         for token in tokenize_all(&self.diff) {
             executor.feed(&token)?;
@@ -304,7 +336,7 @@ impl PatchSection {
         // Same-path sections merge into their first occurrence; if that merge crossed another
         // file's section the authored register order is gone and clipboard ops are undefined.
         if self.interleaved && has_clipboard_edit(&parsed.edits) {
-            return Err(CLIPBOARD_INTERLEAVED_SECTIONS.to_owned());
+            return Err(CLIPBOARD_INTERLEAVED_SECTIONS.to_owned().into());
         }
         if let Some(FileOp::Move { dest }) = &parsed.file_op {
             parsed.file_op = Some(FileOp::Move {
@@ -321,7 +353,7 @@ impl PatchSection {
         }
     }
 
-    pub fn collect_anchor_lines(&self) -> Result<Vec<u64>, String> {
+    pub fn collect_anchor_lines(&self) -> Result<Vec<u64>, PatchError> {
         use super::types::{Cursor, Edit, PasteTarget};
         let parsed = self.parse()?;
         let mut lines: Vec<u64> = Vec::new();
@@ -349,7 +381,7 @@ impl PatchSection {
     }
 
     /// Whether the section inserts at the file head (`PUT <1:`) or tail (`PUT >$:`).
-    pub fn inserts_at_ends(&self) -> Result<(bool, bool), String> {
+    pub fn inserts_at_ends(&self) -> Result<(bool, bool), PatchError> {
         use super::types::{Cursor, Edit, PasteTarget};
         let mut ends = (false, false);
         for edit in self.parse()?.edits {
@@ -374,7 +406,7 @@ pub struct Patch {
 }
 
 impl Patch {
-    pub fn parse(input: &str, cwd: Option<&Path>) -> Result<Self, String> {
+    pub fn parse(input: &str, cwd: Option<&Path>) -> Result<Self, PatchError> {
         let raw = merge_same_path_sections(split_raw_sections(input, cwd)?)?;
         Ok(Self {
             sections: raw
