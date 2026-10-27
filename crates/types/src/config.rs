@@ -104,8 +104,8 @@ pub enum ModeName {
     Yolo,
 }
 
-/// `classifier`: the sidecar's URL, one decision's deadline, and the confidence it points at;
-/// no threshold is shadow mode (record, never fire). The bearer is `LAYA_API_KEY`.
+/// `classifier`: the sidecar's URL, one decision's deadline, and the confidence it points at
+/// (0.9 when unset). The bearer is `LAYA_API_KEY`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClassifierConfig {
