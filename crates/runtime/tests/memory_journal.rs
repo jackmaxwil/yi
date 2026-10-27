@@ -104,49 +104,54 @@ fn a_broken_chain_is_still_named_at_rebuild_and_the_next_append_chains_on() -> T
     Ok(())
 }
 
-/// An over-cap line is damage alone or before a valid record; the append chains from the
-/// last valid record in either case.
+fn over_cap_and_valid(store: &Store) -> Result<(Vec<u8>, MemoryRecord), Box<dyn Error>> {
+    let valid = records(store)?
+        .into_iter()
+        .next()
+        .ok_or("no imported record")?;
+    let mut oversized = valid.clone();
+    oversized
+        .extra
+        .insert("padding".to_owned(), Value::String(String::new()));
+    oversized = oversized.seal(None).map_err(|error| format!("{error:?}"))?;
+    let base = oversized.line().map_err(|error| format!("{error:?}"))?;
+    let target = RECORD_CAP.saturating_add(1);
+    let padding = target
+        .checked_sub(base.len())
+        .ok_or("record already over cap")?;
+    oversized
+        .extra
+        .insert("padding".to_owned(), Value::String("x".repeat(padding)));
+    oversized = oversized.seal(None).map_err(|error| format!("{error:?}"))?;
+    let bytes = oversized.line().map_err(|error| format!("{error:?}"))?;
+    assert_eq!(bytes.len(), target);
+    Ok((bytes, valid))
+}
+
 #[test]
-fn an_over_cap_line_never_parents_the_next_append() -> TestResult {
-    for followed in [false, true] {
-        let label = if followed {
-            "over-cap-then-valid"
-        } else {
-            "over-cap-only"
-        };
-        let (_dir, store) = imported(label)?;
-        let valid = records(&store)?
-            .into_iter()
-            .next()
-            .ok_or("no imported record")?;
-        let valid_line = valid.line().map_err(|error| format!("{error:?}"))?;
-        let parent = valid.digest;
-        let mut oversized = valid;
-        oversized
-            .extra
-            .insert("padding".to_owned(), Value::String(String::new()));
-        oversized = oversized.seal(None).map_err(|error| format!("{error:?}"))?;
-        let base = oversized.line().map_err(|error| format!("{error:?}"))?;
-        let target = RECORD_CAP.saturating_add(1);
-        let padding = target
-            .checked_sub(base.len())
-            .ok_or("record already over cap")?;
-        oversized
-            .extra
-            .insert("padding".to_owned(), Value::String("x".repeat(padding)));
-        oversized = oversized.seal(None).map_err(|error| format!("{error:?}"))?;
-        let mut bytes = oversized.line().map_err(|error| format!("{error:?}"))?;
-        assert_eq!(bytes.len(), target);
-        let expected = followed.then(|| {
-            bytes.extend_from_slice(&valid_line);
-            parent
-        });
-        std::fs::write(journal(&store), bytes)?;
-        let note = store.resolve("fgj-forge-cli").ok_or("no such note")?;
-        store.mark_read(&note.name)?;
-        let chain = records(&store)?;
-        let read = chain.last().ok_or("no appended record")?;
-        assert_eq!(read.digest_of(expected.as_ref()).ok(), Some(read.digest));
-    }
+fn an_over_cap_only_record_does_not_parent_the_next_append() -> TestResult {
+    let (_dir, store) = imported("over-cap-only")?;
+    let (bytes, _) = over_cap_and_valid(&store)?;
+    std::fs::write(journal(&store), bytes)?;
+    let note = store.resolve("fgj-forge-cli").ok_or("no such note")?;
+    store.mark_read(&note.name)?;
+    let chain = records(&store)?;
+    let read = chain.last().ok_or("no appended record")?;
+    assert_eq!(read.digest_of(None).ok(), Some(read.digest));
+    Ok(())
+}
+
+#[test]
+fn a_valid_record_after_an_over_cap_line_parents_the_next_append() -> TestResult {
+    let (_dir, store) = imported("over-cap-then-valid")?;
+    let (mut bytes, valid) = over_cap_and_valid(&store)?;
+    bytes.extend_from_slice(&valid.line().map_err(|error| format!("{error:?}"))?);
+    let parent = valid.digest;
+    std::fs::write(journal(&store), bytes)?;
+    let note = store.resolve("fgj-forge-cli").ok_or("no such note")?;
+    store.mark_read(&note.name)?;
+    let chain = records(&store)?;
+    let read = chain.last().ok_or("no appended record")?;
+    assert_eq!(read.digest_of(Some(&parent)).ok(), Some(read.digest));
     Ok(())
 }
