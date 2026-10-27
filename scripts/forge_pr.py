@@ -327,7 +327,7 @@ def cmd_check(args):
         title, body = pr["title"], pr.get("body") or ""
     else:
         title = args.title or ""
-        body = pathlib.Path(args.body).read_text() if args.body else ""
+        body = cite(pathlib.Path(args.body).read_text() if args.body else "", args)
     errs = check_problems(title, body)
     for err in errs:
         print(err)
@@ -351,11 +351,13 @@ def dedupe_counted(body, counted):
     return "\n".join(out).strip()
 
 
-def compose_body(args):
-    body = pathlib.Path(args.body).read_text().strip() if args.body else ""
+def cite(body, args):
     cites = [f"Closes #{n}" for n in args.closes] + [f"Refs #{n}" for n in args.refs]
-    if cites:
-        body = ", ".join(cites) + ("\n\n" + body if body else "")
+    return ", ".join(cites) + ("\n\n" + body if body else "") if cites else body
+
+
+def compose_body(args):
+    body = cite(pathlib.Path(args.body).read_text().strip() if args.body else "", args)
     counted = subprocess.run(
         (sys.executable, str(ROOT / "scripts/pr_body.py")), capture_output=True, text=True, check=False
     ).stdout.strip()
@@ -751,6 +753,21 @@ def selfcheck():
         globals()["fgj_api"] = real_fgj
     assert stopped == 1, "a refused PATCH is not reported as an edit"
     assert any("no `## Why needed`" in line for line in seen.getvalue().splitlines()), seen.getvalue()
+    grown = lambda: (([], [], 200, ([], [])), None)
+    gate.measure = grown
+    flagged = "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED)
+    body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_check.md"
+    body_file.write_text(flagged)
+    issue_ok = gate.issue_problems
+    gate.issue_problems = lambda *a: []
+    try:
+        for closes, want in (([1], 0), ([], 1)):
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = cmd_check(argparse.Namespace(number=None, title="Keep the gate", body=str(body_file), closes=closes, refs=[]))
+            assert code == want, ("pr check judges the body as pr open composes it", closes, code)
+    finally:
+        gate.measure, gate.issue_problems = real_measure, issue_ok
+        body_file.unlink()
     # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green,
     # because nothing here built the verbs; a name the parser wires that no longer exists
     # now fails this flag instead of the next `just commit`.
@@ -788,6 +805,8 @@ def build_parser():
     check.add_argument("number", nargs="?")
     check.add_argument("--title")
     check.add_argument("--body")
+    check.add_argument("--closes", action="append", default=[])
+    check.add_argument("--refs", action="append", default=[])
     check.set_defaults(run=cmd_check)
     edit = pr.add_parser("edit")
     edit.add_argument("number", type=int)
