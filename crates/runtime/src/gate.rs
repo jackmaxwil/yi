@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::permission::CallOutcome;
 use serde_json::{Value, json};
 use yi_permission::{
     CatastrophicContext, Class, Decision, Parsed, PermissionMode, SessionRules, ToolCall,
@@ -147,6 +148,23 @@ pub(crate) fn headless_split(why: &str) -> String {
     format!(
         "Permission required but no interactive surface is available: part of this command must run outside the sandbox ({why}) and would take the rest with it. Split it into separate calls, or rerun with --yolo."
     )
+}
+
+/// A refusal with no one to ask gains the `permissions.allow` entry, ready to paste as JSON, that
+/// runs this exact call: the pattern is a glob, so the call's own `*` and `[` are escaped.
+pub(crate) fn named_rule(
+    mut outcome: CallOutcome,
+    headless: bool,
+    (tool, display): (&str, &str),
+) -> CallOutcome {
+    if headless {
+        let entry = Value::String(format!("{tool} {}", globset::escape(display)));
+        let said = std::mem::take(&mut outcome.reason);
+        outcome.reason = format!(
+            "{said} Allow exactly this call with the permissions.allow entry {entry} in ~/.yi/config.json."
+        );
+    }
+    outcome
 }
 
 pub fn mode_label(mode: PermissionMode) -> &'static str {

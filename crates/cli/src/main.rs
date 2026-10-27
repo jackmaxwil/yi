@@ -236,11 +236,30 @@ fn build_session(
     let work = lane
         .as_ref()
         .map_or_else(|| cwd.clone(), |lane| lane.path().to_path_buf());
+    let settings = config();
+    let rules = (settings
+        .permissions
+        .as_ref()
+        .and_then(|p| p.allow.as_deref()))
+    .into_iter()
+    .flatten()
+    .map(|entry| {
+        let (tool, pattern) = entry
+            .split_once(' ')
+            .ok_or_else(|| format!("{entry:?} is not `TOOL PATTERN`"))?;
+        yi_runtime::ConfigRule::new(tool, pattern, yi_runtime::ConfigRuleAction::Allow)
+    })
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|reason| Refused {
+        code: 2,
+        reason: format!("permissions.allow: {reason}"),
+        class: yi_types::telemetry::ErrorClass::RefusalConfig,
+    })?;
     let broker = std::sync::Arc::new(
         yi_runtime::PermissionBroker::new(
             args.mode,
             work.clone(),
-            Vec::new(),
+            rules,
             asker,
             session.events_sender(),
         )
@@ -248,7 +267,6 @@ fn build_session(
         .with_session_store(&default_session_dir(args))
         .with_unattended(unattended),
     );
-    let settings = config();
     let configured = (settings.permissions.as_ref()).and_then(|p| p.allow_write.as_deref());
     for dir in args
         .allow_write
