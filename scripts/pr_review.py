@@ -274,10 +274,10 @@ ROUND_MEMORY = 12
 
 def earlier(rounds):
     """What earlier rounds told the author, newest first: their reported findings with the fix each
-    suggested, and whether the owner's `/override` settled the round. Incident: #1659's round 4
+    suggested, and whether the owner's `/override` settled it (only a high: an override clears the blocking highs). Incident: #1659's round 4
     asked to dedupe a loop into the shared helper and round 5, on the commit that did it, asked to
     revert that hunk, because no lens saw round 4."""
-    return [{**f, "n": r["n"], "settled": r["verdict"] == "override"} for r in reversed(rounds) if not twin_round(r)
+    return [{**f, "n": r["n"], "settled": r["verdict"] == "override" and f["severity"] == "high"} for r in reversed(rounds) if not twin_round(r)
             for f in r["findings"] if f.get("severity") in REPORTED and f.get("lens") not in INTAKE]
 
 
@@ -301,10 +301,10 @@ def memory_of(memory, path=None):
 
 
 def settled_again(finding, memory):
-    """A finding on the same path and the same line text as one the owner overrode: the hunk is
-    unchanged since the verdict, so it stays closed. A hunk the author changed quotes other text."""
-    key = (finding.get("path"), (finding.get("quote") or "").strip())
-    return any(f["settled"] and (f.get("path"), (f.get("quote") or "").strip()) == key for f in memory)
+    """A finding from the same lens on the same path and line text as one the owner overrode: the
+    hunk is unchanged since the verdict, so it stays closed. A changed hunk quotes other text."""
+    key = lambda f: (f.get("path"), f.get("lens"), (f.get("quote") or "").strip())
+    return any(f["settled"] and key(f) == key(finding) for f in memory)
 
 
 def delta_base(rounds, merge_base, is_ancestor, head):
@@ -1272,6 +1272,12 @@ def selfcheck():
         moved = [dict(closed[0], quote="    let y = 2;")]
         kept, _, _, _, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, answer, probes, memory=moved)
         assert kept == [finding], "a hunk that changed since the verdict is read afresh"
+        med = earlier([{"n": 4, "verdict": "override", "findings": [dict(finding, severity="medium")]}])
+        kept, _, _, _, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, answer, probes, memory=med)
+        assert kept == [finding], "an override clears the highs only, so a medium in that round is read afresh"
+        other = [dict(closed[0], lens="other-lens")]
+        kept, _, _, _, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, answer, probes, memory=other)
+        assert kept == [finding], "another lens's finding on the same line is not the settled one"
         # Incident: a fix after a blocked round was read afresh and found new mediums, so no draft converged;
         # a narrowed round still owes what the last round found, until a refuter finds it gone.
         held = dict(finding, since=2)
