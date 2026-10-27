@@ -248,6 +248,21 @@ fn build_session(
         .with_session_store(&default_session_dir(args))
         .with_unattended(unattended),
     );
+    let settings = config();
+    let configured = (settings.permissions.as_ref()).and_then(|p| p.allow_write.as_deref());
+    for dir in args
+        .allow_write
+        .iter()
+        .chain(configured.into_iter().flatten())
+    {
+        broker
+            .grant_write(&work.join(dir))
+            .map_err(|reason| Refused {
+                code: 2,
+                reason: format!("allow-write: {reason}"),
+                class: yi_types::telemetry::ErrorClass::RefusalConfig,
+            })?;
+    }
     if prompts_close {
         broker.prompts_close_on_settle();
     }

@@ -94,6 +94,8 @@ pub struct OpenApp {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PermissionsConfig {
     pub mode: Option<ModeName>,
+    /// Directories contained commands and write tools may write besides the workspace.
+    pub allow_write: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -411,6 +411,32 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
     Ok(())
 }
 
+/// A granted directory that does not exist, or that the sandbox must keep closed, ended the run
+/// before the model answered; a good one let it through. Seatbelt only: without it there is no
+/// sandbox to widen and the grant is a no-op.
+#[cfg(target_os = "macos")]
+#[test]
+fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> TestResult {
+    let workspace = Workspace::new("allow-write")?;
+    let (home, missing) = (
+        workspace.0.join("home"),
+        workspace.project().join("no-such-dir"),
+    );
+    for dir in [home.to_string_lossy(), missing.to_string_lossy()] {
+        let run = ask(&workspace, "look", &["--allow-write", &dir])?;
+        let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+        assert_eq!(run.status.code(), Some(2), "{dir}: {stderr}");
+        assert!(stderr.contains("allow-write"), "{stderr}");
+    }
+    let run = ask(
+        &workspace,
+        "look",
+        &["--allow-write", &workspace.project().to_string_lossy()],
+    )?;
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    Ok(())
+}
+
 #[test]
 fn sessions_rm_removes_the_session() -> TestResult {
     let workspace = Workspace::new("rm")?;

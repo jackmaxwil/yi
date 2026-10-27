@@ -677,3 +677,49 @@ fn a_child_elsewhere_does_not_inherit_the_pass() -> TestResult {
     assert_eq!(elsewhere.kept_rules(), Vec::<String>::new());
     Ok(())
 }
+
+/// `yi ask --allow-write`: a headless run in a workspace sandbox could not write a sibling
+/// worktree's git dir, and the only way out was `--yolo`. The granted dir takes writes and its
+/// sibling, one path over, still does not.
+#[tokio::test]
+async fn a_granted_dir_is_writable_and_its_sibling_is_not() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, probe) = workspace("yi-grant-write")?;
+    let (granted, sibling) = (
+        Probe::new(&probe, "granted")?,
+        Probe::new(&probe, "sibling")?,
+    );
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let gate = broker(&session, &project, sandbox, refuse);
+    gate.grant_write(&granted.0)?;
+    let profile = gate
+        .sandbox_for(&project, &Wall::default(), &gate.kept_writes())
+        .ok_or("no profile")?;
+    let touch = |dir: &Path| {
+        let target = dir.join("ORIG_HEAD.lock");
+        let (program, argv) = profile.wrap("/usr/bin/touch", &[&target.to_string_lossy()]);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the contract under test is a real sandboxed write"
+        )]
+        let status = std::process::Command::new(program).args(argv).output()?;
+        Ok::<_, Box<dyn Error>>((status.status.success(), target.exists()))
+    };
+    assert_eq!(
+        touch(&granted.0)?,
+        (true, true),
+        "the granted dir takes the write"
+    );
+    assert_eq!(touch(&sibling.0)?, (false, false), "its sibling does not");
+    let home = std::env::var("HOME")?;
+    let refused = gate.grant_write(Path::new(&home)).err().unwrap_or_default();
+    assert!(
+        refused.contains("protected"),
+        "HOME is not grantable: {refused}"
+    );
+    Ok(())
+}
