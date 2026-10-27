@@ -1413,6 +1413,7 @@ fn an_unknown_model_still_closes_a_json_ask_with_a_final_line() -> TestResult {
     let last: Value = serde_json::from_str(stdout(&run).lines().last().ok_or("no stdout")?)?;
     assert_eq!(last["type"], "final", "{run:?}");
     assert_eq!(last["kind"], "error");
+    assert_eq!(last["class"], "refusal:unknown_model");
     assert!(
         last["message"]
             .as_str()

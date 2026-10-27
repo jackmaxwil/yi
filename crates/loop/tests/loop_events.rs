@@ -1416,25 +1416,6 @@ fn dropped_stream() -> AgentMessage {
     error
 }
 
-async fn run_hi(stream: &Scripted) -> Vec<AgentMessage> {
-    let (config, signal) = (LoopConfig::new(faux_model()), InterruptSignal::default());
-    let (_events, mut emit) = collector();
-    let mut fresh = LoopContext {
-        system_prompt: String::new(),
-        messages: Vec::new(),
-        tools: Vec::new(),
-    };
-    run_loop(
-        &mut fresh,
-        vec![user("hi")],
-        &config,
-        &signal,
-        &mut emit,
-        stream,
-    )
-    .await
-}
-
 /// Dies with a quota 429 classed as transport: the exhausted window got a second request and a steer.
 #[tokio::test]
 async fn an_exhausted_quota_is_not_retried() {
@@ -1446,7 +1427,7 @@ async fn an_exhausted_quota_is_not_retried() {
         quota,
         faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
     ]);
-    let collected = run_hi(&stream).await;
+    let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
     assert!(
         !collected.iter().any(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE)),
         "a refused quota is final"
@@ -1464,7 +1445,7 @@ async fn a_read_timeout_that_showed_nothing_continues_the_run() {
         timeout,
         faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
     ]);
-    let collected = run_hi(&stream).await;
+    let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
     assert!(matches!(
         collected.last(),
         Some(AgentMessage::Assistant {
