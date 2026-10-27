@@ -270,6 +270,9 @@ fn ask_reads_a_prompt_past_the_argument_cap_from_stdin() -> TestResult {
     let empty = run("")?;
     assert_eq!(empty.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&empty.stderr).contains("no prompt on stdin"));
+    let last: Value = serde_json::from_str(stdout(&empty).lines().last().ok_or("no stdout")?)?;
+    assert_eq!(last["type"], "final", "{last}");
+    assert_eq!(last["class"], "refusal:config", "{last}");
     Ok(())
 }
 
@@ -1420,6 +1423,27 @@ fn an_unknown_model_still_closes_a_json_ask_with_a_final_line() -> TestResult {
             .is_some_and(|m| m.contains("gpt-6-astra")),
         "{last}"
     );
+    Ok(())
+}
+
+/// Dies with the store spelling pinned: a driver branching on the closed vocabulary saw
+/// whatever a regression wrote, and nothing failed.
+#[test]
+fn a_resume_the_store_cannot_honour_closes_as_a_harness_store_final() -> TestResult {
+    let workspace = Workspace::new("ask-store-final")?;
+    let run = workspace.yi(&[
+        "ask",
+        "--json",
+        "--model",
+        "faux/faux-1",
+        "--session",
+        "no-such-session",
+        "hi",
+    ])?;
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+    let last: Value = serde_json::from_str(stdout(&run).lines().last().ok_or("no stdout")?)?;
+    assert_eq!(last["type"], "final", "{last}");
+    assert_eq!(last["class"], "harness:store", "{last}");
     Ok(())
 }
 
