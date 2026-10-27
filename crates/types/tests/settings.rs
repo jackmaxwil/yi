@@ -139,7 +139,10 @@ fn leaves() -> Vec<String> {
                 ask_timeout_secs,
             }),
         ),
-        ("permissions", fields!(PermissionsConfig { mode })),
+        (
+            "permissions",
+            fields!(PermissionsConfig { mode, allow_write }),
+        ),
         ("mail", fields!(MailConfig { hop_limit })),
         ("routing", vec!["order", "only"]),
     ];

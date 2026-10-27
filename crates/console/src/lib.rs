@@ -332,8 +332,8 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     drop(setup);
     let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme, control);
     stop_input.store(true, std::sync::atomic::Ordering::SeqCst);
-    let _ = input.join();
     restore_terminal();
+    let _ = input.join();
     teardown(&mut app, &outbound, events, threads);
     code
 }
