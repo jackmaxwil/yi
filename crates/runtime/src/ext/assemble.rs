@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
@@ -85,6 +85,7 @@ const FENCE_ESCAPE: &str = "<\\<<";
 pub struct PromptState {
     slots: BTreeMap<Slot, String>,
     yard: BTreeMap<(Trust, String), String>,
+    built: BTreeSet<Slot>,
 }
 
 impl PromptState {
@@ -123,12 +124,18 @@ impl PromptState {
     }
 
     pub fn assemble(&self) -> String {
+        self.assemble_except(&BTreeSet::new())
+    }
+
+    /// The prompt without the `late` slots, whose text the transcript already carries.
+    pub fn assemble_except(&self, late: &BTreeSet<Slot>) -> String {
         let mut blocks: Vec<String> = Vec::new();
-        let universal = self.render_slots(|rank| rank <= Rank::Doctrine);
+        let base = |slot: &Slot| !late.contains(slot);
+        let universal = self.render_slots(|slot| base(slot) && slot.rank <= Rank::Doctrine);
         if !universal.is_empty() {
             blocks.push(universal);
         }
-        let trusted = self.render_slots(|rank| rank > Rank::Doctrine);
+        let trusted = self.render_slots(|slot| base(slot) && slot.rank > Rank::Doctrine);
         if !trusted.is_empty() {
             blocks.push(trusted);
         }
@@ -139,10 +146,10 @@ impl PromptState {
         blocks.join(SYSTEM_BLOCK_SEPARATOR)
     }
 
-    fn render_slots(&self, keep: impl Fn(Rank) -> bool) -> String {
+    fn render_slots(&self, keep: impl Fn(&Slot) -> bool) -> String {
         self.slots
             .iter()
-            .filter(|(slot, _)| keep(slot.rank))
+            .filter(|(slot, _)| keep(slot))
             .map(|(_, text)| text.trim_end())
             .collect::<Vec<_>>()
             .join("\n\n")
@@ -159,11 +166,32 @@ impl PromptState {
         out
     }
 
-    pub fn snapshot(&self) -> Value {
+    /// The slots attached so far are the build's own, which a resume rebuilds.
+    pub fn seal_build(&mut self) {
+        self.built = self.slots.keys().cloned().collect();
+    }
+
+    /// A build slot keeps its hash and size, never its text; a slot attached since keeps its
+    /// text, and one attached after the first request is marked late.
+    pub fn snapshot(&self, late: &BTreeSet<Slot>) -> Value {
         let slots: Vec<Value> = self
             .slots
             .iter()
-            .map(|(slot, text)| json!({"rank": slot.rank.label(), "name": slot.name, "text": text}))
+            .map(|(slot, text)| {
+                let (rank, name) = (slot.rank.label(), &slot.name);
+                let sha256 = super::project::content_hash(text);
+                let mut entry =
+                    json!({"rank": rank, "name": name, "sha256": sha256, "bytes": text.len()});
+                if let Value::Object(map) = &mut entry {
+                    if !self.built.contains(slot) {
+                        map.insert("text".into(), json!(text));
+                    }
+                    if late.contains(slot) {
+                        map.insert("late".into(), json!(true));
+                    }
+                }
+                entry
+            })
             .collect();
         let yard: Vec<Value> = self
             .yard
@@ -172,20 +200,32 @@ impl PromptState {
                 json!({"trust": trust.label(), "source": source, "text": text})
             })
             .collect();
-        json!({"slots": slots, "yard": yard})
+        json!({"version": 2, "slots": slots, "yard": yard})
     }
 
-    pub fn restore(snapshot: &Value) -> Option<Self> {
-        let mut state = Self::default();
-        for entry in snapshot.get("slots").and_then(Value::as_array)? {
+    /// Re-attaches the yard and each recorded slot with text this build lacks (v1: every slot),
+    /// and returns the restored slots marked late: their text rides the transcript.
+    pub fn restore(&mut self, snapshot: &Value) -> BTreeSet<Slot> {
+        let mut late = BTreeSet::new();
+        for entry in snapshot
+            .get("slots")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let rank = entry
                 .get("rank")
                 .and_then(Value::as_str)
                 .and_then(Rank::parse);
             let name = entry.get("name").and_then(Value::as_str);
             let text = entry.get("text").and_then(Value::as_str);
-            if let (Some(rank), Some(name), Some(text)) = (rank, name, text) {
-                state.attach(Slot::new(rank, name), text.to_owned());
+            if let (Some(rank), Some(name), Some(text)) = (rank, name, text)
+                && !self.has(&Slot::new(rank, name))
+            {
+                if entry.get("late") == Some(&Value::Bool(true)) {
+                    late.insert(Slot::new(rank, name));
+                }
+                self.attach(Slot::new(rank, name), text.to_owned());
             }
         }
         for entry in snapshot
@@ -201,10 +241,10 @@ impl PromptState {
                 _ => Trust::Untrusted,
             };
             if let (Some(source), Some(text)) = (source, text) {
-                state.attach_external(source, trust, text);
+                self.attach_external(source, trust, text);
             }
         }
-        Some(state)
+        late
     }
 }
 

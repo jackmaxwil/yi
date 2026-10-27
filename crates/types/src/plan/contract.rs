@@ -18,9 +18,6 @@ pub const ITEMS_MAX: usize = 16;
 /// Refused verdicts on one todo before it steps to `Blocked { on: User }`.
 pub const DONE_REFUSAL_CAP: u32 = 3;
 
-/// Juries convened on one todo per plan version; the next judged item escalates to the user.
-pub const JUDGE_CAP_PER_TODO: u32 = 3;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractError {
     NoItems,
@@ -237,7 +234,7 @@ pub enum Decider {
         runner: ArtifactRef,
         timeout_ms: u64,
     },
-    /// A jury of walled readers of another model family (plan section 6.4).
+    /// A jury's item: no judge runs it now, and `start` refuses a new one; old journals decode.
     Judge {
         rubric: ArtifactRef,
         evidence: Vec<ArtifactRef>,
@@ -599,24 +596,6 @@ pub enum Vote {
     Abstain,
 }
 
-/// The one answer a juror may give (plan section 6.4), parsed strictly: an unknown key, a
-/// missing one or a fourth verdict word is not an answer.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct JurorAnswer {
-    pub verdict: Vote,
-    pub reason: String,
-    pub quotes: Vec<Quote>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Quote {
-    pub url: String,
-    pub line: usize,
-    pub text: String,
-}
-
 /// One juror of a judged item: the model the host seated, its vote and its stated reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JurorLine {
@@ -718,8 +697,8 @@ pub struct CheckerManifest {
 
 impl CheckerManifest {
     /// # Errors
-    /// Not the format, a bad cwd policy or subdir, or an environment name this session refuses.
-    pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+    /// Not the format, a bad cwd policy or subdir, or an env name `session_has` does not hold.
+    pub fn parse(bytes: &[u8], session_has: impl Fn(&str) -> bool) -> Result<Self, String> {
         let manifest: Self =
             serde_json::from_slice(bytes).map_err(|error| format!("checker manifest: {error}"))?;
         if manifest.manifest != MANIFEST_FORMAT {
@@ -765,7 +744,7 @@ impl CheckerManifest {
                     "checker manifest: {name} looks like a secret; a criterion may not read one"
                 ));
             }
-            if std::env::var_os(name).is_none() {
+            if !session_has(name) {
                 return Err(format!(
                     "checker manifest: this session holds no {name}; a criterion cannot ask for more than the session has"
                 ));

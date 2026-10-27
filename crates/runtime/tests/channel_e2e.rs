@@ -1,6 +1,7 @@
 //! Channels (plan section 3.5, D287): a durable buffer the home orders, subscriptions that
 //! create or unblock todos from it, and supervised adapters that feed it.
 
+use crate::RED_PYTEST;
 use crate::scratch;
 use scratch::Scratch;
 
@@ -21,7 +22,7 @@ use yi_runtime::schedule::adapter;
 use yi_runtime::schedule::channel::{Appended, Channel, WAKE_MAX_BYTES, render};
 use yi_runtime::schedule::clock::{self, Fired};
 use yi_runtime::schedule::{
-    DeliverFn, Firing, HeartbeatService, JobSpec, JobStore, Scheduler, new_job,
+    DeliverFn, Firing, HeartbeatService, JobSpec, JobStore, RunOutcome, Scheduler, new_job,
 };
 use yi_runtime::todo::mirror;
 use yi_runtime::todo::tool::TodoTool;
@@ -37,7 +38,9 @@ use yi_types::plan::doc::{
     AgentId, BlockedOn, Delegation, GoalText, PlanId, ProbeCommand, Todo, TodoAddr, TodoLabel,
     TodoState, TodoStateName,
 };
-use yi_types::schedule::{CronSchedule, Job, JobSource, JobStatus, Overlap, ScheduleKind};
+use yi_types::schedule::{
+    CronSchedule, Job, JobSource, JobStatus, Overlap, ScheduleKind, ScheduleState,
+};
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -389,6 +392,146 @@ async fn a_red_ci_script_makes_one_todo_and_its_green_message_unblocks_the_fix()
     timer.stop();
     assert!(unblocked, "the green message never unblocked the fix");
     assert!(told, "the unblock's wake did not carry the green message");
+    Ok(())
+}
+
+/// The first message a red `exec://` check leaves in a fresh channel.
+async fn first_red_message(name: &str, body: &str) -> Result<serde_json::Value, Box<dyn Error>> {
+    red_message_of(name, body, "./red.sh").await
+}
+
+async fn red_message_of(
+    name: &str,
+    body: &str,
+    command: &str,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let dir = Scratch::new(name)?;
+    script(&dir, "red.sh", body)?;
+    let channel = Channel::at(dir.join("channels/red.jsonl"));
+    let address = format!("exec://{command}?every=1s");
+    let address = address.as_str();
+    channel.open(address, None)?;
+    adapter::ensure(address, &channel, &dir, 1_000, true)?;
+    assert!(wait_until(8_000, || !channel.entries().is_empty()).await);
+    let entry = channel.entries().remove(0);
+    adapter::halt(true);
+    adapter::halt(false);
+    assert_eq!(entry.refused, None, "the channel refused the red level");
+    Ok(entry.data)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_schedule_exec_passes_the_frozen_bash_hooks_before_it_runs() -> TestResult {
+    let dir = Scratch::new("yi-channel-claude-hook")?;
+    let home = dir.join("home");
+    let settings = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().ok_or("settings parent")?)?;
+    std::fs::write(
+        &settings,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo 'schedule hook denied' >&2; exit 2"}]}]}}"#,
+    )?;
+    // SAFETY: nextest isolates each test in its own process.
+    unsafe {
+        std::env::set_var("HOME", &home);
+        std::env::set_var("YI_CLAUDE_HOOKS", "1");
+    }
+    let hooks = yi_runtime::claude_hooks::Hooks::load(&dir);
+    std::fs::write(&settings, "{}")?;
+    let marker = dir.join("checked");
+    script(&dir, "red.sh", &format!("touch {}", marker.display()))?;
+    let channel = Channel::at(dir.join("channels/red.jsonl"));
+    let address = "exec://./red.sh?every=1s";
+    channel.open(address, None)?;
+    let (_session, todos) = session(&[])?;
+    let mut job = subscription(&channel, "sub-claude-hook", None)?;
+    job.cwd = dir.to_string_lossy().into_owned();
+    clock::fire_with_hooks(&todos, &job, &Firing::at(0), hooks.as_ref())?;
+    assert!(wait_until(8_000, || !channel.entries().is_empty()).await);
+    let entry = channel.entries().remove(0);
+    adapter::halt(true);
+    adapter::halt(false);
+    assert_eq!(entry.data["ok"], false);
+    assert!(
+        entry.data["output"]
+            .as_str()
+            .is_some_and(|text| text.contains("schedule hook denied"))
+    );
+    assert!(!marker.exists(), "a refused schedule check ran");
+    Ok(())
+}
+
+/// Dies with the view's 16 KiB text pushing a red level past the channel cap: the message is
+/// refused whole, so a filter on `ok=false` never matches and the todo is never made. Dies too
+/// with the fix dropping the output whole: the verdict sits at the end and must survive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_past_the_channel_cap_keeps_its_level_and_its_verdict() -> TestResult {
+    let data =
+        first_red_message("yi-channel-bigred", &format!("cat '{RED_PYTEST}'; exit 1")).await?;
+    assert_eq!((&data["ok"], &data["exit"]), (&false.into(), &1.into()));
+    let output = data["output"].as_str().ok_or("no output")?;
+    let row = "bytes kept (MESSAGE_MAX_BYTES 16384); the rest: bash (cd '";
+    for kept in [
+        row,
+        "&& ./red.sh) > exec.log 2>&1, then read exec.log]",
+        "FAILED test_ledger.py::test_case_217 - AssertionError: ledger total drifted",
+        "1 failed, 399 passed",
+        "[capture cut: kept 30000 of 32955 bytes (OUTPUT_CAP 30000 per stream)",
+    ] {
+        assert!(output.contains(kept), "{kept}: {output:.400}");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_message_is_whole_at_the_channel_cap_and_cut_one_byte_past_it() -> TestResult {
+    let bare = serde_json::json!({"ok": false, "exit": 1, "output": ""})
+        .to_string()
+        .len();
+    let fill = MESSAGE_MAX_BYTES - bare;
+    let printing = |bytes: usize| format!("head -c {bytes} /dev/zero | tr '\\0' x; exit 1");
+    let at = first_red_message("yi-channel-atcap", &printing(fill)).await?;
+    assert_eq!(at["output"].as_str().map(str::len), Some(fill));
+    let past = first_red_message("yi-channel-pastcap", &printing(fill + 1)).await?;
+    let cut = past["output"].as_str().ok_or("no output")?;
+    let total = fill + 1;
+    assert!(
+        cut.starts_with("[… ")
+            && cut.contains(&format!(" of {total} bytes kept (MESSAGE_MAX_BYTES 16384)")),
+        "{cut:.400}"
+    );
+    assert!(cut.ends_with('x'), "the end of the output is the part kept");
+    Ok(())
+}
+
+/// Dies with the exec row embedding a multi-line command whole: the rerun spills past the row's
+/// line, where the view's own row names such a command by the line it began with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_past_the_cap_names_a_multi_line_command_by_its_first_line() -> TestResult {
+    let body = format!("cat '{RED_PYTEST}'; exit 1");
+    let data = red_message_of("yi-channel-twolines", &body, "./red.sh\n# a second line").await?;
+    let output = data["output"].as_str().ok_or("no output")?;
+    let row = output.lines().next().unwrap_or_default();
+    let tail = ", its output sent to exec.log, then read exec.log]";
+    let named = row.contains("the command that began cd '") && row.ends_with(tail);
+    assert!(named, "{row}");
+    Ok(())
+}
+
+/// Dies with the cut measured on the JSON-escaped message and applied to the raw output: a quote
+/// costs two bytes as sent, so a quote-dense view cut that way kept nothing, verdict included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_of_escape_dense_output_keeps_its_verdict_under_the_cap() -> TestResult {
+    let quotes = "\"".repeat(48);
+    let body = format!(
+        "yes '{quotes}' | head -n 400; echo 'FAILED test_quote - VERDICT red'; echo '{quotes}'; exit 1"
+    );
+    let data = first_red_message("yi-channel-quotes", &body).await?;
+    assert!(data.to_string().len() <= MESSAGE_MAX_BYTES);
+    let output = data["output"].as_str().ok_or("no output")?;
+    assert!(
+        output.contains("FAILED test_quote - VERDICT red"),
+        "{output:.400}"
+    );
     Ok(())
 }
 
@@ -1184,6 +1327,129 @@ async fn a_kernel_exec_subscription_asks_as_bash_and_a_refusal_makes_no_job() ->
     assert!(
         store.snapshot().jobs.is_empty(),
         "a refused subscription left a job"
+    );
+    Ok(())
+}
+
+/// Each delivery, with whether the ledger on disk already held its claim when it began.
+type Seen = Arc<Mutex<Vec<bool>>>;
+
+fn claim_on_disk(ledger: &Path, job: &Job) -> bool {
+    std::fs::read_to_string(ledger)
+        .ok()
+        .and_then(|text| serde_json::from_str::<ScheduleState>(&text).ok())
+        .is_some_and(|disk| disk.dispatches.iter().any(|claim| claim.job_id == job.id))
+}
+
+/// Dies with the idle peek reading a letter another process appended as nothing to deliver, with
+/// a delivery before its claim is on disk, and with a mailbox acked to its newest letter re-claimed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_letter_appended_by_another_process_is_delivered_with_its_claim_already_on_disk()
+-> TestResult {
+    use std::os::unix::fs::MetadataExt;
+    let dir = Scratch::new("yi-channel-peek")?;
+    let path = dir.join("channels/mail-peer.jsonl");
+    let channel = Channel::at(&path);
+    channel.open("channel://mail-peer", None)?;
+    let mut job = subscription(&channel, "sub-mail", None)?;
+    job.schedule.interval_ms = Some(200);
+    job.next_run_at = Some(yi_session::now_ms());
+    let ledger = dir.join("scheduled-jobs.json");
+    let store = Arc::new(JobStore::open(ledger.clone()));
+    store.mutate(|state| state.jobs.push(job));
+    let seen: Seen = Arc::default();
+    let record = Arc::clone(&seen);
+    let deliver: Arc<DeliverFn> = Arc::new(move |job: &Job, _: &Firing| {
+        let on_disk = claim_on_disk(&ledger, job);
+        record.lock().map_err(|_| "poisoned")?.push(on_disk);
+        let sub = job.channel.as_ref().ok_or("no channel")?;
+        let reader = Channel::at(&sub.path);
+        let last = reader.last().map_or(0, |entry| entry.offset);
+        reader.ack(&job.id, last)?;
+        Ok(RunOutcome::Ran)
+    });
+    let timer = start(&store, deliver);
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let idle = seen.lock().map_err(|_| "poisoned")?.len();
+
+    let writer = Channel::at(&path);
+    writer.append(
+        "letter-1",
+        yi_session::now_ms(),
+        serde_json::json!({"body": "hello"}),
+    )?;
+    let delivered = wait_until(10_000, || seen.lock().is_ok_and(|seen| !seen.is_empty())).await;
+    wait_until(10_000, || store.snapshot().dispatches.is_empty()).await;
+    let ino = || std::fs::metadata(dir.join("scheduled-jobs.json")).map(|meta| meta.ino());
+    let (acked, five_ticks) = (ino()?, yi_session::now_ms().saturating_add(1_000));
+    let armed = |job: &Job| job.next_run_at >= Some(five_ticks);
+    let ticked = wait_until(10_000, || store.snapshot().jobs.iter().all(armed)).await;
+    timer.stop();
+
+    assert_eq!(idle, 0, "an empty mailbox was delivered to");
+    assert!(
+        delivered,
+        "a letter from another process was never delivered"
+    );
+    let seen = seen.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        seen.iter().all(|on_disk| *on_disk),
+        "a delivery began before its claim was on disk: {seen:?}"
+    );
+    assert!(ticked, "the acked mailbox stopped ticking");
+    assert_eq!(seen.len(), 1, "an acked mailbox was claimed again");
+    assert_eq!(ino()?, acked, "idle ticks after an ack rewrote the ledger");
+    Ok(())
+}
+
+/// Dies with an adapter's subscription taken for an idle mailbox: its tick is what starts and
+/// keeps its adapter, so routing it through the idle path never runs the source.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_adapter_subscription_still_claims_every_tick() -> TestResult {
+    let dir = Scratch::new("yi-channel-adapter-tick")?;
+    script(&dir, "probe.sh", "echo run >> runs; exit 1")?;
+    let uri = "exec://./probe.sh?every=1s";
+    let channel = Channel::at(dir.join("channels/probe.jsonl"));
+    channel.open(uri, None)?;
+    let mut job = subscription(&channel, "sub-probe", None)?;
+    job.cwd = dir.to_string_lossy().into_owned();
+    job.schedule.interval_ms = Some(300);
+    job.next_run_at = Some(yi_session::now_ms());
+    if let Some(sub) = job.channel.as_mut() {
+        sub.address = uri.to_owned();
+        sub.filter = Some("never=1".to_owned());
+    }
+    let ledger = dir.join("scheduled-jobs.json");
+    let store = Arc::new(JobStore::open(ledger.clone()));
+    store.mutate(|state| state.jobs.push(job));
+    let (session, _todos) = session(&[])?;
+    let real = session.heartbeat_deliverer();
+    let seen: Seen = Arc::default();
+    let record = Arc::clone(&seen);
+    let deliver: Arc<DeliverFn> = Arc::new(move |job: &Job, firing: &Firing| {
+        let on_disk = claim_on_disk(&ledger, job);
+        record.lock().map_err(|_| "poisoned")?.push(on_disk);
+        real(job, firing)
+    });
+    let timer = start(&store, deliver);
+    let ticked = wait_until(10_000, || {
+        seen.lock().is_ok_and(|seen| seen.len() >= 3) && runs(&dir) > 0
+    })
+    .await;
+    timer.stop();
+    adapter::halt(true);
+    adapter::halt(false);
+
+    assert!(
+        ticked,
+        "an adapter subscription stopped claiming: {} deliveries, {} source runs",
+        seen.lock().map_or(0, |seen| seen.len()),
+        runs(&dir)
+    );
+    let seen = seen.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        seen.iter().all(|on_disk| *on_disk),
+        "an adapter tick ran before its claim was on disk: {seen:?}"
     );
     Ok(())
 }

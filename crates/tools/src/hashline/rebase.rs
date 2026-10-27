@@ -76,45 +76,29 @@ pub fn remap_edits(
                 cursor,
                 text,
                 line_num,
-                index,
                 replacement,
-                block_start,
             } => map.cursor(cursor).map(|cursor| Edit::Insert {
                 cursor,
                 text,
                 line_num,
-                index,
                 replacement,
-                block_start,
             }),
-            Edit::Delete {
-                anchor,
-                line_num,
-                index,
-                old_assertion,
-            } => map.anchor(anchor).map(|anchor| Edit::Delete {
-                anchor,
-                line_num,
-                index,
-                old_assertion,
-            }),
+            Edit::Delete { anchor, line_num } => map
+                .anchor(anchor)
+                .map(|anchor| Edit::Delete { anchor, line_num }),
             Edit::Cut {
                 range,
                 register,
                 line_num,
-                index,
             } => map.range(range).map(|range| Edit::Cut {
                 range,
                 register,
                 line_num,
-                index,
             }),
             Edit::Paste {
                 at,
                 register,
                 line_num,
-                index,
-                block_start,
             } => {
                 let at = match at {
                     PasteTarget::Gap { cursor } => {
@@ -128,8 +112,6 @@ pub fn remap_edits(
                     at,
                     register,
                     line_num,
-                    index,
-                    block_start,
                 })
             }
             Edit::Block {
@@ -138,7 +120,6 @@ pub fn remap_edits(
                 mode,
                 register,
                 line_num,
-                index,
             } => map
                 .block(anchor, old_block(anchor.line))
                 .map(|anchor| Edit::Block {
@@ -147,7 +128,6 @@ pub fn remap_edits(
                     mode,
                     register,
                     line_num,
-                    index,
                 }),
         };
         match mapped {

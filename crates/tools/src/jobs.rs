@@ -1,3 +1,7 @@
+mod poll;
+
+pub(crate) use poll::poll_job;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -5,7 +9,9 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::process::{CommandCapture, OUTPUT_CAP, command, run_captured_live};
+use crate::process::{
+    CommandCapture, OUTPUT_CAP, command, run_child_captured_live, spawn_captured,
+};
 use crate::tool::CancelFlag;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -70,6 +76,8 @@ pub struct JobReport {
     pub exit_code: Option<i32>,
     pub state: JobState,
     pub output: String,
+    capture: Option<CommandCapture>,
+    recovery_dir: Option<PathBuf>,
 }
 
 /// Who settles the job: its owner's completion loop, which announces it (an ownerless one only a
@@ -81,14 +89,22 @@ enum Reaper {
     },
     Handle,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Announcement {
+    Pending,
+    Queued,
+    Announced,
+}
 
 struct Job {
     command: String,
     /// Where the command runs: a lane settles only once no job under its path is running.
     cwd: PathBuf,
+    recovery_dir: Option<PathBuf>,
     started: u64,
     reaper: Reaper,
     polled: bool,
+    announcement: Announcement,
     capture: Option<CommandCapture>,
     live: Arc<LiveOutput>,
     kill: Arc<AtomicBool>,
@@ -172,7 +188,7 @@ impl Jobs {
     fn insert(
         &self,
         command: &str,
-        cwd: &Path,
+        (cwd, recovery_dir): (&Path, Option<&Path>),
         reaper: Reaper,
         live: Arc<LiveOutput>,
         kill: Arc<AtomicBool>,
@@ -184,15 +200,21 @@ impl Jobs {
             Job {
                 command: command.to_owned(),
                 cwd: cwd.to_path_buf(),
+                recovery_dir: recovery_dir.map(Path::to_path_buf),
                 started: id,
                 reaper,
                 polled: false,
+                announcement: Announcement::Pending,
                 capture: None,
                 live,
                 kill,
             },
         );
-        evict(&mut jobs);
+        let owner = match jobs.get(&id).map(|job| &job.reaper) {
+            Some(Reaper::Poller { owner, .. }) => *owner,
+            Some(Reaper::Handle) | None => None,
+        };
+        evict(&mut jobs, owner);
         JobId(id)
     }
 
@@ -244,6 +266,16 @@ impl Jobs {
         }
     }
 
+    pub fn mark_announced(&self, id: JobId, queued: bool) {
+        if let Some(job) = self.lock().get_mut(&id.0) {
+            job.announcement = if queued {
+                Announcement::Announced
+            } else {
+                Announcement::Pending
+            };
+        }
+    }
+
     pub fn report(&self, id: JobId) -> Option<JobReport> {
         self.lock().get(&id.0).map(|job| render(id.0, job))
     }
@@ -259,11 +291,19 @@ impl Jobs {
         }
     }
 
-    pub fn latest(&self) -> Option<JobReport> {
+    pub fn latest(&self, owner: Option<JobOwner>) -> Option<JobReport> {
         let jobs = self.lock();
         jobs.iter()
+            .filter(|(_, job)| owned_by(job, owner))
             .max_by_key(|(_, job)| job.started)
             .map(|(id, job)| render(*id, job))
+    }
+
+    pub(crate) fn report_for(&self, id: JobId, owner: Option<JobOwner>) -> Option<JobReport> {
+        self.lock()
+            .get(&id.0)
+            .filter(|job| owned_by(job, owner))
+            .map(|job| render(id.0, job))
     }
 
     /// Output produced since `cursor`, readable while the job still runs and
@@ -286,6 +326,16 @@ impl Jobs {
                 Ok(KillOutcome::Signalled)
             }
         }
+    }
+
+    pub fn retire(&self, owner: JobOwner) {
+        self.lock().retain(|_, job| {
+            if !owned_by(job, Some(owner)) {
+                return true;
+            }
+            job.kill.store(true, Ordering::SeqCst);
+            false
+        });
     }
 
     /// Drops a [`spawn_job`] job from the registry once its handle is done with
@@ -314,14 +364,18 @@ impl Jobs {
         let mut out = Vec::new();
         for (id, job) in jobs.iter_mut() {
             let Reaper::Poller {
-                reported: reported @ false,
+                reported: false,
                 owner: Some(started_by),
             } = &mut job.reaper
             else {
                 continue;
             };
-            if job.capture.is_some() && *started_by == owner {
-                *reported = true;
+            if job.capture.is_some()
+                && job.announcement == Announcement::Pending
+                && !job.polled
+                && *started_by == owner
+            {
+                job.announcement = Announcement::Queued;
                 out.push(render(*id, job));
             }
         }
@@ -343,6 +397,26 @@ impl JobReport {
             JobState::Running => "still running".to_owned(),
         };
         format!("job {} {ending}: {}", self.id, self.command)
+    }
+
+    /// What the model reads of a finished job, poll and announcement alike; `output` stays whole.
+    pub fn view(&self) -> String {
+        let Some(capture) = &self.capture else {
+            return String::new();
+        };
+        let strip = crate::reduce::strip_ansi;
+        let viewed = crate::reduce::view(
+            crate::reduce::Involuntary::Job(&self.command),
+            &strip(&capture.stdout),
+            &strip(&capture.stderr),
+            self.exit_code.unwrap_or(-1),
+            capture.kept().as_deref(),
+            self.recovery_dir.as_deref().filter(|_| !capture.truncated),
+        );
+        let failed =
+            (capture.kill_error.iter()).map(|error| format!("[group kill failed: {error}]"));
+        let rows: Vec<String> = capture.shown(&viewed).into_iter().chain(failed).collect();
+        rows.join("\n")
     }
 }
 
@@ -386,24 +460,38 @@ fn render(id: u64, job: &Job) -> JobReport {
         },
         state,
         output,
+        capture: job.capture.clone(),
+        recovery_dir: job.recovery_dir.clone(),
     }
 }
 
-fn evict(jobs: &mut HashMap<u64, Job>) {
-    if jobs.len() <= MAX_JOBS {
+fn owned_by(job: &Job, owner: Option<JobOwner>) -> bool {
+    matches!(&job.reaper, Reaper::Poller { owner: started_by, .. } if *started_by == owner)
+}
+
+fn evict(jobs: &mut HashMap<u64, Job>, owner: Option<JobOwner>) {
+    let mut ids: Vec<u64> = jobs
+        .iter()
+        .filter(|(_, job)| owned_by(job, owner))
+        .map(|(id, _)| *id)
+        .collect();
+    if ids.len() <= MAX_JOBS {
         return;
     }
-    let mut ids: Vec<u64> = jobs.keys().copied().collect();
     ids.sort_unstable();
     let protected_from = ids.len().saturating_sub(PROTECTED);
     for id in ids.iter().take(protected_from) {
-        if jobs
-            .get(id)
-            .is_some_and(|job| job.capture.is_some() && matches!(job.reaper, Reaper::Poller { .. }))
-        {
+        let announced = jobs.get(id).is_some_and(|job| {
+            job.capture.is_some()
+                && (job.polled
+                    || (!matches!(job.reaper, Reaper::Poller { reported: true, .. })
+                        && job.announcement == Announcement::Announced))
+        });
+        if announced {
             jobs.remove(id);
         }
-        if jobs.len() <= MAX_JOBS {
+        let remaining = jobs.values().filter(|job| owned_by(job, owner)).count();
+        if remaining <= MAX_JOBS {
             return;
         }
     }
@@ -436,45 +524,50 @@ fn start(
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
     reaper: Reaper,
-    sweep: Option<&str>,
+    placed: Option<(&str, &str)>,
     spill_dir: Option<&Path>,
-) -> (
-    JobId,
-    std::sync::mpsc::Receiver<Result<CommandCapture, String>>,
-) {
+) -> Result<
+    (
+        JobId,
+        std::sync::mpsc::Receiver<Result<CommandCapture, String>>,
+    ),
+    String,
+> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let live = Arc::new(LiveOutput::default());
     let kill = Arc::new(AtomicBool::new(false));
+    let text = placed.map_or(shell_command, |(run, _)| run).to_owned();
+    let sweep = placed.map(|(_, sweep)| sweep.to_owned());
+    let outer = Arc::clone(cancelled);
+    let stopped = Arc::clone(&kill);
+    let flag: CancelFlag = Arc::new(move || stopped.load(Ordering::SeqCst) || outer());
+    let wrapped = sandbox.map(|sandbox| sandbox.wrap(interpreter(), &["-c", &text]));
+    let mut process = match &wrapped {
+        Some((program, args)) => {
+            let mut process = crate::keyless_command(program);
+            process.args(args);
+            process
+        }
+        None => {
+            let mut process = crate::keyless_command(interpreter());
+            process.arg("-c").arg(&text);
+            process
+        }
+    };
+    process.current_dir(cwd);
+    let (child, program) = spawn_captured(process, false)?;
     let id = registry().insert(
         shell_command,
-        cwd,
+        (cwd, spill_dir),
         reaper,
         Arc::clone(&live),
         Arc::clone(&kill),
     );
-    let text = shell_command.to_owned();
-    let sweep = sweep.map(str::to_owned);
-    let dir = cwd.to_path_buf();
     let spill_dir = spill_dir.map(Path::to_path_buf);
-    let outer = Arc::clone(cancelled);
-    let flag: CancelFlag = Arc::new(move || kill.load(Ordering::SeqCst) || outer());
-    let wrapped = sandbox.map(|sandbox| sandbox.wrap(interpreter(), &["-c", shell_command]));
     std::thread::spawn(move || {
-        let mut process = match &wrapped {
-            Some((program, args)) => {
-                let mut process = crate::keyless_command(program);
-                process.args(args);
-                process
-            }
-            None => {
-                let mut process = crate::keyless_command(interpreter());
-                process.arg("-c").arg(&text);
-                process
-            }
-        };
-        process.current_dir(&dir);
-        let capture = run_captured_live(
-            process,
+        let capture = run_child_captured_live(
+            child,
+            &program,
             None,
             &flag,
             OUTPUT_CAP,
@@ -494,7 +587,7 @@ fn start(
         }
         let _receiver_may_be_gone = sender.send(capture);
     });
-    (id, receiver)
+    Ok((id, receiver))
 }
 
 /// `docker exec` of `command` under `sh -c` in `cwd` inside `container`, quoted for the host
@@ -527,7 +620,7 @@ pub fn spawn_job(
     cwd: &Path,
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
-) -> JobId {
+) -> Result<JobId, String> {
     start(
         shell_command,
         cwd,
@@ -537,18 +630,18 @@ pub fn spawn_job(
         None,
         None,
     )
-    .0
+    .map(|(id, _)| id)
 }
 
 /// Past `background_after` (a call's `wait`, else `bash.autoBackgroundMs`; `None` holds the turn)
-/// a command keeps running as a job, killed by an interrupt or at `timeout` from its start.
+/// a command keeps running as a job, killed at an interrupt or `timeout`; `placed` runs in its stead.
 pub fn run_or_background(
     shell_command: &str,
     context: &crate::tool::ToolContext,
     background_after: Option<Duration>,
     timeout: Duration,
     sandbox: Option<&crate::sandbox::Sandbox>,
-    sweep: Option<&str>,
+    placed: Option<(&str, &str)>,
 ) -> Result<Run, String> {
     let begun = std::time::Instant::now();
     let (id, receiver) = start(
@@ -561,12 +654,15 @@ pub fn run_or_background(
             reported: true,
             owner: context.job_owner,
         },
-        sweep,
+        placed,
         context.recovery_dir.as_deref(),
-    );
+    )?;
     let background = background_after.filter(|limit| *limit < timeout);
     match receiver.recv_timeout(background.unwrap_or(timeout)) {
-        Ok(Ok(capture)) => Ok(Run::Finished(Box::new(capture))),
+        Ok(Ok(capture)) => {
+            registry().mark_delivered(id);
+            Ok(Run::Finished(Box::new(capture)))
+        }
         Ok(Err(message)) => Err(message),
         Err(RecvTimeoutError::Timeout) if background.is_some() => {
             registry().set_reported(id, false);
@@ -582,7 +678,10 @@ pub fn run_or_background(
             // Incident: `timeout 3000 python3 …` left the shell's group and held the pipes
             // for 43 minutes; the kill gets five seconds, then the turn moves on.
             match receiver.recv_timeout(KILL_GRACE) {
-                Ok(Ok(capture)) => Ok(Run::TimedOut(Box::new(capture))),
+                Ok(Ok(capture)) => {
+                    registry().mark_delivered(id);
+                    Ok(Run::TimedOut(Box::new(capture)))
+                }
                 Ok(Err(message)) => Err(message),
                 Err(_) => {
                     registry().set_reported(id, false);
@@ -621,7 +720,7 @@ const KILL_GRACE: Duration = Duration::from_secs(5);
 pub const MAX_TIMEOUT_SECS: u64 = 600;
 
 /// Absent or zero is the default; the ceiling holds whatever the model asks.
-pub fn clamp_timeout(seconds: Option<u64>) -> Duration {
+pub(crate) fn clamp_timeout(seconds: Option<u64>) -> Duration {
     Duration::from_secs(
         seconds
             .filter(|seconds| *seconds > 0)
@@ -722,10 +821,12 @@ mod tests {
         }
     }
 
-    fn poll(id: JobId, cwd: &Path) -> crate::ToolOutput {
+    fn poll(id: JobId, cwd: &Path, owner: JobOwner) -> crate::ToolOutput {
         use crate::Tool;
         let input = serde_json::Map::from_iter([("job".to_owned(), serde_json::json!(id.0))]);
-        crate::BashTool::default().execute(input, &crate::ToolContext::new(cwd.to_path_buf()))
+        let mut context = crate::ToolContext::new(cwd.to_path_buf());
+        context.job_owner = Some(owner);
+        crate::BashTool::default().execute(input, &context)
     }
 
     #[test]
@@ -748,7 +849,7 @@ mod tests {
     #[test]
     fn output_is_readable_before_the_job_exits() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("printf hello; sleep 300", &dir, &never(), None);
+        let id = spawn_job("printf hello; sleep 300", &dir, &never(), None)?;
         let chunk = poll_until(|| {
             let chunk = registry().output_since(id, 0).ok()?;
             chunk.text.contains("hello").then_some(chunk)
@@ -775,7 +876,7 @@ mod tests {
             &dir,
             &never(),
             None,
-        );
+        )?;
         let first = poll_until(|| {
             let chunk = registry().output_since(id, 0).ok()?;
             chunk.text.contains("aaa").then_some(chunk)
@@ -801,7 +902,7 @@ mod tests {
     #[test]
     fn kill_stops_a_sleeper_and_reports_killed() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("sleep 300", &dir, &never(), None);
+        let id = spawn_job("sleep 300", &dir, &never(), None)?;
         assert_eq!(registry().kill(id)?, KillOutcome::Signalled);
         assert_eq!(settled(id)?, Outcome::Killed);
         let report = registry().release(id)?;
@@ -813,7 +914,7 @@ mod tests {
     #[test]
     fn kill_after_exit_is_a_no_op() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("exit 3", &dir, &never(), None);
+        let id = spawn_job("exit 3", &dir, &never(), None)?;
         let exited = Outcome::Exited { code: Some(3) };
         assert_eq!(settled(id)?, exited);
         assert_eq!(registry().kill(id)?, KillOutcome::AlreadySettled(exited));
@@ -834,7 +935,7 @@ mod tests {
             reported: false,
             owner: Some(owner),
         };
-        let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
+        let id = registry().insert("true", (cwd, None), reaper, Arc::default(), Arc::default());
         let seen = registry().settles.load(Ordering::SeqCst);
         let (woke, waking) = std::sync::mpsc::channel();
         std::thread::spawn(move || woke.send(registry().wait_settle(seen)));
@@ -842,6 +943,72 @@ mod tests {
         registry().finish(id, exited());
         assert!(waking.recv_timeout(Duration::from_secs(5))? > seen);
         assert_eq!(registry().take_finished(owner).len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn unannounced_results_survive_per_owner_eviction() -> Fallible {
+        let owner = JobOwner::mint();
+        let other = JobOwner::mint();
+        let at = (Path::new("/yi-jobs-test/eviction"), None);
+        let reaper = |owner| Reaper::Poller {
+            reported: false,
+            owner: Some(owner),
+        };
+        let mut ids = Vec::new();
+        for _ in 0..33 {
+            let id = registry().insert("true", at, reaper(owner), Arc::default(), Arc::default());
+            registry().finish(id, exited());
+            ids.push(id);
+        }
+        let other_id = registry().insert("true", at, reaper(other), Arc::default(), Arc::default());
+        registry().finish(other_id, exited());
+        let kept: Vec<JobId> = registry()
+            .take_finished(owner)
+            .into_iter()
+            .map(|job| job.id)
+            .collect();
+        assert_eq!(kept, ids);
+        assert_eq!(registry().take_finished(other).len(), 1);
+        Ok(())
+    }
+    #[test]
+    fn a_result_held_by_a_poll_cannot_be_evicted() -> Fallible {
+        let owner = JobOwner::mint();
+        let at = (Path::new("/yi-jobs-test/poll-eviction"), None);
+        let reaper = |reported| Reaper::Poller {
+            reported,
+            owner: Some(owner),
+        };
+        let held = registry().insert("true", at, reaper(true), Arc::default(), Arc::default());
+        registry().finish(held, exited());
+        for _ in 0..32 {
+            let id = registry().insert("true", at, reaper(false), Arc::default(), Arc::default());
+            registry().finish(id, exited());
+        }
+        registry()
+            .report(held)
+            .ok_or("a result held by an unfinished poll was evicted")?;
+        Ok(())
+    }
+    #[test]
+    fn a_result_held_by_completion_delivery_cannot_be_evicted() -> Fallible {
+        let owner = JobOwner::mint();
+        let at = (Path::new("/yi-jobs-test/completion-eviction"), None);
+        let reaper = || Reaper::Poller {
+            reported: false,
+            owner: Some(owner),
+        };
+        let queued = registry().insert("true", at, reaper(), Arc::default(), Arc::default());
+        registry().finish(queued, exited());
+        assert_eq!(registry().take_finished(owner).len(), 1);
+        for _ in 0..32 {
+            let id = registry().insert("true", at, reaper(), Arc::default(), Arc::default());
+            registry().finish(id, exited());
+        }
+        registry()
+            .report(queued)
+            .ok_or("a result queued for completion delivery was evicted")?;
         Ok(())
     }
 
@@ -855,7 +1022,7 @@ mod tests {
             reported: true,
             owner: Some(owner),
         };
-        let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
+        let id = registry().insert("true", (cwd, None), reaper, Arc::default(), Arc::default());
         registry().finish(id, exited());
         let held = registry().settles.load(Ordering::SeqCst);
         let (woke, waking) = std::sync::mpsc::channel();
@@ -872,33 +1039,34 @@ mod tests {
     #[test]
     fn a_poll_after_the_queue_marks_the_announcement_delivered() -> Fallible {
         let cwd = Path::new("/yi-jobs-test/polled-after-queue");
+        let at = (cwd, None);
         let owner = JobOwner::mint();
         let reaper = || Reaper::Poller {
             reported: false,
             owner: Some(owner),
         };
-        let queued = registry().insert("true", cwd, reaper(), Arc::default(), Arc::default());
+        let queued = registry().insert("true", at, reaper(), Arc::default(), Arc::default());
         registry().finish(queued, exited());
         assert_eq!(registry().take_finished(owner).len(), 1);
         assert!(!registry().delivered(queued));
-        assert!(!poll(queued, cwd).is_error);
+        assert!(!poll(queued, cwd, owner).is_error);
         assert!(registry().delivered(queued));
 
-        let running = registry().insert("true", cwd, reaper(), Arc::default(), Arc::default());
-        assert_eq!(poll(running, cwd).result.details["running"], true);
+        let running = registry().insert("true", at, reaper(), Arc::default(), Arc::default());
+        assert_eq!(poll(running, cwd, owner).result.details["running"], true);
         registry().finish(running, exited());
         assert_eq!(registry().take_finished(owner).len(), 1);
         assert!(!registry().delivered(running));
         Ok(())
     }
 
+    /// Dies with the kill row or the colour strip dropped from the view: the row is the only
+    /// place the model learns a job's group may still run, and the colour reached it raw.
     #[test]
     fn a_failed_group_kill_is_named_in_the_job_report() -> Fallible {
-        // A group that survives its kill holds the pipes past the grace, so only this late
-        // report can say why.
         let id = registry().insert(
             "sleep 300",
-            Path::new("."),
+            (Path::new("."), None),
             Reaper::Handle,
             Arc::default(),
             Arc::default(),
@@ -906,7 +1074,7 @@ mod tests {
         registry().finish(
             id,
             CommandCapture {
-                stdout: "partial".to_owned(),
+                stdout: "\x1b[31mpartial\x1b[0m".to_owned(),
                 stderr: String::new(),
                 exit_code: None,
                 cancelled: true,
@@ -924,6 +1092,8 @@ mod tests {
             "{}",
             report.output
         );
+        let row = "[group kill failed: /bin/sh: No such file or directory]";
+        assert_eq!(report.view(), format!("partial\n{row}"));
         Ok(())
     }
 
@@ -971,7 +1141,7 @@ mod tests {
             &dir,
             &never(),
             None,
-        );
+        )?;
         settled(id)?;
         let chunk = registry().output_since(id, 0)?;
         let cap = u64::try_from(OUTPUT_CAP)?;

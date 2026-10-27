@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use serde_json::json;
 use yi_runtime::session_store::{
     BranchBounds, EntryOrder, EntryQuery, JsonlRepo, SessionMetadata, SessionRepo, lock_session,
     validate_session_id,
@@ -53,7 +53,7 @@ pub fn run(subcommand: &str, options: &Options) -> i32 {
         {
             Ok(()) => {
                 if options.json {
-                    print_json(&json!({ "removed": id }));
+                    crate::print_json(&json!({ "removed": id }));
                 } else {
                     println!("removed {id}");
                 }
@@ -73,7 +73,7 @@ pub(crate) fn board_dir(session_dir: &Path, id: &str) -> PathBuf {
 fn remove_board(session_dir: &Path, id: &str) -> Result<(), String> {
     validate_session_id(id).map_err(|error| error.to_string())?;
     let kernel = session_dir.join("kernels").join(id);
-    let clock = session_dir.join("schedules").join(id);
+    let clock = yi_runtime::schedule::schedules_root(session_dir).join(id);
     let gone = |result: std::io::Result<()>| match result {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
         _ => Ok(()),
@@ -103,15 +103,9 @@ fn fail(message: &str) -> i32 {
     1
 }
 
-fn print_json(value: &Value) {
-    if let Ok(line) = serde_json::to_string(value) {
-        println!("{line}");
-    }
-}
-
 fn print_list(listed: &[SessionMetadata], json: bool) {
     if json {
-        print_json(&json!(listed));
+        crate::print_json(&json!(listed));
         return;
     }
     println!("{}", yi_runtime::slash::sessions_listing(listed));
@@ -119,7 +113,7 @@ fn print_list(listed: &[SessionMetadata], json: bool) {
 
 fn print_show(metadata: &SessionMetadata, entries: &[Entry], json: bool) {
     if json {
-        print_json(&json!({ "session": metadata, "entries": entries }));
+        crate::print_json(&json!({ "session": metadata, "entries": entries }));
         return;
     }
     println!("session {}", metadata.id);

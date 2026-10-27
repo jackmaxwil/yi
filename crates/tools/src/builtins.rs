@@ -740,7 +740,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget; -v/--verbose bypass it for cargo and test runners, --porcelain for git, and -la for ls. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
     }
 
     fn schema(&self) -> Value {
@@ -748,9 +748,10 @@ impl Tool for BashTool {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Shell command to run. Omit it to check on a background job instead."},
-                "job": {"type": "integer", "description": "Background job to check on; defaults to the most recent"},
+                "job": {"type": "integer", "description": "Background job from this session to check on; defaults to this session's most recent"},
                 "wait": {"type": "integer", "description": "With command: seconds, below timeout_secs, before a still-running command becomes a background job. Without: seconds to wait for that job. Clamped 5-300."},
                 "timeout_secs": {"type": "integer", "description": "Wall-clock limit in seconds, default 300, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."},
+                "kill": {"type": "boolean", "description": "With job and no command: end this session's job and report how it stopped"},
                 "max_output_lines": {"type": "integer", "description": "Per-call reducer line budget, for when the full output matters"}
             }
         })
@@ -780,7 +781,7 @@ impl Tool for BashTool {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if command.trim().is_empty() {
-            return poll_job(&input, &context.cancelled, context.program);
+            return crate::jobs::poll_job(&input, context);
         }
         if let Some(refusal) = broad_search(command) {
             return error_output(refusal);
@@ -802,12 +803,14 @@ impl Tool for BashTool {
         let placed = (context.container.as_deref())
             .map(|name| crate::jobs::in_container(name, &context.cwd, command));
         let (capture, timed_out) = match crate::jobs::run_or_background(
-            placed.as_ref().map_or(command, |(run, _)| run),
+            command,
             context,
             background_after,
             timeout,
             context.sandbox.as_ref().filter(|_| placed.is_none()),
-            placed.as_ref().map(|(_, sweep)| sweep.as_str()),
+            placed
+                .as_ref()
+                .map(|(run, sweep)| (run.as_str(), sweep.as_str())),
         ) {
             Ok(crate::jobs::Run::Finished(capture)) => (*capture, false),
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
@@ -839,23 +842,14 @@ impl Tool for BashTool {
             &capture.stdout,
             &capture.stderr,
             exit_code_for_reduce,
-            capture.spill.as_deref(),
+            capture.kept().as_deref(),
             context
                 .recovery_dir
                 .as_deref()
                 .filter(|_| !capture.truncated),
             max_lines,
         );
-        let body = match (&reduced.recovery, capture.truncated) {
-            (Some(note), true) => (reduced.text.strip_suffix(note.as_str()))
-                .map_or(reduced.text.as_str(), str::trim_end),
-            _ => reduced.text.as_str(),
-        };
-        if !body.is_empty() {
-            sections.push(body.to_owned());
-        }
-        sections.extend(capture.cut_row());
-        sections.extend(capture.cut_note());
+        sections.extend(capture.shown(&reduced));
         if timed_out {
             sections.extend(timed_out_notes(timeout, nudge.is_some(), asked_wait));
         } else if capture.cancelled {
@@ -949,61 +943,6 @@ fn timed_out_notes(timeout: std::time::Duration, nudged: bool, asked: Option<u64
         ));
     }
     notes
-}
-
-/// The same tool with no command; it holds the job's report so what it returns is not resent.
-fn poll_job(
-    input: &Map<String, Value>,
-    cancelled: &crate::CancelFlag,
-    program: bool,
-) -> ToolOutput {
-    let jobs = crate::jobs::registry();
-    let requested = input
-        .get("job")
-        .and_then(Value::as_u64)
-        .map(crate::jobs::JobId);
-    let deadline = input
-        .get("wait")
-        .and_then(Value::as_u64)
-        .map(crate::jobs::clamp_wait);
-    let started = std::time::Instant::now();
-    let _span = yi_types::trace::span("wait.job");
-    let Some(id) = requested.or_else(|| jobs.latest().map(|report| report.id)) else {
-        return error_output("no background job to check on".to_owned());
-    };
-    jobs.set_reported(id, true);
-    loop {
-        let Some(report) = jobs.report(id) else {
-            return error_output("no background job to check on".to_owned());
-        };
-        if report.finished {
-            jobs.mark_delivered(id);
-            let exit_code = report.exit_code.unwrap_or(-1);
-            let text = format!("{}\n{}", report.headline(), report.output);
-            let killed =
-                report.state == crate::jobs::JobState::Settled(crate::jobs::Outcome::Killed);
-            let details = json!({ "job": id.0, "exitCode": exit_code });
-            let value = program
-                .then(|| crate::values::polled(id, report.exit_code, &report.output, killed));
-            let mut output = crate::tool::ran_output(text, details, killed);
-            output.value = value;
-            return output;
-        }
-        match deadline {
-            // In slices, so an interrupt (Esc, the deadline) ends the wait within a second.
-            Some(limit) if started.elapsed() < limit && !cancelled() => {
-                let left = limit.saturating_sub(started.elapsed());
-                jobs.wait_settled(Some(id), left.min(std::time::Duration::from_secs(1)));
-            }
-            _ => {
-                jobs.set_reported(id, false);
-                let mut output = text_output(report.headline());
-                output.result.details = json!({ "job": id.0, "running": true });
-                output.value = program.then(|| crate::values::job(id));
-                return output;
-            }
-        }
-    }
 }
 
 /// Gitignore-filtered and sorted, for surfaces offering a file picker.

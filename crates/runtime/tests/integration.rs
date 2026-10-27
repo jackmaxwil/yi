@@ -4,12 +4,20 @@
 //! `autotests = false`, so a new file here runs only once it has a line below.
 #[path = "support/own.rs"]
 mod own;
+#[path = "../../types/tests/support/recorded.rs"]
+mod recorded;
+#[path = "../../types/tests/support/repo.rs"]
+mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 #[path = "support/family.rs"]
 mod support;
+#[path = "support/upstream.rs"]
+mod upstream;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/worktree.rs"]
+mod worktree;
 
 mod advisor_compaction;
 mod advisor_e2e;
@@ -19,11 +27,13 @@ mod auto_review;
 mod branch_diff;
 mod breakpoints;
 mod cache_miss;
+mod caps_runtime;
 mod channel_e2e;
 mod child_trail;
 mod child_transcript;
 mod claims;
 mod classifier_e2e;
+mod claude_hooks;
 mod compaction_faux;
 mod documents;
 mod effort_session;
@@ -39,7 +49,6 @@ mod goal_e2e;
 mod host_facts;
 mod injection_canary;
 mod ipython_faux;
-mod judge;
 mod kept_rules;
 mod kernel_across_sessions;
 mod kernel_data_surface;
@@ -50,24 +59,32 @@ mod lanes;
 mod levers;
 mod node;
 mod permission_scope;
+mod plan_arms;
+mod plan_authority;
+mod plan_capacity;
 mod plan_declare;
 mod plan_e2e;
+mod plan_errors;
 mod plan_fuzz;
 mod plan_import;
 mod plan_journal;
 mod plan_ledger;
 mod plan_ops;
 mod plan_program;
+mod plan_readers;
 mod plan_recovery;
 mod plan_timer;
 mod plan_trace;
 mod plan_verify;
 mod plan_walkthrough;
+mod plan_why;
+mod plan_worktree;
 mod plugin_tree;
 mod prompt_drift;
 mod prompts;
 mod provider_keys;
 mod reader_e2e;
+mod reader_retry;
 mod reap_kernel;
 mod recursion_e2e;
 mod requests_e2e;
@@ -94,3 +111,10 @@ mod todo_mirror;
 mod undo_to;
 mod wall_e2e;
 mod worker_prompt;
+
+/// A real `pytest -v` run (#1153): 32,955 B, its FAILED row at line 223 of 419 and the verdict
+/// last, past the view's 16 KiB ceiling and, as JSON, past a channel message's cap.
+pub const RED_PYTEST: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
+);

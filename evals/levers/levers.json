@@ -11,8 +11,6 @@
   {"name": "plan.long_prompt_words", "home": "crates/runtime/src/plan/loop_coupling.rs", "symbol": "gate::LONG_PROMPT_WORDS", "kind": "gate", "default": 30, "min": 10, "max": 120, "tunable": true},
   {"name": "plan.enumerated_min", "home": "crates/runtime/src/plan/loop_coupling.rs", "symbol": "gate::ENUMERATED_ITEMS_MIN", "kind": "gate", "default": 2, "min": 1, "max": 6, "tunable": true},
   {"name": "plan.done_refusal_cap", "home": "crates/types/src/plan/contract.rs", "symbol": "DONE_REFUSAL_CAP", "kind": "envelope bound", "default": 3, "min": 1, "max": 8, "tunable": true},
-  {"name": "plan.judge_cap", "home": "crates/types/src/plan/contract.rs", "symbol": "JUDGE_CAP_PER_TODO", "kind": "envelope bound", "default": 3, "min": 1, "max": 6, "tunable": true},
-  {"name": "plan.jury", "home": "crates/types/src/plan/contract.rs", "symbol": "ContractError::JurySize", "kind": "envelope bound", "default": 1, "min": 1, "max": 3, "tunable": false, "why": "a jury is one or three by the contract rule, declared per item"},
   {"name": "plan.scatter_rounds", "home": "python/yi_runtime/src/yi/shapes.py", "symbol": "SCATTER_MAX_ROUNDS", "kind": "shape", "default": 3, "min": 1, "max": 6, "tunable": false, "why": "user-space Python; no Levers read reaches it"},
   {"name": "todo.nudge_work", "home": "crates/runtime/src/todo/coupling.rs", "symbol": "gate::NUDGE_WORK", "kind": "loop", "default": 12, "min": 4, "max": 40, "tunable": true},
   {"name": "todo.quiet_turns", "home": "crates/runtime/src/todo/coupling.rs", "symbol": "gate::QUIET_TURNS", "kind": "loop", "default": 3, "min": 1, "max": 10, "tunable": true},

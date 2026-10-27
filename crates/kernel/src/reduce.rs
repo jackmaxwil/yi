@@ -1,48 +1,38 @@
 use serde_json::Value;
 use yi_types::image::{has_magic_number, strict_base64_head};
 use yi_types::kernel::{
-    ExecuteResult, ExecuteStatus, JupyterMessage, KernelAttachment, KernelDiffDisplay, KernelError,
-    KernelSentAgentMessage,
+    ExecuteResult, ExecuteStatus, JupyterMessage, KernelAttachment, KernelError,
 };
 
-use crate::{
-    AGENT_MESSAGE_DISPLAY_MIME, ATTACHMENT_DISPLAY_MIME, DIFF_DISPLAY_MIME,
-    MAX_ATTACHMENT_DATA_CHARS,
-};
+use crate::{ATTACHMENT_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS};
 
 #[derive(Debug)]
 pub struct CellState {
     pub request_msg_id: String,
-    pub code: String,
     pub max_chars: usize,
     pub internal: bool,
     pub stdout: String,
     pub stderr: String,
-    pub stdout_truncated: bool,
-    pub stderr_truncated: bool,
+    pub stdout_chars: usize,
+    pub stderr_chars: usize,
     pub result: Option<String>,
-    pub diffs: Vec<KernelDiffDisplay>,
     pub attachments: Vec<KernelAttachment>,
-    pub sent_agent_messages: Vec<KernelSentAgentMessage>,
     pub status: ExecuteStatus,
     pub error: Option<KernelError>,
 }
 
 impl CellState {
-    pub fn new(request_msg_id: String, code: String, max_chars: usize, internal: bool) -> Self {
+    pub fn new(request_msg_id: String, max_chars: usize, internal: bool) -> Self {
         Self {
             request_msg_id,
-            code,
             max_chars,
             internal,
             stdout: String::new(),
             stderr: String::new(),
-            stdout_truncated: false,
-            stderr_truncated: false,
+            stdout_chars: 0,
+            stderr_chars: 0,
             result: None,
-            diffs: Vec::new(),
             attachments: Vec::new(),
-            sent_agent_messages: Vec::new(),
             status: ExecuteStatus::Ok,
             error: None,
         }
@@ -60,20 +50,38 @@ pub struct StreamChunk<'a> {
     pub text: &'a str,
 }
 
-fn append_capped(target: &mut String, truncated: &mut bool, text: &str, max_chars: usize) {
-    if target.chars().count() >= max_chars {
-        return;
-    }
+fn append_capped(target: &mut String, seen: &mut usize, text: &str, max_chars: usize) {
+    *seen = seen.saturating_add(text.chars().count());
     target.push_str(text);
-    let count = target.chars().count();
-    if count > max_chars {
-        *target = target.chars().take(max_chars).collect();
-        *truncated = true;
+    // Invariant: a char is at most 4 bytes, so past 8x the cap a trim always cuts and runs at
+    // most once per 4x the cap of new bytes; it holds at most 8x the cap in bytes plus one chunk.
+    if target.len() > max_chars.saturating_mul(8) {
+        let (head, tail) = ends(target, max_chars);
+        *target = head + &tail;
     }
 }
 
-pub fn parse_diff_display(payload: &Value) -> Option<KernelDiffDisplay> {
-    serde_json::from_value(payload.clone()).ok()
+fn ends(text: &str, max_chars: usize) -> (String, String) {
+    let half = max_chars / 2;
+    let count = text.chars().count();
+    let skip = count
+        .saturating_sub(max_chars.saturating_sub(half))
+        .max(half);
+    (
+        text.chars().take(half).collect(),
+        text.chars().skip(skip).collect(),
+    )
+}
+
+fn keep_ends(text: String, seen: usize, max_chars: usize) -> String {
+    if seen <= max_chars {
+        return text;
+    }
+    let (head, tail) = ends(&text, max_chars);
+    let kept = head.chars().count().saturating_add(tail.chars().count());
+    format!(
+        "{head}\n[\u{2026} {kept} of {seen} chars kept, the middle cut (DEFAULT_MAX_OUTPUT_CHARS {max_chars}); the rest: read the full output file named below, or with none rerun the cell writing it to a file and read that]\n{tail}"
+    )
 }
 
 pub enum AttachmentParse {
@@ -104,17 +112,12 @@ pub fn parse_attachment_display(payload: &Value) -> AttachmentParse {
     AttachmentParse::Attachment(attachment)
 }
 
-pub fn parse_sent_agent_message(payload: &Value) -> Option<KernelSentAgentMessage> {
-    let message: KernelSentAgentMessage = serde_json::from_value(payload.clone()).ok()?;
-    matches!(message.delivery_status.as_str(), "delivered" | "queued").then_some(message)
-}
-
 pub fn parent_msg_id(message: &JupyterMessage) -> Option<&str> {
     message.parent_header.get("msg_id").and_then(Value::as_str)
 }
 
-/// Fold one iopub message into the active cell (design §9). `on_stream` sees uncapped chunks:
-/// the UI gets everything, only the model-facing capture is capped.
+/// Fold one iopub message into the active cell (design §9). `on_stream` sees every stream chunk
+/// and the displayed value (named `execute_result`) uncapped; only the model's capture is capped.
 pub fn reduce(
     cell: &mut CellState,
     message: &JupyterMessage,
@@ -135,13 +138,13 @@ pub fn reduce(
             match name {
                 "stdout" => append_capped(
                     &mut cell.stdout,
-                    &mut cell.stdout_truncated,
+                    &mut cell.stdout_chars,
                     text,
                     cell.max_chars,
                 ),
                 "stderr" => append_capped(
                     &mut cell.stderr,
-                    &mut cell.stderr_truncated,
+                    &mut cell.stderr_chars,
                     text,
                     cell.max_chars,
                 ),
@@ -160,17 +163,17 @@ pub fn reduce(
                 .and_then(Value::as_str)
             {
                 cell.result = Some(text.to_owned());
+                if let Some(on_stream) = on_stream.as_mut() {
+                    on_stream(StreamChunk {
+                        name: "execute_result",
+                        text,
+                    });
+                }
             }
             Reduction::Continue
         }
         "display_data" | "update_display_data" => {
             let data = message.content.get("data");
-            if let Some(diff) = data
-                .and_then(|data| data.get(DIFF_DISPLAY_MIME))
-                .and_then(parse_diff_display)
-            {
-                cell.diffs.push(diff);
-            }
             if let Some(payload) = data.and_then(|data| data.get(ATTACHMENT_DISPLAY_MIME)) {
                 match parse_attachment_display(payload) {
                     AttachmentParse::Attachment(attachment) => cell.attachments.push(attachment),
@@ -186,12 +189,6 @@ pub fn reduce(
                     }
                     AttachmentParse::Malformed => {}
                 }
-            }
-            if let Some(sent) = data
-                .and_then(|data| data.get(AGENT_MESSAGE_DISPLAY_MIME))
-                .and_then(parse_sent_agent_message)
-            {
-                cell.sent_agent_messages.push(sent);
             }
             Reduction::Continue
         }
@@ -221,22 +218,11 @@ pub fn reduce(
 
 pub fn finish(cell: CellState, duration_ms: u64, aborted: bool) -> ExecuteResult {
     let max_chars = cell.max_chars;
-    let truncation = format!("\n[... output truncated at {max_chars} chars ...]");
-    let mut stdout = cell.stdout;
-    let mut stderr = cell.stderr;
-    if cell.stdout_truncated {
-        stdout.push_str(&truncation);
-    }
-    if cell.stderr_truncated {
-        stderr.push_str(&truncation);
-    }
-    let result = cell.result.map(|result| {
-        if result.chars().count() > max_chars {
-            let capped: String = result.chars().take(max_chars).collect();
-            format!("{capped}{truncation}")
-        } else {
-            result
-        }
+    let stdout = keep_ends(cell.stdout, cell.stdout_chars, max_chars);
+    let stderr = keep_ends(cell.stderr, cell.stderr_chars, max_chars);
+    let result = (cell.result).map(|result| {
+        let seen = result.chars().count();
+        keep_ends(result, seen, max_chars)
     });
     let status = if aborted {
         ExecuteStatus::Aborted
@@ -247,9 +233,7 @@ pub fn finish(cell: CellState, duration_ms: u64, aborted: bool) -> ExecuteResult
         stdout,
         stderr,
         result,
-        diffs: cell.diffs,
         attachments: cell.attachments,
-        sent_agent_messages: cell.sent_agent_messages,
         status,
         error: cell.error,
         duration_ms,

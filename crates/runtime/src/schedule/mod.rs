@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod channel;
 pub mod clock;
+mod cron;
 mod kernel;
 mod lanes;
 pub(crate) mod shared;
@@ -9,8 +10,17 @@ mod zone;
 use std::collections::HashSet;
 
 pub use clock::Firing;
+pub use cron::{next_run_at_for_schedule, parse_iso_ms, parse_schedule, parse_schedule_in};
 pub use lanes::Scheduler;
+pub(crate) use shared::jobs_path;
+pub use shared::{release_unloaded, schedules_root};
 pub use zone::Zone;
+
+use cron::{
+    HOUR_UNITS, MINUTE_UNITS, SECOND_UNITS, civil_of, is_unit, parse_cron_expression,
+    split_amount_unit,
+};
+use yi_kernel::client::civil_from_days;
 
 use yi_types::schedule::{
     CronSchedule, DeliveryMode, DispatchRecord, Job, JobStatus, ScheduleKind, ScheduleState,
@@ -23,356 +33,6 @@ pub const DEFAULT_HEARTBEAT_DELIVERY_MODE: DeliveryMode = DeliveryMode::Steer;
 pub const HEARTBEAT_USAGE: &str = "Usage: /heartbeat [--every <interval> | <minute hour day month weekday>] [--steer|--follow-up] <instruction>";
 // The exact recovery marker; tests and `/heartbeat status` surface it.
 pub const INTERRUPTED_ERROR: &str = "Interrupted before scheduled operation completion";
-
-fn strip_matching_quotes(value: &str) -> &str {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2
-        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
-            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
-    {
-        &value[1..value.len() - 1]
-    } else {
-        value
-    }
-}
-
-fn normalize_cron_alias(text: &str) -> &str {
-    match text {
-        "@hourly" => "0 * * * *",
-        "@daily" => "0 0 * * *",
-        "@weekly" => "0 0 * * 0",
-        "@monthly" => "0 0 1 * *",
-        other => other,
-    }
-}
-
-fn split_amount_unit(text: &str) -> Option<(u64, &str)> {
-    let digits_end = text.find(|ch: char| !ch.is_ascii_digit())?;
-    if digits_end == 0 {
-        return None;
-    }
-    let amount: u64 = text[..digits_end].parse().ok()?;
-    let unit = text[digits_end..].trim();
-    Some((amount, unit))
-}
-
-const MINUTE_UNITS: [&str; 5] = ["m", "min", "mins", "minute", "minutes"];
-const HOUR_UNITS: [&str; 5] = ["h", "hr", "hrs", "hour", "hours"];
-const DAY_UNITS: [&str; 3] = ["d", "day", "days"];
-const SECOND_UNITS: [&str; 5] = ["s", "sec", "secs", "second", "seconds"];
-
-fn is_unit(unit: &str, table: &[&str]) -> bool {
-    table.iter().any(|entry| unit.eq_ignore_ascii_case(entry))
-}
-
-fn parse_in_clause(text: &str) -> Option<u64> {
-    let rest = text
-        .strip_prefix("in ")
-        .or_else(|| text.strip_prefix("In "))
-        .or_else(|| text.strip_prefix("IN "))?;
-    let (amount, unit) = split_amount_unit(rest.trim())?;
-    let multiplier = if is_unit(unit, &MINUTE_UNITS) {
-        ONE_MINUTE_MS
-    } else if is_unit(unit, &HOUR_UNITS) {
-        60 * ONE_MINUTE_MS
-    } else if is_unit(unit, &DAY_UNITS) {
-        24 * 60 * ONE_MINUTE_MS
-    } else {
-        return None;
-    };
-    amount.checked_mul(multiplier)
-}
-
-fn parse_every_clause(text: &str) -> Option<Result<u64, String>> {
-    let lowered = text.to_ascii_lowercase();
-    let rest = lowered
-        .strip_prefix("every ")
-        .or_else(|| lowered.strip_prefix("each "))?;
-    let (amount, unit) = split_amount_unit(rest.trim())?;
-    let multiplier = if is_unit(unit, &SECOND_UNITS) {
-        ONE_SECOND_MS
-    } else if is_unit(unit, &MINUTE_UNITS) {
-        ONE_MINUTE_MS
-    } else if is_unit(unit, &HOUR_UNITS) {
-        60 * ONE_MINUTE_MS
-    } else {
-        return None;
-    };
-    let interval_ms = amount.checked_mul(multiplier)?;
-    if interval_ms < 10 * ONE_SECOND_MS {
-        return Some(Err(
-            "Recurring interval must be at least 10 seconds".to_owned()
-        ));
-    }
-    Some(Ok(interval_ms))
-}
-
-pub fn parse_schedule(input: &str, now_ms: u64) -> Result<(CronSchedule, u64), String> {
-    parse_schedule_in(input, now_ms, &Zone::local())
-}
-
-/// `"in 5m"`, `"every 10m"`, `"at <ISO>"`, `@hourly`-style aliases, or a five-field cron
-/// expression in `zone`'s wall time, with its first run in epoch ms.
-pub fn parse_schedule_in(
-    input: &str,
-    now_ms: u64,
-    zone: &Zone,
-) -> Result<(CronSchedule, u64), String> {
-    let text = strip_matching_quotes(input.trim()).trim();
-    if text.is_empty() {
-        return Err("Cron schedule cannot be empty".to_owned());
-    }
-    if let Some(delay) = parse_in_clause(text) {
-        return Ok((
-            CronSchedule {
-                kind: ScheduleKind::Once,
-                expression: text.to_owned(),
-                interval_ms: None,
-            },
-            now_ms.saturating_add(delay),
-        ));
-    }
-    if let Some(every) = parse_every_clause(text) {
-        let interval_ms = every?;
-        return Ok((
-            CronSchedule {
-                kind: ScheduleKind::Interval,
-                expression: text.to_owned(),
-                interval_ms: Some(interval_ms),
-            },
-            now_ms.saturating_add(interval_ms),
-        ));
-    }
-    if text.len() >= 3 && text[..3].eq_ignore_ascii_case("at ") {
-        let when = parse_iso_ms(text[3..].trim())
-            .ok_or_else(|| "Invalid one-shot schedule. Use: at <ISO date>".to_owned())?;
-        if when <= now_ms {
-            return Err("One-shot schedule must be in the future".to_owned());
-        }
-        return Ok((
-            CronSchedule {
-                kind: ScheduleKind::Once,
-                expression: text.to_owned(),
-                interval_ms: None,
-            },
-            when,
-        ));
-    }
-    let expression = normalize_cron_alias(text);
-    let next = next_cron_run_after(expression, now_ms, zone)?;
-    Ok((
-        CronSchedule {
-            kind: ScheduleKind::Cron,
-            expression: expression.to_owned(),
-            interval_ms: None,
-        },
-        next,
-    ))
-}
-
-/// None for a spent one-shot.
-pub fn next_run_at_for_schedule(
-    schedule: &CronSchedule,
-    after_ms: u64,
-) -> Result<Option<u64>, String> {
-    match schedule.kind {
-        ScheduleKind::Once => Ok(None),
-        ScheduleKind::Interval => {
-            let interval = schedule.interval_ms.unwrap_or(0);
-            if interval == 0 {
-                return Err(format!(
-                    "Invalid interval schedule: {}",
-                    schedule.expression
-                ));
-            }
-            Ok(Some(after_ms.saturating_add(interval)))
-        }
-        ScheduleKind::Cron => Ok(Some(next_cron_run_after(
-            &schedule.expression,
-            after_ms,
-            &Zone::local(),
-        )?)),
-    }
-}
-
-struct CronFields {
-    minute: HashSet<u64>,
-    hour: HashSet<u64>,
-    day_of_month: HashSet<u64>,
-    month: HashSet<u64>,
-    day_of_week: HashSet<u64>,
-}
-
-fn parse_cron_number(value: &str, min: u64, max: u64) -> Result<u64, String> {
-    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(format!("Invalid cron number: {value}"));
-    }
-    let parsed: u64 = value
-        .parse()
-        .map_err(|_| format!("Invalid cron number: {value}"))?;
-    if parsed < min || parsed > max {
-        return Err(format!("Cron number out of range: {value}"));
-    }
-    Ok(parsed)
-}
-
-fn parse_cron_field(field: &str, min: u64, max: u64) -> Result<HashSet<u64>, String> {
-    let mut values = HashSet::new();
-    for part in field.split(',') {
-        if part.is_empty() {
-            return Err(format!("Invalid cron field: {field}"));
-        }
-        let (range_text, step_text) = match part.split_once('/') {
-            Some((range, step)) => (range, Some(step)),
-            None => (part, None),
-        };
-        let step = match step_text {
-            Some(step) => parse_cron_number(step, 1, max)?,
-            None => 1,
-        };
-        let (start, end) = if range_text == "*" {
-            (min, max)
-        } else if let Some((start_text, end_text)) = range_text.split_once('-') {
-            let start = parse_cron_number(start_text, min, max)?;
-            let end = parse_cron_number(end_text, min, max)?;
-            if start > end {
-                return Err(format!("Invalid cron range: {range_text}"));
-            }
-            (start, end)
-        } else {
-            let single = parse_cron_number(range_text, min, max)?;
-            (single, single)
-        };
-        let mut value = start;
-        while value <= end {
-            values.insert(value);
-            match value.checked_add(step) {
-                Some(next) => value = next,
-                None => break,
-            }
-        }
-    }
-    Ok(values)
-}
-
-fn parse_cron_expression(expression: &str) -> Result<CronFields, String> {
-    let parts: Vec<&str> = expression.split_whitespace().collect();
-    if parts.len() != 5 {
-        return Err(
-            "Unsupported cron schedule. Use 'in 10m', 'at <ISO date>', @hourly, or five fields: minute hour day month weekday"
-                .to_owned(),
-        );
-    }
-    Ok(CronFields {
-        minute: parse_cron_field(parts[0], 0, 59)?,
-        hour: parse_cron_field(parts[1], 0, 23)?,
-        day_of_month: parse_cron_field(parts[2], 1, 31)?,
-        month: parse_cron_field(parts[3], 1, 12)?,
-        day_of_week: parse_cron_field(parts[4], 0, 7)?,
-    })
-}
-
-struct Civil {
-    minute: u64,
-    hour: u64,
-    day: u64,
-    month: u64,
-    weekday: u64,
-}
-
-fn civil_of(ms: u64) -> Civil {
-    let seconds = ms / 1_000;
-    let days = seconds / 86_400;
-    let (_, month, day) = civil_from_days(days);
-    Civil {
-        minute: (seconds % 3_600) / 60,
-        hour: (seconds % 86_400) / 3_600,
-        day,
-        month,
-        // 1970-01-01 was a Thursday.
-        weekday: (days + 4) % 7,
-    }
-}
-
-use yi_kernel::client::civil_from_days;
-
-fn days_from_civil(year: u64, month: u64, day: u64) -> u64 {
-    // Hinnant days-from-civil, valid for the post-1970 range Yi uses.
-    let adjusted_year = if month <= 2 { year - 1 } else { year };
-    let era = adjusted_year / 400;
-    let yoe = adjusted_year % 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-fn matches_cron_fields(civil: &Civil, fields: &CronFields) -> bool {
-    let day_matches = fields.day_of_week.contains(&civil.weekday)
-        || (civil.weekday == 0 && fields.day_of_week.contains(&7));
-    fields.minute.contains(&civil.minute)
-        && fields.hour.contains(&civil.hour)
-        && fields.day_of_month.contains(&civil.day)
-        && fields.month.contains(&civil.month)
-        && day_matches
-}
-
-fn next_cron_run_after(expression: &str, after_ms: u64, zone: &Zone) -> Result<u64, String> {
-    let fields = parse_cron_expression(expression)?;
-    let after_wall = zone.wall_ms(after_ms);
-    // Truncate to the minute, then step forward one minute at a time.
-    let mut candidate = (after_ms / ONE_MINUTE_MS).saturating_add(1) * ONE_MINUTE_MS;
-    let deadline = candidate.saturating_add(366 * 24 * 60 * ONE_MINUTE_MS);
-    while candidate <= deadline {
-        let wall = zone.wall_ms(candidate);
-        // Invariant: the hour a fall-back repeats has wall times already passed; each fires once.
-        if wall > after_wall && matches_cron_fields(&civil_of(wall), &fields) {
-            return Ok(candidate);
-        }
-        candidate = candidate.saturating_add(ONE_MINUTE_MS);
-    }
-    Err(format!(
-        "Cron schedule did not match within one year: {expression}"
-    ))
-}
-
-/// Minimal UTC ISO-8601 parse: `YYYY-MM-DD[THH:MM[:SS]][Z]`. Offsets other
-/// than Z are rejected: an `at` is an absolute instant, and only cron fields are local.
-pub fn parse_iso_ms(text: &str) -> Option<u64> {
-    let text = text.trim().trim_end_matches('Z');
-    let (date, time) = match text.split_once('T') {
-        Some((date, time)) => (date, Some(time)),
-        None => (text, None),
-    };
-    let mut date_parts = date.split('-');
-    let year: u64 = date_parts.next()?.parse().ok()?;
-    let month: u64 = date_parts.next()?.parse().ok()?;
-    let day: u64 = date_parts.next()?.parse().ok()?;
-    if date_parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let (hour, minute, second) = match time {
-        None => (0, 0, 0),
-        Some(time) => {
-            let mut parts = time.split(':');
-            let hour: u64 = parts.next()?.parse().ok()?;
-            let minute: u64 = parts.next()?.parse().ok()?;
-            let second: u64 = match parts.next() {
-                Some(second) => second.parse().ok()?,
-                None => 0,
-            };
-            if parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
-                return None;
-            }
-            (hour, minute, second)
-        }
-    };
-    if year < 1970 {
-        return None;
-    }
-    let days = days_from_civil(year, month, day);
-    Some((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000)
-}
 
 /// Parsed form of the `/heartbeat` slash command; the kernel's `rlm_heartbeat` calls and the
 /// ACP `_yi/heartbeat` method reach the same scheduler through this one grammar (§15.2).
@@ -700,6 +360,10 @@ pub struct JobStore {
     path: std::path::PathBuf,
     state: std::sync::Mutex<ScheduleState>,
     changed: std::sync::Arc<tokio::sync::Notify>,
+    hub: Option<std::sync::Arc<shared::DeliveryHub>>,
+    /// The write error its sessions were last told of, so a ledger that stays unwritable tells
+    /// them once; a write that succeeds clears it.
+    failed: std::sync::Mutex<Option<String>>,
 }
 
 fn lock_or_poisoned<T>(state: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -720,6 +384,19 @@ impl JobStore {
             path,
             state: std::sync::Mutex::new(state),
             changed: std::sync::Arc::new(tokio::sync::Notify::new()),
+            hub: None,
+            failed: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn with_hub(mut self, hub: std::sync::Arc<shared::DeliveryHub>) -> Self {
+        self.hub = Some(hub);
+        self
+    }
+
+    fn notify(&self, session_id: Option<&str>, text: &str) {
+        if let Some(hub) = &self.hub {
+            hub.notify(session_id, text);
         }
     }
 
@@ -742,18 +419,21 @@ impl JobStore {
                 .filter_map(|job| Some((job.id.clone(), job.channel.as_ref()?.path.clone())))
                 .collect()
         };
-        let (result, ended) = {
+        let (result, ended, failed) = {
             let mut state = lock_or_poisoned(&self.state);
             let before = reading(&state);
             let result = action(&mut state);
-            self.persist(&state);
+            let failed = self.persist(&state);
             let after = reading(&state);
             let ended: Vec<(String, String)> = before
                 .into_iter()
                 .filter(|job| !after.contains(job))
                 .collect();
-            (result, ended)
+            (result, ended, failed)
         };
+        if let Some(text) = failed {
+            self.notify(None, &text);
+        }
         // Invariant: a channel job that ends by any path drops its ack, so a finished wait or a
         // cancelled subscription never holds its channel's truncation back.
         for (id, path) in ended {
@@ -764,17 +444,31 @@ impl JobStore {
         result
     }
 
-    fn persist(&self, state: &ScheduleState) {
-        let Ok(text) = serde_json::to_string_pretty(state) else {
-            return;
-        };
+    /// Invariant: an idle channel tick re-arms in memory only; the next real write carries it,
+    /// and a restart re-derives it, so the worst a crash costs is one idle tick fired again.
+    fn rearm_idle(&self, now: u64, busy: &HashSet<String>) {
+        let mut state = lock_or_poisoned(&self.state);
+        for job in &mut state.jobs {
+            if is_due_job(job, now) && !busy.contains(&job.session_id) && channel::idle(job) {
+                job.next_run_at = next_run_at_for_schedule(&job.schedule, now).ok().flatten();
+            }
+        }
+    }
+
+    /// `Some` is a notice the ledger's sessions have not had yet.
+    fn persist(&self, state: &ScheduleState) -> Option<String> {
+        let text = serde_json::to_string_pretty(state).ok()?;
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let write = yi_session::replace_file(&self.path, text.as_bytes());
-        if let Err(error) = write {
-            eprintln!("scheduled-jobs.json write failed: {error}");
-        }
+        let error = (yi_session::replace_file(&self.path, text.as_bytes()).err()).map(|error| {
+            format!(
+                "[heartbeat ledger {} not written: {error}; schedule changes hold in memory only and a restart loses them]",
+                self.path.display()
+            )
+        });
+        let told = std::mem::replace(&mut *lock_or_poisoned(&self.failed), error.clone());
+        error.filter(|text| told.as_ref() != Some(text))
     }
 }
 
@@ -837,12 +531,16 @@ pub struct HeartbeatService {
     durable: Option<(std::path::PathBuf, tokio::runtime::Handle)>,
     deliver: Option<std::sync::Arc<DeliverFn>>,
     stop: Option<std::sync::Arc<shared::StopFn>>,
+    notice: Option<std::sync::Arc<shared::NoticeFn>>,
     words: Option<crate::goal::StoreHandle>,
     /// The machine's channel buffers, `<sessions>/channels/`.
     channels: Option<std::path::PathBuf>,
     gate: Option<std::sync::Arc<GateFn>>,
     /// Bound to a store every session of this process shares, so a halt reaches them all.
     interned: bool,
+    /// Invariant: this session owns its interned timer from wiring until [`HeartbeatService::end`],
+    /// so neither a sibling leaving nor a rebind's gap between lanes can stop it.
+    wiring: std::sync::Mutex<Option<std::sync::Arc<shared::SharedSchedule>>>,
 }
 
 impl HeartbeatService {
@@ -855,10 +553,12 @@ impl HeartbeatService {
             durable: None,
             deliver: None,
             stop: None,
+            notice: None,
             words: None,
             channels: None,
             gate: None,
             interned: false,
+            wiring: std::sync::Mutex::new(None),
         }
     }
 
@@ -882,8 +582,14 @@ impl HeartbeatService {
         self
     }
 
+    pub(crate) fn with_notice(mut self, notice: std::sync::Arc<shared::NoticeFn>) -> Self {
+        self.notice = Some(notice);
+        self
+    }
+
     pub(crate) fn interned(mut self) -> Self {
         self.interned = true;
+        self.wiring = std::sync::Mutex::new(shared::held(&self.store()));
         self
     }
 
@@ -943,10 +649,11 @@ impl HeartbeatService {
         match &self.durable {
             Some((root, runtime)) if yi_session::validate_session_id(&session_id).is_ok() => {
                 let _timer_spawns_here = runtime.enter();
-                let path = root.join(&session_id).join("scheduled-jobs.json");
+                let path = jobs_path(root, &session_id);
                 let shared = shared::intern(path, |hub| self.lane_into(hub, &session_id));
                 *lock_or_poisoned(&self.store) = std::sync::Arc::clone(&shared.store);
                 *lock_or_poisoned(&self.hub) = Some(std::sync::Arc::clone(&shared.hub));
+                *lock_or_poisoned(&self.wiring) = Some(shared);
                 self.ensure_mailbox(&session_id);
             }
             _ => {
@@ -966,6 +673,9 @@ impl HeartbeatService {
             if let Some(stop) = &self.stop {
                 hub.register_stop(session_id.to_owned(), std::sync::Arc::clone(stop));
             }
+            if let Some(notice) = &self.notice {
+                hub.register_notice(session_id.to_owned(), std::sync::Arc::clone(notice));
+            }
         }
     }
 
@@ -979,8 +689,7 @@ impl HeartbeatService {
             return;
         }
         if self.durable.is_some() {
-            // Its own file keeps the jobs Active for the next process; only its timer stops.
-            shared::release(&self.store());
+            // Its own file keeps the jobs Active for the next process; `end` stops its timer.
             return;
         }
         // Incident: an unconditional mutate persists, so every session that
@@ -1012,6 +721,7 @@ impl HeartbeatService {
         let mut bound = lock_or_poisoned(&self.session_id);
         self.withdraw(&bound);
         bound.clear();
+        lock_or_poisoned(&self.wiring).take();
     }
 }
 
@@ -1194,5 +904,46 @@ impl HeartbeatService {
     /// Parses and applies one `/heartbeat` line, the entry point RPC, ACP and slash share (§15.2).
     pub fn run(&self, line: &str) -> Result<String, String> {
         parse_heartbeat_command(line).and_then(|command| self.apply(&command, yi_session::now_ms()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scratch::Scratch;
+
+    /// Dies with a flapping disk told once for the store's whole life: a write that succeeds
+    /// clears the told error, and a different error is told again.
+    #[test]
+    fn a_ledger_error_is_told_again_after_a_success_or_when_it_changes() -> std::io::Result<()> {
+        let dir = Scratch::new("yi-ledger-flap")?;
+        let parent = dir.join("schedules");
+        let store = JobStore::open(parent.join("scheduled-jobs.json"));
+        let state = ScheduleState::default();
+        std::fs::write(&parent, "a file where the directory goes")?;
+        let not_dir = store.persist(&state);
+        let again = store.persist(&state);
+        std::fs::remove_file(&parent)?;
+        let healed = store.persist(&state);
+        std::fs::remove_dir_all(&parent)?;
+        std::fs::write(&parent, "a file where the directory goes")?;
+        let relapse = store.persist(&state);
+        std::fs::remove_file(&parent)?;
+        std::fs::create_dir_all(parent.join("scheduled-jobs.json/held"))?;
+        let is_dir = store.persist(&state);
+
+        assert!(
+            not_dir
+                .as_ref()
+                .is_some_and(|text| text.contains("not written"))
+        );
+        assert_eq!(again, None, "the same error was told twice");
+        assert_eq!(healed, None, "a write that succeeded was told as a failure");
+        assert_eq!(relapse, not_dir, "a failure after a success went untold");
+        assert!(
+            is_dir.is_some() && is_dir != not_dir,
+            "a changed error went untold: {is_dir:?}"
+        );
+        Ok(())
     }
 }

@@ -10,8 +10,8 @@ use yi_types::wire::SessionStats;
 
 use super::run::{self, Queued};
 use super::{
-    AgentSession, ExtHook, Shared, Status, StillNews, attribute_to_shared, dispatch_ext, host_text,
-    record_store_error, store_of,
+    AgentSession, EnvironmentFn, ExtHook, Shared, Status, StillNews, attribute_to_shared,
+    dispatch_ext, host_text, record_store_error, store_of,
 };
 
 pub(super) type LedgerFold = dyn FnMut(&str, &[Entry], &SessionStats) + Send;
@@ -41,6 +41,12 @@ impl Drop for AgentSession {
 }
 
 impl AgentSession {
+    pub fn set_environment(&self, hook: Arc<EnvironmentFn>) {
+        if let Ok(mut slot) = self.shared.environment.lock() {
+            *slot = Some(hook);
+        }
+    }
+
     /// Invariant: a resumed session's state is a fold of its ledger, never a count from zero;
     /// `fold` reads each store attached after this call (id, branch, totals) before a request.
     pub(crate) fn on_attach(
@@ -343,11 +349,27 @@ impl AgentSession {
         })
     }
 
+    pub(crate) fn claude_hooks(
+        &self,
+        cwd: &std::path::Path,
+    ) -> Option<Arc<crate::claude_hooks::Hooks>> {
+        let broker = self.permission.lock().ok().and_then(|slot| slot.clone());
+        match broker {
+            Some(broker) => broker.claude_hooks(),
+            None => self
+                .claude_hooks
+                .get_or_init(|| crate::claude_hooks::Hooks::load(cwd))
+                .clone(),
+        }
+    }
+
     /// Invariant: an idle queue holds inboxed notices and held follow-ups waiting for another
     /// turn, so only a queue behind a running turn is pending work that defers a heartbeat.
     pub fn heartbeat_deliverer(&self) -> Arc<crate::schedule::DeliverFn> {
         let shared = Arc::clone(&self.shared);
         let compactor = self.compactor.clone();
+        let cwd = self.tool_cwd.lock().ok().and_then(|slot| slot.clone());
+        let hooks = self.claude_hooks(cwd.as_deref().unwrap_or_else(|| std::path::Path::new(".")));
         let (hook, quiet) = (self.heartbeat_hook(), self.deliver_hook());
         Arc::new(move |job, firing| {
             let is_streaming = shared
@@ -370,7 +392,8 @@ impl AgentSession {
                 .ok()
                 .and_then(|slot| slot.as_ref().map(Arc::clone))
                 .ok_or("a tick creates a todo, and this session has no todo list")?;
-            let fired = crate::schedule::clock::fire(&todos, job, firing)?;
+            let fired =
+                crate::schedule::clock::fire_with_hooks(&todos, job, firing, hooks.as_ref())?;
             let outcome = crate::schedule::clock::outcome(&fired);
             if let Some(wake) =
                 crate::schedule::clock::wake_message(job, &fired, yi_session::now_ms())
@@ -416,6 +439,7 @@ impl AgentSession {
         self.shared
             .retired
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        yi_tools::jobs::registry().retire(self.shared.job_owner);
         let Some(kernel) = self.kernel_service() else {
             return;
         };
