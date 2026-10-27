@@ -60,8 +60,7 @@ pub struct Routing {
     pub extra: BTreeMap<String, Value>,
 }
 
-/// One classifier decision as the session journals it. `fired` says a pointer was delivered;
-/// with no threshold set the classifier only records (shadow mode).
+/// One classifier decision as the session journals it. `fired` says a pointer was delivered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClassifyRecord {
