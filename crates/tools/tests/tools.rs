@@ -1709,7 +1709,7 @@ fn a_running_poll_names_output_dropped_from_its_live_buffer() -> TestResult {
     let mut context = ToolContext::new(dir.to_path_buf());
     context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
     let run = yi_tools::run_or_background(
-        "head -c 55000 /dev/zero | tr '\\0' x; touch ready; sleep 30",
+        "head -c 55000 /dev/zero | tr '\\0' x; sleep 30",
         &context,
         Some(Duration::ZERO),
         Duration::from_secs(60),
@@ -1720,14 +1720,15 @@ fn a_running_poll_names_output_dropped_from_its_live_buffer() -> TestResult {
         return Err("the command did not become a job".into());
     };
     for _ in 0..500 {
-        if dir.join("ready").exists() {
+        if yi_tools::jobs::registry().output_since(id, 0)?.next == 55_000 {
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(
-        dir.join("ready").exists(),
-        "producer did not emit 55,000 bytes"
+    assert_eq!(
+        yi_tools::jobs::registry().output_since(id, 0)?.next,
+        55_000,
+        "live reader did not drain 55,000 bytes"
     );
     let polled = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
     let text = output_text(&polled);
