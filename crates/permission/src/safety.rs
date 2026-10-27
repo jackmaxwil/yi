@@ -715,11 +715,18 @@ pub fn refused_scopes(command: &str) -> Vec<String> {
     scopes
 }
 
-/// The files a command redirects into, read as the shell reads them: a `>` inside quotes, a comment
-/// or a heredoc body names nothing, and a redirect after `cd` is left to the sandbox.
-pub(crate) fn redirect_targets(command: &str, include_after_cd: bool) -> Vec<String> {
+pub(crate) struct RedirectTarget {
+    pub(crate) path: String,
+    pub(crate) directory_known: bool,
+}
+
+/// The files a command redirects into, read as the shell reads them: quotes, comments and heredoc
+/// bodies name nothing. A scope resolves static `cd` commands and fails closed on a dynamic one.
+pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectTarget> {
     let (mut files, mut quote, mut ends) = (Vec::new(), None, Vec::<String>::new());
     let (mut depth, mut command_start) = (0_u8, true);
+    let mut directory = Some(std::path::PathBuf::new());
+    let mut cd_applies = true;
     for line in command.split('\n') {
         if let Some(end) = ends.first() {
             if line.trim() == end {
@@ -729,6 +736,7 @@ pub(crate) fn redirect_targets(command: &str, include_after_cd: bool) -> Vec<Str
         }
         if quote.is_none() && depth == 0 {
             command_start = true;
+            cd_applies = true;
         }
         let (mut chars, mut prev) = (line.chars().peekable(), ' ');
         while let Some(c) = chars.next() {
@@ -760,7 +768,16 @@ pub(crate) fn redirect_targets(command: &str, include_after_cd: bool) -> Vec<Str
                         && (!combined
                             || (target != "-" && !target.chars().all(|c| c.is_ascii_digit())))
                     {
-                        files.push(target);
+                        let path = match (resolve_cd, directory.as_ref()) {
+                            (true, Some(base)) if !base.as_os_str().is_empty() => {
+                                base.join(&target).to_string_lossy().into_owned()
+                            }
+                            _ => target,
+                        };
+                        files.push(RedirectTarget {
+                            path,
+                            directory_known: !resolve_cd || directory.is_some(),
+                        });
                     }
                     command_start = false;
                 }
@@ -772,15 +789,38 @@ pub(crate) fn redirect_targets(command: &str, include_after_cd: bool) -> Vec<Str
                     depth = depth.saturating_sub(1);
                     command_start = false;
                 }
-                (None, ';' | '|' | '&') => command_start = depth == 0,
+                (None, ';') => {
+                    command_start = depth == 0;
+                    cd_applies = true;
+                }
+                (None, '|') => {
+                    command_start = depth == 0;
+                    cd_applies = chars.next_if_eq(&'|').is_some();
+                }
+                (None, '&') => {
+                    command_start = depth == 0;
+                    cd_applies = chars.next_if_eq(&'&').is_some();
+                }
                 (None, 'c') if depth == 0 && command_start => {
                     if chars.next_if_eq(&'d').is_some()
                         && chars
                             .peek()
                             .is_none_or(|next| next.is_whitespace() || ";&|<>()".contains(*next))
-                        && !include_after_cd
+                        && resolve_cd
+                        && cd_applies
                     {
-                        return files;
+                        let target = word(&mut chars);
+                        directory = match target {
+                            Some(target)
+                                if target != "-" && std::path::Path::new(&target).is_absolute() =>
+                            {
+                                Some(std::path::PathBuf::from(target))
+                            }
+                            Some(target) if target != "-" => {
+                                directory.map(|base| base.join(target))
+                            }
+                            _ => None,
+                        };
                     }
                     command_start = false;
                 }
@@ -812,7 +852,10 @@ fn word(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> 
 /// What a command writes as an honest agent spells it: redirects (which the lenient splitter
 /// skips), in-place edits, file verbs. `2>&1` names no file.
 pub fn write_targets(command: &str) -> Vec<String> {
-    let mut out = redirect_targets(command, true);
+    let mut out: Vec<String> = redirect_targets(command, false)
+        .into_iter()
+        .map(|target| target.path)
+        .collect();
     for segment in command.split(crate::catastrophic::SEPARATORS) {
         let words: Vec<&str> = segment
             .split_whitespace()

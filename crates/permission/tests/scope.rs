@@ -270,13 +270,33 @@ fn a_redirect_into_the_tree_is_judged_like_a_write() -> TestResult {
     Ok(())
 }
 
-/// Dies with `cd evals && python gen.py > probe.py` refused as `<workdir>/probe.py`: a redirect
-/// after changing directory is outside the static reader's contract, but one before it is judged.
+/// Dies with `cd` hiding a redirect from the scope, or a redirect in `evals` judged against the
+/// old directory: static directory changes are resolved, and an unreadable one fails closed.
 #[test]
-fn a_redirect_after_cd_is_not_misread_against_the_old_directory() -> TestResult {
+fn a_redirect_after_cd_is_judged_from_the_directory_the_shell_uses() -> TestResult {
     let scoped = tree(&["evals/**"])?;
-    let after = scoped.bash("cd evals && python3 gen.py > probe.py");
-    assert!(refusal(&after).is_none(), "{after:?}");
+    for (command, path) in [
+        ("cd crates && echo x > lock.rs", "crates/lock.rs"),
+        ("cd evals\necho hi > ../crates/lock.rs", "crates/lock.rs"),
+        ("ls | cd /tmp; echo hi > crates/lock.rs", "crates/lock.rs"),
+        ("cd \"$dir\" && echo hi > crates/lock.rs", "crates/lock.rs"),
+    ] {
+        let decision = scoped.bash(command);
+        let reason = refusal(&decision).ok_or_else(|| format!("{command:?} was allowed"))?;
+        assert!(
+            reason.contains(path) && reason.contains("evals/**"),
+            "{command:?}: {reason}"
+        );
+    }
+    for command in [
+        "cd evals && python3 gen.py > probe.py",
+        "cd evals && cd nested && echo hi > probe.py",
+        "cd evals\necho hi > probe.py",
+        "cd /tmp && echo hi > probe.py",
+    ] {
+        let decision = scoped.bash(command);
+        assert!(refusal(&decision).is_none(), "{command:?}: {decision:?}");
+    }
     let before = scoped.bash("echo hi > crates/before.rs && cd evals && echo hi > probe.py");
     let reason = refusal(&before).ok_or("the redirect before cd was missed")?;
     assert!(reason.contains("crates/before.rs"), "{reason}");

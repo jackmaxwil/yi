@@ -52,9 +52,20 @@ pub(crate) fn outside(
     // A scope that cannot compile names nothing, so an empty set refuses every write.
     let set = builder.build().unwrap_or_else(|_| GlobSet::empty());
     let root = resolve_links(&lexical_normalize(context.working_dir.as_deref()?));
-    let redirected = (call.command.into_iter())
-        .flat_map(|command| crate::safety::redirect_targets(command, false))
-        .map(|raw| absolute(Path::new(&raw), context));
+    let redirected: Vec<_> = (call.command.into_iter())
+        .flat_map(|command| crate::safety::redirect_targets(command, true))
+        .collect();
+    if let Some(target) = redirected.iter().find(|target| !target.directory_known) {
+        return Some(format!(
+            "{} follows a `cd` whose directory cannot be read statically, so it cannot be shown \
+             to be inside this run's write scope ({}). This is denied in every mode.",
+            target.path,
+            patterns.join(", ")
+        ));
+    }
+    let redirected = redirected
+        .into_iter()
+        .map(|target| absolute(Path::new(&target.path), context));
     // A `grep` that applies a rewrite and names no path walks from the working directory.
     let walks = call.tool_name == "grep" && call.targets.is_empty();
     let written = (call.targets.iter())
