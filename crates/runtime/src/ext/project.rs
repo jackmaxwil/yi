@@ -180,10 +180,11 @@ impl ProjectResources {
                 true => Trust::Granted,
                 false => self.gate.trust_of(&root, &source, &content),
             };
+            let next = format!("read {source} in full");
             let effect = Effect::AttachExternal {
+                text: yi_context::fit(&content, self.budget, &next).text,
                 source,
                 trust,
-                text: yi_context::fit(&content, self.budget).text,
             };
             let hash = content_hash(&instruction_text(&content));
             match seen.iter().find(|(seen_hash, _)| *seen_hash == hash) {
@@ -261,6 +262,12 @@ pub fn contributions(cwd: &Path, home: &Path) -> Vec<(String, String)> {
     }
     for (name, body) in pack_files(cwd) {
         found.push((format!("extensions/{name}"), body));
+    }
+    for source in crate::claude_hooks::PROJECT_FILES {
+        let content = std::fs::read_to_string(root.join(source)).unwrap_or_default();
+        if crate::claude_hooks::carries_hooks(&content) {
+            found.push((source.to_owned(), content));
+        }
     }
     found
 }

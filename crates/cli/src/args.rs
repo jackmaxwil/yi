@@ -3,6 +3,10 @@ use crate::{debug, stats, trace_sink};
 use yi_types::model::{Effort, UnknownEffort};
 
 #[derive(Clone)]
+#[cfg_attr(
+    not(feature = "tui"),
+    expect(dead_code, reason = "the drive flags feed the TUI only")
+)]
 pub(crate) struct Args {
     pub(crate) command: String,
     pub(crate) help: bool,

@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use serde_json::Value;
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::plan::doc::{BlockedOn, Note, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState};
 use yi_types::schedule::{
@@ -110,8 +113,33 @@ pub fn wait_of(on: &BlockedOn) -> Option<(String, Option<String>)> {
     }
 }
 
+/// One definition of "waits on this address" for the session list's unblock and a plan carry's
+/// retry gate, so the two layers of the same once-only firing cannot drift apart.
+pub fn waits_on(address: &str, on: &BlockedOn) -> bool {
+    wait_of(on).is_some_and(|(at, _)| at == address)
+}
+
 pub fn armed_command(on: &BlockedOn) -> Option<String> {
     wait_of(on).and_then(|(address, _)| super::adapter::exec_command(&address))
+}
+
+/// Every command an `on` at any depth of `value` arms: a row's own `on` and a sub-row's arm as a
+/// bare `on` does, so each meets the gate.
+pub fn armed_commands(value: &Value) -> Vec<String> {
+    let (mut stack, mut commands) = (vec![value], Vec::new());
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::Object(map) => {
+                let on = map.get("on").cloned();
+                let on = on.and_then(|on| serde_json::from_value::<BlockedOn>(on).ok());
+                commands.extend(on.as_ref().and_then(armed_command));
+                stack.extend(map.values());
+            }
+            Value::Array(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    commands
 }
 
 fn address(job: &Job) -> String {
@@ -124,8 +152,17 @@ fn stamp(item: &Todo) -> Option<ClockStamp> {
 
 /// A tick never runs saved code: it appends a todo or unblocks one, and the woken agent decides.
 pub fn fire(todos: &TodoStore, job: &Job, firing: &Firing) -> Result<Fired, String> {
+    fire_with_hooks(todos, job, firing, None)
+}
+
+pub fn fire_with_hooks(
+    todos: &TodoStore,
+    job: &Job,
+    firing: &Firing,
+    hooks: Option<&Arc<crate::claude_hooks::Hooks>>,
+) -> Result<Fired, String> {
     match (&job.channel, &job.unblocks) {
-        (Some(sub), _) => super::channel::fire(todos, job, sub),
+        (Some(sub), _) => super::channel::fire_with_hooks(todos, job, sub, hooks),
         (None, Some(label)) => unblock(todos, job, label, CLOCK_ACTOR),
         (None, None) => create(todos, job, firing),
     }
@@ -149,7 +186,7 @@ pub(super) fn unblock(
                     item.label == *label
                         && crate::todo::mirror::row_plan(item).is_none()
                         && matches!(&item.state, TodoState::Blocked { on, .. }
-                        if wait_of(on).map(|(address, _)| address).as_ref() == job.label.as_ref())
+                        if job.label.as_deref().is_some_and(|address| waits_on(address, on)))
                 })
                 .map(crate::todo::id_needle);
             if let Some(row) = &waiting {

@@ -2312,6 +2312,7 @@ name = "yi-orb"
 version = "0.2.0"
 dependencies = [
  "miniz_oxide",
+ "yi-types",
 ]
 
 [[package]]
@@ -2331,6 +2332,7 @@ version = "0.2.0"
 dependencies = [
  "globset",
  "proptest",
+ "regex",
  "serde_json",
  "sha2",
  "thiserror 2.0.20",

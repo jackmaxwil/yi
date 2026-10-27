@@ -393,6 +393,14 @@ fn a_spawn_declares_url_denies_and_the_child_wall_carries_them() -> TestResult {
     );
     let elsewhere: yi_types::url::Url = format!("checkpoint://{tree}/src/lib.rs").parse()?;
     assert!(wall.check_url(&elsewhere, &root).is_none());
+    let spaced: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(r#"{"deny_url": ["local:///tmp/secret dir/"]}"#)?;
+    let wall = Wall::from_kwargs(&spaced, &root)?;
+    let key: yi_types::url::Url = "local:///tmp/secret%20dir/key.txt".parse()?;
+    assert!(
+        wall.check_url(&key, &root).is_some(),
+        "a deny written with a raw space walls the address that spells it %20"
+    );
     let not_a_list: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(r#"{"deny_url": "kernel://"}"#)?;
     assert!(
@@ -659,7 +667,7 @@ pub(crate) fn plant_transcripts(
     })
 }
 
-/// The juror's shape (`plan/judge.rs`): every write walled, `history://` walled.
+/// A walled session that reads and judges: every write walled, `history://` walled.
 pub(crate) fn juror_wall(project: &std::path::Path) -> Wall {
     Wall {
         deny_write: vec![project.to_path_buf()],

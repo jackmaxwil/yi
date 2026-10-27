@@ -24,6 +24,8 @@ pub(crate) const CONTEXT_MAX_KEYS: usize = 8;
 pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;
 pub(crate) const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
+const COUNT_SHAPE: &str = "rlm.run context_chars must be an object of variable name to char count";
+const ROUTE: &str = "write a value to a file and give local://<path> in partition";
 
 pub(crate) type Retired = (
     String,
@@ -37,17 +39,36 @@ pub(crate) type Commit<'a> =
 /// so the list is capped: a degenerate child buys one refusal, not unbounded checks.
 pub(crate) const MAX_DISCOVERIES: usize = 16;
 
-fn clamp(text: &str, cap: usize) -> String {
-    if text.chars().count() <= cap {
+/// Invariant: every cut of a child's return ends in a row that opens with this, so a reader of
+/// a cut preview (the TUI card) finds where the answer's own text stops.
+pub const CUT_ROW: &str = "… [kept ";
+
+/// Invariant: a cut ends in a row naming kept over total, its cap and the call for the rest; a
+/// `total` that is `None` or under the chars received is not believed and reads `over <cap>`.
+fn cut(text: &str, cap: usize, total: Option<usize>, name: &str, next: &str) -> String {
+    let seen = text.chars().count();
+    if seen <= cap {
         return text.to_owned();
     }
+    let total = total
+        .filter(|total| *total >= seen)
+        .map_or_else(|| format!("over {cap}"), |total| total.to_string());
     let kept: String = text.chars().take(cap).collect();
-    format!("{kept}… [truncated to {cap} chars]")
+    format!("{kept}{CUT_ROW}{cap} of {total} chars · cap {name} = {cap} · {next}]")
+}
+
+pub(crate) fn clamp(text: &str, cap: usize, name: &str, next: &str) -> String {
+    cut(text, cap, Some(text.chars().count()), name, next)
 }
 
 /// Incident: values arrive pre-serialized because a host-side kernel read would queue behind
 /// the cell awaiting this reply; the caps re-apply because that python is semi-trusted.
 pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String>, String> {
+    let counted = match kwargs.get("context_chars") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(chars)) if chars.values().all(Value::is_u64) => Some(chars),
+        Some(_) => return Err(COUNT_SHAPE.to_owned()),
+    };
     let Some(value) = kwargs.get("context").filter(|value| !value.is_null()) else {
         return Ok(None);
     };
@@ -65,9 +86,11 @@ pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String
         let text = value
             .as_str()
             .map_or_else(|| value.to_string(), str::to_owned);
-        block.push_str(&format!("{name} = {}\n", clamp(&text, CONTEXT_VALUE_CAP)));
+        let total = counted.and_then(|chars| usize::try_from(chars.get(name)?.as_u64()?).ok());
+        let row = cut(&text, CONTEXT_VALUE_CAP, total, "mail.context_value", ROUTE);
+        block.push_str(&format!("{name} = {row}\n"));
     }
-    block = clamp(&block, CONTEXT_TOTAL_CAP);
+    block = clamp(&block, CONTEXT_TOTAL_CAP, "mail.context_total", ROUTE);
     block.push_str("</parent_context>");
     Ok(Some(block))
 }
@@ -396,8 +419,7 @@ impl SubagentHost {
         let envelope = desk.seal((from, &name), between, draft);
         crate::mail::inbox(&store, &envelope)?;
         let answered = desk.resolve(&envelope);
-        let message = crate::mail::present(&envelope);
-        // `followup` only wakes an idle receiver; a late reply wakes nobody, its asker returned.
+        let message = crate::mail::present_for_delivery(&envelope, draft.followup);
         let wakes = envelope.kind != Kind::Cancel
             && (draft.followup
                 || !matches!(envelope.kind, Kind::Inform | Kind::Progress | Kind::Reply));
@@ -674,16 +696,21 @@ impl SubagentHost {
             (
                 record.session_name.clone(),
                 record.check.clone(),
-                last_assistant_text(&record.session.messages()).unwrap_or_default(),
+                crate::mail::result_answer(&record.session.messages(), schema),
             )
         };
         let json = Self::json_answer(&text);
+        let tail = || {
+            let next = format!("read history://{name} for the whole answer");
+            clamp(&text, RESULT_TAIL_CHARS, "RESULT_TAIL_CHARS", &next)
+        };
         if let Some(schema) = schema {
             let schema = crate::schema::Schema::from_value(schema.clone())
                 .map_err(|error| format!("child \"{target}\" schema rejected: {error}"))?;
             let value = json.clone().ok_or_else(|| {
                 format!(
-                    "child \"{target}\" answered with text, not JSON, and a schema was given so JSON is required:\n{text}"
+                    "child \"{target}\" answered with text, not JSON, and a schema was given so JSON is required:\n{}",
+                    tail()
                 )
             })?;
             schema
@@ -700,7 +727,7 @@ impl SubagentHost {
             let result = serde_json::from_str::<ChildResult>(text.trim()).map_err(|error| {
                 format!(
                     "child \"{target}\" was spawned with a check, so it owes a result object {{\"value\": …, \"discoveries\": [ … ]}}: {error}\nIts answer was:\n{}",
-                    clamp(&text, RESULT_TAIL_CHARS)
+                    tail()
                 )
             })?;
             if result.discoveries.len() > MAX_DISCOVERIES {
@@ -717,11 +744,16 @@ impl SubagentHost {
                     "child \"{target}\" result held back; its check is refused: {refused}"
                 ));
             }
-            crate::goal::run_check(&check, &cwd, crate::goal::DEFAULT_CHECK_TIMEOUT_MS).map_err(
-                |evidence| {
-                    format!("child \"{target}\" result held back; its check is red: {evidence}")
-                },
-            )?;
+            let hooks = self.claude_hooks();
+            crate::goal::run_check(
+                &check,
+                &cwd,
+                crate::goal::DEFAULT_CHECK_TIMEOUT_MS,
+                hooks.as_deref(),
+            )
+            .map_err(|evidence| {
+                format!("child \"{target}\" result held back; its check is red: {evidence}")
+            })?;
             self.route_discoveries(&name, &result.discoveries)
                 .map_err(|error| format!("child \"{target}\" result held back; {error}"))?;
             reply.insert(
@@ -763,7 +795,13 @@ impl SubagentHost {
                     .entry(id)
                     .or_insert_with(|| {
                         let timeout = crate::goal::DISCOVERY_CHECK_TIMEOUT_MS;
-                        crate::goal::run_check(&check, &self.options.cwd, timeout).err()
+                        crate::goal::run_check(
+                            &check,
+                            &self.options.cwd,
+                            timeout,
+                            self.claude_hooks().as_deref(),
+                        )
+                        .err()
                     })
                     .clone()
                     .map(|evidence| (id, evidence))
@@ -887,56 +925,40 @@ impl SubagentHost {
         Ok((key, record, settled))
     }
 
-    /// Invariant: promotion runs at reap whatever the outcome, so the last product reaches
-    /// the owner's transcript before the slot frees and no live child dangles.
+    /// Invariant: a reap names the kept transcript, never its text, so an ending costs the
+    /// owner one line on every later request and the product is one read away.
     pub fn reap(&self, target: &str) -> Result<Harvest, String> {
         let (_key, record, _settled) = self.retire(target)?;
-        let answer = last_assistant_text(&record.session.messages());
-        let body = match (&record.error, &answer) {
-            (Some(error), Some(answer)) => {
-                format!(
-                    "failed: {error}\nlast product:\n{}",
-                    clamp(answer, RESULT_TAIL_CHARS)
-                )
-            }
-            (Some(error), None) => format!("failed: {error}"),
-            (None, Some(answer)) => clamp(answer, RESULT_TAIL_CHARS),
-            (None, None) => "(no product)".to_owned(),
-        };
+        let produced = last_assistant_text(&record.session.messages()).is_some();
         let name = record.session_name.clone();
-        if let Some(store) = record.session.store() {
-            self.reaped.keep(name.clone(), store);
+        let kept = (record.session.store())
+            .map(|store| self.reaped.keep(name.clone(), store))
+            .is_some();
+        let held = self.harvests.lock().is_ok_and(|held| held.contains(&name));
+        if !held {
+            let status = crate::family::read_exit(record.exit).status;
+            let status = status.as_str();
+            let address = if kept {
+                format!("its transcript is history://{name}")
+            } else {
+                "it kept no transcript".to_owned()
+            };
+            (self.options.report)(
+                AgentMessage::Custom {
+                    custom_type: "reap".to_owned(),
+                    content: UserContent::Text(format!("reaped {name} ({status}): {address}")),
+                    display: true,
+                    details: Some(json!({
+                        "child": name,
+                        "status": status,
+                        "error": record.error,
+                    })),
+                    timestamp: yi_session::now_ms(),
+                },
+                true,
+            );
         }
-        let block = format!("<reaped_child from=\"{name}\">\n{body}\n</reaped_child>");
-        let harvested = self.harvests.lock().is_ok_and(|mut held| {
-            held.get_mut(&name)
-                .map(|slot| *slot = Some(block.clone()))
-                .is_some()
-        });
-        if harvested {
-            return Ok(Harvest {
-                name,
-                produced: answer.is_some(),
-            });
-        }
-        (self.options.report)(
-            AgentMessage::Custom {
-                custom_type: "reap".to_owned(),
-                content: UserContent::Text(block),
-                display: true,
-                details: Some(json!({
-                    "child": name,
-                    "status": crate::family::read_exit(record.exit).status.as_str(),
-                    "error": record.error,
-                })),
-                timestamp: yi_session::now_ms(),
-            },
-            true,
-        );
-        Ok(Harvest {
-            name,
-            produced: answer.is_some(),
-        })
+        Ok(Harvest { name, produced })
     }
 }
 

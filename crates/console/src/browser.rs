@@ -18,8 +18,8 @@ use crate::app::{App, MouseKind};
 use crate::layout::PaneId;
 use crate::model::PaneContent;
 
-/// Invariant: avatars count up from 8000 and orbs sit at 7800 plus two per pane; frame ids
-/// start far above both, so neither can reach one (#806).
+/// Invariant: frame ids start far above every other owner in [`crate::app::ids`]'s map, so
+/// none can reach one (#806).
 const FRAME_ID_BASE: u32 = 0x00F0_0000;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const BAR: &str = "‹ › ↻ ";

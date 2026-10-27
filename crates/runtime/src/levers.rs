@@ -75,8 +75,6 @@ levers! {
     plan_long_prompt_words: usize = "plan.long_prompt_words", plan_gate::LONG_PROMPT_WORDS, 10..=120, true;
     plan_enumerated_min: usize = "plan.enumerated_min", plan_gate::ENUMERATED_ITEMS_MIN, 1..=6, true;
     plan_done_refusal_cap: u32 = "plan.done_refusal_cap", yi_types::plan::contract::DONE_REFUSAL_CAP, 1..=8, true;
-    plan_judge_cap: u32 = "plan.judge_cap", yi_types::plan::contract::JUDGE_CAP_PER_TODO, 1..=6, true;
-    plan_jury: u32 = "plan.jury", 1, 1..=3, false;
     plan_scatter_rounds: u32 = "plan.scatter_rounds", 3, 1..=6, false;
     todo_nudge_work: u32 = "todo.nudge_work", todo_gate::NUDGE_WORK, 4..=40, true;
     todo_quiet_turns: u32 = "todo.quiet_turns", todo_gate::QUIET_TURNS, 1..=10, true;

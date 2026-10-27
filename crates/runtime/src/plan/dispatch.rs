@@ -74,11 +74,20 @@ impl PlanEngine {
         if !matches!(todo.state, TodoState::Pending) {
             return Ok(());
         }
-        let told = super::brief::lines(&self.store.artifacts(id), &txn.records, id, todo);
+        let artifacts = self.store.artifacts(id);
+        let inlined = (super::spawn::reads_only(&delegation, &self.cwd))
+            .then(|| super::spawn::schema(&artifacts, todo, self.output_resolve.as_deref()))
+            .flatten();
+        let told = super::brief::lines(&artifacts, &txn.records, id, todo, inlined.as_ref());
         if !told.is_empty() {
             delegation
                 .extra
                 .insert(super::brief::KEY.to_owned(), serde_json::json!(told));
+        }
+        if let Some(schema) = inlined {
+            delegation
+                .extra
+                .insert(super::spawn::SCHEMA.to_owned(), schema);
         }
         let addr = TodoAddr {
             plan: id.clone(),
@@ -176,11 +185,12 @@ impl Delegate for SessionDelegate {
 
     fn spawn(&self, at: &TodoAddr, delegation: &Delegation) -> Result<AgentId, String> {
         let agent = child_name(at)?;
-        let kwargs = kwargs_of(&agent, delegation)?;
+        let cwd = &self.host.options.cwd;
+        let reader = super::spawn::reads_only(delegation, cwd);
+        let kwargs = kwargs_of(&agent, delegation, reader)?;
         // Plan section 7.6: a brief whose own wall denies its context is refused here, with
         // the denial as evidence, not one fetch later inside a child that cannot do its job.
         let wall = self.host.wall_for(&kwargs)?;
-        let cwd = &self.host.options.cwd;
         if let Some(denied) = delegation
             .context
             .iter()
@@ -188,7 +198,7 @@ impl Delegate for SessionDelegate {
         {
             return Err(format!("the brief names context its wall denies. {denied}"));
         }
-        self.host.spawn(brief(at, delegation), kwargs)?;
+        self.host.spawn(brief(at, delegation, reader), kwargs)?;
         // Its worktree goes through `submit` or a journaled disposition: the kernel's merge
         // and discard are refused for a child the engine dispatched.
         self.host.mark_managed(agent.as_str())?;
@@ -502,7 +512,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_ready_todo_dispatches_a_child_and_reap_promotes_its_product() -> TestResult {
+    async fn a_ready_todo_dispatches_a_child_and_reap_names_its_transcript() -> TestResult {
         let rig = rig("the seam is cut and holds")?;
         let out = rig.engine.apply(owner(Op::Init {
             goal: GoalText::new("ship the widget")?,
@@ -530,12 +540,13 @@ pub(crate) mod tests {
             output: Some("local://seam.md".parse()?),
         }))?;
         assert_eq!(out.reaped.len(), 1);
-        let promoted = texts(&rig.reports);
-        assert!(
-            promoted
-                .iter()
-                .any(|text| text.contains("reaped_child") && text.contains("seam is cut")),
-            "the product is promoted into the owner's transcript at reap: {promoted:?}"
+        let child = format!("{}/cut-the-seam", out.plan.id.as_str());
+        assert_eq!(
+            texts(&rig.reports),
+            [format!(
+                "reaped {child} (completed): its transcript is history://{child}"
+            )],
+            "the reap names where the product lives, not the product"
         );
         let agent = format!("agent://{}/cut-the-seam", out.plan.id.as_str()).parse::<Url>()?;
         let pin = rig.pins.pin_of(&agent).ok_or("no pin registered at reap")?;
@@ -663,14 +674,12 @@ pub(crate) mod tests {
             format!("history://{}/write-the-patch", out.plan.id.as_str())
         );
         let said = texts(&rig.said);
-        let [line] = said.as_slice() else {
-            return Err(format!("one line for the verdict and its reap: {said:?}").into());
-        };
-        assert!(
-            line.starts_with(
-                "plan: failed \"write the patch\": the provider hung up\n<reaped_child"
-            ) && line.contains("half a patch"),
-            "the failure path still promotes the last product, on the verdict: {line}"
+        assert_eq!(
+            said,
+            [format!(
+                "plan: failed \"write the patch\": the provider hung up; its last product is {last}"
+            )],
+            "the verdict names the last product's address"
         );
         assert!(texts(&rig.reports).is_empty(), "and no second reap line");
         Ok(())
@@ -726,13 +735,12 @@ pub(crate) mod tests {
             "the product is the child's answer"
         );
         let said = texts(&rig.said);
-        let [line] = said.as_slice() else {
-            return Err(format!("one line for the verdict and its reap: {said:?}").into());
-        };
-        let verdict = format!("plan: accepted \"cut the seam\" (agent://{id}/cut-the-seam)\n");
-        assert!(
-            line.starts_with(&verdict) && line.contains("<reaped_child"),
-            "the verdict carries its reap: {line}"
+        assert_eq!(
+            said,
+            [format!(
+                "plan: accepted \"cut the seam\" (agent://{id}/cut-the-seam); its product is {output}"
+            )],
+            "the verdict names its product's address"
         );
         let journal = rig.engine.store().journal(&id).read()?.records;
         let actors: Vec<(&str, &str)> = journal
@@ -742,8 +750,8 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(actors, [("submit", "engine"), ("done", "engine")]);
         assert!(
-            line.contains("seam is cut") && texts(&rig.reports).is_empty(),
-            "the done reaps the child and promotes its transcript once, on the verdict"
+            texts(&rig.reports).is_empty(),
+            "the done reaps the child and says so once, on the verdict"
         );
         let notices = rig.notices.lock().map_err(|_| "poisoned")?.clone();
         assert!(

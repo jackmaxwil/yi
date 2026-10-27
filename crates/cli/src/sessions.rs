@@ -73,7 +73,7 @@ pub(crate) fn board_dir(session_dir: &Path, id: &str) -> PathBuf {
 fn remove_board(session_dir: &Path, id: &str) -> Result<(), String> {
     validate_session_id(id).map_err(|error| error.to_string())?;
     let kernel = session_dir.join("kernels").join(id);
-    let clock = session_dir.join("schedules").join(id);
+    let clock = yi_runtime::schedule::schedules_root(session_dir).join(id);
     let gone = |result: std::io::Result<()>| match result {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
         _ => Ok(()),

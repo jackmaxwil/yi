@@ -128,7 +128,10 @@ pub trait Extension: Send {
     fn on(&mut self, event: &Event, out: &mut Vec<Effect>);
 }
 
-const STATE_ENTRY: &str = "ext_state";
+/// Invariant: a v2 snapshot holds no build-slot text, so it goes under a type older builds never
+/// read, and they keep their own build slots; `ext_state` is the v1 type, still restored.
+const STATE_ENTRY: &str = "ext_state2";
+const V1_STATE_ENTRY: &str = "ext_state";
 const RECORD_ENTRY: &str = "ext_record";
 /// A fragment attached after the first request rides the transcript as this custom entry,
 /// which `yi_context::convert_to_llm` renders through the internal-context wrapper.
@@ -192,9 +195,16 @@ impl Host {
     pub fn attach(&mut self, slot: Slot, text: String) -> bool {
         let message = self.frozen.get().is_some().then(|| fragment_message(&text));
         let changed = self.state.attach(slot.clone(), text);
-        if changed && let Some(message) = message {
-            self.late.insert(slot);
-            self.send(message);
+        match message {
+            Some(message) if changed => {
+                self.late.insert(slot.clone());
+                self.send(message);
+            }
+            // A resumed late slot whose text moved before the first request joins the prompt.
+            None if changed => {
+                self.late.remove(&slot);
+            }
+            _ => {}
         }
         changed
     }
@@ -228,7 +238,15 @@ impl Host {
     /// The first rendering is the conversation's system prompt (D310): every request sends
     /// these bytes, and whatever attaches later goes out as a message instead.
     pub fn system_prompt(&self) -> String {
-        self.frozen.get_or_init(|| self.state.assemble()).clone()
+        let assemble = || self.state.assemble_except(&self.late);
+        self.frozen.get_or_init(assemble).clone()
+    }
+
+    pub fn peek_prompt(&self) -> String {
+        self.frozen
+            .get()
+            .cloned()
+            .unwrap_or_else(|| self.state.assemble_except(&self.late))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -244,8 +262,9 @@ impl Host {
             return;
         }
         self.started = true;
-        if let Some(restored) = store.and_then(restore_state) {
-            self.state = restored;
+        self.state.seal_build();
+        if let Some(snapshot) = store.and_then(last_snapshot) {
+            self.late = self.state.restore(&snapshot);
         }
         let reason = if resumed {
             StartReason::Resume
@@ -321,7 +340,7 @@ impl Host {
             }
         }
         if changed && let Some(store) = store {
-            persist_state(store, &self.state);
+            persist_state(store, self.state.snapshot(&self.late));
         }
     }
 }
@@ -336,24 +355,28 @@ fn fragment_message(text: &str) -> AgentMessage {
     }
 }
 
-fn restore_state(store: &yi_session::SharedSession) -> Option<PromptState> {
+fn last_snapshot(store: &yi_session::SharedSession) -> Option<Value> {
     let entries = yi_session::lock_session(store)
         .find_entries(&yi_session::EntryQuery {
             order: yi_session::EntryOrder::NewestFirst,
             ..yi_session::EntryQuery::default()
         })
         .ok()?;
-    entries.iter().find_map(|entry| match entry {
+    entries.into_iter().find_map(|entry| match entry {
         yi_types::entry::Entry::Custom {
             custom_type, data, ..
-        } if custom_type == STATE_ENTRY => data.as_ref().and_then(PromptState::restore),
+        } if is_state_entry(&custom_type) => data,
         _ => None,
     })
 }
 
-fn persist_state(store: &yi_session::SharedSession, state: &PromptState) {
+pub(crate) fn is_state_entry(custom_type: &str) -> bool {
+    custom_type == STATE_ENTRY || custom_type == V1_STATE_ENTRY
+}
+
+fn persist_state(store: &yi_session::SharedSession, snapshot: Value) {
     let _unavailable_store_only_costs_the_rehydrate =
-        yi_session::lock_session(store).append_custom("main", STATE_ENTRY, Some(state.snapshot()));
+        yi_session::lock_session(store).append_custom("main", STATE_ENTRY, Some(snapshot));
 }
 
 fn record(store: Option<&yi_session::SharedSession>, key: &str, value: &Value) {

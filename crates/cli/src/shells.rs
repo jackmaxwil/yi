@@ -1,9 +1,11 @@
 //! `yi tui`, `yi console` and `yi serve` launchers, their shared drive-script loader, and the
 //! daemon socket they resolve. Lifted out of main.rs, which the console landing pushed past 1200.
 
+use crate::Args;
+#[cfg(feature = "tui")]
 use crate::{
-    Args, Resume, attach_store, build_session, config, default_session_dir, effective_cwd,
-    exit_refused, print_resume_hint, release_lane, session_target,
+    Resume, attach_store, build_session, config, default_session_dir, effective_cwd, exit_refused,
+    release_lane, session_target,
 };
 
 #[cfg(feature = "tui")]
@@ -141,6 +143,17 @@ fn control(args: &Args) -> Result<Option<yi_tui::drive::Control>, i32> {
         })
 }
 
+/// The exact command that brings this session back, printed only for a session
+/// that recorded something: resuming an empty one reads as a broken suggestion.
+#[cfg(feature = "tui")]
+fn print_resume_hint(session: &yi_runtime::AgentSession, id: &str) {
+    if session.messages().is_empty() {
+        return;
+    }
+    eprintln!();
+    crate::tty::eprint_dim(&format!("Resume this session with `yi --session {id}`"));
+}
+
 /// The quit line says where the work is before the slot is handed back.
 #[cfg(feature = "tui")]
 fn leave_lane(session: &yi_runtime::AgentSession) {
@@ -192,6 +205,7 @@ pub fn serve_flags(args: &Args) -> Vec<String> {
     flags
 }
 
+#[cfg(feature = "tui")]
 fn ensure_daemon(args: &Args, socket: &std::path::Path) {
     let _span = yi_types::trace::span("console.ensure_daemon");
     if std::os::unix::net::UnixStream::connect(socket).is_ok() {
@@ -375,6 +389,7 @@ pub fn run_console_command(args: &Args) -> i32 {
     yi_console::run_console(&options, control)
 }
 
+#[cfg(feature = "tui")]
 struct DriveCommon {
     frames_dir: Option<std::path::PathBuf>,
     record: Option<std::path::PathBuf>,
@@ -383,6 +398,7 @@ struct DriveCommon {
     height: u16,
 }
 
+#[cfg(feature = "tui")]
 fn drive_common(args: &Args) -> DriveCommon {
     DriveCommon {
         frames_dir: args.frames.clone().map(std::path::PathBuf::from),

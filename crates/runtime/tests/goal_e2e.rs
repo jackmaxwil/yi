@@ -6,8 +6,11 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use serde_json::Number;
+use serde_json::{Number, json};
+use yi_ai::anthropic::Mapper;
 use yi_ai::faux::{faux_assistant_message, faux_text};
+use yi_ai::openai::ChunkMapper;
+use yi_ai::sse::SseDecoder;
 
 use yi_loop::ExecutionMode;
 use yi_runtime::goal::{
@@ -183,7 +186,7 @@ fn budget_crossing_limits_the_goal_and_delivers_one_reminder() -> TestResult {
         message: with_usage.clone(),
     });
     let goal = yi_session::lock_session(&store).goal().ok_or("goal")?;
-    assert_eq!(goal.tokens_used, 120, "uncached input + output");
+    assert_eq!(goal.tokens_used, 120, "input + output");
     assert_eq!(
         goal.status,
         GoalStatus::BudgetLimited,
@@ -203,6 +206,109 @@ fn budget_crossing_limits_the_goal_and_delivers_one_reminder() -> TestResult {
     assert_eq!(
         reminders, 1,
         "the budget reminder is one-shot on the Active->BudgetLimited transition"
+    );
+    Ok(())
+}
+
+/// Anthropic's documented Messages stream order, with a 9,000-token cached prefix.
+const CACHED_REPLY: &str = r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_01XFDUDYJgAACzvnptvVoYEL","type":"message","role":"assistant","content":[],"model":"claude-opus-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":500,"cache_creation_input_tokens":0,"cache_read_input_tokens":9000,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: ping
+data: {"type":"ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Checked."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":300}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#;
+
+fn mapped(sse: &str) -> Result<AgentMessage, Box<dyn Error>> {
+    let mut mapper = Mapper::new(&faux_model());
+    let mut decoder = SseDecoder::default();
+    let mut events = decoder.feed(sse);
+    events.extend(decoder.finish());
+    for event in events {
+        mapper.push(&serde_json::from_str(&event.data)?);
+    }
+    match mapper.finish() {
+        yi_types::event::AssistantMessageEvent::Done { message, .. } => Ok(message),
+        other => Err(format!("the stream did not finish: {other:?}").into()),
+    }
+}
+
+fn goal_after(
+    service: &GoalService,
+    store: &yi_session::SharedSession,
+    reply: &AgentMessage,
+) -> Result<Goal, Box<dyn Error>> {
+    service.observe(&yi_types::event::AgentEvent::MessageEnd {
+        message: reply.clone(),
+    });
+    Ok(yi_session::lock_session(store).goal().ok_or("goal")?)
+}
+
+#[test]
+fn a_cached_reply_costs_the_goal_its_fresh_tokens_and_not_its_cache_reads() -> TestResult {
+    let (_plans, (service, store, _delivered)) = service_with_plans()?;
+    service.create("cached work", Some(1000), None, None)?;
+    let reply = mapped(CACHED_REPLY)?;
+    let AgentMessage::Assistant { usage, .. } = &reply else {
+        return Err("not an assistant message".into());
+    };
+    assert_eq!(
+        (usage.input, usage.cache_read, usage.output),
+        (500, 9000, 300)
+    );
+    assert_eq!(usage.context(), 9500, "the request held the cached prefix");
+    let first = goal_after(&service, &store, &reply)?;
+    assert_eq!(first.tokens_used, 800, "input 500 + output 300");
+    assert_eq!(first.status, GoalStatus::Active);
+    let second = goal_after(&service, &store, &reply)?;
+    assert_eq!(second.tokens_used, 1600);
+    assert_eq!(second.status, GoalStatus::BudgetLimited);
+    Ok(())
+}
+
+/// The OpenAI mapper takes the cache counts off `prompt_tokens`, so a low prompt maps negative.
+#[test]
+fn a_prompt_count_below_its_cache_counts_still_costs_the_goal_its_reply() -> TestResult {
+    let (_plans, (service, store, _delivered)) = service_with_plans()?;
+    service.create("odd gateway", Some(1000), None, None)?;
+    let mut mapper = ChunkMapper::new(&faux_model());
+    let _ = mapper.push_chunk(&json!({
+        "id": "chatcmpl-1",
+        "choices": [{"delta": {"content": "Checked."}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 30,
+            "prompt_tokens_details": {"cached_tokens": 300, "cache_write_tokens": 25}
+        }
+    }));
+    let Some(yi_types::event::AssistantMessageEvent::Done { message: reply, .. }) =
+        mapper.finish().pop()
+    else {
+        return Err("the chunk did not finish".into());
+    };
+    let AgentMessage::Assistant { usage, .. } = &reply else {
+        return Err("not an assistant message".into());
+    };
+    assert_eq!(usage.input, -225, "the mapper emits a negative input");
+    let used = goal_after(&service, &store, &reply)?.tokens_used;
+    assert_eq!(
+        used, 55,
+        "cache writes 25 + output 30; the negative input takes nothing"
     );
     Ok(())
 }
