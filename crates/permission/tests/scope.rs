@@ -279,6 +279,7 @@ fn a_redirect_after_cd_is_judged_from_the_directory_the_shell_uses() -> TestResu
         ("cd crates && echo x > lock.rs", "crates/lock.rs"),
         ("cd evals\necho hi > ../crates/lock.rs", "crates/lock.rs"),
         ("ls | cd /tmp; echo hi > crates/lock.rs", "crates/lock.rs"),
+        ("ls |\ncd /tmp; echo hi > crates/lock.rs", "crates/lock.rs"),
         ("cd \"$dir\" && echo hi > crates/lock.rs", "crates/lock.rs"),
     ] {
         let decision = scoped.bash(command);

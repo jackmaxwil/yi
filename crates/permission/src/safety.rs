@@ -725,7 +725,7 @@ pub(crate) struct RedirectTarget {
 pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectTarget> {
     let (mut files, mut quote, mut ends) = (Vec::new(), None, Vec::<String>::new());
     let (mut depth, mut command_start) = (0_u8, true);
-    let mut directory = Some(std::path::PathBuf::new());
+    let (mut directory, mut pipeline_tail) = (Some(std::path::PathBuf::new()), false);
     let mut cd_applies = true;
     for line in command.split('\n') {
         if let Some(end) = ends.first() {
@@ -736,7 +736,7 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
         }
         if quote.is_none() && depth == 0 {
             command_start = true;
-            cd_applies = true;
+            cd_applies = !pipeline_tail;
         }
         let (mut chars, mut prev) = (line.chars().peekable(), ' ');
         while let Some(c) = chars.next() {
@@ -829,6 +829,7 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
             }
             prev = c;
         }
+        pipeline_tail = !cd_applies && line.trim_end().ends_with(['|', '&']);
     }
     files
 }
