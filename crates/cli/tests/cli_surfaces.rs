@@ -1397,6 +1397,31 @@ fn an_unknown_model_names_itself_over_acp() -> TestResult {
     Ok(())
 }
 
+/// Dies with `final` printed only inside the loop's stream: a driver waiting on the closing
+/// line of `ask --json` saw nothing when the model was unknown.
+#[test]
+fn an_unknown_model_still_closes_a_json_ask_with_a_final_line() -> TestResult {
+    let workspace = Workspace::new("ask-early-final")?;
+    let run = workspace.yi(&[
+        "ask",
+        "--json",
+        "--model",
+        "openrouter/openai/gpt-6-astra",
+        "hi",
+    ])?;
+    assert_ne!(run.status.code(), Some(0), "{run:?}");
+    let last: Value = serde_json::from_str(stdout(&run).lines().last().ok_or("no stdout")?)?;
+    assert_eq!(last["type"], "final", "{run:?}");
+    assert_eq!(last["kind"], "error");
+    assert!(
+        last["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("gpt-6-astra")),
+        "{last}"
+    );
+    Ok(())
+}
+
 /// With no cache written yet, `yi catalog` reports the bundle and touches no network.
 #[test]
 fn catalog_reports_the_bundle_before_any_refresh() -> TestResult {

@@ -1416,6 +1416,25 @@ fn dropped_stream() -> AgentMessage {
     error
 }
 
+async fn run_hi(stream: &Scripted) -> Vec<AgentMessage> {
+    let (config, signal) = (LoopConfig::new(faux_model()), InterruptSignal::default());
+    let (_events, mut emit) = collector();
+    let mut fresh = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    run_loop(
+        &mut fresh,
+        vec![user("hi")],
+        &config,
+        &signal,
+        &mut emit,
+        stream,
+    )
+    .await
+}
+
 /// Dies with a quota 429 classed as transport: the exhausted window got a second request and a steer.
 #[tokio::test]
 async fn an_exhausted_quota_is_not_retried() {
@@ -1427,26 +1446,32 @@ async fn an_exhausted_quota_is_not_retried() {
         quota,
         faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
     ]);
-    let (config, signal) = (LoopConfig::new(faux_model()), InterruptSignal::default());
-    let (_events, mut emit) = collector();
-    let mut fresh = LoopContext {
-        system_prompt: String::new(),
-        messages: Vec::new(),
-        tools: Vec::new(),
-    };
-    let collected = run_loop(
-        &mut fresh,
-        vec![user("hi")],
-        &config,
-        &signal,
-        &mut emit,
-        &stream,
-    )
-    .await;
+    let collected = run_hi(&stream).await;
     assert!(
         !collected.iter().any(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE)),
         "a refused quota is final"
     );
+}
+
+/// Dies with a read timeout that delivered nothing ending the run: the driver saw a crash, not a resume.
+#[tokio::test]
+async fn a_read_timeout_that_showed_nothing_continues_the_run() {
+    let mut timeout = faux_assistant_message(Vec::new(), StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut timeout {
+        *error_message = Some("Network Error: timed out reading response".to_owned());
+    }
+    let stream = Scripted::new(vec![
+        timeout,
+        faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
+    ]);
+    let collected = run_hi(&stream).await;
+    assert!(matches!(
+        collected.last(),
+        Some(AgentMessage::Assistant {
+            stop_reason: StopReason::Stop,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
