@@ -3399,7 +3399,7 @@ mod contracts {
                 key: Some("k".to_owned()),
                 model: "english".to_owned(),
                 timeout: std::time::Duration::from_secs(2),
-                threshold: None,
+                threshold: 0.9,
             };
             let thresholds = Thresholds {
                 allow_at: 0.9,
@@ -3524,7 +3524,7 @@ mod contracts {
                 key: Some("k".to_owned()),
                 model: "english".to_owned(),
                 timeout: std::time::Duration::from_secs(2),
-                threshold: None,
+                threshold: 0.9,
             },
             Thresholds {
                 allow_at: 0.9,
