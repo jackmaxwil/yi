@@ -741,22 +741,17 @@ impl AgentSession {
                 run::push(&mut queue, Queued::new(message, false, None));
             }
         }
-        if let Some(broker) = self.permission_broker() {
-            let kept = entries.iter().filter_map(|entry| match entry {
-                Entry::Custom {
-                    custom_type,
-                    data: Some(data),
-                    ..
-                } if custom_type == yi_types::permission::PERMISSION_RULE_ENTRY => {
-                    serde_json::from_value(data.clone()).ok()
-                }
-                _ => None,
-            });
-            broker.replay(kept.collect(), &self.wall());
+        let broker = self.permission_broker();
+        let recorded = crate::permission::PermissionBroker::recorded(&entries);
+        if let Some(broker) = &broker {
+            broker.replay(recorded.clone(), &self.wall());
         }
         let id = yi_session::lock_session(&store).metadata().id.clone();
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);
+        }
+        if let Some(broker) = &broker {
+            broker.journal_unrecorded(&recorded);
         }
         self.todos().iter().for_each(|todos| todos.rehydrate());
         // Invariant: bound last, so a tick owed since the last process finds the ledger and list.
