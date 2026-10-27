@@ -88,6 +88,8 @@ pub struct PermissionBroker {
     journal: std::sync::OnceLock<Journal>,
     /// Appends each kept rule to the holder's own session JSONL, the one ledger of them.
     rule_journal: std::sync::OnceLock<Journal<SessionPermissionRule>>,
+    /// `--allow-write` grants kept before any session store was attached to journal them.
+    unledgered: Mutex<Vec<SessionPermissionRule>>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
     /// A walled holder's retry never leaves the sandbox for a protected dir (D345).
@@ -225,6 +227,7 @@ impl PermissionBroker {
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
             rule_journal: std::sync::OnceLock::new(),
+            unledgered: Mutex::new(Vec::new()),
             approver: std::sync::OnceLock::new(),
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
             walled: false,

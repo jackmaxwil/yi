@@ -169,6 +169,12 @@ impl PermissionBroker {
             &grant.canonical,
             "--allow-write",
         );
+        let kept = (self.lock_rules().state().rules.iter())
+            .find(|rule| rule.canonical == grant.canonical)
+            .cloned();
+        if let (Some(rule), Ok(mut unledgered)) = (kept, self.unledgered.lock()) {
+            unledgered.push(rule);
+        }
         Ok(())
     }
 
@@ -187,6 +193,38 @@ impl PermissionBroker {
 
     pub fn set_rule_journal(&self, journal: Journal<SessionPermissionRule>) {
         let _first_wiring_wins = self.rule_journal.set(journal);
+    }
+
+    pub(crate) fn recorded(entries: &[yi_types::entry::Entry]) -> Vec<SessionPermissionRule> {
+        (entries.iter())
+            .filter_map(|entry| match entry {
+                yi_types::entry::Entry::Custom {
+                    custom_type,
+                    data: Some(data),
+                    ..
+                } if custom_type == yi_types::permission::PERMISSION_RULE_ENTRY => {
+                    serde_json::from_value(data.clone()).ok()
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A grant kept before a store was attached, as an `--allow-write` grant is, reached no
+    /// ledger; it is written once one is, so `--continue` replays it.
+    pub(crate) fn journal_unrecorded(&self, recorded: &[SessionPermissionRule]) {
+        let Some(journal) = self.rule_journal.get() else {
+            return;
+        };
+        let pending =
+            (self.unledgered.lock()).map_or(Vec::new(), |mut held| std::mem::take(&mut *held));
+        let unrecorded: Vec<_> = (pending.into_iter())
+            .filter(|rule| {
+                !(recorded.iter())
+                    .any(|seen| seen.kind == rule.kind && seen.canonical == rule.canonical)
+            })
+            .collect();
+        unrecorded.into_iter().for_each(|rule| journal(rule));
     }
 
     pub(super) fn keep_grant(
