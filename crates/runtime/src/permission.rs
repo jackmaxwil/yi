@@ -6,7 +6,7 @@ use crate::claude_hooks::Verdict;
 use serde_json::{Map, Value};
 use tokio::sync::broadcast;
 use yi_permission::{
-    ActionId, ActionLedger, ActionState, CatastrophicContext, ConfigRule, Decision, Hold,
+    ActionId, ActionLedger, ActionState, CatastrophicContext, ConfigRule, Decision, Hold, Parsed,
     PermissionMode, RequestId, ReviewedAsk, SessionRules, ToolCall, UserVerdict,
     canonical_command_identity, canonical_tool_identity, decide,
 };
@@ -74,6 +74,8 @@ pub struct PermissionBroker {
     config_rules: Vec<ConfigRule>,
     /// The holder's own: a child starts from a copy ([`PermissionBroker::for_child`]).
     session_rules: Mutex<SessionRules>,
+    /// Kept while no rule journal is attached, flushed to it by `set_rule_journal`.
+    pending_rules: Mutex<Vec<SessionPermissionRule>>,
     holds: Arc<Mutex<Vec<Hold>>>,
     context: CatastrophicContext,
     cwd: PathBuf,
@@ -131,10 +133,7 @@ pub(crate) fn leaves_sandbox(
         .map(|argv| yi_permission::host_need(argv).or_else(|| reads(&argv.join(" "))))
         .collect();
     // Only a strict parse splits truly: the lenient split folds `$(…)` or a newline into argv.
-    let parsed = matches!(
-        yi_permission::parse(command),
-        yi_permission::Parsed::Segments(_)
-    );
+    let parsed = matches!(yi_permission::parse(command), Parsed::Segments(_));
     match needs.iter().flatten().next() {
         Some(why) => Some((why, parsed && needs.iter().all(Option::is_some))),
         None => reads(command).map(|why| (why, false)),
@@ -143,23 +142,23 @@ pub(crate) fn leaves_sandbox(
 
 /// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
 /// daemon socket), a credential store, or a git path the host runs.
-pub(crate) fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
+pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let yi = home.iter().map(|home| home.join(".yi"));
+    let yi: Vec<PathBuf> = home.iter().map(|home| home.join(".yi")).collect();
     let overlaps = |guarded: &PathBuf| {
         let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
-        [guarded, &real]
-            .iter()
-            .any(|guarded| dir.starts_with(guarded) || guarded.starts_with(dir))
+        let hit = |guarded: &PathBuf| dir.starts_with(guarded) || guarded.starts_with(dir);
+        hit(guarded) || hit(&real)
     };
+    let listed: Vec<PathBuf> = sandbox.map_or(Vec::new(), |sandbox| {
+        let mut listed = sandbox.deny_read.clone();
+        listed.extend(sandbox.deny_write.iter().cloned());
+        listed.extend(sandbox.host_owned.iter().cloned());
+        listed
+    });
     home.as_deref()
         .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
-        || (sandbox.deny_read.iter())
-            .chain(&sandbox.deny_write)
-            .chain(&sandbox.host_owned)
-            .cloned()
-            .chain(yi)
-            .any(|guarded| overlaps(&guarded))
+        || listed.iter().chain(&yi).any(overlaps)
 }
 
 pub(crate) fn extract_targets(
@@ -217,6 +216,7 @@ impl PermissionBroker {
             mode: Arc::new(Mutex::new(mode)),
             config_rules,
             session_rules: Mutex::new(SessionRules::new()),
+            pending_rules: Mutex::new(Vec::new()),
             holds: Arc::new(Mutex::new(Vec::new())),
             context: CatastrophicContext::detect(&cwd),
             cwd,
@@ -411,7 +411,7 @@ impl PermissionBroker {
             Some(yi_tools::SandboxRefusal::Path(path)) => {
                 let dir = path.parent().unwrap_or(path);
                 let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-                if protected(sandbox, &dir) {
+                if protected(Some(sandbox), &dir) {
                     return outside(&format!("`{}` is protected", dir.display()));
                 }
                 let note = format!("; approving widens this run by `{}`", dir.display());
@@ -462,7 +462,6 @@ impl PermissionBroker {
             holds.push(hold);
         }
     }
-
     pub fn mode(&self) -> PermissionMode {
         *self
             .mode
@@ -482,7 +481,6 @@ impl PermissionBroker {
             );
         }
     }
-
     pub fn set_mode(&self, mode: PermissionMode) {
         *self
             .mode
