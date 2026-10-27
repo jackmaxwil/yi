@@ -150,6 +150,31 @@ impl PermissionBroker {
         protected(sandbox, &dir).then(|| crate::gate::walled_refusal(path))
     }
 
+    /// Makes `dir` writable to every contained run, as an "always" on a widened retry would;
+    /// refused where that retry is, a credential store or the session ledger. No sandbox, no-op.
+    pub fn grant_write(&self, dir: &Path) -> Result<(), String> {
+        let Some(sandbox) = &self.sandbox else {
+            return Ok(());
+        };
+        let real = dir
+            .canonicalize()
+            .map_err(|error| format!("{}: {error}", dir.display()))?;
+        if protected(sandbox, &real) {
+            return Err(format!(
+                "{} is protected and cannot be granted",
+                real.display()
+            ));
+        }
+        let grant = yi_permission::write_grant(&real);
+        self.keep_grant(
+            Some(&grant),
+            RuleKind::Command,
+            &grant.canonical,
+            "--allow-write",
+        );
+        Ok(())
+    }
+
     /// The session stores: `~/.yi/sessions` and the `--session-dir` in use.
     pub fn session_stores(&self) -> &[PathBuf] {
         &self.context.host_owned
