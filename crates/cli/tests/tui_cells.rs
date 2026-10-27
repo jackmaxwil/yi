@@ -58,6 +58,10 @@ fn rendered(cell: &ToolCell, mode: TranscriptMode) -> String {
         .join("\n")
 }
 
+fn row(line: &str) -> &str {
+    line.strip_prefix("│ ").unwrap_or(line).trim()
+}
+
 #[test]
 fn real_tool_results_drive_read_grep_and_edit_cards() -> TestResult {
     let dir = Scratch::new("yi-real-tool-cells")?;
@@ -65,7 +69,7 @@ fn real_tool_results_drive_read_grep_and_edit_cards() -> TestResult {
         dir.join("sample.rs"),
         "fn main() {\n    println!(\"needle\");\n}\n",
     )?;
-    let context = ToolContext::new(dir.to_path_buf());
+    let mut context = ToolContext::new(dir.to_path_buf());
     let tools = yi_tools::builtin_tools();
     let args = |pairs: &[(&str, Value)]| {
         pairs
@@ -90,10 +94,13 @@ fn real_tool_results_drive_read_grep_and_edit_cards() -> TestResult {
         "sample.rs",
         args(&[(
             "patch",
-            json!(format!("{header}\nPUT 2.=2:\n+    println!(\"changed\");")),
+            json!(format!(
+                "{header}\nPUT 2.=2:\n+    println!(\"changed\");\n+    println!(\"changed again\");"
+            )),
         )]),
         &context,
     )?;
+    context.program = true;
     let grep = cell(
         &tools,
         "grep",
@@ -109,14 +116,38 @@ fn real_tool_results_drive_read_grep_and_edit_cards() -> TestResult {
         Some("3 lines")
     );
     let read_body = rendered(&read, TranscriptMode::Verbose);
-    assert!(read_body.contains("fn main()"), "{read_body}");
+    assert!(
+        read_body
+            .lines()
+            .any(|line| row(line).starts_with("1 ") && line.contains("fn main()")),
+        "{read_body}"
+    );
     assert!(!read_body.contains("1:fn main()"), "{read_body}");
     assert!(!read_body.contains("sample.rs#"), "{read_body}");
 
-    assert_eq!(grep.digest.as_deref(), Some("1 hit"));
+    assert_eq!(grep.digest.as_deref(), Some("2 hits"));
     let grep_body = rendered(&grep, TranscriptMode::Verbose);
-    assert!(grep_body.contains("sample.rs"), "{grep_body}");
-    assert!(grep_body.contains("changed"), "{grep_body}");
+    assert_eq!(
+        grep_body
+            .lines()
+            .filter(|line| row(line) == "sample.rs")
+            .count(),
+        1,
+        "{grep_body}"
+    );
+    assert!(
+        grep_body
+            .lines()
+            .any(|line| row(line).starts_with("2 ") && line.contains("changed")),
+        "{grep_body}"
+    );
+    assert!(
+        grep_body
+            .lines()
+            .any(|line| row(line).starts_with("3 ") && line.contains("changed again")),
+        "{grep_body}"
+    );
+    assert!(!grep_body.contains("sample.rs:"), "{grep_body}");
 
     assert_eq!(
         edit.digest.as_deref(),

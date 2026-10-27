@@ -1,6 +1,6 @@
 ---
 issue: Closes #1504, Refs #1442
-raise: crate console +4, crate tui +18, tests +160
+raise: crate console +4, crate tui +18, tests +194
 ---
 This PR hardens drive and tool-cell tests in two units, in commit order: HD-V05-console-oracle and HD-V03-real-producer-fixtures.
 

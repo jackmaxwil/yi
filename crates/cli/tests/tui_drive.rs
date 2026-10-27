@@ -1741,7 +1741,7 @@ fn a_failed_wait_frame_never_runs_the_steps_after_it() -> TestResult {
     let keys = dir.join("keys");
     std::fs::write(
         &keys,
-        "wait-idle 10000\nwait-frame 25 never-on-screen\ntype hello\nkey enter\nwait-idle 10000\nquit\n",
+        "wait-frame 25 never-on-screen\ntype hello\nkey enter\nwait-idle 10000\nquit\n",
     )?;
     #[expect(
         clippy::disallowed_methods,
@@ -1760,7 +1760,10 @@ fn a_failed_wait_frame_never_runs_the_steps_after_it() -> TestResult {
         ])
         .env("HOME", &home)
         .output()?;
-    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("timed out after 25 ms"), "{stderr}");
+    assert!(stderr.contains("never-on-screen"), "{stderr}");
     let transcript = session_files(&sessions)?
         .into_iter()
         .map(std::fs::read_to_string)
