@@ -8,6 +8,7 @@ pub struct Snapshot {
     pub text: String,
     pub hash: FileTag,
     pub seen_lines: Option<HashSet<u64>>,
+    pub clipped_lines: HashSet<u64>,
     /// Invariant: lines a kernel program's `read` returned, which only a program's edit may
     /// anchor to; the model's own edits still answer to `seen_lines` alone.
     pub program_lines: HashSet<u64>,
@@ -117,6 +118,7 @@ impl SnapshotStore {
             hash,
             seen_lines: None,
             program_lines: HashSet::new(),
+            clipped_lines: HashSet::new(),
         };
         merge_seen_lines(&mut snapshot, seen_lines);
         history.insert(0, snapshot);
@@ -134,6 +136,18 @@ impl SnapshotStore {
             && let Some(version) = history.iter_mut().find(|snapshot| snapshot.hash == hash)
         {
             merge_seen_lines(version, Some(lines));
+        }
+    }
+
+    pub fn record_clipped_lines(&mut self, path: &str, hash: FileTag, lines: &[u64]) {
+        if let Some(history) = self
+            .paths
+            .iter_mut()
+            .find(|(name, _)| name == path)
+            .map(|(_, history)| history)
+            && let Some(version) = history.iter_mut().find(|snapshot| snapshot.hash == hash)
+        {
+            version.clipped_lines.extend(lines.iter().copied());
         }
     }
 

@@ -136,10 +136,6 @@ impl Tool for HashlineReadTool {
             Ok(path) => path.to_owned(),
             Err(message) => return error_output(message),
         };
-        if display_path.contains(['*', '?', '[']) && !resolve_path(context, &display_path).exists()
-        {
-            return self.read_glob(&display_path, context);
-        }
         // Incident: grep prints hits under `[path#TAG]` and a reader passed that `path#TAG`
         // to read, which found no such file (#993). A file really named so still reads.
         let tagged = (!resolve_path(context, &display_path).exists())
@@ -151,6 +147,10 @@ impl Tool for HashlineReadTool {
             Some((bare, tag)) => (bare, Some(tag)),
             None => (display_path, None),
         };
+        if display_path.contains(['*', '?', '[']) && !resolve_path(context, &display_path).exists()
+        {
+            return self.read_glob(&display_path, context);
+        }
         let path = resolve_path(context, &display_path);
         if path.is_dir() {
             return read_dir(&display_path, &path, context);
@@ -628,6 +628,9 @@ impl HashlineReadTool {
         });
         let mut state = lock_state(&self.state);
         let tag = state.snapshots.record(&canonical, &normalized, Some(&seen));
+        state
+            .snapshots
+            .record_clipped_lines(&canonical, tag, &clipped);
         if let Some((lines, _)) = &program {
             let numbers: Vec<u64> = lines.iter().map(|line| line.n).collect();
             state
@@ -783,18 +786,26 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         // Invariant: an unchanged line the model saw is still a line it saw, so the prior
         // seen set rebases onto the new tag rather than shrinking to the hunk windows (#473).
-        let carried: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before) {
-            Some(prior) => {
-                let map = super::rebase::LineMap::between(&result.before, &result.after);
-                prior
-                    .seen_lines
-                    .iter()
-                    .flatten()
-                    .filter_map(|line| map.line(*line))
-                    .collect()
-            }
-            None => Vec::new(),
-        };
+        let (carried, carried_clipped): (Vec<u64>, Vec<u64>) =
+            match snapshots.by_content(&result.canonical_path, &result.before) {
+                Some(prior) => {
+                    let map = super::rebase::LineMap::between(&result.before, &result.after);
+                    (
+                        prior
+                            .seen_lines
+                            .iter()
+                            .flatten()
+                            .filter_map(|line| map.line(*line))
+                            .collect(),
+                        prior
+                            .clipped_lines
+                            .iter()
+                            .filter_map(|line| map.line(*line))
+                            .collect(),
+                    )
+                }
+                None => (Vec::new(), Vec::new()),
+            };
         let mut seen: Vec<u64> = Vec::new();
         // Every hunk gets a window, not just the first: a window the model cannot see is a
         // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
@@ -814,6 +825,7 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         }
         seen.extend(carried);
         snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
+        snapshots.record_clipped_lines(&result.canonical_path, result.file_hash, &carried_clipped);
     }
     for warning in &result.warnings {
         out.push(format!("warning: {warning}"));

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::clipboard::has_clipboard_edit;
@@ -354,14 +355,17 @@ impl PatchSection {
     }
 
     pub fn collect_anchor_lines(&self) -> Result<Vec<u64>, PatchError> {
-        self.anchor_lines(false)
+        self.anchor_lines(None)
     }
 
-    pub fn collect_seen_anchor_lines(&self) -> Result<Vec<u64>, PatchError> {
-        self.anchor_lines(true)
+    pub fn collect_seen_anchor_lines(
+        &self,
+        clipped_lines: &HashSet<u64>,
+    ) -> Result<Vec<u64>, PatchError> {
+        self.anchor_lines(Some(clipped_lines))
     }
 
-    fn anchor_lines(&self, seen_only: bool) -> Result<Vec<u64>, PatchError> {
+    fn anchor_lines(&self, clipped_lines: Option<&HashSet<u64>>) -> Result<Vec<u64>, PatchError> {
         use super::types::{Cursor, Edit, PasteTarget};
         let parsed = self.parse()?;
         let mut lines: Vec<u64> = Vec::new();
@@ -373,13 +377,17 @@ impl PatchSection {
                     PasteTarget::Span { range } => lines.extend(range.start.line..=range.end.line),
                     PasteTarget::Gap {
                         cursor: Cursor::BeforeAnchor { anchor } | Cursor::AfterAnchor { anchor },
-                    } if !seen_only => lines.push(anchor.line),
+                    } if clipped_lines.is_none_or(|clipped| !clipped.contains(&anchor.line)) => {
+                        lines.push(anchor.line)
+                    }
                     PasteTarget::Gap { .. } => {}
                 },
                 Edit::Insert {
                     cursor: Cursor::BeforeAnchor { anchor } | Cursor::AfterAnchor { anchor },
                     ..
-                } if !seen_only => lines.push(anchor.line),
+                } if clipped_lines.is_none_or(|clipped| !clipped.contains(&anchor.line)) => {
+                    lines.push(anchor.line)
+                }
                 Edit::Insert { .. } => {}
             }
         }

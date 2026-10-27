@@ -323,6 +323,32 @@ fn seen_lines_guard_reveals_unseen_lines_then_allows_retry() -> TestResult {
     assert!(fixture.content("big.txt")?.contains("changed line 30"));
     Ok(())
 }
+#[test]
+fn unseen_gap_anchors_are_refused_without_changing_the_file() -> TestResult {
+    for (name, operation) in [
+        ("paste", "CUT 1.=1 @x\nPUT >30 @x\n"),
+        ("insert", "PUT >30:\n+inserted\n"),
+    ] {
+        let fixture = Fixture::new(name)?;
+        let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
+        fixture.write("big.txt", &body)?;
+        let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
+            args(&[
+                ("path", json!("big.txt")),
+                ("offset", json!(1)),
+                ("limit", json!(10)),
+            ]),
+            &fixture.context,
+        );
+        let tag = minted_tag(&output_text(&read), "big.txt")?;
+        let edit = fixture.edit(&format!("[big.txt#{tag}]\n{operation}"));
+        let text = output_text(&edit);
+        assert!(edit.is_error, "{name}: {text}");
+        assert!(text.contains("never displayed"), "{name}: {text}");
+        assert_eq!(fixture.content("big.txt")?, body, "{name}");
+    }
+    Ok(())
+}
 
 #[test]
 fn noop_edits_escalate_after_three_identical_repeats() -> TestResult {

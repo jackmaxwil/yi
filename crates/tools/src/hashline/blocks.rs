@@ -16,7 +16,7 @@ pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
     let anchor = lines.get(anchor_index)?;
     let mut depth: i64 = 0;
     let mut opened = false;
-    for byte in strip_line_noise(anchor) {
+    for byte in strip_line_noise(anchor, true) {
         match byte {
             b'{' | b'[' | b'(' => {
                 depth += 1;
@@ -30,7 +30,7 @@ pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
         return None;
     }
     for (offset, candidate) in lines.iter().enumerate().skip(anchor_index + 1) {
-        for byte in strip_line_noise(candidate) {
+        for byte in strip_line_noise(candidate, true) {
             match byte {
                 b'{' | b'[' | b'(' => depth += 1,
                 b'}' | b']' | b')' => {
@@ -79,7 +79,7 @@ pub fn indent_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
 }
 
 fn delimiter_delta(line: &str) -> i64 {
-    strip_line_noise(line)
+    strip_line_noise(line, false)
         .into_iter()
         .fold(0_i64, |depth, byte| match byte {
             b'{' | b'[' | b'(' => depth.saturating_add(1),
@@ -97,7 +97,7 @@ fn indent_width(line: &str) -> usize {
 
 /// Delimiters inside string/char literals and line comments do not count. A lexical pass, not
 /// a parser: multi-line strings and block comments fail closed via unbalanced depth.
-fn strip_line_noise(line: &str) -> Vec<u8> {
+fn strip_line_noise(line: &str, rust_lifetimes: bool) -> Vec<u8> {
     let bytes = line.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -117,9 +117,10 @@ fn strip_line_noise(line: &str) -> Vec<u8> {
         }
         match byte {
             b'\''
-                if bytes
-                    .get(index + 1)
-                    .is_some_and(|next| next.is_ascii_alphabetic() || *next == b'_')
+                if rust_lifetimes
+                    && bytes
+                        .get(index + 1)
+                        .is_some_and(|next| next.is_ascii_alphabetic() || *next == b'_')
                     && bytes.get(index + 2) != Some(&b'\'') =>
             {
                 out.push(byte)

@@ -45,6 +45,19 @@ fn an_existing_bracketed_path_reads_as_a_file() -> TestResult {
     let output = read(&dir, args(&[("path", json!("app/[id]/page.tsx"))]));
     assert!(!output.is_error, "{}", text(&output));
     assert!(text(&output).contains("1:export default function Page() {}"));
+    let first = text(&output);
+    let tag = first
+        .lines()
+        .next()
+        .and_then(|line| line.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or("no tag")?;
+    let tagged = read(
+        &dir,
+        args(&[("path", json!(format!("app/[id]/page.tsx#{tag}")))]),
+    );
+    assert!(!tagged.is_error, "{}", text(&tagged));
+    assert!(text(&tagged).contains("1:export default function Page() {}"));
     Ok(())
 }
 

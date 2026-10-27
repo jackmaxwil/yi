@@ -38,6 +38,13 @@ fn a_multiline_python_signature_resolves_through_the_function_body() -> TestResu
     fs::write(dir.join("one.py"), "def a():\n")?;
     let one = find(&dir, "one.py", "def a():");
     assert!(one.contains("[find: no enclosing block"), "{one}");
+    fs::write(
+        dir.join("quoted.py"),
+        "def f(\n    arg='abc)',\n):\n    return arg\n",
+    )?;
+    let quoted = find(&dir, "quoted.py", "def f(");
+    assert!(quoted.contains("[find: block at lines 1-4 of"), "{quoted}");
+
     Ok(())
 }
 

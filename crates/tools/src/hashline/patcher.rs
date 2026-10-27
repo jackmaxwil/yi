@@ -506,7 +506,7 @@ impl<'a> Patcher<'a> {
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         let read = |line: &u64| self.program && snapshot.program_lines.contains(line);
         let unseen: Vec<u64> = section
-            .collect_seen_anchor_lines()?
+            .collect_seen_anchor_lines(&snapshot.clipped_lines)?
             .into_iter()
             .filter(|line| *line <= total && !seen.contains(line) && !read(line))
             .collect();
@@ -516,6 +516,8 @@ impl<'a> Patcher<'a> {
         let shown = refusal_rows(&anchored_lines(&unseen, total), &unseen, &lines);
         self.snapshots
             .record_seen_lines(canonical_path, snapshot.hash, &shown.seen);
+        self.snapshots
+            .record_clipped_lines(canonical_path, snapshot.hash, &shown.clipped);
         let footer = refusal_footer(&section.path, snapshot.hash, &shown, &unseen, total);
         Err(
             unseen_lines_message(&section.path, &unseen, snapshot.hash, &shown.rows, &footer)
