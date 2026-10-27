@@ -3427,12 +3427,10 @@ fn gc_judges_a_released_lane_by_its_detached_head() -> TestResult {
     Ok(())
 }
 
-/// Dies when a stale git lock outranks the free `.held` flock: a crashed session leaves no
-/// live holder, so its merged lane can be unlocked and removed.
-#[test]
-fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
-    let rig = Rig::new("gc-stale-lock")?;
-    let pool = rig.pool(1)?;
+fn merged_crashed_slot(
+    rig: &Rig,
+    pool: &Pool,
+) -> Result<(PathBuf, PathBuf, yi_types::lane::SlotState), Box<dyn Error>> {
     let lane = pool.claim("s-crashed", ClaimBase::Main)?;
     std::fs::write(lane.path().join("work.txt"), "work\n")?;
     git(lane.path(), &["add", "."])?;
@@ -3455,6 +3453,17 @@ fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
     let mut state: yi_types::lane::SlotState =
         serde_json::from_slice(&std::fs::read(&state_path)?)?;
     state.session = Some("s-crashed".to_owned());
+    std::fs::write(&state_path, serde_json::to_vec(&state)?)?;
+    Ok((path, state_path, state))
+}
+
+/// Dies when a stale git lock outranks the free `.held` flock: a crashed session leaves no
+/// live holder, so its merged lane can be unlocked and removed.
+#[test]
+fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
+    let rig = Rig::new("gc-stale-lock")?;
+    let pool = rig.pool(1)?;
+    let (path, state_path, mut state) = merged_crashed_slot(&rig, &pool)?;
     let mut warmer = yi_tools::command("sleep")
         .arg("30")
         .current_dir(&path)
@@ -3489,6 +3498,41 @@ fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
         report.contains(&format!("removed {}", path.display())),
         "{report}"
     );
+    Ok(())
+}
+
+/// Dies with slot cleanup before `git worktree remove`: a refused removal keeps the tree and
+/// the session record that a later claim or reap uses to identify its orphan.
+#[test]
+fn gc_keeps_slot_state_when_worktree_removal_fails() -> TestResult {
+    let rig = Rig::new("gc-remove-fails")?;
+    let pool = rig.pool(1)?;
+    let (path, state_path, _) = merged_crashed_slot(&rig, &pool)?;
+
+    let shim = Scratch::new("gc-remove-failure-shim")?;
+    let path_env = std::env::var_os("PATH").ok_or("no PATH")?;
+    let real_git = std::env::split_paths(&path_env)
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .ok_or("no git on PATH")?;
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = remove ]; then\n  echo forced-remove-failure >&2\n  exit 1\nfi\nexec '{}' \"$@\"\n",
+        real_git.display()
+    );
+    std::fs::write(shim.join("git"), script)?;
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(shim.join("git"), std::fs::Permissions::from_mode(0o755))?;
+    let joined = std::env::join_paths(
+        std::iter::once(shim.to_path_buf()).chain(std::env::split_paths(&path_env)),
+    )?;
+    // nextest isolates this test process, so its failing git reaches no other test.
+    unsafe { std::env::set_var("PATH", joined) };
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    let state: yi_types::lane::SlotState = serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    assert!(path.is_dir(), "{report}");
+    assert!(report.contains("forced-remove-failure"), "{report}");
+    assert_eq!(state.session.as_deref(), Some("s-crashed"), "{report}");
     Ok(())
 }
 

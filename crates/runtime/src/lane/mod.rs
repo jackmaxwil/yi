@@ -619,20 +619,7 @@ impl Pool {
             .checked_add(LIST_BUDGET)
             .unwrap_or_else(std::time::Instant::now);
         // Invariant: a listing never fetches; `behind` counts against the `main` last seen.
-        let base = probe_git(
-            &self.repo,
-            &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
-            deadline,
-        )
-        .or_else(|_| {
-            probe_git(
-                &self.repo,
-                &["rev-parse", "--verify", "-q", "main^{commit}"],
-                deadline,
-            )
-        })
-        .ok()
-        .and_then(|text| Sha::parse(&text));
+        let base = self.local_main(deadline);
         let mut views = Vec::new();
         for n in 0..self.slots {
             let slot = SlotIndex(n);
@@ -726,9 +713,21 @@ impl Pool {
         git(&self.repo, &["rev-parse", "--verify", "-q", &spec]).map(|sha| sha.trim().to_owned())
     }
 
-    fn local_main(&self) -> Result<String, LaneError> {
-        self.resolve_commit("origin/main")
-            .or_else(|_| self.resolve_commit("main"))
+    fn local_main(&self, deadline: std::time::Instant) -> Option<Sha> {
+        probe_git(
+            &self.repo,
+            &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
+            deadline,
+        )
+        .or_else(|_| {
+            probe_git(
+                &self.repo,
+                &["rev-parse", "--verify", "-q", "main^{commit}"],
+                deadline,
+            )
+        })
+        .ok()
+        .and_then(|text| Sha::parse(&text))
     }
 
     fn resolve(&self, base: &ClaimBase, background: bool) -> Result<String, LaneError> {
@@ -747,8 +746,13 @@ impl Pool {
             if let Ok(sha) = self.resolve_commit("main") {
                 return Ok(sha);
             }
-        } else if let Ok(sha) = self.local_main() {
-            return Ok(sha);
+        } else {
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(GIT_TIMEOUT_MS))
+                .unwrap_or_else(std::time::Instant::now);
+            if let Some(sha) = self.local_main(deadline) {
+                return Ok(sha.as_str().to_owned());
+            }
         }
         self.resolve_commit("HEAD")
     }
@@ -806,9 +810,7 @@ impl Pool {
             match self.read_state(slot)?.session {
                 Some(_) if self.abandoned(slot)? => {
                     self.detach(slot, self.branch_of(slot).as_deref())?;
-                    let mut state = self.read_state(slot)?;
-                    state.session = None;
-                    self.write_state(slot, &state)?;
+                    self.clear_session(slot)?;
                     free = Some((slot, Some(guard), false));
                     break;
                 }
@@ -992,9 +994,7 @@ impl Drop for Lane {
                 return Ok(());
             }
             self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-            let mut state = self.pool.read_state(self.slot)?;
-            state.session = None;
-            self.pool.write_state(self.slot, &state)
+            self.pool.clear_session(self.slot)
         });
     }
 }
@@ -1077,9 +1077,7 @@ impl Lane {
         } else {
             self.pool.wipe(self.slot)?
         };
-        let mut state = self.pool.read_state(self.slot)?;
-        state.session = None;
-        self.pool.write_state(self.slot, &state)?;
+        self.pool.clear_session(self.slot)?;
         if quit {
             // Invariant: an unseen lockfile stays cold; that is not a failure.
             match toolchain::warm(&self.pool, self.slot) {

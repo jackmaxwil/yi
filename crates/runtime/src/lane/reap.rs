@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{ClaimBase, Head, LaneError, Pool, STATUS, SlotIndex, git, git_capture, head};
+use super::{
+    ClaimBase, Head, LIST_BUDGET, LaneError, Pool, STATUS, Sha, SlotIndex, git, git_capture, head,
+};
 
 /// Uncommitted paths one status read named; past the capture cap the count is a floor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -77,6 +79,12 @@ impl Pool {
         self.reap_if(slot, Some(session))
     }
 
+    pub(super) fn clear_session(&self, slot: SlotIndex) -> Result<(), LaneError> {
+        let mut state = self.read_state(slot)?;
+        state.session = None;
+        self.write_state(slot, &state)
+    }
+
     fn reap_if(&self, slot: SlotIndex, expected: Option<&str>) -> Result<String, LaneError> {
         let _pool = self.lock()?;
         let (guard, holder) = self.probe(slot)?;
@@ -96,9 +104,7 @@ impl Pool {
         let branch = self.branch_of(slot);
         let kept = self.detach(slot, branch.as_deref())?;
         let lost = self.wipe(slot)?.discarded();
-        let mut state = self.read_state(slot)?;
-        state.session = None;
-        self.write_state(slot, &state)?;
+        self.clear_session(slot)?;
         drop(guard);
         Ok(match (branch, kept) {
             (Some(branch), true) => {
@@ -159,8 +165,11 @@ impl Pool {
     /// locked, a commit `main` lacks or a dirty tree stays, and every kept tree says why. Dry run is read-only.
     pub fn gc(&self, cwd: &Path, dry_run: bool) -> Result<Vec<String>, LaneError> {
         let listing = git_capture(&self.repo, &["worktree", "list", "--porcelain"])?;
-        let base = self.local_main().ok();
-        let base = base.as_deref();
+        let deadline = std::time::Instant::now()
+            .checked_add(LIST_BUDGET)
+            .unwrap_or_else(std::time::Instant::now);
+        let base = self.local_main(deadline);
+        let base = base.as_ref().map(Sha::as_str);
         let here = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
         let slots = (0..self.slots)
             .map(SlotIndex)
@@ -223,12 +232,10 @@ impl Pool {
                     if tree.locked && slot.is_some() {
                         git(&self.repo, &["worktree", "unlock", &path])?;
                     }
-                    if let Some(slot) = slot {
-                        let mut state = self.read_state(slot)?;
-                        state.session = None;
-                        self.write_state(slot, &state)?;
-                    }
                     git(&self.repo, &["worktree", "remove", &path])?;
+                    if let Some(slot) = slot {
+                        self.clear_session(slot)?;
+                    }
                     Ok::<(), LaneError>(())
                 })()
                 .map(drop)
