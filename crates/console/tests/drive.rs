@@ -626,20 +626,28 @@ fn prompt_stream(frame: &Value) -> Vec<Value> {
     frames
 }
 
+fn recorded_permission(path: &str) -> Vec<Value> {
+    path.lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
 fn permission_request() -> Vec<Value> {
     vec![json!({
-        "jsonrpc": "2.0",
-        "id": "perm_s-alpha_1",
-        "method": "session/request_permission",
-        "params": {
-            "sessionId": "s-alpha",
-            "title": "run rm -rf target",
-            "options": [
-                {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
-                {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
-            ],
-        },
+        "jsonrpc": "2.0", "id": "perm_s-alpha_1", "method": "session/request_permission",
+        "params": {"sessionId": "s-alpha", "title": "run rm -rf target", "options": [
+            {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
+            {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
+        ]},
     })]
+}
+
+fn recorded_permission_request() -> Vec<Value> {
+    recorded_permission(include_str!("fixtures/frames/permission-first.jsonl"))
+}
+
+fn second_permission_request() -> Vec<Value> {
+    recorded_permission(include_str!("fixtures/frames/permission-second.jsonl"))
 }
 
 fn permission_answer(frame: &Value) -> Vec<Value> {
@@ -662,6 +670,16 @@ fn permission_answer(frame: &Value) -> Vec<Value> {
         json!({"sessionUpdate": "state_update", "state": "idle"}),
     ));
     frames
+}
+
+fn reject_and_continue(frame: &Value) -> Vec<Value> {
+    let option = frame
+        .pointer("/result/outcome/optionId")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    (option == "reject_once")
+        .then(second_permission_request)
+        .unwrap_or_default()
 }
 
 /// A drive run that times out fails by error, not by panic; its frames still stay behind.
@@ -966,6 +984,29 @@ fn permission_request_blocks_then_answers() -> TestResult {
          key y\n\
          wait-frame 5000 approved, continuing\n\
          wait-frame 5000 !rm -rf target\n\
+         quit\n",
+    )
+}
+
+#[test]
+fn rejecting_an_ask_closes_it_and_the_next_ask_opens() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.extend([
+        Step::Push(recorded_permission_request),
+        Step::Expect("<response>", reject_and_continue),
+        Step::Expect("<response>", permission_answer),
+    ]);
+    run(
+        "permission-reject-second",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 mkdir permission-marker\n\
+         key n\n\
+         wait-frame 5000 !mkdir permission-marker\n\
+         wait-frame 5000 mkdir permission-marker\n\
+         key y\n\
+         wait-frame 5000 approved, continuing\n\
          quit\n",
     )
 }
@@ -4752,18 +4793,18 @@ fn denial_ends_the_turn(frame: &Value) -> Vec<Value> {
 #[test]
 fn closing_the_pane_that_holds_an_approval_cancels_it() -> TestResult {
     let mut fixture = session_fixture();
-    fixture.push(Step::Push(permission_request));
+    fixture.push(Step::Push(recorded_permission_request));
     fixture.push(Step::Expect("<response>", denial_ends_the_turn));
     let frame = run_frames(
         "close-cancels-ask",
         fixture,
         "wait-frame 5000 s-alpha\n\
          key enter\n\
-         wait-frame 5000 rm -rf target\n\
+         wait-frame 5000 mkdir permission-marker\n\
          key alt-v\n\
          key alt-left\n\
          key alt-x\n\
-         wait-frame 5000 !rm -rf target\n\
+         wait-frame 5000 !mkdir permission-marker\n\
          wait-frame 5000 !needs your a\n\
          quit\n",
     )?;

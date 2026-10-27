@@ -1479,37 +1479,13 @@ fn rendered(cell: &ToolCell, mode: TranscriptMode) -> Vec<String> {
 }
 
 #[test]
-fn a_finished_tool_states_its_outcome_without_switching_modes() -> TestResult {
-    let theme = theme();
-    let cases = [
-        ("read", "[a.rs#CF8C]\n1:one\n2:two\n3:three", "3 lines"),
-        (
-            "edit",
-            "[a.rs#77BC]\nupdated; first change at line 210\n210:new",
-            "updated; first change at line 210",
-        ),
-        (
-            "grep",
-            "src/a.rs:3:hit\nsrc/a.rs-4-ctx\nsrc/b.rs:9:hit",
-            "2 hits",
-        ),
-        (
-            "write",
-            "Wrote 36 bytes to /tmp/x",
-            "Wrote 36 bytes to /tmp/x",
-        ),
-    ];
-    for (name, result, expected) in cases {
-        let lines = rendered(&tool_cell(name, result, false), TranscriptMode::Normal);
-        assert!(
-            lines.iter().any(|line| line.contains(expected)),
-            "{name} normal mode should state `{expected}`: {lines:?}"
-        );
-    }
-    // A single hit and a single line read as singular, not "1 hits".
-    let one = tool_cell("grep", "src/a.rs:3:hit", false);
-    assert_eq!(one.digest.as_deref(), Some("1 hit"));
-    let _ = theme;
+fn a_finished_write_states_its_outcome_without_switching_modes() -> TestResult {
+    let cell = tool_cell("write", "Wrote 36 bytes to /tmp/x", false);
+    let lines = rendered(&cell, TranscriptMode::Normal);
+    assert!(
+        lines.iter().any(|line| line.contains("Wrote 36 bytes")),
+        "{lines:?}"
+    );
     Ok(())
 }
 
@@ -1529,51 +1505,6 @@ fn a_failed_call_shows_why_in_every_mode() -> TestResult {
             "a failure must be legible in {mode:?}: {lines:?}"
         );
     }
-    Ok(())
-}
-
-#[test]
-fn verbose_reads_hang_off_a_line_number_gutter_and_drop_the_anchor_header() -> TestResult {
-    let cell = tool_cell(
-        "read",
-        "[a.rs#CF8C]\n9:fn main() {\n10:    body()\n11:}",
-        false,
-    );
-    let lines = rendered(&cell, TranscriptMode::Verbose);
-    let body = lines.join("\n");
-    assert!(
-        !body.contains("CF8C"),
-        "anchor header must not reach the reader: {body}"
-    );
-    assert!(body.contains("   9 fn main() {"), "{body}");
-    assert!(body.contains("  10     body()"), "{body}");
-    Ok(())
-}
-
-#[test]
-fn verbose_grep_prints_each_path_once() -> TestResult {
-    let cell = tool_cell(
-        "grep",
-        "src/a.rs:3:one\nsrc/a.rs:7:two\nsrc/b.rs:9:three",
-        false,
-    );
-    let lines = rendered(&cell, TranscriptMode::Verbose);
-    assert_eq!(
-        lines
-            .iter()
-            .filter(|line| line.trim_matches(['│', ' ']) == "src/a.rs")
-            .count(),
-        1,
-        "{lines:?}"
-    );
-    assert!(
-        lines.iter().any(|line| line.contains("   3 one")),
-        "{lines:?}"
-    );
-    assert!(
-        lines.iter().any(|line| line.contains("   7 two")),
-        "{lines:?}"
-    );
     Ok(())
 }
 

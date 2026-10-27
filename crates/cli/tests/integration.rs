@@ -37,4 +37,5 @@ mod plan_ops;
 mod python_client;
 mod rpc_protocol;
 mod serve_daemon;
+mod tui_cells;
 mod tui_drive;

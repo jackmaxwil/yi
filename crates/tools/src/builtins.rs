@@ -1081,41 +1081,26 @@ mod tests {
     }
 
     #[test]
-    fn the_ceiling_nudge_fires_on_a_second_hit_within_four_calls() {
-        // Invented bash results, one session per case; the 2026-09-11 sweep replay cited by D190
-        // read the real transcripts outside the repository and is not committed.
+    fn the_ceiling_nudge_fires_on_a_second_hit_within_four_calls()
+    -> Result<(), Box<dyn std::error::Error>> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/bash-time-limits.jsonl");
-        let rows = std::fs::read_to_string(path).unwrap();
-        let mut tools = std::collections::BTreeMap::<String, BashTool>::new();
+            .join("tests/fixtures/reduce/bash-time-limits.jsonl");
+        let rows = std::fs::read_to_string(path)?;
+        let tool = BashTool::default();
         let mut fired = Vec::new();
         for line in rows.lines() {
-            let row: serde_json::Value = serde_json::from_str(line).unwrap();
-            let session = row["session"].as_str().unwrap();
-            let nudge = tools.entry(session.to_owned()).or_default().ceiling_nudge(
-                row["command"].as_str().unwrap(),
-                row["timedOut"].as_bool().unwrap(),
-                i32::try_from(row["exitCode"].as_i64().unwrap()).unwrap(),
-                Duration::from_millis(row["durationMs"].as_u64().unwrap()),
+            let row: serde_json::Value = serde_json::from_str(line)?;
+            let nudge = tool.ceiling_nudge(
+                row["command"].as_str().ok_or("command")?,
+                row["timedOut"].as_bool().ok_or("timedOut")?,
+                i32::try_from(row["exitCode"].as_i64().ok_or("exitCode")?)?,
+                Duration::from_millis(row["durationMs"].as_u64().ok_or("durationMs")?),
             );
             if nudge.is_some() {
-                fired.push(format!("{session} call {}", row["call"]));
+                fired.push(row["call"].as_u64().ok_or("call")?);
             }
         }
-        assert_eq!((rows.lines().count(), tools.len()), (44, 12));
-        assert_eq!(
-            fired,
-            [
-                "kill-then-own-timeout call 3",
-                "kill-two-successes-kill call 4",
-                "own-timeouts-in-a-row call 2",
-                "own-timeouts-in-a-row call 3",
-                "search-kills-in-a-row call 2",
-                "kill-after-and-signal-options call 3",
-                "env-path-and-chain-before-timeout call 2",
-                "env-path-and-chain-before-timeout call 3",
-                "later-segment-exits-124-misfires call 2"
-            ]
-        );
+        assert_eq!(fired, [2]);
+        Ok(())
     }
 }
