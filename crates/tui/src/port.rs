@@ -118,10 +118,13 @@ impl Dirty {
         self.count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The count for a draw: the first idle draw after a turn (or ever) starts a read, so a
-    /// turn of twenty tool rounds costs one `git status`, taken once its edits are done.
-    pub fn count(self: &Arc<Self>, running: bool, cwd: &str) -> u32 {
+    /// The first idle draw after a turn starts one `git status`, so twenty tool rounds cost one.
+    /// A lane shows its name where the badge would be, so it reads nothing and counts 0.
+    pub fn count(self: &Arc<Self>, running: bool, lane: bool, cwd: &str) -> u32 {
         use std::sync::atomic::Ordering::Relaxed;
+        if lane {
+            return 0;
+        }
         if running {
             self.read_while_idle.store(false, Relaxed);
         } else if !self.read_while_idle.swap(true, Relaxed) {
@@ -706,9 +709,7 @@ impl crate::app::App {
             return;
         }
         self.branch = git_branch(&cwd);
-        if lane.is_none() {
-            self.dirty.refresh(&cwd);
-        }
+        self.dirty.refresh(&cwd);
         self.options.cwd = cwd;
         self.options.lane = lane;
         self.scheduler.request();

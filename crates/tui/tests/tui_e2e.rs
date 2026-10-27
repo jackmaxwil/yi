@@ -3643,6 +3643,23 @@ fn a_dirty_count_follows_the_directory_asked_for_last() -> TestResult {
     Ok(())
 }
 
+/// Dies with a `git status` per lane draw, whose count the lane's status row never shows.
+#[test]
+fn a_lane_draw_reads_no_dirty_count() -> TestResult {
+    let root = Scratch::new("yi-dirty-lane")?;
+    let repo = root.join("repo");
+    crate::repo::init_repo(&repo)?;
+    std::fs::write(repo.join("one"), "x")?;
+    let cwd = repo.to_string_lossy().into_owned();
+    let dirty = Arc::new(yi_tui::port::Dirty::default());
+    assert_eq!(dirty.count(false, true, &cwd), 0);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(dirty.get(), 0, "a lane draw read the tree");
+    wait_for("the count outside a lane", || {
+        dirty.count(false, false, &cwd) == 1
+    })
+}
+
 /// Dies with a `git status` per draw, or per tool round: the count is read once when a turn
 /// has ended and not again until another turn has run, however many idle draws come between.
 #[test]
@@ -3653,13 +3670,17 @@ fn a_dirty_count_is_read_once_per_idle_period() -> TestResult {
     std::fs::write(repo.join("one"), "x")?;
     let cwd = repo.to_string_lossy().into_owned();
     let dirty = Arc::new(yi_tui::port::Dirty::default());
-    let settled = |want: u32| wait_for("the count", || dirty.count(false, &cwd) == want);
+    let settled = |want: u32| wait_for("the count", || dirty.count(false, false, &cwd) == want);
     settled(1)?;
     std::fs::write(repo.join("two"), "x")?;
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(dirty.count(false, &cwd), 1, "an idle draw re-read the tree");
     assert_eq!(
-        dirty.count(true, &cwd),
+        dirty.count(false, false, &cwd),
+        1,
+        "an idle draw re-read the tree"
+    );
+    assert_eq!(
+        dirty.count(true, false, &cwd),
         1,
         "a running draw re-read the tree"
     );
