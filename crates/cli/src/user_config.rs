@@ -122,7 +122,31 @@ pub(crate) fn configured_roles() -> yi_types::config::ModelRoles {
     config().models.clone().unwrap_or_default()
 }
 
-pub(crate) fn configured_auto_background() -> Option<std::time::Duration> {
-    let millis = config().bash.as_ref()?.auto_background_ms?;
+/// Incident: a model that never passed `wait` held the turn for a whole `just check`.
+/// Off where the run exits once idle (`yi ask`): nothing would hear the job finish.
+pub(crate) fn configured_auto_background(exits_idle: bool) -> Option<std::time::Duration> {
+    auto_background(
+        config()
+            .bash
+            .as_ref()
+            .and_then(|bash| bash.auto_background_ms),
+        exits_idle,
+    )
+}
+
+fn auto_background(set: Option<u64>, exits_idle: bool) -> Option<std::time::Duration> {
+    let millis = set.unwrap_or(if exits_idle { 0 } else { 60_000 });
     (millis > 0).then(|| std::time::Duration::from_millis(millis))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unset_backgrounds_at_60s_unless_the_run_exits_idle_and_zero_opts_out() {
+        let at = |set, exits_idle| super::auto_background(set, exits_idle).map(|d| d.as_secs());
+        assert_eq!(at(None, false), Some(60));
+        assert_eq!(at(None, true), None);
+        assert_eq!(at(Some(0), false), None);
+        assert_eq!(at(Some(5_000), true), Some(5));
+    }
 }
