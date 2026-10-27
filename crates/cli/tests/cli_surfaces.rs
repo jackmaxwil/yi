@@ -383,7 +383,8 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
     assert!(full.iter().any(|kind| kind == "message_update"), "{full:?}");
     let kept: Vec<_> = full.into_iter().filter(|k| k != "message_update").collect();
     assert_eq!(lean, kept);
-    assert_eq!(lean.last().map(String::as_str), Some("agent_end"));
+    let tail: Vec<_> = lean.iter().rev().take(2).map(String::as_str).collect();
+    assert_eq!(tail, ["final", "agent_end"]);
 
     let mut argv = vec!["--faux", recorded.as_str()];
     argv.extend("--model faux/faux-1 --json --no-deltas look on".split(' '));
