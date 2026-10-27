@@ -41,8 +41,7 @@ BASELINES = ROOT / "scripts/guardrails/baselines"
 BINARY = {"binary_size_budget": "dist binary", "binary_size_budget_linux": "Linux dist binary"}
 SUBJECT_LIMIT = 72
 POLL = 20
-GATES = ("gate (guardrails)", "gate (lint)", "gate (test)")
-WEB ="https://git.example.invalid"
+WEB = "https://git.example.invalid"
 HOST = WEB.removeprefix("https://")
 
 
@@ -328,7 +327,7 @@ def cmd_check(args):
         title, body = pr["title"], pr.get("body") or ""
     else:
         title = args.title or ""
-        body = cite(pathlib.Path(args.body).read_text() if args.body else "", args)
+        body = pathlib.Path(args.body).read_text() if args.body else ""
     errs = check_problems(title, body)
     for err in errs:
         print(err)
@@ -352,13 +351,11 @@ def dedupe_counted(body, counted):
     return "\n".join(out).strip()
 
 
-def cite(body, args):
-    cites = [f"Closes #{n}" for n in args.closes] + [f"Refs #{n}" for n in args.refs]
-    return ", ".join(cites) + ("\n\n" + body if body else "") if cites else body
-
-
 def compose_body(args):
-    body = cite(pathlib.Path(args.body).read_text().strip() if args.body else "", args)
+    body = pathlib.Path(args.body).read_text().strip() if args.body else ""
+    cites = [f"Closes #{n}" for n in args.closes] + [f"Refs #{n}" for n in args.refs]
+    if cites:
+        body = ", ".join(cites) + ("\n\n" + body if body else "")
     counted = subprocess.run(
         (sys.executable, str(ROOT / "scripts/pr_body.py")), capture_output=True, text=True, check=False
     ).stdout.strip()
@@ -462,12 +459,14 @@ def is_behind(pr):
 def required():
     """Invariant: a merge waits on the three gates whatever the protection rule lists, because the
     rule is a setting someone can shorten and the merge verb is where red must stop."""
+    import pr_review
+
     protections = fgj_api("GET", f"repos/{repo()}/branch_protections") or []
     protected = ["size-report", "title"]
     for protection in protections:
         if protection.get("branch_name") == "main":
             protected = required_jobs(protection.get("status_check_contexts") or [])
-    return list(dict.fromkeys([*GATES, *protected]))
+    return list(dict.fromkeys([*pr_review.GATE_LANES, *protected]))
 
 
 def jobs_of(pr):
@@ -666,16 +665,21 @@ def selfcheck():
     # Incident: measure() grew the surface delta and this unpack still took three, so
     # `just pr open`, `pr check` and `land` died on a ValueError before asking anything.
     import check_pr_metadata as gate
+    def fake_measure(measured):
+        """Replaces check_pr_metadata.measure with one returning `measured`; returns (the saved measure, the body with every REQUIRED section)."""
+        saved = gate.measure
+        gate.measure = lambda: (measured, None)
+        return saved, "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED)
 
-    real = gate.measure, globals()["repo"]
-    gate.measure = lambda: (([], [], 0, ([], ["tool:bash"])), None)
+
+    real_repo = globals()["repo"]
+    real_measure, filled = fake_measure(([], [], 0, ([], ["tool:bash"])))
     globals()["repo"] = lambda: "apex/yi"
-    filled = "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED)
     try:
         errs = check_problems("Lock the tool surface", filled)
         drafted = check_problems(DRAFT + "Lock the tool surface", "## Summary\n\nwords\n")
     finally:
-        gate.measure, globals()["repo"] = real
+        gate.measure, globals()["repo"] = real_measure, real_repo
     assert len(errs) == 1 and "## Claims ledger" in errs[0] and "tool:bash" in errs[0], errs
     assert not [e for e in drafted if e.startswith("title:")], "a draft title passes the title rule"
     assert any("no `## Why needed`" in e for e in drafted), "`just pr open` runs the template check"
@@ -776,8 +780,7 @@ def selfcheck():
     code, posts = merge_on_fake_forge(listed, {job: s for job, s in green.items() if job != "gate (lint)"})
     assert code == 2 and not posts, "a gate that has not run on the head is not merged"
     assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
-    real_measure = gate.measure
-    gate.measure = lambda: (([], [], 0, ([], [])), None)
+    real_measure, _ = fake_measure(([], [], 0, ([], [])))
     body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_body.md"
     body_file.write_text("## Summary\n\nwords\n")
     globals()["pull"] = lambda n: {"number": n, "title": "Keep the gate"}
@@ -797,21 +800,6 @@ def selfcheck():
         globals()["fgj_api"] = real_fgj
     assert stopped == 1, "a refused PATCH is not reported as an edit"
     assert any("no `## Why needed`" in line for line in seen.getvalue().splitlines()), seen.getvalue()
-    grown = lambda: (([], [], 200, ([], [])), None)
-    gate.measure = grown
-    flagged = "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED)
-    body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_check.md"
-    body_file.write_text(flagged)
-    issue_ok = gate.issue_problems
-    gate.issue_problems = lambda *a: []
-    try:
-        for closes, want in (([1], 0), ([], 1)):
-            with contextlib.redirect_stdout(io.StringIO()):
-                code = cmd_check(argparse.Namespace(number=None, title="Keep the gate", body=str(body_file), closes=closes, refs=[]))
-            assert code == want, ("pr check judges the body as pr open composes it", closes, code)
-    finally:
-        gate.measure, gate.issue_problems = real_measure, issue_ok
-        body_file.unlink()
     # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green,
     # because nothing here built the verbs; a name the parser wires that no longer exists
     # now fails this flag instead of the next `just commit`.
@@ -849,8 +837,6 @@ def build_parser():
     check.add_argument("number", nargs="?")
     check.add_argument("--title")
     check.add_argument("--body")
-    check.add_argument("--closes", action="append", default=[])
-    check.add_argument("--refs", action="append", default=[])
     check.set_defaults(run=cmd_check)
     edit = pr.add_parser("edit")
     edit.add_argument("number", type=int)
