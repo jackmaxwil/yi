@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::file_cache::{Slot, Stamp};
 
@@ -90,14 +90,16 @@ impl Zone {
         let Some((_, slot)) = local.as_ref() else {
             return Self::default();
         };
-        slot.load(stamp, || {
-            std::fs::read(&path)
-                .ok()
-                .and_then(|bytes| Self::from_tzif(&bytes))
-                .ok_or(())
-        })
-        .map(|zone| (*zone).clone())
-        .unwrap_or_default()
+        if let Some(zone) = slot.cached(&stamp) {
+            return zone.as_ref().clone();
+        }
+        let Some(zone) = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| Self::from_tzif(&bytes))
+        else {
+            return Self::default();
+        };
+        slot.store(stamp, Arc::new(zone)).as_ref().clone()
     }
 
     pub fn from_tzif(bytes: &[u8]) -> Option<Self> {

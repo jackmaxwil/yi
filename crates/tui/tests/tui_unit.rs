@@ -1,4 +1,5 @@
 use crate::common;
+use crate::tool_cell_support::{rendered, tool_cell};
 
 use std::error::Error;
 
@@ -1452,36 +1453,16 @@ fn nested_items_hang_under_their_own_marker() -> TestResult {
     Ok(())
 }
 
-fn tool_cell(name: &str, result: &str, failed: bool) -> ToolCell {
-    ToolCell {
-        name: name.to_owned(),
-        call_id: String::new(),
-        status: if failed {
-            ToolStatus::Failed
-        } else {
-            ToolStatus::Done
-        },
-        summary: ToolCell::summary_of(name, ""),
-        digest: ToolCell::digest_of(name, result, &serde_json::Value::Null, failed),
-        preview: result.lines().map(str::to_owned).collect(),
-        elapsed_ms: 0,
-        calls: 1,
-        details: serde_json::Value::Null,
-    }
-}
-
-fn rendered(cell: &ToolCell, mode: TranscriptMode) -> Vec<String> {
-    Cell::Tool(cell.clone())
-        .lines(80, &theme(), mode, 0)
-        .iter()
-        .map(flat)
-        .collect()
-}
-
 #[test]
 fn a_finished_write_states_its_outcome_without_switching_modes() -> TestResult {
-    let cell = tool_cell("write", "Wrote 36 bytes to /tmp/x", false);
-    let lines = rendered(&cell, TranscriptMode::Normal);
+    let cell = tool_cell(
+        "write",
+        "",
+        "Wrote 36 bytes to /tmp/x",
+        &serde_json::Value::Null,
+        false,
+    );
+    let lines = rendered(&cell, 80, TranscriptMode::Normal);
     assert!(
         lines.iter().any(|line| line.contains("Wrote 36 bytes")),
         "{lines:?}"
@@ -1491,13 +1472,19 @@ fn a_finished_write_states_its_outcome_without_switching_modes() -> TestResult {
 
 #[test]
 fn a_failed_call_shows_why_in_every_mode() -> TestResult {
-    let cell = tool_cell("bash", "error[E0308]: mismatched types\n  --> a.rs:1", true);
+    let cell = tool_cell(
+        "bash",
+        "",
+        "error[E0308]: mismatched types\n  --> a.rs:1",
+        &serde_json::Value::Null,
+        true,
+    );
     for mode in [
         TranscriptMode::Normal,
         TranscriptMode::Thinking,
         TranscriptMode::Verbose,
     ] {
-        let lines = rendered(&cell, mode);
+        let lines = rendered(&cell, 80, mode);
         assert!(
             lines
                 .iter()

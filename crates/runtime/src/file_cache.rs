@@ -38,19 +38,74 @@ impl<T> Default for Slot<T> {
     }
 }
 impl<T> Slot<T> {
-    pub(crate) fn load<E>(
-        &self,
-        stamp: Stamp,
-        fresh: impl FnOnce() -> Result<T, E>,
-    ) -> Result<Arc<T>, E> {
+    pub(crate) fn cached(&self, stamp: &Stamp) -> Option<Arc<T>> {
+        let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        held.as_ref()
+            .and_then(|(seen, cached)| (*seen == *stamp).then(|| Arc::clone(cached)))
+    }
+
+    pub(crate) fn store(&self, stamp: Stamp, cached: Arc<T>) -> Arc<T> {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((seen, cached)) = held.as_ref()
+        if let Some((seen, existing)) = held.as_ref()
             && *seen == stamp
         {
-            return Ok(Arc::clone(cached));
+            return Arc::clone(existing);
         }
-        let cached = Arc::new(fresh()?);
         *held = Some((stamp, Arc::clone(&cached)));
-        Ok(cached)
+        cached
+    }
+
+    pub(crate) fn load(&self, stamp: Stamp, fresh: impl FnOnce() -> T) -> Arc<T> {
+        if let Some(cached) = self.cached(&stamp) {
+            return cached;
+        }
+        let cached = Arc::new(fresh());
+        self.store(stamp, cached)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    fn stamp(mark: i64) -> Stamp {
+        Stamp {
+            dev: 0,
+            ino: 0,
+            len: 0,
+            mtime: (mark, 0),
+            tail: None,
+        }
+    }
+
+    #[test]
+    fn a_cache_hit_does_not_wait_for_a_reload() -> Result<(), Box<dyn std::error::Error>> {
+        let slot = Arc::new(Slot::default());
+        assert_eq!(*slot.load(stamp(1), || 1), 1);
+        let (loading_tx, loading_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (hit_tx, hit_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let reloading = Arc::clone(&slot);
+            scope.spawn(move || {
+                reloading.load(stamp(2), || {
+                    let _ = loading_tx.send(());
+                    let _ = release_rx.recv();
+                    2
+                });
+            });
+            loading_rx.recv()?;
+            let hitting = Arc::clone(&slot);
+            scope.spawn(move || {
+                let _ = hit_tx.send(hitting.load(stamp(1), || 3));
+            });
+            let hit = hit_rx.recv_timeout(Duration::from_millis(100));
+            release_tx.send(())?;
+            assert_eq!(*hit?, 1);
+            Ok(())
+        })
     }
 }

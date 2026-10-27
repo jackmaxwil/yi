@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext};
-use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
-use yi_tui::colors::{ColorTier, Theme};
+use yi_tui::cell::{ToolCell, TranscriptMode};
 use yi_types::message::Content;
 
 use crate::scratch::Scratch;
+use crate::tool_cell_support::{rendered, tool_cell};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -27,35 +27,13 @@ fn cell(
         Some(Content::Text { text, .. }) => text.clone(),
         _ => return Err(format!("{name} returned no text").into()),
     };
-    Ok(ToolCell {
-        name: name.to_owned(),
-        call_id: String::new(),
-        status: if output.is_error {
-            ToolStatus::Failed
-        } else {
-            ToolStatus::Done
-        },
-        summary: ToolCell::summary_of(name, argument),
-        digest: ToolCell::digest_of(name, &text, &output.result.details, output.is_error),
-        preview: text.lines().map(str::to_owned).collect(),
-        elapsed_ms: 0,
-        calls: 1,
-        details: output.result.details,
-    })
-}
-
-fn rendered(cell: &ToolCell, mode: TranscriptMode) -> String {
-    Cell::Tool(cell.clone())
-        .lines(100, &Theme::new(ColorTier::Ansi16, true), mode, 0)
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    Ok(tool_cell(
+        name,
+        argument,
+        &text,
+        &output.result.details,
+        output.is_error,
+    ))
 }
 
 fn row(line: &str) -> &str {
@@ -115,7 +93,7 @@ fn real_tool_results_drive_read_grep_and_edit_cards() -> TestResult {
         ToolCell::digest_of("read", &read_text, &Value::Null, false).as_deref(),
         Some("3 lines")
     );
-    let read_body = rendered(&read, TranscriptMode::Verbose);
+    let read_body = rendered(&read, 100, TranscriptMode::Verbose).join("\n");
     assert!(
         read_body
             .lines()
@@ -126,7 +104,7 @@ fn real_tool_results_drive_read_grep_and_edit_cards() -> TestResult {
     assert!(!read_body.contains("sample.rs#"), "{read_body}");
 
     assert_eq!(grep.digest.as_deref(), Some("2 hits"));
-    let grep_body = rendered(&grep, TranscriptMode::Verbose);
+    let grep_body = rendered(&grep, 100, TranscriptMode::Verbose).join("\n");
     assert_eq!(
         grep_body
             .lines()
@@ -153,7 +131,7 @@ fn real_tool_results_drive_read_grep_and_edit_cards() -> TestResult {
         edit.digest.as_deref(),
         Some("updated; first change at line 2")
     );
-    let edit_body = rendered(&edit, TranscriptMode::Verbose);
+    let edit_body = rendered(&edit, 100, TranscriptMode::Verbose).join("\n");
     assert!(edit_body.contains("changed"), "{edit_body}");
     Ok(())
 }

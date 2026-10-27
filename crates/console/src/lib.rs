@@ -752,23 +752,17 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                     WaitPoll::Done => {}
                 }
             }
-            (step @ ConsoleStep::Tui(Step::WaitFrame(..) | Step::WaitRow(..)), started) => {
-                let (ms, present, text, whole) =
-                    if let ConsoleStep::Tui(Step::WaitFrame(ms, present, text)) = &step {
-                        (*ms, *present, text, false)
-                    } else if let ConsoleStep::Tui(Step::WaitRow(ms, present, text)) = &step {
-                        (*ms, *present, text, true)
-                    } else {
-                        return 1;
-                    };
-                let shown =
-                    yi_tui::drive::frame_matches(terminal.backend(), text, whole) == present;
-                match poll_condition(shown, started, ms, &format!("{step:?}")) {
-                    WaitPoll::Done => {}
-                    WaitPoll::Retry => current = Some((step, started)),
-                    WaitPoll::Failed(error) => {
-                        eprintln!("error: {error}");
-                        exit_code = 1;
+            (ConsoleStep::Tui(step @ (Step::WaitFrame(..) | Step::WaitRow(..))), started) => {
+                if let Some((ms, present, text, whole)) = yi_tui::drive::wait_parts(&step) {
+                    let shown =
+                        yi_tui::drive::frame_matches(terminal.backend(), text, whole) == present;
+                    match poll_condition(shown, started, ms, &format!("{step:?}")) {
+                        WaitPoll::Done => {}
+                        WaitPoll::Retry => current = Some((ConsoleStep::Tui(step), started)),
+                        WaitPoll::Failed(error) => {
+                            eprintln!("error: {error}");
+                            exit_code = 1;
+                        }
                     }
                 }
             }

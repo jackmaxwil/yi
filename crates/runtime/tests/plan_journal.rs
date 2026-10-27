@@ -1032,27 +1032,13 @@ fn a_memory_journal_sets_its_torn_tail_aside() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-struct TraceFile(std::sync::Mutex<std::fs::File>);
-
-impl yi_types::trace::TraceSink for TraceFile {
-    fn write(&self, event: &str) {
-        if let Ok(mut file) = self.0.lock() {
-            let _ = std::io::Write::write_all(&mut *file, format!("{event}\n").as_bytes());
-        }
-    }
-}
-
 /// The trace sink is fixed at a process's first span, so a span count needs a fresh process:
 /// the parent reruns `test` under `YI_TRACE`, and the child gets its own trace file back.
 fn traced(test: &str) -> Result<Option<PathBuf>, Box<dyn Error>> {
     if let Some(dir) = std::env::var_os("YI_TRACE") {
         let trace = PathBuf::from(dir).join(format!("{}.jsonl", std::process::id()));
         let file = std::fs::File::create(&trace)?;
-        yi_types::trace::install(
-            Box::new(TraceFile(std::sync::Mutex::new(file))),
-            std::process::id(),
-            0,
-        );
+        yi_types::trace::install(yi_runtime::trace::file_sink(file), std::process::id(), 0);
         return Ok(Some(trace));
     }
     let dir = Scratch::new("yi-plan-journal-trace")?;
@@ -1143,11 +1129,11 @@ fn long_plan(engine: &PlanEngine) -> Result<PlanId, Box<dyn Error>> {
     Ok(id)
 }
 
-/// Sixteen first reads of one journal reduce it once, and every reader gets what an
-/// uncached reduce of the same bytes gives.
+/// Sixteen first reads of one journal agree, and a read after they settle uses the cached reduction.
 #[test]
-fn sixteen_first_reads_of_one_journal_reduce_it_once() -> TestResult {
-    let Some(trace) = traced("plan_journal::sixteen_first_reads_of_one_journal_reduce_it_once")?
+fn sixteen_first_reads_agree_and_the_next_read_is_cached() -> TestResult {
+    let Some(trace) =
+        traced("plan_journal::sixteen_first_reads_agree_and_the_next_read_is_cached")?
     else {
         return Ok(());
     };
@@ -1157,7 +1143,6 @@ fn sixteen_first_reads_of_one_journal_reduce_it_once() -> TestResult {
     let store = PlanStore::open(dir.join("fresh"))?;
     std::fs::create_dir_all(store.plan_dir(&id))?;
     std::fs::copy(written.journal_path(&id), store.journal_path(&id))?;
-    let before = reduces(&trace)?;
     let reads: Vec<_> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..16)
             .map(|_| scope.spawn(|| store.read(&id).map_err(|error| error.to_string())))
@@ -1167,12 +1152,13 @@ fn sixteen_first_reads_of_one_journal_reduce_it_once() -> TestResult {
             .map(|handle| handle.join().map_err(|_| "a reader panicked".to_owned()))
             .collect()
     });
-    let counted = reduces(&trace)?.saturating_sub(before);
     let expected = uncached(&store, &id)?;
     for read in reads {
         assert_eq!(read??, expected);
     }
-    assert_eq!(counted, 1, "sixteen readers of one unchanged journal");
+    let cached = reduces(&trace)?;
+    assert_eq!(store.read(&id)?, expected);
+    assert_eq!(reduces(&trace)?, cached, "the settled read hit the cache");
     Ok(())
 }
 

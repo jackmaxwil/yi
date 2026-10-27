@@ -195,6 +195,14 @@ pub fn frame_matches(backend: &RecordingBackend, text: &str, whole_row: bool) ->
     })
 }
 
+pub fn wait_parts(step: &Step) -> Option<(u64, bool, &str, bool)> {
+    match step {
+        Step::WaitFrame(ms, present, text) => Some((*ms, *present, text, false)),
+        Step::WaitRow(ms, present, text) => Some((*ms, *present, text, true)),
+        _ => None,
+    }
+}
+
 pub fn key_event(key: &SingleKey) -> KeyEvent {
     let code = match key.code {
         KeyCodeValue::Char(c) => KeyCode::Char(c),
@@ -651,21 +659,16 @@ pub fn run_headless(
                 }
             }
             (step @ (Step::WaitFrame(..) | Step::WaitRow(..)), started) => {
-                let (ms, present, text, whole) = if let Step::WaitFrame(ms, present, text) = &step {
-                    (*ms, *present, text, false)
-                } else if let Step::WaitRow(ms, present, text) = &step {
-                    (*ms, *present, text, true)
-                } else {
-                    return 1;
-                };
-                let shown = frame_matches(terminal.backend(), text, whole) == present;
-                match poll_condition(shown, started, ms, &format!("{step:?}")) {
-                    WaitPoll::Done => {}
-                    WaitPoll::Retry => current = Some((step, started)),
-                    WaitPoll::Failed(error) => {
-                        eprintln!("error: {error}\n  waiting for {text:?}");
-                        exit_code = 1;
-                        break;
+                if let Some((ms, present, text, whole)) = wait_parts(&step) {
+                    let shown = frame_matches(terminal.backend(), text, whole) == present;
+                    match poll_condition(shown, started, ms, &format!("{step:?}")) {
+                        WaitPoll::Done => {}
+                        WaitPoll::Retry => current = Some((step, started)),
+                        WaitPoll::Failed(error) => {
+                            eprintln!("error: {error}\n  waiting for {text:?}");
+                            exit_code = 1;
+                            break;
+                        }
                     }
                 }
             }
