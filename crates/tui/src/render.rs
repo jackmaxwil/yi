@@ -272,11 +272,9 @@ pub fn layout_chat(
         cwd: app.options.cwd.clone(),
         lane: app.options.lane.clone(),
         branch: app.branch.clone(),
-        dirty: if app.options.lane.is_some() {
-            0
-        } else {
-            app.dirty.count(app.running, &app.options.cwd)
-        },
+        dirty: app
+            .dirty
+            .count(app.running, app.options.lane.is_some(), &app.options.cwd),
         landing: app.landing.as_ref().and_then(|landing| {
             crate::status::landing_segment(landing, app.landing_at.map(|at| app.clock.since(at)))
         }),
