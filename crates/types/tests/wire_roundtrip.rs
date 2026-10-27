@@ -36,8 +36,9 @@ fn pi_v4_fixtures_roundtrip_byte_identical() -> Result<(), Box<dyn Error>> {
     for fixture in fs::read_dir(&dir)? {
         let path = fixture?.path();
         if path
-            .extension()
-            .is_some_and(|extension| extension == "jsonl")
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("v4-") && name.ends_with(".jsonl"))
         {
             roundtrip_file(&path)?;
             seen += 1;
