@@ -441,6 +441,25 @@ fn write_targets_keep_what_the_splitter_skips() {
     }
 }
 
+/// Dies with shell text read as a write: quoted arrows and heredoc bodies name no file, while
+/// bash's combined-stream forms name the same file their shell writes.
+#[test]
+fn write_targets_read_redirects_with_shell_quoting() {
+    let heredoc = "python3 - <<'PY'\ndef gate(n: int) -> bool:\n    return n > 1\nPY";
+    let cases: [(&str, &[&str]); 7] = [
+        (heredoc, &[]),
+        ("echo \"a > crates/b\"", &[]),
+        ("make >&crates/build.log", &["crates/build.log"]),
+        ("echo hi >& crates/lock.rs", &["crates/lock.rs"]),
+        ("cargo test &>> crates/test.log", &["crates/test.log"]),
+        ("cd /tmp && echo hi > crates/after.rs", &["crates/after.rs"]),
+        ("cmd >&2 2>/dev/null", &["/dev/null"]),
+    ];
+    for (command, expected) in cases {
+        assert_eq!(write_targets(command), expected, "{command:?}");
+    }
+}
+
 /// A contained run has no network past loopback, so these approvals leave the sandbox; `git add` and a local
 /// `rm` stay inside it.
 #[test]

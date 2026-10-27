@@ -715,26 +715,104 @@ pub fn refused_scopes(command: &str) -> Vec<String> {
     scopes
 }
 
+/// The files a command redirects into, read as the shell reads them: a `>` inside quotes, a comment
+/// or a heredoc body names nothing, and a redirect after `cd` is left to the sandbox.
+pub(crate) fn redirect_targets(command: &str, include_after_cd: bool) -> Vec<String> {
+    let (mut files, mut quote, mut ends) = (Vec::new(), None, Vec::<String>::new());
+    let (mut depth, mut command_start) = (0_u8, true);
+    for line in command.split('\n') {
+        if let Some(end) = ends.first() {
+            if line.trim() == end {
+                ends.remove(0);
+            }
+            continue;
+        }
+        if quote.is_none() && depth == 0 {
+            command_start = true;
+        }
+        let (mut chars, mut prev) = (line.chars().peekable(), ' ');
+        while let Some(c) = chars.next() {
+            match (quote, c) {
+                (Some(open), c) if c == open => quote = None,
+                (Some('"') | None, '\\') => {
+                    chars.next();
+                    command_start = false;
+                }
+                (Some(_), _) => {}
+                (None, '#') if prev.is_whitespace() => break,
+                (None, '\'' | '"') => {
+                    quote = Some(c);
+                    command_start = false;
+                }
+                (None, '<') => {
+                    let heredoc =
+                        chars.next_if_eq(&'<').is_some() && chars.next_if_eq(&'<').is_none();
+                    if heredoc {
+                        chars.next_if_eq(&'-');
+                        ends.extend(word(&mut chars));
+                    }
+                    command_start = false;
+                }
+                (None, '>') => {
+                    while chars.next_if(|next| matches!(next, '>' | '|')).is_some() {}
+                    let combined = chars.next_if_eq(&'&').is_some();
+                    if let Some(target) = word(&mut chars)
+                        && (!combined
+                            || (target != "-" && !target.chars().all(|c| c.is_ascii_digit())))
+                    {
+                        files.push(target);
+                    }
+                    command_start = false;
+                }
+                (None, '(') => {
+                    depth = depth.saturating_add(1);
+                    command_start = false;
+                }
+                (None, ')') => {
+                    depth = depth.saturating_sub(1);
+                    command_start = false;
+                }
+                (None, ';' | '|' | '&') => command_start = depth == 0,
+                (None, 'c') if depth == 0 && command_start => {
+                    if chars.next_if_eq(&'d').is_some()
+                        && chars
+                            .peek()
+                            .is_none_or(|next| next.is_whitespace() || ";&|<>()".contains(*next))
+                        && !include_after_cd
+                    {
+                        return files;
+                    }
+                    command_start = false;
+                }
+                (None, c) if c.is_whitespace() => {}
+                (None, _) => command_start = false,
+            }
+            prev = c;
+        }
+    }
+    files
+}
+
+/// The next shell word, quotes dropped; none when it is empty or built by expansion.
+fn word(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+    while chars.next_if(|next| next.is_whitespace()).is_some() {}
+    let (mut text, mut quote) = (String::new(), None);
+    while let Some(c) =
+        chars.next_if(|c| quote.is_some() || !(c.is_whitespace() || ";&|()<>".contains(*c)))
+    {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            _ => text.push(c),
+        }
+    }
+    (!text.is_empty() && !text.contains(['$', '`'])).then_some(text)
+}
+
 /// What a command writes as an honest agent spells it: redirects (which the lenient splitter
 /// skips), in-place edits, file verbs. `2>&1` names no file.
 pub fn write_targets(command: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for (at, _) in command.match_indices('>') {
-        let from = command.get(at..).unwrap_or_default();
-        let rest = from.trim_start_matches(['>', '|']).trim_start();
-        let target: String = rest
-            .chars()
-            .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '&' | '|' | ')'))
-            .collect();
-        let target = target.trim_matches(['\'', '"']);
-        // `>>x` is seen at both of its `>`s.
-        if !target.is_empty()
-            && !from.starts_with(">&")
-            && out.last().is_none_or(|last| last != target)
-        {
-            out.push(target.to_owned());
-        }
-    }
+    let mut out = redirect_targets(command, true);
     for segment in command.split(crate::catastrophic::SEPARATORS) {
         let words: Vec<&str> = segment
             .split_whitespace()

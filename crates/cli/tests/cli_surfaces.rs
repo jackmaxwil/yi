@@ -434,6 +434,20 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
         &["--allow-write", &workspace.project().to_string_lossy()],
     )?;
     assert_eq!(run.status.code(), Some(0), "{run:?}");
+    let granted = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("allow-write-config-{}", std::process::id()));
+    std::fs::create_dir_all(&granted)?;
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [granted]}}).to_string(),
+    )?;
+    let made = granted.join("made");
+    let command = format!("touch '{}'", made.display());
+    let script = bash_script(&workspace, &command, Some("done"))?;
+    let configured = ask(&workspace, "look", &["--faux", &script])?;
+    assert_eq!(configured.status.code(), Some(0), "{configured:?}");
+    assert!(made.exists());
+    std::fs::remove_dir_all(granted)?;
     Ok(())
 }
 
@@ -2838,6 +2852,27 @@ fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -
     let run = ask(&workspace, "go", &flags)?;
     assert_eq!(run.status.code(), Some(0), "{}", stdout(&run));
     assert!(workspace.project().join("made[1]").exists());
+    Ok(())
+}
+
+/// Dies with `edit edit` offered as an exact remedy: its pattern allows every edit, so a pathless
+/// display must send the operator to an interactive approval instead of printing that entry.
+#[test]
+fn a_headless_edit_denial_does_not_offer_an_allow_everything_entry() -> TestResult {
+    let workspace = Workspace::new("headless-edit-denial")?;
+    let patch = "[crates/x.rs#1234]\nPUT 1.=1:\n+changed";
+    let script = tool_script(&workspace, &[("edit", json!({"patch": patch}))], Some("no"))?;
+    let run = ask(
+        &workspace,
+        "go",
+        &["--confirm", "--json", "--faux", &script],
+    )?;
+    assert_eq!(run.status.code(), Some(4), "{run:?}");
+    let out = stdout(&run);
+    let last: Value = serde_json::from_str(out.lines().last().ok_or("no output")?)?;
+    let reason = last["reason"].as_str().ok_or("no reason")?;
+    assert!(!reason.contains("Allow exactly this call"), "{reason}");
+    assert!(reason.contains("interactive"), "{reason}");
     Ok(())
 }
 

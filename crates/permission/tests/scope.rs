@@ -238,6 +238,9 @@ fn a_redirect_into_the_tree_is_judged_like_a_write() -> TestResult {
         "make 2>crates/err.log",
         "make &>crates/all.log",
         "echo hi >| crates/x",
+        "make >&crates/build.log",
+        "echo hi >& crates/lock.rs",
+        "cargo test &>> crates/lock.rs",
         "cat <<EOF > crates/x\nbody\nEOF",
         "# don't touch crates\necho hi > crates/x",
         "(cd crates && true) ; echo hi > \"crates/with space\"",
@@ -254,6 +257,8 @@ fn a_redirect_into_the_tree_is_judged_like_a_write() -> TestResult {
         "echo hi > evals/out.txt",
         "cargo test 2>&1 | tail -5 > /dev/null",
         "echo hi >&2",
+        "echo hi >& evals/out.txt",
+        "echo hi >&-",
         "cat evals/probe.py",
         "echo \"a > crates/b\" ; python3 -c 'print(2 > 1)'",
         "echo $PATH > $OUT",
@@ -262,6 +267,19 @@ fn a_redirect_into_the_tree_is_judged_like_a_write() -> TestResult {
         let decision = scoped.bash(command);
         assert!(refusal(&decision).is_none(), "{command:?}: {decision:?}");
     }
+    Ok(())
+}
+
+/// Dies with `cd evals && python gen.py > probe.py` refused as `<workdir>/probe.py`: a redirect
+/// after changing directory is outside the static reader's contract, but one before it is judged.
+#[test]
+fn a_redirect_after_cd_is_not_misread_against_the_old_directory() -> TestResult {
+    let scoped = tree(&["evals/**"])?;
+    let after = scoped.bash("cd evals && python3 gen.py > probe.py");
+    assert!(refusal(&after).is_none(), "{after:?}");
+    let before = scoped.bash("echo hi > crates/before.rs && cd evals && echo hi > probe.py");
+    let reason = refusal(&before).ok_or("the redirect before cd was missed")?;
+    assert!(reason.contains("crates/before.rs"), "{reason}");
     Ok(())
 }
 
