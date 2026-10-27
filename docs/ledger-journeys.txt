@@ -434,3 +434,88 @@ kimi login and models | `kimi_wire::a_moonshot_route_sends_thinking_not_reasonin
 kimi login and models | `quota::a_quota_429_is_final_and_a_rate_limit_429_still_retries`
 kimi login and models | `cli_surfaces::refreshing_kimi_without_a_login_is_a_skip_not_a_failure`
 kimi login and models | `cli_surfaces::catalog_usage_without_a_kimi_login_names_the_login_verb`
+todo tool + loop coupling | `todo_coupling::what_the_user_types_never_becomes_a_todo` (T0)
+todo tool + loop coupling | `todo_coupling::todo_clear_empties_the_list_and_records_the_user` (T0)
+todo tool + loop coupling | `todo_mirror::todo_clear_on_a_plans_list_refuses_in_user_words` (T0)
+todo tool + loop coupling | `acp_protocol::slash_verbs_run_on_the_worker_and_unknown_ones_are_refused` (T1)
+todo tool + loop coupling | `todo_coupling::a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go`
+todo tool + loop coupling | `todo_coupling::only_a_state_suppresses_the_interception`
+todo tool + loop coupling | `todo_e2e::the_tool_result_teaches_the_next_move_with_the_label_filled_in`
+todo tool + loop coupling | `hud_todos::the_block_numbers_open_work_and_hides_a_finished_list` (T0)
+todo tool + loop coupling | `hud_todos::a_done_row_whose_evidence_nothing_checks_says_claimed` (T0)
+todo tool + loop coupling | `todo_mirror::a_plan_opened_through_the_tool_is_the_sessions_todo_list` (T1)
+todo tool + loop coupling | `todo_mirror::a_mirrored_blocker_keeps_its_child_and_its_probe` (T0)
+todo tool + loop coupling | `hud_todos::old_session_lists_read_as_they_did_before_the_merge` (T0)
+todo tool + loop coupling | `cli_surfaces::yi_todo_reads_a_recorded_session_as_before_the_merge` (T2)
+todo tool + loop coupling | `hud_todos::a_hud_row_wider_than_the_screen_ends_in_an_ellipsis_at_the_edge`
+todo tool + loop coupling | `hud_todos::a_block_reason_that_repeats_the_label_shows_once`
+fetch: one addressable read path | `fetch_grep::a_child_greps_its_parents_tool_output_by_alias`
+fetch: one addressable read path | `fetch_grep::history_repo_greps_this_repositorys_other_sessions`
+fetch: one addressable read path | `fetch_grep::a_history_grep_names_every_cut_it_makes`
+fetch: one addressable read path | `fetch_session::a_multi_line_result_in_the_compact_view_counts_what_it_dropped`
+fetch: one addressable read path | `fetch_session::a_child_reads_its_parent_transcript_by_alias`
+fetch: one addressable read path | `reader_e2e::every_child_role_reads_its_parent_or_is_refused_by_its_wall`
+fetch: one addressable read path | `fetch_session::a_reader_child_reads_its_live_parent_by_alias`
+fetch: one addressable read path | `fetch_session::a_cut_compact_history_line_names_the_whole_entry_read`
+fetch: one addressable read path | `fetch_session::an_unpaged_history_listing_past_its_cap_says_where_it_was_cut`
+fetch: one addressable read path | `fetch_session::a_capped_read_names_the_next_offset_and_the_next_page_continues_it`
+fetch: one addressable read path | `fetch_session::a_store_attached_after_the_resolver_still_serves_history`
+fetch: one addressable read path | `request_budget::every_deferred_guide_is_one_read_away`
+fetch: one addressable read path | `tools::a_grammar_or_stale_tag_refusal_names_the_edit_guide`
+fetch: one addressable read path | `fetch_session::a_session_is_read_by_name_across_repositories_and_a_shared_name_lists_its_owners`
+daemon (ACP-router supervisor + worker/root) | `serve_daemon::a_pin_survives_a_daemon_restart` (T2)
+daemon (ACP-router supervisor + worker/root) | `serve_daemon::a_pin_survives_its_worker_dying` (T2)
+daemon (ACP-router supervisor + worker/root) | `wire_roundtrip::daemon_ledger_with_a_pin_round_trips` (T0)
+TUI | `states::a_change_waits_for_the_next_exit_then_lands_on_the_entry_pose` (T0)
+TUI | `tui_e2e::the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row` (T0)
+TUI | `tui_e2e::a_reader_that_finishes_first_stays_one_blank_above_its_running_sibling` (T0)
+TUI | `tui_e2e::each_kind_of_work_puts_its_own_state_on_the_orb` (T0)
+TUI | `waits::each_wait_names_its_cause_and_puts_its_own_state_on_the_orb` (T0)
+TUI | `tui_drive::plan_and_undo_answer_for_the_session_the_turn_ran_in` (T2)
+TUI | `tui_drive::reverse_search_enter_accepts_a_match_without_submitting` (T2)
+TUI | `input::a_steer_leaves_the_queued_row_when_the_loop_injects_it` (T0)
+TUI | `drive::ctrl_c_closes_an_open_popup_without_arming_the_quit` (T2)
+TUI | `drive::ctrl_c_over_a_pending_approval_still_stops_the_daemon` (T2)
+TUI | `drive::stopping_the_daemon_quits_without_a_disconnect_banner` (T2)
+TUI | `composer_box::a_typed_paragraph_wraps_inside_the_box_and_keeps_every_word` (T0)
+TUI | `composer_box::cmd_delete_and_ctrl_u_clear_the_whole_line_the_cursor_is_on` (T0)
+TUI | `drive::option_left_over_a_draft_moves_by_word_in_ghostty` (T2)
+TUI | `tui_e2e::a_paragraph_that_commits_on_screen_moves_nothing`
+TUI | `tui_e2e::a_screen_too_short_for_a_scroll_region_keeps_its_chrome_out_of_scrollback`
+TUI | `tui_e2e::a_blank_row_is_never_adopted_without_the_ink_below_it` (T0)
+TUI | `tui_drive::the_at_picker_over_101_files_reaches_the_last_by_typing_its_name` (T2)
+TUI | `input::a_name_typed_into_the_picker_reaches_a_file_past_its_first_hundred`
+TUI | `input::a_picker_names_its_cap_one_file_past_five_thousand`
+TUI | `cards::a_child_answer_past_sixteen_kilobytes_names_the_head_it_dropped`
+TUI | `cards::a_feedless_childs_long_answer_keeps_its_tail_when_the_preview_arrives`
+TUI | `review::the_review_names_the_files_its_file_cap_dropped`
+TUI | `review::the_review_names_the_files_its_byte_cap_dropped`
+TUI | `review::a_turns_review_counts_only_the_files_its_own_turn_lost`
+TUI | `drive::the_rail_counts_the_children_its_cache_gave_up` (T0)
+TUI | `input::a_pasted_makefile_recipe_reaches_the_prompt_with_its_tabs`
+TUI | `input::a_paste_with_a_popup_open_fills_the_popup_not_the_composer`
+TUI | `question_card::a_paste_with_a_card_open_fills_the_card_not_the_composer` (T0)
+TUI | `tui_e2e::a_prompt_met_by_a_busy_session_steers_the_run_instead_of_vanishing`
+TUI | `tui_drive::a_typo_and_pr_answer_locally_without_a_model_turn` (T2)
+TUI | `input::a_busy_prompt_is_awaited_until_a_run_reads_it`
+TUI | `input::a_double_slash_and_a_slash_path_are_prompts`
+TUI | `input::a_double_slash_typed_in_the_popup_is_a_prompt`
+TUI | `tui_drive::a_chord_in_the_keys_config_stops_the_drive_naming_it` (T2)
+TUI | `tui_unit::a_chord_in_the_keys_config_is_refused_naming_it` (T0)
+TUI | `toolcells::every_tool_a_recorded_session_calls_has_its_own_glyph_and_hue`
+TUI | `cards::a_mail_body_keeps_its_angle_brackets_and_an_advisory_loses_only_its_tags` (T0)
+console right-click menu and pane close mark | `sessions::the_sidebar_lists_pins_then_each_workspace_need_first` (T0)
+console right-click menu and pane close mark | `drive::pin_from_the_menu_moves_a_session_under_pinned`
+console right-click menu and pane close mark | `drive::a_click_on_a_workspace_header_folds_it`
+console right-click menu and pane close mark | `drive::a_workspace_headers_plus_starts_a_session_there`
+console right-click menu and pane close mark | `drive::rows_group_by_workspace_and_rank_by_need_inside_it` (T2)
+console settings pane | `drive::the_gear_opens_settings_and_a_default_saves_or_says_why_not`
+console settings pane | `drive::the_session_tab_sets_the_live_option_and_makes_it_the_default`
+console settings pane | `drive::the_keys_key_opens_settings_on_the_keys_tab` (T2)
+console settings pane | `serve_daemon::a_saved_default_reaches_the_next_session_and_a_refused_one_writes_nothing` (T2)
+console settings pane | `settings::every_config_leaf_has_exactly_one_row`
+console settings pane | `settings::tests::concurrent_saves_of_different_keys_all_land`
+console settings pane | `settings::tests::a_list_row_is_typed_as_comma_separated_names_and_saves_an_array` (T0)
+console settings pane | `settings::tests::a_wide_strip_shows_every_tab_and_a_narrow_one_keeps_the_current_in_view`
+console settings pane | `tests::the_gear_is_placed_as_an_image_and_a_popup_hides_it`
+console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ring_and_tooth_gaps` (T0)
