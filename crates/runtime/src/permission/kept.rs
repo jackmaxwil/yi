@@ -61,7 +61,7 @@ impl PermissionBroker {
                 walled.deny_read.extend_from_slice(&wall.deny_read);
                 // A directory swapped for a link since it was kept is judged where it leads.
                 let real = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-                !protected(&walled, &dir) && !protected(&walled, &real)
+                !protected(Some(&walled), &dir) && !protected(Some(&walled), &real)
             });
         }
         wall.is_empty() || !yi_permission::is_exact_command(rule)
@@ -147,19 +147,16 @@ impl PermissionBroker {
         };
         let dir = path.parent().unwrap_or(path);
         let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-        protected(sandbox, &dir).then(|| crate::gate::walled_refusal(path))
+        protected(Some(sandbox), &dir).then(|| crate::gate::walled_refusal(path))
     }
 
     /// Makes `dir` writable to every contained run, as an "always" on a widened retry would;
-    /// refused where that retry is, a credential store or the session ledger. No sandbox, no-op.
+    /// refused where that retry is, a credential store, the session ledger or a missing path.
     pub fn grant_write(&self, dir: &Path) -> Result<(), String> {
-        let Some(sandbox) = &self.sandbox else {
-            return Ok(());
-        };
         let real = dir
             .canonicalize()
             .map_err(|error| format!("{}: {error}", dir.display()))?;
-        if protected(sandbox, &real) {
+        if protected(self.sandbox.as_ref(), &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
@@ -175,7 +172,7 @@ impl PermissionBroker {
         Ok(())
     }
 
-    /// The session stores: `~/.yi/sessions` and the `--session-dir` in use.
+    /// The session store in use, when `--session-dir` moved it from `~/.yi/sessions`.
     pub fn session_stores(&self) -> &[PathBuf] {
         &self.context.host_owned
     }
@@ -190,6 +187,15 @@ impl PermissionBroker {
 
     pub fn set_rule_journal(&self, journal: Journal<SessionPermissionRule>) {
         let _first_wiring_wins = self.rule_journal.set(journal);
+        if let Ok(mut pending) = self.pending_rules.lock() {
+            let drained: Vec<_> = pending.drain(..).collect();
+            drop(pending);
+            for rule in drained {
+                if let Some(journal) = self.rule_journal.get() {
+                    journal(rule);
+                }
+            }
+        }
     }
 
     pub(super) fn keep_grant(
@@ -214,8 +220,15 @@ impl PermissionBroker {
                 .find(|rule| rule.kind == kind && rule.canonical == canonical)
                 .cloned()
         };
-        if let (Some(rule), Some(journal)) = (kept, self.rule_journal.get()) {
-            journal(rule);
+        if let Some(rule) = kept {
+            match self.rule_journal.get() {
+                Some(journal) => journal(rule),
+                None => {
+                    if let Ok(mut pending) = self.pending_rules.lock() {
+                        pending.push(rule);
+                    }
+                }
+            }
         }
     }
 }

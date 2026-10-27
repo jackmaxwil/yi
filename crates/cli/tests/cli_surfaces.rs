@@ -412,9 +412,7 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
 }
 
 /// A granted directory that does not exist, or that the sandbox must keep closed, ended the run
-/// before the model answered; a good one let it through. Seatbelt only: without it there is no
-/// sandbox to widen and the grant is a no-op.
-#[cfg(target_os = "macos")]
+/// before the model answered; a good one let it through.
 #[test]
 fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> TestResult {
     let workspace = Workspace::new("allow-write")?;
@@ -434,6 +432,26 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
         &["--allow-write", &workspace.project().to_string_lossy()],
     )?;
     assert_eq!(run.status.code(), Some(0), "{run:?}");
+    Ok(())
+}
+
+/// The grant reached through `permissions.allowWrite` is refused where the flag's is, so a
+/// config chain that stops delivering the value fails here instead of granting nothing.
+#[test]
+fn allow_write_from_config_refuses_a_protected_dir() -> TestResult {
+    let workspace = Workspace::new("allow-write-config")?;
+    let home = workspace.0.join("home");
+    std::fs::create_dir_all(home.join(".yi"))?;
+    std::fs::write(
+        home.join(".yi/config.json"),
+        serde_json::to_string(&json!({
+            "permissions": {"allowWrite": [home.to_string_lossy()]}
+        }))?,
+    )?;
+    let run = ask(&workspace, "look", &[])?;
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    assert_eq!(run.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("allow-write"), "{stderr}");
     Ok(())
 }
 
