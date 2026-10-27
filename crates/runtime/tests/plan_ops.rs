@@ -2281,15 +2281,11 @@ mod contracts {
         plan: &PlanId,
         command: &str,
     ) -> Result<ArtifactRef, Box<dyn Error>> {
-        let manifest = json!({
-            "manifest": 1, "command": command, "cwd": "snapshot_root", "cwd_subdir": null,
-            "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
-        });
-        Ok(store.artifacts(plan).put(
-            &serde_json::to_vec(&manifest)?,
-            "application/vnd.yi.checker-manifest+json",
+        crate::checker::put_checker(
+            &store.artifacts(plan),
+            &crate::checker::checker_manifest(command, 10_000, &[], false),
             &store.nonce(),
-        )?)
+        )
     }
 
     /// A contract built here, not from a fixture: one critical cmd item over a manifest.
