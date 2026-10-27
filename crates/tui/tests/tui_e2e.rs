@@ -3637,11 +3637,7 @@ fn a_dirty_count_follows_the_directory_asked_for_last() -> TestResult {
     let dirty = Arc::new(yi_tui::port::Dirty::default());
     dirty.refresh(&first.to_string_lossy());
     dirty.refresh(&second.to_string_lossy());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while dirty.get() != 1 {
-        assert!(Instant::now() < deadline, "count stuck at {}", dirty.get());
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_for("the second tree's count", || dirty.get() == 1)?;
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(dirty.get(), 1, "a late read of the first tree overwrote it");
     Ok(())
@@ -3657,14 +3653,7 @@ fn a_dirty_count_is_read_once_per_idle_period() -> TestResult {
     std::fs::write(repo.join("one"), "x")?;
     let cwd = repo.to_string_lossy().into_owned();
     let dirty = Arc::new(yi_tui::port::Dirty::default());
-    let settled = |want: u32| -> TestResult {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while dirty.count(false, &cwd) != want {
-            assert!(Instant::now() < deadline, "stuck at {}", dirty.get());
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        Ok(())
-    };
+    let settled = |want: u32| wait_for("the count", || dirty.count(false, &cwd) == want);
     settled(1)?;
     std::fs::write(repo.join("two"), "x")?;
     std::thread::sleep(Duration::from_millis(200));

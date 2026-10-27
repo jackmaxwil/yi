@@ -706,7 +706,9 @@ impl crate::app::App {
             return;
         }
         self.branch = git_branch(&cwd);
-        self.dirty.refresh(&cwd);
+        if lane.is_none() {
+            self.dirty.refresh(&cwd);
+        }
         self.options.cwd = cwd;
         self.options.lane = lane;
         self.scheduler.request();
