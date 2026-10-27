@@ -762,8 +762,9 @@ def selfcheck():
     flagged = "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED)
     body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_check.md"
     body_file.write_text(flagged)
-    issue_ok = gate.issue_problems
+    issue_ok, judged, real_check = gate.issue_problems, [], check_problems
     gate.issue_problems = lambda *a: []
+    globals()["check_problems"] = lambda title, body: judged.append(body) or real_check(title, body)
     try:
         for closes, want in (([1], 0), ([], 1)):
             with contextlib.redirect_stdout(io.StringIO()):
@@ -771,7 +772,9 @@ def selfcheck():
             assert code == want, ("pr check judges the body as pr open composes it", closes, code)
     finally:
         gate.measure, gate.issue_problems = real_measure, issue_ok
+        globals()["check_problems"] = real_check
         body_file.unlink()
+    assert judged[0] == "Closes #1\n\n" + flagged.strip(), ("pr check judges the stripped body pr open submits", judged[0])
     # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green,
     # because nothing here built the verbs; a name the parser wires that no longer exists
     # now fails this flag instead of the next `just commit`.
