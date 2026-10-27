@@ -248,21 +248,6 @@ fn build_session(
         .with_session_store(&default_session_dir(args))
         .with_unattended(unattended),
     );
-    let settings = config();
-    let configured = (settings.permissions.as_ref()).and_then(|p| p.allow_write.as_deref());
-    for dir in args
-        .allow_write
-        .iter()
-        .chain(configured.into_iter().flatten())
-    {
-        broker
-            .grant_write(&work.join(dir))
-            .map_err(|reason| Refused {
-                code: 2,
-                reason: format!("allow-write: {reason}"),
-                class: yi_types::telemetry::ErrorClass::RefusalConfig,
-            })?;
-    }
     if prompts_close {
         broker.prompts_close_on_settle();
     }
@@ -296,7 +281,7 @@ fn build_session(
             home: home.clone(),
             lane_slots: lanes::lane_slots(),
             mcp_read: Some(std::sync::Arc::new(McpOneShot)),
-            broker: Some(broker),
+            broker: Some(std::sync::Arc::clone(&broker)),
             tools: std::sync::Arc::new(move || {
                 yi_runtime::session_tools(
                     freeform_grammar,
@@ -335,6 +320,21 @@ fn build_session(
         },
     );
     drop(wiring);
+    let settings = config();
+    let configured = (settings.permissions.as_ref()).and_then(|p| p.allow_write.as_deref());
+    for dir in args
+        .allow_write
+        .iter()
+        .chain(configured.into_iter().flatten())
+    {
+        broker
+            .grant_write(&work.join(dir))
+            .map_err(|reason| Refused {
+                code: 2,
+                reason: format!("allow-write: {reason}"),
+                class: yi_types::telemetry::ErrorClass::RefusalConfig,
+            })?;
+    }
     let at = config().compaction.as_ref().and_then(|at| at.at);
     if let Some(why) = session.compactor().and_then(|c| c.set_ceiling(at)) {
         eprintln!("warning: {why}");
