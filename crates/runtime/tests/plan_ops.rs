@@ -3863,14 +3863,29 @@ mod contracts {
         Ok(std::fs::read_to_string(path)?)
     }
 
+    fn covered_journal() -> Result<String, Box<dyn Error>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../types/tests/fixtures/journals/plan-covers-contract.jsonl");
+        Ok(std::fs::read_to_string(path)?)
+    }
+
+    fn seed_journal(
+        store: &PlanStore,
+        plan: &PlanId,
+        text: &str,
+        records: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        let lines: Vec<&str> = text.lines().take(records).collect();
+        std::fs::create_dir_all(store.plan_dir(plan))?;
+        std::fs::write(store.journal_path(plan), format!("{}\n", lines.join("\n")))?;
+        Ok(())
+    }
+
     /// A store holding the first `records` lines of [`judged_journal`] as its plan's journal.
     fn judged_store(temp: &Scratch, records: usize) -> Result<(PlanStore, PlanId), Box<dyn Error>> {
         let store = PlanStore::open(temp.join("plans"))?;
         let plan = planned()?;
-        let text = judged_journal()?;
-        let lines: Vec<&str> = text.lines().take(records).collect();
-        std::fs::create_dir_all(store.plan_dir(&plan))?;
-        std::fs::write(store.journal_path(&plan), format!("{}\n", lines.join("\n")))?;
+        seed_journal(&store, &plan, &judged_journal()?, records)?;
         Ok((store, plan))
     }
 
@@ -4668,19 +4683,25 @@ mod contracts {
     }
 
     #[test]
-    fn a_contract_naming_covers_is_refused_at_start() -> TestResult {
-        let rig = rig("yi-g4-covers-refused", None)?;
+    fn a_pending_covered_contract_from_an_old_journal_still_starts() -> TestResult {
+        let rig = rig("yi-g4-legacy-pending-covers", None)?;
         let plan = planned()?;
-        let mut contract = cmd_contract(&rig.store, &plan, "exit 0", "inline")?;
-        contract.covers = vec!["src/*.rs".to_owned()];
-        init(&rig.engine, vec![contracted("alpha", contract)?])?;
-        let error = start(&rig.engine, &plan, "alpha")
-            .err()
-            .ok_or("start accepted a contract naming covers")?;
-        assert!(
-            error.to_string().contains("cmd items run at done"),
-            "{error}"
-        );
+        seed_journal(&rig.store, &plan, &covered_journal()?, 1)?;
+        let manifest = json!({
+            "manifest": 1, "command": "exit 0", "cwd": "snapshot_root", "cwd_subdir": null,
+            "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
+        });
+        rig.store.artifacts(&plan).put(
+            &serde_json::to_vec(&manifest)?,
+            "application/vnd.yi.checker-manifest+json",
+            &rig.store.nonce(),
+        )?;
+        rig.store.write(&rig.store.read(&plan)?)?;
+        start(&rig.engine, &plan, "alpha")?;
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "alpha")?.state,
+            TodoState::Running { .. }
+        ));
         Ok(())
     }
 
@@ -4688,11 +4709,7 @@ mod contracts {
     async fn a_covered_write_gets_no_preview_line() -> TestResult {
         let rig = rig("yi-g4-no-preview", None)?;
         let plan = planned()?;
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../types/tests/fixtures/plan-covers-contract.jsonl");
-        let journal = rig.store.journal_path(&plan);
-        std::fs::create_dir_all(journal.parent().ok_or("journal parent")?)?;
-        std::fs::write(journal, std::fs::read(fixture)?)?;
+        seed_journal(&rig.store, &plan, &covered_journal()?, usize::MAX)?;
         rig.store.write(&rig.store.read(&plan)?)?;
         let todo = todo_of(&rig.store, &plan, "alpha")?;
         assert!(matches!(todo.state, TodoState::Running { .. }));
