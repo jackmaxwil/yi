@@ -43,6 +43,7 @@ _yi() {
         '--yolo[run without permission prompts]'
         '--auto[let the policy judge each call (the default)]'
         '--confirm[ask before every write or command]'
+        '--allow-write[let the sandbox write dir too; repeatable]:dir:_files -/'
         '--session-dir[session storage root]:dir:_files -/'
         '--cwd[working directory]:dir:_files -/'
         '--here[work in this directory and claim no lane]'
