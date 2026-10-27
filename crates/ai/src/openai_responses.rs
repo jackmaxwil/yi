@@ -9,6 +9,7 @@ use crate::catalog::calculate_cost;
 use crate::compat::developer_role;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::openai::{OpenAiOptions, mapped_effort};
+use crate::request::{assistant_content_mut, content_end_events};
 use crate::transform::{system_text, transform_messages};
 
 pub fn normalize_responses_tool_call_id(id: &str) -> String {
@@ -462,13 +463,6 @@ impl EventMapper {
         }
     }
 
-    fn content_mut(&mut self) -> Option<&mut Vec<Content>> {
-        match &mut self.output {
-            AgentMessage::Assistant { content, .. } => Some(content),
-            _ => None,
-        }
-    }
-
     fn set_response_id(&mut self, id: &str) {
         if let AgentMessage::Assistant {
             response_id: slot, ..
@@ -507,7 +501,7 @@ impl EventMapper {
         if let Some(existing) = self.text_index {
             return Some(existing);
         }
-        let content = self.content_mut()?;
+        let content = assistant_content_mut(&mut self.output)?;
         let content_index = content.len();
         content.push(Content::Text {
             text: String::new(),
@@ -522,7 +516,7 @@ impl EventMapper {
         if let Some(existing) = self.thinking_index {
             return Some(existing);
         }
-        let content = self.content_mut()?;
+        let content = assistant_content_mut(&mut self.output)?;
         let content_index = content.len();
         content.push(Content::Thinking {
             thinking: String::new(),
@@ -594,7 +588,7 @@ impl EventMapper {
                 && let Some(Content::ToolCall {
                     name: slot_name, ..
                 }) = backfill_index.and_then(|content_index| {
-                    self.content_mut()
+                    assistant_content_mut(&mut self.output)
                         .and_then(|content| content.get_mut(content_index))
                 })
                 && slot_name.is_empty()
@@ -603,7 +597,7 @@ impl EventMapper {
             }
             return Some(index);
         }
-        let content = self.content_mut()?;
+        let content = assistant_content_mut(&mut self.output)?;
         let content_index = content.len();
         content.push(Content::ToolCall {
             id: combined_id(call_id, item_id),
@@ -634,8 +628,7 @@ impl EventMapper {
         let Some(content_index) = self.ensure_text(events) else {
             return;
         };
-        if let Some(Content::Text { text, .. }) = self
-            .content_mut()
+        if let Some(Content::Text { text, .. }) = assistant_content_mut(&mut self.output)
             .and_then(|content| content.get_mut(content_index))
         {
             text.push_str(delta);
@@ -653,8 +646,7 @@ impl EventMapper {
         let Some(content_index) = self.ensure_thinking(events) else {
             return;
         };
-        if let Some(Content::Thinking { thinking, .. }) = self
-            .content_mut()
+        if let Some(Content::Thinking { thinking, .. }) = assistant_content_mut(&mut self.output)
             .and_then(|content| content.get_mut(content_index))
         {
             thinking.push_str(delta);
@@ -677,9 +669,9 @@ impl EventMapper {
         let content_index = slot.content_index;
         let call_id = slot.call_id.clone();
         let item_id = slot.item_id.clone();
-        if let Some(Content::ToolCall { id, arguments, .. }) = self
-            .content_mut()
-            .and_then(|content| content.get_mut(content_index))
+        if let Some(Content::ToolCall { id, arguments, .. }) =
+            assistant_content_mut(&mut self.output)
+                .and_then(|content| content.get_mut(content_index))
         {
             *id = combined_id(&call_id, &item_id);
             *arguments = parsed;
@@ -726,8 +718,7 @@ impl EventMapper {
             let Some(content_index) = self.materialize_args(slot_index) else {
                 return;
             };
-            if let Some(tool_call) = self
-                .content_mut()
+            if let Some(tool_call) = assistant_content_mut(&mut self.output)
                 .and_then(|content| content.get(content_index))
                 .cloned()
             {
@@ -751,9 +742,9 @@ impl EventMapper {
             Some("message") => {
                 if let Some(id) = item.get("id").and_then(Value::as_str)
                     && let Some(content_index) = self.ensure_text(events)
-                    && let Some(Content::Text { text_signature, .. }) = self
-                        .content_mut()
-                        .and_then(|content| content.get_mut(content_index))
+                    && let Some(Content::Text { text_signature, .. }) =
+                        assistant_content_mut(&mut self.output)
+                            .and_then(|content| content.get_mut(content_index))
                 {
                     *text_signature = Some(id.to_owned());
                 }
@@ -775,8 +766,7 @@ impl EventMapper {
         };
         if let Some(Content::Thinking {
             thinking_signature, ..
-        }) = self
-            .content_mut()
+        }) = assistant_content_mut(&mut self.output)
             .and_then(|content| content.get_mut(content_index))
         {
             *thinking_signature = Some(item.to_string());
@@ -790,8 +780,7 @@ impl EventMapper {
         if let Some(usage) = response.get("usage") {
             self.apply_usage(usage);
         }
-        let has_tools = self
-            .content_mut()
+        let has_tools = assistant_content_mut(&mut self.output)
             .map(|content| {
                 content
                     .iter()
@@ -933,35 +922,12 @@ impl EventMapper {
             ));
             return events;
         }
-        crate::leak::recover_in(&mut self.output);
-        let content = self.content_mut().cloned().unwrap_or_default();
-        for (content_index, block) in content.iter().enumerate() {
-            match block {
-                Content::Text { text, .. } => events.push(AssistantMessageEvent::TextEnd {
-                    content_index,
-                    content: text.clone(),
-                }),
-                Content::Thinking { thinking, .. } => {
-                    events.push(AssistantMessageEvent::ThinkingEnd {
-                        content_index,
-                        content: thinking.clone(),
-                    });
-                }
-                Content::ToolCall { .. } => {
-                    let already = self
-                        .tools
-                        .iter()
-                        .any(|slot| slot.content_index == content_index && slot.ended);
-                    if !already {
-                        events.push(AssistantMessageEvent::ToolCallEnd {
-                            content_index,
-                            tool_call: block.clone(),
-                        });
-                    }
-                }
-                Content::Image { .. } => {}
-            }
-        }
+        let mut events = content_end_events(&mut self.output, |content_index| {
+            !self
+                .tools
+                .iter()
+                .any(|slot| slot.content_index == content_index && slot.ended)
+        });
         events.push(crate::request::terminal_event(self.output.clone()));
         events
     }

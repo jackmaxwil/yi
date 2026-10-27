@@ -618,16 +618,6 @@ fn attach_store(
     Ok(id)
 }
 
-/// The exact command that brings this session back, printed only for a session
-/// that recorded something: resuming an empty one reads as a broken suggestion.
-fn print_resume_hint(session: &AgentSession, id: &str) {
-    if session.messages().is_empty() {
-        return;
-    }
-    eprintln!();
-    tty::eprint_dim(&format!("Resume this session with `yi --session {id}`"));
-}
-
 /// Checkpoints (§7.7) restore the files the last turn changed, from the cwd's leaf session.
 fn run_undo(args: &Args) -> i32 {
     use yi_runtime::session_store::SessionRepo;
