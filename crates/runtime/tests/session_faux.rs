@@ -418,13 +418,7 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
     ));
     session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), Some(broker));
     session.prompt("run it")?;
-    for _ in 0..200 {
-        if started.exists() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(started.exists(), "the shell never got as far as forking");
+    crate::support::wait_for_path(&started, "the shell never got as far as forking").await?;
     let interrupted = std::time::Instant::now();
     session.abort();
     session.wait_idle().await;
@@ -451,7 +445,7 @@ fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> A
 }
 
 /// `session` wired the way `yi ask` is.
-fn attach_like_yi_ask(
+pub(crate) fn attach_like_yi_ask(
     session: &mut AgentSession,
     root: &std::path::Path,
     deadline: Option<Duration>,
@@ -1053,6 +1047,7 @@ async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        can_delegate: true,
     }));
     session.prompt("hi")?;
     session.wait_idle().await;
@@ -1163,6 +1158,7 @@ async fn a_mode_flip_and_the_protocol_survive_a_compaction() -> Result<(), Box<d
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        can_delegate: true,
     }));
     session.prompt("hi")?;
     session.wait_idle().await;
@@ -1280,6 +1276,60 @@ async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dy
     Ok(())
 }
 
+/// A finished job's `<async_result>` landed raw, a 258,672 B build log here, where reclaim never
+/// cuts; it now carries the view, inside the ceiling, the same bytes a poll of that job returns.
+#[tokio::test]
+async fn a_job_that_exits_mid_turn_lands_its_view_as_a_poll_reads_it() -> Result<(), Box<dyn Error>>
+{
+    let root = scratch("job-view")?;
+    let build = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tools/tests/fixtures/view/make-build-error-last.txt");
+    let command = format!("sleep 6; cat '{}'; exit 2", build.display());
+    let calls = [
+        serde_json::json!({"command": command, "wait": 5}),
+        serde_json::json!({"command": "sleep 4"}),
+    ];
+    let session = bash_session(&root, &calls, &["done", "seen"], None);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_value(session.messages())?;
+    let mut values = vec![&said];
+    let announced = std::iter::from_fn(|| {
+        let value = values.pop()?;
+        values.extend(value.as_array().into_iter().flatten());
+        values.extend(
+            value
+                .as_object()
+                .into_iter()
+                .flat_map(|object| object.values()),
+        );
+        Some(value.as_str())
+    })
+    .flatten()
+    .find_map(|text| {
+        text.split_once("<async_result")?
+            .1
+            .split_once("</async_result>")
+    })
+    .and_then(|(report, _)| Some(report.split_once('\n')?.1))
+    .ok_or_else(|| format!("no <async_result>: {said}"))?;
+    let error = "src/unit_1700.c:1:42: error: use of undeclared identifier 'undeclared_offset'";
+    assert!(announced.len() <= yi_tools::VIEW_CEILING, "{announced}");
+    assert!(announced.contains(error) && announced.contains("(VIEW_CEILING 16384)"));
+    let job = job_in(&said.to_string())?;
+    let poll = serde_json::json!({ "job": job.0 }).as_object().cloned();
+    let mut context = yi_tools::ToolContext::new(root.to_path_buf());
+    context.job_owner = Some(session.job_owner());
+    let tool = yi_tools::BashTool::default();
+    let polled = yi_tools::Tool::execute(&tool, poll.unwrap_or_default(), &context);
+    let polled = yi_types::message::join_text(&polled.result.content, "\n");
+    assert_eq!(
+        polled.split_once('\n').map(|(_, body)| body),
+        Some(announced)
+    );
+    Ok(())
+}
+
 /// Waits for the transcript to hold `needle`, or names what it held instead.
 async fn said_eventually(session: &AgentSession, needle: &str) -> Result<String, Box<dyn Error>> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -1328,21 +1378,65 @@ async fn a_job_reports_only_to_the_session_that_started_it() -> Result<(), Box<d
     Ok(())
 }
 
+#[tokio::test]
+async fn two_sessions_bare_polls_return_their_own_jobs() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-bare-poll-owner")?;
+    let calls = |name: &str| {
+        [
+            serde_json::json!({"command": format!("sleep 30; echo {name}"), "wait": 5}),
+            serde_json::json!({}),
+        ]
+    };
+    let first = bash_session(&root, &calls("first"), &["done", "polled"], None);
+    let second = bash_session(&root, &calls("second"), &["done", "polled"], None);
+    first.prompt("run first")?;
+    second.prompt("run second")?;
+    tokio::time::timeout(Duration::from_secs(20), first.wait_idle()).await?;
+    tokio::time::timeout(Duration::from_secs(20), second.wait_idle()).await?;
+    let first_said = serde_json::to_string(&first.messages())?;
+    let second_said = serde_json::to_string(&second.messages())?;
+    let first_id = job_in(&first_said)?;
+    let second_id = job_in(&second_said)?;
+    let jobs = yi_tools::jobs::registry();
+    let _cleanup = [jobs.kill(first_id), jobs.kill(second_id)];
+    assert!(
+        first_said.contains("still running: sleep 30; echo first")
+            && !first_said.contains("still running: sleep 30; echo second"),
+        "{first_said}"
+    );
+    assert!(
+        second_said.contains("still running: sleep 30; echo second")
+            && !second_said.contains("still running: sleep 30; echo first"),
+        "{second_said}"
+    );
+    Ok(())
+}
+
 /// A retired session (a reaped child) starts no turn when its job exits: the wake would be a
 /// paid turn in a session nobody reads.
 #[tokio::test]
 async fn a_retired_session_s_job_starts_no_turn() -> Result<(), Box<dyn Error>> {
     let root = scratch("job-retired")?;
-    let calls = [serde_json::json!({"command": "sleep 6; echo r$((1+1))tired", "wait": 5})];
+    let calls = [
+        serde_json::json!({"command": "sleep 6; touch retired-ran; echo r$((1+1))tired", "wait": 5}),
+    ];
     let session = bash_session(&root, &calls, &["done", "should not run"], None);
     session.prompt("run it")?;
     tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
     let job = job_in(&serde_json::to_string(&session.messages())?)?;
     session.retire();
     let jobs = yi_tools::jobs::registry();
+    assert!(
+        jobs.report(job).is_none(),
+        "a retired session's job stayed registered"
+    );
     tokio::task::spawn_blocking(move || jobs.wait_settled(Some(job), Duration::from_secs(20)))
         .await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !root.join("retired-ran").exists(),
+        "a retired session's job kept running"
+    );
     let said = serde_json::to_string(&session.messages())?;
     assert!(!said.contains("should not run"), "{said}");
     assert_eq!(session.status(), Status::Idle);

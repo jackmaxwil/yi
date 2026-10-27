@@ -606,6 +606,147 @@ async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
     Ok(())
 }
 
+/// The recorded session's own messages, in order: typed turns, tool calls, and one lifecycle
+/// notice the host wrote in the user role.
+fn recorded_parent() -> Result<Vec<AgentMessage>, Box<dyn Error>> {
+    let mut messages = Vec::new();
+    for row in include_str!("../../tui/tests/fixtures/sessions/01a0648f.jsonl").lines() {
+        let row: Value = serde_json::from_str(row)?;
+        if row["type"] == "message" {
+            messages.push(serde_json::from_value(row["message"].clone())?);
+        }
+    }
+    Ok(messages)
+}
+
+/// Dies with the control: count every user-role message as a turn and the five notices are
+/// the last turns, so the seed opens on the second-to-last notice and drops the request.
+#[tokio::test]
+async fn a_fork_counts_typed_turns_not_host_notices() -> TestResult {
+    let forked = harness(0, 1, "forked")?;
+    let notice = "[subagent sweep (sub-1) completed without replying]\nLast answer: done";
+    {
+        let mut parent = forked.parent.lock().map_err(|_| "poisoned")?;
+        parent.extend(recorded_parent()?);
+        parent.push(AgentMessage::user_input(
+            yi_types::message::UserContent::Text("now fix the failing cell".to_owned()),
+            0,
+        ));
+        for _ in 0..5 {
+            parent.push(AgentMessage::host_text(
+                yi_types::message::HostSource::Lifecycle,
+                notice,
+                0,
+            ));
+        }
+    }
+    forked
+        .host
+        .spawn(
+            "carry on".to_owned(),
+            kwargs(&[("name", "two"), ("fork", "2")]),
+        )
+        .map_err(|error| error.to_string())?;
+    let texts = user_texts(&first_child_messages(&forked).await);
+    assert_eq!(
+        texts.first().map(String::as_str),
+        Some("Test the ipython tooling"),
+        "fork=2 opens on the second-to-last typed turn: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "now fix the failing cell"),
+        "the user's request rides the seed: {texts:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the control: walk newest-first without a cut point and the seed opens on the tool
+/// result whose call the budget dropped, which no provider accepts.
+#[tokio::test]
+async fn a_fork_budget_never_opens_on_a_tool_result() -> TestResult {
+    let forked = harness(0, 1, "forked")?;
+    let mut args = Map::new();
+    args.insert("code".to_owned(), Value::String("x".repeat(600_000)));
+    {
+        let mut parent = forked.parent.lock().map_err(|_| "poisoned")?;
+        parent.push(AgentMessage::user_input(
+            yi_types::message::UserContent::Text("load it".to_owned()),
+            0,
+        ));
+        parent.push(faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("call-big", "ipython", args)],
+            StopReason::ToolUse,
+        ));
+        parent.push(serde_json::from_value(json!({
+            "role": "toolResult", "toolCallId": "call-big", "toolName": "ipython",
+            "content": [{"type": "text", "text": "loaded"}], "isError": false, "timestamp": 0
+        }))?);
+        parent.push(child_reply("loaded the frame"));
+    }
+    forked
+        .host
+        .spawn(
+            "carry on".to_owned(),
+            kwargs(&[("name", "cut"), ("fork", "1")]),
+        )
+        .map_err(|error| error.to_string())?;
+    let messages = first_child_messages(&forked).await;
+    let notice = user_texts(&messages).into_iter().next().unwrap_or_default();
+    assert!(
+        notice.contains("[… fork kept 1 of 4 messages")
+            && notice.contains("history://parent/since/0"),
+        "the cut is named where it is made: {notice}"
+    );
+    assert!(
+        matches!(messages.get(1), Some(AgentMessage::Assistant { .. })),
+        "then the answer, the first cut point that fits: {:?}",
+        messages.get(1)
+    );
+    Ok(())
+}
+
+/// Dies with the control: set the seed in memory only and the respawn reloads a transcript
+/// that never held it, so incarnation 2 runs cold.
+#[tokio::test]
+async fn a_respawned_forked_service_keeps_its_seed() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    {
+        let mut parent = harness.parent.lock().map_err(|_| "poisoned")?;
+        parent.extend(parent_turn("turn one", "a1"));
+    }
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let mut asked = Map::new();
+    asked.insert("fork".to_owned(), Value::from("all"));
+    harness
+        .host
+        .service("index", "serve".to_owned(), asked, 3)?;
+    assert!(
+        serves(&harness, "index", 2, "finished").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let child = harness
+        .host
+        .children_view()
+        .into_iter()
+        .find(|child| child.update.name == "index")
+        .ok_or("no service")?;
+    assert!(
+        user_texts(&child.session.messages()).contains(&"turn one".to_owned()),
+        "incarnation 2 still opens on the parent's turn"
+    );
+    let store = child.session.store().ok_or("no store")?;
+    let file = yi_session::lock_session(&store)
+        .file_path()
+        .cloned()
+        .ok_or("no session file")?;
+    assert!(
+        std::fs::read_to_string(file)?.contains("turn one"),
+        "the session file holds the seed"
+    );
+    Ok(())
+}
+
 async fn child_sees(harness: &Harness, name: &str, needle: &str) -> bool {
     for _ in 0..POLL_ATTEMPTS {
         let seen = harness
@@ -1083,7 +1224,7 @@ async fn mail_queued_as_a_run_stops_early_starts_the_next_turn() -> TestResult {
         vec![yi_ai::faux::faux_tool_call("p", "poke", Map::new())],
         StopReason::ToolUse,
     );
-    let mut session = parent_session_scripted(vec![call; 6], &["heard the kid"]);
+    let session = parent_session_scripted(vec![call; 6], &["heard the kid"]);
     let poke = Poke {
         calls: AtomicU32::new(0),
         deliver: session.heartbeat_hook(),
@@ -1632,7 +1773,7 @@ async fn a_finish_the_parent_already_collected_is_not_presented() -> TestResult 
             vec![yi_ai::faux::faux_tool_call("c", "collect", Map::new())],
             StopReason::ToolUse,
         );
-        let mut parent = parent_session_scripted(vec![call], &["kid said done", "spare"]);
+        let parent = parent_session_scripted(vec![call], &["kid said done", "spare"]);
         let collect = Collect {
             host: Arc::clone(&slot),
             road,
@@ -2635,7 +2776,7 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
     );
     let merged = harness
         .host
-        .merge_worktree("mutator")
+        .merge_worktree("mutator", None)
         .map_err(|error| error.to_string())?;
     assert_eq!(merged["merged"], true);
     assert_eq!(
@@ -2809,6 +2950,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         cell_ceiling: None,
     }));
 
+    harness.host.attach_kernel(&service);
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
     let spawn_cell = tokio::task::spawn_blocking({
         let service = Arc::clone(&service);
@@ -2817,6 +2959,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "h = await rlm.run('greet the parent', name='helper')\nprint(h.rlm_child_id.startswith('sub-'), h.name, h.model)",
+                "call-spawn",
                 &cancelled,
                 None,
             )
@@ -2830,6 +2973,26 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         spawn_cell.result.stderr
     );
 
+    let spawned_by = harness
+        .host
+        .children_view()
+        .first()
+        .and_then(|c| c.spawned_by.clone());
+    assert_eq!(spawned_by.as_deref(), Some("call-spawn"));
+    harness.host.spawn(
+        "outside any cell".to_owned(),
+        kwargs(&[("name", "outside")]),
+    )?;
+    let outside = (harness.host.children_view().into_iter())
+        .find(|child| child.update.name == "outside")
+        .map(|child| child.spawned_by);
+    assert_eq!(
+        outside,
+        Some(None),
+        "a spawn after the cell ended names no cell"
+    );
+    harness.host.delete("outside")?;
+
     let list_cell = tokio::task::spawn_blocking({
         let service = Arc::clone(&service);
         let cancelled = Arc::clone(&cancelled);
@@ -2837,6 +3000,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "import asyncio\nfor _ in range(100):\n    subs = await rlm.list_subagents()\n    if subs and subs[0].status == 'completed':\n        break\n    await asyncio.sleep(0.05)\nprint(subs[0].session_name, subs[0].status)",
+                "",
                 &cancelled,
                 None,
             )
@@ -2857,6 +3021,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "agents = await rlm.list_agents()\nreceipt = await rlm.send('helper', 'status?')\ntry:\n    await rlm.request('helper', 'ping?', timeout=1)\nexcept RuntimeError as error:\n    asked = 'no reply to parent-' in str(error)\nprint([a['name'] for a in agents], receipt['receipts'][0]['state'], asked)",
+                "",
                 &cancelled,
                 None,
             )
@@ -2880,6 +3045,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "gone = await rlm.delete_subagent('helper')\nprint(gone.rlm_child_id.startswith('sub-'), len(await rlm.list_subagents()))",
+                "",
                 &cancelled,
                 None,
             )
@@ -2900,6 +3066,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "try:\n    await rlm.run('too deep', junk=1)\nexcept RuntimeError as e:\n    print(f'refused: {e}')",
+                "",
                 &cancelled,
                 None,
             )
@@ -2922,6 +3089,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "board = {'grid': [1, 2, 3]}\nsecret = 'never scoped'\nscoped = await rlm.run('use the board', name='scoped', context_keys=['board'])\ntry:\n    await rlm.run('and this', name='nope', context_keys=['absent'])\nexcept KeyError as e:\n    print(f'keyerror: {e}')\nprint([s.session_name for s in await rlm.list_subagents()])",
+                "",
                 &cancelled,
                 None,
             )
@@ -3010,7 +3178,7 @@ async fn a_scoped_child_reads_the_named_keys_and_nothing_else() -> TestResult {
         "a named key reaches the child with its value: {brief:?}"
     );
     assert!(
-        brief.contains("[truncated to 4096 chars]"),
+        brief.contains("[kept 4096 of over 4096 chars"),
         "an oversized value is capped with a named marker, never silently cut: {brief:?}"
     );
     assert!(
@@ -3041,6 +3209,330 @@ async fn a_scoped_child_reads_the_named_keys_and_nothing_else() -> TestResult {
             .is_some_and(|error| error.contains("at most 8 are scoped")),
         "an unbounded brief is refused at admission"
     );
+    Ok(())
+}
+
+/// A value as the kernel's `_resolve_context` sends a list of dicts: `json.dumps` text, or the
+/// `repr` text it falls back to (non-ASCII kept) when the structure will not serialize.
+fn kernel_value(chars: usize, dumped: bool) -> String {
+    let item = |id: usize| {
+        if dumped {
+            format!("{{\"id\": {id}, \"name\": \"na\\u00efve\"}}")
+        } else {
+            format!("{{'id': {id}, 'name': 'na\u{ef}ve'}}")
+        }
+    };
+    let items: Vec<String> = (0..chars / 20 + 1).map(item).collect();
+    format!("[{}]", items.join(", "))
+        .chars()
+        .take(chars)
+        .collect()
+}
+
+fn context_row<'a>(brief: &'a str, name: &str) -> Result<&'a str, String> {
+    let head = format!("{name} = ");
+    (brief.lines().find(|line| line.starts_with(&head))).ok_or(format!("no {name} row: {brief:?}"))
+}
+
+/// The road a loud `row` names, read off the row as the model would: the `history://` address in
+/// it serves the child's `answer`, as its JSONL transcript escapes it, live and after the reap.
+fn history_holds(harness: &Harness, name: &str, row: &str, answer: &str) -> TestResult {
+    let (_, tail) = row
+        .split_once("read history://")
+        .ok_or("the row names no address")?;
+    let child: String = tail
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '_'))
+        .collect();
+    let url: yi_types::url::Url = format!("history://{child}").parse()?;
+    let desk =
+        yi_runtime::fetch::SessionTranscripts::new(Arc::clone(&harness.host), None, &harness.root);
+    let resolver =
+        yi_runtime::fetch::Resolver::new(harness.root.to_path_buf(), yi_runtime::Wall::default())
+            .with_transcripts(Arc::new(desk));
+    let escaped = serde_json::to_string(answer)?;
+    let needle = escaped.trim_matches('"');
+    for reaped in [false, true] {
+        if reaped {
+            harness.host.reap(name)?;
+        }
+        let served = resolver.fetch(&url)?.text;
+        assert!(
+            served.contains(needle),
+            "{url} lacks the answer (reaped: {reaped}): {served:.400}"
+        );
+    }
+    Ok(())
+}
+
+/// The brief of a child spawned with `context` as the kernel sends it, and its `context_chars`.
+async fn scoped_brief(context: Value, counted: Option<Value>) -> Result<String, String> {
+    let harness = harness(0, 1, "ok").map_err(|error| error.to_string())?;
+    let mut pairs = vec![("context", context)];
+    pairs.extend(counted.map(|counted| ("context_chars", counted)));
+    harness
+        .host
+        .spawn("read them".to_owned(), protocol_kwargs("scoped", &pairs))
+        .map_err(|error| error.to_string())?;
+    Ok(child_brief(&harness).await)
+}
+
+#[tokio::test]
+async fn a_context_value_cut_names_what_was_kept_and_the_way_to_pass_the_rest() -> TestResult {
+    let whole = kernel_value(4_096, true);
+    let past = kernel_value(4_097, true);
+    let brief = scoped_brief(
+        json!({"whole": whole, "past": past}),
+        Some(json!({"whole": 4_096, "past": 4_097})),
+    )
+    .await?;
+    assert_eq!(
+        context_row(&brief, "whole")?,
+        format!("whole = {whole}"),
+        "a value at its cap passes whole"
+    );
+    let row = context_row(&brief, "past")?;
+    let head: String = past.chars().take(4_096).collect();
+    assert!(
+        row.starts_with(&format!("past = {head}… [")),
+        "one char past the cap keeps exactly the cap: {row:?}"
+    );
+    for fact in [
+        "kept 4096 of 4097 chars",
+        "cap mail.context_value = 4096",
+        "local://<path> in partition",
+    ] {
+        assert!(row.contains(fact), "the cut row names {fact:?}: {row:?}");
+    }
+
+    let brief = scoped_brief(
+        json!({"far": kernel_value(4_097, true), "blind": kernel_value(4_097, true), "accent": kernel_value(4_097, false)}),
+        Some(json!({"far": 20_000, "accent": 4_097})),
+    )
+    .await?;
+    assert!(
+        context_row(&brief, "far")?.contains("kept 4096 of 20000 chars"),
+        "the kernel's own count is the total: {brief:?}"
+    );
+    let blind = context_row(&brief, "blind")?;
+    assert!(
+        blind.contains("kept 4096 of over 4096 chars") && !blind.contains("4097"),
+        "a cut the sender did not count is not passed off as its length: {blind:?}"
+    );
+    let accent = context_row(&brief, "accent")?;
+    let head: String = kernel_value(4_097, false).chars().take(4_096).collect();
+    assert!(
+        accent.starts_with(&format!("accent = {head}… [kept 4096 of 4097 chars")),
+        "a non-ASCII value is cut on a char boundary: {accent:?}"
+    );
+
+    let mid = format!("x{}", "\u{e9}".repeat(4_096));
+    let brief = scoped_brief(
+        json!({"low": kernel_value(4_097, true), "mid": mid}),
+        Some(json!({"low": 10, "mid": 4_097})),
+    )
+    .await?;
+    let low = context_row(&brief, "low")?;
+    assert!(
+        low.contains("kept 4096 of over 4096 chars") && !low.contains("of 10 chars"),
+        "a count under the chars received is not believed: {}",
+        low.chars().skip(4_090).collect::<String>()
+    );
+    let head: String = mid.chars().take(4_096).collect();
+    assert!(
+        context_row(&brief, "mid")?.starts_with(&format!("mid = {head}… [kept 4096 of 4097 chars")),
+        "byte 4096 sits inside a two-byte char and the cut does not panic there"
+    );
+    Ok(())
+}
+
+/// Dies with a count of the wrong shape ignored: a scalar or a float count is the sender's bug,
+/// and a row that quietly says `over 4096` hides it from the one run that could fix it.
+#[tokio::test]
+async fn a_context_count_of_the_wrong_shape_is_refused_not_ignored() -> TestResult {
+    for counted in [
+        json!(10_000),
+        json!([4_097]),
+        json!({"a": 1.5}),
+        json!({"a": -1}),
+        json!({"a": "9"}),
+    ] {
+        let refused = scoped_brief(json!({"a": "x"}), Some(counted.clone()))
+            .await
+            .err()
+            .ok_or(format!("{counted} was admitted"))?;
+        assert!(
+            refused.contains("context_chars must be an object of variable name to char count"),
+            "{counted}: {refused}"
+        );
+    }
+    let brief = scoped_brief(json!({"a": "x"}), Some(Value::Null)).await?;
+    assert!(
+        brief.contains("a = x\n"),
+        "a null count is no count: {brief:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the road the row names leading nowhere: the address and kwarg read off a cut value's
+/// row, with the value written to that file, reach the child whole.
+#[tokio::test]
+async fn a_value_past_the_context_cap_reaches_a_child_whole_through_a_partition() -> TestResult {
+    let value = kernel_value(4_097, true);
+    let cut = scoped_brief(json!({ "board": value }), None).await?;
+    let row = context_row(&cut, "board")?;
+    let (address, kwarg) = (row.rsplit_once(" · write a value to a file and give "))
+        .and_then(|(_, road)| road.strip_suffix(']')?.split_once(" in "))
+        .ok_or(format!(
+            "the cut row names no road: {}",
+            row.chars().skip(4_096).collect::<String>()
+        ))?;
+    let address = address.replace("<path>", "board.json");
+    let harness = harness(0, 1, "ok")?;
+    std::fs::write(harness.root.join("board.json"), &value)?;
+    harness
+        .host
+        .set_resolver(Arc::new(yi_runtime::fetch::Resolver::new(
+            harness.root.to_path_buf(),
+            yi_runtime::Wall::default(),
+        )));
+    harness
+        .host
+        .spawn(
+            "read it".to_owned(),
+            protocol_kwargs("scoped", &[(kwarg, json!([address]))]),
+        )
+        .map_err(|error| error.to_string())?;
+    let brief = child_brief(&harness).await;
+    assert!(
+        brief.contains(&value),
+        "the partition carries the value whole: {brief:.300}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_context_block_cut_names_what_was_kept_and_the_way_to_pass_the_rest() -> TestResult {
+    let scope = |last: usize| {
+        let mut keys = Map::new();
+        for (name, chars) in [("a", 4_096), ("b", 4_096), ("c", 4_096), ("d", last)] {
+            keys.insert(name.to_owned(), Value::String(kernel_value(chars, true)));
+        }
+        Value::Object(keys)
+    };
+    let brief = scoped_brief(scope(4_059), None).await?;
+    assert!(
+        !brief.contains("[kept") && brief.contains("\n</parent_context>"),
+        "a block of exactly 16384 chars passes whole: {}",
+        brief.len()
+    );
+    let brief = scoped_brief(scope(4_060), None).await?;
+    for fact in [
+        "kept 16384 of 16385 chars",
+        "cap mail.context_total = 16384",
+        "local://<path> in partition]</parent_context>",
+    ] {
+        assert!(brief.contains(fact), "the cut row names {fact:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_schema_refusal_carries_the_head_of_the_answer_and_names_the_rest() -> TestResult {
+    let schema = json!({"type": "object", "properties": {"outcome": {"type": "string"}}, "required": ["outcome"]});
+    for chars in [2_000, 2_001, 10_000] {
+        let reader_prose =
+            "Voil\u{e0} la r\u{e9}ponse:\n```\nnot json\n```\n".repeat(chars / 30 + 1);
+        let mut answer: String = reader_prose.chars().take(chars - 1).collect();
+        answer.push('.');
+        let answer: &'static str = answer.leak();
+        let harness = harness(0, 1, answer)?;
+        harness
+            .host
+            .spawn("answer in prose".to_owned(), kwargs(&[("name", "reader")]))
+            .map_err(|error| error.to_string())?;
+        assert!(wait_for_status_named(&harness, "reader").await);
+        let refused = harness
+            .host
+            .result("reader", Some(&schema))
+            .err()
+            .ok_or("prose passed a schema")?;
+        assert!(refused.contains("text, not JSON"), "{chars}: {refused}");
+        if chars == 2_000 {
+            assert!(
+                refused.ends_with(answer) && !refused.contains("[kept"),
+                "an answer at the cap rides whole: {refused:?}"
+            );
+            continue;
+        }
+        assert!(
+            refused.chars().count() <= 2_300,
+            "{chars} chars refused with {}",
+            refused.chars().count()
+        );
+        for fact in [
+            format!("kept 2000 of {chars} chars"),
+            "cap RESULT_TAIL_CHARS = 2000".to_owned(),
+            "read history://reader".to_owned(),
+        ] {
+            assert!(
+                refused.contains(&fact),
+                "{chars}: names {fact:?}: {refused:?}"
+            );
+        }
+        history_holds(&harness, "reader", &refused, answer)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_child_answer_preview_past_its_cap_names_the_transcript_that_holds_the_rest() -> TestResult
+{
+    for chars in [240, 241] {
+        let words = "r\u{e9}ponse ".repeat(chars / 8 + 1);
+        let mut answer: String = words.chars().take(chars - 1).collect();
+        answer.push('\u{e9}');
+        let answer: &'static str = answer.leak();
+        let harness = harness(0, 1, answer)?;
+        let mut events = harness.events.subscribe();
+        harness
+            .host
+            .spawn(
+                "answer at length".to_owned(),
+                kwargs(&[("name", "answerer")]),
+            )
+            .map_err(|error| error.to_string())?;
+        let updates = collect_updates(&mut events).await;
+        let preview = updates
+            .last()
+            .and_then(|update| update.answer_preview.clone())
+            .ok_or("no preview")?;
+        let notices = harness.notices.lock().map_err(|_| "poisoned")?.clone();
+        let notice = notices.first().ok_or("no completion notice")?;
+        assert!(
+            notice.contains(&format!("Last answer: {preview}\n")),
+            "the notice and the status carry one preview: {notice:?}"
+        );
+        if chars == 240 {
+            assert_eq!(preview, answer, "an answer at the cap rides whole");
+            continue;
+        }
+        assert!(
+            preview.starts_with(&format!(
+                "{}… [",
+                answer.chars().take(240).collect::<String>()
+            )),
+            "{preview:?}"
+        );
+        for fact in [
+            "kept 240 of 241 chars",
+            "cap PREVIEW_CHARS = 240",
+            "read history://answerer",
+        ] {
+            assert!(preview.contains(fact), "names {fact:?}: {preview:?}");
+        }
+        history_holds(&harness, "answerer", &preview, answer)?;
+    }
     Ok(())
 }
 
@@ -3118,6 +3610,339 @@ async fn a_checked_childs_check_runs_in_the_session_cwd() -> TestResult {
     assert!(wait_for_status_named(&harness, "auditor").await);
     let reply = harness.host.result("auditor", None)?;
     assert_eq!(reply.get("value"), Some(&json!(1)), "{reply:?}");
+    Ok(())
+}
+
+const PROTOCOL_ANSWER: &str = "{\"value\": 1, \"discoveries\": []}";
+
+/// A root wired the way `yi` wires one: rules read from `root/home`, and a yolo broker with no
+/// sandbox, or an auto one over `sandbox`, so the host gate alone stands between a check and the host.
+fn wired_root(
+    root: &std::path::Path,
+    wall: yi_runtime::Wall,
+    sandbox: Option<yi_tools::Sandbox>,
+) -> (AgentSession, Arc<ProviderStream>, Arc<SubagentHost>) {
+    let provider = Arc::new(ProviderStream::new(None));
+    // Every turn of the family, the parent's woken one too, answers the result object.
+    provider.queue_faux(vec![child_reply(PROTOCOL_ANSWER); 8]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    let mode = match sandbox {
+        Some(_) => yi_permission::PermissionMode::Auto,
+        None => yi_permission::PermissionMode::Yolo,
+    };
+    let broker = yi_runtime::PermissionBroker::new(
+        mode,
+        root.join("project"),
+        Vec::new(),
+        None,
+        session.events_sender(),
+    )
+    .with_sandbox(sandbox);
+    let host = yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider: Arc::clone(&provider),
+            system_prompt: String::new(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.join("project"),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: Some(Arc::new(broker)),
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall,
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    (session, provider, host)
+}
+
+fn gate_rule_root(label: &str, rule: Option<&str>) -> Result<Scratch, Box<dyn Error>> {
+    let root = Scratch::new(label)?;
+    std::fs::create_dir_all(root.join("project"))?;
+    std::fs::create_dir_all(root.join("home/.yi/rules"))?;
+    if let Some(rule) = rule {
+        std::fs::write(root.join("home/.yi/rules/no-denied.md"), rule)?;
+    }
+    Ok(root)
+}
+
+const DENY_MARKER: &str =
+    "---\ntrigger: denied-marker\nscope: tool:bash\nmode: gate\n---\nNever run denied-marker.\n";
+
+/// #1055: a spawn's check runs `sh -c` on the host at `rlm.result`, outside the sandbox, and it
+/// met no gate; a user's gate rule naming it now refuses the spawn, and the check never runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_user_rule_refuses_a_spawn_check_it_names() -> TestResult {
+    let root = gate_rule_root("yi-check-gate", Some(DENY_MARKER))?;
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), None);
+    let marker = root.join("project/denied-marker");
+    let check = json!(format!("touch {}; true", marker.display()));
+    let spawned = host.spawn(
+        "land the fix".to_owned(),
+        protocol_kwargs("gated", &[("check", check)]),
+    );
+    let refusal = spawned
+        .err()
+        .ok_or("a check the rule names must not spawn")?;
+    assert!(
+        refusal.contains("refused before it runs on the host")
+            && refusal.contains("Denied by rule `no-denied`")
+            && refusal.contains("Never run denied-marker."),
+        "the refusal names the rule and its words: {refusal}"
+    );
+    let listed = host.list()["subagents"].as_array().map_or(0, Vec::len);
+    assert_eq!(listed, 0, "nothing was admitted");
+    assert!(!marker.exists(), "the denied check never ran");
+    Ok(())
+}
+
+/// #1055: judged at spawn alone, a check ran at `rlm.result` past a gate rule promoted after the
+/// spawn; `result` judges it again before it runs, holds the result back, and the check never runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rule_promoted_after_the_spawn_still_stops_the_check_at_result() -> TestResult {
+    let root = gate_rule_root("yi-check-regate", None)?;
+    let (session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), None);
+    let marker = root.join("project/denied-marker");
+    let check = json!(format!("touch {}; true", marker.display()));
+    let reply = host
+        .spawn(
+            "land the fix".to_owned(),
+            protocol_kwargs("gated", &[("check", check)]),
+        )
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    assert!(wait_for_status(&host, child_id, "completed").await);
+    let engine = session
+        .rules_engine()
+        .ok_or("the wiring attaches a rule engine")?;
+    engine.insert(yi_runtime::rules::RuleDoc {
+        name: "no-denied".to_owned(),
+        body: "Never run denied-marker.".to_owned(),
+        path: root.join("home/.yi/rules/no-denied.md"),
+        needles: vec!["denied-marker".to_owned()],
+        scope: yi_runtime::rules::RuleScope::Tool("bash".to_owned()),
+        gap: yi_runtime::rules::RuleGap::Once,
+        mode: yi_runtime::rules::RuleMode::Gate,
+        paths: Vec::new(),
+        after: 1,
+    });
+    let refusal = host
+        .result("gated", None)
+        .err()
+        .ok_or("a check the rule now names must not run")?;
+    assert!(
+        refusal.contains("result held back; its check is refused")
+            && refusal.contains("Denied by rule `no-denied`"),
+        "the refusal names the rule: {refusal}"
+    );
+    assert!(!marker.exists(), "the denied check never ran");
+    Ok(())
+}
+
+/// A rule's `after: 2` counts attempts, and the recheck at `rlm.result` counted the spawned check
+/// a second time, so the first use of its trigger passed the spawn and was refused after the run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_after_gate_counts_a_spawned_check_once() -> TestResult {
+    let rule = DENY_MARKER.replace("mode: gate\n", "mode: gate\nafter: 2\n");
+    let root = gate_rule_root("yi-check-after", Some(&rule))?;
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), None);
+    let marker = root.join("project/denied-marker");
+    let check = json!(format!("touch {}; true", marker.display()));
+    let kwargs = |name| protocol_kwargs(name, &[("check", check.clone())]);
+    let reply = (host.spawn("land the fix".to_owned(), kwargs("first")))
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    assert!(wait_for_status(&host, child_id, "completed").await);
+    let reply = host.result("first", None)?;
+    assert_eq!(reply.get("value"), Some(&json!(1)), "{reply:?}");
+    assert!(marker.exists(), "the first attempt's check ran");
+    let second = host.spawn("land the fix".to_owned(), kwargs("second"));
+    let refusal = second.err().ok_or("the second attempt meets the gate")?;
+    assert!(refusal.contains("Denied by rule `no-denied`"), "{refusal}");
+    Ok(())
+}
+
+/// The wall's verdict on a check's text holds at every spawn, unlike a gate rule's single
+/// informed refusal: a check reading a denied path is refused the second time as the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_walled_check_is_refused_at_every_spawn() -> TestResult {
+    let root = gate_rule_root("yi-check-walled", None)?;
+    let secret = root.join("project/secret");
+    std::fs::create_dir_all(&secret)?;
+    let wall = yi_runtime::Wall {
+        deny_write: Vec::new(),
+        deny_read: vec![secret.clone()],
+        deny_url: Vec::new(),
+        container: None,
+    };
+    let (_session, _provider, host) = wired_root(&root, wall, None);
+    let check = json!(format!("cat {}/key.txt", secret.display()));
+    for attempt in ["first", "second"] {
+        let spawned = host.spawn(
+            "land the fix".to_owned(),
+            protocol_kwargs(attempt, &[("check", check.clone())]),
+        );
+        let refusal = spawned.err().ok_or("a walled check must not spawn")?;
+        assert!(
+            refusal.contains("refused before it runs on the host"),
+            "{attempt}: {refusal}"
+        );
+    }
+    let listed = host.list()["subagents"].as_array().map_or(0, Vec::len);
+    assert_eq!(listed, 0, "nothing was admitted");
+    Ok(())
+}
+
+/// A sandboxed auto session runs a command it would only contain inside the sandbox, and a check
+/// runs on the host, so the broker's leg of the gate refuses it at spawn and names the way out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sandboxed_session_refuses_a_check_it_would_only_contain() -> TestResult {
+    let root = gate_rule_root("yi-check-sandboxed", None)?;
+    let sandbox = yi_tools::Sandbox {
+        writable: vec![root.join("project")],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    };
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), Some(sandbox));
+    let marker = root.join("project/contained-marker");
+    let check = json!(format!("touch {}", marker.display()));
+    let spawned = host.spawn(
+        "land the fix".to_owned(),
+        protocol_kwargs("contained", &[("check", check)]),
+    );
+    let refusal = spawned
+        .err()
+        .ok_or("a check the sandbox only contains must not spawn")?;
+    assert!(
+        refusal.contains("refused before it runs on the host")
+            && refusal.contains("runs later outside the sandbox, which allows it only contained")
+            && refusal.contains("run it yourself with bash, or allow it by a permission rule"),
+        "the refusal names the containment and the way out: {refusal}"
+    );
+    assert!(!marker.exists(), "the refused check never ran");
+    Ok(())
+}
+
+/// The gate passes a check no rule names: it runs at `rlm.result` in the session's cwd, and a
+/// red one still holds the result back with its own evidence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gated_host_still_runs_an_allowed_check_and_holds_a_red_one() -> TestResult {
+    let root = gate_rule_root("yi-check-allowed", Some(DENY_MARKER))?;
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), None);
+    let mut children = Vec::new();
+    for (name, check) in [("allowed", "touch ran-marker"), ("red", "exit 3")] {
+        let reply = host
+            .spawn(
+                "land the fix".to_owned(),
+                protocol_kwargs(name, &[("check", json!(check))]),
+            )
+            .map_err(|error| error.to_string())?;
+        let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+        children.push(child_id.to_owned());
+    }
+    for child_id in &children {
+        assert!(wait_for_status(&host, child_id, "completed").await);
+    }
+    let reply = host.result("allowed", None)?;
+    assert_eq!(reply.get("value"), Some(&json!(1)), "{reply:?}");
+    assert!(root.join("project/ran-marker").exists(), "the check ran");
+    let error = host
+        .result("red", None)
+        .err()
+        .ok_or("a red check must hold the result back")?;
+    assert!(
+        error.contains("check is red") && error.contains("exited 3"),
+        "the refusal carries the check's own evidence: {error}"
+    );
+    Ok(())
+}
+
+/// Dies with a merge's check reaching the host past the gate: a sandboxed auto session only
+/// contains `rm -rf ..`, so it is refused before it runs and the lane is still there to merge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merge_check_the_gate_refuses_never_runs() -> TestResult {
+    use yi_kernel::client::HostHandlers as _;
+    let root = gate_rule_root("yi-merge-check-gate", None)?;
+    let project = root.join("project");
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["commit", "-q", "--allow-empty", "-m", "base"],
+    ] {
+        let identity = ["-c", "user.name=t", "-c", "user.email=t@t"];
+        let ran = yi_tools::command("git")
+            .current_dir(&project)
+            .args(identity)
+            .args(args)
+            .status()?;
+        assert!(ran.success(), "git {args:?}");
+    }
+    let sandbox = yi_tools::Sandbox {
+        writable: vec![project.clone()],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    };
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), Some(sandbox));
+    let asked = kwargs(&[("name", "lane"), ("isolation", "worktree")]);
+    let reply = host
+        .spawn("land the fix".to_owned(), asked)
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    assert!(wait_for_status(&host, child_id, "completed").await);
+    let mut registry = yi_runtime::HostRegistry::default();
+    host.register(&mut registry);
+    let marker = root.join("check-marker");
+    let check = format!("touch {}; rm -rf ..", marker.display());
+    let mut merges = Vec::new();
+    for asked in [
+        json!({"target": "lane", "check": check}),
+        json!({"target": "lane"}),
+    ] {
+        let asked = asked.as_object().cloned().unwrap_or_default();
+        let merge = registry
+            .dispatch("rlm.merge_worktree", asked)
+            .ok_or("no handler")?;
+        merges.push(merge.await);
+    }
+    let refusal = merges.first().and_then(|merged| merged.as_ref().err());
+    let refusal = refusal.ok_or_else(|| format!("a refused check must not merge: {merges:?}"))?;
+    assert!(
+        refusal.contains("refused before it runs on the host"),
+        "{refusal}"
+    );
+    assert!(!marker.exists(), "the refused check never ran");
+    let merged = merges.get(1).and_then(|merged| merged.as_ref().ok());
+    assert_eq!(
+        merged.map(|reply| &reply["merged"]),
+        Some(&json!(true)),
+        "{merges:?}"
+    );
     Ok(())
 }
 
@@ -3456,6 +4281,66 @@ async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResul
         vec!["aaa"],
         "only the HIGH row enters the goal ledger the completion gate drains: {ledger:?}"
     );
+    Ok(())
+}
+
+const TWO_ROWS_ONE_TASK: &str = r#"{"value": "patched", "discoveries": [
+    {"text": "the retry loop double-counts", "violatesCheckOf": "t1", "fingerprint": "aaa"},
+    {"text": "the backoff is unbounded", "violatesCheckOf": "t1", "fingerprint": "bbb"}
+]}"#;
+
+/// Dies with every row printing the check's whole evidence: two rows on one red task were two
+/// copies of a 16 KiB view, and the parent's context paid for both.
+#[tokio::test]
+async fn two_discoveries_on_one_red_task_print_its_evidence_once() -> TestResult {
+    let cwd = Scratch::new("yi-adjudication-once")?;
+    let pytest = crate::RED_PYTEST;
+    write_canonical_plan(&cwd, &[("t1", &format!("cat '{pytest}'; exit 1"))])?;
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: TWO_ROWS_ONE_TASK,
+        tool_command: None,
+        cwd: Some(cwd.to_path_buf()),
+        wake_parent: None,
+    })?;
+    own(&harness.store, "adjudication")?;
+    yi_session::lock_session(&harness.store).set_goal(yi_types::goal::Goal {
+        objective: "ship the retry fix".to_owned(),
+        status: yi_types::goal::GoalStatus::Active,
+        token_budget: None,
+        tokens_used: 0,
+        time_used_seconds: 0,
+        created: 0,
+        updated: 0,
+        check: None,
+        check_timeout_ms: None,
+        check_failure: None,
+        discoveries: Vec::new(),
+        extra: Map::new(),
+    })?;
+    harness
+        .host
+        .spawn(
+            "patch the retry loop".to_owned(),
+            protocol_kwargs("finder", &[("check", json!("true"))]),
+        )
+        .map_err(|error| error.to_string())?;
+    assert!(wait_for_status_named(&harness, "finder").await);
+    harness
+        .host
+        .result("finder", None)
+        .map_err(|error| error.to_string())?;
+    let inbox = harness.inbox.lock().map_err(|_| "poisoned")?.join("\n");
+    assert_eq!(inbox.matches("HIGH discovery from finder").count(), 2);
+    assert_eq!(
+        inbox.matches("collected 400 items").count(),
+        1,
+        "{inbox:.300}"
+    );
+    let later = "(the same evidence as the first row naming this task, above)";
+    assert_eq!(inbox.matches(later).count(), 1);
     Ok(())
 }
 
@@ -4051,6 +4936,7 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "h = await rlm.run('hold on', name='doomed')\nd = await rlm.delete_subagent(h)\nprint(d.session_name, d.status)",
+                "",
                 &cancelled,
                 None,
             )

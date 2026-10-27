@@ -201,6 +201,7 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
 
 pub struct Options {
     pub session_dir: std::path::PathBuf,
+    pub plans_dir: std::path::PathBuf,
     pub cwd: String,
     pub json: bool,
     pub query: Query,
@@ -215,7 +216,12 @@ pub fn run(id_arg: &str, options: &Options) -> i32 {
             );
             return 2;
         }
-        return rollup::run(&options.query, &options.session_dir, options.json);
+        return rollup::run(
+            &options.query,
+            &options.session_dir,
+            &options.plans_dir,
+            options.json,
+        );
     }
     if let Some(dir) = id_arg.trim().strip_prefix("telemetry") {
         return telemetry_rollup(std::path::Path::new(dir.trim()), options.json);
@@ -311,9 +317,7 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
             "bashCategories": totals.categories,
             "editOps": totals.edit_ops,
         });
-        if let Ok(line) = serde_json::to_string(&value) {
-            println!("{line}");
-        }
+        crate::print_json(&value);
         return 0;
     }
     println!("session {id}");
@@ -367,101 +371,6 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
         println!("edit ops  {}", parts.join(" "));
     }
     0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use yi_types::message::{Content, StopReason, Usage};
-
-    fn assistant(cache_read: i64, cache_write: i64) -> Entry {
-        let mut usage = Usage::zero();
-        usage.input = 1000;
-        usage.cache_read = cache_read;
-        usage.cache_write = cache_write;
-        Entry::Message {
-            id: String::new(),
-            terminate: None,
-            parent_id: None,
-            seq: 0,
-            timestamp: 0,
-            message: AgentMessage::Assistant {
-                content: vec![Content::Text {
-                    text: "ok".to_owned(),
-                    text_signature: None,
-                }],
-                api: "openai-completions".to_owned(),
-                provider: "openrouter".to_owned(),
-                model: "z-ai/glm-5.3-flash".to_owned(),
-                response_model: None,
-                response_id: None,
-                diagnostics: None,
-                usage,
-                stop_reason: StopReason::Stop,
-                deferred: None,
-                error_message: None,
-                raw_stop_reason: None,
-                end_turn: None,
-                timestamp: 0,
-            },
-        }
-    }
-
-    fn reduce(entries: &[Entry]) -> Totals {
-        let mut tools = BTreeMap::new();
-        let mut totals = Totals::default();
-        for entry in entries {
-            reduce_entry(entry, &mut tools, &mut totals);
-        }
-        totals
-    }
-
-    /// The first request is cold by definition; a warm same-model request that
-    /// reads nothing is the miss, whatever it wrote.
-    #[test]
-    fn a_warm_request_that_reads_nothing_is_a_miss() {
-        let cold_then_miss = reduce(&[assistant(0, 1000), assistant(0, 0)]);
-        assert_eq!(cold_then_miss.all.misses, 1);
-        assert_eq!(cold_then_miss.all.hit_rate(), 0.0);
-        let cold_then_hit = reduce(&[assistant(0, 1000), assistant(1000, 0)]);
-        assert_eq!(cold_then_hit.all.misses, 0);
-        assert_eq!(cold_then_hit.all.hit_rate(), 0.25);
-        assert_eq!(cold_then_hit.all.write_share(), 0.25);
-        assert_eq!(cold_then_hit.by_model.len(), 1);
-    }
-
-    /// A refusal is a known zero with no prompt: not a miss, and not a lower bound.
-    #[test]
-    fn a_refusal_is_no_miss_and_a_lost_usage_makes_the_cost_a_lower_bound() {
-        let refused = |unknown: bool| {
-            let mut entry = assistant(0, 0);
-            if let Entry::Message {
-                message: AgentMessage::Assistant { usage, .. },
-                ..
-            } = &mut entry
-            {
-                *usage = if unknown {
-                    Usage::unknown()
-                } else {
-                    Usage::zero()
-                };
-            }
-            entry
-        };
-        let totals = reduce(&[assistant(0, 1000), refused(false)]);
-        assert_eq!(totals.all.misses, 0);
-        assert!(
-            totals.all.line().contains("  cost $0.000  "),
-            "{}",
-            totals.all.line()
-        );
-        let lost = reduce(&[assistant(0, 1000), refused(true)]);
-        assert!(
-            lost.all.line().contains("  cost $?  "),
-            "{}",
-            lost.all.line()
-        );
-    }
 }
 
 #[derive(Default)]
@@ -602,4 +511,99 @@ fn telemetry_rollup(dir: &std::path::Path, json_out: bool) -> i32 {
         println!("  class {class}: {count}");
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_types::message::{Content, StopReason, Usage};
+
+    fn assistant(cache_read: i64, cache_write: i64) -> Entry {
+        let mut usage = Usage::zero();
+        usage.input = 1000;
+        usage.cache_read = cache_read;
+        usage.cache_write = cache_write;
+        Entry::Message {
+            id: String::new(),
+            terminate: None,
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
+            message: AgentMessage::Assistant {
+                content: vec![Content::Text {
+                    text: "ok".to_owned(),
+                    text_signature: None,
+                }],
+                api: "openai-completions".to_owned(),
+                provider: "openrouter".to_owned(),
+                model: "z-ai/glm-5.3-flash".to_owned(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage,
+                stop_reason: StopReason::Stop,
+                deferred: None,
+                error_message: None,
+                raw_stop_reason: None,
+                end_turn: None,
+                timestamp: 0,
+            },
+        }
+    }
+
+    fn reduce(entries: &[Entry]) -> Totals {
+        let mut tools = BTreeMap::new();
+        let mut totals = Totals::default();
+        for entry in entries {
+            reduce_entry(entry, &mut tools, &mut totals);
+        }
+        totals
+    }
+
+    /// The first request is cold by definition; a warm same-model request that
+    /// reads nothing is the miss, whatever it wrote.
+    #[test]
+    fn a_warm_request_that_reads_nothing_is_a_miss() {
+        let cold_then_miss = reduce(&[assistant(0, 1000), assistant(0, 0)]);
+        assert_eq!(cold_then_miss.all.misses, 1);
+        assert_eq!(cold_then_miss.all.hit_rate(), 0.0);
+        let cold_then_hit = reduce(&[assistant(0, 1000), assistant(1000, 0)]);
+        assert_eq!(cold_then_hit.all.misses, 0);
+        assert_eq!(cold_then_hit.all.hit_rate(), 0.25);
+        assert_eq!(cold_then_hit.all.write_share(), 0.25);
+        assert_eq!(cold_then_hit.by_model.len(), 1);
+    }
+
+    /// A refusal is a known zero with no prompt: not a miss, and not a lower bound.
+    #[test]
+    fn a_refusal_is_no_miss_and_a_lost_usage_makes_the_cost_a_lower_bound() {
+        let refused = |unknown: bool| {
+            let mut entry = assistant(0, 0);
+            if let Entry::Message {
+                message: AgentMessage::Assistant { usage, .. },
+                ..
+            } = &mut entry
+            {
+                *usage = if unknown {
+                    Usage::unknown()
+                } else {
+                    Usage::zero()
+                };
+            }
+            entry
+        };
+        let totals = reduce(&[assistant(0, 1000), refused(false)]);
+        assert_eq!(totals.all.misses, 0);
+        assert!(
+            totals.all.line().contains("  cost $0.000  "),
+            "{}",
+            totals.all.line()
+        );
+        let lost = reduce(&[assistant(0, 1000), refused(true)]);
+        assert!(
+            lost.all.line().contains("  cost $?  "),
+            "{}",
+            lost.all.line()
+        );
+    }
 }

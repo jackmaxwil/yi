@@ -1,11 +1,12 @@
+use crate::recorded::recorded_line;
 use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 
 use serde_json::Number;
-use yi_runtime::fetch::{FETCH_ENTRY_TYPE, FetchError, Page, Resolver};
+use yi_runtime::fetch::{FETCH_ENTRY_TYPE, FetchError, FetchLog, FetchRecord, Page, Resolver};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Wall};
 use yi_types::model::{Model, ModelCost};
 use yi_types::url::Url;
@@ -90,6 +91,76 @@ fn a_store_attached_after_the_resolver_still_serves_history() -> TestResult {
         !logged.is_empty(),
         "the fetch log's own writes must land in the late-attached store"
     );
+    Ok(())
+}
+
+/// Dies with the control: append a row on every fetch and a file read four times leaves four
+/// rows. A changed file is a new hash and gets its own row.
+#[test]
+fn a_repeated_read_of_an_unchanged_file_adds_no_session_row() -> TestResult {
+    let workspace = Scratch::new("yi-fetch-repeat")?;
+    let file = workspace.join("a.py");
+    std::fs::write(
+        &file,
+        "def greet(name, greeting):\n    return f\"{greeting}, {name}\"\n",
+    )?;
+    let store = memory_store();
+    let resolver =
+        Resolver::new(workspace.to_path_buf(), Wall::default()).with_session("main", store.clone());
+    let rows = || -> Result<usize, Box<dyn Error>> {
+        let query = yi_session::EntryQuery {
+            entry_type: Some("custom"),
+            custom_type: Some(FETCH_ENTRY_TYPE.to_owned()),
+            ..yi_session::EntryQuery::default()
+        };
+        Ok(yi_session::lock_session(&store).find_entries(&query)?.len())
+    };
+    let url: Url = "local://a.py".parse()?;
+    for _ in 0..4 {
+        resolver.fetch(&url)?;
+    }
+    assert_eq!(rows()?, 1, "one row for one address at one hash");
+    std::fs::write(&file, "def greet(name):\n    return f\"hi {name}\"\n")?;
+    resolver.fetch(&url)?;
+    assert_eq!(rows()?, 2, "the edited file's new hash is a row of its own");
+    Ok(())
+}
+
+#[test]
+fn concurrent_unchanged_reads_write_one_session_row() -> TestResult {
+    let store = memory_store();
+    let log = Arc::new(FetchLog::new());
+    log.attach_session(store.clone());
+    let url: Url = "local://a.py".parse()?;
+    let record = FetchRecord {
+        url: url.to_string(),
+        hash: "deadbeef".to_owned(),
+        served_by: "test".to_owned(),
+    };
+    let barrier = Arc::new(Barrier::new(16));
+    let readers: Vec<_> = (0..16)
+        .map(|_| {
+            let (log, barrier, url, record) = (
+                Arc::clone(&log),
+                Arc::clone(&barrier),
+                url.clone(),
+                record.clone(),
+            );
+            std::thread::spawn(move || {
+                barrier.wait();
+                log.record(&url, record);
+            })
+        })
+        .collect();
+    for reader in readers {
+        reader.join().map_err(|_| "a reader panicked")?;
+    }
+    let rows = yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery {
+        entry_type: Some("custom"),
+        custom_type: Some(FETCH_ENTRY_TYPE.to_owned()),
+        ..yi_session::EntryQuery::default()
+    })?;
+    assert_eq!(rows.len(), 1, "sixteen readers wrote duplicate fetch rows");
     Ok(())
 }
 
@@ -465,6 +536,7 @@ fn a_session_is_read_by_name_across_repositories_and_a_shared_name_lists_its_own
             .to_string_lossy()
             .into_owned(),
         brief: String::new(),
+        spawned_by: None,
     });
     let trail = serde_json::to_value(spawned)?;
     yi_session::lock_session(&ops_root).append_custom(
@@ -607,6 +679,121 @@ fn named_session(
     Ok(id)
 }
 
+/// The incident's shape: a snippet cut at 160 chars with nothing to say so, and on `history.grep`
+/// no address to read the rest. The remedy the notice names is run the way the model runs it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn both_history_verbs_name_the_snippet_cap_and_the_address_that_reads_the_rest() -> TestResult
+{
+    use yi_kernel::client::HostHandlers;
+    let root = Scratch::new("yi-fetch-snippet-cap")?;
+    let (sessions, here) = (root.join("sessions"), root.join("here"));
+    std::fs::create_dir_all(&here)?;
+    let line = recorded_line("well-governed codebase")?;
+    assert!(line.chars().count() > 400, "a life-sized line");
+    named_session(&sessions, &here, "snippets", &line)?;
+    let own = memory_store();
+    let said = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text(&line)],
+        yi_types::message::StopReason::Stop,
+    );
+    yi_session::lock_session(&own).append_message("main", said)?;
+    let mut registry = yi_runtime::HostRegistry::default();
+    let handle = own.clone();
+    let held = Arc::new(move || Some(handle.clone()));
+    yi_runtime::history::register_grep(&mut registry, held, &Wall::default());
+    yi_runtime::history::register(&mut registry, sessions.clone(), here.clone());
+    let host = crate::support::family(root.to_path_buf(), here.clone(), own.clone(), None).host;
+    let desk = yi_runtime::fetch::SessionTranscripts::new(host, Some(sessions), &here);
+    let resolver = Resolver::new(here.clone(), Wall::default())
+        .with_session("main", own)
+        .with_transcripts(Arc::new(desk));
+    let keys = ["session", "entryId", "type", "snippet", "url", "cut"];
+    for (verb, key, from) in [
+        ("history.grep", "pattern", 1),
+        ("history.search", "query", 0),
+    ] {
+        let payload = serde_json::json!({ key: "WELL-GOVERNED" });
+        let call = registry
+            .dispatch(verb, payload.as_object().cloned().unwrap_or_default())
+            .ok_or("the verb is not registered")?;
+        let reply = call.await?;
+        let hit = &reply["hits"][0];
+        let notice = reply.get("notice").and_then(serde_json::Value::as_str);
+        let notice = notice.ok_or("a cut snippet carries a notice")?;
+        assert!(
+            notice.contains("1 of 1 snippets cut to 160 chars (SNIPPET_CHARS)")
+                && notice.contains("rlm.fetch(hit[\"url\"])"),
+            "{verb}: {notice}"
+        );
+        let row = hit.as_object().into_iter();
+        let listed: Vec<&str> = row.flat_map(|row| row.keys().map(String::as_str)).collect();
+        assert_eq!(listed, keys.get(from..).unwrap_or_default(), "{verb}");
+        let url: Url = hit["url"].as_str().ok_or("no url")?.parse()?;
+        let whole = resolver.fetch(&url)?.text;
+        assert!(whole.contains(&line), "{verb}: {url} reads {whole}");
+    }
+    Ok(())
+}
+
+/// The same hit walled three ways: `history://` and this session's own id refuse its fetch, so the
+/// notice must not name `rlm.fetch(hit["url"])`; `history://main` walls only the parent, so it must.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reader_walled_from_history_is_not_told_to_fetch_a_cut_hit() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let root = Scratch::new("yi-fetch-snippet-wall")?;
+    let here = root.join("here");
+    std::fs::create_dir_all(&here)?;
+    let line = recorded_line("well-governed codebase")?;
+    let own = memory_store();
+    let said = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text(&line)],
+        yi_types::message::StopReason::Stop,
+    );
+    yi_session::lock_session(&own).append_message("main", said)?;
+    let walls = [
+        ("history://", true),
+        ("history://fetch-session-test", true),
+        ("history://main", false),
+    ];
+    for (deny, refused) in walls {
+        let wall = Wall {
+            deny_url: vec![deny.to_owned()],
+            ..Wall::default()
+        };
+        let mut registry = yi_runtime::HostRegistry::default();
+        let handle = own.clone();
+        let held = Arc::new(move || Some(handle.clone()));
+        yi_runtime::history::register_grep(&mut registry, held, &wall);
+        let payload = serde_json::json!({ "pattern": "WELL-GOVERNED" });
+        let call = registry.dispatch(
+            "history.grep",
+            payload.as_object().cloned().unwrap_or_default(),
+        );
+        let reply = call.ok_or("the verb is not registered")?.await?;
+        let notice = reply["notice"]
+            .as_str()
+            .ok_or("a cut snippet carries a notice")?;
+        assert!(
+            notice.contains("1 of 1 snippets cut to 160 chars (SNIPPET_CHARS)")
+                && notice.contains("rlm.fetch") != refused,
+            "{deny}: {notice}"
+        );
+        let url: Url = reply["hits"][0]["url"].as_str().ok_or("no url")?.parse()?;
+        let reader = Resolver::new(here.clone(), wall).with_session("reader-1", own.clone());
+        let fetched = reader.fetch(&url);
+        assert!(
+            match fetched {
+                Err(FetchError::Denied { .. }) => refused,
+                Ok(ref whole) => !refused && whole.text.contains(&line),
+                Err(_) => false,
+            },
+            "{deny}: {:?}",
+            fetched.map(|fetched| fetched.text)
+        );
+    }
+    Ok(())
+}
+
 /// A wall written with the lowercase address a name resolves as holds against that session's id,
 /// whether the name has capitals or runs its words together with two spaces, for a read and a grep.
 #[test]
@@ -701,6 +888,7 @@ fn a_spawn_record_cannot_point_a_read_outside_its_roots_directory() -> TestResul
             session: "elsewhere".to_owned(),
             path,
             brief: String::new(),
+            spawned_by: None,
         });
         yi_session::lock_session(&ops).append_custom(
             "main",
@@ -952,6 +1140,51 @@ fn an_unpaged_history_listing_past_its_cap_says_where_it_was_cut() -> TestResult
         "{}",
         text.lines().last().unwrap_or_default()
     );
+    Ok(())
+}
+
+/// An unpaged `local://` read is served whole at 51,200 bytes and cut past it, with the row a
+/// history listing gets, and the offset the row names reads the bytes after the cut. The wide file
+/// has a char over byte 51,200 and the traceback is a recorded 73,488 B cell.
+#[test]
+fn an_unpaged_local_read_past_its_cap_says_where_it_was_cut() -> TestResult {
+    const CAP: usize = 50 * 1024;
+    let workspace = Scratch::new("yi-fetch-local-cap")?;
+    let resolver = Arc::new(Resolver::new(workspace.to_path_buf(), Wall::default()));
+    let read = |name: &str, body: &str, offset: Option<i64>, limit: Option<i64>| {
+        std::fs::write(workspace.join(name), body)?;
+        read_tool_text(&resolver, &format!("local://{name}"), offset, limit).map(|read| read.0)
+    };
+    let at = "x".repeat(CAP);
+    assert_eq!(read("at.txt", &at, None, None)?, at);
+    let trace = include_str!("../../tools/tests/fixtures/view/recursion-traceback.txt");
+    let wide = format!("a{}", "\u{e9}".repeat(CAP / 2));
+    for (name, body) in [
+        ("past.txt", format!("{at}x")),
+        ("wide.txt", wide),
+        ("trace.txt", trace.to_owned()),
+    ] {
+        let kept = body.floor_char_boundary(CAP);
+        let row = format!(
+            "[\u{2026} {kept} of {} bytes shown \u{b7} unpaged local cap 51200 bytes \u{b7} read local://{name} with offset={} and limit to page on]",
+            body.len(),
+            kept + 1
+        );
+        let text = read(name, &body, None, None)?;
+        assert_eq!(
+            text,
+            format!("{}\n{row}", body.get(..kept).unwrap_or_default()),
+            "{name}"
+        );
+        let next = read(name, &body, Some(i64::try_from(kept + 1)?), Some(8))?;
+        assert!(
+            next.starts_with(
+                body.get(kept..(kept + 8).min(body.len()))
+                    .unwrap_or_default()
+            ),
+            "{name}"
+        );
+    }
     Ok(())
 }
 

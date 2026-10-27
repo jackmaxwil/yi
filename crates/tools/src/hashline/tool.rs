@@ -423,7 +423,7 @@ impl HashlineReadTool {
                 matches.push(path.to_path_buf());
             }
             let room = match context.program {
-                true => matches.len() <= yi_types::tool_value::PROGRAM_FUSE_ITEMS,
+                true => matches.len() <= context.fuse.items,
                 false => matches.len() < GLOB_FILES_CAP,
             };
             room && !(context.cancelled)()
@@ -438,7 +438,8 @@ impl HashlineReadTool {
             return error_output(rows.join("\n"));
         }
         if context.program {
-            return super::values::program_glob(pattern, &matches, &root, &walled.notices());
+            let fuse = context.fuse.items;
+            return super::values::program_glob(pattern, &matches, &root, &walled.notices(), fuse);
         }
         let mut sections = vec![if matches.len() >= GLOB_FILES_CAP {
             format!(
@@ -615,8 +616,9 @@ impl HashlineReadTool {
         // A program's open window runs to the end: the page is the model's cap, not its.
         let to_end =
             found.is_none() && !input.contains_key("limit") && !input.contains_key("ranges");
-        let program = (context.program)
-            .then(|| super::values::program_lines(&all_lines[..line_count], to_end, &windows));
+        let program = (context.program).then(|| {
+            super::values::program_lines(&all_lines[..line_count], to_end, &windows, context.fuse)
+        });
         let mut state = lock_state(&self.state);
         let tag = state.snapshots.record(&canonical, &normalized, Some(&seen));
         if let Some((lines, _)) = &program {
@@ -652,8 +654,14 @@ impl HashlineReadTool {
                 "[byte budget {budget} reached at line {line} of {line_count} — continue with offset={line}]"
             ));
         } else if shown_end < line_count && found.is_none() {
+            let asked = explicit_limit.is_some() || input.contains_key("ranges");
+            let cap = if asked {
+                String::new()
+            } else {
+                format!(" (READ_LINE_CAP {READ_LINE_CAP})")
+            };
             rendered.push(format!(
-                "[showing lines {first_shown}-{shown_end} of {line_count} — continue with offset={}]",
+                "[showing lines {first_shown}-{shown_end} of {line_count}{cap} — continue with offset={}]",
                 shown_end + 1
             ));
         } else if first_shown > 1 && shown_end >= line_count && found.is_none() {
@@ -914,14 +922,18 @@ impl Tool for HashlineEditTool {
 
     /// [`Patcher::prepare`] validates and materializes the new text without touching disk.
     /// It runs on a clone of the store, so a refusal's reveal is recorded only by an execute.
-    fn preview(&self, input: &Map<String, Value>, cwd: &Path) -> Option<String> {
-        let patch_text = input.get("patch").and_then(Value::as_str)?;
-        let patch = Patch::parse(patch_text, Some(cwd)).ok()?;
+    fn changes(&self, input: &Map<String, Value>, cwd: &Path) -> Vec<crate::tool::FileChange> {
+        let Some(patch) = input.get("patch").and_then(Value::as_str) else {
+            return Vec::new();
+        };
+        let Ok(patch) = Patch::parse(patch, Some(cwd)) else {
+            return Vec::new();
+        };
         let state = lock_state(&self.state);
         let mut snapshots = state.snapshots.clone();
         let mut scratch = super::clipboard::fork_clipboard(&state.clipboard);
         let mut patcher = Patcher::new(&mut snapshots, cwd.to_owned());
-        let mut out = String::new();
+        let mut changes = Vec::new();
         for section in &patch.sections {
             let Ok(prepared) = patcher.prepare(section, &mut scratch) else {
                 continue;
@@ -930,12 +942,19 @@ impl Tool for HashlineEditTool {
                 continue;
             }
             let (before, after) = prepared.diff_inputs();
-            let resolved = yi_permission::resolve_target(prepared.path(), cwd);
-            let diff = crate::diff::patch(before, after, &resolved);
-            if diff.is_empty() {
-                continue;
-            }
-            out.push_str(diff.as_str());
+            changes.push(crate::tool::FileChange {
+                path: yi_permission::resolve_target(prepared.path(), cwd),
+                before: before.to_owned(),
+                after: after.to_owned(),
+            });
+        }
+        changes
+    }
+
+    fn preview(&self, input: &Map<String, Value>, cwd: &Path) -> Option<String> {
+        let mut out = String::new();
+        for change in self.changes(input, cwd) {
+            out.push_str(crate::diff::patch(&change.before, &change.after, &change.path).as_str());
         }
         (!out.is_empty()).then_some(out)
     }
@@ -1071,10 +1090,6 @@ impl Tool for HashlineEditTool {
                 "syntax".to_owned(),
                 syntax.map_or(Value::Null, Value::String),
             );
-        }
-        // The op mix is what `yi stats` aggregates for the M3 register/move
-        // economics question; counts, never content.
-        if let Value::Object(details) = &mut output.result.details {
             let count = |op: SectionOp| results.iter().filter(|result| result.op == op).count();
             details.insert(
                 "ops".to_owned(),

@@ -355,7 +355,7 @@ async fn plan_op(
 }
 
 /// A child spawned for a todo: its agent id is the todo's own label.
-struct Named;
+pub(crate) struct Named;
 
 impl Delegate for Named {
     fn spawn(
@@ -375,7 +375,7 @@ impl Delegate for Named {
     }
 }
 
-fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, Box<dyn Error>> {
+pub(crate) fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, Box<dyn Error>> {
     Ok(yi_runtime::plan::ops::TodoSpec {
         label: TodoLabel::new(label)?,
         after: Vec::new(),
@@ -427,6 +427,7 @@ async fn a_child_may_submit_only_for_its_own_attempt() -> TestResult {
     yi_runtime::plan::request::register(
         Arc::clone(&engine),
         Actor::Child(yi_types::plan::doc::AgentId::new("cut")?),
+        None,
         &mut registry,
     );
     let submit = |request: &str, label: &str, attempt: u32| {
@@ -503,6 +504,7 @@ async fn a_child_stores_the_product_of_the_attempt_it_submits() -> TestResult {
     yi_runtime::plan::request::register(
         Arc::clone(&engine),
         Actor::Child(yi_types::plan::doc::AgentId::new("cut")?),
+        None,
         &mut registry,
     );
     let product = "{\"passed\":12}";
@@ -600,7 +602,12 @@ async fn a_child_named_main_is_not_the_owner_of_an_inline_todo() -> TestResult {
     let id = PlanId::slug("ship the seam end to end")?;
     let mut registry = HostRegistry::default();
     let main = yi_types::plan::doc::AgentId::new("main")?;
-    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Child(main), &mut registry);
+    yi_runtime::plan::request::register(
+        Arc::clone(&engine),
+        Actor::Child(main),
+        None,
+        &mut registry,
+    );
     let product = "{\"forged\":true}";
     let digest = yi_types::plan::canonical::Digest::of(product.as_bytes());
     let url = format!("plan://{id}/artifacts/{}", digest.hex());
@@ -648,6 +655,7 @@ async fn a_child_kernels_plan_op_is_refused_beyond_view() -> TestResult {
     yi_runtime::plan::request::register(
         engine,
         Actor::Child(yi_types::plan::doc::AgentId::new("helper")?),
+        None,
         &mut registry,
     );
     let viewed = plan_op(
@@ -753,7 +761,7 @@ async fn a_reused_request_id_is_refused_by_the_journal_and_a_bad_one_by_the_pars
         Arc::new(NoChildren),
     ));
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(engine, Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(engine, Actor::Owner, None, &mut registry);
     let first = plan_op(
         &registry,
         serde_json::json!({"request_id": "dup", "op": "append", "args": {"todos": [{"label": "one"}]}}),
@@ -808,7 +816,7 @@ async fn expected_revision_is_compared_on_the_plan_the_op_names() -> TestResult 
         Arc::new(NoChildren),
     ));
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(engine, Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(engine, Actor::Owner, None, &mut registry);
     let append = serde_json::json!({"plan": "beta", "todos": [{"label": "cut"}]});
     let stale = plan_op(
         &registry,
@@ -853,7 +861,7 @@ async fn a_shape_cannot_retry_a_done_or_drop_a_running_todo() -> TestResult {
             .with_width(std::num::NonZeroUsize::MIN.saturating_add(1)),
     );
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
     let op = |request: &str, op: &str, label: &str| serde_json::json!({"request_id": request, "op": op, "args": {"label": label}});
     let init = serde_json::json!({"request_id": "i", "op": "init", "args": {
         "goal": "fork and join", "todos": [{"label": "finished"}, {"label": "busy"}]}});
@@ -988,5 +996,120 @@ fn a_lost_ledger_write_does_not_orphan_the_plan_it_opened() -> TestResult {
         Err(PlanOpError::PlanExists { id }) => assert_eq!(id, opened),
         other => return Err(format!("a duplicate root opened: {other:?}").into()),
     }
+    Ok(())
+}
+
+/// Dies with a cell's refusal teaching the tool's set-row move, which `plan.op`'s strict set
+/// refuses: each hint a cell reads is followed as written, and the call it names lands.
+#[tokio::test]
+async fn each_hint_a_cell_reads_names_a_call_that_lands_from_the_cell() -> TestResult {
+    use serde_json::json;
+    let dir = Scratch::new("yi-plan-cell-hints")?;
+    let store = PlanStore::open(dir.to_path_buf())?;
+    let engine = Arc::new(PlanEngine::new(store, Arc::new(NoChildren)));
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
+    let user = json!({"user": null});
+    let steps = [
+        (
+            json!({"op": "set", "goal": "ship it", "list": "- [ ] a\n- [ ] b"}),
+            None,
+        ),
+        (
+            json!({"op": "append", "todos": [{"label": "c", "on": user}]}),
+            Some("op block with {label, on, note, options}"),
+        ),
+        (json!({"op": "append", "todos": [{"label": "c"}]}), None),
+        (
+            json!({"op": "block", "label": "c", "on": user, "note": "which name?"}),
+            None,
+        ),
+        (json!({"op": "start", "label": "a"}), None),
+        (
+            json!({"op": "drop", "label": "a"}),
+            Some("op fail with {label, cause}"),
+        ),
+        (
+            json!({"op": "fail", "label": "a", "cause": "the build broke"}),
+            None,
+        ),
+        (json!({"op": "start", "label": "b"}), None),
+        (
+            json!({"op": "retry", "label": "b"}),
+            Some("op fail it first"),
+        ),
+        (json!({"op": "fail", "label": "b", "cause": "flaky"}), None),
+        (json!({"op": "retry", "label": "b"}), None),
+    ];
+    for (at, (call, hint)) in steps.into_iter().enumerate() {
+        let mut args = call.as_object().cloned().unwrap_or_default();
+        let op = args.remove("op").unwrap_or_default();
+        let payload = json!({"request_id": format!("r{at}"), "op": op, "args": args});
+        let reply = plan_op(&registry, payload).await?;
+        let refusal = reply
+            .get("refusal")
+            .and_then(|refusal| refusal.get("message"));
+        let said = refusal
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        match hint {
+            None => assert_eq!(reply.get("ok"), Some(&json!(true)), "{call}: {said}"),
+            Some(hint) => assert!(said.contains(hint), "{call}: {said}"),
+        }
+    }
+    Ok(())
+}
+
+/// A `set` naming one row leaves a failed row it does not name failed on the tool and on
+/// `plan.op` alike, and a struck row drops on both; `plan.op` once called the reducer's raw set.
+#[tokio::test]
+async fn a_set_reads_its_rows_alike_on_the_tool_and_plan_op() -> TestResult {
+    use yi_tools::Tool;
+    let mut wrong = Vec::new();
+    for surface in ["tool", "plan.op"] {
+        let dir = Scratch::new(&format!("yi-plan-oneparse-{surface}"))?;
+        let engine = Arc::new(PlanEngine::new(
+            PlanStore::open(dir.to_path_buf())?,
+            Arc::new(NoChildren),
+        ));
+        let tool = yi_runtime::plan::tool::PlanTool::new(Arc::clone(&engine), Actor::Owner);
+        let mut registry = HostRegistry::default();
+        yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
+        let calls = [
+            serde_json::json!({"op": "set", "goal": "ship it", "list": "- [ ] a\n- [ ] b\n- [ ] c"}),
+            serde_json::json!({"op": "start", "label": "a"}),
+            serde_json::json!({"op": "fail", "label": "a", "cause": "the build broke"}),
+            serde_json::json!({"op": "set", "todos": [{"label": "b", "state": "running"}]}),
+            serde_json::json!({"op": "set", "list": "- [-] c"}),
+        ];
+        for (at, call) in calls.into_iter().enumerate() {
+            let mut args = call.as_object().cloned().unwrap_or_default();
+            let refused = if surface == "tool" {
+                let context = yi_tools::ToolContext::new(std::env::temp_dir());
+                tool.execute(args, &context).is_error
+            } else {
+                let op = args.remove("op").unwrap_or_default();
+                let payload =
+                    serde_json::json!({"request_id": format!("r{at}"), "op": op, "args": args});
+                plan_op(&registry, payload).await?["ok"] != serde_json::json!(true)
+            };
+            assert!(!refused, "{surface} {call}");
+        }
+        let id = PlanStore::open(dir.to_path_buf())?
+            .roots()?
+            .into_iter()
+            .next()
+            .ok_or("no plan")?;
+        let plan = PlanStore::open(dir.to_path_buf())?.read(&id)?;
+        let state = |label: &str| {
+            let todo = plan.todos.iter().find(|todo| todo.label.as_str() == label);
+            todo.map(|todo| yi_types::plan::doc::TodoStateName::of(&todo.state).to_string())
+        };
+        let seen = (state("a"), state("c"));
+        if seen != (Some("failed".to_owned()), Some("abandoned".to_owned())) {
+            wrong.push(format!("{surface}: a and c read {seen:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
     Ok(())
 }

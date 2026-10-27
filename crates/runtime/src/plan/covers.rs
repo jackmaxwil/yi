@@ -214,7 +214,7 @@ impl PlanEngine {
         let manifest = match artifacts
             .get(&checker.digest)
             .map_err(|error| error.to_string())
-            .and_then(|bytes| CheckerManifest::parse(&bytes))
+            .and_then(|bytes| CheckerManifest::parse(&bytes, super::verify::session_has))
         {
             Ok(manifest) => manifest,
             Err(reason) => return ItemVerdict::Abstain { reason },
@@ -228,7 +228,14 @@ impl PlanEngine {
             .unwrap_or(now)
             .min(run.deadline);
         super::verify::protecting(&manifest, root, || {
-            super::verify::run_cmd(&manifest, root, deadline, Some(run.cancel))
+            super::verify::run_cmd(
+                &manifest,
+                root,
+                artifacts,
+                deadline,
+                Some(run.cancel),
+                self.verifier.hook_config(),
+            )
         })
     }
 }

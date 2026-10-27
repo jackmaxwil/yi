@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::apply::apply_edits;
 use super::blocks::{brace_block_resolver, indent_block_resolver, resolve_block_edits};
-use super::clipboard::{OnEmptyPaste, fork_clipboard, start_clipboard_batch};
+use super::clipboard::{fork_clipboard, start_clipboard_batch};
 use super::format::{
     FileTag, HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, compute_file_hash, format_hashline_header,
     split_addressable_file_lines,
@@ -563,13 +563,12 @@ impl<'a> Patcher<'a> {
 
         let has_blocks = edits.iter().any(|edit| matches!(edit, Edit::Block { .. }));
         let (resolved, mut resolve_warnings) = if has_blocks {
-            let resolved =
-                resolve_block_edits(edits, &section.path, normalized, Some(&block_resolver))?;
+            let resolved = resolve_block_edits(edits, &section.path, normalized, &block_resolver)?;
             (resolved.edits, resolved.warnings)
         } else {
             (edits, Vec::new())
         };
-        let mut result = apply_edits(normalized, resolved, clipboard, OnEmptyPaste::Throw)?;
+        let mut result = apply_edits(normalized, resolved, clipboard)?;
         warnings.append(&mut resolve_warnings);
         warnings.append(&mut result.warnings);
         result.warnings = warnings;

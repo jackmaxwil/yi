@@ -8,7 +8,9 @@ use yi_loop::{AgentTool, ToolOutcome};
 use yi_tools::{CancelFlag, Tool, ToolContext};
 use yi_types::model::ToolDef;
 
+use crate::claude_hooks::{Event, Verdict};
 use crate::permission::{Containment, PermissionBroker};
+use crate::rules::RuleEngine;
 
 pub struct ToolAdapter {
     tool: Arc<dyn Tool>,
@@ -25,6 +27,7 @@ pub struct ToolAdapter {
     check: Option<Arc<crate::plan::covers::WriteCheck>>,
     job_owner: Option<yi_tools::jobs::JobOwner>,
     rejections: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
+    hooks: Option<crate::claude_hooks::Attached>,
 }
 
 fn files_matched(name: &str, result: &yi_types::event::ToolResult) -> u32 {
@@ -120,7 +123,10 @@ async fn gate_armed(
     walled: (&[PathBuf], &[PathBuf]),
     context: &ToolContext,
 ) -> Option<String> {
-    let refused = host_wall(command, rules.as_deref(), wall, walled, &context.cwd);
+    let rules = rules
+        .as_deref()
+        .map(|rules| (rules, RuleEngine::check_tool as RuleScan));
+    let refused = host_wall(command, rules, wall, walled, &context.cwd);
     if refused.is_some() {
         return refused;
     }
@@ -131,11 +137,14 @@ async fn gate_armed(
         .unwrap_or_else(|join_error| Some(format!("permission check failed: {join_error}")))
 }
 
-/// The gate of a heartbeat's `exec://` source: it runs on the host, so it meets what an armed
-/// todo command does. The spares are read per call: a child's store attaches after its wiring.
-pub(crate) fn heartbeat_gate(
+pub(crate) type RuleScan = fn(&RuleEngine, &str, &str) -> Option<String>;
+
+/// The gate of a heartbeat's `exec://` source and a spawn's `check`: each runs later on the host,
+/// so it meets what an armed todo command does. Spares are read per call: a store attaches late.
+pub(crate) fn host_gate(
     wiring: &crate::wiring::RuntimeWiring,
-    rules: Arc<dyn Fn() -> Option<Arc<crate::rules::RuleEngine>> + Send + Sync>,
+    rules: Arc<dyn Fn() -> Option<Arc<RuleEngine>> + Send + Sync>,
+    scan: RuleScan,
     own: Option<crate::wiring::OwnPathsFn>,
 ) -> Arc<crate::schedule::GateFn> {
     let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
@@ -144,7 +153,8 @@ pub(crate) fn heartbeat_gate(
     Arc::new(move |command: &str| {
         let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
         let rules = rules();
-        host_wall(command, rules.as_deref(), &wall, (&roots, &spared), &cwd)
+        let rules = rules.as_deref().map(|rules| (rules, scan));
+        host_wall(command, rules, &wall, (&roots, &spared), &cwd)
             .or_else(|| refuse_armed(command, contained, broker.as_deref(), ""))
     })
 }
@@ -153,14 +163,14 @@ pub(crate) fn heartbeat_gate(
 /// alone: the wall's own lists, and its walled roots save a spare (#1001).
 pub(crate) fn host_wall(
     command: &str,
-    rules: Option<&crate::rules::RuleEngine>,
+    rules: Option<(&RuleEngine, RuleScan)>,
     wall: &crate::wall::Wall,
     (roots, spared): (&[PathBuf], &[PathBuf]),
     cwd: &std::path::Path,
 ) -> Option<String> {
     let args = bash(command);
     let json = serde_json::to_string(&args).unwrap_or_default();
-    let walled = (rules.and_then(|rules| rules.check_tool("bash", &json)))
+    let walled = (rules.and_then(|(rules, scan)| scan(rules, "bash", &json)))
         .or_else(|| wall.check("bash", yi_tools::ToolKind::Exec, &args, cwd));
     walled.or_else(|| walled_root_refusal(command, roots, spared, cwd))
 }
@@ -183,7 +193,7 @@ fn walled_root_refusal(
     // Every `cd` target joins the dirs a word is resolved from, scoped or not: fail closed.
     let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
     for word in words.filter(|word| !word.is_empty() && !roots.is_empty()) {
-        let glued = word.find('/').filter(|at| *at > 0).map(|at| &word[at..]);
+        let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
         for spelled in std::iter::once(word).chain(glued) {
             let head: String = (spelled.split_inclusive('/'))
                 .take_while(|part| !part.contains(['*', '?', '[']))
@@ -235,12 +245,12 @@ pub fn refuse_armed(
 ) -> Option<String> {
     if in_container {
         return Some(format!(
-            "an exec:// source runs `{command}` on the host, and this session's commands run in a container"
+            "`{command}` runs later on the host, and this session's commands run in a container"
         ));
     }
     if broker.is_some_and(PermissionBroker::confines_walled) {
         return Some(crate::gate::walled_host_refusal(
-            "an exec:// source runs on the host",
+            "it runs later on the host",
         ));
     }
     let outcome = broker?.decide_call(
@@ -257,14 +267,14 @@ pub fn refuse_armed(
             gate_allowed: false,
             ..
         } => Some(format!(
-            "an exec:// source runs `{command}` outside the sandbox, which allows it only contained: run it with bash in a turn, or allow it by a permission rule"
+            "`{command}` runs later outside the sandbox, which allows it only contained: run it yourself with bash, or allow it by a permission rule"
         )),
         Containment::Contained { .. } | Containment::Uncontained => None,
     }
 }
 
 type Gates<'a> = (
-    &'a Option<Arc<crate::rules::RuleEngine>>,
+    &'a Option<Arc<RuleEngine>>,
     &'a crate::wall::Wall,
     Option<&'a Arc<PermissionBroker>>,
 );
@@ -341,7 +351,16 @@ impl ToolAdapter {
             check: None,
             job_owner: None,
             rejections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            hooks: None,
         }
+    }
+
+    pub(crate) fn with_claude_hooks(
+        mut self,
+        hooks: Option<crate::claude_hooks::Attached>,
+    ) -> Self {
+        self.hooks = hooks;
+        self
     }
 
     pub fn with_job_owner(mut self, owner: yi_tools::jobs::JobOwner) -> Self {
@@ -478,8 +497,25 @@ impl ToolAdapter {
         let store = (self.transcript.as_ref()).and_then(|store| store());
         let (selector, ledger, spills_dir) =
             (self.selector.clone(), store.clone(), self.spills.clone());
-        let transcript =
-            store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());
+        let (session_id, child, transcript) = store.map_or((None, false, None), |store| {
+            let session = yi_session::lock_session(&store);
+            let child = session.metadata().parent_session_id.is_some();
+            let id = Some(session.metadata().id.clone());
+            (id, child, session.file_path().cloned())
+        });
+        let template = crate::claude_hooks::Call {
+            tool: self.tool.name().to_owned(),
+            tool_use_id: tool_call_id.to_owned(),
+            cwd: self.cwd.clone(),
+            agent_id: session_id.clone().filter(|_| child),
+            session_id,
+            transcript_path: transcript.clone(),
+            permission_mode: (self.permission.as_deref())
+                .map(|broker| crate::claude_hooks::mode_name(broker.mode())),
+            spills: spills_dir.clone(),
+            ..crate::claude_hooks::Call::default()
+        };
+        let hooks = self.hooks.clone();
         let spared: Vec<PathBuf> = (spills.iter().chain(&transcript))
             .filter(|dir| !walled_roots.is_empty() && unwalled(&self.wall, dir))
             .cloned()
@@ -497,6 +533,7 @@ impl ToolAdapter {
             call_id: tool_call_id.to_owned(),
             job_owner: self.job_owner,
             program,
+            fuse: yi_tools::Fuse::PROGRAM,
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
@@ -505,15 +542,91 @@ impl ToolAdapter {
         let check = self.check.clone();
         let call_id = tool_call_id.to_owned();
         Box::pin(async move {
-            let refuse = |result: yi_types::event::ToolResult| {
-                (
-                    ToolOutcome {
-                        result,
-                        is_error: true,
-                    },
-                    None,
+            let cancel = Arc::clone(&context.cancelled);
+            let mut template = template;
+            if hooks.as_ref().is_some_and(|hooks| {
+                template.args.clone_from(&args);
+                [
+                    Event::PreToolUse,
+                    Event::PostToolUse,
+                    Event::PostToolUseFailure,
+                ]
+                .into_iter()
+                .any(|event| hooks.needs_changes(event, &template))
+            }) {
+                let (tool, args, cwd) = (Arc::clone(&tool), args.clone(), context.cwd.clone());
+                let edits = tokio::task::spawn_blocking(move || tool.changes(&args, &cwd));
+                template.edits = edits.await.unwrap_or_default();
+            }
+            let pre = match &hooks {
+                Some(hooks) => {
+                    let call = crate::claude_hooks::Call {
+                        args: args.clone(),
+                        ..template.clone()
+                    };
+                    hooks
+                        .run(Event::PreToolUse, call, Arc::clone(&cancel))
+                        .await
+                }
+                None => crate::claude_hooks::Outcome::default(),
+            };
+            let refuse = |mut result: yi_types::event::ToolResult| {
+                for row in &pre.rows {
+                    crate::affordance::append(&mut result, row);
+                }
+                let outcome = ToolOutcome {
+                    result,
+                    is_error: true,
+                };
+                (outcome, None)
+            };
+            let denied = |reason: &str| {
+                let reason = format!("Claude Code PreToolUse hook: {reason}");
+                yi_loop::tool::error_tool_result_kind(
+                    &reason,
+                    yi_types::event::ToolErrorKind::Denied,
                 )
             };
+            if hooks.is_some() && cancel() {
+                let aborted = yi_types::event::ToolErrorKind::Aborted;
+                return refuse(yi_loop::tool::error_tool_result_kind(
+                    "Operation aborted",
+                    aborted,
+                ));
+            }
+            if let Some(reason) =
+                crate::claude_hooks::refusal_unless_answerable(&pre, permission.is_some())
+            {
+                let mut result = denied(&reason);
+                if pre.stop.is_some() {
+                    result.terminate = Some(true);
+                }
+                return refuse(result);
+            }
+            let mut args = args;
+            if let Some(updated) = pre.updated_input.clone() {
+                let sent = crate::claude_hooks::Call {
+                    args: args.clone(),
+                    ..template.clone()
+                };
+                let shaped = crate::claude_hooks::updated_args(&sent, updated)
+                    .map(|updated| unsent_empties(&tool.schema(), updated))
+                    .and_then(|updated| tool.validate(&updated).map(|()| updated));
+                match shaped {
+                    Ok(updated) => args = updated,
+                    Err(why) => return refuse(denied(&why)),
+                }
+            }
+            if pre.updated_input.is_some()
+                && hooks.as_ref().is_some_and(|hooks| {
+                    hooks.needs_changes(Event::PostToolUse, &template)
+                        || hooks.needs_changes(Event::PostToolUseFailure, &template)
+                })
+            {
+                let (tool, args, cwd) = (Arc::clone(&tool), args.clone(), context.cwd.clone());
+                let edits = tokio::task::spawn_blocking(move || tool.changes(&args, &cwd));
+                template.edits = edits.await.unwrap_or_default();
+            }
             if let Some(ext) = &ext {
                 ext(crate::ext::Event::ToolCall {
                     name: tool.name().to_owned(),
@@ -562,30 +675,55 @@ impl ToolAdapter {
                 let gate_tool = Arc::clone(&tool);
                 let gate_args = args.clone();
                 let gate_cwd = context.cwd.clone();
+                let gate_call_id = call_id.clone();
+                let hook = pre.verdict.clone();
+                let allowed_by_hook = hook == Verdict::Allow;
                 let outcome = tokio::task::spawn_blocking(move || {
                     let span = yi_types::trace::span("tool.preview").arg("tool", gate_tool.name());
                     let preview = gate_tool.preview(&gate_args, &gate_cwd);
                     drop(span);
                     let _span = yi_types::trace::span("tool.decide").arg("tool", gate_tool.name());
-                    broker.decide_call(
-                        gate_tool.name(),
-                        gate_tool.kind(),
+                    let (name, kind) = (gate_tool.name(), gate_tool.kind());
+                    let call = (
+                        name,
+                        kind,
                         gate_tool.irreversible(&gate_args),
-                        &call_id,
-                        &gate_args,
-                        preview.as_deref(),
-                    )
+                        gate_call_id.as_str(),
+                    );
+                    broker.decide_hooked(call, &gate_args, preview.as_deref(), &hook)
                 })
                 .await;
+                // A hook's allow never widens what the sandbox lets an in-process write reach.
+                let ran = outcome.as_ref().is_ok_and(|outcome| outcome.allowed);
+                let profile = (reporter.sandbox_for(&context.cwd, &wall, &reporter.kept_writes()))
+                    .filter(|_| ran && allowed_by_hook && tool.name() != "bash");
+                let escapes = (profile.as_ref()).and_then(|profile| {
+                    let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write).then(|| {
+                        crate::permission::extract_targets(tool.name(), &args, &context.cwd)
+                    });
+                    written
+                        .into_iter()
+                        .flatten()
+                        .find(|path| profile.denies_write(path))
+                });
+                if let Some(path) = escapes {
+                    let why = format!(
+                        "its allow does not widen the sandbox, which denies writing {}",
+                        path.display()
+                    );
+                    return refuse(denied(&why));
+                }
                 match outcome {
                     Ok(outcome) if outcome.allowed => {
                         if let Containment::Contained { widen, .. } = &outcome.containment {
-                            context.sandbox = (reporter.sandbox_for(&context.cwd, &wall, widen))
-                                .map(|mut sandbox| {
-                                    sandbox.deny_read.extend_from_slice(&walled_roots);
-                                    sandbox.spared.clone_from(&spared);
-                                    sandbox
-                                });
+                            context.sandbox =
+                                (reporter.sandbox_for(&context.cwd, &wall, widen.as_slice())).map(
+                                    |mut sandbox| {
+                                        sandbox.deny_read.extend_from_slice(&walled_roots);
+                                        sandbox.spared.clone_from(&spared);
+                                        sandbox
+                                    },
+                                );
                             contained = context.sandbox.as_ref().map(|_| reporter);
                         } else if wall.container.is_none() {
                             outside = reporter.outside_notice(tool.name(), &args, &outcome);
@@ -623,7 +761,8 @@ impl ToolAdapter {
             }
             let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
                 .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
-            let (cwd, cancel) = (context.cwd.clone(), Arc::clone(&context.cancelled));
+            let (cwd, hook_args) = (context.cwd.clone(), args.clone());
+            let check_cancel = Arc::clone(&cancel);
             let output = tokio::task::spawn_blocking(move || {
                 let _span = yi_types::trace::span("tool.execute").arg("tool", tool.name());
                 tool.execute(args, &context)
@@ -648,6 +787,16 @@ impl ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
+                    let failed =
+                        yi_types::event::shown_failed(output.is_error, &output.result.details);
+                    if let Some(hooks) = hooks.as_ref().filter(|_| failed || !cancel()) {
+                        let call = crate::claude_hooks::Call {
+                            args: hook_args,
+                            ..template
+                        };
+                        let (result, cancel) = (&mut output.result, Arc::clone(&cancel));
+                        hooks.after(call, result, failed, &pre.rows, cancel).await;
+                    }
                     if let (Some(selector), Some(spills)) = (
                         selector.as_deref().filter(|_| name == "bash" && !program),
                         &spills_dir,
@@ -675,8 +824,9 @@ impl ToolAdapter {
                         crate::affordance::append(&mut output.result, &line);
                     }
                     if let (Some(check), Some(written), false) = (check, written, output.is_error) {
-                        let verdict =
-                            tokio::task::spawn_blocking(move || check(&written, &cwd, &cancel));
+                        let verdict = tokio::task::spawn_blocking(move || {
+                            check(&written, &cwd, &check_cancel)
+                        });
                         if let Ok(Some(line)) = verdict.await {
                             crate::affordance::append(&mut output.result, &line);
                         }
@@ -709,13 +859,26 @@ impl ToolAdapter {
                         value,
                     )
                 }
-                Err(join_error) => (
-                    ToolOutcome {
-                        result: error_tool_result(&format!("tool execution failed: {join_error}")),
-                        is_error: true,
-                    },
-                    None,
-                ),
+                Err(join_error) => {
+                    let mut result =
+                        error_tool_result(&format!("tool execution failed: {join_error}"));
+                    if let Some(hooks) = hooks.as_ref() {
+                        let call = crate::claude_hooks::Call {
+                            args: hook_args,
+                            ..template
+                        };
+                        hooks
+                            .after(call, &mut result, true, &pre.rows, cancel)
+                            .await;
+                    }
+                    (
+                        ToolOutcome {
+                            result,
+                            is_error: true,
+                        },
+                        None,
+                    )
+                }
             }
         })
     }

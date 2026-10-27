@@ -228,9 +228,15 @@ impl JournalRecord {
         Ok(self)
     }
 
+    pub fn is_refusal(&self) -> bool {
+        self.record.is_refusal()
+    }
+}
+
+impl PlanOpRecord {
     /// True when the record recorded a refusal: nothing moved, `to` is absent.
     pub fn is_refusal(&self) -> bool {
-        self.record.extra.contains_key("refusal")
+        self.extra.contains_key("refusal")
     }
 }
 

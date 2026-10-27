@@ -57,7 +57,7 @@ impl HostRegistry {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
                     })?;
                 let cancelled: CancelFlag = Arc::new(|| false);
-                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, sandbox.as_ref());
+                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, sandbox.as_ref())?;
                 lock(&spawned).push(id);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));
@@ -201,21 +201,15 @@ pub struct KernelServiceOptions {
     pub per_session_state: bool,
 }
 
-/// A session's snapshot files in `base`, prefixed with its id.
-pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, PathBuf) {
-    let (snapshot, manifest) = (
-        yi_kernel::snapshot::snapshot_path_in(base),
-        yi_kernel::snapshot::manifest_path_in(base),
-    );
-    let prefixed = |path: PathBuf, id: &str| {
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned());
-        name.map_or(path.clone(), |name| base.join(format!("{id}.{name}")))
-    };
-    match key {
-        Some(id) if !id.is_empty() => (prefixed(snapshot, id), prefixed(manifest, id)),
-        _ => (snapshot, manifest),
+/// A session's snapshot index in `base`, prefixed with its id.
+pub fn snapshot_path(base: &std::path::Path, key: Option<&str>) -> PathBuf {
+    let snapshot = yi_kernel::snapshot::snapshot_path_in(base);
+    let name = snapshot
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    match (key, name) {
+        (Some(id), Some(name)) if !id.is_empty() => base.join(format!("{id}.{name}")),
+        _ => snapshot,
     }
 }
 
@@ -256,6 +250,7 @@ pub struct KernelService {
     own_paths: Option<crate::wiring::OwnPathsFn>,
     user_cells: std::sync::atomic::AtomicUsize,
     pub(crate) cell_calls: std::sync::OnceLock<Arc<dyn yi_tools::CellCalls>>,
+    pub(crate) running_cell: Mutex<Option<String>>,
 }
 
 impl KernelService {
@@ -279,6 +274,7 @@ impl KernelService {
             own_paths: None,
             user_cells: std::sync::atomic::AtomicUsize::new(0),
             cell_calls: std::sync::OnceLock::new(),
+            running_cell: Mutex::new(None),
         }
     }
 
@@ -291,6 +287,13 @@ impl KernelService {
         if let Ok(mut slot) = self.on_death.lock() {
             *slot = Some(hook);
         }
+    }
+
+    /// A kernel in use or holding names its snapshot lacks; see [`KernelManager::unsaved`].
+    pub fn unsaved(&self) -> bool {
+        self.manager.try_lock().map_or(true, |slot| {
+            slot.as_ref().is_some_and(|kernel| kernel.unsaved())
+        })
     }
 
     pub fn take_death(&self) -> bool {
@@ -378,10 +381,6 @@ impl KernelService {
         if let Some(path) = yi_tools::plugin::search_path(&self.options.home) {
             env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
         }
-        // Set but never read by Python; the host-side depth check is
-        // authoritative (design §9).
-        env.push(("RLM_DEPTH".to_owned(), "0".to_owned()));
-        env.push(("RLM_MAX_DEPTH".to_owned(), "1".to_owned()));
         env
     }
 
@@ -411,16 +410,14 @@ impl KernelService {
         if wrap.is_none() && self.own_paths.is_some() {
             return Err(crate::gate::WALLED_KERNEL_UNCONFINED.to_owned());
         }
-        let snapshot = state.as_deref().map(|dir| {
-            let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
-            yi_kernel::client::KernelSnapshotConfig {
-                path,
-                manifest_path,
+        let snapshot = state
+            .as_deref()
+            .map(|dir| yi_kernel::client::KernelSnapshotConfig {
+                path: snapshot_path(dir, key.as_deref()),
                 max_bytes: None,
                 max_variable_bytes: None,
                 debounce_ms: None,
-            }
-        });
+            });
         let mut slot = self.manager.lock().await;
         let booting = !slot
             .as_ref()
@@ -622,7 +619,7 @@ impl KernelService {
         // session closes, after which no notice can wake it.
         self.user_cells.fetch_add(1, SeqCst);
         let output = match self.execute_async(code, cancelled, None, None).await {
-            Ok(outcome) => yi_tools::cell_output(code, outcome),
+            Ok(outcome) => yi_tools::cell_output(code, outcome, None),
             Err(message) => yi_tools::error_output(message),
         };
         self.user_cells.fetch_sub(1, SeqCst);
@@ -847,8 +844,8 @@ mod tests {
     #[test]
     fn a_snapshot_is_keyed_by_its_session() {
         let base = std::path::Path::new("/tmp/sessions");
-        let (keyed, manifest) = super::snapshot_paths(base, Some("01a0"));
-        let (bare, _) = super::snapshot_paths(base, None);
+        let keyed = super::snapshot_path(base, Some("01a0"));
+        let bare = super::snapshot_path(base, None);
         assert_eq!(
             keyed.parent(),
             Some(base),
@@ -859,9 +856,8 @@ mod tests {
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with("01a0."))
         );
-        assert!(manifest.to_string_lossy().ends_with(".json"));
         assert_eq!(bare, yi_kernel::snapshot::snapshot_path_in(base));
-        assert_eq!(super::snapshot_paths(base, Some("")).0, bare);
+        assert_eq!(super::snapshot_path(base, Some("")), bare);
     }
 
     use super::*;

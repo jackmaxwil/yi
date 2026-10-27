@@ -21,7 +21,7 @@ use yi_types::url::Url;
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[derive(Default)]
-struct Recorder(Mutex<Vec<PlanOpRecord>>);
+pub(crate) struct Recorder(pub(crate) Mutex<Vec<PlanOpRecord>>);
 
 impl OpSink for Recorder {
     fn record(&self, record: PlanOpRecord) -> Result<(), String> {
@@ -299,7 +299,7 @@ fn a_finished_plan_directs_the_summarizer_at_nothing() -> TestResult {
 /// `attach_runtime` enables it for every session. The claim is now a test.
 #[test]
 fn the_plan_directive_leads_whatever_slash_compact_asked_for() -> TestResult {
-    let compactor = yi_runtime::compaction::Compactor::new("win-0".to_owned());
+    let compactor = yi_runtime::compaction::Compactor::default();
     assert_eq!(compactor.pending_directive(), None);
     compactor.set_standing(Arc::new(|| Some("the ledger says X is live".to_owned())));
     compactor.schedule_with_instructions(Some("keep the auth trace".to_owned()));

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
@@ -6,8 +8,8 @@ use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, Too
 
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, Ttl, encode};
 use crate::catalog::calculate_cost;
-use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
+use crate::request::{assistant_block_mut, assistant_content_mut, push_assistant_block};
 use crate::transform::{normalize_anthropic_tool_call_id, transform_messages};
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -27,7 +29,6 @@ pub enum Thinking {
 #[derive(Debug, Clone, Default)]
 pub struct AnthropicOptions {
     pub max_tokens: Option<u64>,
-    pub temperature: Option<f64>,
     pub thinking: Thinking,
     /// Interactive sessions hold the system breakpoints for an hour (D116); the history
     /// breakpoints' TTL is `LlmContext::cache_ttl`.
@@ -301,13 +302,6 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
     if !context.system_prompt.is_empty() {
         params["system"] = Value::Array(system_blocks(&context.system_prompt));
     }
-    let supports_temperature = compat_bool(model, "supportsTemperature", true);
-    if let Some(temperature) = options.temperature
-        && options.thinking == Thinking::Off
-        && supports_temperature
-    {
-        params["temperature"] = json!(temperature);
-    }
     if let Some(tools) = &context.tools
         && !tools.is_empty()
     {
@@ -412,17 +406,10 @@ impl Mapper {
         }
     }
 
-    fn content_mut(&mut self) -> &mut Vec<Content> {
+    fn usage_mut(&mut self) -> Option<&mut Usage> {
         match &mut self.output {
-            AgentMessage::Assistant { content, .. } => content,
-            _ => unreachable!("mapper output is always an assistant message"),
-        }
-    }
-
-    fn usage_mut(&mut self) -> &mut Usage {
-        match &mut self.output {
-            AgentMessage::Assistant { usage, .. } => usage,
-            _ => unreachable!("mapper output is always an assistant message"),
+            AgentMessage::Assistant { usage, .. } => Some(usage),
+            _ => None,
         }
     }
 
@@ -433,14 +420,15 @@ impl Mapper {
     }
 
     fn recompute_totals(&mut self) {
-        let usage = self.usage_mut();
-        usage.total_tokens = usage
-            .input
-            .saturating_add(usage.output)
-            .saturating_add(usage.cache_read)
-            .saturating_add(usage.cache_write);
         let model = self.model.clone();
-        calculate_cost(&model, self.usage_mut());
+        if let Some(usage) = self.usage_mut() {
+            usage.total_tokens = usage
+                .input
+                .saturating_add(usage.output)
+                .saturating_add(usage.cache_read)
+                .saturating_add(usage.cache_write);
+            calculate_cost(&model, usage);
+        }
     }
 
     pub fn push(&mut self, payload: &Value) -> Vec<AssistantMessageEvent> {
@@ -475,8 +463,7 @@ impl Mapper {
             }
             let usage_value = &message["usage"];
             let read = |key: &str| usage_value.get(key).and_then(Value::as_i64).unwrap_or(0);
-            {
-                let usage = self.usage_mut();
+            if let Some(usage) = self.usage_mut() {
                 usage.input = read("input_tokens");
                 usage.output = read("output_tokens");
                 usage.cache_read = read("cache_read_input_tokens");
@@ -497,47 +484,57 @@ impl Mapper {
         {
             let api_index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
             let block = &payload["content_block"];
-            let content_index = self.content_mut().len();
+            let content_index =
+                assistant_content_mut(&mut self.output).map_or(0, |content| content.len());
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                    self.content_mut().push(Content::Text {
-                        text: text.to_owned(),
-                        text_signature: None,
-                    });
+                    push_assistant_block(
+                        &mut self.output,
+                        Content::Text {
+                            text: text.to_owned(),
+                            text_signature: None,
+                        },
+                    );
                     self.partial_json.push(None);
                     self.api_indices.push(api_index);
                     events.push(AssistantMessageEvent::TextStart { content_index });
                 }
                 Some("thinking") => {
-                    self.content_mut().push(Content::Thinking {
-                        thinking: block
-                            .get("thinking")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_owned(),
-                        thinking_signature: Some(
-                            block
-                                .get("signature")
+                    push_assistant_block(
+                        &mut self.output,
+                        Content::Thinking {
+                            thinking: block
+                                .get("thinking")
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_owned(),
-                        ),
-                        redacted: None,
-                    });
+                            thinking_signature: Some(
+                                block
+                                    .get("signature")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_owned(),
+                            ),
+                            redacted: None,
+                        },
+                    );
                     self.partial_json.push(None);
                     self.api_indices.push(api_index);
                     events.push(AssistantMessageEvent::ThinkingStart { content_index });
                 }
                 Some("redacted_thinking") => {
-                    self.content_mut().push(Content::Thinking {
-                        thinking: "[Reasoning redacted]".to_owned(),
-                        thinking_signature: block
-                            .get("data")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        redacted: Some(true),
-                    });
+                    push_assistant_block(
+                        &mut self.output,
+                        Content::Thinking {
+                            thinking: "[Reasoning redacted]".to_owned(),
+                            thinking_signature: block
+                                .get("data")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            redacted: Some(true),
+                        },
+                    );
                     self.partial_json.push(None);
                     self.api_indices.push(api_index);
                     events.push(AssistantMessageEvent::ThinkingStart { content_index });
@@ -548,21 +545,24 @@ impl Mapper {
                         .and_then(Value::as_object)
                         .cloned()
                         .unwrap_or_default();
-                    self.content_mut().push(Content::ToolCall {
-                        id: block
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_owned(),
-                        name: block
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_owned(),
-                        arguments,
-                        thought_signature: None,
-                        namespace: None,
-                    });
+                    push_assistant_block(
+                        &mut self.output,
+                        Content::ToolCall {
+                            id: block
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_owned(),
+                            name: block
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_owned(),
+                            arguments,
+                            thought_signature: None,
+                            namespace: None,
+                        },
+                    );
                     self.partial_json.push(Some(String::new()));
                     self.api_indices.push(api_index);
                     let name = block.get("name").and_then(Value::as_str).map(str::to_owned);
@@ -590,7 +590,7 @@ impl Mapper {
                 Some("text_delta") => {
                     let chunk = delta.get("text").and_then(Value::as_str).unwrap_or("");
                     if let Some(Content::Text { text, .. }) =
-                        self.content_mut().get_mut(content_index)
+                        assistant_block_mut(&mut self.output, content_index)
                     {
                         text.push_str(chunk);
                     }
@@ -602,7 +602,7 @@ impl Mapper {
                 Some("thinking_delta") => {
                     let chunk = delta.get("thinking").and_then(Value::as_str).unwrap_or("");
                     if let Some(Content::Thinking { thinking, .. }) =
-                        self.content_mut().get_mut(content_index)
+                        assistant_block_mut(&mut self.output, content_index)
                     {
                         thinking.push_str(chunk);
                     }
@@ -624,7 +624,7 @@ impl Mapper {
                             Map::new()
                         };
                     if let Some(Content::ToolCall { arguments, .. }) =
-                        self.content_mut().get_mut(content_index)
+                        assistant_block_mut(&mut self.output, content_index)
                     {
                         *arguments = parsed;
                     }
@@ -637,7 +637,7 @@ impl Mapper {
                     let chunk = delta.get("signature").and_then(Value::as_str).unwrap_or("");
                     if let Some(Content::Thinking {
                         thinking_signature, ..
-                    }) = self.content_mut().get_mut(content_index)
+                    }) = assistant_block_mut(&mut self.output, content_index)
                     {
                         match thinking_signature {
                             Some(signature) => signature.push_str(chunk),
@@ -656,7 +656,7 @@ impl Mapper {
             let Some(content_index) = self.local_index(api_index) else {
                 return;
             };
-            let block = self.content_mut().get(content_index).cloned();
+            let block = assistant_block_mut(&mut self.output, content_index).cloned();
             match block {
                 Some(Content::Text { text, .. }) => {
                     events.push(AssistantMessageEvent::TextEnd {
@@ -678,12 +678,18 @@ impl Mapper {
                         .map(parse_streaming_json)
                         .unwrap_or_default();
                     if let Some(Content::ToolCall { arguments, .. }) =
-                        self.content_mut().get_mut(content_index)
-                        && (!final_arguments.is_empty() || arguments.is_empty())
+                        assistant_block_mut(&mut self.output, content_index)
                     {
-                        *arguments = final_arguments;
+                        if !final_arguments.is_empty() || arguments.is_empty() {
+                            *arguments = final_arguments;
+                        }
+                        if let Cow::Owned(fixed) = crate::leak::unleak(arguments) {
+                            *arguments = fixed;
+                        }
                     }
-                    if let Some(block) = self.content_mut().get(content_index).cloned() {
+                    if let Some(block) =
+                        assistant_block_mut(&mut self.output, content_index).cloned()
+                    {
                         events.push(AssistantMessageEvent::ToolCallEnd {
                             content_index,
                             tool_call: block,
@@ -720,8 +726,9 @@ impl Mapper {
                     }
                 }
             }
-            if let Some(usage_value) = payload.get("usage").filter(|value| !value.is_null()) {
-                let usage = self.usage_mut();
+            if let Some(usage_value) = payload.get("usage").filter(|value| !value.is_null())
+                && let Some(usage) = self.usage_mut()
+            {
                 usage.unknown = false;
                 let update = |target: &mut i64, key: &str| {
                     if let Some(value) = usage_value.get(key).and_then(Value::as_i64) {
@@ -792,7 +799,12 @@ fn run_request(
         oauth,
         settle: _,
     } = wire;
-    let url = format!("{}/v1/messages", model.base_url);
+    let beta = if crate::compat::moonshot(model) {
+        "?beta=true"
+    } else {
+        ""
+    };
+    let url = format!("{}/v1/messages{beta}", model.base_url);
     let base = if oauth {
         vec![
             ("authorization", format!("Bearer {api_key}")),
