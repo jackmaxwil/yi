@@ -314,12 +314,14 @@ impl Corpus {
                 all.push(Arc::new(units_of(file)));
                 continue;
             };
-            all.push(
-                cached
-                    .entry(file.clone())
-                    .or_default()
-                    .load(stamp, || units_of(file)),
-            );
+            let units = cached
+                .entry(file.clone())
+                .or_default()
+                .load(stamp, || Ok::<_, std::convert::Infallible>(units_of(file)));
+            match units {
+                Ok(units) => all.push(units),
+                Err(never) => match never {},
+            }
         }
         all
     }

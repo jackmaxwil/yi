@@ -1,8 +1,8 @@
-//! An unchanged journal shares one settled reduction; concurrent cold loads may overlap, and
-//! cache hits never wait for a fresh read, verification and reduction.
+//! A journal reduced once per change: every reader of an unchanged `ops.jsonl` shares one
+//! reduction instead of re-reading, re-verifying and re-applying the whole chain.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use yi_types::plan::doc::PlanId;
@@ -18,18 +18,8 @@ pub(crate) struct Reduced {
     pub(crate) state: RootState,
 }
 
-const SLOT_CAP: usize = 128;
+// ponytail: one slot per journal path for the process's life; evict when roots number thousands.
 static SLOTS: OnceLock<Mutex<HashMap<PathBuf, Arc<Slot<Reduced>>>>> = OnceLock::new();
-
-fn take_slot(slots: &mut HashMap<PathBuf, Arc<Slot<Reduced>>>, path: &Path) -> Arc<Slot<Reduced>> {
-    if slots.len() >= SLOT_CAP
-        && !slots.contains_key(path)
-        && let Some(oldest) = slots.keys().next().cloned()
-    {
-        slots.remove(&oldest);
-    }
-    Arc::clone(slots.entry(path.to_path_buf()).or_default())
-}
 
 fn stamp(journal: &Journal) -> Result<Option<Stamp>, StoreError> {
     Ok(Stamp::of(journal.path(), journal.tail()?))
@@ -70,27 +60,7 @@ pub(crate) fn reduced(journal: &Journal, root: &PlanId) -> Result<Arc<Reduced>, 
             .get_or_init(Mutex::default)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        take_slot(&mut slots, journal.path())
+        Arc::clone(slots.entry(journal.path().to_path_buf()).or_default())
     };
-    if let Some(cached) = slot.cached(&stamp) {
-        return Ok(cached);
-    }
-    let cached = Arc::new(fresh(journal, root)?);
-    Ok(slot.store(stamp, cached))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_plan_slot_map_stays_bounded() {
-        let mut slots = HashMap::new();
-        for n in 0..=SLOT_CAP {
-            let path = PathBuf::from(format!("plan-{n}"));
-            take_slot(&mut slots, &path);
-        }
-        assert_eq!(slots.len(), SLOT_CAP);
-        assert!(slots.contains_key(Path::new("plan-128")));
-    }
+    slot.load(stamp, || fresh(journal, root))
 }
