@@ -194,7 +194,7 @@ fn prompt_title(frame: &Value) -> Option<String> {
     clippy::disallowed_methods,
     reason = "the ledger's timestamp is the job: when the last unattended update landed"
 )]
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
