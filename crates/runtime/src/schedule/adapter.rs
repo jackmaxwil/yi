@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use yi_tools::cut_row;
+use yi_types::channel::MESSAGE_MAX_BYTES;
 
 use super::channel::{Appended, Channel};
 
@@ -26,6 +28,7 @@ struct Supervisor {
     eager_until: Mutex<Instant>,
     stop: AtomicBool,
     dead: Mutex<Option<String>>,
+    hooks: Mutex<Option<Arc<crate::claude_hooks::Hooks>>>,
 }
 
 #[derive(Default)]
@@ -132,6 +135,17 @@ pub fn ensure(
     cadence_ms: u64,
     eager: bool,
 ) -> Result<(), String> {
+    ensure_with_hooks(uri, channel, cwd, cadence_ms, eager, None)
+}
+
+pub(crate) fn ensure_with_hooks(
+    uri: &str,
+    channel: &Channel,
+    cwd: &Path,
+    cadence_ms: u64,
+    eager: bool,
+    hooks: Option<&Arc<crate::claude_hooks::Hooks>>,
+) -> Result<(), String> {
     let lease = Duration::from_millis(cadence_ms.saturating_mul(3)).max(Duration::from_secs(30));
     let now = Instant::now();
     let deadline = now.checked_add(lease).unwrap_or(now);
@@ -144,6 +158,7 @@ pub fn ensure(
         return Ok(());
     }
     if let Some(running) = registry.running.get(channel.path()) {
+        *held(&running.hooks) = hooks.cloned();
         if let Some(why) = held(&running.dead).clone() {
             return Err(why);
         }
@@ -158,6 +173,7 @@ pub fn ensure(
         eager_until: Mutex::new(eager_until),
         stop: AtomicBool::new(false),
         dead: Mutex::new(None),
+        hooks: Mutex::new(hooks.cloned()),
     });
     registry
         .running
@@ -221,7 +237,10 @@ fn supervise(uri: &str, channel: &Channel, cwd: &Path, supervisor: &Arc<Supervis
                     uri,
                     channel,
                     supervisor,
-                    || exec(&command, cwd),
+                    || {
+                        let hooks = held(&supervisor.hooks).clone();
+                        exec(&command, cwd, hooks.as_deref())
+                    },
                     |data| data.get("ok").cloned().unwrap_or_default(),
                 )
             }
@@ -311,20 +330,47 @@ fn poll(
 
 /// Emits on a change of exit status, not per output line: a check is a level, red or green,
 /// and a line stream would re-send the same log on every run of an unchanged check.
-fn exec(command: &str, cwd: &Path) -> Value {
+fn exec(command: &str, cwd: &Path, hooks: Option<&crate::claude_hooks::Hooks>) -> Value {
+    if let Err(refused) = crate::claude_hooks::guard_shell(hooks, command, cwd) {
+        return json!({"ok": false, "output": refused});
+    }
     let mut shell = yi_tools::keyless_command("sh");
     shell.arg("-c").arg(command).current_dir(cwd);
     let deadline = Instant::now()
         .checked_add(Duration::from_millis(EXEC_TIMEOUT_MS))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    match yi_tools::run_captured(shell, None, &cancelled, 30_000) {
+    match yi_tools::run_captured(shell, None, &cancelled, yi_tools::OUTPUT_CAP) {
         Ok(capture) if capture.exit_code == Some(0) => json!({"ok": true, "exit": 0}),
-        Ok(capture) => json!({
-            "ok": false,
-            "exit": capture.exit_code,
-            "output": crate::goal::output_tail(&capture),
-        }),
+        Ok(capture) => {
+            let output = crate::goal::check_view(command, cwd, None, &capture);
+            let level =
+                |output: &str| json!({"ok": false, "exit": capture.exit_code, "output": output});
+            let data = level(&output);
+            let size = data.to_string().len();
+            if size <= MESSAGE_MAX_BYTES {
+                return data;
+            }
+            // Invariant: the channel refuses a message past MESSAGE_MAX_BYTES whole, `ok` included,
+            // counting bytes as sent (a quote two, a control byte six): the tail is walked as sent.
+            let total = output.len();
+            let next = yi_tools::rerun("bash", &crate::goal::rerun_in(cwd, command), "exec.log");
+            let cap = "MESSAGE_MAX_BYTES";
+            let row = |kept| cut_row(kept, total, "bytes kept", cap, MESSAGE_MAX_BYTES, &next);
+            let room = level(&format!("{}\n", row(total))).to_string().len();
+            let sent = |c: char| serde_json::to_string(&c).map_or(6, |s| s.len().saturating_sub(2));
+            let from = output
+                .char_indices()
+                .rev()
+                .scan(MESSAGE_MAX_BYTES.saturating_sub(room), |room, (at, c)| {
+                    *room = room.checked_sub(sent(c))?;
+                    Some(at)
+                })
+                .last()
+                .unwrap_or(output.len());
+            let tail = output.get(from..).unwrap_or_default();
+            level(&format!("{}\n{tail}", row(tail.len())))
+        }
         Err(error) => json!({"ok": false, "output": format!("did not run: {error}")}),
     }
 }

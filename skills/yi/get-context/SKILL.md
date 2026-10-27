@@ -54,7 +54,7 @@ it. The task map is a guide: its rows name where to start, not what is correct.
 
 Each layer is clamped, and each cut says what it dropped:
 
-- `[skeletons truncated: N of M files at ...; read a directory for its skeletons, or pass symbol to rank its files first]`
+- `[skeletons truncated: N of M files at ...; read a directory for its skeletons, or pass symbol to rank its files first]`; `M` reads `2000+` with `scan stopped at SKELETON_SCAN 2000` when the walk stopped before the last source file.
 - `[N of M heads, cap N per file — grep def=true for all]`: `grep` with `def=true` lists them.
 - `[callers: 20 of N rows, cap 20 — bash: ripwire . --callers=... --json --limit=N]`: run the
   command it prints.

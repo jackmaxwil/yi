@@ -2,7 +2,7 @@
 //! was told, and a store the lease journal lands in.
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
@@ -74,6 +74,16 @@ pub fn memory_store(id: &str) -> yi_session::SharedSession {
             name: None,
         },
     )))
+}
+
+pub async fn wait_for_path(path: &Path, message: &str) -> Result<(), Box<dyn std::error::Error>> {
+    for _ in 0..200 {
+        if path.exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    Err(message.into())
 }
 
 pub fn faux_model() -> Model {

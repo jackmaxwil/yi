@@ -154,12 +154,6 @@ pub struct Permit {
     purpose: Purpose,
 }
 
-impl Permit {
-    pub fn purpose(&self) -> Purpose {
-        self.purpose
-    }
-}
-
 impl fmt::Debug for Permit {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -238,7 +232,6 @@ mod tests {
             workers.push(capacity.reserve(Purpose::Worker)?);
         }
         let verifying = capacity.reserve(Purpose::Verification)?;
-        assert_eq!(verifying.purpose(), Purpose::Verification);
         assert_eq!(
             capacity.reserve(Purpose::Verification).err(),
             Some(Exhausted {

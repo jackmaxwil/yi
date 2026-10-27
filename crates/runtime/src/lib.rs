@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(clippy::string_slice)]
 
 pub mod advisor;
 pub mod affordance;
@@ -9,6 +10,7 @@ pub mod auto_review;
 pub mod cache_miss;
 pub mod checkpoint;
 pub mod classifier;
+pub mod claude_hooks;
 pub mod compaction;
 pub mod environment;
 pub mod ext;
@@ -27,6 +29,7 @@ mod kernel_variables;
 pub mod lane;
 pub mod lease;
 pub mod levers;
+mod listed;
 mod mail;
 pub mod mailbox;
 pub mod memory;
@@ -81,7 +84,7 @@ pub use provider::{
     catalog_age, catalog_cache_dir, catalog_is_stale, catalog_list_url, catalog_needs_credential,
     catalog_rejected, kimi_usages, refresh_catalog, resolve_model, set_catalog_cache_dir,
 };
-pub use rewind::{BranchStub, Rewound, rewind_to, summarize_branch};
+pub use rewind::{BranchStub, Rewound, ensure_idle, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status, next_event};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{
@@ -114,6 +117,11 @@ pub fn identity_fragment() -> &'static str {
 /// Stable text: it rides the cached prefix, so every byte is paid per turn.
 pub fn doctrine_fragment() -> &'static str {
     include_str!("prompts/doctrine.md")
+}
+
+/// Attached only where [`ext::ExtOptions::can_delegate`]: a leaf never reads it.
+pub fn delegation_fragment() -> &'static str {
+    include_str!("prompts/delegation.md")
 }
 
 /// Rides the system prompt only when no asker is wired, so no person can answer.

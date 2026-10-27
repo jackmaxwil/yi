@@ -7,10 +7,13 @@ use super::{DeliverFn, JobStore, RunOutcome, Scheduler};
 /// The kill switch's reach into one session: `true` holds its wakes and interrupts its turn,
 /// `false` lifts the hold; each answers whether it changed anything.
 pub(crate) type StopFn = dyn Fn(bool) -> bool + Send + Sync;
+pub(crate) type NoticeFn = dyn Fn(&str) + Send + Sync;
 
 pub(crate) struct DeliveryHub {
     lanes: Mutex<HashMap<String, Arc<DeliverFn>>>,
     stops: Mutex<HashMap<String, Arc<StopFn>>>,
+    notices: Mutex<HashMap<String, Arc<NoticeFn>>>,
+    absent: Mutex<Option<Arc<AbsentFn>>>,
 }
 
 impl DeliveryHub {
@@ -18,7 +21,18 @@ impl DeliveryHub {
         Self {
             lanes: Mutex::new(HashMap::new()),
             stops: Mutex::new(HashMap::new()),
+            notices: Mutex::new(HashMap::new()),
+            absent: Mutex::new(None),
         }
+    }
+
+    /// Invariant: an evicted session's wake is owed, not skipped: `reload` loads it and the
+    /// deferred job delivers once its lane is back.
+    pub(crate) fn on_absent(&self, reload: Arc<AbsentFn>) {
+        *self
+            .absent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reload);
     }
 
     pub(crate) fn register(&self, session_id: String, deliver: Arc<DeliverFn>) {
@@ -27,6 +41,22 @@ impl DeliveryHub {
 
     pub(crate) fn register_stop(&self, session_id: String, stop: Arc<StopFn>) {
         lock_lanes(&self.stops).insert(session_id, stop);
+    }
+
+    pub(crate) fn register_notice(&self, session_id: String, notice: Arc<NoticeFn>) {
+        lock_lanes(&self.notices).insert(session_id, notice);
+    }
+
+    /// `None` tells every session on the ledger; the hooks run with no lock held.
+    pub(crate) fn notify(&self, session_id: Option<&str>, text: &str) {
+        let notices: Vec<Arc<NoticeFn>> = {
+            let all = lock_lanes(&self.notices);
+            match session_id {
+                Some(id) => all.get(id).map(Arc::clone).into_iter().collect(),
+                None => all.values().map(Arc::clone).collect(),
+            }
+        };
+        notices.iter().for_each(|notice| notice(text));
     }
 
     /// Invariant: a session reopened before its old handle drops re-registered under the same id,
@@ -41,6 +71,7 @@ impl DeliveryHub {
         }
         lanes.remove(session_id);
         lock_lanes(&self.stops).remove(session_id);
+        lock_lanes(&self.notices).remove(session_id);
         true
     }
 
@@ -61,17 +92,41 @@ impl DeliveryHub {
         firing: &super::Firing,
     ) -> Result<RunOutcome, String> {
         let lane = lock_lanes(&self.lanes).get(&job.session_id).map(Arc::clone);
+        let owed = || (job.channel.as_ref()).is_none_or(|sub| super::channel::unread(job, sub));
+        let reload = || {
+            let hook = self
+                .absent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            hook.clone()
+        };
+        let absent = || owed() && reload().is_some_and(|reload| reload(&job.session_id));
         match lane {
             Some(deliver) => deliver(job, firing),
+            None if absent() => Ok(RunOutcome::Deferred),
             None => Ok(RunOutcome::Skipped),
         }
     }
 }
 
+/// Answers whether the session `id`, unloaded while idle, is being loaded again for a wake.
+pub(crate) type AbsentFn = dyn Fn(&str) -> bool + Send + Sync;
+
 pub(crate) struct SharedSchedule {
     pub store: Arc<JobStore>,
     pub hub: Arc<DeliveryHub>,
     _scheduler: Scheduler,
+}
+
+struct Interned {
+    live: Weak<SharedSchedule>,
+    parked: Option<Arc<SharedSchedule>>,
+}
+
+impl Interned {
+    fn get(&self) -> Option<Arc<SharedSchedule>> {
+        self.parked.clone().or_else(|| self.live.upgrade())
+    }
 }
 
 fn lock_lanes<T: ?Sized>(
@@ -82,10 +137,10 @@ fn lock_lanes<T: ?Sized>(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Invariant: the map only points at a timer; the sessions wired or bound to it own it, so it
-/// stops when the last of them ends, even while a halt or poke walk still holds a clone.
-fn intern_map() -> &'static Mutex<HashMap<PathBuf, Weak<SharedSchedule>>> {
-    static MAP: OnceLock<Mutex<HashMap<PathBuf, Weak<SharedSchedule>>>> = OnceLock::new();
+/// Invariant: wired sessions own their timer; `parked` owns it only while its session is
+/// unloaded idle, so a close or delete can release it without reviving the session.
+fn intern_map() -> &'static Mutex<HashMap<PathBuf, Interned>> {
+    static MAP: OnceLock<Mutex<HashMap<PathBuf, Interned>>> = OnceLock::new();
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -94,7 +149,7 @@ fn live() -> Vec<Arc<SharedSchedule>> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .values()
-        .filter_map(Weak::upgrade)
+        .filter_map(Interned::get)
         .collect()
 }
 
@@ -149,13 +204,16 @@ pub(crate) fn intern(path: PathBuf, prime: impl FnOnce(&DeliveryHub)) -> Arc<Sha
     let mut map = intern_map()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(existing) = map.get(&path).and_then(Weak::upgrade) {
+    if let Some(entry) = map.get_mut(&path)
+        && let Some(existing) = entry.get()
+    {
+        entry.parked = None;
         prime(&existing.hub);
         return existing;
     }
-    map.retain(|_, shared| shared.strong_count() > 0);
-    let store = Arc::new(JobStore::open(path.clone()));
+    map.retain(|_, entry| entry.get().is_some());
     let hub = Arc::new(DeliveryHub::new());
+    let store = Arc::new(JobStore::open(path.clone()).with_hub(Arc::clone(&hub)));
     prime(&hub);
     let dispatch = Arc::clone(&hub);
     let scheduler = Scheduler::start(
@@ -173,7 +231,13 @@ pub(crate) fn intern(path: PathBuf, prime: impl FnOnce(&DeliveryHub)) -> Arc<Sha
         hub,
         _scheduler: scheduler,
     });
-    map.insert(path, Arc::downgrade(&shared));
+    map.insert(
+        path,
+        Interned {
+            live: Arc::downgrade(&shared),
+            parked: None,
+        },
+    );
     shared
 }
 
@@ -182,8 +246,46 @@ pub(crate) fn held(store: &Arc<JobStore>) -> Option<Arc<SharedSchedule>> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     map.values()
-        .filter_map(Weak::upgrade)
+        .filter_map(Interned::get)
         .find(|shared| Arc::ptr_eq(&shared.store, store))
+}
+
+pub(crate) fn park(store: &Arc<JobStore>) {
+    let mut map = intern_map()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for entry in map.values_mut() {
+        let Some(shared) = entry.get() else {
+            continue;
+        };
+        if Arc::ptr_eq(&shared.store, store) {
+            entry.parked = Some(shared);
+            break;
+        }
+    }
+}
+
+/// The durable schedules directory under a sessions directory, one subdirectory per session.
+pub fn schedules_root(session_dir: &std::path::Path) -> PathBuf {
+    session_dir.join("schedules")
+}
+
+/// A session's durable job file under [`schedules_root`].
+pub(crate) fn jobs_path(root: &std::path::Path, session_id: &str) -> PathBuf {
+    root.join(session_id).join("scheduled-jobs.json")
+}
+
+/// A session the worker closed or deleted without loading it: drop the ownership its
+/// eviction retained, unless a live session still owns the same timer.
+pub fn release_unloaded(root: &std::path::Path, session_id: &str) {
+    let path = jobs_path(root, session_id);
+    let mut map = intern_map()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(entry) = map.get_mut(&path) {
+        entry.parked = None;
+    }
+    map.retain(|_, entry| entry.get().is_some());
 }
 
 #[cfg(test)]
@@ -361,6 +463,73 @@ mod tests {
         );
         drop(new);
         assert_eq!(hub.lane_count(), 0, "the reopened session's lane leaked");
+        Ok(())
+    }
+
+    #[test]
+    fn a_clock_job_due_for_an_unloaded_session_defers_and_wakes_it_once() {
+        let hub = DeliveryHub::new();
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        hub.on_absent(Arc::new(move |id| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            id == "a"
+        }));
+        let due = job("a");
+        assert!(due.channel.is_none());
+
+        assert_eq!(
+            hub.dispatch(&due, &Firing::at(0)),
+            Ok(RunOutcome::Deferred),
+            "a heartbeat due for an evicted session was skipped instead of loading it"
+        );
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_session_loaded_again_and_closed_leaves_no_held_timer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-held")?;
+        let path = dir.join("scheduled-jobs.json");
+        let shared = intern(path.clone(), |_| {});
+        park(&shared.store);
+        let timer = Arc::downgrade(&shared);
+        drop(shared);
+        assert!(
+            timer.upgrade().is_some(),
+            "an unloaded session lost its timer"
+        );
+
+        let shared = intern(path, |hub| {
+            hub.register("a".to_owned(), Arc::new(|_, _| Ok(RunOutcome::Ran)));
+        });
+        drop(shared);
+        assert!(
+            timer.upgrade().is_none(),
+            "a closed session's timer kept ticking and skipping its jobs"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_session_deleted_while_parked_leaves_no_held_timer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-unheld")?;
+        let path = jobs_path(&dir, "a");
+        let shared = intern(path, |_| {});
+        park(&shared.store);
+        let timer = Arc::downgrade(&shared);
+        drop(shared);
+        assert!(
+            timer.upgrade().is_some(),
+            "a parked session has a held timer to lift in the first place"
+        );
+
+        crate::schedule::release_unloaded(&dir, "a");
+        assert!(
+            timer.upgrade().is_none(),
+            "a deleted session's held timer kept firing and skipping its jobs forever"
+        );
         Ok(())
     }
 

@@ -1,5 +1,4 @@
-//! The model registry as a spawn sees it: the `rlm.find_models` listing, and the family rule
-//! the judge tier seats its jurors by (plan section 6.4).
+//! The model registry as a spawn sees it: the `rlm.find_models` listing.
 
 use serde_json::{Map, Value, json};
 use yi_types::model::Model;
@@ -10,7 +9,7 @@ use crate::provider::{ProviderStream, available_models};
 impl SubagentHost {
     pub fn find_models(&self, query: &str, limit: usize) -> Map<String, Value> {
         let needle = query.to_lowercase();
-        let models: Vec<Value> = credentialed_models(&self.options.provider)
+        let matched: Vec<Model> = credentialed_models(&self.options.provider)
             .into_iter()
             .filter(|model| {
                 needle.is_empty()
@@ -18,6 +17,10 @@ impl SubagentHost {
                     || model.name.to_lowercase().contains(&needle)
                     || model.provider.to_lowercase().contains(&needle)
             })
+            .collect();
+        let total = matched.len();
+        let models: Vec<Value> = matched
+            .into_iter()
             .take(limit)
             .map(|model| {
                 json!({
@@ -31,6 +34,13 @@ impl SubagentHost {
             .collect();
         let mut reply = Map::new();
         reply.insert("models".to_owned(), Value::Array(models));
+        if total > limit {
+            let query = Value::from(query);
+            let next = format!("await rlm.find_models({query}, limit={total})");
+            let row =
+                crate::listed::cut_row(limit, total, "matching models", "limit", limit, &next);
+            reply.insert("cut".to_owned(), Value::String(row));
+        }
         reply
     }
 }
@@ -49,26 +59,4 @@ pub fn credentialed_models(stream: &ProviderStream) -> Vec<Model> {
 
 pub fn selector_of(model: &Model) -> String {
     format!("{}/{}", model.provider, model.id)
-}
-
-/// The vendor segment of a recorded model identity: `openrouter/z-ai/glm-5.3-flash` is
-/// `z-ai`, `anthropic/claude-x` is `anthropic`. A weak heuristic for independent errors.
-pub fn family_of(model: &Model) -> &str {
-    model
-        .id
-        .split_once('/')
-        .map_or(model.provider.as_str(), |(vendor, _)| vendor)
-}
-
-/// The registry's models of none of the `owners` families, cheapest input first.
-pub fn other_families(mut pool: Vec<Model>, owners: &[&str]) -> Vec<Model> {
-    pool.retain(|model| !owners.contains(&family_of(model)));
-    // ponytail: cheapest first is the reader rule; a configured judge role is the upgrade.
-    let cost = |model: &Model| model.cost.input.as_f64().unwrap_or(f64::MAX);
-    pool.sort_by(|left, right| {
-        cost(left)
-            .total_cmp(&cost(right))
-            .then_with(|| selector_of(left).cmp(&selector_of(right)))
-    });
-    pool
 }

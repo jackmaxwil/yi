@@ -7,6 +7,7 @@ pub mod daemon;
 mod fork;
 mod forward;
 pub mod replay;
+mod resident;
 pub mod review;
 pub mod update;
 
@@ -198,6 +199,7 @@ struct SessionHandle {
     host: Arc<SubagentHost>,
     forwarder: JoinHandle<()>,
     prompts: PendingPrompts,
+    last_active: Arc<AtomicU64>,
 }
 
 impl Drop for SessionHandle {
@@ -212,6 +214,7 @@ impl Drop for SessionHandle {
 struct AcpState {
     user_cells: crate::cells::UserCells,
     repo: JsonlRepo,
+    schedules_root: std::path::PathBuf,
     sessions: HashMap<String, SessionHandle>,
     building: HashMap<String, attach::Building>,
     failed: HashMap<String, String>,
@@ -324,6 +327,7 @@ impl AcpState {
         let events = session.subscribe();
         let context_window = session.model().context_window;
         let prompts = PendingPrompts::default();
+        let last_active = Arc::new(AtomicU64::new(daemon::now_ms()));
         let mut parent = Parent {
             forward: Forward {
                 session_id: session_id.clone(),
@@ -342,6 +346,7 @@ impl AcpState {
             last_plan: Value::Null,
             titled: lock_session(store).name().is_some(),
             launch_cwd: self.cwd.clone(),
+            last_active: Arc::clone(&last_active),
         };
         parent.watch_workdir();
         parent.watch_claims();
@@ -354,8 +359,10 @@ impl AcpState {
                 host,
                 forwarder,
                 prompts,
+                last_active,
             },
         );
+        self.evict_idle(&session_id);
         Ok(session_id)
     }
 
@@ -393,29 +400,20 @@ impl AcpState {
                 eprintln!("user cell {id}: the session closed before its output");
             }
         });
-        self.user_cells.track(
-            &session_id,
-            crate::cells::UserCell {
-                call_id: call_id.clone(),
-                cancelled,
-                task,
-            },
-        );
+        self.user_cells
+            .track(&session_id, crate::cells::UserCell { cancelled, task });
         Ok(json!({ "callId": call_id }))
     }
 
     fn session(&self, params: &Value) -> Result<(&SessionHandle, String), (i64, String)> {
-        let id = params
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?;
-        if let Some(error) = self.failed.get(id) {
+        let id = Self::session_id(params)?;
+        if let Some(error) = self.failed.get(&id) {
             return Err((INTERNAL_ERROR, error.clone()));
         }
-        self.sessions
-            .get(id)
-            .map(|handle| (handle, id.to_owned()))
-            .ok_or((INVALID_PARAMS, format!("unknown session {id}")))
+        match self.sessions.get(&id) {
+            Some(handle) => Ok((handle, id)),
+            None => Err((INVALID_PARAMS, format!("unknown session {id}"))),
+        }
     }
 
     fn session_result(&self, session_id: &str) -> AcpSessionResult {
@@ -439,6 +437,7 @@ impl AcpState {
     fn prompt(&mut self, request: Value, params: &Value) -> Option<Result<Value, (i64, String)>> {
         if let Some(id) = params.get("sessionId").and_then(Value::as_str) {
             let id = id.to_owned();
+            self.reload(&id);
             self.settle(&id);
         }
         self.prompt_serial = self.prompt_serial.saturating_add(1);
@@ -447,6 +446,7 @@ impl AcpState {
             Ok(found) => found,
             Err(refused) => return Some(Err(refused)),
         };
+        (handle.last_active).store(daemon::now_ms(), std::sync::atomic::Ordering::Relaxed);
         let text = crate::replay::prompt_text(params);
         crate::update::queued(&handle.prompts).push(PendingPrompt {
             text: text.clone(),
@@ -458,16 +458,6 @@ impl AcpState {
             handle.session.follow_up_message(prompt);
         }
         None
-    }
-
-    fn drop_session(&mut self, session_id: &str) {
-        if let Some(handle) = self.sessions.remove(session_id) {
-            // Incident: the turn and its queued follow-ups ran on after a close told the client
-            // they were cancelled.
-            handle.session.stop();
-            let closed = "the session closed before this prompt was inserted";
-            refuse(&self.sink, &handle.prompts, REQUEST_CANCELLED, closed);
-        }
     }
 
     fn emit_config(&self, session_id: &str) {
@@ -545,10 +535,13 @@ impl AcpState {
     }
 
     fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
-        if method != "session/resume"
-            && let Some(id) = params.get("sessionId").and_then(Value::as_str)
+        if !matches!(
+            method,
+            "session/resume" | "session/close" | "session/delete"
+        ) && let Some(id) = params.get("sessionId").and_then(Value::as_str)
         {
             let id = id.to_owned();
+            self.reload(&id);
             self.settle(&id);
         }
         match method {
@@ -622,22 +615,12 @@ impl AcpState {
                 Ok(json!({"sessions": sessions}))
             }
             "session/resume" => {
-                let id = params
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?
-                    .to_owned();
+                let id = Self::session_id(params)?;
                 let store = match self.store_of(&id) {
                     Some(store) => store,
-                    None => {
-                        let _span = yi_types::trace::span("acp.repo_open");
-                        let store = self
-                            .repo
-                            .open(&id)
-                            .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
-                        self.attach_later(&store);
-                        store
-                    }
+                    None => self
+                        .open_later(&id)
+                        .map_err(|error| (INVALID_PARAMS, error))?,
                 };
                 self.emit_servers_notice(&id, params);
                 let mut result = self.session_result(&id);
@@ -663,18 +646,28 @@ impl AcpState {
                 Ok(json!(result))
             }
             "session/close" => {
-                let id = self.session(params)?.1;
+                let id = Self::session_id(params)?;
+                if self.building.contains_key(&id) {
+                    self.settle(&id);
+                }
+                let loaded = self.sessions.contains_key(&id);
+                if !loaded {
+                    self.release_parked(&id);
+                    crate::resident::forget(&id);
+                }
                 self.user_cells.close(&id);
                 self.drop_session(&id);
                 Ok(json!({}))
             }
             "session/delete" => {
-                let id = params
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?
-                    .to_owned();
+                let id = Self::session_id(params)?;
+                self.building.remove(&id);
+                let loaded = self.sessions.contains_key(&id);
                 self.drop_session(&id);
+                if !loaded {
+                    self.release_parked(&id);
+                }
+                crate::resident::forget(&id);
                 self.repo
                     .delete(&id)
                     .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
@@ -790,14 +783,6 @@ impl AcpState {
                     .ok_or((INTERNAL_ERROR, "no kernel is attached".to_owned()))?;
                 let events = session.events_sender();
                 self.spawn_user_cell(session_id, service, events, code)
-            }
-            "_yi/kernel_cancel" => {
-                let (_, session_id) = found?;
-                let call = text("callId");
-                if self.user_cells.cancel(&session_id, call) {
-                    return Ok(json!({}));
-                }
-                Err((INVALID_PARAMS, format!("no running user cell {call}")))
             }
             "_yi/tracked" => {
                 let paths: Vec<String> = params
@@ -931,13 +916,6 @@ fn submit_plan(
         .map_err(|error| (INVALID_PARAMS, error))
 }
 
-fn refuse(sink: &LineSink, prompts: &PendingPrompts, code: i64, why: &str) {
-    let waiting = std::mem::take(&mut *crate::update::queued(prompts));
-    for prompt in waiting {
-        respond(sink, prompt.request, Err((code, why.to_owned())));
-    }
-}
-
 fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
     let frame = match outcome {
         Ok(result) => json!(AcpResponse {
@@ -955,6 +933,7 @@ fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
 }
 
 pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
+    let schedules_root = yi_runtime::schedule::schedules_root(&options.session_dir);
     let repo = JsonlRepo::new(options.session_dir, options.cwd.display().to_string());
     let sink = stdout_sink();
     let pending: PendingAsks = Arc::new(Mutex::new(Some(HashMap::new())));
@@ -962,6 +941,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
     let mut state = AcpState {
         user_cells: crate::cells::UserCells::default(),
         repo,
+        schedules_root,
         sessions: HashMap::new(),
         building: HashMap::new(),
         failed: HashMap::new(),
@@ -1015,6 +995,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
             let line = match incoming {
                 attach::Incoming::Line(line) => line,
                 attach::Incoming::Built(session_id) => {
+                    state.reload(&session_id);
                     state.settle(&session_id);
                     continue;
                 }

@@ -605,7 +605,6 @@ impl PlanEngine {
                     root: root_path,
                     output: contracted.product.as_deref().map(str::as_bytes),
                     artifacts: &artifacts,
-                    jury: None,
                 },
             ),
             (None, None) => self.verifier.abstained(
@@ -816,7 +815,7 @@ impl PlanEngine {
         )
         .map_err(|error| verification(label, format!("publish: {error}")))?;
         let (at, how) = match published {
-            Publish::Published { at, how } => (at, Some(how)),
+            Publish::Published { at, how, .. } => (at, Some(how)),
             // Incident: a run killed between publish and `accepted` left HEAD at this integration.
             Publish::Moved { found, .. } if found == integration.integrated => (found, None),
             Publish::Moved { expected, found } => {
@@ -945,9 +944,11 @@ impl PlanEngine {
                     self.dispose(txn, &plan_id, &todo, by, op)?;
                 }
             }
+            // A reader's partition is inlined at spawn, so no fetch row could show it was read.
             let supplied = todo
                 .delegation
                 .as_ref()
+                .filter(|delegation| !super::spawn::reads_only(delegation, &self.cwd))
                 .map(|delegation| delegation.context.clone())
                 .unwrap_or_default();
             let last =

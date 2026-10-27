@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -21,36 +21,83 @@ pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one wit
 /// Checks are integration gates (`just check`-class), not unit runs; 10 min
 /// covers a cold cargo build without letting a hang eat the session.
 pub const DEFAULT_CHECK_TIMEOUT_MS: u64 = 600_000;
-const CHECK_TAIL_CHARS: usize = 2_000;
 
-pub(crate) fn output_tail(capture: &yi_tools::CommandCapture) -> String {
-    let mut combined = String::new();
-    if !capture.stdout.trim().is_empty() {
-        combined.push_str(capture.stdout.trim_end());
+/// A failed check's output through [`yi_tools::view`]: a cut row's recovery is the rerun from
+/// `dir`, or a file under `spill`; the capture's own cut row follows the view's.
+pub(crate) fn check_view(
+    command: &str,
+    dir: &std::path::Path,
+    spill: Option<&std::path::Path>,
+    capture: &yi_tools::CommandCapture,
+) -> String {
+    let (stdout, stderr) = (&capture.stdout, &capture.stderr);
+    let exit = capture.exit_code.unwrap_or(-1);
+    let rerun = rerun_in(dir, command);
+    let producer = yi_tools::Involuntary::Job(&rerun);
+    let view = yi_tools::view(producer, stdout, stderr, exit, None, spill);
+    let text = view.text.trim();
+    capture
+        .cut_row()
+        .map_or_else(|| text.to_owned(), |row| format!("{text}\n{row}"))
+}
+
+/// The rerun a cut row names: `command` from `dir`, where the check ran. The reader's own bash
+/// is rooted elsewhere for a child's lane or a `cwd_subdir`, and a bare command would pass there.
+pub(crate) fn rerun_in(dir: &std::path::Path, command: &str) -> String {
+    let dir = dir.to_string_lossy().replace('\'', r"'\''");
+    format!("cd '{dir}' && {command}")
+}
+
+const REPEAT_BYTES: usize = 2_000;
+
+/// A later copy of evidence the model already read whole: its first line and last
+/// [`REPEAT_BYTES`], where the verdict sits, with a row for the cut.
+pub(crate) fn evidence_repeat(evidence: &str) -> String {
+    if evidence.len() <= REPEAT_BYTES {
+        return evidence.to_owned();
     }
-    if !capture.stderr.trim().is_empty() {
-        if !combined.is_empty() {
-            combined.push('\n');
-        }
-        combined.push_str(capture.stderr.trim_end());
+    let head: String = evidence
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect();
+    let from = evidence.ceil_char_boundary(evidence.len().saturating_sub(REPEAT_BYTES));
+    let tail = evidence.get(from..).unwrap_or_default();
+    let (kept, total, cap) = (tail.len(), evidence.len(), "REPEAT_BYTES");
+    let next = "the refusal that first carried this output, or run the check again";
+    let row = yi_tools::cut_row(kept, total, "bytes kept", cap, REPEAT_BYTES, next);
+    format!(
+        "{head}
+{row}
+{tail}"
+    )
+}
+
+pub(crate) fn evidence_once(first: bool, evidence: String) -> String {
+    if first {
+        evidence
+    } else {
+        "(the same evidence as the first row naming this task, above)".to_owned()
     }
-    let start = combined
-        .char_indices()
-        .rev()
-        .nth(CHECK_TAIL_CHARS.saturating_sub(1))
-        .map_or(0, |(index, _)| index);
-    combined.get(start..).unwrap_or(&combined).to_owned()
 }
 
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
-pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> Result<(), String> {
+pub(crate) fn run_check(
+    check: &str,
+    cwd: &std::path::Path,
+    timeout_ms: u64,
+    hooks: Option<&crate::claude_hooks::Hooks>,
+) -> Result<(), String> {
+    crate::claude_hooks::guard_shell(hooks, check, cwd)?;
     let mut command = yi_tools::keyless_command("sh");
     command.arg("-c").arg(check).current_dir(cwd);
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, 30_000)
+    let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP)
         .map_err(|error| format!("goal check failed to run: {error}"))?;
     if capture.cancelled {
         return Err(format!("goal check timed out after {timeout_ms} ms"));
@@ -61,7 +108,7 @@ pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> 
             let exit = code.map_or_else(|| "signal".to_owned(), |code| code.to_string());
             Err(format!(
                 "goal check `{check}` exited {exit}:\n{}",
-                output_tail(&capture)
+                check_view(check, cwd, None, &capture)
             ))
         }
     }
@@ -71,7 +118,7 @@ pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> 
 pub const CHECKER_ENV_BASE: [&str; 4] = ["PATH", "HOME", "LANG", "TMPDIR"];
 
 /// # Errors
-/// The shell did not spawn. Runs `/bin/sh -c` with `env_clear()` plus the base allowlist.
+/// No spawn, or a Claude Code Bash hook refused it. `/bin/sh -c`, `env_clear()` plus the allowlist.
 pub(crate) fn run_check_in(
     cwd: &std::path::Path,
     command: &str,
@@ -79,7 +126,9 @@ pub(crate) fn run_check_in(
     stdin: Option<Vec<u8>>,
     deadline: Instant,
     stop: Option<&yi_tools::CancelFlag>,
+    hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> Result<yi_tools::CommandCapture, String> {
+    crate::claude_hooks::guard_shell(hooks, command, cwd)?;
     let mut shell = yi_tools::command("/bin/sh");
     shell.arg("-c").arg(command).current_dir(cwd).env_clear();
     for name in CHECKER_ENV_BASE
@@ -237,13 +286,6 @@ fn goal_json(goal: &Goal) -> Value {
     value
 }
 
-/// Uncached input plus output.
-pub(crate) fn usage_delta(usage: &yi_types::message::Usage) -> u64 {
-    let uncached = usage.input.saturating_sub(usage.cache_read).max(0);
-    let output = usage.output.max(0);
-    u64::try_from(uncached.saturating_add(output)).unwrap_or(0)
-}
-
 /// State machine over the session store fact, idle continuation and budget
 /// accounting. One per session.
 pub struct GoalService {
@@ -256,6 +298,7 @@ pub struct GoalService {
     /// Cleared at AgentStart so idle cannot double-fire.
     pending: Mutex<bool>,
     wall_mark: Mutex<Option<Instant>>,
+    hooks: Option<Arc<crate::claude_hooks::Hooks>>,
 }
 
 impl GoalService {
@@ -266,6 +309,7 @@ impl GoalService {
             cwd,
             deliver,
             deferred: Mutex::new(false),
+            hooks: None,
             pending: Mutex::new(false),
             wall_mark: Mutex::new(None),
         }
@@ -273,6 +317,11 @@ impl GoalService {
 
     pub fn with_plans_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.plans_dir = dir;
+        self
+    }
+
+    pub fn with_claude_hooks(mut self, hooks: Option<Arc<crate::claude_hooks::Hooks>>) -> Self {
+        self.hooks = hooks;
         self
     }
 
@@ -381,8 +430,8 @@ impl GoalService {
             && let Some(check) = goal.check.clone()
         {
             let timeout = goal.check_timeout_ms.unwrap_or(DEFAULT_CHECK_TIMEOUT_MS);
-            if let Err(evidence) = run_check(&check, &self.cwd, timeout) {
-                goal.check_failure = Some(evidence.clone());
+            if let Err(evidence) = run_check(&check, &self.cwd, timeout, self.hooks.as_deref()) {
+                goal.check_failure = Some(evidence_repeat(&evidence));
                 goal.updated = yi_session::now_ms();
                 self.write_goal(goal)?;
                 return Err(format!(
@@ -414,6 +463,7 @@ impl GoalService {
         };
         // One check run per named todo, however many rows name it.
         let mut adjudged: HashMap<yi_types::plan::TaskId, Option<String>> = HashMap::new();
+        let mut shown = HashSet::new();
         let mut kept = Vec::new();
         let mut blockers = Vec::new();
         for row in std::mem::take(&mut goal.discoveries) {
@@ -425,7 +475,13 @@ impl GoalService {
                     let evidence = adjudged
                         .entry(id.clone())
                         .or_insert_with(|| {
-                            run_check(&check, &self.cwd, DISCOVERY_CHECK_TIMEOUT_MS).err()
+                            run_check(
+                                &check,
+                                &self.cwd,
+                                DISCOVERY_CHECK_TIMEOUT_MS,
+                                self.hooks.as_deref(),
+                            )
+                            .err()
                         })
                         .clone();
                     match evidence {
@@ -433,6 +489,7 @@ impl GoalService {
                             drained_message(&row, json!({ "drained": true, "task": id.as_str() }))
                         }
                         Some(evidence) => {
+                            let evidence = evidence_once(shown.insert(id.clone()), evidence);
                             blockers.push(format!(
                                 "undrained HIGH discovery {}: {}\nThe check of task {} is still red:\n{evidence}",
                                 row.fingerprint,
@@ -534,7 +591,7 @@ impl GoalService {
         if !matches!(goal.status, GoalStatus::Active | GoalStatus::BudgetLimited) {
             return;
         }
-        goal.tokens_used = goal.tokens_used.saturating_add(usage_delta(usage));
+        goal.tokens_used = goal.tokens_used.saturating_add(usage.fresh());
         if let Ok(mut mark) = self.wall_mark.lock() {
             if let Some(started) = mark.take() {
                 goal.time_used_seconds = goal
@@ -661,8 +718,11 @@ pub fn attach_goal(
     cwd: std::path::PathBuf,
 ) -> Arc<GoalService> {
     let deliver: DeliverFn = session.heartbeat_hook();
-    let service =
-        Arc::new(GoalService::new(session.store_handle(), deliver, cwd).with_plans_dir(plans_dir));
+    let service = Arc::new(
+        GoalService::new(session.store_handle(), deliver, cwd.clone())
+            .with_plans_dir(plans_dir)
+            .with_claude_hooks(session.claude_hooks(&cwd)),
+    );
     let mut events = session.subscribe();
     let observer = Arc::clone(&service);
     tokio::spawn(async move {

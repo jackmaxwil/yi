@@ -144,7 +144,19 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// Each file this call would change, its text before and after, read without touching disk.
+    fn changes(&self, _input: &Map<String, Value>, _cwd: &std::path::Path) -> Vec<FileChange> {
+        Vec::new()
+    }
+
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput;
+}
+
+#[derive(Debug, Clone)]
+pub struct FileChange {
+    pub path: std::path::PathBuf,
+    pub before: String,
+    pub after: String,
 }
 
 pub fn text_output(text: impl Into<String>) -> ToolOutput {
@@ -221,6 +233,18 @@ pub(crate) fn clip(line: &str, cols: usize) -> (String, bool) {
         ),
         None => (line.to_owned(), false),
     }
+}
+
+/// A loud cut's row: kept of what existed, the cap that cut it, and the call that gets the rest.
+pub fn cut_row(
+    kept: usize,
+    total: usize,
+    what: &str,
+    cap: &str,
+    limit: usize,
+    next_call: &str,
+) -> String {
+    format!("[\u{2026} {kept} of {total} {what} ({cap} {limit}); the rest: {next_call}]")
 }
 
 pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {

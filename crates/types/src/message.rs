@@ -181,6 +181,23 @@ impl Usage {
             ..Self::zero()
         }
     }
+
+    /// What the reply newly cost; stream mappers report `input` net of cache reads, so none is subtracted.
+    pub fn fresh(&self) -> u64 {
+        clamped_sum([self.input, self.cache_write, self.output])
+    }
+
+    /// What the request held, read from cache or not; the reply is not in it.
+    pub fn context(&self) -> u64 {
+        clamped_sum([self.input, self.cache_read, self.cache_write])
+    }
+}
+
+fn clamped_sum(parts: [i64; 3]) -> u64 {
+    parts
+        .into_iter()
+        .map(|part| u64::try_from(part).unwrap_or(0))
+        .fold(0, u64::saturating_add)
 }
 
 /// yi's one spelling of money: 3 decimals under $1, 2 above. `lower_bound`: a reply in the sum

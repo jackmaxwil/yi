@@ -542,6 +542,11 @@ impl Pool {
         })
     }
 
+    pub(crate) fn branch_exists(&self, branch: &BranchName) -> Result<bool, LaneError> {
+        let local = format!("refs/heads/{}", branch.as_str());
+        no(git(&self.repo, &["rev-parse", "--verify", "-q", &local])).map(|absent| !absent)
+    }
+
     pub fn repo(&self) -> &Path {
         &self.repo
     }
@@ -835,10 +840,8 @@ impl Pool {
         let reason = format!("session:{session}");
         let text = path.to_string_lossy().into_owned();
         // Invariant: `-B` runs only over no branch or a merged one; any unread answer refuses.
-        let local = format!("refs/heads/{}", branch.as_str());
         let ancestor = ["merge-base", "--is-ancestor", branch.as_str(), &sha];
-        let kept = !no(git(&self.repo, &["rev-parse", "--verify", "-q", &local]))?
-            && no(git(&self.repo, &ancestor))?;
+        let kept = self.branch_exists(&branch)? && no(git(&self.repo, &ancestor))?;
         let mut add = vec!["worktree", "add", "-q", "--lock", "--reason", &reason];
         let mut checkout = vec!["checkout", "-q", "-f"];
         if kept {

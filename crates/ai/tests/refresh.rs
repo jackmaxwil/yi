@@ -3,6 +3,7 @@
 use std::error::Error;
 
 use serde_json::{Value, json};
+use yi_ai::anthropic::{AnthropicOptions, build_params as anthropic_params};
 use yi_ai::catalog::Catalog;
 use yi_ai::openai::{OpenAiOptions, build_params};
 use yi_ai::refresh::{catalog_from, cursor_catalog, is_stale, reachable_ids};
@@ -88,14 +89,50 @@ fn a_bundled_id_keeps_its_compat_through_a_refresh() -> TestResult {
     let models_dev: Value = serde_json::from_str(MODELS_DEV)?;
     let bundled = Catalog::bundled();
     let known = bundled
-        .get("anthropic", "claude-opus-5")
-        .ok_or("opus in bundle")?;
-    let written = catalog_from(&models_dev, "anthropic", None, &bundled);
-    let entry = &written["anthropic-messages"]["claude-opus-5"];
+        .get("openai", "gpt-5.6-sol")
+        .ok_or("sol in bundle")?;
+    assert!(
+        known.compat.is_some(),
+        "the row must carry a compat to keep"
+    );
+    let written = catalog_from(&models_dev, "openai", None, &bundled);
+    let entry = &written["openai-responses"]["gpt-5.6-sol"];
     assert_eq!(entry["compat"], known.compat.clone().unwrap_or(Value::Null));
     assert_eq!(
         entry["thinkingLevelMap"],
         known.thinking_level_map.clone().unwrap_or(Value::Null)
+    );
+    Ok(())
+}
+
+/// The bundle's Opus 5 row before the temperature option went, as an older session's refresh
+/// left it in the cache: `supportsTemperature` is a key nothing reads now.
+const STALE_OPUS_ROW: &str = r#"{"id":"claude-opus-5","name":"Claude Opus 5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":5,"output":25,"cacheRead":0.5,"cacheWrite":6.25},"contextWindow":1000000,"maxTokens":128000,"thinkingLevelMap":{"xhigh":"xhigh","max":"max"},"compat":{"supportsTemperature":false}}"#;
+
+/// A cache row naming a compat key the code no longer reads loads untouched and builds the
+/// request the bundled row builds.
+#[test]
+fn a_cache_row_naming_a_dropped_compat_key_loads_and_is_ignored() -> TestResult {
+    let row: Value = serde_json::from_str(STALE_OPUS_ROW)?;
+    let dir = Scratch::new("yi-refresh-stale-compat")?;
+    std::fs::write(
+        dir.join("anthropic.json"),
+        json!({"anthropic-messages": {"claude-opus-5": row}}).to_string(),
+    )?;
+    let catalog = Catalog::bundled().with_cache(&dir);
+    assert!(catalog.rejected().is_empty(), "{:?}", catalog.rejected());
+    let stale = catalog
+        .get("anthropic", "claude-opus-5")
+        .ok_or("cached opus")?;
+    assert_eq!(stale.compat, Some(json!({"supportsTemperature": false})));
+    let bundled = Catalog::bundled();
+    let fresh = bundled
+        .get("anthropic", "claude-opus-5")
+        .ok_or("bundled opus")?;
+    let (context, options) = (history_context(), AnthropicOptions::default());
+    assert_eq!(
+        anthropic_params(stale, &context, &options).into_value(),
+        anthropic_params(fresh, &context, &options).into_value()
     );
     Ok(())
 }

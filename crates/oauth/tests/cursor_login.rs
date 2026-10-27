@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 
 use serde_json::json;
 use yi_oauth::cursor::{Pace, login_polled, login_url, tokens_from_exchange};
-use yi_oauth::pkce::base64url_nopad;
 use yi_oauth::registry::{self, Kind};
+use yi_types::encoding::base64url_nopad;
 
 fn jwt_with_exp(exp: u64) -> String {
     let header = base64url_nopad(br#"{"alg":"none"}"#);

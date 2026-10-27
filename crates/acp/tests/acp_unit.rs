@@ -6,11 +6,12 @@ mod scratch;
 use std::error::Error;
 
 use serde_json::{Map, Value, json};
-use yi_acp::update::{IdMap, base64, extension, replay_updates, to_updates, update_notification};
+use yi_acp::update::{IdMap, extension, replay_updates, to_updates, update_notification};
 use yi_acp::{VERSION_MISMATCH_ERROR, negotiate};
 use yi_types::acp::{
     AcpNotification, AcpSessionUpdate, AcpState, AcpStopReason, AcpToolCallStatus, AcpUpdateParams,
 };
+use yi_types::encoding::base64;
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
@@ -342,15 +343,6 @@ fn update_notifications_match_the_serde_wire_shape() -> TestResult {
         assert_eq!(update_notification("s1", update), expected);
     }
     Ok(())
-}
-
-#[test]
-fn base64_pads_correctly() {
-    assert_eq!(base64(b""), "");
-    assert_eq!(base64(b"f"), "Zg==");
-    assert_eq!(base64(b"fo"), "Zm8="); // codespell:ignore fo
-    assert_eq!(base64(b"foo"), "Zm9v");
-    assert_eq!(base64(b"foob"), "Zm9vYg==");
 }
 
 #[test]

@@ -67,16 +67,27 @@ impl CommandCapture {
             .then(|| kept.unwrap_or_else(|| "[output truncated]".to_owned()))
     }
 
-    /// The one row naming a cut capture: kept over total bytes, the cap, and the file with the rest.
+    /// The one row naming a cut capture: kept over total bytes, the cap, and the file with the rest,
+    /// shaped as a `[full output, …: path]` pointer when a file holds it, so [`spill_path`] reads it.
     pub fn cut_row(&self) -> Option<String> {
         let (kept, total) = self.cut.filter(|_| self.truncated)?;
-        let rest = match self.spill.as_deref().and_then(spill_path) {
-            Some((label, path)) => format!("{label}: {path}"),
-            None => "no file kept the rest".to_owned(),
-        };
-        Some(format!(
-            "[capture cut: kept {kept} of {total} bytes (OUTPUT_CAP {OUTPUT_CAP} per stream); {rest}]"
-        ))
+        let cut = format!("kept {kept} of {total} bytes (OUTPUT_CAP {OUTPUT_CAP} per stream)");
+        Some(match self.spill.as_deref().and_then(spill_path) {
+            Some((label, path)) => format!("[full output, {cut}, {label}: {path}]"),
+            None => format!("[capture cut: {cut}; no file kept the rest]"),
+        })
+    }
+
+    /// The pointer the reducer ends a cut capture with: its cut row, when a file holds the rest.
+    pub(crate) fn kept(&self) -> Option<String> {
+        self.spill.as_ref().and(self.cut_row())
+    }
+
+    /// The reduced text, and the cut row when that text points at no file.
+    pub(crate) fn shown(&self, reduced: &crate::Reduced) -> Vec<String> {
+        let body = (!reduced.text.is_empty()).then(|| reduced.text.clone());
+        let row = self.cut_row().filter(|_| reduced.recovery.is_none());
+        body.into_iter().chain(row).collect()
     }
 }
 
@@ -279,19 +290,20 @@ pub fn run_captured(
 }
 
 pub(crate) fn run_captured_live(
-    mut command: Command,
+    command: Command,
     stdin: Option<Vec<u8>>,
     cancelled: &CancelFlag,
     cap: usize,
     live: Option<Arc<LiveOutput>>,
     spill_dir: Option<&std::path::Path>,
 ) -> Result<CommandCapture, String> {
+    let (child, program) = spawn_captured(command, stdin.is_some())?;
+    run_child_captured_live(child, &program, stdin, cancelled, cap, live, spill_dir)
+}
+
+pub(crate) fn spawn_captured(mut command: Command, stdin: bool) -> Result<(Child, String), String> {
     command
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // The group `kill_tree` signals: descendants inherit it, and killing the
@@ -303,10 +315,22 @@ pub(crate) fn run_captured_live(
     }
     let program = command.get_program().to_string_lossy().into_owned();
     let spawned = yi_types::trace::span("proc.spawn").arg("program", program.clone());
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|error| format!("failed to spawn: {error}"))?;
     drop(spawned);
+    Ok((child, program))
+}
+
+pub(crate) fn run_child_captured_live(
+    mut child: Child,
+    program: &str,
+    stdin: Option<Vec<u8>>,
+    cancelled: &CancelFlag,
+    cap: usize,
+    live: Option<Arc<LiveOutput>>,
+    spill_dir: Option<&std::path::Path>,
+) -> Result<CommandCapture, String> {
     let _running = yi_types::trace::span("proc.run").arg("program", program);
 
     let stdin_writer = match (stdin, child.stdin.take()) {
