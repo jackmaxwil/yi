@@ -3278,3 +3278,57 @@ async fn a_check_past_the_deadline_is_cut_while_the_executor_serves() -> TestRes
     );
     Ok(())
 }
+
+/// Dies with `judge` or `remove` deleted: a dry run removes nothing, `--fix` takes only the
+/// merged clean tree and its `target/`, and each kept tree says why.
+#[test]
+fn gc_removes_only_the_merged_clean_worktree_and_says_why_it_kept_the_rest() -> TestResult {
+    let rig = Rig::new("gc")?;
+    let root = rig.root.canonicalize()?;
+    let tree = |name: &str| root.join(format!("wt-{name}"));
+    std::fs::write(rig.repo.join(".gitignore"), "target/\n")?;
+    git(&rig.repo, &["add", ".gitignore"])?;
+    git(&rig.repo, &["commit", "-qm", "ignore target"])?;
+    for name in ["merged", "dirty", "unmerged"] {
+        let path = tree(name);
+        git(
+            &rig.repo,
+            &["worktree", "add", "-q", "-b", name, &path.to_string_lossy()],
+        )?;
+        std::fs::write(path.join(format!("{name}.txt")), "work\n")?;
+        git(&path, &["add", "."])?;
+        git(&path, &["commit", "-qm", name])?;
+    }
+    for name in ["merged", "dirty"] {
+        git(&rig.repo, &["merge", "-q", "--no-ff", "-m", name, name])?;
+    }
+    std::fs::write(tree("dirty").join("scratch.txt"), "unsaved\n")?;
+    std::fs::create_dir_all(tree("merged").join("target"))?;
+    std::fs::write(tree("merged").join("target/big"), "x")?;
+    let pool = rig.pool(2)?;
+
+    let preview = pool.gc(&rig.repo, true)?.join("\n");
+    assert!(preview.contains("would remove"), "{preview}");
+    assert!(tree("merged").is_dir(), "a dry run removes nothing");
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(!tree("merged").exists(), "{report}");
+    assert!(
+        tree("dirty").is_dir() && tree("unmerged").is_dir(),
+        "{report}"
+    );
+    let kept = |name: &str| format!("kept {}", tree(name).display());
+    assert!(
+        report.contains(&format!("{}: 1 uncommitted path", kept("dirty"))),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!(
+            "{}: unmerged is not merged into",
+            kept("unmerged")
+        )),
+        "{report}"
+    );
+    assert!(git(&rig.repo, &["rev-parse", "--verify", "-q", "merged"]).is_ok());
+    Ok(())
+}

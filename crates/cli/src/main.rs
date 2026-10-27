@@ -417,6 +417,16 @@ fn run_gc(args: &Args) -> i32 {
     for report in yi_runtime::retention::sweep(home(), !args.fix) {
         println!("{report}");
     }
+    let cwd = effective_cwd(args);
+    if let Ok(pool) = yi_runtime::lane::Pool::open(home(), &cwd, lanes::lane_slots()) {
+        match pool.gc(&cwd, !args.fix) {
+            Ok(lines) => lines.iter().for_each(|line| println!("{line}")),
+            Err(error) => {
+                eprintln!("error: worktrees: {error}");
+                return 1;
+            }
+        }
+    }
     0
 }
 
