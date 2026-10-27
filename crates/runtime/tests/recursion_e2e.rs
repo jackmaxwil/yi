@@ -606,6 +606,147 @@ async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
     Ok(())
 }
 
+/// The recorded session's own messages, in order: typed turns, tool calls, and one lifecycle
+/// notice the host wrote in the user role.
+fn recorded_parent() -> Result<Vec<AgentMessage>, Box<dyn Error>> {
+    let mut messages = Vec::new();
+    for row in include_str!("../../tui/tests/fixtures/sessions/01a0648f.jsonl").lines() {
+        let row: Value = serde_json::from_str(row)?;
+        if row["type"] == "message" {
+            messages.push(serde_json::from_value(row["message"].clone())?);
+        }
+    }
+    Ok(messages)
+}
+
+/// Dies with the control: count every user-role message as a turn and the five notices are
+/// the last turns, so the seed opens on the second-to-last notice and drops the request.
+#[tokio::test]
+async fn a_fork_counts_typed_turns_not_host_notices() -> TestResult {
+    let forked = harness(0, 1, "forked")?;
+    let notice = "[subagent sweep (sub-1) completed without replying]\nLast answer: done";
+    {
+        let mut parent = forked.parent.lock().map_err(|_| "poisoned")?;
+        parent.extend(recorded_parent()?);
+        parent.push(AgentMessage::user_input(
+            yi_types::message::UserContent::Text("now fix the failing cell".to_owned()),
+            0,
+        ));
+        for _ in 0..5 {
+            parent.push(AgentMessage::host_text(
+                yi_types::message::HostSource::Lifecycle,
+                notice,
+                0,
+            ));
+        }
+    }
+    forked
+        .host
+        .spawn(
+            "carry on".to_owned(),
+            kwargs(&[("name", "two"), ("fork", "2")]),
+        )
+        .map_err(|error| error.to_string())?;
+    let texts = user_texts(&first_child_messages(&forked).await);
+    assert_eq!(
+        texts.first().map(String::as_str),
+        Some("Test the ipython tooling"),
+        "fork=2 opens on the second-to-last typed turn: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "now fix the failing cell"),
+        "the user's request rides the seed: {texts:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the control: walk newest-first without a cut point and the seed opens on the tool
+/// result whose call the budget dropped, which no provider accepts.
+#[tokio::test]
+async fn a_fork_budget_never_opens_on_a_tool_result() -> TestResult {
+    let forked = harness(0, 1, "forked")?;
+    let mut args = Map::new();
+    args.insert("code".to_owned(), Value::String("x".repeat(600_000)));
+    {
+        let mut parent = forked.parent.lock().map_err(|_| "poisoned")?;
+        parent.push(AgentMessage::user_input(
+            yi_types::message::UserContent::Text("load it".to_owned()),
+            0,
+        ));
+        parent.push(faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("call-big", "ipython", args)],
+            StopReason::ToolUse,
+        ));
+        parent.push(serde_json::from_value(json!({
+            "role": "toolResult", "toolCallId": "call-big", "toolName": "ipython",
+            "content": [{"type": "text", "text": "loaded"}], "isError": false, "timestamp": 0
+        }))?);
+        parent.push(child_reply("loaded the frame"));
+    }
+    forked
+        .host
+        .spawn(
+            "carry on".to_owned(),
+            kwargs(&[("name", "cut"), ("fork", "1")]),
+        )
+        .map_err(|error| error.to_string())?;
+    let messages = first_child_messages(&forked).await;
+    let notice = user_texts(&messages).into_iter().next().unwrap_or_default();
+    assert!(
+        notice.contains("[… fork kept 1 of 4 messages")
+            && notice.contains("history://parent/since/0"),
+        "the cut is named where it is made: {notice}"
+    );
+    assert!(
+        matches!(messages.get(1), Some(AgentMessage::Assistant { .. })),
+        "then the answer, the first cut point that fits: {:?}",
+        messages.get(1)
+    );
+    Ok(())
+}
+
+/// Dies with the control: set the seed in memory only and the respawn reloads a transcript
+/// that never held it, so incarnation 2 runs cold.
+#[tokio::test]
+async fn a_respawned_forked_service_keeps_its_seed() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    {
+        let mut parent = harness.parent.lock().map_err(|_| "poisoned")?;
+        parent.extend(parent_turn("turn one", "a1"));
+    }
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let mut asked = Map::new();
+    asked.insert("fork".to_owned(), Value::from("all"));
+    harness
+        .host
+        .service("index", "serve".to_owned(), asked, 3)?;
+    assert!(
+        serves(&harness, "index", 2, "finished").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let child = harness
+        .host
+        .children_view()
+        .into_iter()
+        .find(|child| child.update.name == "index")
+        .ok_or("no service")?;
+    assert!(
+        user_texts(&child.session.messages()).contains(&"turn one".to_owned()),
+        "incarnation 2 still opens on the parent's turn"
+    );
+    let store = child.session.store().ok_or("no store")?;
+    let file = yi_session::lock_session(&store)
+        .file_path()
+        .cloned()
+        .ok_or("no session file")?;
+    assert!(
+        std::fs::read_to_string(file)?.contains("turn one"),
+        "the session file holds the seed"
+    );
+    Ok(())
+}
+
 async fn child_sees(harness: &Harness, name: &str, needle: &str) -> bool {
     for _ in 0..POLL_ATTEMPTS {
         let seen = harness
@@ -1083,7 +1224,7 @@ async fn mail_queued_as_a_run_stops_early_starts_the_next_turn() -> TestResult {
         vec![yi_ai::faux::faux_tool_call("p", "poke", Map::new())],
         StopReason::ToolUse,
     );
-    let mut session = parent_session_scripted(vec![call; 6], &["heard the kid"]);
+    let session = parent_session_scripted(vec![call; 6], &["heard the kid"]);
     let poke = Poke {
         calls: AtomicU32::new(0),
         deliver: session.heartbeat_hook(),
@@ -1632,7 +1773,7 @@ async fn a_finish_the_parent_already_collected_is_not_presented() -> TestResult 
             vec![yi_ai::faux::faux_tool_call("c", "collect", Map::new())],
             StopReason::ToolUse,
         );
-        let mut parent = parent_session_scripted(vec![call], &["kid said done", "spare"]);
+        let parent = parent_session_scripted(vec![call], &["kid said done", "spare"]);
         let collect = Collect {
             host: Arc::clone(&slot),
             road,

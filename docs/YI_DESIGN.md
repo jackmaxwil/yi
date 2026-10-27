@@ -113,7 +113,6 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Delegate a todo to a worktree child | Plan + Contract + Child + Lane (candidate, then integration) + Envelope | D195, D224, D225 |
 | `fork_join` / `scatter` | Kernel (`yi` library) + Plan + Child | D212 |
 | Review pod | Kernel shapes + Child (reader) per brief + arbiter + Contract | D217 |
-| Judge a contract item | Contract (`judge` decider) + Child (jurors of other model families) | D216 |
 | Service with a stable name | Child (service standing) + restart policy + Envelope | D218 |
 | Child asks the human | Envelope (request to parent) + child flag | D233 |
 | Shared family objects | Kernel `rlm.put` / `rlm.get` + Url (`family://`) | D164 |
@@ -144,7 +143,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   `Entry { Message, ModelChange, ThinkingLevelChange, ActiveToolsChange, Compaction,
   BranchSummary, Custom }`; `Fact { Name, Label, Goal, Plan }`. Yi's `custom` entries:
   `checkpoint` (§7.7), `todo`, `todo_intercept`, `plan_op` (§13), `fetch` (§10), `agent_message`,
-  `agent_message_read`, `human_answer` (§12), `lease` (§11), `ext_state`, `ext_record`.
+  `agent_message_read`, `human_answer` (§12), `lease` (§11), `ext_state2` (v1 `ext_state`),
+  `ext_record`.
 - Shapes: [`wire.rs`](../crates/types/src/wire.rs), [`entry.rs`](../crates/types/src/entry.rs),
   [`record.rs`](../crates/types/src/record.rs); `~/.yi/sessions/--<cwd, / \ : as ->--/
   <createdAt>_<id>.jsonl`; a child's is a flat file in its own directory.
@@ -303,11 +303,24 @@ extension `Host` whose synchronous extensions turn session events into effects.
   comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
   granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
-- The table persists as `custom{ext_state}` on change and is restored on resume.
+- The table persists as `custom{ext_state2}` when an extension changes it: the build's own slots
+  (the ones attached before the session starts) as rank, name, SHA-256 and bytes, every slot an
+  extension attached and the yard with their text, a slot attached after the first request
+  marked `late`. Older builds read only the v1 `custom{ext_state}`, so they keep their own build
+  slots. A resume reads the newest of either, rebuilds the build's slots from the running build,
+  so its mode, identity and doctrine are current, and re-attaches the recorded ones it lacks; a
+  late one rejoins the late set, not the prompt, since the transcript carries it. A v1 snapshot
+  carries text for every slot and restores the same way. Within one process the first request's
+  bytes stay frozen, and only the loop's read freezes them.
 - The environment block is a `host_user` message appended per request by `transform_context`,
   never stored: `cwd`, `files` (20), `landing`, `todos`, `time` (per minute), `deadline`,
   `platform … · host <line>`, `model`, `context`, `kernel`, children. `host` comes from
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
+  The `cwd` line's git counts (`environment::GitSummary`) are read when a shared generation
+  moves at a run's start and after a `bash`, `edit`, `write` or `ipython` call or a `grep` that
+  `applied` a rewrite ends, not per request or after a lagged broadcast replay, and a failed read
+  is retried; a change made outside Yi or by a same-tree child mid-run shows later. The review
+  pane's git reads live in `environment`.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
   `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers
@@ -689,7 +702,8 @@ A persistent IPython process per session that reaches the host only through host
   xxh32 in four uppercase hex digits, and a live file that differs is refused `Stale`.
 - `kernel` and `agent` are `Ephemeral`, the rest `Durable`. The wall (§11) runs first
   (`deny_url` by prefix, `deny_read` by path); `local` stays under the workspace or spill dir.
-- A reply is `{url, text, hash, servedBy}`, logged in `FetchLog`. `offset`/`limit` page
+- A reply is `{url, text, hash, servedBy}`, logged in `FetchLog`, which writes a `fetch` session
+  row only when an address's hash moved. `offset`/`limit` page
   `local` by bytes on char boundaries, `history` by entries, `kernel` by chars, adding
   `next_offset` (null at the end); a zero `limit`, a non-integer, or another scheme is refused.
 
@@ -716,12 +730,15 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
   deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns,
   schema`;
-  `fork=all` refuses a model.
+  `fork=all` refuses a model. `fork=N` counts typed turns only, never host notices, and
+  keeps what fits from the first cut point compaction would take, behind a `[… fork kept K of N`
+  row when the budget cut; the seed is appended to the child's transcript, so a respawned
+  service keeps it.
 - A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
   with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
-  `role="reader"` (D308); a juror and a service are `root`, and so is a plan delegation unless it
+  `role="reader"` (D308); a service is `root`, and so is a plan delegation unless it
   reads only: spec role `reader`, an accept that is not a command, no isolation, tools within
   `read` and `grep`, and no `kernel://`, `family://` or directory context. That one spawns
   `role="reader"`, its context the partition and its schema (the declared output's, else the
@@ -756,12 +773,11 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   whose card lacks `container` refuses before a lane is claimed; a missing image is pulled once
   with a notice.
 - Admission refuses at lever `family.cap` (16, an eval run's levers raise it to 128) live sessions,
-  at depth `rlm.maxDepth` (1, clamped 1..=3) but for a juror, at `family.max_children` (8, up to
+  at depth `rlm.maxDepth` (1, clamped 1..=3), at `family.max_children` (8, up to
   128) workers, and on a taken name (D344).
-- `Standing { Worker, Juror, Reader, Service }`: juror, reader and service stand outside the worker cap; lease,
+- `Standing { Worker, Reader, Service }`: reader and service stand outside the worker cap; lease,
   wall and family cap bind them all. A service (`rlm.service(name, brief, restart=3)`)
   respawns on its `ChildRecord` after `Failed { Provider | KernelDeath }`, ≤ 10 per 10 min.
-  A judge seats `policy.n` jurors from the cheapest other model family, else `Abstain` (§13).
 - The wall only reduces and `under(parent)` makes it hereditary; it refuses at the tool adapter
   before permission, `deny_read` implies write-deny, and bash naming a denied path is refused.
   A walled session also walls the old spill root and every session store and spares its
@@ -883,9 +899,9 @@ A `Contract` ([`contract.rs`](../crates/types/src/plan/contract.rs)) is 1..=16 i
   copy of the tree), re-acquires, compares the whole token, and commits the verdict with
   `Done{VerifiedDone}`, `done_refused`, or `verification_stale` for a moved token.
 - `Outcome { Pass, Fail, Abstain, Escalate }`. Staleness and abstention charge nothing; the
-  `plan.done_refusal_cap`-th refusal (default 3) or an escalation derives `block{on: User}`.
-- A `judge` item seats 1 or 3 reader children on the cheapest model of another family (none:
-  abstain); an unquoted vote abstains; Rust tallies. The jury past `plan.judge_cap` escalates.
+  `plan.done_refusal_cap`-th refusal (default 3) derives `block{on: User}`.
+- `start` refuses a `judge` item and names the deciders that run (`cmd`, `schema`, `example`);
+  the variant decodes so old journals replay, and a started one abstains `no judge`.
 - `Resolution { VerifiedDone, AcceptedByUser, LegacyUnverified }`. A todo with a contract or a
   stated acceptance completes only beside one, on every path (`set`, `import`, `repair`,
   `supersede` share the validator); any other on the caller's word.
@@ -919,7 +935,11 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
   the owner's plan op, any other change to one is `TodoError::Mirrored`.
 - A done todo's evidence is held against the ledger for display only: it is observed when a span
   it quotes in backticks appears verbatim in a recorded call's arguments or output, and claimed
-  otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows.
+  otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows. `TodoStore`
+  keeps one history for those claims and the stop re-drives: an unchanged list reads only entries
+  past the last consumed sequence, late evidence refreshes the claims, a list change rebuilds
+  older observations without retaining transcript copies, and a typed prompt starts a fresh
+  artifact-write set and source-text window.
 - Owner: [`schedule.rs`](../crates/runtime/src/plan/schedule.rs). Settled by: D224, D225, D226,
   D229, D275, D282.
 
@@ -1294,6 +1314,7 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 | transitive deps | 176 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
 | dist binary | 8,521,200 bytes on macOS arm64, a measured ratchet that passes growth up to a fixed 16,384-byte jitter allowance past it, under a hard cap of 9,437,184 (9 MiB; D249 set 8 MiB) that moves only with a `decision:` line | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json`; on Linux `baselines/binary_size_budget_linux.json` (13,220,280 at the first forge build) under its own 14 MiB cap |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
+| `yi ask --model faux/faux-1 hi` | 178.0 ms | the same, under a scratch HOME (kernel prewarm off) in an empty cwd under `target/` with `GIT_CEILING_DIRECTORIES` above it, so no lane is claimed | same; `--selfcheck` proves each entry can fail on a stand-in binary |
 
 The binary and startup gates run only after a dist build; a failed build fails both. Under
 `--fast` both are skipped by a printed line. When `CI` is set startup is skipped (D68), and the
@@ -1301,14 +1322,15 @@ dist build and the binary gate run only on a Linux host, against the Linux basel
 guardrails lane measures every pull request (revises D70 and D91).
 
 ## 19. Code style (HAR)
-The enforced rules for Rust in `crates/`; production lines precede a file's first `#[cfg(test)]`.
+The enforced rules for Rust in `crates/`; production lines are those no `#[cfg(test)]` attribute
+covers, and the attribute covers the one item after it, to its matching brace or its `;`.
 
 - Settled by: D49, D55, D109.
 
 | Rule | Gate |
 |---|---|
 | `#![forbid(unsafe_code)]` on every crate root | rustc; no script checks the attribute is present |
-| clippy denies `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `await_holding_lock`, `await_holding_invalid_type` (`std::sync::MutexGuard`, `RwLockReadGuard`, `RwLockWriteGuard`), `disallowed_methods`; `unwrap`/`expect` are allowed in tests | `[workspace.lints.clippy]`, [`clippy.toml`](../clippy.toml); `just lint` runs clippy `-D warnings` and `fmt --check` |
+| clippy denies `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `unreachable`, `await_holding_lock`, `await_holding_invalid_type` (`std::sync::MutexGuard`, `RwLockReadGuard`, `RwLockWriteGuard`), `disallowed_methods`; `unwrap`/`expect` are allowed in tests | `[workspace.lints.clippy]`, [`clippy.toml`](../clippy.toml); `just lint` runs clippy `-D warnings`, again over yi-cli without the `tui` feature, and `fmt --check` |
 | disallowed methods `std::process::Command::new`, `std::time::SystemTime::now`, `String::truncate`; each call site carries a scoped `allow` | same |
 | panic budget 0: no `.unwrap()`, `.expect(`, `panic!(`, `todo!(`, `unimplemented!(` in production lines | `check_panic.py`, `panic_budget.json` |
 | `#![deny(clippy::string_slice)]` on every crate root outside the shrink-only pending list (`ai`, `context`, `kernel`, `mcp-cli`, `runtime`, `tools`) | `check_manifests.py`, `string_slice_pending.json` |
@@ -1352,15 +1374,15 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | Gate | Enforces | Baseline |
 |---|---|---|
 | `check_manifests` | folder `x` is crate `yi-x`; workspace version, edition, license, rust-version, lints; deps `{ workspace = true }`; feature allowlist; string_slice roots (§19); `serde`/`serde_derive` only in `yi-types` (§20) | `string_slice_pending.json` |
-| `check_boundaries` | each crate's `yi-*` deps are in its allowlist; unknown crate or stale entry fails | `boundaries.toml` |
+| `check_boundaries` | each crate's `yi-*` deps are in its allowlist, and a `yi-*` dev-dependency past it is in the `[dev]` table; unknown crate, stale entry or stale `[dev]` edge fails | `boundaries.toml` |
 | `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field, no baseline without a reader (D109) | — |
 | `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline modification never shares a commit with code (a deletion rides with the gate that stopped reading it; merge commits exempt) | — |
 | `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, the fork point, `schemas.lock` |
 | `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json` (`binary_size_budget_linux.json` on Linux), `startup_ms_budget.json` |
-| `check_file_size`, `check_fn_size`, `check_crate_size` | a `src/` file ≤ 1,200 lines; a function ≤ 150 lines, counted by braces; per-crate `src/` lines ≤ the fork point's plus `raise: crate <name> +N` | the fork point |
-| `check_duplication` | no 15-line normalized window repeated across production `.rs`, and no 6-line one across `crates/*/src/**/*.md` and shipped `SKILL.md` files, `yi:schema` blocks skipped | — |
-| `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
-| `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/` is declared, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
+| `check_file_size`, `check_fn_size`, `check_crate_size` | a `src/` file ≤ 1,200 production lines (§19), and one past 1,000 may not grow past its fork-point count; a function ≤ 150 lines, counted by braces; per-crate `src/` lines ≤ the fork point's plus `raise: crate <name> +N` | the fork point |
+| `check_duplication` | no 15-line normalized window repeated across production `.rs`, and no 6-line one across `crates/*/src/**/*.md` and shipped `SKILL.md` files, `yi:schema` blocks skipped; in `crates/*/tests` no 15-line window copied more often than at the fork point | the fork point |
+| `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines plus inline `#[cfg(test)]` lines in `src/` ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
+| `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/`, tests, scripts, workflows and the justfile is declared, every declared name is read, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
 | `check_request_budget` | system-prompt and tool-table bytes; tool-surface texts and hashes (D188) | `request_budget.json`, `tool_surface.json` |
 | `check_behavior` | faux-cassette behavior cases: a locked pass never fails (D76) | `behavior_baseline.json` |

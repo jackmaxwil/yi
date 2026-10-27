@@ -605,7 +605,6 @@ impl PlanEngine {
                     root: root_path,
                     output: contracted.product.as_deref().map(str::as_bytes),
                     artifacts: &artifacts,
-                    jury: None,
                 },
             ),
             (None, None) => self.verifier.abstained(
