@@ -92,7 +92,9 @@ pub fn spawn_input(
     use ratatui::crossterm::event as ct_event;
     std::thread::spawn(move || {
         while !stop.load(Ordering::SeqCst) {
-            let event = match ct_event::poll(Duration::from_millis(50)) {
+            // Invariant: each check is an idle wakeup, and 50 ms made twenty a second; quitting
+            // restores the terminal before it joins this thread, so the check is not quit latency.
+            let event = match ct_event::poll(Duration::from_millis(250)) {
                 Ok(false) => continue,
                 Ok(true) => ct_event::read().map(ClientEvent::Input),
                 Err(error) => Err(error),

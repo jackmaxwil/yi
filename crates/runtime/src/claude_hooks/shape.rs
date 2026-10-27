@@ -290,7 +290,8 @@ pub(super) fn after(call: Call, result: &ToolResult, failed: bool) -> (Event, Ca
         Some(code) if call.tool == "bash" => format!("Exit code {code}\n{text}"),
         _ => text,
     };
-    let interrupted = result.details.get("errorKind") == Some(&Value::from("aborted"))
+    let interrupted = yi_types::event::ToolErrorKind::from_details(&result.details)
+        == Some(yi_types::event::ToolErrorKind::Aborted.as_str())
         || flag(&result.details, "cancelled") && !flag(&result.details, "timedOut");
     let call = Call {
         error: Some(error),

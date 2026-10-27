@@ -427,6 +427,16 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
         assert_eq!(run.status.code(), Some(2), "{dir}: {stderr}");
         assert!(stderr.contains("allow-write"), "{stderr}");
     }
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [missing]}}).to_string(),
+    )?;
+    let configured = ask(&workspace, "look", &[])?;
+    assert_eq!(configured.status.code(), Some(2), "{configured:?}");
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [workspace.project()]}}).to_string(),
+    )?;
     let run = ask(
         &workspace,
         "look",
@@ -2835,11 +2845,69 @@ fn turns_script(
     Ok(path.display().to_string())
 }
 
+/// Dies with a headless run that needed an approval nobody could give exiting 0 with the call
+/// unnamed, so a caller could not tell a refusal from an answer. The `permissions.allow` entry
+/// the refusal prints is the remedy, so it is run: the same call, with that entry, goes through.
+#[test]
+fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -> TestResult {
+    let workspace = Workspace::new("headless-denial")?;
+    let command = "touch 'made[1]'";
+    let script = bash_script(&workspace, command, Some("I could not run it."))?;
+    let flags = ["--confirm", "--json", "--faux", &script];
+    let run = ask(&workspace, "go", &flags)?;
+    let (out, err) = (
+        stdout(&run),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
+    );
+    assert_eq!(run.status.code(), Some(4), "{out}{err}");
+    assert!(err.contains(command), "{err}");
+    assert!(!workspace.project().join("made[1]").exists());
+    let last: Value = serde_json::from_str(out.lines().last().ok_or("no output")?)?;
+    assert_eq!(last["type"], "denied", "{out}");
+    assert_eq!(last["tool"], "bash", "{out}");
+    assert_eq!(last["args"]["command"], command, "{out}");
+    let reason = last["reason"].as_str().ok_or("no reason")?;
+    assert!(reason.contains(command), "{reason}");
+
+    let (_, tail) = reason
+        .split_once("permissions.allow entry ")
+        .ok_or(reason)?;
+    let entry: String = serde_json::Deserializer::from_str(tail)
+        .into_iter()
+        .next()
+        .ok_or(tail)??;
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allow": [entry]}}).to_string(),
+    )?;
+    let run = ask(&workspace, "go", &flags)?;
+    assert_eq!(run.status.code(), Some(0), "{}", stdout(&run));
+    assert!(workspace.project().join("made[1]").exists());
+    Ok(())
+}
+
+/// Dies with a mistyped `permissions.allow` entry dropped, so the denial it was written to
+/// prevent came back with no word of why.
+#[test]
+fn an_allow_entry_without_a_pattern_ends_the_run_with_exit_2() -> TestResult {
+    let workspace = Workspace::new("allow-entry")?;
+    write_config(&workspace, r#"{"permissions":{"allow":["bash"]}}"#)?;
+    let run = ask(&workspace, "go", &[])?;
+    let err = String::from_utf8_lossy(&run.stderr).into_owned();
+    assert_eq!(run.status.code(), Some(2), "{err}");
+    assert!(err.contains("permissions.allow"), "{err}");
+    Ok(())
+}
+
 /// Dies with the last word started at `--deadline` and followed 90 s past it: the eval
 /// harness kills `yi ask` at the deadline, so the answer and the lane release were lost.
 #[test]
 fn a_run_past_its_deadline_answers_and_exits_inside_it() -> TestResult {
     let workspace = Workspace::new("deadline-last-word")?;
+    write_config(
+        &workspace,
+        r#"{"permissions":{"allow":["bash sleep 100"]}}"#,
+    )?;
     let script = bash_script(&workspace, "sleep 100", Some("the last word"))?;
     let started = std::time::Instant::now();
     let answered = ask(
