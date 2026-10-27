@@ -61,7 +61,7 @@ impl PermissionBroker {
                 walled.deny_read.extend_from_slice(&wall.deny_read);
                 // A directory swapped for a link since it was kept is judged where it leads.
                 let real = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-                !protected(&walled, &dir) && !protected(&walled, &real)
+                !protected(Some(&walled), &dir) && !protected(Some(&walled), &real)
             });
         }
         wall.is_empty() || !yi_permission::is_exact_command(rule)
@@ -147,26 +147,16 @@ impl PermissionBroker {
         };
         let dir = path.parent().unwrap_or(path);
         let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-        protected(sandbox, &dir).then(|| crate::gate::walled_refusal(path))
+        protected(Some(sandbox), &dir).then(|| crate::gate::walled_refusal(path))
     }
 
-    /// Makes `dir` writable to every contained run, as an "always" on a widened retry would;
-    /// refused where that retry is, a credential store or the session ledger. No sandbox, no-op.
+    /// Makes `dir` writable to every contained run, as an "always" on a widened retry would, but
+    /// never journaled (it runs before the session store attaches): `--continue` names it again.
     pub fn grant_write(&self, dir: &Path) -> Result<(), String> {
         let real = dir
             .canonicalize()
             .map_err(|error| format!("{}: {error}", dir.display()))?;
-        let sandbox = self.sandbox.clone().unwrap_or_else(|| {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            let mut sandbox = yi_tools::Sandbox::for_workspace(&self.cwd, &home, None);
-            sandbox
-                .host_owned
-                .extend(self.context.host_owned.iter().cloned());
-            sandbox
-        });
-        if protected(&sandbox, &real) {
+        if protected(self.sandbox.as_ref(), &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
@@ -185,7 +175,7 @@ impl PermissionBroker {
         Ok(())
     }
 
-    /// The session stores: `~/.yi/sessions` and the `--session-dir` in use.
+    /// The session store in use, when `--session-dir` moved it from `~/.yi/sessions`.
     pub fn session_stores(&self) -> &[PathBuf] {
         &self.context.host_owned
     }
@@ -224,7 +214,9 @@ impl PermissionBroker {
                 .find(|rule| rule.kind == kind && rule.canonical == canonical)
                 .cloned()
         };
-        if let (Some(rule), Some(journal)) = (kept, self.rule_journal.get()) {
+        if let Some(rule) = kept
+            && let Some(journal) = self.rule_journal.get()
+        {
             journal(rule);
         }
     }
