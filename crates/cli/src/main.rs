@@ -119,7 +119,7 @@ fn build_session(
     asker: Option<yi_runtime::Asker>,
     session_id: Option<&str>,
     prompts_close: bool,
-    unattended: bool,
+    [unattended, exits_idle]: [bool; 2],
 ) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), Refused> {
     // Invariant: the first statement here, so no lever is read on both sides of the
     // override and a refused file stops the run before the session, and any model call.
@@ -322,7 +322,7 @@ fn build_session(
                 .as_ref()
                 .and_then(|plan| plan.stale_reminder_turns),
             plans_dir: configured_plans_dir(&work),
-            auto_background: configured_auto_background(),
+            auto_background: configured_auto_background(exits_idle),
             deadline: args.deadline.map(std::time::Duration::from_secs),
             // A cold venv installs from PyPI; a scripted run boots it at its first cell.
             kernel_prewarm: !faux
@@ -874,7 +874,7 @@ fn run_rpc(args: &Args) -> i32 {
     };
     let session = {
         let _guard = runtime.enter();
-        match build_session(args, None, None, false, false) {
+        match build_session(args, None, None, false, [false; 2]) {
             Ok((session, _host)) => session,
             Err(refused) => return exit_refused(refused),
         }
@@ -900,7 +900,7 @@ fn run_acp(args: &Args) -> i32 {
         let runtime_handle = runtime.handle().clone();
         std::sync::Arc::new(move |asker, session| {
             let _guard = runtime_handle.enter();
-            build_session(&build_args, asker, session, false, false)
+            build_session(&build_args, asker, session, false, [false; 2])
                 .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
         })
     };
