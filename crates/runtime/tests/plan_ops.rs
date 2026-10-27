@@ -63,7 +63,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Map;
-use yi_runtime::plan::journal::JournalError;
+use yi_runtime::journal::JournalError;
 use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, OutputResolve, PlanEngine, PlanOpError, SetRow,
     TodoSpec, dispatch_width,
@@ -2137,9 +2137,9 @@ mod contracts {
     use serde_json::{Value, json};
     use yi_kernel::client::HostHandlers;
     use yi_runtime::HostRegistry;
+    use yi_runtime::journal::{Journal, RealFs};
     use yi_runtime::plan::authority::{Confirmer, Submission, SubmitError, submit};
     use yi_runtime::plan::capacity::{Capacity, Purpose};
-    use yi_runtime::plan::journal::{Journal, RealFs};
     use yi_runtime::plan::tool::PlanTool;
     use yi_runtime::plan::verify::Verifier;
     use yi_runtime::subagent::DEFAULT_MAX_CHILDREN;
