@@ -5,7 +5,7 @@ commit, and the ratchet then hid 865,664 bytes of growth across 20 PRs because
 nothing checked the baseline itself. The 9 MiB cap below is checked independently of
 the baseline so the baseline can never be edited past it, and the cap itself moves only
 with a `decision:` line: it went 7, 8, 9 MiB, each time the baseline reached it."""
-import json, platform, re, sys, pathlib
+import json, os, platform, re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import BASE, DIST_BIN, ROOT, fail, fork, no_fork, scratch_repo
 import check_changes
@@ -138,7 +138,11 @@ def main(argv):
     path, cap = baseline()
     budget = json.loads(path.read_text())["max_bytes"]
     errs += problems(size, budget, hard_cap=cap, name=path.name)
-    errs += leaks(DIST_BIN.read_bytes(), [str(ROOT)])
+    home = pathlib.Path.home()
+    cargo = pathlib.Path(os.environ.get("CARGO_HOME") or home / ".cargo")
+    rustup = pathlib.Path(os.environ.get("RUSTUP_HOME") or home / ".rustup")
+    roots = [str(p) for r in (ROOT, cargo / "registry" / "src", rustup / "toolchains") for p in (r, r.resolve())]
+    errs += leaks(DIST_BIN.read_bytes(), roots)
     fail(errs, f"binary_size ({size} bytes; {path.name} {budget} + {JITTER}, cap {cap})")
     return 0
 

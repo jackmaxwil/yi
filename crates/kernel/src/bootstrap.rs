@@ -240,7 +240,7 @@ pub fn python_root() -> PathBuf {
     resolve_python_root(
         std::env::current_exe().ok().as_deref(),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-        PathBuf::from("python"),
+        PathBuf::from("/nonexistent/yi/python"),
     )
 }
 
