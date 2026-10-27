@@ -1,5 +1,8 @@
 use std::path::Path;
 
+use crate::process::spill_path;
+use crate::tool::cut_row;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reduced {
     pub text: String,
@@ -15,7 +18,7 @@ const GREP_LINES: usize = 60;
 const DIAGNOSTIC_LOOKAHEAD: usize = 3;
 const WARNINGS_SHOWN: usize = 3;
 const ERROR_BYTES: usize = 16 * 1024;
-const SPILL_READ_LIMIT: u64 = 4 * 1024 * 1024;
+const SPILL_READ_LIMIT: usize = 4 * 1024 * 1024;
 /// Lines kept around each error or failure the head and tail would drop: a Python traceback
 /// names its file three lines above the error.
 const SIGNAL_CONTEXT: usize = 3;
@@ -27,7 +30,32 @@ const GREP_PER_FILE: usize = 3;
 pub const REDUCE_FLOOR: usize = 8_192;
 
 /// The user asked for the whole thing; reducing answers a different question.
-const RAW_FLAGS: [&str; 6] = ["-v", "--verbose", "--nocapture", "--porcelain", "-la", "-C"];
+fn skip_reduction(command: &str) -> bool {
+    yi_permission::command_segments(command)
+        .iter()
+        .any(|segment| {
+            let words: Vec<&str> = segment.iter().map(String::as_str).collect();
+            let has = |flags: &[&str]| words.iter().any(|word| flags.contains(word));
+            let Some((at, program)) = program(words.iter().copied()) else {
+                return false;
+            };
+            const TEST_RAW: [&str; 3] = ["-v", "--verbose", "--nocapture"];
+            match program {
+                "git" => has(&["--porcelain"]),
+                "ls" => has(&["-la"]),
+                "go" => words.get(at.saturating_add(1)) == Some(&"test") && has(&TEST_RAW),
+                "cargo" | "pytest" | "py.test" | "nextest" | "jest" | "vitest" => has(&TEST_RAW),
+                "python" | "python3"
+                    if words
+                        .windows(2)
+                        .any(|pair| pair == ["-m", "pytest"] || pair == ["-m", "unittest"]) =>
+                {
+                    has(&TEST_RAW)
+                }
+                _ => false,
+            }
+        })
+}
 
 /// Every path runs through [`never_worse`]; a lossy result points at `kept` (a cut capture's
 /// spill) or at a tee under `tee_dir`. `max_lines` moves the line caps, never the byte ceiling.
@@ -51,9 +79,8 @@ pub fn reduce(
             select(command, source, exit_code, budget, max_lines, numbering),
         )
     };
-    let spilled = kept.and_then(read_spill);
-    let from_spill = spilled
-        .as_deref()
+    let mut spill = kept.map(read_spill);
+    let from_spill = (spill.as_ref().and_then(|read| read.as_deref().ok()))
         .map(|spill| (select(spill, Numbering::File), spill.len()))
         .filter(|(text, _)| text.len() < raw.len());
     let numbering = match kept {
@@ -61,19 +88,22 @@ pub fn reduce(
         None => Numbering::File,
     };
     let (text, raw_bytes) = from_spill.unwrap_or_else(|| (select(&raw, numbering), raw.len()));
+    let (text, clipped) = clip_lines(text);
     let out_bytes = text.len();
-    let recovery = if out_bytes < raw_bytes {
+    let lossy = out_bytes < raw_bytes || clipped;
+    let recovery = if lossy {
         (kept.map(str::to_owned)).or_else(|| tee_dir.and_then(|dir| tee(dir, &raw)))
     } else {
         None
     };
     // Output that is lossy with nowhere to recover from is worse than unreduced.
-    if out_bytes < raw_bytes && recovery.is_none() {
+    if lossy && recovery.is_none() {
         return whole(raw);
     }
-    let text = match &recovery {
-        Some(note) => format!("{text}\n{note}"),
-        None => text,
+    let text = match (&recovery, spill.take().and_then(Result::err).flatten()) {
+        (Some(note), Some(row)) => format!("{row}\n{text}\n{note}"),
+        (Some(note), None) => format!("{text}\n{note}"),
+        (None, _) => text,
     };
     Reduced {
         out_bytes: text.len(),
@@ -92,12 +122,179 @@ fn whole(raw: String) -> Reduced {
     }
 }
 
-/// The spill a cut capture names, read whole when small enough that its line numbers can be named.
-fn read_spill(kept: &str) -> Option<String> {
-    let (_, path) = crate::process::spill_path(kept)?;
-    let small = std::fs::metadata(path).ok()?.len() <= SPILL_READ_LIMIT;
-    let bytes = small.then(|| std::fs::read(path).ok()).flatten()?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+/// The spill a cut capture names, read whole when small enough that its line numbers can be
+/// named; one past [`SPILL_READ_LIMIT`] gives the row that says so.
+fn read_spill(kept: &str) -> Result<String, Option<String>> {
+    let (_, path) = spill_path(kept).ok_or(None)?;
+    let size = std::fs::metadata(path).map_err(|_| None)?.len();
+    let size = usize::try_from(size).unwrap_or(usize::MAX);
+    if size > SPILL_READ_LIMIT {
+        let what = "bytes of it read, so omitted-line numbers count the cut capture";
+        let next = format!("read {path} with offset and limit");
+        let row = cut_row(0, size, what, "SPILL_READ_LIMIT", SPILL_READ_LIMIT, &next);
+        return Err(Some(row));
+    }
+    let bytes = std::fs::read(path).map_err(|_| None)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The closed list of output the model did not choose to read whole: a bash command's (a job's
+/// report and poll body, a host-run check's tail), a cell traceback, `%%bash` and `!cmd` output.
+#[derive(Debug, Clone, Copy)]
+pub enum Involuntary<'a> {
+    Job(&'a str),
+    Traceback,
+    ShellCell(&'a str),
+}
+
+pub const VIEW_CEILING: usize = ERROR_BYTES;
+const LINE_CLIP: usize = 512;
+const LAST_TRACEBACK: &str = "import sys, traceback; traceback.print_exception(sys.last_value)";
+
+pub fn rerun(how: &str, command: &str, log: &str) -> String {
+    let command = command.trim_end();
+    let first = command.lines().next().unwrap_or_default();
+    match crate::tool::clip(first, LINE_CLIP) {
+        (line, false) if !command.contains('\n') => {
+            format!("{how} ({line}) > {log} 2>&1, then read {log}")
+        }
+        (line, _) => format!(
+            "{how} the command that began {line}, its output sent to {log}, then read {log}"
+        ),
+    }
+}
+
+pub fn view(
+    producer: Involuntary<'_>,
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+    kept: Option<&str>,
+    tee_dir: Option<&Path>,
+) -> Reduced {
+    view_inner(producer, stdout, stderr, exit_code, kept, tee_dir, None)
+}
+
+pub(crate) fn view_running(
+    command: &str,
+    output: &str,
+    total: usize,
+    tee_dir: Option<&Path>,
+) -> Reduced {
+    view_inner(
+        Involuntary::Job(command),
+        output,
+        "",
+        -1,
+        None,
+        tee_dir,
+        Some(total),
+    )
+}
+
+fn view_inner(
+    producer: Involuntary<'_>,
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+    kept: Option<&str>,
+    tee_dir: Option<&Path>,
+    produced: Option<usize>,
+) -> Reduced {
+    use Involuntary::{Job, ShellCell, Traceback};
+    let command = match producer {
+        Job(command) | ShellCell(command) => command,
+        Traceback => "",
+    };
+    let mut reduced = reduce(command, stdout, stderr, exit_code, kept, tee_dir, None);
+    reduced.raw_bytes = produced.unwrap_or(reduced.raw_bytes);
+    let raw = join_streams(stdout, stderr);
+    let room = |pointer: Option<&str>| {
+        VIEW_CEILING.saturating_sub(pointer.map_or(0, |note| note.len().saturating_add(1)))
+    };
+    let body = (reduced.recovery.as_deref())
+        .and_then(|note| reduced.text.strip_suffix(note)?.strip_suffix('\n'))
+        .unwrap_or(&reduced.text);
+    if body.len() <= room(reduced.recovery.as_deref()) {
+        return reduced;
+    }
+    let pointer = (reduced.recovery.clone())
+        .or_else(|| kept.map(str::to_owned))
+        .or_else(|| tee_dir.and_then(|dir| tee(dir, &raw)));
+    let next = match (pointer.as_deref(), producer) {
+        (Some(note), _) => format!("read {}", spill_path(note).map_or(note, |(_, path)| path)),
+        (None, Traceback) => format!(
+            "an ipython cell running {LAST_TRACEBACK}, which prints this exception again in Python's own format"
+        ),
+        (None, ShellCell(command)) => rerun("a %%bash cell running", command, "view.log"),
+        (None, Job(command)) => rerun("bash", command, "view.log"),
+    };
+    let cut_text = ceiling(body, reduced.raw_bytes, room(pointer.as_deref()), &next);
+    // Incident: with no file to name, this middle cut swallowed the kernel's own cut row.
+    let swallowed = (raw.lines()).filter(|line| line.starts_with("[\u{2026} "));
+    let kernel = matches!(producer, ShellCell(_)) && pointer.is_none();
+    let swallowed = swallowed.filter(|row| kernel && !cut_text.contains(*row));
+    let mut text = std::iter::once(cut_text.as_str())
+        .chain(swallowed)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Some(note) = &pointer {
+        text = format!("{text}\n{note}");
+    }
+    Reduced {
+        out_bytes: text.len(),
+        text,
+        raw_bytes: reduced.raw_bytes,
+        recovery: pointer,
+    }
+}
+
+fn clip_lines(text: String) -> (String, bool) {
+    let (mut lines, mut first, mut shown, mut long) = (Vec::new(), None, 0_usize, 0_usize);
+    for line in text.lines() {
+        let (clipped, cut) = crate::tool::clip(line, LINE_CLIP);
+        if cut {
+            first = first.or(Some(lines.len()));
+            shown = shown.saturating_add(LINE_CLIP);
+            long = long.saturating_add(line.chars().count());
+        }
+        lines.push(clipped);
+    }
+    let Some(at) = first else {
+        return (text, false);
+    };
+    let (what, next) = (
+        "chars kept on the clipped lines",
+        "read the full output named below",
+    );
+    lines.insert(
+        at.saturating_add(1),
+        cut_row(shown, long, what, "LINE_CLIP", LINE_CLIP, next),
+    );
+    (lines.join("\n"), true)
+}
+
+/// Two thirds of `room` from the head and the rest from the tail, where a verdict sits, each end
+/// on a line boundary when one is in reach; the row between counts against `room`.
+fn ceiling(text: &str, total: usize, room: usize, next: &str) -> String {
+    let what = "bytes kept";
+    let row = |kept| cut_row(kept, total, what, "VIEW_CEILING", VIEW_CEILING, next);
+    let budget = room.saturating_sub(row(total).len().saturating_add(2));
+    let head_end = text.floor_char_boundary(budget.saturating_mul(2) / 3);
+    let head = text.get(..head_end).unwrap_or_default();
+    let head = (head.rfind('\n').and_then(|at| head.get(..at))).unwrap_or(head);
+    let tail_from = text.len().saturating_sub(budget.saturating_sub(head_end));
+    let tail = text
+        .get(text.ceil_char_boundary(tail_from)..)
+        .unwrap_or_default();
+    let tail = (tail
+        .find('\n')
+        .and_then(|at| tail.get(at.saturating_add(1)..)))
+    .unwrap_or(tail);
+    format!(
+        "{head}\n{}\n{tail}",
+        row(head.len().saturating_add(tail.len()))
+    )
 }
 
 /// Which text an omitted-lines notice counts: the file the pointer names, or the cut capture.
@@ -154,7 +351,7 @@ fn select(
         return diagnostics(&stripped, budget, numbering);
     }
     let rows = compress(&stripped, 0);
-    match program(command) {
+    match program(command.split_whitespace()).map(|(_, program)| program) {
         Some("cargo") => cargo(&rows, exit_code, budget, numbering),
         Some("grep" | "rg" | "ag") => {
             let rows = per_file(&rows, numbering);
@@ -182,17 +379,12 @@ fn join_streams(stdout: &str, stderr: &str) -> String {
     }
 }
 
-fn skip_reduction(command: &str) -> bool {
-    command
-        .split_whitespace()
-        .any(|word| RAW_FLAGS.contains(&word))
-}
-
-fn program(command: &str) -> Option<&str> {
-    command
-        .split_whitespace()
-        .find(|word| !word.contains('='))
-        .map(|word| word.rsplit('/').next().unwrap_or(word))
+fn program<'a>(words: impl IntoIterator<Item = &'a str>) -> Option<(usize, &'a str)> {
+    words
+        .into_iter()
+        .enumerate()
+        .find(|(_, word)| !word.contains('='))
+        .map(|(at, word)| (at, word.rsplit('/').next().unwrap_or(word)))
 }
 
 /// A green cargo run is a progress log with one line that matters; a red one

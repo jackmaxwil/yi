@@ -459,9 +459,8 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
     wire_last_word(&mut config, &shared);
     let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut emit = emit_event(&shared, &failed);
-    if cfg!(debug_assertions)
-        && let Some(errored) = first_system_prompt_broken(&shared, &context.system_prompt, &model)
-    {
+    #[cfg(debug_assertions)]
+    if let Some(errored) = first_system_prompt_broken(&shared, &context.system_prompt, &model) {
         failed_turn(&shared, prompt, errored, &mut emit);
         return false;
     }
@@ -539,6 +538,7 @@ fn emit_event(
         if let Some(telemetry) = shared.telemetry.lock().ok().and_then(|slot| slot.clone()) {
             telemetry.on_event(&event);
         }
+        crate::environment::GitSummary::note_event(&shared.tree_generation, &event);
         let _ = shared.events.send(event);
     }
 }
@@ -546,6 +546,7 @@ fn emit_event(
 /// D310: the first request's bytes are the conversation's. In a debug build a later turn whose
 /// bytes differ ends before any request with this errored reply, fast and loud, and the
 /// session still settles idle; a release build rests on `ext::Host::frozen` alone.
+#[cfg(debug_assertions)]
 fn first_system_prompt_broken(
     shared: &Shared,
     system: &str,
@@ -570,6 +571,7 @@ fn first_system_prompt_broken(
 
 /// Ends a turn before any request with `errored` as its reply, through the events a run emits,
 /// so the transcript, the store and every front end see the same failed turn.
+#[cfg(debug_assertions)]
 fn failed_turn(
     shared: &Shared,
     prompt: AgentMessage,
@@ -625,7 +627,7 @@ fn wire_last_word(config: &mut LoopConfig, shared: &Arc<Shared>) {
     let capped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let capped_word = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (turns, cap_hit) = (std::sync::atomic::AtomicU32::new(0), Arc::clone(&capped));
-    let cap = shared.turn_cap.get().copied();
+    let cap = shared.turn_cap.lock().ok().and_then(|cap| *cap);
     config.should_stop_after_turn = Some(Box::new(move |_| {
         let taken = turns
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)

@@ -29,7 +29,7 @@ pub(super) fn path_of_patch(patch: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn replayed_updates(message: &AgentMessage) -> Vec<AcpSessionUpdate> {
+pub(super) fn replayed_updates(message: &AgentMessage) -> Vec<AcpSessionUpdate> {
     match message {
         AgentMessage::Assistant { content, .. } => content
             .iter()
@@ -87,6 +87,14 @@ fn is_side(content: &PaneContent, session: &SessionId) -> bool {
 }
 
 impl App {
+    /// Invariant: every write to a session's diff comes through here, so its revision is what
+    /// tells a drawn Review its rows went stale.
+    pub(super) fn diff_mut(&mut self, session: &SessionId) -> &mut crate::model::SessionDiff {
+        let diff = self.state.diffs.entry(session.clone()).or_default();
+        diff.rev = diff.rev.wrapping_add(1);
+        diff
+    }
+
     pub(super) fn absorb_edit(
         &mut self,
         outbound: &Outbound,
@@ -125,11 +133,7 @@ impl App {
             turn: replayed
                 .unwrap_or_else(|| self.state.diffs.get(session).map_or(0, |diff| diff.turn)),
         };
-        self.state
-            .diffs
-            .entry(session.clone())
-            .or_default()
-            .insert(path.clone(), file);
+        self.diff_mut(session).insert(path.clone(), file);
         self.editors_touched(Some(&path));
         Some(path)
     }
@@ -180,8 +184,8 @@ impl App {
                 self.fill_notebook(session, &update);
             }
         }
-        if let Some(diff) = self.state.diffs.get_mut(session) {
-            diff.turn = turn;
+        if self.state.diffs.contains_key(session) {
+            self.diff_mut(session).turn = turn;
         }
         if !edited.is_empty() {
             self.track(outbound, session, edited.into_iter().collect(), false);
@@ -197,7 +201,8 @@ impl App {
     ) {
         let flags = result.get("tracked").and_then(Value::as_array);
         let mut any = false;
-        if let Some(diff) = self.state.diffs.get_mut(session) {
+        if self.state.diffs.contains_key(session) {
+            let diff = self.diff_mut(session);
             for (index, path) in paths.iter().enumerate() {
                 let tracked = flags
                     .and_then(|flags| flags.get(index))
@@ -349,18 +354,31 @@ impl App {
         self.split_with_anim(Direction::Horizontal);
         let opened = self.state.focused_pane_id().filter(|id| *id != home);
         if let Some(pane) = self.state.focused_pane_mut() {
-            pane.content = match (kind, session) {
-                (SideKind::Diff, Some(session)) => PaneContent::SessionDiff {
-                    session,
-                    scope: crate::model::ReviewScope::default(),
-                },
-                (_, session) => PaneContent::Notebook {
-                    session,
-                    full: false,
-                    drawn: None,
-                },
+            (pane.content, pane.scroll_from_bottom) = match (kind, session) {
+                (SideKind::Diff, Some(session)) => {
+                    let scope = crate::model::ReviewScope::default();
+                    let drawn = None;
+                    (
+                        PaneContent::SessionDiff {
+                            session,
+                            scope,
+                            drawn,
+                        },
+                        crate::panes::TOP,
+                    )
+                }
+                (_, session) => {
+                    let (full, drawn) = (false, None);
+                    (
+                        PaneContent::Notebook {
+                            session,
+                            full,
+                            drawn,
+                        },
+                        0,
+                    )
+                }
             };
-            pane.scroll_from_bottom = 0;
         }
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(home);

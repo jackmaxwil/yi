@@ -754,7 +754,7 @@ fn yi_event_stream_is_lossless_for_a_faux_turn() -> TestResult {
         app.reduce_agent(event);
     }
     assert!(!app.is_running(), "solo's reducer must see the turn end");
-    assert!(app.has_run(), "solo's reducer must see the turn start");
+    assert!(app.turn_idle(), "solo's reducer must see the turn start");
     let text: String = app
         .reflowed(200)
         .iter()
@@ -886,6 +886,81 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
     assert_eq!(
         after[0]["params"]["update"]["leafId"], response["result"]["leafId"],
         "the replay after a rewind names the same leaf the result does"
+    );
+    client.finish()
+}
+
+/// Dies with the history replaced under a turn: a `_yi/rewind` without `files` reached the
+/// session while its bash call ran, and only the `files` form answered `still running`. The
+/// bash ask may land before a reply (no sandbox off macOS), so each reply is read allowing it.
+#[test]
+fn a_rewind_is_refused_while_a_turn_runs_a_tool() -> TestResult {
+    let dir = temp_dir("rewind-running")?;
+    let go = dir.join("go");
+    let wait = format!(
+        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
+        go.display()
+    );
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"text": "first answer"}),
+            json!({"tool": "bash", "args": {"command": wait}}),
+            json!({"text": "done"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    prompt(
+        &mut client,
+        "first",
+        &session_id,
+        json!([{"type": "text", "text": "first turn"}]),
+    )?;
+    let first = read_allowing(&mut client, is_idle)?;
+    let asked = committed(&first)?
+        .first()
+        .map(|entry| entry.id().to_owned())
+        .ok_or("no committed entry")?;
+    prompt(
+        &mut client,
+        "second",
+        &session_id,
+        json!([{"type": "text", "text": "wait for it"}]),
+    )?;
+    read_allowing(&mut client, |frame| {
+        frame["params"]["update"]["sessionUpdate"] == "tool_call_update"
+            && frame["params"]["update"]["status"] == "in_progress"
+    })?;
+
+    for (id, files) in [("plain", false), ("files", true)] {
+        let params = json!({"sessionId": session_id, "entryId": asked, "files": files});
+        client
+            .send(&json!({"jsonrpc": "2.0", "id": id, "method": "_yi/rewind", "params": params}))?;
+        let frames = read_allowing(&mut client, |frame| {
+            frame["id"] == id && frame.get("method").is_none()
+        })?;
+        let answer = frames.last().ok_or("no rewind response")?;
+        assert_eq!(answer["error"]["code"], -32602, "{id}: {answer}");
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("still running")),
+            "{id}: {answer}"
+        );
+    }
+
+    std::fs::write(&go, "")?;
+    read_allowing(&mut client, is_idle)?;
+    let rewound = client.request(
+        "after",
+        "_yi/rewind",
+        json!({"sessionId": session_id, "entryId": asked}),
+    )?;
+    let answer = rewound.last().ok_or("no rewind response")?;
+    assert_eq!(
+        answer["result"]["unsent"], "first turn",
+        "the turn ended, so the rewind lands: {answer}"
     );
     client.finish()
 }
@@ -1793,6 +1868,77 @@ fn a_committed_answer_forks_into_a_session_that_ends_at_it() -> TestResult {
     Ok(())
 }
 
+fn attached(client: &mut AcpClient, id: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let listed = client.request(id, "session/list", json!({}))?;
+    let sessions = listed
+        .last()
+        .map(|frame| frame["result"]["sessions"].clone());
+    Ok((sessions
+        .as_ref()
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten())
+    .filter(|session| session["_meta"]["yi"]["attached"] == true)
+    .filter_map(|session| session["sessionId"].as_str().map(str::to_owned))
+    .collect())
+}
+
+/// Incident: a worker dropped a session only on `session/close`, which no client sends, so a
+/// daemon kept every session it ever opened; the ninth idle one now evicts the idlest.
+#[test]
+fn a_worker_keeps_eight_idle_sessions_and_reloads_the_one_it_evicted() -> TestResult {
+    let dir = temp_dir("resident")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let mut ids = Vec::new();
+    for n in 0..9 {
+        ids.push(new_idle_session(&mut client, &dir, n)?);
+        let loaded = attached(&mut client, &format!("list-{n}"))?;
+        let first_kept = loaded.contains(&ids[0]);
+        assert_eq!(
+            (loaded.len(), first_kept),
+            (ids.len().min(8), n < 8),
+            "after {} sessions: {loaded:?}",
+            ids.len()
+        );
+    }
+    let frames = prompt_until_idle(&mut client, "again", &ids[0], "still there?")?;
+    assert!(
+        !updates_of(&frames, "agent_message_chunk").is_empty(),
+        "the evicted session answered nothing: {frames:?}"
+    );
+    let loaded = attached(&mut client, "list-again")?;
+    assert!(
+        loaded.contains(&ids[0]) && !loaded.contains(&ids[1]),
+        "{loaded:?}"
+    );
+    client.finish()
+}
+
+/// Incident: closing a session the worker had unloaded started loading it again, so the close
+/// answered Ok and the session it closed was back in memory a moment later.
+#[test]
+fn closing_an_evicted_session_does_not_load_it_again() -> TestResult {
+    let dir = temp_dir("resident-close")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let mut ids = Vec::new();
+    for n in 0..9 {
+        ids.push(new_idle_session(&mut client, &dir, n)?);
+    }
+    assert!(!attached(&mut client, "list")?.contains(&ids[0]));
+    let closed = client.request("close", "session/close", json!({"sessionId": ids[0]}))?;
+    let reply = closed.last().ok_or("no reply")?;
+    assert!(reply.get("error").is_none(), "{reply}");
+    let cancel = client.request("cancel", "session/cancel", json!({"sessionId": ids[0]}))?;
+    let after = cancel.last().ok_or("no reply")?;
+    assert!(
+        after.get("error").is_some() && !attached(&mut client, "list-after")?.contains(&ids[0]),
+        "the closed session was loaded again: {after}"
+    );
+    client.finish()
+}
+
 /// The review pane asks `_yi/why` for each hunk it shows; a router that lost the method
 /// refused every chain with METHOD_NOT_FOUND while its handler sat one call away.
 #[test]
@@ -2022,6 +2168,164 @@ fn a_dropped_prompt_block_and_unread_mcp_servers_are_named() -> TestResult {
     client.finish()
 }
 
+fn new_idle_session(
+    client: &mut AcpClient,
+    dir: &std::path::Path,
+    n: usize,
+) -> Result<String, Box<dyn Error>> {
+    let new = client.request(
+        &format!("new-{n}"),
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    let id = (new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str()))
+    .ok_or("missing sessionId")?
+    .to_owned();
+    prompt_until_idle(client, &format!("prompt-{n}"), &id, "hello")?;
+    Ok(id)
+}
+
+/// Incident: the cap judged a session by its prompts alone, so one with a steer queued for its
+/// next turn was the idlest and its queued message went with it.
+#[test]
+fn a_session_with_a_steer_queued_is_not_the_one_unloaded() -> TestResult {
+    let dir = temp_dir("resident-steer")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let first = new_idle_session(&mut client, &dir, 0)?;
+    client.request(
+        "steer",
+        "_yi/steer",
+        json!({"sessionId": first, "text": "when you next run"}),
+    )?;
+    let mut second = String::new();
+    for n in 1..9 {
+        let id = new_idle_session(&mut client, &dir, n)?;
+        if n == 1 {
+            second = id;
+        }
+    }
+    let loaded = attached(&mut client, "list")?;
+    assert!(
+        loaded.contains(&first) && !loaded.contains(&second),
+        "the session holding a queued steer was unloaded instead of the idlest free one: {loaded:?}"
+    );
+    client.finish()
+}
+
+/// Incident: idle order was set by the last prompt alone, so a session whose own heartbeat turn
+/// had just ended still looked the idlest and was unloaded.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_session_whose_turn_just_ended_is_not_the_idlest() -> TestResult {
+    let dir = temp_dir("resident-turn-end")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let mut ids = Vec::new();
+    for n in 0..8 {
+        ids.push(new_idle_session(&mut client, &dir, n)?);
+    }
+    client.request(
+        "beat",
+        "_yi/heartbeat",
+        json!({"sessionId": ids[0], "command": "--every 10s say hi"}),
+    )?;
+    let mut ended = false;
+    for poll in 0..300 {
+        let frames = client.request(&format!("poll-{poll}"), "session/list", json!({}))?;
+        ended = updates_of(&frames, "state_update").iter().any(|frame| {
+            frame["params"]["sessionId"] == ids[0] && frame["params"]["update"]["state"] == "idle"
+        });
+        if ended {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(ended, "the heartbeat never ran a turn on {}", ids[0]);
+    client.request(
+        "clear",
+        "_yi/heartbeat",
+        json!({"sessionId": ids[0], "command": "clear"}),
+    )?;
+    new_idle_session(&mut client, &dir, 8)?;
+    let loaded = attached(&mut client, "list")?;
+    assert!(
+        loaded.contains(&ids[0]) && !loaded.contains(&ids[1]),
+        "{loaded:?}"
+    );
+    client.finish()
+}
+
+/// A letter to a session the worker unloaded while idle still reaches it: the mailbox's due job
+/// finds no lane, the worker loads the session again, and its subscription delivers.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_letter_to_an_evicted_session_loads_it_and_reads_the_letter() -> TestResult {
+    let dir = temp_dir("resident-mail")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let mut ids = Vec::new();
+    for n in 0..9 {
+        ids.push(new_idle_session(&mut client, &dir, n)?);
+    }
+    let (asleep, sender) = (ids[0].clone(), ids[8].clone());
+    assert!(!attached(&mut client, "list")?.contains(&asleep));
+    let code = format!("await rlm.send(\"history://{asleep}\", \"ping\")");
+    client.request(
+        "send",
+        "_yi/kernel_execute",
+        json!({"sessionId": sender, "code": code}),
+    )?;
+    let meta = dir.join(format!("sessions/channels/mail-{asleep}.json"));
+    let acked = || -> Option<u64> {
+        let meta: Value = serde_json::from_str(&std::fs::read_to_string(&meta).ok()?).ok()?;
+        meta["acks"]
+            .as_object()?
+            .values()
+            .filter_map(Value::as_u64)
+            .max()
+    };
+    let mut woke = false;
+    for poll in 0..150 {
+        if attached(&mut client, &format!("poll-{poll}"))?.contains(&asleep)
+            && acked().is_some_and(|offset| offset > 0)
+        {
+            woke = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(
+        woke,
+        "the evicted session was not loaded and its letter not read within 30 s"
+    );
+    client.finish()
+}
+
+/// Incident: a delete arriving while the session's build was in flight returned Ok, and the
+/// build then landed and loaded the deleted session back into memory.
+#[test]
+fn deleting_a_session_while_it_loads_does_not_load_it() -> TestResult {
+    let dir = temp_dir("resident-delete")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let id = new_idle_session(&mut client, &dir, 0)?;
+    client.request("close", "session/close", json!({"sessionId": id}))?;
+    client.request("resume", "session/resume", json!({"sessionId": id}))?;
+    let deleted = client.request("delete", "session/delete", json!({"sessionId": id}))?;
+    let reply = deleted.last().ok_or("no reply")?;
+    assert!(reply.get("error").is_none(), "{reply}");
+    let cancel = client.request("cancel", "session/cancel", json!({"sessionId": id}))?;
+    let after = cancel.last().ok_or("no reply")?;
+    assert!(
+        after.get("error").is_some() && !attached(&mut client, "list")?.contains(&id),
+        "the deleted session was loaded again: {after}"
+    );
+    client.finish()
+}
+
 /// The committed entry is found by walking back from the leaf to the message it holds, so a
 /// long branch still names the entry the turn just saved, not an older one.
 #[test]
@@ -2081,5 +2385,34 @@ fn a_five_thousand_message_session_names_each_committed_entry() -> TestResult {
         saved[saved.len() - 2..],
         "the turn's prompt and reply, the newest two messages saved"
     );
+    Ok(())
+}
+
+/// No client cancels a user cell by call id (`Yi.close` waits instead), so a worker answers
+/// the method like any name it does not know.
+#[test]
+fn a_kernel_cancel_frame_is_an_unknown_method() -> TestResult {
+    let dir = temp_dir("kernel-cancel")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let new = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    let session_id = new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .ok_or("missing sessionId")?
+        .to_owned();
+    let params = json!({"sessionId": session_id, "callId": "user-1"});
+    let refused = client.request("3", "_yi/kernel_cancel", params)?;
+    let refused = refused.last().ok_or("no response")?;
+    assert_eq!(refused["error"]["code"], -32601, "{refused}");
+    assert_eq!(
+        refused["error"]["message"], "unknown method _yi/kernel_cancel",
+        "{refused}"
+    );
+    client.finish()?;
     Ok(())
 }

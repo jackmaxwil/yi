@@ -9,6 +9,7 @@ pub mod avatar;
 pub mod browser;
 mod chrome;
 pub mod client;
+mod editor_view;
 mod header;
 pub mod keys;
 pub mod kitty;
@@ -47,7 +48,7 @@ use yi_tui::term::ControlPictures;
 use crate::app::{App, MouseKind};
 use crate::client::{ClientEvent, Outbound};
 use crate::layout::PaneId;
-use crate::model::{Link, SessionId, SessionStatus};
+use crate::model::{Link, SessionStatus};
 
 pub use title::{TitleOptions, UnknownScene};
 use title::{title_playing, title_tick};
@@ -63,6 +64,7 @@ pub struct ConsoleOptions {
     pub pace: u16,
     pub browser: Option<PathBuf>,
     pub chrome_pin: Option<crate::browser::Pinned>,
+    pub home: Option<String>,
 }
 
 pub struct DriveOptions {
@@ -237,25 +239,21 @@ fn draw<B: Backend>(
         app.state.browser_placed.clear();
     }
     let _span = yi_types::trace::span("console.draw");
+    let scroll = |app: &App| {
+        let drag = app.selection.as_ref()?;
+        Some(app.state.panes.get(&drag.pane)?.scroll_from_bottom)
+    };
     terminal.draw(|frame| {
         let computing = yi_types::trace::span("console.compute_view");
+        let pinned = scroll(app);
         let mut view = render::compute_view(app, frame.area(), theme);
         drop(computing);
         let _rendering = yi_types::trace::span("console.render");
-        let scroll = |app: &App| {
-            let drag = app.selection.as_ref()?;
-            Some(app.state.panes.get(&drag.pane)?.scroll_from_bottom)
-        };
         let before = scroll(app);
         render::render(app, frame, &mut view, theme);
         app.selected.clear();
         if let Some(mut drag) = app.selection.take() {
-            // A held view that grew below raises its scroll with nothing moving on screen.
-            if let (Some(before), Some(after)) = (before, scroll(app))
-                && after > before
-            {
-                drag.shift(after - before);
-            }
+            drag.follow(pinned, before, scroll(app));
             app.selected = crate::select::selected(
                 app,
                 &view,
@@ -408,7 +406,7 @@ fn step_frame<B: Backend>(
     terminal: &mut Terminal<B>,
     theme: &Theme,
     scheduler: &mut yi_tui::frame::FrameScheduler,
-    orb_owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
+    orb_owners: &mut crate::app::ids::Owners,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
     if scheduler.should_draw(Instant::now()) {
@@ -422,7 +420,8 @@ fn step_frame<B: Backend>(
         scheduler.mark_drawn(start, Instant::now());
     } else if app.kitty {
         let _ = yi_tui::term::framed(out, |out| {
-            place_chat_orbs(app, orb_owners, out);
+            crate::app::ids::lease(app, orb_owners, out);
+            place_chat_orbs(app, out);
             app.avatars.animate(out);
         });
     }
@@ -435,16 +434,19 @@ fn present<B: Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     theme: &Theme,
-    orb_owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
+    orb_owners: &mut crate::app::ids::Owners,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
     let _ = out.execute(ratatui::crossterm::terminal::BeginSynchronizedUpdate);
+    if app.kitty {
+        crate::app::ids::lease(app, orb_owners, out);
+    }
     let drawn = draw(app, terminal, theme);
     if app.kitty {
         place_avatars(app, out);
         place_notebook_image(app, out);
         crate::browser::place(app, out);
-        place_chat_orbs(app, orb_owners, out);
+        place_chat_orbs(app, out);
         app.avatars.animate(out);
     }
     let _ = out.execute(ratatui::crossterm::terminal::EndSynchronizedUpdate);
@@ -503,34 +505,8 @@ fn chat_wake(app: &App) -> Duration {
 
 /// One orb per drawn chat pane on its own image ids; only the focused pane animates, the rest
 /// hold one placed frame. Incident: a closed or switched pane kept its orb.
-fn place_chat_orbs(
-    app: &mut App,
-    owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
-    out: &mut impl std::io::Write,
-) {
+fn place_chat_orbs(app: &mut App, out: &mut impl std::io::Write) {
     use crate::model::PaneContent;
-    owners.retain(|pane, owner| {
-        let kept = app
-            .state
-            .panes
-            .get(pane)
-            .is_some_and(|pane| match &pane.content {
-                PaneContent::Session {
-                    session,
-                    chat: Some(_),
-                } => session == owner,
-                _ => false,
-            });
-        if !kept {
-            for id in crate::app::orb_ids(*pane)
-                .into_iter()
-                .chain(crate::app::card_ids(*pane))
-            {
-                let _ = yi_tui::orb::kitty::delete_id(out, id);
-            }
-        }
-        kept
-    });
     let focused = app.state.focused_pane_id();
     let shown = |id: PaneId| {
         app.hits.as_ref().is_some_and(|hits| {
@@ -547,13 +523,11 @@ fn place_chat_orbs(
         .collect();
     for (id, pane) in &mut app.state.panes {
         let PaneContent::Session {
-            session,
-            chat: Some(chat),
+            chat: Some(chat), ..
         } = &mut pane.content
         else {
             continue;
         };
-        owners.entry(*id).or_insert_with(|| session.clone());
         if shown.contains(id) {
             yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb, Some(*id) == focused);
             yi_tui::question::tick(&chat.app, out, &mut chat.card);
@@ -588,7 +562,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
             cells
                 .iter()
                 .rev()
-                .flat_map(|cell| cell.images.iter())
+                .flat_map(|cell| cell.images.iter().rev())
                 .next()
         })
         .and_then(|image| {
@@ -832,6 +806,7 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
+    app.state.home.clone_from(&options.home);
     app.state.chrome =
         crate::browser::Chrome::new(options.browser.clone(), options.chrome_pin.clone());
 }
@@ -1163,7 +1138,7 @@ mod tests {
     #[test]
     fn a_session_name_cannot_end_the_window_title() -> Result<(), Box<dyn std::error::Error>> {
         let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
-        let id = SessionId("s-evil".to_owned());
+        let id = crate::model::SessionId("s-evil".to_owned());
         app.state.upsert_row(crate::model::SessionRow {
             id: id.clone(),
             root: "/repo".to_owned(),

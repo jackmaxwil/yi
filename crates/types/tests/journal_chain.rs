@@ -5,7 +5,7 @@ use std::error::Error;
 use std::path::PathBuf;
 
 use yi_types::memory::MemoryRecord;
-use yi_types::plan::canonical::Chained;
+use yi_types::plan::canonical::{Chained, Digest};
 use yi_types::plan::ledger::JournalRecord;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -17,30 +17,31 @@ fn fixture(name: &str) -> Result<String, Box<dyn Error>> {
     Ok(std::fs::read_to_string(path)?)
 }
 
-#[test]
-fn a_plan_journal_verifies_and_keeps_its_bytes() -> TestResult {
-    let text = fixture("journals/plan-ops-v1.jsonl")?;
+fn chain_keeps_bytes<T>(name: &str, digest: impl Fn(&T) -> Digest) -> TestResult
+where
+    T: Chained + serde::de::DeserializeOwned,
+{
+    let text = fixture(name)?;
     let mut prev = None;
     for line in text.lines() {
-        let record: JournalRecord = serde_json::from_str(line)?;
-        assert_eq!(record.digest_of(prev.as_ref())?, record.digest, "{line}");
+        let record: T = serde_json::from_str(line)?;
+        let recorded = digest(&record);
+        assert_eq!(record.digest_of(prev.as_ref())?, recorded, "{line}");
         assert_eq!(record.line()?, format!("{line}\n").into_bytes());
-        prev = Some(record.digest);
+        prev = Some(recorded);
     }
-    assert!(prev.is_some(), "the fixture holds records");
+    assert!(prev.is_some(), "{name} holds records");
     Ok(())
 }
 
 #[test]
+fn a_plan_journal_verifies_and_keeps_its_bytes() -> TestResult {
+    chain_keeps_bytes::<JournalRecord>("journals/plan-ops-v1.jsonl", |record| record.digest)?;
+    chain_keeps_bytes::<JournalRecord>("journals/plan-judge-verdict-v1.jsonl", |record| {
+        record.digest
+    })
+}
+#[test]
 fn a_memory_journal_verifies_and_keeps_its_bytes() -> TestResult {
-    let text = fixture("journals/memory-ops-v1.jsonl")?;
-    let mut prev = None;
-    for line in text.lines() {
-        let record: MemoryRecord = serde_json::from_str(line)?;
-        assert_eq!(record.digest_of(prev.as_ref())?, record.digest, "{line}");
-        assert_eq!(record.line()?, format!("{line}\n").into_bytes());
-        prev = Some(record.digest);
-    }
-    assert!(prev.is_some(), "the fixture holds records");
-    Ok(())
+    chain_keeps_bytes::<MemoryRecord>("journals/memory-ops-v1.jsonl", |record| record.digest)
 }

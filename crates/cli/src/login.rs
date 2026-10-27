@@ -22,7 +22,11 @@ fn refreshed(code: i32, args: &[String]) -> i32 {
     let (0, Some(provider), Some(dir)) = (code, provider, yi_runtime::catalog_cache_dir()) else {
         return code;
     };
-    if args.iter().any(|word| word == "--list") || !yi_runtime::catalog_needs_credential(provider) {
+    if args
+        .iter()
+        .any(|word| matches!(word.as_str(), "--list" | "--refresh"))
+        || !yi_runtime::catalog_needs_credential(provider)
+    {
         return code;
     }
     let key = crate::yi_ai_key(provider);

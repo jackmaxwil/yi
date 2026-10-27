@@ -11,6 +11,10 @@ fmt-check:
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
+# The `cfg(not(feature = "tui"))` arms build in no other lane: six dead items had rotted there unseen.
+clippy-no-tui:
+    cargo clippy -p yi-cli --no-default-features -- -D warnings
+
 # nextest when it is on PATH, cargo when it is not, so a fresh clone still
 # runs the suite. Many tests set HOME or poke the process's own registries and say
 # "nextest runs each test in its own process"; plain `cargo test` threads them into
@@ -44,7 +48,7 @@ sweep:
     python3 scripts/sweep_target.py
 
 # The lanes `check` runs, named so CI can run them as separate jobs.
-lint: fmt-check clippy
+lint: fmt-check clippy clippy-no-tui
 
 # The one line for a dev loop: rebuild, stop the daemon the last build left running,
 # open the workspace. ctrl+c twice inside yi does the stop for you; ⌥q keeps it running.
@@ -58,7 +62,7 @@ build-dist:
 
 # No build-dist dependency: the aggregator is the one place that knows whether
 # binary_size and startup will run at all, so it owns the LTO build they read
-# (D91). CI skips both, and paid 2-3 min a job for a binary nothing measured.
+# (D91). CI skips startup, and builds the binary only on Linux to measure it there.
 guardrails *flags:
     bash scripts/guardrails/check_guardrails.sh "$@"
 

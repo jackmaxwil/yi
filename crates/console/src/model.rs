@@ -163,6 +163,7 @@ pub struct Chat {
     pub phase: usize,
     pub logos: yi_tui::logos::Tick,
     pub card: yi_tui::question::CardTick,
+    pub(crate) slot: Option<crate::app::ids::Slot>,
     pub ask: Option<PendingAsk>,
     pub events: (Sender<UiEvent>, Receiver<UiEvent>),
     pub commands: (CommandSender, CommandReceiver),
@@ -190,7 +191,10 @@ pub struct NbCell {
     pub stderr: String,
     pub result: Option<String>,
     pub error: Option<String>,
+    /// Invariant: only the session's newest cell with images keeps their base64; every cell keeps
+    /// `image_bytes`, their lengths, for its size rows.
     pub images: Vec<String>,
+    pub image_bytes: Vec<usize>,
     pub dropped_image_bytes: Vec<usize>,
     pub images_past_limit: usize,
     pub duration_ms: Option<u64>,
@@ -204,6 +208,12 @@ pub(crate) fn notebook_cells<'a>(
     notebooks.get(session).map_or(&[][..], Vec::as_slice)
 }
 
+/// Invariant: rows drawn under a key (the width, and for Review its scope, note and the diff's
+/// revision), redrawn only when the key moves; a new pane content starts with none.
+pub type Drawn<K, V = Rows> = Option<(K, V)>;
+pub type Rows = Vec<ratatui::text::Line<'static>>;
+pub type ReviewKey = (usize, ReviewScope, String, u64);
+
 /// What a pane shows: the provider seam — a new kind is a new variant plus
 /// its render arm, nothing else.
 pub enum PaneContent {
@@ -214,10 +224,14 @@ pub enum PaneContent {
     Markdown {
         path: String,
         source: String,
+        workdir: String,
+        drawn: Drawn<usize>,
     },
     Diff {
         path: String,
         source: String,
+        workdir: String,
+        drawn: Drawn<usize>,
     },
     Notebook {
         session: Option<SessionId>,
@@ -228,6 +242,7 @@ pub enum PaneContent {
     SessionDiff {
         session: SessionId,
         scope: ReviewScope,
+        drawn: Drawn<ReviewKey, (String, Rows)>,
     },
     Terminal(Box<crate::pty::Pty>),
     Editor(Editor),
@@ -245,6 +260,9 @@ pub struct Editor {
     pub lang: Option<String>,
     pub primed: Option<(usize, yi_tui::highlight::Lang)>,
     pub last_cursor: (usize, usize),
+    pub crlf: bool,
+    pub final_newline: bool,
+    pub workdir: String,
 }
 
 impl Editor {
@@ -324,6 +342,7 @@ pub struct SessionDiff {
     pub why_due: Option<(String, Vec<u32>)>,
     /// The title a second `l` lands under; any other key clears it.
     pub land_armed: Option<String>,
+    pub rev: u64,
     pub dropped_at_turn: BTreeMap<String, u64>,
 }
 
@@ -452,6 +471,7 @@ pub struct ConsoleState {
     pub parked: BTreeMap<SessionId, Box<Chat>>,
     pub chrome: crate::browser::Chrome,
     pub browser_placed: BTreeMap<PaneId, crate::placed::Placed>,
+    pub home: Option<String>,
 }
 
 impl ConsoleState {
@@ -498,6 +518,7 @@ impl ConsoleState {
             parked: BTreeMap::new(),
             chrome: crate::browser::Chrome::default(),
             browser_placed: BTreeMap::new(),
+            home: None,
             quit: false,
         }
     }
