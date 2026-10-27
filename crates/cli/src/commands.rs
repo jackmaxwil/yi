@@ -75,6 +75,7 @@ const FLAGS: &[Flag] = &[
     Flag { name: "yolo", value: None, summary: "run without permission prompts" },
     Flag { name: "auto", value: None, summary: "let the policy judge each call (the default)" },
     Flag { name: "confirm", value: None, summary: "ask before every write or command" },
+    Flag { name: "allow-write", value: Some("dir"), summary: "let the sandbox write dir too; repeatable" },
     Flag { name: "session-dir", value: Some("dir"), summary: "session storage root" },
     Flag { name: "cwd", value: Some("dir"), summary: "working directory" },
     Flag { name: "here", value: None, summary: "work in this directory and claim no lane" },
