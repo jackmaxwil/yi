@@ -115,6 +115,10 @@ impl ErrorClass {
         if lower.contains("no credential for provider") {
             return Self::RefusalNoKey;
         }
+        // Incident: a 429 quota refusal classed as plain transport http, so the loop re-sent it.
+        if lower.contains("quota exhausted") {
+            return Self::Provider("quota".to_owned());
+        }
         if let Some(rest) = lower.split("http ").nth(1)
             && let Some(code) = rest.split(|c: char| !c.is_ascii_digit()).next()
             && let Ok(status) = code.parse::<u16>()

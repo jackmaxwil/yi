@@ -176,7 +176,7 @@ async fn stream(
 ) -> i32 {
     let held = || host.holds_owner();
     let working = || host.holds_owner() || session.status() != Status::Idle;
-    let code = follow(session.subscribe(), [&held, &working], modes, schema, ends).await;
+    let (code, last) = follow(session.subscribe(), [&held, &working], modes, schema, ends).await;
     // Incident: nothing drove the runtime after the deadline, so a looping cell outlived it.
     if session.status() != Status::Idle {
         session.abort();
@@ -202,6 +202,9 @@ async fn stream(
         if json {
             println!("{line}");
         }
+    }
+    if json {
+        println!("{last}");
     }
     code
 }
@@ -254,6 +257,56 @@ fn leftovers(family: &Family<'_>, undelivered: usize) -> Option<(String, serde_j
     Some((said, line))
 }
 
+const EXIT_QUOTA: i32 = 4;
+
+/// The reset instant is the first `YYYY-MM-DDTHH:MM:SSZ` in the provider's message.
+fn reset_instant(text: &str) -> Option<&str> {
+    const SHAPE: &[u8; 20] = b"dddd-dd-ddTdd:dd:ddZ";
+    text.char_indices().find_map(|(at, _)| {
+        let window = text.get(at..at.checked_add(SHAPE.len())?)?;
+        let fits = window.bytes().zip(SHAPE).all(|(byte, want)| match want {
+            b'd' => byte.is_ascii_digit(),
+            want => byte == *want,
+        });
+        fits.then_some(window)
+    })
+}
+
+/// The last event of a json run: why it stopped, in one closed vocabulary a driver can branch on.
+fn final_event(finished: bool, answered: bool, error: Option<&str>) -> serde_json::Value {
+    use yi_types::telemetry::ErrorClass;
+    let class = error.map(ErrorClass::from_provider_text);
+    let kind = match (&class, finished, answered) {
+        (Some(ErrorClass::Provider(what)), ..) if what == "quota" => "quota",
+        (Some(ErrorClass::TransportTimeout), ..) => "timeout",
+        (Some(_), ..) => "error",
+        (None, false, _) => "deadline",
+        (None, true, true) => "stop",
+        (None, true, false) => "no_answer",
+    };
+    let mut line = serde_json::json!({"type": "final", "kind": kind});
+    if let (Some(class), Some(text)) = (class, error) {
+        line["class"] = class.to_string().into();
+        line["message"] = text.into();
+    }
+    if kind == "quota"
+        && let Some(text) = error
+    {
+        let lower = text.to_lowercase();
+        let has = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
+        let window = if has(&["week", "7d", "7 day"]) {
+            Some("7d")
+        } else if has(&["5h", "5 hour", "5-hour"]) {
+            Some("5h")
+        } else {
+            None
+        };
+        line["window"] = window.into();
+        line["reset"] = reset_instant(text).into();
+    }
+    line
+}
+
 /// Incident: a plan child's finish wakes the owner, so it waits, but only on what wakes it (#489).
 async fn follow(
     mut events: tokio::sync::broadcast::Receiver<AgentEvent>,
@@ -265,10 +318,11 @@ async fn follow(
     }: Modes,
     schema: Option<&yi_runtime::schema::Schema>,
     ends: Option<Instant>,
-) -> i32 {
+) -> (i32, serde_json::Value) {
     let (mut answer, mut said, mut exit) = (String::new(), Vec::new(), 0);
     let (mut holding, mut ended) = (false, false);
     let (mut last_stop, mut said_anything, mut due) = (None, false, false);
+    let (mut last_error, mut finished) = (None, false);
     loop {
         let next = match patience(holding, ends) {
             None => yi_runtime::next_event(&mut events).await,
@@ -324,10 +378,16 @@ async fn follow(
                 AgentMessage::Assistant {
                     stop_reason,
                     content,
+                    error_message,
                     ..
                 },
         } = &event
         {
+            last_error = (*stop_reason == StopReason::Error).then(|| {
+                error_message
+                    .clone()
+                    .unwrap_or_else(|| "provider error".to_owned())
+            });
             let text = yi_types::message::has_text(content);
             said_anything |= text;
             due |= text;
@@ -359,7 +419,7 @@ async fn follow(
             }
             AgentEvent::AgentEnd { .. } if held() => holding = true,
             AgentEvent::AgentEnd { .. } => {
-                ended = true;
+                (ended, finished) = (true, true);
                 break;
             }
             _ => {}
@@ -386,7 +446,11 @@ async fn follow(
     } else if !json && matches!(last_stop, Some((StopReason::Error, _))) {
         exit = 1;
     }
-    exit
+    let line = final_event(finished, final_answer, last_error.as_deref());
+    if line["kind"] == "quota" {
+        exit = EXIT_QUOTA;
+    }
+    (exit, line)
 }
 
 #[cfg(test)]
@@ -479,7 +543,11 @@ mod tests {
         let run = super::follow(receiver, [&always, &always], modes, None, ends);
         let ran =
             runtime.block_on(async { tokio::time::timeout(Duration::from_secs(5), run).await });
-        assert_eq!(ran.ok(), Some(1), "the steered turn outlived the deadline");
+        assert_eq!(
+            ran.ok().map(|run| run.0),
+            Some(1),
+            "the steered turn outlived the deadline"
+        );
         drop(events);
         Ok(())
     }
@@ -511,7 +579,7 @@ mod tests {
                 no_deltas: false,
             };
             let run = super::follow(receiver, [&never, &never], modes, None, None);
-            assert_eq!(runtime.block_on(run), code, "eval {eval}");
+            assert_eq!(runtime.block_on(run).0, code, "eval {eval}");
         }
         Ok(())
     }
@@ -547,8 +615,51 @@ mod tests {
                 no_deltas: false,
             };
             let run = super::follow(receiver, [&never, &never], modes, None, None);
-            assert_eq!(runtime.block_on(run), code);
+            assert_eq!(runtime.block_on(run).0, code);
         }
+        Ok(())
+    }
+
+    /// Dies with a quota 429 read as plain transport: the run exited 1 or 0 with no reset time,
+    /// and a driver could not tell the 5-hour window from a crash.
+    #[test]
+    fn a_quota_refusal_ends_the_run_with_its_window_and_exit_code()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::faux::faux_assistant_message;
+        use yi_types::message::StopReason;
+        let text = "HTTP 429 quota exhausted: {\"error\":{\"message\":\"You have reached the 5 hour usage limit, resets at 2026-10-27T18:00:00Z\",\"type\":\"exceeded_current_quota_error\"}}";
+        let line = super::final_event(true, false, Some(text));
+        assert_eq!(line["kind"], "quota");
+        assert_eq!(line["window"], "5h");
+        assert_eq!(line["reset"], "2026-10-27T18:00:00Z");
+        let timeout = super::final_event(
+            true,
+            false,
+            Some("Network Error: timed out reading response"),
+        );
+        assert_eq!(timeout["kind"], "timeout");
+        assert_eq!(super::final_event(false, true, None)["kind"], "deadline");
+        assert_eq!(super::final_event(true, true, None)["kind"], "stop");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let never = || false;
+        let mut message = faux_assistant_message(Vec::new(), StopReason::Error);
+        if let yi_types::message::AgentMessage::Assistant { error_message, .. } = &mut message {
+            *error_message = Some(text.to_owned());
+        }
+        let (events, receiver) = tokio::sync::broadcast::channel(8);
+        events.send(AgentEvent::MessageEnd { message })?;
+        events.send(AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        })?;
+        let modes = super::Modes {
+            json: true,
+            eval: false,
+            no_deltas: false,
+        };
+        let run = super::follow(receiver, [&never, &never], modes, None, None);
+        assert_eq!(runtime.block_on(run).0, super::EXIT_QUOTA);
         Ok(())
     }
 
