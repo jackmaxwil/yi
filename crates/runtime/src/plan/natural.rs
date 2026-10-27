@@ -615,19 +615,19 @@ fn weights(args: &mut Map<String, Value>, said: &mut Vec<String>) {
         return;
     };
     for todo in todos.iter_mut().filter_map(Value::as_object_mut) {
-        if let Some(Value::Object(contract)) = todo.get_mut("contract")
-            && contract.remove("covers").is_some()
-        {
-            said.push(
-                "the contract's covers globs were left out; the cmd items run at done".to_owned(),
-            );
-        }
         let label = todo.get("label").and_then(Value::as_str).map(str::to_owned);
         if let Some(Value::Object(delegation)) = todo.get_mut("delegation")
             && let Some(contract) = delegation.remove("contract")
         {
             todo.entry("contract").or_insert(contract);
             said.push("a contract inside the delegation is the row's".to_owned());
+        }
+        if let Some(Value::Object(contract)) = todo.get_mut("contract")
+            && contract.remove("covers").is_some()
+        {
+            said.push(
+                "the contract's covers globs were left out; the cmd items run at done".to_owned(),
+            );
         }
         let check = contract_check(todo);
         if let Some(Value::Object(delegation)) = todo.get_mut("delegation") {
