@@ -86,6 +86,7 @@ Tests are tiered by where they run and what they may spend:
 - **T3** paid smoke: one real-provider run per suite, ledgered in docs/eval-ledger.md with its
   config fingerprint. Opt-in and user-run; money in a gate is what plan law 3 forbids, so T3
   never sits in one.
-- Every feature-ledger row names its journey test in a `journey:` clause. A row that cannot name
-  the test a user-visible regression would trip is asserting "live" on vibes; a new or edited
-  row without the clause is not done.
+- Every feature-ledger row names its journey test as a `feature | `test`` line in
+  docs/ledger-journeys.txt, one test a line (union-merged, so parallel PRs append without
+  conflicting). A row that cannot name the test a user-visible regression would trip is asserting
+  "live" on vibes; a new or edited row without a line is not done.
