@@ -25,6 +25,7 @@ pub enum Step {
     /// `wait-frame <ms> <text>` blocks until the frame shows `text`, or stops showing it when
     /// written `!text`. Timeout first so the text may hold spaces; the bool is the polarity.
     WaitFrame(u64, bool, String),
+    WaitRow(u64, bool, String),
     /// `type-ms <n>` paces every later `type` step at one character per `n` ms. Zero, the
     /// default, keeps assertion scripts instant; a recording needs human typing speed.
     TypeMs(u64),
@@ -62,19 +63,20 @@ pub fn parse_script(source: &str) -> Result<Vec<Step>, String> {
             "type" => Step::Type(rest.to_owned()),
             "wait" => Step::Wait(rest.parse().map_err(|e| error(format!("{e}")))?),
             "wait-idle" => Step::WaitIdle(rest.parse().map_err(|e| error(format!("{e}")))?),
-            "wait-frame" => {
+            word @ ("wait-frame" | "wait-row") => {
                 let (ms, text) = rest
                     .split_once(' ')
-                    .ok_or_else(|| error("wait-frame needs <ms> <text>".to_owned()))?;
+                    .ok_or_else(|| error(format!("{word} needs <ms> <text>")))?;
                 let (present, text) = match text.strip_prefix('!') {
                     Some(negated) => (false, negated),
                     None => (true, text),
                 };
-                Step::WaitFrame(
-                    ms.parse().map_err(|e| error(format!("{e}")))?,
-                    present,
-                    text.to_owned(),
-                )
+                let ms = ms.parse().map_err(|e| error(format!("{e}")))?;
+                if word == "wait-frame" {
+                    Step::WaitFrame(ms, present, text.to_owned())
+                } else {
+                    Step::WaitRow(ms, present, text.to_owned())
+                }
             }
             "type-ms" => Step::TypeMs(rest.parse().map_err(|e| error(format!("{e}")))?),
             "snap" if is_snap_name(rest) => Step::Snap(rest.to_owned()),
@@ -181,6 +183,16 @@ fn write_snap(dir: Option<&Path>, name: &str, backend: &RecordingBackend) -> Res
     write_still(&still, backend.buffer()).map_err(|e| format!("snap {}: {e}", still.display()))?;
     let text = dir.join(format!("snap-{name}.txt"));
     std::fs::write(&text, backend.screen()).map_err(|e| format!("snap {}: {e}", text.display()))
+}
+
+pub fn frame_matches(backend: &RecordingBackend, text: &str, whole_row: bool) -> bool {
+    let buffer = backend.buffer();
+    (0..buffer.area.height).any(|y| {
+        let row: String = (0..buffer.area.width)
+            .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+            .collect();
+        (whole_row && row.trim() == text) || (!whole_row && row.contains(text))
+    })
 }
 
 pub fn key_event(key: &SingleKey) -> KeyEvent {
@@ -638,16 +650,22 @@ pub fn run_headless(
                     std::thread::sleep(Duration::from_millis(2));
                 }
             }
-            (Step::WaitFrame(ms, present, text), started) => {
-                let shown = terminal.backend().screen().contains(&text) == present;
-                match poll_condition(shown, started, ms, &format!("wait-frame {text:?}")) {
+            (step @ (Step::WaitFrame(..) | Step::WaitRow(..)), started) => {
+                let (ms, present, text, whole) = if let Step::WaitFrame(ms, present, text) = &step {
+                    (*ms, *present, text, false)
+                } else if let Step::WaitRow(ms, present, text) = &step {
+                    (*ms, *present, text, true)
+                } else {
+                    return 1;
+                };
+                let shown = frame_matches(terminal.backend(), text, whole) == present;
+                match poll_condition(shown, started, ms, &format!("{step:?}")) {
                     WaitPoll::Done => {}
-                    WaitPoll::Retry => {
-                        current = Some((Step::WaitFrame(ms, present, text), started))
-                    }
+                    WaitPoll::Retry => current = Some((step, started)),
                     WaitPoll::Failed(error) => {
                         eprintln!("error: {error}\n  waiting for {text:?}");
                         exit_code = 1;
+                        break;
                     }
                 }
             }

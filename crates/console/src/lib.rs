@@ -752,16 +752,20 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                     WaitPoll::Done => {}
                 }
             }
-            (ConsoleStep::Tui(Step::WaitFrame(ms, present, text)), started) => {
-                let shown = terminal.backend().screen().contains(&text) == present;
-                match poll_condition(shown, started, ms, &format!("wait-frame {text:?}")) {
+            (step @ ConsoleStep::Tui(Step::WaitFrame(..) | Step::WaitRow(..)), started) => {
+                let (ms, present, text, whole) =
+                    if let ConsoleStep::Tui(Step::WaitFrame(ms, present, text)) = &step {
+                        (*ms, *present, text, false)
+                    } else if let ConsoleStep::Tui(Step::WaitRow(ms, present, text)) = &step {
+                        (*ms, *present, text, true)
+                    } else {
+                        return 1;
+                    };
+                let shown =
+                    yi_tui::drive::frame_matches(terminal.backend(), text, whole) == present;
+                match poll_condition(shown, started, ms, &format!("{step:?}")) {
                     WaitPoll::Done => {}
-                    WaitPoll::Retry => {
-                        current = Some((
-                            ConsoleStep::Tui(Step::WaitFrame(ms, present, text)),
-                            started,
-                        ))
-                    }
+                    WaitPoll::Retry => current = Some((step, started)),
                     WaitPoll::Failed(error) => {
                         eprintln!("error: {error}");
                         exit_code = 1;

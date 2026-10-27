@@ -524,6 +524,41 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
     Ok(())
 }
 
+fn oracle_screen() -> Result<ratatui::Terminal<yi_tui::capture::RecordingBackend>, Box<dyn Error>> {
+    let mut terminal = ratatui::Terminal::new(yi_tui::capture::RecordingBackend::new(8, 5, None)?)?;
+    terminal.draw(|frame| {
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Paragraph;
+        frame.render_widget(Paragraph::new("foobar"), Rect::new(0, 0, 8, 1));
+        frame.render_widget(Paragraph::new("foo"), Rect::new(5, 2, 3, 1));
+        frame.render_widget(Paragraph::new("bar"), Rect::new(0, 3, 3, 1));
+        frame.render_widget(Paragraph::new(" padded "), Rect::new(0, 4, 8, 1));
+    })?;
+    Ok(terminal)
+}
+
+#[test]
+fn drive_needles_match_rows_and_wait_row_requires_the_whole_row() -> TestResult {
+    let terminal = oracle_screen()?;
+    for (needle, whole, wanted) in [
+        ("foo\"\n\"bar", false, false),
+        ("foobar", false, true),
+        ("padded", true, true),
+        ("pad", true, false),
+    ] {
+        assert_eq!(
+            yi_tui::drive::frame_matches(terminal.backend(), needle, whole),
+            wanted,
+            "{needle:?}"
+        );
+    }
+    assert!(matches!(
+        yi_tui::drive::parse_script("wait-row 100 padded")?.as_slice(),
+        [yi_tui::drive::Step::WaitRow(100, true, text)] if text == "padded"
+    ));
+    Ok(())
+}
+
 fn empty_list(frame: &Value) -> Vec<Value> {
     vec![ok(frame, json!({"sessions": []}))]
 }

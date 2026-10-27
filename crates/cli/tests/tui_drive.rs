@@ -1732,3 +1732,42 @@ fn a_chord_in_the_keys_config_stops_the_drive_naming_it() -> TestResult {
     assert!(stderr.contains("ctrl-x ctrl-e"), "{stderr}");
     Ok(())
 }
+
+#[test]
+fn a_failed_wait_frame_never_runs_the_steps_after_it() -> TestResult {
+    let dir = Scratch::new("yi-tui-failed-wait")?;
+    let home = dir.home()?;
+    let sessions = dir.join("sessions");
+    let keys = dir.join("keys");
+    std::fs::write(
+        &keys,
+        "wait-idle 10000\nwait-frame 25 never-on-screen\ntype hello\nkey enter\nwait-idle 10000\nquit\n",
+    )?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &sessions.display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+        ])
+        .env("HOME", &home)
+        .output()?;
+    assert_eq!(output.status.code(), Some(1));
+    let transcript = session_files(&sessions)?
+        .into_iter()
+        .map(std::fs::read_to_string)
+        .collect::<Result<String, _>>()?;
+    assert!(
+        !transcript.contains("hello"),
+        "the failed wait must stop before Enter submits a prompt"
+    );
+    Ok(())
+}
