@@ -434,7 +434,21 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
     )?;
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     let ledger = session_text(&workspace.0.join("home/sessions"))?;
-    assert!(!ledger.contains("permission_rule"), "{ledger}");
+    assert!(
+        !ledger.contains(yi_types::permission::PERMISSION_RULE_ENTRY),
+        "{ledger}"
+    );
+    Ok(())
+}
+
+/// A relative grant resolves against the invocation directory, not the claimed lane under `$HOME`.
+#[test]
+fn allow_write_relative_dir_uses_the_invocation_directory() -> TestResult {
+    let workspace = Workspace::new("allow-write-relative")?;
+    crate::repo::init_repo(&workspace.project())?;
+    std::fs::create_dir(workspace.project().join("relative-grant"))?;
+    let run = ask(&workspace, "look", &["--allow-write", "relative-grant"])?;
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
     Ok(())
 }
 

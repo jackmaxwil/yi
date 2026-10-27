@@ -256,7 +256,7 @@ fn build_session(
         .chain(configured.into_iter().flatten())
     {
         broker
-            .grant_write(&work.join(dir))
+            .grant_write(&cwd.join(dir))
             .map_err(|reason| Refused {
                 code: 2,
                 reason: format!("allow-write: {reason}"),
