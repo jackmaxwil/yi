@@ -169,10 +169,7 @@ impl Telemetry {
                     .and_then(serde_json::Value::as_u64);
                 span.ok = Some(!is_error);
                 span.class = is_error.then(|| {
-                    let kind = result
-                        .details
-                        .get("errorKind")
-                        .and_then(serde_json::Value::as_str)
+                    let kind = yi_types::event::ToolErrorKind::from_details(&result.details)
                         .unwrap_or("tool_error");
                     ErrorClass::Tool(kind.to_owned()).to_string()
                 });

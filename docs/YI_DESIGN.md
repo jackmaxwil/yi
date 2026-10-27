@@ -1072,7 +1072,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | Verb | What |
 |---|---|
 | `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask`. A lone word one edit from a verb (four or five letters; two edits from six) is refused with the verb and `yi ask <word>`, and a verb that reads no words (`version`, `rpc`, `acp`, `doctor`, `gc`, `serve`, `console`; `undo` reads only `list`) refuses trailing ones; `console` and `serve` refuse `--thinking`, `--system`, `--schema` and `--deadline` (a headless console drive reads `--deadline`), which never reach their sessions |
-| `ask`, `rpc`, `acp`, `serve` | One headless run (plain text puts a blank line between one turn's text and the next; `--json` prints each event as a JSON line, and `--no-deltas` leaves out the `message_update` ones); `--allow-write DIR` and `permissions.allowWrite` make a directory writable to contained commands and write tools; a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
+| `ask`, `rpc`, `acp`, `serve` | One headless run (plain text puts a blank line between one turn's text and the next; `--json` prints each event as a JSON line, and `--no-deltas` leaves out the `message_update` ones); `--allow-write DIR` and `permissions.allowWrite` make a directory writable to contained commands and write tools, and each `permissions.allow` entry (`TOOL PATTERN`, a glob over the call) lets a matching call run unasked; a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
 | `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog; `stats --by plan` counts every applied plan-engine op by kind and actor class from the sessions' `plan_op` entries and the plans directory's `ops.jsonl` journals, with totals for delegations, acceptances, `done_refused` and retries |
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
@@ -1084,8 +1084,11 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 
 - The default permission mode is `permissions.mode`, else `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
 - `yi ask -` reads the prompt from stdin: one argument past Linux's 128 KiB cap is refused before `yi` starts.
-- Exit codes: 0 ok; 1 error; 2 usage, bad flag, bad config or refused build; 3 an answer failing
-  `--schema`. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
+- Exit codes: 0 ok; 1 error; 2 usage, bad flag, bad config (a `permissions.allow` entry that is not
+  `TOOL PATTERN`) or refused build; 3 an answer failing `--schema`; 4 a headless `ask` whose last tool
+  call was refused with no one to ask: stderr names it, `--json` ends with `{"type": "denied", "tool",
+  "args", "reason"}`, and the tool result already carried the `permissions.allow` entry that would run
+  that exact call. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
 - `~/.yi/config.json` is the only config file, parsed strictly before dispatch and read again as each
   session starts, since the console's settings page saves it while workers run; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
@@ -1093,7 +1096,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
-  `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`,
+  `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode,allowWrite,allow}`,
   `mail{hopLimit}`, `open[{name,command}]`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
