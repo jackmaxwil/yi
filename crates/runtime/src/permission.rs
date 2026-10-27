@@ -143,7 +143,7 @@ pub(crate) fn leaves_sandbox(
 
 /// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
 /// daemon socket), a credential store, or a git path the host runs.
-pub(crate) fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
+pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let yi = home.iter().map(|home| home.join(".yi"));
     let overlaps = |guarded: &PathBuf| {
@@ -154,9 +154,8 @@ pub(crate) fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
     };
     home.as_deref()
         .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
-        || (sandbox.deny_read.iter())
-            .chain(&sandbox.deny_write)
-            .chain(&sandbox.host_owned)
+        || (sandbox.into_iter())
+            .flat_map(|s| s.deny_read.iter().chain(&s.deny_write).chain(&s.host_owned))
             .cloned()
             .chain(yi)
             .any(|guarded| overlaps(&guarded))
@@ -411,7 +410,7 @@ impl PermissionBroker {
             Some(yi_tools::SandboxRefusal::Path(path)) => {
                 let dir = path.parent().unwrap_or(path);
                 let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-                if protected(sandbox, &dir) {
+                if protected(Some(sandbox), &dir) {
                     return outside(&format!("`{}` is protected", dir.display()));
                 }
                 let note = format!("; approving widens this run by `{}`", dir.display());
@@ -702,7 +701,7 @@ impl PermissionBroker {
                 (None, Some(refusal)) if self.asker.is_none() => self.denied(
                     crate::gate::headless_refusal(self.sandbox.as_ref(), refusal),
                 ),
-                _ => outcome,
+                _ => crate::gate::named_rule(outcome, self.asker.is_none(), (tool_name, &display)),
             };
         }
         if let (Some(grant), Some(refusal), Containment::Contained { .. }) =
