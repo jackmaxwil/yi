@@ -32,7 +32,7 @@ pub struct Sidecar {
     pub key: Option<String>,
     pub model: String,
     pub timeout: Duration,
-    pub threshold: Option<f64>,
+    pub threshold: f64,
 }
 
 impl Sidecar {
@@ -212,11 +212,9 @@ impl SkillClassifier {
         record.answer = answer.and_then(|answer| answer.choice.clone());
         record.confidence = answer.and_then(|answer| answer.answer_confidence);
         record.model = response.routing.map(|routing| routing.model);
-        if let (Some(name), Some(confidence), Some(threshold)) = (
-            record.answer.as_deref(),
-            record.confidence,
-            self.sidecar.threshold,
-        ) && confidence >= threshold
+        if let (Some(name), Some(confidence)) = (record.answer.as_deref(), record.confidence)
+            && self.sidecar.threshold < 1.0
+            && confidence >= self.sidecar.threshold
             && self.candidates.contains_key(name)
             && !already.iter().any(|pointed| pointed == name)
             && self.pointed.lock().is_ok_and(|mut pointed| {
@@ -249,6 +247,7 @@ impl SkillClassifier {
 
 const SAFE: &str = "safe";
 const SAFE_INSTRUCTIONS: &str = "Is it safe for a coding agent to run this without asking the user? Safe means it cannot destroy work a checkpoint would not restore, leak a secret, or act outside the project.";
+const DEFAULT_THRESHOLD: f64 = 0.9;
 const DEFAULT_ALLOW_AT: f64 = 0.9;
 const DEFAULT_ALLOW_DESTRUCTIVE_AT: f64 = 0.98;
 const DEFAULT_ASK_AT: f64 = 0.05;
@@ -481,6 +480,17 @@ pub fn timing(block: &ClassifierConfig) -> Option<Timing> {
     }
 }
 
+fn number(value: &Option<serde_json::Number>, default: f64) -> f64 {
+    value
+        .as_ref()
+        .and_then(serde_json::Number::as_f64)
+        .unwrap_or(default)
+}
+
+fn threshold(block: &ClassifierConfig) -> f64 {
+    number(&block.threshold, DEFAULT_THRESHOLD)
+}
+
 pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConfig) -> Vec<String> {
     let Some(Endpoint {
         checkpoint: model,
@@ -490,12 +500,6 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         return Vec::new();
     };
     let block = config.classifier.clone().unwrap_or_default();
-    let number = |value: &Option<serde_json::Number>, default: f64| {
-        value
-            .as_ref()
-            .and_then(serde_json::Number::as_f64)
-            .unwrap_or(default)
-    };
     let thresholds = Thresholds {
         allow_at: number(&block.allow_at, DEFAULT_ALLOW_AT),
         allow_destructive_at: number(&block.allow_destructive_at, DEFAULT_ALLOW_DESTRUCTIVE_AT),
@@ -524,10 +528,7 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         key,
         model,
         timeout: Duration::from_millis(block.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
-        threshold: block
-            .threshold
-            .as_ref()
-            .and_then(serde_json::Number::as_f64),
+        threshold: threshold(&block),
     };
     if let (Some(timing), Some(_), Some(broker)) = (timing, &sidecar.key, broker) {
         broker.set_approver(Arc::new(Approver::new(
@@ -604,6 +605,19 @@ mod tests {
         assert!(
             token.exists(),
             "an armed session mints the key it arms with"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unset_threshold_is_0_9_and_a_set_one_wins() -> serde_json::Result<()> {
+        let read = |json: serde_json::Value| {
+            serde_json::from_value::<yi_types::config::ClassifierConfig>(json)
+        };
+        assert_eq!(super::threshold(&read(serde_json::json!({}))?), 0.9);
+        assert_eq!(
+            super::threshold(&read(serde_json::json!({"threshold": 0.5}))?),
+            0.5
         );
         Ok(())
     }

@@ -164,8 +164,9 @@ skills: catalog ladder, `$name`, Yi's triggered skills | `request_budget::every_
 skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::the_catalog_ladder_keeps_every_name_and_clips_descriptions_first`
 skills: catalog ladder, `$name`, Yi's triggered skills | `journeys::a_typed_dollar_name_points_at_the_skill_before_the_first_reply`
 skills: catalog ladder, `$name`, Yi's triggered skills | `journeys::the_agents_own_words_fire_no_skill` (T2)
-skill classifier (shadow, then a threshold) | `classifier_e2e::in_shadow_a_decision_is_recorded_and_nothing_fires`
-skill classifier (shadow, then a threshold) | `classifier_e2e::a_dead_sidecar_trips_the_breaker_and_says_so_once` (T1)
+skill classifier | `classifier_e2e::below_the_threshold_a_decision_is_recorded_and_nothing_fires`
+skill classifier | `session_faux::an_unset_classifier_threshold_points_at_0_9_through_attach`
+skill classifier | `classifier_e2e::a_dead_sidecar_trips_the_breaker_and_says_so_once` (T1)
 runtime facts on the tools: bash contract, chain-stop note, reducer ranges, `ask_user` where someone answers | `tools::a_stopped_chain_says_so_beside_the_exit_code`
 runtime facts on the tools: bash contract, chain-stop note, reducer ranges, `ask_user` where someone answers | `auto_review::a_question_ends_the_turn_and_lists_its_options` (T0)
 session mining: deterministic signals + the prompt drift gate | `extract.py --selfcheck` (run by `check_guardrails.sh`)
