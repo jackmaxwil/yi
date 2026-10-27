@@ -10,6 +10,7 @@ use super::{
 };
 
 const HOLD_POLL: Duration = Duration::from_millis(500);
+const EXIT_DENIED: i32 = 4;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 pub(super) fn run(args: &Args) -> i32 {
@@ -81,6 +82,7 @@ pub(super) fn run(args: &Args) -> i32 {
         json: args.json,
         eval: args.eval,
         no_deltas: args.no_deltas,
+        headless: !interactive,
     };
     let code = runtime.block_on(async move {
         if session
@@ -147,6 +149,7 @@ struct Modes {
     json: bool,
     eval: bool,
     no_deltas: bool,
+    headless: bool,
 }
 
 fn left(deadline: Option<Instant>) -> Duration {
@@ -262,6 +265,7 @@ async fn follow(
         json,
         eval,
         no_deltas,
+        headless,
     }: Modes,
     schema: Option<&yi_runtime::schema::Schema>,
     ends: Option<Instant>,
@@ -269,6 +273,7 @@ async fn follow(
     let (mut answer, mut said, mut exit) = (String::new(), Vec::new(), 0);
     let (mut holding, mut ended) = (false, false);
     let (mut last_stop, mut said_anything, mut due) = (None, false, false);
+    let (mut calls, mut denied) = (std::collections::HashMap::new(), None);
     loop {
         let next = match patience(holding, ends) {
             None => yi_runtime::next_event(&mut events).await,
@@ -335,6 +340,26 @@ async fn follow(
             said.push(std::mem::take(&mut answer));
         }
         match &event {
+            AgentEvent::ToolExecutionStart {
+                tool_call_id, args, ..
+            } => {
+                calls.insert(tool_call_id.clone(), args.clone());
+            }
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                tool_name,
+                result,
+                is_error,
+            } => {
+                let args = calls.remove(tool_call_id);
+                let refused = *is_error
+                    && yi_types::event::ToolErrorKind::from_details(&result.details)
+                        == Some(yi_types::event::ToolErrorKind::Denied.as_str());
+                denied = refused.then(|| {
+                    let reason = yi_types::message::join_text(&result.content, "\n");
+                    (tool_name.clone(), args.unwrap_or_default(), reason)
+                });
+            }
             AgentEvent::MessageEnd {
                 message:
                     AgentMessage::Assistant {
@@ -370,6 +395,20 @@ async fn follow(
     } else if ended && !json {
         println!();
     }
+    if ended
+        && headless
+        && exit == 0
+        && let Some((tool, args, reason)) = denied
+    {
+        eprintln!("error: the run ended on a denied {tool} call {args}: {reason}");
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"type": "denied", "tool": tool, "args": args, "reason": reason})
+            );
+        }
+        exit = EXIT_DENIED;
+    }
     let final_answer = matches!(last_stop, Some((StopReason::Stop, true)));
     if ended && eval && !final_answer {
         let stop = last_stop.map(|(stop, _)| stop);
@@ -383,7 +422,7 @@ async fn follow(
     } else if ended && !said_anything && exit == 0 {
         eprintln!("error: the run ended with no assistant text at all");
         exit = 1;
-    } else if !json && matches!(last_stop, Some((StopReason::Error, _))) {
+    } else if !json && exit == 0 && matches!(last_stop, Some((StopReason::Error, _))) {
         exit = 1;
     }
     exit
@@ -475,6 +514,7 @@ mod tests {
             json: true,
             eval: false,
             no_deltas: false,
+            headless: false,
         };
         let run = super::follow(receiver, [&always, &always], modes, None, ends);
         let ran =
@@ -509,6 +549,7 @@ mod tests {
                 json: true,
                 eval,
                 no_deltas: false,
+                headless: false,
             };
             let run = super::follow(receiver, [&never, &never], modes, None, None);
             assert_eq!(runtime.block_on(run), code, "eval {eval}");
@@ -545,10 +586,96 @@ mod tests {
                 json: false,
                 eval: false,
                 no_deltas: false,
+                headless: false,
             };
             let run = super::follow(receiver, [&never, &never], modes, None, None);
             assert_eq!(runtime.block_on(run), code);
         }
+        Ok(())
+    }
+
+    /// Dies with an interactive user's own "no" read as a refusal nobody could answer, or a
+    /// denial the model got past held against the run: only a headless run that ends on one exits 4.
+    #[test]
+    fn only_a_headless_run_that_ends_on_a_refused_call_exits_4()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use serde_json::json;
+        use yi_runtime::faux::{faux_assistant_message, faux_text};
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let never = || false;
+        let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+        let cases = [
+            (true, vec![true], 4),
+            (false, vec![true], 0),
+            (true, vec![true, false], 0),
+        ];
+        for (headless, calls, code) in cases {
+            let (events, receiver) = tokio::sync::broadcast::channel(16);
+            for (n, refused) in calls.into_iter().enumerate() {
+                let (id, kind) = (format!("c{n}"), refused.then_some("denied"));
+                let start = json!({"type": "tool_execution_start", "toolCallId": id,
+                    "toolName": "bash", "args": {"command": format!("run {n}")}});
+                let end = json!({"type": "tool_execution_end", "toolCallId": id, "toolName": "bash",
+                    "result": {"content": [], "details": {"errorKind": kind}}, "isError": refused});
+                for wire in [start, end] {
+                    events.send(serde_json::from_value(wire)?)?;
+                }
+            }
+            events.send(AgentEvent::MessageEnd {
+                message: answer.clone(),
+            })?;
+            events.send(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            })?;
+            let modes = super::Modes {
+                json: true,
+                eval: false,
+                no_deltas: false,
+                headless,
+            };
+            let run = super::follow(receiver, [&never, &never], modes, None, None);
+            assert_eq!(runtime.block_on(run), code, "headless {headless}");
+        }
+        Ok(())
+    }
+
+    /// Dies with a later provider error replacing the distinct refusal exit a script depends on.
+    #[test]
+    fn a_refusal_followed_by_a_provider_error_still_exits_4()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use serde_json::json;
+        use yi_runtime::faux::faux_assistant_message;
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let (events, receiver) = tokio::sync::broadcast::channel(8);
+        for wire in [
+            json!({"type": "tool_execution_end", "toolCallId": "c0", "toolName": "bash",
+                "result": {"content": [], "details": {"errorKind": "denied"}}, "isError": true}),
+            serde_json::to_value(AgentEvent::MessageEnd {
+                message: faux_assistant_message(Vec::new(), StopReason::Error),
+            })?,
+            serde_json::to_value(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            })?,
+        ] {
+            events.send(serde_json::from_value(wire)?)?;
+        }
+        let never = || false;
+        let modes = super::Modes {
+            json: false,
+            eval: false,
+            no_deltas: false,
+            headless: true,
+        };
+        assert_eq!(
+            runtime.block_on(super::follow(receiver, [&never, &never], modes, None, None)),
+            4
+        );
         Ok(())
     }
 
