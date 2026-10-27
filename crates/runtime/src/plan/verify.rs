@@ -44,6 +44,9 @@ pub fn session_has(name: &str) -> bool {
 /// # Errors
 /// The contract fails validation or names a criterion the store cannot serve as declared.
 pub fn freeze(artifacts: &Artifacts, contract: &Contract) -> Result<Frozen, String> {
+    if !contract.covers.is_empty() {
+        return Err("contract `covers` is retired; the cmd items run at done".to_owned());
+    }
     contract.validate().map_err(|error| error.to_string())?;
     for item in &contract.items {
         for artifact in item.decider.criteria() {
@@ -183,10 +186,6 @@ impl Verifier {
     pub fn with_claude_hooks(mut self, hooks: Option<Arc<crate::claude_hooks::Hooks>>) -> Self {
         self.hooks = hooks;
         self
-    }
-
-    pub(super) fn hook_config(&self) -> Option<&crate::claude_hooks::Hooks> {
-        self.hooks.as_deref()
     }
 
     pub fn timeout_ms(&self) -> u64 {
@@ -443,27 +442,6 @@ fn run_cmd_said(
         format!("`{}` exit 0\n{cut}{kept}", manifest.command)
     });
     (verdict_of(capture, manifest, &workdir, artifacts), said)
-}
-
-pub(super) fn run_cmd(
-    manifest: &CheckerManifest,
-    root: &Path,
-    artifacts: &Artifacts,
-    deadline: Instant,
-    stop: Option<&yi_tools::CancelFlag>,
-    hooks: Option<&crate::claude_hooks::Hooks>,
-) -> ItemVerdict {
-    let workdir = manifest.workdir(root);
-    let capture = run_check_in(
-        &workdir,
-        &manifest.command,
-        &manifest.env,
-        None,
-        deadline,
-        stop,
-        hooks,
-    );
-    verdict_of(capture, manifest, &workdir, artifacts)
 }
 
 fn verdict_of(

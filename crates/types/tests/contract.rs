@@ -452,6 +452,39 @@ fn a_contract_without_covers_keeps_its_digest() -> TestResult {
     Ok(())
 }
 
+/// A contract carrying the retired preview globs keeps the digest its start record froze.
+#[test]
+fn a_journal_with_covers_keeps_its_contract_digest() -> TestResult {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/plan-covers-contract.jsonl");
+    let mut found = 0;
+    for line in std::fs::read_to_string(path)?.lines() {
+        let record: JournalRecord = serde_json::from_str(line)?;
+        let todos = record
+            .args
+            .get("todos")
+            .and_then(serde_json::Value::as_array);
+        for raw in todos
+            .into_iter()
+            .flatten()
+            .filter_map(|todo| todo.get("contract"))
+        {
+            let contract: Contract = serde_json::from_value(raw.clone())?;
+            assert_eq!(
+                contract.digest()?.to_string(),
+                "sha256:2c0b4a0b109a3f9bd7336fc7a38fd2fc15a44b5b71c54e4cc6ac553ddc653986"
+            );
+            assert_eq!(
+                canonical_bytes(&serde_json::to_value(contract)?)?,
+                canonical_bytes(raw)?
+            );
+            found += 1;
+        }
+    }
+    assert_eq!(found, 1, "the recorded init carries one covered contract");
+    Ok(())
+}
+
 /// The judge decider and juror line in this recorded journal decode to their typed shapes and
 /// canonicalize to the same bytes.
 #[test]

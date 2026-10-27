@@ -205,6 +205,22 @@ fn surface_lines() -> Result<Vec<String>, Box<dyn Error>> {
     Ok(lines)
 }
 
+#[test]
+fn the_plan_schema_has_no_covered_write_preview() -> TestResult {
+    let defs = tool_defs()?;
+    let plan = defs
+        .iter()
+        .find(|def| def.name == "plan")
+        .ok_or("plan tool")?;
+    assert!(
+        plan.parameters
+            .pointer("/properties/todos/items/properties/contract/properties/covers")
+            .is_none(),
+        "the model must not be offered the deleted covered-write preview"
+    );
+    Ok(())
+}
+
 /// The skills catalog is deliberately excluded: it is assembled from the
 /// machine's global and project roots, so including it would make the budget
 /// depend on what the runner has installed.
