@@ -16,10 +16,7 @@ pub enum PatchError {
     #[error("{message}")]
     Grammar { line: Option<u64>, message: String },
     #[error("{message}")]
-    Unreadable {
-        kind: std::io::ErrorKind,
-        message: String,
-    },
+    Unreadable { message: String },
     #[error("{0}")]
     Refused(String),
 }

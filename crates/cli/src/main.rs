@@ -19,7 +19,6 @@ mod setup;
 mod sidecar;
 mod stats;
 mod todo;
-mod trace_sink;
 mod tty;
 mod update;
 mod user_config;

@@ -62,6 +62,7 @@ pub mod telemetry;
 pub mod title;
 pub mod todo;
 pub mod tools;
+pub mod trace_sink;
 pub mod wall;
 pub mod wiring;
 

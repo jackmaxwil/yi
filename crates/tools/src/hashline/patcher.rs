@@ -89,7 +89,8 @@ pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
     match extension {
         "py" | "pyi" | "yaml" | "yml" => indent_block_resolver(request.text, request.line),
         "md" | "markdown" => super::blocks::markdown_section_resolver(request.text, request.line),
-        _ => brace_block_resolver(request.text, request.line),
+        "rs" => brace_block_resolver(request.text, request.line, true),
+        _ => brace_block_resolver(request.text, request.line, false),
     }
 }
 
@@ -273,7 +274,6 @@ impl<'a> Patcher<'a> {
 
         let Some(raw_content) = read else {
             return Err(PatchError::Unreadable {
-                kind: std::io::ErrorKind::NotFound,
                 message: format!(
                     "File not found: {}. Use the write tool to create new files.",
                     target.path
@@ -455,8 +455,7 @@ impl<'a> Patcher<'a> {
             Ok(text) => Ok(Some(text)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => {
-                let kind = error.kind();
-                let message = match kind {
+                let message = match error.kind() {
                     std::io::ErrorKind::InvalidData => {
                         format!("File is not UTF-8: {path}: {error}")
                     }
@@ -465,7 +464,7 @@ impl<'a> Patcher<'a> {
                     }
                     _ => format!("Could not read {path}: {error}"),
                 };
-                Err(PatchError::Unreadable { kind, message })
+                Err(PatchError::Unreadable { message })
             }
         }
     }

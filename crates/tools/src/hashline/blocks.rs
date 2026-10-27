@@ -10,13 +10,13 @@ use super::types::{
 
 /// The block opening at `line` spans to where the scanner returns to its prior depth. None
 /// when the anchor opens nothing, or when the delimiters never balance.
-pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
+pub fn brace_block_resolver(text: &str, line: u64, rust_lifetimes: bool) -> Option<BlockSpan> {
     let lines: Vec<&str> = text.split('\n').collect();
     let anchor_index = usize::try_from(line.checked_sub(1)?).ok()?;
     let anchor = lines.get(anchor_index)?;
     let mut depth: i64 = 0;
     let mut opened = false;
-    for byte in strip_line_noise(anchor, true) {
+    for byte in strip_line_noise(anchor, rust_lifetimes) {
         match byte {
             b'{' | b'[' | b'(' => {
                 depth += 1;
@@ -30,7 +30,7 @@ pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
         return None;
     }
     for (offset, candidate) in lines.iter().enumerate().skip(anchor_index + 1) {
-        for byte in strip_line_noise(candidate, true) {
+        for byte in strip_line_noise(candidate, rust_lifetimes) {
             match byte {
                 b'{' | b'[' | b'(' => depth += 1,
                 b'}' | b']' | b')' => {

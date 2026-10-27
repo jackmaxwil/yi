@@ -1,5 +1,5 @@
 use crate::user_config::{config, configured_mode, configured_model};
-use crate::{debug, stats, trace_sink};
+use crate::{debug, stats};
 use yi_types::model::{Effort, UnknownEffort};
 
 #[derive(Clone)]
@@ -147,7 +147,7 @@ pub(super) fn parse_from(
             _ => return Err(argument.unexpected()),
         }
     }
-    trace_sink::install();
+    yi_runtime::trace_sink::install();
     yi_types::trace::init(debug::process_label(&command));
     // A drive is a harness: it claims no lane unless the scenario is about lanes.
     // A cassette run is a harness too: a claim would fetch origin (#943).

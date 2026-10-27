@@ -80,3 +80,23 @@ fn rust_lifetimes_do_not_hide_braces_and_character_literals_stay_unchanged() -> 
     assert!(one.contains("[find: no enclosing block"), "{one}");
     Ok(())
 }
+
+#[test]
+fn non_rust_single_quoted_strings_do_not_change_block_depth() -> TestResult {
+    let dir = temp_dir("hashline-non-rust-strings")?;
+    for (name, quoted) in [
+        ("closer.js", "const s = 'x)';"),
+        ("opener.js", "const s = 'hello (world';"),
+    ] {
+        fs::write(
+            dir.join(name),
+            format!("function f() {{\n    {quoted}\n    return s;\n}}\n"),
+        )?;
+        let output = find(&dir, name, "function f()");
+        assert!(
+            output.contains("[find: block at lines 1-4 of"),
+            "{name}: {output}"
+        );
+    }
+    Ok(())
+}
