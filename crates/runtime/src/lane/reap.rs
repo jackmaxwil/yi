@@ -159,7 +159,7 @@ fn parse(listing: &str) -> Vec<Tree> {
 }
 
 impl Pool {
-    /// Invariant: nothing is removed that holds work; a held lane is locked, a branch `main`
+    /// Invariant: nothing is removed that holds work; a held lane is locked or flocked, a branch `main`
     /// lacks or a dirty tree stays, and every kept tree says why. Dry run removes nothing.
     pub fn gc(&self, cwd: &Path, dry_run: bool) -> Result<Vec<String>, LaneError> {
         let listing = git_capture(&self.repo, &["worktree", "list", "--porcelain"])?;
@@ -167,6 +167,7 @@ impl Pool {
             .into_iter()
             .find(|name| git(&self.repo, &["rev-parse", "--verify", "-q", name]).is_ok());
         let here = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let _pool = self.lock()?;
         let mut lines = Vec::new();
         if let Some((kept, total)) = listing.cut {
             lines.push(format!(
@@ -176,6 +177,22 @@ impl Pool {
         }
         for tree in parse(&listing.stdout).into_iter().skip(1) {
             let shown = tree.path.display();
+            let slot = (0..self.slots).map(SlotIndex).find(|slot| {
+                let at = self.slot_path(*slot);
+                at.canonicalize().unwrap_or(at) == tree.path.canonicalize().unwrap_or_default()
+            });
+            let _held = match slot.map(|slot| self.probe(slot)) {
+                Some(Ok((_, Some(_)))) => {
+                    lines.push(format!("kept {shown}: a live session holds the slot"));
+                    continue;
+                }
+                Some(Err(why)) => {
+                    lines.push(format!("kept {shown}: slot unreadable: {why}"));
+                    continue;
+                }
+                Some(Ok((guard, None))) => Some(guard),
+                None => None,
+            };
             let verdict = base
                 .ok_or("no main or origin/main to judge against".to_owned())
                 .and_then(|base| self.judge(&tree, base, &here));
@@ -214,13 +231,9 @@ impl Pool {
     }
 }
 
-/// Incident: sixty worktrees' own `target/` directories filled a 1.8 TB disk. Build output
-/// goes first: it is the bulk, and a worktree git refuses to remove still loses it.
+/// Incident: sixty worktrees' own `target/` directories filled a 1.8 TB disk. Git removes
+/// ignored files with a clean tree, so one call drops the build output and refuses the rest.
 fn remove(repo: &Path, path: &Path) -> Result<(), String> {
-    let target = path.join("target");
-    if std::fs::symlink_metadata(&target).is_ok_and(|meta| meta.is_dir()) {
-        std::fs::remove_dir_all(&target).map_err(|e| format!("target/: {e}"))?;
-    }
     let path = path.to_string_lossy();
     git(repo, &["worktree", "remove", &path])
         .map(drop)

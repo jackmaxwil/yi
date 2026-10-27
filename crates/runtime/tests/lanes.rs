@@ -3289,7 +3289,7 @@ fn gc_removes_only_the_merged_clean_worktree_and_says_why_it_kept_the_rest() -> 
     std::fs::write(rig.repo.join(".gitignore"), "target/\n")?;
     git(&rig.repo, &["add", ".gitignore"])?;
     git(&rig.repo, &["commit", "-qm", "ignore target"])?;
-    for name in ["merged", "dirty", "unmerged"] {
+    for name in ["merged", "dirty", "unmerged", "locked"] {
         let path = tree(name);
         git(
             &rig.repo,
@@ -3299,9 +3299,24 @@ fn gc_removes_only_the_merged_clean_worktree_and_says_why_it_kept_the_rest() -> 
         git(&path, &["add", "."])?;
         git(&path, &["commit", "-qm", name])?;
     }
-    for name in ["merged", "dirty"] {
+    for name in ["merged", "dirty", "locked"] {
         git(&rig.repo, &["merge", "-q", "--no-ff", "-m", name, name])?;
     }
+    git(&rig.repo, &["branch", "atbase"])?;
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            &tree("atbase").to_string_lossy(),
+            "atbase",
+        ],
+    )?;
+    git(
+        &rig.repo,
+        &["worktree", "lock", &tree("locked").to_string_lossy()],
+    )?;
     std::fs::write(tree("dirty").join("scratch.txt"), "unsaved\n")?;
     std::fs::create_dir_all(tree("merged").join("target"))?;
     std::fs::write(tree("merged").join("target/big"), "x")?;
@@ -3329,6 +3344,40 @@ fn gc_removes_only_the_merged_clean_worktree_and_says_why_it_kept_the_rest() -> 
         )),
         "{report}"
     );
+    for (name, why) in [
+        ("locked", "locked, a session holds it"),
+        ("atbase", "atbase is at main, no commits of its own"),
+    ] {
+        assert!(tree(name).is_dir(), "{report}");
+        assert!(
+            report.contains(&format!("{}: {why}", kept(name))),
+            "{report}"
+        );
+    }
     assert!(git(&rig.repo, &["rev-parse", "--verify", "-q", "merged"]).is_ok());
+    Ok(())
+}
+
+/// Dies with the `.held` probe removed from `gc`: a resumed lane is unlocked in git, merged
+/// and clean, and only the live session's flock keeps `--fix` from deleting its directory.
+#[test]
+fn gc_keeps_a_slot_a_live_session_holds_even_when_git_sees_it_merged() -> TestResult {
+    let rig = Rig::new("gc-held")?;
+    let pool = rig.pool(2)?;
+    let lane = pool.claim("s-held", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("w.txt"), "work\n")?;
+    git(lane.path(), &["add", "."])?;
+    git(lane.path(), &["commit", "-qm", "w"])?;
+    git(
+        &rig.repo,
+        &["merge", "-q", "--no-ff", "-m", "m", lane.branch().as_str()],
+    )?;
+    git(
+        &rig.repo,
+        &["worktree", "unlock", &lane.path().to_string_lossy()],
+    )?;
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(lane.path().is_dir(), "{report}");
+    assert!(report.contains("a live session holds the slot"), "{report}");
     Ok(())
 }
