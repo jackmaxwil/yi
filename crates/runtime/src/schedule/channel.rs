@@ -395,7 +395,7 @@ pub(crate) fn fire_with_hooks(
     ) {
         return Ok(Fired::Stopped(stopped));
     }
-    let acked = meta.acks.get(&job.id).copied().unwrap_or(0);
+    let acked = acked(&meta, job);
     let size = usize::try_from(sub.batch.unwrap_or(DEFAULT_BATCH).max(1)).unwrap_or(usize::MAX);
     let (mut scanned, mut batch) = (acked, Vec::new());
     for entry in channel
@@ -638,7 +638,46 @@ impl HeartbeatService {
     }
 }
 
+/// Whether the buffer holds an entry past the job's ack; read only for a session not loaded.
+pub(crate) fn unread(job: &Job, sub: &ChannelSub) -> bool {
+    let channel = Channel::at(&sub.path);
+    let acked = channel.meta().map_or(0, |meta| acked(&meta, job));
+    channel.last().is_some_and(|entry| entry.offset > acked)
+}
+
+fn acked(meta: &ChannelMeta, job: &Job) -> u64 {
+    meta.acks.get(&job.id).copied().unwrap_or(0)
+}
+
 impl HeartbeatService {
+    /// Keeps the timer of a session unloaded while idle that still has a job to come due; that
+    /// job asks `reload` to load it.
+    pub fn hold_unloaded(&self, reload: impl Fn(&str) -> bool + Send + Sync + 'static) {
+        let session = self.session_id();
+        let owes = (self.store().snapshot().jobs.iter())
+            .any(|job| job.session_id == session && super::claimable(job));
+        if let Some(hub) = self.hub().filter(|_| owes) {
+            hub.on_absent(std::sync::Arc::new(reload));
+            super::shared::park(&self.store());
+        }
+    }
+
+    /// A session loaded again for a wake reads its subscriptions now, not a retry later.
+    pub fn rearm_channels(&self) {
+        let session = self.session_id();
+        let paths: std::collections::HashSet<String> = self
+            .store()
+            .snapshot()
+            .jobs
+            .into_iter()
+            .filter(|job| job.session_id == session && super::claimable(job))
+            .filter_map(|job| job.channel.map(|sub| sub.path))
+            .collect();
+        for path in paths {
+            super::shared::poke_now(std::path::Path::new(&path));
+        }
+    }
+
     /// A durable root reads its mail through one subscription, made at its first bind and kept:
     /// one letter per todo, any number open at once, each waiting for the turn it lands in.
     pub(super) fn ensure_mailbox(&self, session_id: &str) {

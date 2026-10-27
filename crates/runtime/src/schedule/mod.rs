@@ -12,6 +12,8 @@ use std::collections::HashSet;
 pub use clock::Firing;
 pub use cron::{next_run_at_for_schedule, parse_iso_ms, parse_schedule, parse_schedule_in};
 pub use lanes::Scheduler;
+pub(crate) use shared::jobs_path;
+pub use shared::{release_unloaded, schedules_root};
 pub use zone::Zone;
 
 use cron::{
@@ -647,7 +649,7 @@ impl HeartbeatService {
         match &self.durable {
             Some((root, runtime)) if yi_session::validate_session_id(&session_id).is_ok() => {
                 let _timer_spawns_here = runtime.enter();
-                let path = root.join(&session_id).join("scheduled-jobs.json");
+                let path = jobs_path(root, &session_id);
                 let shared = shared::intern(path, |hub| self.lane_into(hub, &session_id));
                 *lock_or_poisoned(&self.store) = std::sync::Arc::clone(&shared.store);
                 *lock_or_poisoned(&self.hub) = Some(std::sync::Arc::clone(&shared.hub));

@@ -366,7 +366,7 @@ fn wire_schedule(
             .interned();
     crate::schedule::adapter::adapters_home(&wiring.home);
     let heartbeats = Arc::new(match (&wiring.sessions_dir, wiring.depth) {
-        (Some(sessions), 0) => heartbeats.durable(sessions.join("schedules")),
+        (Some(sessions), 0) => heartbeats.durable(crate::schedule::schedules_root(sessions)),
         _ => heartbeats,
     });
     heartbeats.register(registry);
