@@ -9,8 +9,7 @@ use serde_json::Value;
 use yi_types::plan::canonical::Digest;
 pub use yi_types::plan::contract::{Case, CheckerManifest, Cwd, MANIFEST_FORMAT};
 use yi_types::plan::contract::{
-    Contract, ContractItem, Decider, ItemLine, ItemVerdict, JurorLine, Verdict, VerificationToken,
-    aggregate,
+    Contract, ContractItem, Decider, ItemLine, ItemVerdict, Verdict, VerificationToken, aggregate,
 };
 
 use super::artifact::Artifacts;
@@ -23,36 +22,12 @@ const ABSTAIN_BACKOFF_MS: u64 = 100;
 const EVIDENCE_CHARS: usize = 300;
 const PAST_DEADLINE: &str = "the verification deadline passed before this item ran";
 
-/// The judge tier (`judge.rs`). A verifier built without one abstains every judge item.
-pub trait Judge: Send + Sync {
-    /// The item's verdict and one line per juror seated, decided before `until`.
-    fn judge(
-        &self,
-        item: &ContractItem,
-        snapshot: &Snapshot<'_>,
-        until: Instant,
-    ) -> (ItemVerdict, Vec<JurorLine>);
-}
-
-/// What the done path establishes under the lease before a jury may sit (plan section 6.4).
-pub struct Seat<'a> {
-    /// Invariant: jurors sit above the worker cap only under the verification reserve, and only
-    /// Rust mints a permit, so no spawn payload can claim the seat.
-    pub permit: &'a super::capacity::Permit,
-    /// Verifications requested on this todo at this plan version, this one included.
-    pub juries: u32,
-    /// The selector the todo's child was spawned with, when the plan names one.
-    pub owner_model: Option<&'a str>,
-}
-
 /// The workspace the snapshot names, the attempt's output bytes, and the criteria store.
 pub struct Snapshot<'a> {
     pub id: &'a str,
     pub root: &'a Path,
     pub output: Option<&'a [u8]>,
     pub artifacts: &'a Artifacts,
-    /// None on a path that seats no jury: a judge item abstains there.
-    pub jury: Option<Seat<'a>>,
 }
 
 /// The digests a `start` freezes.
@@ -106,7 +81,12 @@ pub fn freeze(artifacts: &Artifacts, contract: &Contract) -> Result<Frozen, Stri
                 read_schema(artifacts, schema)
                     .map_err(|error| format!("item {}: {error}", item.id))?;
             }
-            Decider::Judge { .. } => {}
+            Decider::Judge { .. } => {
+                return Err(format!(
+                    "item {}: no judge runs a `judge` item; decide it with `cmd`, `schema` or `example`",
+                    item.id
+                ));
+            }
         }
     }
     Ok(Frozen {
@@ -138,9 +118,9 @@ fn read_schema(
 
 pub struct Verifier {
     timeout_ms: u64,
-    judge: Option<Arc<dyn Judge>>,
     /// The session's own clock (D177): a verification never outlives the run it belongs to.
     deadline: Option<Instant>,
+    hooks: Option<Arc<crate::claude_hooks::Hooks>>,
 }
 
 fn deadline_after(from: Instant, millis: u64) -> Instant {
@@ -151,17 +131,6 @@ fn deadline_after(from: Instant, millis: u64) -> Instant {
 fn abstain(reason: impl Into<String>) -> ItemVerdict {
     let reason = reason.into();
     ItemVerdict::Abstain { reason }
-}
-
-/// The jury cap (plan section 6.4): past it no jury sits, and the item is the user's question.
-fn escalated(item: &ContractItem) -> ItemVerdict {
-    let cap = crate::levers::get().plan_judge_cap;
-    ItemVerdict::Escalate {
-        question: format!(
-            "{cap} juries sat on this todo without settling item {}; accept it, fail it or change its contract",
-            item.id
-        ),
-    }
 }
 
 fn retryable(verdict: &ItemVerdict) -> bool {
@@ -199,8 +168,8 @@ impl Verifier {
     pub fn new(timeout_ms: u64) -> Self {
         Self {
             timeout_ms,
-            judge: None,
             deadline: None,
+            hooks: None,
         }
     }
 
@@ -211,11 +180,13 @@ impl Verifier {
         }
     }
 
-    pub fn with_judge(self, judge: Arc<dyn Judge>) -> Self {
-        Self {
-            judge: Some(judge),
-            ..self
-        }
+    pub fn with_claude_hooks(mut self, hooks: Option<Arc<crate::claude_hooks::Hooks>>) -> Self {
+        self.hooks = hooks;
+        self
+    }
+
+    pub(super) fn hook_config(&self) -> Option<&crate::claude_hooks::Hooks> {
+        self.hooks.as_deref()
     }
 
     pub fn timeout_ms(&self) -> u64 {
@@ -243,28 +214,11 @@ impl Verifier {
         let mut lines = Vec::with_capacity(contract.items.len());
         let mut reproducible = true;
         for item in &contract.items {
-            // Ahead of every decider, so a jury is never seated for an item with no time left.
             if Instant::now() >= whole {
                 lines.push(ItemLine {
                     id: item.id.clone(),
                     verdict: abstain(PAST_DEADLINE),
                     jurors: Vec::new(),
-                    evidence: None,
-                });
-                continue;
-            }
-            if let (Decider::Judge { .. }, Some(judge)) = (&item.decider, &self.judge) {
-                let (verdict, jurors) = match &snapshot.jury {
-                    Some(seat) if seat.juries > crate::levers::get().plan_judge_cap => {
-                        (escalated(item), Vec::new())
-                    }
-                    _ => judge.judge(item, snapshot, whole),
-                };
-                let id = item.id.clone();
-                lines.push(ItemLine {
-                    id,
-                    verdict,
-                    jurors,
                     evidence: None,
                 });
                 continue;
@@ -342,8 +296,13 @@ impl Verifier {
                     deadline_after(Instant::now(), (*timeout_ms).min(manifest.timeout_ms))
                         .min(whole);
                 protecting(&manifest, snapshot.root, || {
-                    let (verdict, said) =
-                        run_cmd_said(&manifest, snapshot.root, snapshot.artifacts, deadline);
+                    let (verdict, said) = run_cmd_said(
+                        &manifest,
+                        snapshot.root,
+                        snapshot.artifacts,
+                        deadline,
+                        self.hooks.as_deref(),
+                    );
                     *evidence = said;
                     verdict
                 })
@@ -372,7 +331,13 @@ impl Verifier {
                 }
                 let item_deadline = deadline_after(Instant::now(), *timeout_ms).min(whole);
                 protecting(&manifest, snapshot.root, || {
-                    run_examples(&manifest, &cases, snapshot.root, item_deadline)
+                    run_examples(
+                        &manifest,
+                        &cases,
+                        snapshot.root,
+                        item_deadline,
+                        self.hooks.as_deref(),
+                    )
                 })
             }
             Decider::Judge { .. } => abstain("no judge"),
@@ -446,6 +411,7 @@ fn run_cmd_said(
     root: &Path,
     artifacts: &Artifacts,
     deadline: Instant,
+    hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> (ItemVerdict, Option<String>) {
     let workdir = manifest.workdir(root);
     let capture = run_check_in(
@@ -455,6 +421,7 @@ fn run_cmd_said(
         None,
         deadline,
         None,
+        hooks,
     );
     let passed =
         |capture: &&yi_tools::CommandCapture| capture.exit_code == Some(0) && !capture.cancelled;
@@ -484,6 +451,7 @@ pub(super) fn run_cmd(
     artifacts: &Artifacts,
     deadline: Instant,
     stop: Option<&yi_tools::CancelFlag>,
+    hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> ItemVerdict {
     let workdir = manifest.workdir(root);
     let capture = run_check_in(
@@ -493,6 +461,7 @@ pub(super) fn run_cmd(
         None,
         deadline,
         stop,
+        hooks,
     );
     verdict_of(capture, manifest, &workdir, artifacts)
 }
@@ -509,7 +478,7 @@ fn verdict_of(
     };
     if capture.cancelled {
         return abstain(format!(
-            "checker timed out (deadline {} ms); run it by hand, then op=accept with its exit line as note",
+            "checker timed out (deadline {} ms); run it by hand, then accepted_by_user with its exit line as note",
             manifest.timeout_ms
         ));
     }
@@ -564,10 +533,11 @@ fn run_examples(
     cases: &[Case],
     root: &Path,
     item_deadline: Instant,
+    hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> ItemVerdict {
     let mut failed: Vec<(usize, &'static str)> = Vec::new();
     for (index, case) in cases.iter().enumerate() {
-        match run_case(manifest, case, root, item_deadline) {
+        match run_case(manifest, case, root, item_deadline, hooks) {
             Ok(()) => {}
             Err(CaseError::Case(why)) => failed.push((index, why)),
             Err(CaseError::Host(reason)) => return abstain(reason),
@@ -595,6 +565,7 @@ fn run_case(
     case: &Case,
     root: &Path,
     item_deadline: Instant,
+    hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> Result<(), CaseError> {
     if Instant::now() >= item_deadline {
         return Err(CaseError::Case("timeout"));
@@ -608,6 +579,7 @@ fn run_case(
         Some(input),
         deadline,
         None,
+        hooks,
     )
     .map_err(CaseError::Host)?;
     if capture.cancelled {

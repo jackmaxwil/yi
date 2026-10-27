@@ -7,6 +7,7 @@ use yi_types::url::{Scheme, Url};
 use super::{Page, Resolver};
 
 /// Incident: an unpaged `read history://<id>` of a 5 MB session put 4.86 MB in one tool result.
+/// An unpaged `read local://<file>` is held to the same cap.
 const LISTING_BYTES: usize = 50 * 1024;
 
 struct UrlRouted {
@@ -31,9 +32,19 @@ fn unit(url: &Url) -> &'static str {
     }
 }
 
-/// Whole entries up to the budget, the first one clipped if it alone is over; the bare listing
-/// and `since/` both page by `offset`, so that is the next call.
-fn capped(url: &Url, served_by: &str, text: String) -> String {
+/// A listing keeps whole entries up to the budget, the first clipped if it alone is over; an
+/// unpaged local file keeps its first bytes. Both page by `offset`, so that is the next call.
+fn capped(url: &Url, served_by: &str, text: String, input: &Map<String, Value>) -> String {
+    let unpaged_local = matches!(url.scheme(), Scheme::Local) && matches!(page(input), Ok(None));
+    if unpaged_local && text.len() > LISTING_BYTES {
+        let kept = text.floor_char_boundary(LISTING_BYTES);
+        return format!(
+            "{}\n[… {kept} of {} bytes shown · unpaged local cap {LISTING_BYTES} bytes · read {url} with offset={} and limit to page on]",
+            text.get(..kept).unwrap_or_default(),
+            text.len(),
+            kept.saturating_add(1)
+        );
+    }
     let listing = matches!(served_by, "session-transcript" | "session-since");
     if !listing || text.len() <= LISTING_BYTES {
         return text;
@@ -72,7 +83,7 @@ fn capped(url: &Url, served_by: &str, text: String) -> String {
     )
 }
 
-fn address(input: &Map<String, Value>) -> Option<&str> {
+pub(super) fn address(input: &Map<String, Value>) -> Option<&str> {
     let path = input.get("path")?.as_str()?;
     let (scheme, _) = path.split_once("://")?;
     (!scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_lowercase())).then_some(path)
@@ -114,7 +125,12 @@ fn serve_read(
                 next.saturating_add(1),
                 unit(&fetched.url)
             )),
-            None => text_output(capped(&fetched.url, &fetched.served_by, fetched.text)),
+            None => text_output(capped(
+                &fetched.url,
+                &fetched.served_by,
+                fetched.text,
+                input,
+            )),
         },
         Err(message) => error_output(message),
     })

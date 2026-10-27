@@ -502,18 +502,17 @@ mod tests {
     }
 
     #[test]
-    fn ratio_paths_round_trip() {
+    fn ratio_paths_round_trip() -> Result<(), &'static str> {
         let mut ids = PaneIds::default();
         let (mut layout, _first) = TileLayout::new(&mut ids);
         layout.split_focused(&mut ids, Direction::Horizontal);
         let area = Rect::new(0, 0, 80, 24);
         let splits = layout.splits(area);
-        let Some(border) = splits.first() else {
-            unreachable!("one split exists");
-        };
+        let border = splits.first().ok_or("one split exists")?;
         assert!(layout.set_ratio_at(&border.path, 0.7));
         assert_eq!(layout.ratio_at(&border.path), Some(0.7));
         assert!(layout.set_ratio_at(&border.path, 5.0));
         assert_eq!(layout.ratio_at(&border.path), Some(0.9));
+        Ok(())
     }
 }

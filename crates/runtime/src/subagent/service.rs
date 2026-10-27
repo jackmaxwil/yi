@@ -30,8 +30,6 @@ pub(crate) fn spend_restart(restarts: &mut Vec<u64>, max: usize, now: u64) -> Re
 /// Why a record stands outside the worker cap and the owner's lifecycle notice, if it does.
 pub(crate) enum Standing {
     Worker,
-    /// Seated by the judge tier under the verification reserve; its ending is the jury's.
-    Juror,
     Reader,
     /// Never reaped while it serves, and idle between turns without having ended.
     Service(Service),
@@ -52,7 +50,7 @@ impl Standing {
     pub(crate) fn incarnation(&self) -> Option<u32> {
         match self {
             Self::Service(service) => Some(service.incarnation),
-            Self::Worker | Self::Juror | Self::Reader => None,
+            Self::Worker | Self::Reader => None,
         }
     }
 

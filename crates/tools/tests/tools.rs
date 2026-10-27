@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools};
@@ -11,7 +12,7 @@ use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn temp_dir(tag: &str) -> std::io::Result<Scratch> {
+pub(crate) fn temp_dir(tag: &str) -> std::io::Result<Scratch> {
     Scratch::new(&format!("yi-tools-{tag}"))
 }
 
@@ -22,13 +23,13 @@ fn args(pairs: &[(&str, Value)]) -> Map<String, Value> {
         .collect()
 }
 
-fn read_tool() -> yi_tools::hashline::tool::HashlineReadTool {
+pub(crate) fn read_tool() -> yi_tools::hashline::tool::HashlineReadTool {
     yi_tools::hashline::tool::HashlineReadTool::new(
         yi_tools::hashline::tool::shared_hashline_state(),
     )
 }
 
-fn output_text(output: &yi_tools::ToolOutput) -> String {
+pub(crate) fn output_text(output: &yi_tools::ToolOutput) -> String {
     output
         .result
         .content
@@ -900,9 +901,15 @@ fn a_cut_bash_stream_names_a_file_with_every_byte() -> TestResult {
             "{command}"
         );
     }
-    // Kept only where a pointer names it: a 13,893-byte output left whole leaves no file.
-    let whole =
-        BashTool::default().execute(args(&[("command", json!("seq 1 3000 # -v"))]), &context);
+    // Real ls output past the floor stays whole under its own -la bypass and leaves no file.
+    fs::create_dir(dir.join("many"))?;
+    for n in 0..200 {
+        fs::write(
+            dir.join(format!("many/file-{n:03}-abcdefghijklmnopqrstuvwxyz")),
+            "",
+        )?;
+    }
+    let whole = BashTool::default().execute(args(&[("command", json!("ls -la many"))]), &context);
     assert!(!output_text(&whole).contains("[full output:"));
     // `seq 1 8000` twice is one file: equal bytes share their name.
     assert_eq!(
@@ -977,6 +984,56 @@ fn a_verbose_command_is_left_alone() -> TestResult {
     let reduced = yi_tools::reduce("cargo test -- --nocapture", &raw, "", 0, None, None, None);
     assert_eq!(reduced.text, raw);
     assert!(reduced.recovery.is_none());
+    Ok(())
+}
+
+#[test]
+fn reducer_bypass_flags_are_scoped_to_their_programs() -> TestResult {
+    let dir = temp_dir("reduce-flag-programs")?;
+    let raw = fs::read_to_string(reduce_fixture("rg-many-files.txt"))?;
+    for command in [
+        "cargo test -- --nocapture",
+        "pytest -v",
+        "git status --porcelain",
+        "ls -la",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert_eq!(reduced.text, raw, "{command}");
+    }
+    for command in [
+        "cd /tmp && cargo test -- --nocapture",
+        "cd repo; git status --porcelain",
+        "cd /tmp && /usr/bin/cargo test \"--nocapture\"",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert_eq!(reduced.text, raw, "{command}");
+    }
+    for command in [
+        "grep -v needle",
+        "git -C repo status",
+        "ls -C",
+        "cargo -C repo test",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert!(reduced.out_bytes < reduced.raw_bytes, "{command}");
+    }
+    for command in [
+        "go test -v",
+        "python3 -m pytest -v",
+        "python -m unittest --verbose",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert_eq!(reduced.text, raw, "{command}");
+    }
+    for command in [
+        "go build -v",
+        "cargo test; grep -v needle file",
+        "python -c 'print(\"pytest\")' -v",
+        "python3 -c 'print(\"unittest\")' --verbose",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert!(reduced.out_bytes < reduced.raw_bytes, "{command}");
+    }
     Ok(())
 }
 
@@ -1544,6 +1601,183 @@ fn a_poll_that_gives_up_leaves_the_job_to_its_report() -> TestResult {
 }
 
 #[test]
+fn a_failed_spawn_leaves_no_running_job() -> TestResult {
+    let dir = temp_dir("job-spawn-failure")?;
+    let missing = dir.join("removed");
+    fs::create_dir(&missing)?;
+    fs::remove_dir(&missing)?;
+    let mut context = ToolContext::new(missing);
+    context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+    let output = BashTool::default().execute(
+        args(&[("command", json!("printf ghost")), ("wait", json!(5))]),
+        &context,
+    );
+    assert!(output.is_error);
+    assert!(
+        yi_tools::jobs::registry().running_under(&dir).is_empty(),
+        "a failed spawn left a ghost job"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_running_poll_shows_output_and_kill_ends_the_job() -> TestResult {
+    let dir = temp_dir("job-running-poll")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+    let run = yi_tools::run_or_background(
+        "printf before; touch ready; sleep 30",
+        &context,
+        Some(Duration::ZERO),
+        Duration::from_secs(60),
+        None,
+        None,
+    )?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the command did not become a job".into());
+    };
+    for _ in 0..500 {
+        if dir.join("ready").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(dir.join("ready").exists(), "producer did not print before");
+    let running = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
+    let running_text = output_text(&running);
+    let killed = BashTool::default().execute(
+        args(&[
+            ("job", json!(id.0)),
+            ("kill", json!(true)),
+            ("wait", json!(5)),
+        ]),
+        &context,
+    );
+    let killed_text = output_text(&killed);
+    let _cleanup = yi_tools::jobs::registry().kill(id);
+    assert!(running_text.contains("before"), "{running_text}");
+    assert!(killed_text.contains("killed"), "{killed_text}");
+    Ok(())
+}
+
+#[test]
+fn a_running_poll_view_names_its_ceiling_only_one_byte_past_it() -> TestResult {
+    let dir = temp_dir("job-running-view-ceiling")?;
+    for (bytes, cut) in [
+        (yi_tools::VIEW_CEILING, false),
+        (yi_tools::VIEW_CEILING + 1, true),
+    ] {
+        let mut context = ToolContext::new(dir.to_path_buf());
+        context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+        let command = format!("head -c {bytes} /dev/zero | tr '\\0' x; touch ready; sleep 30");
+        let run = yi_tools::run_or_background(
+            &command,
+            &context,
+            Some(Duration::ZERO),
+            Duration::from_secs(60),
+            None,
+            None,
+        )?;
+        let yi_tools::Run::Backgrounded(id) = run else {
+            return Err("the command did not become a job".into());
+        };
+        for _ in 0..500 {
+            if dir.join("ready").exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            dir.join("ready").exists(),
+            "producer did not finish {bytes} bytes"
+        );
+        fs::remove_file(dir.join("ready"))?;
+        let polled = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
+        let text = output_text(&polled);
+        let _cleanup = yi_tools::jobs::registry().kill(id);
+        assert_eq!(
+            text.contains("(VIEW_CEILING 16384)"),
+            cut,
+            "{bytes}: {text}"
+        );
+    }
+    Ok(())
+}
+#[test]
+fn a_running_poll_names_output_dropped_from_its_live_buffer() -> TestResult {
+    let dir = temp_dir("job-running-live-cap")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+    let run = yi_tools::run_or_background(
+        "head -c 55000 /dev/zero | tr '\\0' x; touch ready; sleep 30",
+        &context,
+        Some(Duration::ZERO),
+        Duration::from_secs(60),
+        None,
+        None,
+    )?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the command did not become a job".into());
+    };
+    for _ in 0..500 {
+        if dir.join("ready").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        dir.join("ready").exists(),
+        "producer did not emit 55,000 bytes"
+    );
+    let polled = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
+    let text = output_text(&polled);
+    let _cleanup = yi_tools::jobs::registry().kill(id);
+    assert!(text.contains("30000 of 55000"), "{text}");
+    assert!(text.contains("(OUTPUT_CAP 30000)"), "{text}");
+    assert!(
+        text.contains("of 55000 bytes kept (VIEW_CEILING 16384)"),
+        "{text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_poll_cannot_cross_job_owners() -> TestResult {
+    let dir = temp_dir("job-poll-owner")?;
+    let first = yi_tools::jobs::JobOwner::mint();
+    let second = yi_tools::jobs::JobOwner::mint();
+    let context = |owner| {
+        let mut context = ToolContext::new(dir.to_path_buf());
+        context.job_owner = Some(owner);
+        context
+    };
+    let start = |command: &str, context: &ToolContext| -> Result<yi_tools::JobId, String> {
+        let run = yi_tools::run_or_background(
+            command,
+            context,
+            Some(Duration::ZERO),
+            Duration::from_secs(60),
+            None,
+            None,
+        )?;
+        match run {
+            yi_tools::Run::Backgrounded(id) => Ok(id),
+            _ => Err("the command did not become a job".to_owned()),
+        }
+    };
+    let one = start("sleep 30", &context(first))?;
+    let two = start("sleep 30", &context(second))?;
+    let own = BashTool::default().execute(args(&[("job", json!(one.0))]), &context(first));
+    let other = BashTool::default().execute(args(&[("job", json!(one.0))]), &context(second));
+    let _cleanup = [
+        yi_tools::jobs::registry().kill(one),
+        yi_tools::jobs::registry().kill(two),
+    ];
+    assert!(!own.is_error, "{}", output_text(&own));
+    assert!(other.is_error, "{}", output_text(&other));
+    Ok(())
+}
+#[test]
 fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
     let tool = BashTool::default();
     for command in [
@@ -1954,6 +2188,38 @@ fn read_footers_name_the_next_offset() -> TestResult {
     Ok(())
 }
 
+/// Dies with the 2,000-line default window cutting a file at a row that never says why. A window
+/// the model asked for stays plain.
+#[test]
+fn a_default_read_window_names_its_cap_and_an_asked_one_does_not() -> TestResult {
+    let dir = temp_dir("read-default-cap")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let rows = |count: usize| {
+        (1..=count)
+            .map(|n| format!("row {n}\n"))
+            .collect::<String>()
+    };
+    let page = |path: &str, extra: &[(&str, Value)]| {
+        let pairs = [&[("path", json!(path))], extra].concat();
+        output_text(&read_tool().execute(args(&pairs), &context))
+    };
+    fs::write(dir.join("at.txt"), rows(2_000))?;
+    assert!(!page("at.txt", &[]).contains("[showing lines"));
+    fs::write(dir.join("past.txt"), rows(2_001))?;
+    let default = page("past.txt", &[]);
+    let cut =
+        "[showing lines 1-2000 of 2001 (READ_LINE_CAP 2000) \u{2014} continue with offset=2001]";
+    assert!(
+        default.ends_with(cut),
+        "{}",
+        default.lines().last().unwrap_or_default()
+    );
+    assert!(page("past.txt", &[("offset", json!(2_001))]).contains("row 2001"));
+    let asked = page("past.txt", &[("limit", json!(1_000))]);
+    assert!(asked.ends_with("[showing lines 1-1000 of 2001 \u{2014} continue with offset=1001]"));
+    Ok(())
+}
+
 /// P3: hits that exactly fill the collection cap are not a truncation, and an
 /// offset past the end names what it ran off — matches, or files in
 /// `files_with_matches` mode.
@@ -1987,6 +2253,126 @@ fn grep_cap_and_offset_footers_are_honest() -> TestResult {
     );
     let text = output_text(&past_files);
     assert!(text.contains("beyond the 1 matching files"), "{text}");
+    Ok(())
+}
+
+/// A page stops between hits once its rows hold PAGE_BYTES (51,200). A row is `a.txt:n:text` and
+/// a newline; a 101st line sized to land exactly on the cap ends the page, and one char fewer
+/// leaves a byte for the 102nd hit. With context 2 the window of hit 99 already draws hits 100
+/// and 101 as hit rows, so the footer must count them or the next page prints them again.
+#[test]
+fn a_grep_page_stops_on_its_byte_cap_between_hits() -> TestResult {
+    let cost = |n: usize, width: usize| "a.txt:".len() + n.to_string().len() + width + 2;
+    let used: usize = (1..=100).map(|n| cost(n, 500)).sum();
+    let exact = 51_200 - used - cost(101, 0);
+    let page = |last: usize, offset: u64, context: u64| -> Result<String, Box<dyn Error>> {
+        let dir = temp_dir(&format!("grep-page-bytes-{last}-{context}"))?;
+        let line = |n: usize| {
+            let width = if n == 101 { last } else { 500 };
+            format!("needle {n:03} {}\n", "x".repeat(width - 11))
+        };
+        fs::write(dir.join("a.txt"), (1..=102).map(line).collect::<String>())?;
+        let input = args(&[
+            ("pattern", json!("needle")),
+            ("offset", json!(offset)),
+            ("context", json!(context)),
+        ]);
+        Ok(output_text(
+            &GrepTool::default().execute(input, &ToolContext::new(dir.to_path_buf())),
+        ))
+    };
+    let hit_rows = |text: &str| -> Vec<usize> {
+        let number = |row: &str| row.strip_prefix("a.txt:")?.split_once(':')?.0.parse().ok();
+        text.lines().filter_map(number).collect()
+    };
+    let cut = "[showing matches 1-101 of 102 (PAGE_BYTES 51200) \u{2014} continue with offset=101]";
+    for context in [0, 2] {
+        let first = page(exact, 0, context)?;
+        assert_eq!(first.lines().last(), Some(cut), "context {context}");
+        assert_eq!(hit_rows(&first), (1..=101).collect::<Vec<_>>());
+        assert_eq!(hit_rows(&page(exact, 101, context)?), [102]);
+        let under = page(exact - 1, 0, context)?;
+        assert_eq!(hit_rows(&under), (1..=102).collect::<Vec<_>>());
+        assert!(!under.contains("[showing"), "context {context}: {under}");
+    }
+    Ok(())
+}
+
+/// A page cut by its hit count names the row cap that cut it, in line mode and in block mode,
+/// and a page of exactly the cap carries no continuation row.
+#[test]
+fn a_grep_page_cut_by_its_hit_cap_names_the_cap() -> TestResult {
+    let page = |hits: usize, block: bool| -> Result<String, Box<dyn Error>> {
+        let dir = temp_dir(&format!("grep-page-rows-{hits}-{block}"))?;
+        let body: String = (1..=hits)
+            .map(|n| format!("fn f{n}() {{}} // needle\n"))
+            .collect();
+        fs::write(dir.join("a.rs"), body)?;
+        let input = args(&[("pattern", json!("needle")), ("block", json!(block))]);
+        Ok(output_text(
+            &GrepTool::default().execute(input, &ToolContext::new(dir.to_path_buf())),
+        ))
+    };
+    for (cap, name, block) in [(200, "PAGE_CAP", false), (20, "BLOCK_PAGE_CAP", true)] {
+        let whole = page(cap, block)?;
+        assert!(!whole.contains("[showing"), "{name}: {whole}");
+        let cut = page(cap + 1, block)?;
+        let row = format!(
+            "[showing matches 1-{cap} of {} ({name} {cap}) \u{2014} continue with offset={cap}]",
+            cap + 1
+        );
+        assert_eq!(cut.lines().last(), Some(row.as_str()), "{cut}");
+    }
+    Ok(())
+}
+
+/// Five recorded sessions, one compact JSON entry a line: 169 hits of 64,701 B under the 200-hit
+/// cap. Dies with all of them on one page. The corpus is those five files, copied by name, so a
+/// session added beside them cannot move the page count.
+#[test]
+fn a_grep_page_over_recorded_long_lines_pages_exactly() -> TestResult {
+    const SESSIONS: [&str; 5] = [
+        "01a0648f.jsonl",
+        "01a0d6e4.jsonl",
+        "01a129b6.jsonl",
+        "01a13357.jsonl",
+        "01a133ca.jsonl",
+    ];
+    let recorded =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tui/tests/fixtures/sessions");
+    let root = temp_dir("grep-recorded-sessions")?;
+    let mut expected = Vec::new();
+    for name in SESSIONS {
+        let text = fs::read_to_string(recorded.join(name))?;
+        expected.extend((1..=text.lines().count()).map(|n| format!("{name}:{n}")));
+        fs::write(root.join(name), text)?;
+    }
+    let key = |row: &str| {
+        let (path, rest) = row.split_once(':').unwrap_or_default();
+        let n = rest.split(':').next().unwrap_or_default();
+        format!("{}:{n}", path.rsplit('/').next().unwrap_or_default())
+    };
+    let (grep, context) = (GrepTool::default(), ToolContext::new(root.to_path_buf()));
+    let (mut seen, mut pages) = (Vec::new(), 0);
+    loop {
+        let input = args(&[("pattern", json!("\"")), ("offset", json!(seen.len()))]);
+        let text = output_text(&grep.execute(input, &context));
+        seen.extend(text.lines().filter(|row| !row.starts_with('[')).map(key));
+        pages += 1;
+        let Some(more) = text.lines().find(|row| row.starts_with("[showing matches")) else {
+            break;
+        };
+        let next = format!(
+            "(PAGE_BYTES 51200) \u{2014} continue with offset={}]",
+            seen.len()
+        );
+        assert!(
+            more.ends_with(&next) && text.len() < 52_600,
+            "{more}: {}",
+            text.len()
+        );
+    }
+    assert!(pages > 1 && seen == expected, "{pages} pages");
     Ok(())
 }
 
@@ -4131,7 +4517,7 @@ fn a_gap_beside_a_counted_row_claims_no_line_twice() -> TestResult {
     Ok(())
 }
 
-fn view_fixture(name: &str) -> PathBuf {
+pub(crate) fn view_fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}"))
 }
 
@@ -4301,6 +4687,20 @@ fn a_rerun_row_names_a_long_command_on_one_line() -> TestResult {
         assert!(next.contains("the command that began "), "{next}");
         assert!(next.ends_with(", then read view.log"), "{next}");
     }
+    Ok(())
+}
+
+/// Only a shell cell's kernel capture carries a cut row of its own: a job's output line that
+/// looks like one is cut with the middle, never appended after the view's row.
+#[test]
+fn a_jobs_own_cut_like_line_stays_in_the_middle_cut() -> TestResult {
+    let mut raw: Vec<String> = (0..400)
+        .map(|n| format!("record {n:04} {}", "x".repeat(60)))
+        .collect();
+    raw.insert(200, "[\u{2026} a line the job printed]".to_owned());
+    let (job, raw) = (yi_tools::Involuntary::Job("make"), raw.join("\n"));
+    let text = yi_tools::view(job, &raw, "", 0, None, None).text;
+    assert!(!text.contains("a line the job printed"), "{text}");
     Ok(())
 }
 

@@ -3,10 +3,10 @@ use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 
 use serde_json::Number;
-use yi_runtime::fetch::{FETCH_ENTRY_TYPE, FetchError, Page, Resolver};
+use yi_runtime::fetch::{FETCH_ENTRY_TYPE, FetchError, FetchLog, FetchRecord, Page, Resolver};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Wall};
 use yi_types::model::{Model, ModelCost};
 use yi_types::url::Url;
@@ -91,6 +91,76 @@ fn a_store_attached_after_the_resolver_still_serves_history() -> TestResult {
         !logged.is_empty(),
         "the fetch log's own writes must land in the late-attached store"
     );
+    Ok(())
+}
+
+/// Dies with the control: append a row on every fetch and a file read four times leaves four
+/// rows. A changed file is a new hash and gets its own row.
+#[test]
+fn a_repeated_read_of_an_unchanged_file_adds_no_session_row() -> TestResult {
+    let workspace = Scratch::new("yi-fetch-repeat")?;
+    let file = workspace.join("a.py");
+    std::fs::write(
+        &file,
+        "def greet(name, greeting):\n    return f\"{greeting}, {name}\"\n",
+    )?;
+    let store = memory_store();
+    let resolver =
+        Resolver::new(workspace.to_path_buf(), Wall::default()).with_session("main", store.clone());
+    let rows = || -> Result<usize, Box<dyn Error>> {
+        let query = yi_session::EntryQuery {
+            entry_type: Some("custom"),
+            custom_type: Some(FETCH_ENTRY_TYPE.to_owned()),
+            ..yi_session::EntryQuery::default()
+        };
+        Ok(yi_session::lock_session(&store).find_entries(&query)?.len())
+    };
+    let url: Url = "local://a.py".parse()?;
+    for _ in 0..4 {
+        resolver.fetch(&url)?;
+    }
+    assert_eq!(rows()?, 1, "one row for one address at one hash");
+    std::fs::write(&file, "def greet(name):\n    return f\"hi {name}\"\n")?;
+    resolver.fetch(&url)?;
+    assert_eq!(rows()?, 2, "the edited file's new hash is a row of its own");
+    Ok(())
+}
+
+#[test]
+fn concurrent_unchanged_reads_write_one_session_row() -> TestResult {
+    let store = memory_store();
+    let log = Arc::new(FetchLog::new());
+    log.attach_session(store.clone());
+    let url: Url = "local://a.py".parse()?;
+    let record = FetchRecord {
+        url: url.to_string(),
+        hash: "deadbeef".to_owned(),
+        served_by: "test".to_owned(),
+    };
+    let barrier = Arc::new(Barrier::new(16));
+    let readers: Vec<_> = (0..16)
+        .map(|_| {
+            let (log, barrier, url, record) = (
+                Arc::clone(&log),
+                Arc::clone(&barrier),
+                url.clone(),
+                record.clone(),
+            );
+            std::thread::spawn(move || {
+                barrier.wait();
+                log.record(&url, record);
+            })
+        })
+        .collect();
+    for reader in readers {
+        reader.join().map_err(|_| "a reader panicked")?;
+    }
+    let rows = yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery {
+        entry_type: Some("custom"),
+        custom_type: Some(FETCH_ENTRY_TYPE.to_owned()),
+        ..yi_session::EntryQuery::default()
+    })?;
+    assert_eq!(rows.len(), 1, "sixteen readers wrote duplicate fetch rows");
     Ok(())
 }
 
@@ -1070,6 +1140,51 @@ fn an_unpaged_history_listing_past_its_cap_says_where_it_was_cut() -> TestResult
         "{}",
         text.lines().last().unwrap_or_default()
     );
+    Ok(())
+}
+
+/// An unpaged `local://` read is served whole at 51,200 bytes and cut past it, with the row a
+/// history listing gets, and the offset the row names reads the bytes after the cut. The wide file
+/// has a char over byte 51,200 and the traceback is a recorded 73,488 B cell.
+#[test]
+fn an_unpaged_local_read_past_its_cap_says_where_it_was_cut() -> TestResult {
+    const CAP: usize = 50 * 1024;
+    let workspace = Scratch::new("yi-fetch-local-cap")?;
+    let resolver = Arc::new(Resolver::new(workspace.to_path_buf(), Wall::default()));
+    let read = |name: &str, body: &str, offset: Option<i64>, limit: Option<i64>| {
+        std::fs::write(workspace.join(name), body)?;
+        read_tool_text(&resolver, &format!("local://{name}"), offset, limit).map(|read| read.0)
+    };
+    let at = "x".repeat(CAP);
+    assert_eq!(read("at.txt", &at, None, None)?, at);
+    let trace = include_str!("../../tools/tests/fixtures/view/recursion-traceback.txt");
+    let wide = format!("a{}", "\u{e9}".repeat(CAP / 2));
+    for (name, body) in [
+        ("past.txt", format!("{at}x")),
+        ("wide.txt", wide),
+        ("trace.txt", trace.to_owned()),
+    ] {
+        let kept = body.floor_char_boundary(CAP);
+        let row = format!(
+            "[\u{2026} {kept} of {} bytes shown \u{b7} unpaged local cap 51200 bytes \u{b7} read local://{name} with offset={} and limit to page on]",
+            body.len(),
+            kept + 1
+        );
+        let text = read(name, &body, None, None)?;
+        assert_eq!(
+            text,
+            format!("{}\n{row}", body.get(..kept).unwrap_or_default()),
+            "{name}"
+        );
+        let next = read(name, &body, Some(i64::try_from(kept + 1)?), Some(8))?;
+        assert!(
+            next.starts_with(
+                body.get(kept..(kept + 8).min(body.len()))
+                    .unwrap_or_default()
+            ),
+            "{name}"
+        );
+    }
     Ok(())
 }
 

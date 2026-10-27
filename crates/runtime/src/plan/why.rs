@@ -34,13 +34,21 @@ pub enum WhyError {
 }
 
 fn git(cwd: &Path, verb: &'static str, args: &[&str]) -> Result<String, WhyError> {
+    run(cwd, verb, args).map(|capture| capture.stdout)
+}
+
+fn run(
+    cwd: &Path,
+    verb: &'static str,
+    args: &[&str],
+) -> Result<yi_tools::CommandCapture, WhyError> {
     let mut process = yi_tools::command("git");
     process.arg("-C").arg(cwd).args(args);
     let never: yi_tools::CancelFlag = Arc::new(|| false);
     let capture = yi_tools::run_captured(process, None, &never, CAP)
         .map_err(|detail| WhyError::Git { verb, detail })?;
     if capture.exit_code == Some(0) {
-        return Ok(capture.stdout);
+        return Ok(capture);
     }
     Err(WhyError::Git {
         verb,
@@ -58,7 +66,7 @@ fn blame(cwd: &Path, path: &str, line: u32) -> Result<String, WhyError> {
     let commit = blamed
         .split_whitespace()
         .next()
-        .filter(|first| first.len() == 40 && first.chars().all(|byte| byte.is_ascii_hexdigit()))
+        .filter(|first| is_commit(first))
         .ok_or_else(|| WhyError::NotBlamed {
             path: path.to_owned(),
             line,
@@ -71,6 +79,10 @@ fn blame(cwd: &Path, path: &str, line: u32) -> Result<String, WhyError> {
         });
     }
     Ok(commit.to_owned())
+}
+
+fn is_commit(id: &str) -> bool {
+    id.len() == 40 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn trailer_of(body: &str) -> Option<(PlanId, String)> {
@@ -132,24 +144,26 @@ pub fn answer(cwd: &Path, plans_dir: &Path, path: &str, line: u32) -> Result<Ans
     })
 }
 
-/// The reverse index is the same data: every commit that carried this todo's
-/// trailer, which is what makes a todo's row accumulate what it produced.
-pub fn commits_for(cwd: &Path, address: &str) -> Result<Vec<(String, String)>, WhyError> {
-    let needle = format!("{TRAILER}{address}");
-    let found = git(
-        cwd,
-        "log",
-        &[
-            "log",
-            "--format=%H %s",
-            "--fixed-strings",
-            "--grep",
-            needle.as_str(),
-        ],
-    )?;
-    Ok(found
-        .lines()
-        .filter_map(|line| line.split_once(' '))
+/// Basic regexp named, so a user's `grep.patternType` never reads the trailer pattern.
+const LOG: [&str; 4] = ["log", "--format=%H %s", "--basic-regexp", "--grep"];
+
+/// The reverse index is the same data: every commit whose trailer names this todo exactly, so
+/// `p/todo` never lists `p/todo-2`'s; a log past [`CAP`] ends with the row naming the cut.
+pub fn commits_for(cwd: &Path, address: &str) -> Result<Commits, WhyError> {
+    let escaped: String = (address.chars())
+        .flat_map(|c| (".[]*^$\\".contains(c).then_some('\\').into_iter()).chain([c]))
+        .collect();
+    let pattern = format!("^[[:space:]]*{TRAILER}{escaped}[[:space:]]*$");
+    let capture = run(cwd, "log", &[&LOG[..], &[pattern.as_str()]].concat())?;
+    let found = (capture.stdout.lines())
+        .filter_map(|line| line.split_once(' ').filter(|(commit, _)| is_commit(commit)))
         .map(|(commit, subject)| (commit.to_owned(), subject.to_owned()))
-        .collect())
+        .collect();
+    let rest = format!("git log --format='%H %s' --basic-regexp --grep '{pattern}'");
+    let cut = (capture.cut)
+        .map(|(kept, all)| yi_tools::cut_row(kept, all, "bytes of git log", "CAP", CAP, &rest));
+    Ok((found, cut))
 }
+
+/// Each commit and its subject, and the cut row when the log passed [`CAP`].
+pub type Commits = (Vec<(String, String)>, Option<String>);

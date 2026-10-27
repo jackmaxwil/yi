@@ -76,11 +76,7 @@ pub(crate) struct TokenTally {
 
 impl TokenTally {
     pub(crate) fn record(&mut self, usage: &yi_types::message::Usage) {
-        let read = usage
-            .input
-            .saturating_add(usage.cache_read)
-            .saturating_add(usage.cache_write);
-        self.input = bump(self.input, read);
+        self.input = self.input.saturating_add(usage.context());
         self.output = bump(self.output, usage.output);
         self.cached = bump(self.cached, usage.cache_read);
     }

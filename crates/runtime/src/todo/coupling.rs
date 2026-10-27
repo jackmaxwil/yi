@@ -265,7 +265,7 @@ pub fn quiet_turn(message: &AgentMessage, results: &[AgentMessage]) -> bool {
 
 const DATA_EXTENSIONS: [&str; 6] = ["txt", "json", "csv", "md", "yaml", "xml"];
 
-fn data_path(path: &str) -> bool {
+pub(crate) fn data_path(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
         .and_then(|extension| extension.to_str())
@@ -315,84 +315,22 @@ pub fn figures_of(text: &str) -> Vec<String> {
 /// Figures written to data files this prompt cycle that no tool result, user message or
 /// environment fact the host printed shows.
 fn artifact_figures(
-    store: &StoreHandle,
+    history: &super::claims::History,
     printed: &EnvironmentHandle,
 ) -> Vec<(String, Vec<String>)> {
-    let Some(session) = store() else {
-        return Vec::new();
-    };
-    let entries = yi_session::lock_session(&session)
-        .find_entries(&yi_session::EntryQuery {
-            entry_type: Some("message"),
-            order: yi_session::EntryOrder::OldestFirst,
-            ..yi_session::EntryQuery::default()
-        })
-        .unwrap_or_default();
-    let mut seen = String::new();
-    let mut written: Vec<(String, String)> = Vec::new();
-    for entry in entries {
-        let yi_types::entry::Entry::Message { message, .. } = entry else {
-            continue;
-        };
-        match message {
-            AgentMessage::User {
-                content: UserContent::Text(text),
-                attribution: Attribution::User,
-                ..
-            } => {
-                written.clear();
-                seen.push_str(&text);
-                seen.push('\n');
-            }
-            AgentMessage::User {
-                content: UserContent::Text(text),
-                ..
-            } => {
-                seen.push_str(&text);
-                seen.push('\n');
-            }
-            AgentMessage::ToolResult { content, .. } => {
-                for block in content {
-                    if let Content::Text { text, .. } = block {
-                        seen.push_str(&text);
-                        seen.push('\n');
-                    }
-                }
-            }
-            AgentMessage::Assistant { content, .. } => {
-                for block in content {
-                    let Content::ToolCall {
-                        name, arguments, ..
-                    } = block
-                    else {
-                        continue;
-                    };
-                    if name != "write" {
-                        continue;
-                    }
-                    let path = arguments.get("path").and_then(serde_json::Value::as_str);
-                    let body = arguments.get("content").and_then(serde_json::Value::as_str);
-                    if let (Some(path), Some(body)) = (path, body)
-                        && data_path(path)
-                    {
-                        written.push((path.to_owned(), body.to_owned()));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    if !written.is_empty() {
+    let mut seen = history.seen().to_owned();
+    if !history.written().is_empty() {
         seen.push_str(&printed_facts(printed));
     }
-    written
-        .into_iter()
+    history
+        .written()
+        .iter()
         .filter_map(|(path, body)| {
-            let figures: Vec<String> = figures_of(&body)
+            let figures: Vec<String> = figures_of(body)
                 .into_iter()
                 .filter(|figure| !seen.contains(figure.as_str()))
                 .collect();
-            (!figures.is_empty()).then_some((path, figures))
+            (!figures.is_empty()).then_some((path.clone(), figures))
         })
         .collect()
 }
@@ -464,42 +402,8 @@ pub fn numbers_of(text: &str) -> Vec<String> {
     out
 }
 
-/// Every tool result and user message the session has persisted, joined for a substring test.
-fn seen_text(store: &StoreHandle) -> String {
-    let Some(session) = store() else {
-        return String::new();
-    };
-    let entries = yi_session::lock_session(&session)
-        .find_entries(&yi_session::EntryQuery {
-            entry_type: Some("message"),
-            ..yi_session::EntryQuery::default()
-        })
-        .unwrap_or_default();
-    let mut seen = String::new();
-    for entry in entries {
-        let yi_types::entry::Entry::Message { message, .. } = entry else {
-            continue;
-        };
-        match message {
-            AgentMessage::ToolResult { content, .. } => {
-                for block in content {
-                    if let Content::Text { text, .. } = block {
-                        seen.push_str(&text);
-                        seen.push('\n');
-                    }
-                }
-            }
-            AgentMessage::User {
-                content: UserContent::Text(text),
-                ..
-            } => {
-                seen.push_str(&text);
-                seen.push('\n');
-            }
-            _ => {}
-        }
-    }
-    seen
+fn seen_text(history: &super::claims::History, printed: &EnvironmentHandle) -> String {
+    format!("{}{}", history.seen(), printed_facts(printed))
 }
 
 pub fn unsourced(text: &str, seen: &str) -> Vec<String> {
@@ -683,8 +587,13 @@ fn claim_redrive(
             false,
         ));
     }
+    let mut history = todos.history.lock().ok();
+    if let (Some(session), Some(history)) = (store(), history.as_deref_mut()) {
+        let _ = history.claims_cached(&todos.list(), &session, todos.touched());
+    }
     if !cycle.artifact
-        && let Some((path, figures)) = artifact_figures(store, printed).into_iter().next()
+        && let Some(history) = history.as_deref()
+        && let Some((path, figures)) = artifact_figures(history, printed).into_iter().next()
     {
         cycle.artifact = true;
         record_intercept(store, 0, "artifact", &fingerprint, cycle.intercepts);
@@ -695,7 +604,10 @@ fn claim_redrive(
         ));
     }
     if !cycle.unsourced && !numbers_of(text).is_empty() {
-        let seen = format!("{}{}", seen_text(store), printed_facts(printed));
+        let seen = history
+            .as_deref()
+            .map(|history| seen_text(history, printed))
+            .unwrap_or_default();
         let numbers = unsourced(text, &seen);
         if !numbers.is_empty() {
             cycle.unsourced = true;
@@ -730,6 +642,9 @@ fn prompt_hook(
         else {
             return inner.as_ref().and_then(|inner| inner(prompt));
         };
+        if let Ok(mut history) = todos.history.lock() {
+            history.start_prompt();
+        }
         if let Ok(mut cycle) = cycle.lock() {
             cycle.prompt_claims_impossible = claims_impossible(text);
         }

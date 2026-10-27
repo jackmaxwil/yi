@@ -166,16 +166,21 @@ fn every_rlm_name_the_model_reads_is_public_in_the_package() -> TestResult {
 }
 
 /// Dogfood 2026-09-27: a cell's stream past 65,536 characters was cut, and no copy was kept.
-/// stdout and stderr each name the file that holds all of it.
+/// stdout, stderr and a displayed value each keep both ends and name the file with all of it.
 #[tokio::test]
 async fn a_cut_cell_stream_names_a_file_with_every_character() -> TestResult {
     let root = Scratch::new("yi-kernel-spill")?;
     let service = service();
+    let items: Vec<String> = (0..200_000).map(|n| n.to_string()).collect();
     let cells = [
         ("print('x' * 200_000)", "x".repeat(200_000) + "\n"),
         (
-            "import sys; sys.stderr.write('y' * 200_000)",
+            "import sys; _ = sys.stderr.write('y' * 200_000)",
             "y".repeat(200_000),
+        ),
+        (
+            "str(list(range(200_000)))",
+            format!("'[{}]'", items.join(", ")),
         ),
     ];
     for (code, whole) in cells {
@@ -194,7 +199,19 @@ async fn a_cut_cell_stream_names_a_file_with_every_character() -> TestResult {
         let path = (text.lines())
             .find_map(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
             .ok_or_else(|| format!("{code}: no pointer: {}", text.len()))?;
-        assert_eq!(std::fs::read_to_string(path)?, whole, "{code}");
+        let ends = [whole.get(..20), whole.get(whole.len().saturating_sub(20)..)];
+        let lost = ends.iter().flatten().find(|end| !text.contains(**end));
+        assert!(lost.is_none(), "{code}: lost {lost:?}");
+        let row = format!("[\u{2026} 65536 of {} chars kept", whole.chars().count());
+        assert!(
+            text.lines().any(|line| line.starts_with(&row)),
+            "{code}: no row"
+        );
+        assert!(
+            !text.contains("100000, 100001"),
+            "{code}: the middle was kept"
+        );
+        assert!(std::fs::read_to_string(path)? == whole, "{code}");
     }
     service.dispose().await;
     Ok(())
@@ -205,21 +222,22 @@ async fn a_cut_cell_stream_names_a_file_with_every_character() -> TestResult {
 #[tokio::test]
 async fn the_cell_a_cut_traceback_names_prints_the_exception_again() -> TestResult {
     let service = service();
-    let failed = cell(
-        &service,
-        "def deeper(n):\n    return deeper(n + 1)\ndeeper(0)",
-    )
-    .await?;
-    let shown = failed.result.error.ok_or("no error")?.traceback.join("\n");
-    let traceback = yi_tools::Involuntary::Traceback;
-    let viewed = yi_tools::view(traceback, &shown, "", 1, None, None);
-    let named = (viewed.text.lines()).find_map(|line| {
+    let code = "def deeper(n):\n    return deeper(n + 1)\ndeeper(0)";
+    let failed = cell(&service, code).await?;
+    let shown = yi_tools::cell_output(code, failed, None).result.content;
+    let text: String = (shown.iter())
+        .filter_map(|content| match content {
+            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let named = (text.lines()).find_map(|line| {
         line.split_once("the rest: an ipython cell running ")?
             .1
             .split_once(", which")
     });
     let call = named
-        .ok_or_else(|| format!("no cell named: {} B", viewed.text.len()))?
+        .ok_or_else(|| format!("no cell named: {} B", text.len()))?
         .0;
     let again = cell(&service, call).await?;
     let printed = again.result.stdout + &again.result.stderr;
@@ -459,7 +477,7 @@ async fn the_plan_skill_is_gone_and_plan_op_answers() -> TestResult {
         Arc::new(NoChildren),
     ));
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(engine, Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(engine, Actor::Owner, None, &mut registry);
     let service = service_with(registry);
     let outcome = cell(
         &service,
@@ -559,7 +577,12 @@ impl PlanRig {
 
     fn kernel(&self) -> Arc<KernelService> {
         let mut registry = HostRegistry::default();
-        yi_runtime::plan::request::register(Arc::clone(&self.engine), Actor::Owner, &mut registry);
+        yi_runtime::plan::request::register(
+            Arc::clone(&self.engine),
+            Actor::Owner,
+            None,
+            &mut registry,
+        );
         let kids = Arc::clone(&self.kids);
         let engine = Arc::clone(&self.engine);
         registry.register("rlm.wait", move |_payload| {
@@ -799,7 +822,7 @@ fn crewed(
             .with_width(std::num::NonZeroUsize::MIN),
     );
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
     let reply = |value: serde_json::Value| value.as_object().cloned().ok_or("reply".to_owned());
     registry.register("rlm.wait", move |_payload| {
         let spawned = Arc::clone(&crew);
