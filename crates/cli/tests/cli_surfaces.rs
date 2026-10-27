@@ -412,7 +412,8 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
 }
 
 /// A granted directory that does not exist, or that the sandbox must keep closed, ended the run
-/// before the model answered; a good one let it through.
+/// before the model answered; a good one let it through. The grant belongs to the run that named
+/// it: the ledger keeps none, so a `--continue` that omits the flag does not inherit it.
 #[test]
 fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> TestResult {
     let workspace = Workspace::new("allow-write")?;
@@ -432,6 +433,8 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
         &["--allow-write", &workspace.project().to_string_lossy()],
     )?;
     assert_eq!(run.status.code(), Some(0), "{run:?}");
+    let ledger = session_text(&workspace.0.join("home/sessions"))?;
+    assert!(!ledger.contains("permission_rule"), "{ledger}");
     Ok(())
 }
 

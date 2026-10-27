@@ -2,7 +2,6 @@
 //! in one binary. As 62 binaries each linked its own copy of the stack, so an edit to yi-types
 //! relinked all of them: 71 of the 173 CPU-seconds that rebuild cost. Cargo.toml sets
 //! `autotests = false`, so a new file here runs only once it has a line below.
-mod allow_write_journal;
 #[path = "support/own.rs"]
 mod own;
 #[path = "../../types/tests/support/recorded.rs"]
