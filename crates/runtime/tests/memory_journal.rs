@@ -144,14 +144,27 @@ fn an_over_cap_only_record_does_not_parent_the_next_append() -> TestResult {
 #[test]
 fn a_valid_record_after_an_over_cap_line_parents_the_next_append() -> TestResult {
     let (_dir, store) = imported("over-cap-then-valid")?;
-    let (mut bytes, valid) = over_cap_and_valid(&store)?;
+    fastest_read(&store, "fgj-forge-cli")?;
+    grow(&store, 1_000)?;
+    let small = fastest_read(&store, "fgj-forge-cli")?;
+    grow(&store, 50_000)?;
+    let (mut damage, valid) = over_cap_and_valid(&store)?;
+    let mut bytes = std::fs::read(journal(&store))?;
+    bytes.append(&mut damage);
     bytes.extend_from_slice(&valid.line().map_err(|error| format!("{error:?}"))?);
     let parent = valid.digest;
     std::fs::write(journal(&store), bytes)?;
     let note = store.resolve("fgj-forge-cli").ok_or("no such note")?;
+    let started = Instant::now();
     store.mark_read(&note.name)?;
+    let large = started.elapsed();
     let chain = records(&store)?;
     let read = chain.last().ok_or("no appended record")?;
     assert_eq!(read.digest_of(Some(&parent)).ok(), Some(read.digest));
+    let large = large.min(fastest_read(&store, "fgj-forge-cli")?);
+    assert!(
+        large <= small.saturating_mul(3),
+        "a read at 50,000 records took {large:?}, at 1,000 {small:?}"
+    );
     Ok(())
 }
