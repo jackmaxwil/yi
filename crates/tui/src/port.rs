@@ -135,8 +135,8 @@ impl Dirty {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// An unanswered read leaves the badge off rather than claiming a clean tree. A lane shows
-    /// its name where the badge would be, so it reads nothing and counts 0.
+    /// An unanswered read leaves the badge off rather than claiming a clean tree. A lane's row
+    /// has no badge, so it reads nothing and counts 0.
     pub fn refresh(self: &Arc<Self>, lane: bool, cwd: &str) {
         if lane {
             self.count.store(0, std::sync::atomic::Ordering::Relaxed);
