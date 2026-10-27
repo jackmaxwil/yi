@@ -6,6 +6,7 @@ mod decide;
 mod review;
 mod rules;
 mod safety;
+mod scope;
 
 pub use catastrophic::{
     CatastrophicContext, ReadGate, beneath, command_reads_credentials, credential_stores,
@@ -27,3 +28,4 @@ pub use safety::{
     Class, Parsed, Verdict, classify, command_segments, host_need, parse, refused_scopes, verdict,
     write_targets,
 };
+pub use scope::write_scope;

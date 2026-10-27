@@ -22,6 +22,7 @@ pub(crate) struct Args {
     pub(crate) mode: yi_runtime::PermissionMode,
     pub(crate) mode_pinned: bool,
     pub(crate) allow_write: Vec<String>,
+    pub(crate) scope: Vec<String>,
     pub(crate) session_dir: Option<String>,
     pub(crate) cwd: Option<String>,
     pub(crate) here: bool,
@@ -72,6 +73,7 @@ pub(super) fn parse_from(
     let mut no_deltas = false;
     let mut mode = None;
     let mut allow_write = Vec::new();
+    let mut scope = Vec::new();
     let mut session_dir = None;
     let mut cwd = None;
     let mut here = false;
@@ -114,6 +116,7 @@ pub(super) fn parse_from(
             Long("auto") => mode = Some(yi_runtime::PermissionMode::Auto),
             Long("confirm") => mode = Some(yi_runtime::PermissionMode::Ask),
             Long("allow-write") => allow_write.push(parser.value()?.string()?),
+            Long("scope") => scope.push(parser.value()?.string()?),
             Long("session-dir") => session_dir = Some(parser.value()?.string()?),
             Long("cwd") => cwd = Some(parser.value()?.string()?),
             Long("here") => here = true,
@@ -169,6 +172,7 @@ pub(super) fn parse_from(
         mode: mode.unwrap_or_else(configured_mode),
         mode_pinned: mode.is_some(),
         allow_write,
+        scope,
         session_dir,
         cwd,
         here,
@@ -221,6 +225,9 @@ fn inert_flags(args: &Args) -> Result<(), lexopt::Error> {
         return Err(lexopt::Error::Custom(
             "--no-deltas needs `yi ask --json`".into(),
         ));
+    }
+    if !args.scope.is_empty() && args.command != "ask" {
+        return Err(lexopt::Error::Custom("--scope needs `yi ask`".into()));
     }
     // The console, headless too, is a client of a daemon that never sees the cassette, and
     // `yi serve` does not hand it to its workers (#943).

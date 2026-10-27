@@ -17,7 +17,7 @@ pub enum RuleStateError {
 }
 
 /// Each field as `<byte length>:<field>\n` after the version tag, so no field runs into the next.
-fn identity(fields: &[&str]) -> String {
+pub(crate) fn identity(fields: &[&str]) -> String {
     ["yi-permission-state-v2"]
         .iter()
         .chain(fields)
@@ -214,15 +214,18 @@ pub fn write_grant(dir: &std::path::Path) -> Grant {
     }
 }
 
-/// The directory a [`write_grant`] names. Only a command rule is one: an exact `write` call's
-/// identity starts the same way and carries the call's arguments.
-pub fn write_grant_dir(rule: &SessionPermissionRule) -> Option<std::path::PathBuf> {
+/// The one field a command rule's identity carries after `tag`. Only a command rule is one: an
+/// exact `write` call's identity starts the same way and carries the call's arguments.
+pub(crate) fn tagged<'a>(rule: &'a SessionPermissionRule, tag: &str) -> Option<&'a str> {
     let canonical = (rule.kind == RuleKind::Command).then_some(rule.canonical.as_str())?;
-    let (length, dir) = canonical
-        .strip_prefix(&identity(&["write"]))?
-        .split_once(':')?;
-    let dir = dir.strip_suffix('\n')?;
-    (length.parse() == Ok(dir.len())).then(|| dir.into())
+    let (length, field) = canonical.strip_prefix(&identity(&[tag]))?.split_once(':')?;
+    let field = field.strip_suffix('\n')?;
+    (length.parse() == Ok(field.len())).then_some(field)
+}
+
+/// The directory a [`write_grant`] names.
+pub fn write_grant_dir(rule: &SessionPermissionRule) -> Option<std::path::PathBuf> {
+    tagged(rule, "write").map(Into::into)
 }
 
 /// Whether a rule keeps one exact command, the only kind a pathless refusal lets leave the
