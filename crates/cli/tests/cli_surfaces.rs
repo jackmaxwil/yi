@@ -12,7 +12,7 @@ use yi_types::plan::doc::PlanId;
 use crate::scratch::Scratch;
 
 use crate::prompt_slots_support::prompt_slots;
-use crate::session_files::{session_files, session_text};
+use crate::session_files::{recursive_files, session_files, session_text};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -2128,20 +2128,10 @@ fn telemetry_writes_spans_beside_the_session_and_stats_rolls_them_up() -> TestRe
         String::from_utf8_lossy(&answered.stderr)
     );
     let sessions = workspace.0.join("home/sessions");
-    let mut sidecars = Vec::new();
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    walk(&path, out)
-                } else if path.to_string_lossy().ends_with(".telemetry.jsonl") {
-                    out.push(path)
-                }
-            }
-        }
-    }
-    walk(&sessions, &mut sidecars);
+    let sidecars: Vec<_> = recursive_files(&sessions)?
+        .into_iter()
+        .filter(|path| path.to_string_lossy().ends_with(".telemetry.jsonl"))
+        .collect();
     assert_eq!(
         sidecars.len(),
         1,
@@ -2718,21 +2708,14 @@ fn memory_imports_lists_checks_and_forgets() -> TestResult {
 type Stamped = (PathBuf, Vec<u8>, std::time::SystemTime);
 
 fn files_at(dir: &std::path::Path) -> Result<Vec<Stamped>, Box<dyn Error>> {
-    let mut found = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(at) = stack.pop() {
-        for entry in std::fs::read_dir(&at)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                let modified = std::fs::metadata(&path)?.modified()?;
-                found.push((path.clone(), std::fs::read(&path)?, modified));
-            }
-        }
-    }
-    found.sort();
-    Ok(found)
+    Ok(recursive_files(dir)?
+        .into_iter()
+        .map(|path| {
+            let modified = std::fs::metadata(&path)?.modified()?;
+            let bytes = std::fs::read(&path)?;
+            Ok((path, bytes, modified))
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?)
 }
 
 #[test]

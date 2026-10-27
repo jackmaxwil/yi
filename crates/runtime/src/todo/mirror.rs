@@ -150,12 +150,6 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
                 let mut pace = yi_types::backoff::backoff(WAIT_RETRY_NAP);
                 let deadline = std::time::Instant::now() + WAIT_BUDGET;
                 return loop {
-                    if std::time::Instant::now() >= deadline {
-                        break Err(format!(
-                            "todo {label} still waits on {address}, but the plan kept \
-                             changing for {WAIT_BUDGET:?}"
-                        ));
-                    }
                     let read = engine
                         .store()
                         .read(&plan)
@@ -170,8 +164,16 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
                     }
                     match apply(unblock.clone(), Some(read.touched)) {
                         Ok(rendered) => break Ok(rendered),
-                        Err(PlanOpError::StaleRevision { .. }) => {
+                        Err(PlanOpError::StaleRevision { .. })
+                            if std::time::Instant::now() < deadline =>
+                        {
                             std::thread::sleep(pace());
+                        }
+                        Err(PlanOpError::StaleRevision { .. }) => {
+                            break Err(format!(
+                                "todo {label} still waits on {address}, but the plan kept \
+                                 changing for {WAIT_BUDGET:?}"
+                            ));
                         }
                         Err(error) => break Err(error.to_string()),
                     }

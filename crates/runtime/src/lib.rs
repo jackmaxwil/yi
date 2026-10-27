@@ -16,6 +16,7 @@ pub mod environment;
 pub mod ext;
 pub mod family;
 pub mod fetch;
+mod file_cache;
 pub mod gate;
 pub mod goal;
 pub mod history;

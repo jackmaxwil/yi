@@ -1223,12 +1223,12 @@ fn a_same_length_rewrite_with_its_mtime_restored_reads_the_new_plan() -> TestRes
     Ok(())
 }
 
-/// One `set` on a thirty-todo, two-hundred-record plan reduces the journal at most twice:
+/// One `set` on a thirty-todo, two-hundred-record plan reduces the journal exactly twice:
 /// once to load, once to read back what it committed.
 #[test]
-fn a_set_on_a_long_plan_reduces_its_journal_at_most_twice() -> TestResult {
+fn a_set_on_a_long_plan_reduces_its_journal_exactly_twice() -> TestResult {
     let Some(trace) =
-        traced("plan_journal::a_set_on_a_long_plan_reduces_its_journal_at_most_twice")?
+        traced("plan_journal::a_set_on_a_long_plan_reduces_its_journal_exactly_twice")?
     else {
         return Ok(());
     };
@@ -1256,6 +1256,6 @@ fn a_set_on_a_long_plan_reduces_its_journal_at_most_twice() -> TestResult {
     let out = engine.apply(owner(Op::Set { goal: None, rows }))?;
     let counted = reduces(&trace)?.saturating_sub(before);
     assert_eq!(out.plan, uncached(&store, &id)?);
-    assert!(counted <= 2, "one set reduced the journal {counted} times");
+    assert_eq!(counted, 2, "one set reduced the journal {counted} times");
     Ok(())
 }
