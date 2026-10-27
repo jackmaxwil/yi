@@ -45,7 +45,6 @@ def selfcheck():
         cargo.chmod(0o755)
         env = {**os.environ, "PATH": tmp, "DENY_OUT": lock}
         env.pop("CI", None)
-        env.pop("GITHUB_ACTIONS", None)
         p = subprocess.run([sys.executable, __file__], capture_output=True, text=True, env=env)
         row = f"skip deny (advisory database unreachable: {lock.strip()})\n"
         assert p.returncode == 0 and p.stdout == row + lock
