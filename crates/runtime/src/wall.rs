@@ -86,7 +86,11 @@ impl Wall {
     /// URL space — a read-walled path is also a walled `local://` URL.
     pub fn check_url(&self, url: &Url, workspace: &Path) -> Option<String> {
         let rendered = url.to_string();
-        if let Some(hit) = self.deny_url.iter().find(|prefix| walls(prefix, &rendered)) {
+        // A `local://` address prints a space as `%20`, so a raw-space prefix walls it too.
+        let walled = |prefix: &&String| {
+            walls(prefix, &rendered) || walls(&prefix.replace(' ', "%20"), &rendered)
+        };
+        if let Some(hit) = self.deny_url.iter().find(walled) {
             return Some(yi_tools::wall_refusal("fetch", hit, "deny_url"));
         }
         let raw = match url.scheme() {

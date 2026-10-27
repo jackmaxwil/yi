@@ -9,8 +9,10 @@ use yi_types::message::{AgentMessage, Usage};
 use yi_types::model::{Effort, Model};
 pub use yi_types::subagent::{ChildActivity, ChildExit, ChildId, ChildStatus, ChildUpdate};
 
+use crate::lease::off_executor;
 use crate::mail::Draft;
 use crate::mailbox::{ParentLink, timeout_of};
+use crate::schedule::GateFn;
 use crate::session::AgentSession;
 
 mod build;
@@ -23,6 +25,7 @@ pub(crate) mod trail;
 pub use record::ChildFeed;
 pub(crate) use record::Step;
 use record::preview;
+pub(crate) use runs::schema_answer;
 pub(crate) use service::Standing;
 
 // A completed child holds its slot until closed: the cap forces the parent to
@@ -39,6 +42,7 @@ pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
     session_dir: PathBuf,
     trail: Option<PathBuf>,
+    spawned_by: Option<String>,
     pub(crate) worktree: Option<crate::lane::Lane>,
     /// The worker share of the lane pool this child's checkout was taken from; dropped with
     /// the lane, so a settled child stops holding a slot nobody is standing in.
@@ -50,7 +54,7 @@ pub(crate) struct ChildRecord {
     /// Dispatched by the plan engine: its worktree goes through `submit` or a journaled
     /// disposition, never the kernel's merge or discard.
     pub(crate) managed: bool,
-    /// A juror or a service stands outside the worker cap and the owner's lifecycle notice.
+    /// A reader or a service stands outside the worker cap.
     pub(crate) standing: Standing,
     /// `None` while the run is live; every status, state and notice is read from it.
     pub(crate) exit: Option<ChildExit>,
@@ -161,6 +165,8 @@ impl std::ops::DerefMut for Children {
 pub struct ChildView {
     pub update: ChildUpdate,
     pub session: ChildFeed,
+    /// The tool call id of the kernel cell running when the host admitted the child, if any.
+    pub spawned_by: Option<String>,
 }
 
 pub struct ChildBuild<'a> {
@@ -229,7 +235,7 @@ pub struct SubagentHost {
     pub(crate) grant: Mutex<crate::lease::Grant>,
     pub(crate) finished: Mutex<Option<Arc<FinishFn>>>,
     pub(crate) settling: std::sync::atomic::AtomicUsize,
-    pub(crate) harvests: Mutex<HashMap<String, Option<String>>>,
+    pub(crate) harvests: Mutex<std::collections::HashSet<String>>,
     pub(crate) waits: std::sync::atomic::AtomicU64,
     pub(crate) told: Mutex<Option<(String, u64)>>,
     pub(crate) stuck: Mutex<std::collections::HashSet<String>>,
@@ -239,6 +245,11 @@ pub struct SubagentHost {
     pub(crate) mailboxes: std::sync::OnceLock<PathBuf>,
     pub(crate) partitions: Mutex<HashMap<String, std::time::Instant>>,
     pub(crate) leads: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
+    /// Invariant: a `check` runs `sh -c` on the host at `rlm.result`, so the host gate judges it
+    /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
+    pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
+    kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
+    pub(crate) claude_hooks: std::sync::OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
 }
 
 impl SubagentHost {
@@ -372,40 +383,6 @@ fn parse_fork(kwargs: &Map<String, Value>) -> Result<Fork, String> {
     }
 }
 
-/// The seed budget is the child's window less the reserve compaction needs.
-fn seed_for_fork(parent: &[AgentMessage], fork: Fork, window: u64) -> Vec<AgentMessage> {
-    let start = match fork {
-        Fork::None => return Vec::new(),
-        Fork::All => 0,
-        Fork::LastN(turns) => {
-            let boundaries: Vec<usize> = parent
-                .iter()
-                .enumerate()
-                .filter(|(_, message)| matches!(message, AgentMessage::User { .. }))
-                .map(|(index, _)| index)
-                .collect();
-            let wanted = usize::try_from(turns).unwrap_or(usize::MAX);
-            boundaries
-                .len()
-                .checked_sub(wanted)
-                .and_then(|index| boundaries.get(index).copied())
-                .unwrap_or(0)
-        }
-    };
-    let budget = window.saturating_sub(yi_context::Settings::default().reserve_tokens.0);
-    let mut kept: Vec<AgentMessage> = Vec::new();
-    let mut used = 0_u64;
-    for message in parent[start.min(parent.len())..].iter().rev() {
-        used = used.saturating_add(yi_context::estimate_message(message).0);
-        if used > budget {
-            break;
-        }
-        kept.push(message.clone());
-    }
-    kept.reverse();
-    kept
-}
-
 fn optional_string(kwargs: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
     match kwargs.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -417,7 +394,7 @@ fn optional_string(kwargs: &Map<String, Value>, key: &str) -> Result<Option<Stri
                 Ok(Some(trimmed.to_owned()))
             }
         }
-        Some(other) => Err(format!("rlm.run {key} must be a string, got {other}")),
+        Some(other) => Err(format!("{key} must be a string, got {other}")),
     }
 }
 
@@ -479,6 +456,9 @@ impl SubagentHost {
             mailboxes: std::sync::OnceLock::new(),
             partitions: Mutex::default(),
             leads: Mutex::default(),
+            check_gate: std::sync::OnceLock::new(),
+            claude_hooks: std::sync::OnceLock::new(),
+            kernel: std::sync::OnceLock::new(),
         }
     }
 
@@ -502,6 +482,10 @@ impl SubagentHost {
         self.deadline.lock().ok().and_then(|slot| *slot)
     }
 
+    pub(crate) fn claude_hooks(&self) -> Option<Arc<crate::claude_hooks::Hooks>> {
+        self.claude_hooks.get().cloned().flatten()
+    }
+
     /// Incident: a wait on an empty family exempted a repeated failing call from the breaker.
     pub(crate) fn waited_on(&self, live: bool) {
         if live || self.busy() {
@@ -519,6 +503,7 @@ impl SubagentHost {
                     .map(|(id, record)| ChildView {
                         update: crate::family::flagged(record.update(id), &states),
                         session: ChildFeed::of(Arc::clone(&record.session)),
+                        spawned_by: record.spawned_by.clone(),
                     })
                     .collect();
                 view.sort_by(|left, right| left.update.id.cmp(&right.update.id));
@@ -594,38 +579,16 @@ impl SubagentHost {
         prompt: String,
         kwargs: Map<String, Value>,
     ) -> Result<Map<String, Value>, String> {
-        self.spawn_seated(prompt, kwargs, None)
+        self.admit(prompt, kwargs, Standing::Worker)
     }
 
-    /// [`Self::spawn`], or a juror's seat when `seat` holds the verification reserve: a leaf
-    /// above the worker cap and the depth limit, still under the family cap and the lease.
-    pub(crate) fn spawn_seated(
-        self: &Arc<Self>,
-        prompt: String,
-        kwargs: Map<String, Value>,
-        seat: Option<&crate::plan::capacity::Permit>,
-    ) -> Result<Map<String, Value>, String> {
-        let juror =
-            seat.is_some_and(|seat| seat.purpose() == crate::plan::capacity::Purpose::Verification);
-        let standing = if juror {
-            Standing::Juror
-        } else {
-            Standing::Worker
-        };
-        self.admit(prompt, kwargs, standing)
-    }
-
-    /// Only a juror is above the depth limit; a juror and a service are above the worker cap.
     fn admit(
         self: &Arc<Self>,
         prompt: String,
         kwargs: Map<String, Value>,
         standing: Standing,
     ) -> Result<Map<String, Value>, String> {
-        let (juror, family_cap) = (
-            matches!(standing, Standing::Juror),
-            crate::levers::get().family_cap,
-        );
+        let family_cap = crate::levers::get().family_cap;
         build::require_kwargs(&kwargs)?;
         let mut kwargs = kwargs;
         if matches!(standing, Standing::Worker) && !kwargs.contains_key("role") {
@@ -672,10 +635,16 @@ impl SubagentHost {
                 "the family holds {family_cap} live sessions; reap one with rlm.delete_subagent before spawning"
             ));
         }
-        if !juror && self.options.depth >= self.options.max_depth {
+        if self.options.depth >= self.options.max_depth {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",
                 self.options.depth, self.options.max_depth
+            ));
+        }
+        let gate = self.check_gate.get().map(|gates| &gates.0);
+        if let Some(refused) = (check.as_deref()).and_then(|check| gate?(check)) {
+            return Err(format!(
+                "the check is refused before it runs on the host: {refused}"
             ));
         }
         let mut cast = self.cast(&kwargs)?;
@@ -707,15 +676,9 @@ impl SubagentHost {
         cast.2.container = container.as_ref().map(|held| held.name().to_owned());
         let child = self.build(cast, &session_name, &session_dir, cwd, &lease, None)?;
         let trail = self.trail_spawned(&session_name, &child_id, &child, &prompt);
-        reader::seed(&child, seed);
-        if fork != Fork::None {
-            let seed = seed_for_fork(
-                &(self.options.parent_messages)(),
-                fork,
-                child.model().context_window,
-            );
-            child.seed_messages(seed);
-        }
+        let window = child.model().context_window;
+        let forked = reader::seed_for_fork(&*self.options.parent_messages, fork, window);
+        reader::seed(&child, forked, seed);
         let session = Arc::new(child);
         self.options.family_live.enroll(&session);
         let lead = stagger.and_then(|stagger| stagger.arm(&session));
@@ -736,6 +699,7 @@ impl SubagentHost {
                     session_name: session_name.clone(),
                     session_dir: session_dir.clone(),
                     trail,
+                    spawned_by: self.spawning_cell(),
                     worktree,
                     lane_permit,
                     _container: container,
@@ -1078,9 +1042,7 @@ impl SubagentHost {
             Box::pin(async move {
                 let target = target.ok_or("rlm.result requires a target")?;
                 // A protocol child's result runs checks; keep them off the executor.
-                tokio::task::spawn_blocking(move || host.result(&target, schema.as_ref()))
-                    .await
-                    .map_err(|error| format!("rlm.result task failed: {error}"))?
+                off_executor("rlm.result", move || host.result(&target, schema.as_ref())).await
             })
         });
         let host = Arc::clone(self);
@@ -1094,9 +1056,7 @@ impl SubagentHost {
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let prompt = prompt.ok_or("rlm.run requires a prompt")?;
-                tokio::task::spawn_blocking(move || host.spawn(prompt, kwargs))
-                    .await
-                    .map_err(|error| format!("rlm.run task failed: {error}"))?
+                off_executor("rlm.run", move || host.spawn(prompt, kwargs)).await
             })
         });
         let host = Arc::clone(self);
@@ -1115,7 +1075,7 @@ impl SubagentHost {
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let target = target.ok_or("rlm.delete_subagent requires a target")?;
-                host.delete(&target)
+                off_executor("rlm.delete_subagent", move || host.delete(&target)).await
             })
         });
         for (method, merges) in [
@@ -1125,14 +1085,19 @@ impl SubagentHost {
             let host = Arc::clone(self);
             registry.register(method, move |payload| {
                 let target = payload.str_of("target").map(str::to_owned);
+                let check = optional_string(&payload, "check");
                 let host = Arc::clone(&host);
                 Box::pin(async move {
                     let target = target.ok_or_else(|| format!("{method} requires a target"))?;
-                    if merges {
-                        host.merge_worktree(&target)
-                    } else {
-                        host.discard_worktree(&target)
-                    }
+                    let check = check?;
+                    off_executor(method, move || {
+                        if merges {
+                            host.merge_worktree(&target, check.as_deref())
+                        } else {
+                            host.discard_worktree(&target)
+                        }
+                    })
+                    .await
                 })
             });
         }

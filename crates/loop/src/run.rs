@@ -149,12 +149,7 @@ fn tool_result_message(finalized: &Finalized) -> AgentMessage {
         content: finalized.result.content.clone(),
         details: Some(finalized.result.details.clone()),
         usage: finalized.result.usage.clone(),
-        added_tool_names: finalized
-            .result
-            .added_tool_names
-            .as_ref()
-            .filter(|names| !names.is_empty())
-            .cloned(),
+        added_tool_names: None,
         is_error: finalized.is_error,
         timestamp: 0,
     }
@@ -461,13 +456,19 @@ fn cut_message(partial: Option<&AgentMessage>, model: &Model, chars: usize) -> A
 /// `Done` at the moment of the cut, and the pump stops reading at the flag.
 const CUT_DRAIN: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// The provider's `Done` after a cut, if it comes within the bound; its usage is settled.
+/// The provider's `Done` after a cut, if it comes within the bound and before an abort.
 async fn drain_to_done(
     receiver: &mut tokio::sync::mpsc::Receiver<AssistantMessageEvent>,
+    signal: &InterruptSignal,
 ) -> Option<AgentMessage> {
     let deadline = tokio::time::Instant::now() + CUT_DRAIN;
     loop {
-        match tokio::time::timeout_at(deadline, receiver.recv()).await {
+        let event = tokio::select! {
+            biased;
+            () = signal.wait() => return None,
+            event = tokio::time::timeout_at(deadline, receiver.recv()) => event,
+        };
+        match event {
             Ok(Some(AssistantMessageEvent::Done { message, .. })) => return Some(message),
             Ok(Some(AssistantMessageEvent::Error { .. }) | None) | Err(_) => return None,
             Ok(Some(_)) => {}
@@ -476,8 +477,8 @@ async fn drain_to_done(
 }
 
 pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
-pub const STREAM_RETRY_TEXT: &str = "The provider dropped the stream before any output reached the transcript; the same turn runs again.";
-pub const STREAM_RETRY_AT: u32 = 1;
+const STREAM_RETRY_TEXT: &str = "The provider dropped the stream before any output reached the transcript; the same turn runs again.";
+const STREAM_RETRY_AT: u32 = 1;
 
 /// A stream that was generating, died on the wire or ended on an in-band error chunk, and
 /// showed nothing; a synthesized error with zero usage never went to a provider.
@@ -524,7 +525,7 @@ fn stream_retry(error: Option<&str>) -> AgentMessage {
 }
 
 pub const REPEAT_BREAK_CUSTOM_TYPE: &str = "repeat_break";
-pub const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns. Nothing is changing. Write the final answer now; call no tools.";
+const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns. Nothing is changing. Write the final answer now; call no tools.";
 pub const REPEAT_STEER_AT: u32 = 3;
 pub const REPEAT_STOP_AT: u32 = 6;
 const REPEAT_WINDOW: usize = 6;
@@ -665,8 +666,8 @@ async fn stream_assistant_response<S: StreamFn>(
     let mut cut: Option<usize> = None;
     let mut timed_out = false;
     loop {
-        // The provider's stream takes no cancellation input, so this is a streaming answer's
-        // only interrupt checkpoint; without it a tool-less turn ran to completion first.
+        // A fire also sets the cut the provider pump reads, so the request stops on the wire;
+        // here the loop stops reading, or a tool-less turn ran to completion first.
         let event = tokio::select! {
             biased;
             () = signal.wait() => None,
@@ -745,15 +746,17 @@ async fn stream_assistant_response<S: StreamFn>(
         }
     }
     let cut = match cut {
-        Some(chars) => {
-            let settled = drain_to_done(&mut receiver).await;
-            let source = settled
-                .as_ref()
-                .or_else(|| added_partial.then(|| context.messages.last()).flatten());
-            let tail = source.map(crate::reasoning::tail).unwrap_or_default();
-            final_message = Some(cut_message(source, model, chars));
-            Some(Cut { chars, tail })
-        }
+        Some(chars) => match drain_to_done(&mut receiver, signal).await {
+            None if signal.is_fired() => None,
+            settled => {
+                let source = settled
+                    .as_ref()
+                    .or_else(|| added_partial.then(|| context.messages.last()).flatten());
+                let tail = source.map(crate::reasoning::tail).unwrap_or_default();
+                final_message = Some(cut_message(source, model, chars));
+                Some(Cut { chars, tail })
+            }
+        },
         None => None,
     };
     let mut final_message = final_message.unwrap_or_else(|| {

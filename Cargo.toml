@@ -74,7 +74,6 @@ unicode-width = { version = "0.2", default-features = false }
 rustix = { version = "0.38", default-features = false, features = ["fs", "process", "std", "stdio"] }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 vt100 = { version = "0.15", default-features = false }
-insta = { version = "1", default-features = false }
 proptest = { version = "1", default-features = false, features = ["std"] }
 rmcp = { version = "3", default-features = false, features = ["server", "transport-io", "macros"] }
 
@@ -89,6 +88,7 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 todo = "deny"
+unreachable = "deny"
 unimplemented = "deny"
 await_holding_lock = "deny"
 await_holding_invalid_type = "deny"

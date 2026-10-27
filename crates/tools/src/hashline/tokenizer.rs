@@ -1,6 +1,6 @@
 use super::format::{
-    HL_CUT_KEYWORD, HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX,
-    HL_MOVE_KEYWORD, HL_PUT_KEYWORD, HL_REM_KEYWORD, describe_anchor_examples,
+    HL_CUT_KEYWORD, HL_FILE_HASH_LENGTH, HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_MOVE_KEYWORD,
+    HL_PUT_KEYWORD, HL_REM_KEYWORD,
 };
 use super::messages::{ABORT_MARKER, BEGIN_PATCH_MARKER, END_PATCH_MARKER};
 use super::types::{Anchor, ParsedRange};
@@ -80,22 +80,6 @@ fn scan_line_number(line: &[u8], index: usize, end: usize) -> Option<NumberScan>
         line: value,
         next_index,
     })
-}
-
-pub fn parse_lid(raw: &str, line_num: u64) -> Result<Anchor, String> {
-    let bytes = raw.as_bytes();
-    let end = trim_end_index(bytes);
-    let number_start = skip_whitespace(bytes, 0, end);
-    let number = scan_line_number(bytes, number_start, end);
-    match number {
-        Some(number) if skip_whitespace(bytes, number.next_index, end) == end => {
-            Ok(Anchor { line: number.line })
-        }
-        _ => Err(format!(
-            "line {line_num}: expected a line number such as {}; got {raw:?}. Use {HL_FILE_PREFIX}PATH{HL_FILE_HASH_SEP}hash{HL_FILE_SUFFIX} from your latest read for file-version binding.",
-            describe_anchor_examples("119")
-        )),
-    }
 }
 
 struct RangeScan {

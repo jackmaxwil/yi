@@ -13,13 +13,21 @@ mod decide;
 mod effort_catalog;
 mod faux_events;
 mod images;
+mod kimi_catalog;
+mod kimi_wire;
 mod leak;
+#[path = "../../types/tests/support/loopback.rs"]
+mod loopback;
+#[path = "../../types/tests/support/loopback_server.rs"]
+mod loopback_server;
 mod model_headers;
 mod oauth;
 mod openai_mapper;
 mod openai_responses;
 mod openrouter;
 mod proxy;
+mod pump_stop;
+mod quota;
 mod refresh;
 mod resend;
 mod strict_tools;

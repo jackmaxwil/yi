@@ -7,6 +7,7 @@ use yi_types::model::Model;
 
 use crate::args::Args;
 use crate::mailbox::{ParentLink, register_child_messaging};
+use crate::rules::RuleEngine;
 use crate::session::AgentSession;
 use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
 
@@ -55,6 +56,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             schema_instruction: None,
             context_window: child.model().context_window,
             global_skills: Vec::new(),
+            can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
         }));
         let host = attach_runtime(
             &mut child,
@@ -244,6 +246,9 @@ impl RuntimeWiring {
         let mut sandbox = crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())?;
         sandbox.host_owned.extend(self.sessions_dir.clone());
         sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
+        sandbox
+            .deny_write
+            .extend(crate::permission::claude_dir(self.broker.as_deref()));
         sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
         if !self.wall.is_empty() {
             let roots = crate::tools::walled_roots(&self.wall, self.broker.as_deref());
@@ -343,6 +348,7 @@ fn wire_schedule(
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
             .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver))
             .with_stop(session.halt_hook())
+            .with_notice(session.notice_hook(HostSource::Notice))
             .with_words(session.store_handle())
             .with_channels(
                 wiring
@@ -351,15 +357,16 @@ fn wire_schedule(
                     .unwrap_or(&wiring.rlm_dir)
                     .join("channels"),
             )
-            .with_gate(crate::tools::heartbeat_gate(
+            .with_gate(crate::tools::host_gate(
                 wiring,
                 session.rules_handle(),
+                RuleEngine::check_tool,
                 wiring.own_paths(session),
             ))
             .interned();
     crate::schedule::adapter::adapters_home(&wiring.home);
     let heartbeats = Arc::new(match (&wiring.sessions_dir, wiring.depth) {
-        (Some(sessions), 0) => heartbeats.durable(sessions.join("schedules")),
+        (Some(sessions), 0) => heartbeats.durable(crate::schedule::schedules_root(sessions)),
         _ => heartbeats,
     });
     heartbeats.register(registry);
@@ -465,7 +472,7 @@ fn wire_fetch(
             Ok(fetched.into_reply(page.is_some()))
         })
     });
-    register_history_grep(registry, session.store_handle());
+    crate::history::register_grep(registry, session.store_handle(), &wiring.wall);
     if let Some(dir) = wiring.sessions_dir.clone().filter(|_| wiring.depth == 0) {
         crate::history::register(registry, dir, wiring.cwd.clone());
     }
@@ -477,76 +484,6 @@ fn wire_fetch(
         wiring.depth == 0,
     );
     resolver
-}
-
-pub fn register_history_grep(
-    registry: &mut crate::kernel::HostRegistry,
-    handle: crate::goal::StoreHandle,
-) {
-    registry.register("history.grep", move |payload| {
-        let handle = Arc::clone(&handle);
-        Box::pin(async move {
-            let pattern = payload
-                .str_of("pattern")
-                .map(str::trim)
-                .filter(|pattern| !pattern.is_empty())
-                .ok_or_else(|| "history.grep requires a \"pattern\" argument".to_owned())?
-                .to_owned();
-            let number = |key: &str, default: usize| {
-                payload
-                    .get(key)
-                    .and_then(Value::as_u64)
-                    .map_or(default, |n| usize::try_from(n).unwrap_or(default))
-            };
-            let (offset, limit) = (number("offset", 0), number("limit", 8));
-            let page = tokio::task::spawn_blocking(move || {
-                let shared = handle()
-                    .ok_or_else(|| "history.grep: missing an attached session store".to_owned())?;
-                let store = yi_session::lock_session(&shared);
-                Ok::<_, String>((store.grep_page(&pattern, offset, limit), pattern))
-            })
-            .await
-            .map_err(|error| format!("history.grep task failed: {error}"))??;
-            let ((hits, total), pattern) = page;
-            Ok(grep_reply(&hits, total, &pattern, offset, limit))
-        })
-    });
-}
-
-fn grep_reply(
-    hits: &[yi_session::HistoryHit],
-    total: usize,
-    pattern: &str,
-    offset: usize,
-    limit: usize,
-) -> Map<String, Value> {
-    let mut reply = Map::new();
-    let items = hits
-        .iter()
-        .map(|hit| {
-            let mut item = Map::new();
-            item.insert("entryId".to_owned(), Value::String(hit.entry_id.clone()));
-            item.insert("type".to_owned(), Value::String(hit.entry_type.clone()));
-            item.insert("snippet".to_owned(), Value::String(hit.snippet.clone()));
-            Value::Object(item)
-        })
-        .collect();
-    reply.insert("hits".to_owned(), Value::Array(items));
-    reply.insert("total".to_owned(), Value::from(total));
-    let next = offset.saturating_add(hits.len());
-    if next < total {
-        let cap = limit.clamp(1, yi_session::GREP_PAGE_MAX);
-        let quoted = Value::from(pattern);
-        reply.insert(
-            "notice".to_owned(),
-            Value::from(format!(
-                "[{} of {total} hits · limit {cap} (at most {}) · compact.recall({quoted}, limit={cap}, offset={next}) for the next]",
-                hits.len(),
-                yi_session::GREP_PAGE_MAX,
-            )),
-        );
-    }
-    reply
 }
 
 /// The engine and `plan.op` with this session's principal; `None` (no plan surface at all)
@@ -616,10 +553,10 @@ fn wire_plan_request(
         .with_cwd(cwd.clone())
         .with_owned(owned_roots(session, host))
         .with_owner_words(session.store_handle());
-    // This session's host seats the juries (plan section 6.4). A verification never outlives
-    // the run (D177): the verifier and every lane settle read the session's deadline too.
+    // Invariant: a verification never outlives the run (D177): the verifier and every lane
+    // settle read the session's deadline too.
     let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
-        .with_judge(Arc::new(crate::plan::judge::Jury::new(Arc::clone(host))));
+        .with_claude_hooks(session.claude_hooks(&cwd));
     if let Some(deadline) = session.deadline()
         && let Some(ends) = deadline.started.checked_add(deadline.total)
     {
@@ -641,7 +578,8 @@ fn wire_plan_request(
     if wiring.depth == 0 {
         todos.set_carry(crate::todo::mirror::carry(Arc::downgrade(&engine)));
     }
-    crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
+    let gate = session.heartbeat_service().and_then(|beat| beat.gate());
+    crate::plan::request::register(Arc::clone(&engine), actor.clone(), gate, registry);
     Some((engine, actor, todos))
 }
 
@@ -807,15 +745,22 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
 pub(crate) fn wire_job_completions(session: &AgentSession) {
     let (report, owner) = (session.job_report_hook(), session.job_owner());
     tokio::spawn(crate::session::until(job_settled(), move || {
-        let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();
-        let texts = reports.map(|report| {
-            let (job, headline, body) = (report.id, report.headline(), &report.output);
-            let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
-            let unread: crate::session::StillNews =
-                Arc::new(move || !yi_tools::jobs::registry().delivered(job));
-            (text, unread)
-        });
-        if report(texts.collect()) {
+        let (ids, texts): (Vec<_>, Vec<_>) = yi_tools::jobs::registry()
+            .take_finished(owner)
+            .into_iter()
+            .map(|report| {
+                let (job, headline, body) = (report.id, report.headline(), report.view());
+                let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
+                let unread: crate::session::StillNews =
+                    Arc::new(move || !yi_tools::jobs::registry().delivered(job));
+                (job, (text, unread))
+            })
+            .unzip();
+        let queued = report(texts);
+        for id in ids {
+            yi_tools::jobs::registry().mark_announced(id, queued);
+        }
+        if queued {
             std::ops::ControlFlow::Continue(None)
         } else {
             std::ops::ControlFlow::Break(())
@@ -878,10 +823,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         session.set_deadline(total);
     }
     session.provider().settle_into(session.settle_hook(None));
-    let plans_dir = wiring
-        .plans_dir
-        .clone()
-        .unwrap_or_else(|| wiring.cwd.join(crate::plan::PLANS_DIR));
+    let plans_dir = crate::plan::resolve_plans_dir(wiring.plans_dir.clone(), &wiring.cwd);
     wiring.plans_dir = Some(plans_dir.clone());
     if session.compactor().is_none() {
         session.enable_compaction_with_summarizer(
@@ -959,6 +901,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let (tools_now, root) = (session.tools_handle(), wiring.parent_link.is_none());
     crate::kernel_tools::register(&mut registry, tools_now, Arc::clone(&calls), root);
     let service = wire_kernel(session, &wiring, registry);
+    host.attach_kernel(&service);
     wire_advisor(session, &wiring);
     if wiring.kernel_prewarm {
         let warm = Arc::clone(&service);
@@ -1051,8 +994,13 @@ fn subagent_host(
         plans_dir: plans_dir.to_path_buf(),
         family_live: Arc::clone(&wiring.kernels),
     }));
+    let _first_wins = host.claude_hooks.set(session.claude_hooks(&wiring.cwd));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
+    let (handle, own) = (session.rules_handle(), wiring.own_paths(session));
+    let gate = |scan| crate::tools::host_gate(wiring, handle.clone(), scan, own.clone());
+    let gates = (gate(RuleEngine::check_tool), gate(RuleEngine::recheck_tool));
+    host.check_gate.get_or_init(|| gates);
     let counted = Arc::downgrade(&host);
     session.set_waits(Arc::new(move || {
         let host = counted.upgrade();
@@ -1133,42 +1081,6 @@ fn wire_compacted(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_cut_grep_page_names_the_call_for_the_next_page() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let mut store = yi_session::SessionStore::in_memory(yi_types::wire::SessionMetadata {
-            id: "s".to_owned(),
-            created_at: 0,
-            parent_session_id: None,
-            name: None,
-        });
-        for turn in 0..10 {
-            store.append_compaction(
-                "main",
-                format!("the ö needle, turn {turn}"),
-                Vec::new(),
-                1,
-                None,
-            )?;
-        }
-        let (hits, total) = store.grep_page("Needle", 0, 8);
-        let reply = grep_reply(&hits, total, "Needle", 0, 8);
-        assert_eq!(reply["total"], 10);
-        assert_eq!(
-            reply["notice"],
-            "[8 of 10 hits · limit 8 (at most 32) · compact.recall(\"Needle\", limit=8, offset=8) for the next]"
-        );
-        let (rest, total) = store.grep_page("Needle", 8, 8);
-        let last = grep_reply(&rest, total, "Needle", 8, 8);
-        assert_eq!(last["hits"].as_array().map(Vec::len), Some(2));
-        assert!(last.get("notice").is_none(), "{last:?}");
-        let (clamped, total) = store.grep_page("needle", 0, 500);
-        let wide = grep_reply(&clamped, total, "needle", 0, 500);
-        assert_eq!(wide["hits"].as_array().map(Vec::len), Some(10));
-        assert!(wide.get("notice").is_none());
-        Ok(())
-    }
 
     /// #1001: with no Seatbelt (Linux) a walled kernel and its `bash()` jobs would run with no
     /// profile, so a cell would meet no wall at all; it is refused before it boots.

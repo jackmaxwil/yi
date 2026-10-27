@@ -1,10 +1,10 @@
 use serde_json::Value;
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::{AssistantMessageEvent, Wait};
-use yi_types::message::{AgentMessage, StopReason, Usage};
+use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::Model;
 
-use crate::retry::{RetryPolicy, is_retryable_status, retry_delay};
+use crate::retry::{RetryPolicy, is_retryable_status, quota_exhausted, retry_delay};
 use crate::sse::SseEvent;
 
 pub fn empty_assistant(model: &Model) -> AgentMessage {
@@ -26,6 +26,58 @@ pub fn empty_assistant(model: &Model) -> AgentMessage {
         end_turn: None,
         timestamp: 0,
     }
+}
+
+pub(crate) fn assistant_content_mut(message: &mut AgentMessage) -> Option<&mut Vec<Content>> {
+    match message {
+        AgentMessage::Assistant { content, .. } => Some(content),
+        _ => None,
+    }
+}
+
+pub(crate) fn assistant_block_mut(
+    message: &mut AgentMessage,
+    index: usize,
+) -> Option<&mut Content> {
+    assistant_content_mut(message)?.get_mut(index)
+}
+
+pub(crate) fn push_assistant_block(message: &mut AgentMessage, block: Content) -> usize {
+    let Some(content) = assistant_content_mut(message) else {
+        return 0;
+    };
+    content.push(block);
+    content.len().saturating_sub(1)
+}
+
+pub(crate) fn content_end_events(
+    output: &mut AgentMessage,
+    mut include_tool: impl FnMut(usize) -> bool,
+) -> Vec<AssistantMessageEvent> {
+    crate::leak::recover_in(output);
+    assistant_content_mut(output)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .filter_map(|(content_index, block)| match block {
+            Content::Text { text, .. } => Some(AssistantMessageEvent::TextEnd {
+                content_index,
+                content: text.clone(),
+            }),
+            Content::Thinking { thinking, .. } => Some(AssistantMessageEvent::ThinkingEnd {
+                content_index,
+                content: thinking.clone(),
+            }),
+            Content::ToolCall { .. } if include_tool(content_index) => {
+                Some(AssistantMessageEvent::ToolCallEnd {
+                    content_index,
+                    tool_call: block.clone(),
+                })
+            }
+            Content::ToolCall { .. } | Content::Image { .. } => None,
+        })
+        .collect()
 }
 
 /// Invariant: a configured proxy is applied or startup fails — degrading to a
@@ -100,6 +152,7 @@ pub fn host_of(url: &str) -> &str {
 
 fn agent(url: &str, proxy: Option<&ProxyConfig>) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
+        .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout_read(std::time::Duration::from_secs(20));
     if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
@@ -170,6 +223,7 @@ static POOLED: std::sync::Mutex<Option<(ureq::Agent, std::time::Instant)>> =
 // ponytail: a proxied request pools nothing; key the pool by proxy if that path matters.
 fn stream_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
     let builder = ureq::AgentBuilder::new()
+        .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(30))
         .timeout_read(std::time::Duration::from_secs(60));
     if let Some(proxy) = proxy {
@@ -225,19 +279,22 @@ pub fn send_with_retry(
         match sent {
             Ok(response) => return Ok(response),
             Err(ureq::Error::Status(status, response)) => {
-                let retryable = is_retryable_status(status)
-                    && attempt < policy.max_attempts
-                    && started.elapsed() < policy.max_total_wall;
-                if !retryable {
-                    let text = response.into_string().unwrap_or_default();
-                    return Err(format!("HTTP {status}: {text}"));
-                }
                 let retry_after_ms = response
                     .header("retry-after-ms")
                     .and_then(|value| value.parse::<f64>().ok());
                 let retry_after = response
                     .header("retry-after")
                     .and_then(|value| value.parse::<f64>().ok());
+                let text = response.into_string().unwrap_or_default();
+                if quota_exhausted(status, &text, url) {
+                    return Err(format!("HTTP {status} quota exhausted: {text}"));
+                }
+                let retryable = is_retryable_status(status)
+                    && attempt < policy.max_attempts
+                    && started.elapsed() < policy.max_total_wall;
+                if !retryable {
+                    return Err(format!("HTTP {status}: {text}"));
+                }
                 let delay = retry_delay(attempt, retry_after_ms, retry_after, &policy);
                 attempt = attempt.saturating_add(1);
                 announce(on_retry, attempt, &policy, delay, format!("HTTP {status}"));

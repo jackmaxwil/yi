@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yi_context::{
-    Preparation, Settings, Tokens, Window, compose_summary, convert_to_llm, drop_internal,
+    Preparation, Settings, Tokens, compose_summary, convert_to_llm, drop_internal,
     estimate_context, estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
     serialize_conversation, should_compact,
 };
@@ -88,11 +88,11 @@ fn carried(summary: &str) -> &str {
         .filter_map(|tag| body.find(tag))
         .min()
         .unwrap_or(body.len());
-    body[..end].trim()
+    body.get(..end).unwrap_or(body).trim()
 }
 
 /// The earliest cut point from which the rest of `messages` fits `budget`.
-fn fitting_start(messages: &[AgentMessage], budget: Tokens) -> Option<usize> {
+pub(crate) fn fitting_start(messages: &[AgentMessage], budget: Tokens) -> Option<usize> {
     let (mut kept, mut found) = (Tokens(0), None);
     for (index, message) in messages.iter().enumerate().rev() {
         kept = kept.saturating_add(wide(estimate_message(message)));
@@ -229,12 +229,12 @@ pub struct CompactStatus {
     pub scheduled: bool,
 }
 
+#[derive(Default)]
 pub struct Compactor {
     pub settings: Settings,
     /// §5 `summarizer` role. The window math stays on the turn's own model: a cheaper
     /// summarizer with a smaller window must not make compaction look overdue.
     pub summarizer: Option<Model>,
-    window: Mutex<Window>,
     pending: AtomicBool,
     running: AtomicBool,
     /// Invariant: set while the last entry failed to write; only `/compact` spends the summarizer.
@@ -269,12 +269,6 @@ impl Drop for Raised<'_> {
 /// Read at every compaction rather than stored, so a directive derived from
 /// live state cannot go stale between the schedule and the summarizer call.
 pub type Standing = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
-
-fn lock_window(window: &Mutex<Window>) -> std::sync::MutexGuard<'_, Window> {
-    window
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 fn synthesize_entries(messages: &[AgentMessage]) -> Vec<Entry> {
     messages
@@ -364,22 +358,6 @@ fn directive_message(
 }
 
 impl Compactor {
-    pub fn new(initial_window_id: String) -> Self {
-        Self {
-            settings: Settings::default(),
-            summarizer: None,
-            window: Mutex::new(Window::new_initial(initial_window_id)),
-            pending: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-            unsaved: AtomicBool::new(false),
-            instructions: Mutex::new(None),
-            standing: Mutex::new(None),
-            opening: Mutex::new(None),
-            stale: Mutex::new(None),
-            ceiling: AtomicU64::new(0),
-        }
-    }
-
     /// The reason when `tokens` is under what a compaction keeps and was raised to it.
     pub fn set_ceiling(&self, tokens: Option<u64>) -> Option<String> {
         let tokens = tokens.unwrap_or(0);
@@ -398,39 +376,15 @@ impl Compactor {
         })
     }
 
-    /// Rebuilds the window chain and the stale reply from the latest compaction entry, which
-    /// stores both its details and the kept tail; resume would otherwise compact once more.
-    /// A branch with none (a rewind past the compaction) goes back to the initial window.
+    /// Rebuilds the stale reply from the latest compaction entry's kept tail; resume would
+    /// otherwise compact once more. A branch with none (a rewind past it) has no stale reply.
     pub fn resume(&self, entries: &[yi_types::entry::Entry]) {
         let latest = entries.iter().rev().find_map(|entry| match entry {
-            yi_types::entry::Entry::Compaction {
-                retained_tail,
-                details,
-                ..
-            } => Some((retained_tail, details)),
+            yi_types::entry::Entry::Compaction { retained_tail, .. } => Some(retained_tail),
             _ => None,
         });
-        let mut window = lock_window(&self.window);
-        match latest {
-            None => *window = Window::new_initial(window.ids().first),
-            Some((_, details)) => {
-                let ids = details
-                    .as_ref()
-                    .and_then(|value| {
-                        serde_json::from_value::<yi_types::compaction::CompactionDetails>(
-                            value.clone(),
-                        )
-                        .ok()
-                    })
-                    .and_then(|details| details.window);
-                if let Some(ids) = ids {
-                    *window = Window::restore(ids.number, ids);
-                }
-            }
-        }
-        drop(window);
         if let Ok(mut slot) = self.stale.lock() {
-            *slot = latest.and_then(|(tail, _)| {
+            *slot = latest.and_then(|tail| {
                 tail.iter()
                     .rfind(|message| reply_tokens(message).is_some())
                     .cloned()
@@ -749,7 +703,7 @@ impl Compactor {
                 break;
             }
         }
-        let (composed, mut details, retained_tail, elision) = match summary {
+        let (composed, details, retained_tail, elision) = match summary {
             Ok(text) => {
                 let (composed, details) =
                     compose_summary(&text, &prepared.file_ops, &prepared.view);
@@ -777,12 +731,6 @@ impl Compactor {
                 }
             },
         };
-        let new_window_id = match store {
-            Some(store) => yi_session::lock_session(store).next_id(),
-            None => format!("win-{}", yi_session::now_ms()),
-        };
-        let mut next = lock_window(&self.window).clone();
-        details.window = Some(next.advance(new_window_id));
         let timestamp = yi_session::now_ms();
         if let Some(store) = store {
             let details_value = serde_json::to_value(&details).ok();
@@ -796,7 +744,6 @@ impl Compactor {
             self.unsaved.store(saved.is_err(), Ordering::Relaxed);
             saved?;
         }
-        *lock_window(&self.window) = next;
         if let Ok(mut slot) = self.stale.lock() {
             *slot = retained_tail
                 .iter()

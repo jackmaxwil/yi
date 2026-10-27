@@ -2,7 +2,7 @@
 //! was told, and a store the lease journal lands in.
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
@@ -76,6 +76,16 @@ pub fn memory_store(id: &str) -> yi_session::SharedSession {
     )))
 }
 
+pub async fn wait_for_path(path: &Path, message: &str) -> Result<(), Box<dyn std::error::Error>> {
+    for _ in 0..200 {
+        if path.exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    Err(message.into())
+}
+
 pub fn faux_model() -> Model {
     let zero = || serde_json::Number::from(0u64);
     Model {
@@ -109,6 +119,16 @@ pub fn family(
     store: yi_session::SharedSession,
     hold: Option<&'static str>,
 ) -> Family {
+    family_with_slots(dir, cwd, store, hold, 2)
+}
+
+pub fn family_with_slots(
+    dir: PathBuf,
+    cwd: PathBuf,
+    store: yi_session::SharedSession,
+    hold: Option<&'static str>,
+    lane_slots: u8,
+) -> Family {
     let built: Arc<Mutex<Vec<Built>>> = Arc::default();
     let notices: Arc<Mutex<Vec<String>>> = Arc::default();
     let (seen, told, journal) = (Arc::clone(&built), Arc::clone(&notices), store.clone());
@@ -124,7 +144,7 @@ pub fn family(
         plans_dir: cwd.join(".yi/plans"),
         cwd,
         home: dir.join("home"),
-        lane_slots: 2,
+        lane_slots,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut seen) = seen.lock() {

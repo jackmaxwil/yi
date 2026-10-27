@@ -4,7 +4,9 @@
 mod child_result;
 mod config_migrate;
 mod contract;
+mod diff;
 mod effort;
+mod encoding;
 mod graph;
 mod image;
 mod journal_chain;
@@ -17,5 +19,7 @@ mod session_output;
 mod settings;
 mod stream_apply;
 mod text_newtypes;
+mod todo;
 mod todo_record;
+mod url;
 mod wire_roundtrip;

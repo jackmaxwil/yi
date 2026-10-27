@@ -45,7 +45,7 @@
 {"id": "console.titleWeights", "label": "Title scene odds", "tab": "Interface", "help": "scene name to weight, e.g. kali 8, echo 2; a weight of 0 turns a scene off, all zero turns the title off; edit in config.json", "kind": {"type": "json"}, "applies": "consoleRestart"},
 {"id": "browser.path", "label": "Browser", "tab": "Interface", "help": "Chrome or Chromium the browser pane runs; unset, the installed one is found", "kind": {"type": "text"}, "applies": "consoleRestart"},
 {"id": "telemetry.enabled", "label": "Telemetry", "tab": "Interface", "help": "write one span per request, tool call and turn beside the session", "kind": {"type": "toggle"}, "applies": "nextSession", "default": false},
-{"id": "tui.pace", "label": "Reveal pace %", "tab": "Interface", "help": "the solo TUI's streaming speed; 0 paints at once", "kind": {"type": "number", "integer": true, "min": 0, "max": 1000}, "applies": "soloTui"},
+{"id": "tui.pace", "label": "Reveal pace %", "tab": "Interface", "help": "the streaming speed in both UIs; 0 paints at once", "kind": {"type": "number", "integer": true, "min": 0, "max": 1000}, "applies": "consoleRestart"},
 {"id": "keys", "label": "Solo keymap", "tab": "Interface", "help": "the solo TUI's key bindings; edit in config.json", "kind": {"type": "json"}, "applies": "soloTui"},
 {"id": "open", "label": "Open in apps", "tab": "Interface", "help": "a name and a command per app, `{path}` standing for the message saved as markdown; edit in config.json", "kind": {"type": "json"}, "applies": "consoleRestart"}
 ]
