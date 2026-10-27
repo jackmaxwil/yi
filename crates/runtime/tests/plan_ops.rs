@@ -2276,6 +2276,22 @@ mod contracts {
         Ok((goal, specs))
     }
 
+    fn put_checker(
+        store: &PlanStore,
+        plan: &PlanId,
+        command: &str,
+    ) -> Result<ArtifactRef, Box<dyn Error>> {
+        let manifest = json!({
+            "manifest": 1, "command": command, "cwd": "snapshot_root", "cwd_subdir": null,
+            "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
+        });
+        Ok(store.artifacts(plan).put(
+            &serde_json::to_vec(&manifest)?,
+            "application/vnd.yi.checker-manifest+json",
+            &store.nonce(),
+        )?)
+    }
+
     /// A contract built here, not from a fixture: one critical cmd item over a manifest.
     fn cmd_contract(
         store: &PlanStore,
@@ -2283,15 +2299,7 @@ mod contracts {
         command: &str,
         class: &str,
     ) -> Result<Contract, Box<dyn Error>> {
-        let manifest = json!({
-            "manifest": 1, "command": command, "cwd": "snapshot_root", "cwd_subdir": null,
-            "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
-        });
-        let put = store.artifacts(plan).put(
-            &serde_json::to_vec(&manifest)?,
-            "application/vnd.yi.checker-manifest+json",
-            &store.nonce(),
-        )?;
+        let put = put_checker(store, plan, command)?;
         Ok(serde_json::from_value(json!({
             "class": class,
             "items": [{"id": "check", "critical": true, "weight": 100,
@@ -3857,15 +3865,10 @@ mod contracts {
 
     /// The journal the done path wrote while a one-juror jury sat on a judge item, before the
     /// judge tier was deleted; yi-types holds it as the golden for the shapes it still decodes.
-    fn judged_journal() -> Result<String, Box<dyn Error>> {
+    fn journal_fixture(name: &str) -> Result<String, Box<dyn Error>> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../types/tests/fixtures/journals/plan-judge-verdict-v1.jsonl");
-        Ok(std::fs::read_to_string(path)?)
-    }
-
-    fn covered_journal() -> Result<String, Box<dyn Error>> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../types/tests/fixtures/journals/plan-covers-contract.jsonl");
+            .join("../types/tests/fixtures/journals")
+            .join(name);
         Ok(std::fs::read_to_string(path)?)
     }
 
@@ -3881,11 +3884,16 @@ mod contracts {
         Ok(())
     }
 
-    /// A store holding the first `records` lines of [`judged_journal`] as its plan's journal.
+    /// A store holding the first `records` lines of the recorded judge fixture as its journal.
     fn judged_store(temp: &Scratch, records: usize) -> Result<(PlanStore, PlanId), Box<dyn Error>> {
         let store = PlanStore::open(temp.join("plans"))?;
         let plan = planned()?;
-        seed_journal(&store, &plan, &judged_journal()?, records)?;
+        seed_journal(
+            &store,
+            &plan,
+            &journal_fixture("plan-judge-verdict-v1.jsonl")?,
+            records,
+        )?;
         Ok((store, plan))
     }
 
@@ -3925,8 +3933,12 @@ mod contracts {
     fn a_journal_holding_a_judge_verdict_still_replays() -> TestResult {
         let temp = Scratch::new("yi-judge-replay")?;
         let (store, plan) = judged_store(&temp, usize::MAX)?;
-        let last: JournalRecord =
-            serde_json::from_str(judged_journal()?.lines().last().ok_or("an empty fixture")?)?;
+        let last: JournalRecord = serde_json::from_str(
+            journal_fixture("plan-judge-verdict-v1.jsonl")?
+                .lines()
+                .last()
+                .ok_or("an empty fixture")?,
+        )?;
         let todo = todo_of(&store, &plan, "write the migration report")?;
         assert!(
             matches!(todo.state, TodoState::Done { .. }),
@@ -3943,15 +3955,7 @@ mod contracts {
     fn a_started_judge_item_abstains_without_a_judge_and_holds_the_todo() -> TestResult {
         let temp = Scratch::new("yi-judge-held")?;
         let (store, plan) = judged_store(&temp, 2)?;
-        let manifest = json!({
-            "manifest": 1, "command": "true", "cwd": "snapshot_root", "cwd_subdir": null,
-            "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
-        });
-        let checker = store.artifacts(&plan).put(
-            &serde_json::to_vec(&manifest)?,
-            "application/vnd.yi.checker-manifest+json",
-            &store.nonce(),
-        )?;
+        let checker = put_checker(&store, &plan, "true")?;
         let ws = temp.join("ws");
         std::fs::create_dir_all(&ws)?;
         let engine = PlanEngine::new(store.clone(), Arc::new(Stub::default()))
@@ -4336,16 +4340,10 @@ mod contracts {
         let rig = rig("yi-f0c-verbose-refusal", None)?;
         let plan = planned()?;
         // Six items, each ending in 2,000 control characters: six bytes apiece once escaped.
-        let manifest = json!({
-            "manifest": 1,
-            "command": "awk 'BEGIN { for (i = 0; i < 2000; i++) printf \"\\001\" }'; exit 1",
-            "cwd": "snapshot_root", "cwd_subdir": null, "protected": [], "timeout_ms": 10_000,
-            "env": [], "reads_outside_snapshot": false
-        });
-        let put = rig.store.artifacts(&plan).put(
-            &serde_json::to_vec(&manifest)?,
-            "application/vnd.yi.checker-manifest+json",
-            &rig.store.nonce(),
+        let put = put_checker(
+            &rig.store,
+            &plan,
+            "awk 'BEGIN { for (i = 0; i < 2000; i++) printf \"\\001\" }'; exit 1",
         )?;
         let items: Vec<Value> = (0..6)
             .map(|index| {
@@ -4686,16 +4684,13 @@ mod contracts {
     fn a_pending_covered_contract_from_an_old_journal_still_starts() -> TestResult {
         let rig = rig("yi-g4-legacy-pending-covers", None)?;
         let plan = planned()?;
-        seed_journal(&rig.store, &plan, &covered_journal()?, 1)?;
-        let manifest = json!({
-            "manifest": 1, "command": "exit 0", "cwd": "snapshot_root", "cwd_subdir": null,
-            "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
-        });
-        rig.store.artifacts(&plan).put(
-            &serde_json::to_vec(&manifest)?,
-            "application/vnd.yi.checker-manifest+json",
-            &rig.store.nonce(),
+        seed_journal(
+            &rig.store,
+            &plan,
+            &journal_fixture("plan-covers-contract.jsonl")?,
+            1,
         )?;
+        put_checker(&rig.store, &plan, "exit 0")?;
         rig.store.write(&rig.store.read(&plan)?)?;
         start(&rig.engine, &plan, "alpha")?;
         assert!(matches!(
@@ -4709,7 +4704,12 @@ mod contracts {
     async fn a_covered_write_gets_no_preview_line() -> TestResult {
         let rig = rig("yi-g4-no-preview", None)?;
         let plan = planned()?;
-        seed_journal(&rig.store, &plan, &covered_journal()?, usize::MAX)?;
+        seed_journal(
+            &rig.store,
+            &plan,
+            &journal_fixture("plan-covers-contract.jsonl")?,
+            usize::MAX,
+        )?;
         rig.store.write(&rig.store.read(&plan)?)?;
         let todo = todo_of(&rig.store, &plan, "alpha")?;
         assert!(matches!(todo.state, TodoState::Running { .. }));
