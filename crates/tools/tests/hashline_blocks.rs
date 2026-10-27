@@ -1,39 +1,75 @@
 use std::error::Error;
+use std::fs;
 
-use yi_tools::hashline::blocks::{brace_block_resolver, indent_block_resolver};
+use serde_json::{Map, json};
+use yi_tools::hashline::tool::HashlineReadTool;
+use yi_tools::{Tool, ToolContext};
+
+use crate::scratch::Scratch;
+use crate::tools::{output_text, temp_dir};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+fn find(dir: &Scratch, path: &str, needle: &str) -> String {
+    let arguments = Map::from_iter([
+        ("path".to_owned(), json!(path)),
+        ("find".to_owned(), json!(needle)),
+    ]);
+    let output = HashlineReadTool::new(yi_tools::hashline::tool::shared_hashline_state())
+        .execute(arguments, &ToolContext::new(dir.to_path_buf()));
+    let text = output_text(&output);
+    assert!(!output.is_error, "{text}");
+    text
+}
+
 #[test]
 fn a_multiline_python_signature_resolves_through_the_function_body() -> TestResult {
-    let text = include_str!("../../../python/yi_runtime/src/rlm/__init__.py");
-    let span = indent_block_resolver(text, 287).ok_or("async def result did not resolve")?;
-    assert_eq!((span.start, span.end), (287, 354));
+    let dir = temp_dir("hashline-python-signature")?;
+    fs::write(
+        dir.join("input.py"),
+        include_str!("../../../python/yi_runtime/src/rlm/__init__.py"),
+    )?;
+    let output = find(&dir, "input.py", "async def result(");
+    assert!(
+        output.contains("[find: block at lines 287-354 of"),
+        "{output}"
+    );
+
+    fs::write(dir.join("one.py"), "def a():\n")?;
+    let one = find(&dir, "one.py", "def a():");
+    assert!(one.contains("[find: no enclosing block"), "{one}");
     Ok(())
 }
 
 #[test]
 fn rust_lifetimes_do_not_hide_braces_and_character_literals_stay_unchanged() -> TestResult {
-    let text = include_str!("../../ai/src/leak.rs");
-    let span = brace_block_resolver(text, 93).ok_or("fn between<'a> did not resolve")?;
-    assert_eq!(span.start, 93);
-    assert!(span.end > 93);
+    let dir = temp_dir("hashline-rust-lifetimes")?;
+    fs::write(dir.join("leak.rs"), include_str!("../../ai/src/leak.rs"))?;
+    let output = find(&dir, "leak.rs", "fn between<'a>");
+    assert!(
+        output.contains("[find: block at lines 93-101 of"),
+        "{output}"
+    );
 
-    let getter = "pub fn get<'a>(&'a self) -> &'a str {\n    self.value\n}\n";
-    assert_eq!(
-        brace_block_resolver(getter, 1).map(|span| span.end),
-        Some(3)
+    fs::write(
+        dir.join("getter.rs"),
+        "pub fn get<'a>(&'a self) -> &'a str {\n    self.value\n}\n",
+    )?;
+    let getter = find(&dir, "getter.rs", "pub fn get<'a>");
+    assert!(getter.contains("[find: block at lines 1-3 of"), "{getter}");
+
+    fs::write(
+        dir.join("character.rs"),
+        "fn a() {\n    let brace = '{';\n    let letter = 'x';\n}\n",
+    )?;
+    let character = find(&dir, "character.rs", "fn a()");
+    assert!(
+        character.contains("[find: block at lines 1-4 of"),
+        "{character}"
     );
-    let character = "fn a() {\n    let brace = '{';\n    let letter = 'x';\n}\n";
-    assert_eq!(
-        brace_block_resolver(character, 1).map(|span| span.end),
-        Some(4)
-    );
+
+    fs::write(dir.join("one.rs"), "fn a() {}\n")?;
+    let one = find(&dir, "one.rs", "fn a()");
+    assert!(one.contains("[find: no enclosing block"), "{one}");
     Ok(())
-}
-
-#[test]
-fn one_line_definitions_still_open_no_block() {
-    assert_eq!(indent_block_resolver("def a():\n", 1), None);
-    assert_eq!(brace_block_resolver("fn a() {}\n", 1), None);
 }

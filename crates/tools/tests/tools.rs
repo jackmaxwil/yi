@@ -4861,11 +4861,13 @@ fn non_ascii_hashline_paths_and_rows_parse_without_byte_boundary_panics() -> Tes
     let header = try_parse_header("[crates/tui/src/cell-✱.rs#ABCD]").ok_or("Unicode header")?;
     assert_eq!(header.path, "crates/tui/src/cell-✱.rs");
     assert_eq!(tokenize_all("PUT 1.=1:\n+↳ done\n").len(), 2);
-    let patch = Patch::parse(
-        "[crates/tui/src/cell-✱.rs#ABCD]\n1:focus it (alt-↓) and type your answer\n",
-        None,
-    )
-    .map_err(|error| format!("Unicode patch refused: {error}"))?;
+    let source = include_str!("../../tui/src/cell.rs");
+    let row = source
+        .lines()
+        .find(|line| line.contains("alt-↓"))
+        .ok_or("the real TUI source lost its non-ASCII reply hint")?;
+    let patch = Patch::parse(&format!("[crates/tui/src/cell-✱.rs#ABCD]\n{row}\n"), None)
+        .map_err(|error| format!("Unicode patch refused: {error}"))?;
     assert_eq!(patch.sections.len(), 1);
     Ok(())
 }

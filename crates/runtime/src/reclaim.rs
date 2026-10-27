@@ -600,10 +600,7 @@ mod tests {
                 named += usize::from(!paths.is_empty());
             }
         }
-        assert_eq!(
-            named, 10,
-            "the edit and nine of ten reads name a file; one read past the end prints none"
-        );
+        assert_eq!(named, 11, "the edit and all ten reads name a file");
         Ok(())
     }
 
@@ -651,12 +648,28 @@ mod tests {
 
     #[test]
     fn read_notices_are_not_patch_sections() -> Fallible {
-        let content = vec![Content::Text {
-            text: "[src/lib.rs#ABCD]\n1:fn tidy() {}\n[showing lines 1-40 of 90; cap 40 — read with offset=41]\n41:fn later() {}\n[skeleton: 8 of 20 heads]\n1:fn tidy() {}"
-                .to_owned(),
-            text_signature: None,
-        }];
-        assert_eq!(super::Sections::default().paths(&content), ["src/lib.rs"]);
+        use yi_tools::Tool;
+
+        let dir = crate::scratch::Scratch::new("yi-reclaim-read-notices")?;
+        let body: String = (1..=2_001)
+            .map(|line| format!("pub fn row{line}() {{}}\n"))
+            .collect();
+        std::fs::write(dir.join("lib.rs"), body)?;
+        let read = yi_tools::hashline::tool::HashlineReadTool::new(
+            yi_tools::hashline::tool::shared_hashline_state(),
+        )
+        .execute(
+            serde_json::Map::from_iter([("path".to_owned(), json!("lib.rs"))]),
+            &yi_tools::ToolContext::new(dir.to_path_buf()),
+        );
+        assert!(!read.is_error);
+        let text = yi_types::message::join_text(&read.result.content, "");
+        assert!(text.contains("[showing lines 1-2000 of 2001"));
+        assert!(text.contains("[skeleton:"));
+        assert_eq!(
+            super::Sections::default().paths(&read.result.content),
+            ["lib.rs"]
+        );
         Ok(())
     }
 
