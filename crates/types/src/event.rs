@@ -207,11 +207,14 @@ pub fn shown_failed(is_error: bool, details: &serde_json::Value) -> bool {
             .get("exitCode")
             .and_then(serde_json::Value::as_i64)
             .is_some_and(|code| code != 0)
-        || details.get("errorKind").and_then(serde_json::Value::as_str)
-            == Some(ToolErrorKind::Verdict.as_str())
+        || ToolErrorKind::from_details(details) == Some(ToolErrorKind::Verdict.as_str())
 }
 
 impl ToolErrorKind {
+    pub fn from_details(details: &Value) -> Option<&str> {
+        details.get("errorKind").and_then(Value::as_str)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Denied => "denied",
