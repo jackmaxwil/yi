@@ -80,6 +80,8 @@ run "$PY" scripts/tui_see.py --selfcheck
 run "$PY" scripts/tui_monkey.py --selfcheck
 # The frame audit is only evidence if each of its checks can fail; only this flag trips them.
 run "$PY" scripts/tui_pty.py --selfcheck
+# Only this flag proves the skip row cannot swallow a real advisory.
+run "$PY" scripts/guardrails/check_deny.py --selfcheck
 # The tool-surface lock is equality over hashes, so a comparison that drifted would
 # pass every change or refuse every run; only this flag walks the delta cases.
 run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
@@ -182,7 +184,7 @@ if [ "$FAST" -eq 0 ]; then
   run cargo doc --workspace --no-deps --document-private-items -q
 
   if command -v cargo-machete >/dev/null; then run cargo machete crates; else run sh -c 'echo "FAIL machete (cargo install cargo-machete)"; exit 1'; fi
-  if command -v cargo-deny >/dev/null; then run cargo deny check -s; else run sh -c 'echo "FAIL deny (cargo install cargo-deny)"; exit 1'; fi
+  if command -v cargo-deny >/dev/null; then run "$PY" scripts/guardrails/check_deny.py; else run sh -c 'echo "FAIL deny (cargo install cargo-deny)"; exit 1'; fi
 else
   run echo "skip doc/machete/deny (--fast)"
 fi
