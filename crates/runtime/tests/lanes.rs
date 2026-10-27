@@ -3449,14 +3449,110 @@ fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
         ],
     )?;
     let path = lane.path().canonicalize()?;
+    let slot = lane.slot();
     drop(lane);
+    let state_path = pool.dir().join(format!("{slot}.json"));
+    let mut state: yi_types::lane::SlotState =
+        serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    state.session = Some("s-crashed".to_owned());
+    let mut warmer = yi_tools::command("sleep")
+        .arg("30")
+        .current_dir(&path)
+        .spawn()?;
+    let warmer_pid = warmer.id();
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = stopped_tx.send(warmer.wait());
+    });
+    state.warm = Some(yi_types::lane::WarmReceipt {
+        pid: Some(warmer_pid),
+        ..Default::default()
+    });
+    std::fs::write(&state_path, serde_json::to_vec(&state)?)?;
     git(&rig.repo, &["worktree", "lock", &path.to_string_lossy()])?;
 
     let report = pool.gc(&rig.repo, false)?.join("\n");
+    let stopped = stopped_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .is_ok();
+    if !stopped {
+        yi_tools::command("kill")
+            .arg(warmer_pid.to_string())
+            .output()?;
+    }
+    let state: yi_types::lane::SlotState = serde_json::from_slice(&std::fs::read(&state_path)?)?;
     assert!(!path.exists(), "{report}");
+    assert!(stopped, "gc removed the tree under its live warmer");
+    assert!(state.session.is_none(), "gc left a session on a gone slot");
+    assert!(state.warm.is_some_and(|warm| warm.pid.is_none()));
     assert!(
         report.contains(&format!("removed {}", path.display())),
         "{report}"
     );
+    Ok(())
+}
+
+/// Dies when gc judges against HEAD after both main names vanish: a feature checkout is not
+/// evidence that another worktree merged, so the tree stays with the base refusal named.
+#[test]
+fn gc_without_a_main_ref_keeps_a_tree_its_head_contains() -> TestResult {
+    let rig = Rig::new("gc-no-main")?;
+    let tree = rig.root.join("tree");
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "merged",
+            &tree.to_string_lossy(),
+        ],
+    )?;
+    std::fs::write(tree.join("work.txt"), "work\n")?;
+    git(&tree, &["add", "."])?;
+    git(&tree, &["commit", "-qm", "work"])?;
+    git(
+        &rig.repo,
+        &["merge", "-q", "--no-ff", "-m", "merged", "merged"],
+    )?;
+    git(&rig.repo, &["branch", "-m", "feature"])?;
+
+    let report = rig.pool(1)?.gc(&rig.repo, false)?.join("\n");
+    assert!(tree.is_dir(), "{report}");
+    assert!(report.contains("no main or origin/main"), "{report}");
+    Ok(())
+}
+
+/// Dies when gc refreshes its base: even a dry run with no linked worktrees must leave
+/// the aged FETCH_HEAD untouched instead of dialing origin before it prints a report.
+#[test]
+fn gc_never_fetches_the_remote_main() -> TestResult {
+    let rig = Rig::new("gc-no-fetch")?;
+    let remote = rig.root.join("remote");
+    git(
+        &rig.repo,
+        &[
+            "clone",
+            "-q",
+            &rig.repo.to_string_lossy(),
+            &remote.to_string_lossy(),
+        ],
+    )?;
+    git(
+        &rig.repo,
+        &["remote", "add", "origin", &remote.to_string_lossy()],
+    )?;
+    git(&rig.repo, &["fetch", "-q", "origin"])?;
+    let fetch_head = rig.repo.join(".git/FETCH_HEAD");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture ages FETCH_HEAD so a gc fetch is observable"
+    )]
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    std::fs::File::open(&fetch_head)?.set_modified(old)?;
+
+    rig.pool(1)?.gc(&rig.repo, true)?;
+    assert_eq!(std::fs::metadata(fetch_head)?.modified()?, old);
     Ok(())
 }

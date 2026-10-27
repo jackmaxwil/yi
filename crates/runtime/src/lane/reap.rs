@@ -130,8 +130,6 @@ impl Pool {
 
 struct Tree {
     path: PathBuf,
-    head: Option<String>,
-    branch: Option<String>,
     locked: bool,
 }
 
@@ -140,17 +138,11 @@ fn parse(listing: &str) -> Vec<Tree> {
     for block in listing.split("\n\n") {
         let mut tree = Tree {
             path: PathBuf::new(),
-            head: None,
-            branch: None,
             locked: false,
         };
         for line in block.lines() {
             if let Some(path) = line.strip_prefix("worktree ") {
                 tree.path = PathBuf::from(path);
-            } else if let Some(sha) = line.strip_prefix("HEAD ") {
-                tree.head = Some(sha.to_owned());
-            } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
-                tree.branch = Some(branch.to_owned());
             } else if line == "locked" || line.starts_with("locked ") {
                 tree.locked = true;
             }
@@ -167,7 +159,7 @@ impl Pool {
     /// locked, a commit `main` lacks or a dirty tree stays, and every kept tree says why. Dry run is read-only.
     pub fn gc(&self, cwd: &Path, dry_run: bool) -> Result<Vec<String>, LaneError> {
         let listing = git_capture(&self.repo, &["worktree", "list", "--porcelain"])?;
-        let base = self.resolve(&ClaimBase::Main, false).ok();
+        let base = self.local_main().ok();
         let base = base.as_deref();
         let here = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
         let slots = (0..self.slots)
@@ -194,11 +186,11 @@ impl Pool {
                 .iter()
                 .find(|(path, _)| path == &resolved)
                 .map(|(_, slot)| *slot);
-            let judge = || {
+            let judge = |status| {
                 base.ok_or("no main or origin/main to judge against".to_owned())
-                    .and_then(|base| self.judge(&tree, base, &here, slot.is_some()))
+                    .and_then(|base| self.judge(&tree, base, &here, slot.is_some(), status))
             };
-            if let Err(why) = judge() {
+            if let Err(why) = judge(true) {
                 lines.push(format!("kept {shown}: {why}"));
                 continue;
             }
@@ -215,17 +207,29 @@ impl Pool {
                 Some(Ok((guard, None))) => Some(guard),
                 None => None,
             };
-            lines.push(match judge() {
+            if dry_run {
+                lines.push(format!("would remove {shown}"));
+                continue;
+            }
+            lines.push(match judge(false) {
                 Err(why) => format!("kept {shown}: {why}"),
-                Ok(()) if dry_run => format!("would remove {shown}"),
                 // Incident: sixty worktrees' own `target/` directories filled a 1.8 TB disk. Git
                 // removes ignored files with a clean tree and refuses the rest.
                 Ok(()) => match (|| {
+                    if let Some(slot) = slot {
+                        self.stop_warmer(slot)?;
+                    }
                     let path = tree.path.to_string_lossy();
                     if tree.locked && slot.is_some() {
                         git(&self.repo, &["worktree", "unlock", &path])?;
                     }
-                    git(&self.repo, &["worktree", "remove", &path])
+                    if let Some(slot) = slot {
+                        let mut state = self.read_state(slot)?;
+                        state.session = None;
+                        self.write_state(slot, &state)?;
+                    }
+                    git(&self.repo, &["worktree", "remove", &path])?;
+                    Ok::<(), LaneError>(())
                 })()
                 .map(drop)
                 .map_err(|error| error.to_string())
@@ -238,31 +242,91 @@ impl Pool {
         Ok(lines)
     }
 
-    fn judge(&self, tree: &Tree, base: &str, here: &Path, pool_slot: bool) -> Result<(), String> {
-        let tip = tree
-            .branch
-            .as_deref()
-            .or(tree.head.as_deref())
-            .ok_or("HEAD missing")?;
-        let name = tree.branch.as_deref().unwrap_or("detached HEAD");
+    fn judge(
+        &self,
+        tree: &Tree,
+        base: &str,
+        here: &Path,
+        pool_slot: bool,
+        status: bool,
+    ) -> Result<(), String> {
+        let current = head(&tree.path).map_err(|_| "HEAD missing".to_owned())?;
+        let name = current
+            .branch()
+            .map(|branch| branch.as_str())
+            .unwrap_or("detached HEAD");
         if tree.locked && !pool_slot {
             return Err("locked, a session holds it".to_owned());
         }
         if here.starts_with(&tree.path) {
             return Err("the current directory is inside it".to_owned());
         }
-        let tip = git(&self.repo, &["rev-parse", tip]).map_err(|e| e.to_string())?;
-        let at = git(&self.repo, &["rev-parse", base]).map_err(|e| e.to_string())?;
-        let (tip, at) = (tip.trim(), at.trim());
-        if tree.branch.is_some() && tip == at {
+        let tip = match &current {
+            Head::Branch(branch) => git(&self.repo, &["rev-parse", branch.as_str()])
+                .map_err(|e| e.to_string())?
+                .trim()
+                .to_owned(),
+            Head::Detached(sha) => sha.as_str().to_owned(),
+        };
+        if current.branch().is_some() && tip == base {
             return Err(format!("{name} is at {base}, no commits of its own"));
         }
-        git(&self.repo, &["merge-base", "--is-ancestor", tip, at])
+        git(&self.repo, &["merge-base", "--is-ancestor", &tip, base])
             .map_err(|_| format!("{name} is not merged into {base}"))?;
+        if !status {
+            return Ok(());
+        }
         let dirty = Uncommitted::read(&tree.path).map_err(|e| format!("status unreadable: {e}"))?;
         match dirty.is_empty() {
             true => Ok(()),
             false => Err(dirty.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn judgment_reads_a_detached_head_newer_than_the_listing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("yi-gc-live-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo)?;
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "lanes@test"][..],
+            &["config", "user.name", "lanes"][..],
+        ] {
+            git(&repo, args)?;
+        }
+        std::fs::write(repo.join("README.md"), "base\n")?;
+        git(&repo, &["add", "."])?;
+        git(&repo, &["commit", "-qm", "base"])?;
+        let path = root.join("detached");
+        git(
+            &repo,
+            &["worktree", "add", "-q", "--detach", &path.to_string_lossy()],
+        )?;
+        let listing = git(&repo, &["worktree", "list", "--porcelain"])?;
+        let tree = parse(&listing)
+            .into_iter()
+            .nth(1)
+            .ok_or("no detached tree")?;
+        let base = git(&repo, &["rev-parse", "main"])?.trim().to_owned();
+        let pool = Pool::open(&root.join("home"), &repo, 1)?;
+        pool.judge(&tree, &base, &repo, false, true)?;
+
+        std::fs::write(path.join("new.txt"), "unreferenced\n")?;
+        git(&path, &["add", "."])?;
+        git(&path, &["commit", "-qm", "new detached commit"])?;
+        let verdict = pool.judge(&tree, &base, &repo, false, true);
+        assert!(
+            verdict.is_err(),
+            "stale listing HEAD authorized removing new work"
+        );
+        Ok(())
     }
 }

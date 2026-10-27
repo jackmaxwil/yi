@@ -9,7 +9,7 @@ use yi_runtime::plan::ops::{Actor, PlanEngine};
 use yi_runtime::plan::store::PlanStore;
 use yi_types::plan::doc::PlanId;
 
-use crate::repo::init_repo;
+use crate::repo::{git, init_repo};
 use crate::scratch::Scratch;
 
 use crate::prompt_slots_support::prompt_slots;
@@ -871,27 +871,13 @@ fn gc_fix_removes_the_merged_worktree_the_preview_kept() -> TestResult {
     let workspace = Workspace::new("gc-worktree")?;
     init_repo(&workspace.project())?;
     let tree = workspace.0.join("merged-worktree");
-    let git = |args: &[&str]| -> TestResult {
-        let output = yi_tools::command("git")
-            .current_dir(workspace.project())
-            .args(args)
-            .output()?;
-        if !output.status.success() {
-            return Err(format!(
-                "git {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-        Ok(())
-    };
+    let repo = workspace.project();
     let path = tree.to_string_lossy().into_owned();
-    git(&["worktree", "add", "-q", "-b", "merged", &path])?;
+    git(&repo, &["worktree", "add", "-q", "-b", "merged", &path])?;
     std::fs::write(tree.join("work.txt"), "work\n")?;
-    git(&["-C", &path, "add", "work.txt"])?;
-    git(&["-C", &path, "commit", "-qm", "work"])?;
-    git(&["merge", "-q", "--no-ff", "-m", "merged", "merged"])?;
+    git(&repo, &["-C", &path, "add", "work.txt"])?;
+    git(&repo, &["-C", &path, "commit", "-qm", "work"])?;
+    git(&repo, &["merge", "-q", "--no-ff", "-m", "merged", "merged"])?;
 
     let preview = workspace.yi(&["gc"])?;
     assert!(preview.status.success(), "{preview:?}");

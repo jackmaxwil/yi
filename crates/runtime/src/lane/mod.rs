@@ -721,38 +721,36 @@ impl Pool {
         });
     }
 
+    fn resolve_commit(&self, candidate: &str) -> Result<String, LaneError> {
+        let spec = format!("{candidate}^{{commit}}");
+        git(&self.repo, &["rev-parse", "--verify", "-q", &spec]).map(|sha| sha.trim().to_owned())
+    }
+
+    fn local_main(&self) -> Result<String, LaneError> {
+        self.resolve_commit("origin/main")
+            .or_else(|_| self.resolve_commit("main"))
+    }
+
     fn resolve(&self, base: &ClaimBase, background: bool) -> Result<String, LaneError> {
-        let candidates: Vec<String> = match base {
-            ClaimBase::Main => {
-                let known = background.then(|| {
-                    git(
-                        &self.repo,
-                        &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
-                    )
-                });
-                if let Some(Ok(sha)) = &known {
-                    self.refresh_in_background();
-                    return Ok(sha.trim().to_owned());
-                }
-                let fetched = self.fetch_if_stale();
-                let missing = known.is_some() && !fetched;
-                ["origin/main", "main", "HEAD"]
-                    .into_iter()
-                    .filter(|name| !missing || *name != "origin/main")
-                    .map(str::to_owned)
-                    .collect()
-            }
-            ClaimBase::Commit(sha) => vec![sha.clone()],
-        };
-        let mut last = None;
-        for candidate in candidates {
-            let spec = format!("{candidate}^{{commit}}");
-            match git(&self.repo, &["rev-parse", "--verify", "-q", &spec]) {
-                Ok(sha) => return Ok(sha.trim().to_owned()),
-                Err(error) => last = Some(error),
-            }
+        match base {
+            ClaimBase::Commit(sha) => return self.resolve_commit(sha),
+            ClaimBase::Main => {}
         }
-        Err(last.unwrap_or(LaneError::NotARepo(self.repo.clone())))
+        let known = background.then(|| self.resolve_commit("origin/main"));
+        if let Some(Ok(sha)) = &known {
+            self.refresh_in_background();
+            return Ok(sha.clone());
+        }
+        let fetched = self.fetch_if_stale();
+        let missing = known.is_some() && !fetched;
+        if missing {
+            if let Ok(sha) = self.resolve_commit("main") {
+                return Ok(sha);
+            }
+        } else if let Ok(sha) = self.local_main() {
+            return Ok(sha);
+        }
+        self.resolve_commit("HEAD")
     }
 
     /// How many lanes this pool holds, so a caller can size its own share of them.
