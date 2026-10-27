@@ -64,6 +64,7 @@ impl AcpState {
         session_id
     }
 
+    /// A wake for a session evicted while idle reloads before this settles its build.
     pub(crate) fn settle(&mut self, session_id: &str) {
         let Some(building) = self.building.remove(session_id) else {
             return;
@@ -78,9 +79,18 @@ impl AcpState {
                 let text = format!("the session could not start: {error}");
                 let update = extension("_yi/notice", [("text", Value::String(text))]);
                 (self.sink)(&update_notification(session_id, update));
+                crate::resident::forget(session_id);
                 self.failed.insert(session_id.to_owned(), error);
             }
         }
+    }
+
+    pub(crate) fn open_later(&mut self, session_id: &str) -> Result<SharedSession, String> {
+        let _span = yi_types::trace::span("acp.repo_open");
+        let store = yi_runtime::session_store::SessionRepo::open(&mut self.repo, session_id)
+            .map_err(|error| error.to_string())?;
+        self.attach_later(&store);
+        Ok(store)
     }
 
     pub(crate) fn store_of(&self, session_id: &str) -> Option<SharedSession> {
