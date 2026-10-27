@@ -5,23 +5,13 @@ feature conflicted on it and were merged by hand. One `feature | test` line each
 (.gitattributes), lets both append without a conflict."""
 import re, subprocess, sys, tempfile, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, fail
+from _common import ROOT, fail, row_key, table_rows
 
 FILE, ARCH = "docs/ledger-journeys.txt", "docs/ARCHITECTURE.md"
-CELL = re.compile(r"(?<!\\)\|")
 
 
 def ledger_rows(arch):
-    keys, inside, started = [], False, False
-    for line in arch.splitlines():
-        if line.startswith("#"):
-            inside, started = line.lstrip("#").strip() == "Feature ledger", False
-        elif inside and line.startswith("|"):
-            if not set(line) - set("|-: "):
-                started = True
-            elif started:
-                keys.append((CELL.split(line)[1].strip(), line))
-    return keys
+    return [(row_key(row), row) for row in table_rows(arch, "Feature ledger")]
 
 
 def ledger_keys(arch):
