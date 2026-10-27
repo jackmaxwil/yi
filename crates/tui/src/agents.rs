@@ -13,6 +13,8 @@ use yi_types::status_mark::StatusMark;
 /// stray key does not stay armed while the reader looks away.
 const CONFIRM: Duration = Duration::from_secs(2);
 const BAR_CELLS: u64 = 10;
+/// Finished cards kept once committed; older ones live on in the transcript.
+pub(crate) const FINISHED_CARDS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -40,6 +42,7 @@ pub struct AgentsPopup {
     armed: Option<(usize, Instant)>,
     /// The child the user chose to interrupt; the event loop drains it.
     pub stop: Option<String>,
+    dropped: usize,
 }
 
 /// The roster knows only running, done and failed, so a child that needs you or is
@@ -71,7 +74,13 @@ impl AgentsPopup {
             selected: 0,
             armed: None,
             stop: None,
+            dropped: 0,
         }
+    }
+
+    /// Finished children the card cap dropped, named on the popup's last rows.
+    pub fn with_dropped(self, dropped: usize) -> Self {
+        Self { dropped, ..self }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -170,6 +179,18 @@ impl BottomView for AgentsPopup {
             spans.extend(self.bar(row.tokens, theme));
             out.push(Line::from(spans));
         }
+        if self.dropped > 0 {
+            let shown = self
+                .rows
+                .iter()
+                .filter(|row| row.state != AgentState::Running);
+            let shown = shown.count();
+            let all = shown.saturating_add(self.dropped);
+            out.push(Line::from(Span::styled(
+                format!("[…] agents: {shown} of {all} finished shown · cap {FINISHED_CARDS} finished children · older cards are in the transcript"),
+                theme.dim_style(),
+            )));
+        }
         let total: u64 = self.rows.iter().map(|row| row.tokens).sum();
         out.push(Line::from(Span::styled(
             format!(
@@ -234,7 +255,8 @@ impl crate::app::App {
                 spawn: state.cell.spawn.clone(),
             })
             .collect::<Vec<_>>();
-        let popup = AgentsPopup::new(rows, self.options.context_window);
+        let popup =
+            AgentsPopup::new(rows, self.options.context_window).with_dropped(self.dropped_tasks);
         if popup.is_empty() {
             self.commit_cell(&Cell::Notice {
                 text: "no subagents in this session".to_owned(),
@@ -245,24 +267,26 @@ impl crate::app::App {
         self.scheduler.request();
     }
 
-    /// The kernel cell a child was born under, if one is running.
-    pub(crate) fn spawning_cell(&self) -> Option<String> {
-        let tool = self
-            .live_tools
-            .iter()
-            .rev()
-            .find(|tool| tool.name == "ipython" && tool.status != ToolStatus::Done)?;
-        let code = tool.details.get("code")?.as_str()?;
-        Some(crate::pycell::preview(code)).filter(|line| !line.is_empty())
-    }
-
-    /// That cell's call id: the one cell a finished card waits on before it commits.
-    pub(crate) fn spawning_call(&self) -> Option<String> {
-        self.live_tools
-            .iter()
-            .rev()
-            .find(|tool| tool.name == "ipython" && tool.status != ToolStatus::Done)
-            .map(|tool| tool.call_id.clone())
+    /// The code preview and call id of the cell a child was born under: the cell its record names,
+    /// or for an update with no record (a console's forwarded one) the `ipython` cell running now.
+    pub(crate) fn spawned_under(
+        &self,
+        call: Option<&str>,
+        recorded: bool,
+    ) -> (Option<String>, Option<String>) {
+        let tool = self.live_tools.iter().rev().find(|tool| match call {
+            Some(call) => tool.call_id == call,
+            None => !recorded && tool.name == "ipython" && tool.status != ToolStatus::Done,
+        });
+        let code = tool.and_then(|tool| tool.details.get("code")?.as_str());
+        let preview = code
+            .map(crate::pycell::preview)
+            .filter(|line| !line.is_empty());
+        let call = call.map(str::to_owned);
+        (
+            preview,
+            call.or_else(|| tool.map(|tool| tool.call_id.clone())),
+        )
     }
 
     /// A stop is the host's `interrupt`, asked for through the driver: the App holds a

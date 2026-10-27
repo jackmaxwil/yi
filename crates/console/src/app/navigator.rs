@@ -101,13 +101,11 @@ impl App {
     /// `md <path>` / `diff <path>` open viewer panes, `nb` swaps the pane
     /// to the notebook view of its session. True when handled.
     pub(super) fn run_navigator_command(&mut self, query: &str) -> bool {
-        let root = self.state.root.clone();
-        let resolve = |path: &str| {
-            if path.starts_with('/') {
-                path.to_owned()
-            } else {
-                format!("{root}/{path}")
-            }
+        let (dir, home) = (self.session_dir(), self.state.home.clone());
+        let resolve = |path: &str| match (path.strip_prefix("~/"), home.as_deref()) {
+            (Some(rest), Some(home)) => format!("{home}/{rest}"),
+            _ if path.starts_with('/') => path.to_owned(),
+            _ => format!("{dir}/{path}"),
         };
         if query.trim() == "nb" {
             if let Some(pane) = self.state.focused_pane_mut() {
@@ -126,7 +124,7 @@ impl App {
             return true;
         }
         if let Some(("e", path)) = query.split_once(' ') {
-            self.open_editor(&resolve(path.trim()));
+            self.open_editor(&resolve(path.trim()), dir);
             return true;
         }
         let (kind, path) = match query.split_once(' ') {
@@ -138,11 +136,21 @@ impl App {
             Ok(source) => {
                 if let Some(pane) = self.state.focused_pane_mut() {
                     pane.content = if kind {
-                        PaneContent::Markdown { path, source }
+                        PaneContent::Markdown {
+                            path,
+                            source,
+                            workdir: dir,
+                            drawn: None,
+                        }
                     } else {
-                        PaneContent::Diff { path, source }
+                        PaneContent::Diff {
+                            path,
+                            source,
+                            workdir: dir,
+                            drawn: None,
+                        }
                     };
-                    pane.scroll_from_bottom = 0;
+                    pane.scroll_from_bottom = crate::panes::TOP;
                 }
             }
             Err(error) => self.note(&format!("{path}: {error}")),

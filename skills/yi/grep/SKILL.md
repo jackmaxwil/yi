@@ -48,7 +48,7 @@ Hits print under `[path#TAG]` as `LINE:TEXT`; context rows are `LINE-TEXT`, and 
 
 ## Paging and caps
 
-- `[showing matches A-B of T — continue with offset=N]` is the next page. A total reading `at least N` means the collection stopped, at 2000 hits or 8 MiB of matches: `[match collection stopped at 2000 before every file was scanned — narrow with path, include, or type]`. Narrow, do not page to the end.
+- `[showing matches A-B of T (CAP N) — continue with offset=N]` is the next page; the parenthesis names what cut it: `PAGE_CAP 200` hits, `BLOCK_PAGE_CAP 20` blocks, or `PAGE_BYTES 51200` bytes of rows (a page stops between hits, so one hit's context may pass it). A total reading `at least N` means the collection stopped, at 2000 hits or 8 MiB of matches: `[match collection stopped at 2000 before every file was scanned — narrow with path, include, or type]`. Narrow, do not page to the end.
 - `[matches changed since the last page; offsets now count the current sweep]`: files moved under you (an edit, a build). Restart at offset 0 for a coherent list.
 - `[offset N is beyond the K collected matches]`: you paged past the end.
 - `[N binary files skipped (not text, not a document) — bash: rg -a for those]` and `[N paths left out: the reviewer wall's …]` are skips, not misses.

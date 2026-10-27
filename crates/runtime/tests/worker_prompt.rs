@@ -1,8 +1,9 @@
 //! A worker's request carries its role's text and the project's rules, and nothing else of the
 //! root's prompt: no identity, no doctrine, no skill catalog.
 
-use crate::family_cache::{body_asking, root, root_with, route, stand_in};
+use crate::family_cache::{root, route};
 use crate::scratch::Scratch;
+use crate::upstream::{body_asking, git, root_with, stand_in};
 
 use std::error::Error;
 use std::sync::Arc;
@@ -52,6 +53,7 @@ async fn a_worker_is_sent_its_role_and_the_project_rules_and_nothing_of_the_root
     for root_only in [
         yi_runtime::identity_fragment(),
         yi_runtime::doctrine_fragment(),
+        yi_runtime::delegation_fragment(),
     ] {
         for line in root_only.lines().filter(|line| line.len() > 40) {
             assert!(!text.contains(line), "{line} reached the worker: {text}");
@@ -73,21 +75,8 @@ async fn a_worker_is_sent_its_role_and_the_project_rules_and_nothing_of_the_root
     Ok(())
 }
 
-fn git(dir: &std::path::Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
-    let status = yi_tools::command("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
-        .arg(dir)
-        .args(args)
-        .output()?
-        .status;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| format!("git {args:?}").into())
-}
-
 #[tokio::test(flavor = "multi_thread")]
-async fn a_worker_in_its_own_lane_is_told_the_committed_rules_its_mode_and_the_rust_pack()
+async fn a_worker_in_its_own_lane_is_told_the_committed_rules_and_the_rust_pack_but_not_the_mode()
 -> TestResult {
     let scratch = Scratch::new("yi-worker-lane")?;
     let (port, from) = stand_in(String::new())?;
@@ -104,7 +93,15 @@ async fn a_worker_in_its_own_lane_is_told_the_committed_rules_its_mode_and_the_r
         None,
         tokio::sync::broadcast::channel(8).0,
     ));
-    let (_session, host) = root_with(&scratch, model, port, false, Some(broker))?;
+    let (_session, host) = root_with(
+        &scratch,
+        model,
+        port,
+        false,
+        Some(broker),
+        false,
+        Arc::new(yi_tools::builtin_tools),
+    )?;
     let ws = scratch.join("ws");
     std::fs::write(ws.join("AGENTS.md"), "Indent with tabs, never spaces.\n")?;
     std::fs::write(ws.join("Cargo.toml"), "[package]\nname = \"probe\"\n")?;
@@ -115,6 +112,11 @@ async fn a_worker_in_its_own_lane_is_told_the_committed_rules_its_mode_and_the_r
     let kwargs = json!({"role": "worker", "isolation": "worktree"});
     host.spawn(
         "Rename the probe crate to kite.".to_owned(),
+        kwargs.as_object().cloned().unwrap_or_default(),
+    )?;
+    let kwargs = json!({"role": "root"});
+    host.spawn(
+        "Tally the lines of notes.txt.".to_owned(),
         kwargs.as_object().cloned().unwrap_or_default(),
     )?;
     let mut bodies = Vec::new();
@@ -128,7 +130,14 @@ async fn a_worker_in_its_own_lane_is_told_the_committed_rules_its_mode_and_the_r
         system.contains("Indent with tabs") && !system.contains("Indent with spaces"),
         "the lane's committed rules, not the parent's edit: {system}"
     );
-    assert!(system.contains("Permission mode: ask."), "{system}");
+    assert!(system.contains("You make one change."), "{system}");
     assert!(system.contains("# Rust discipline"), "{system}");
+    assert!(!system.contains("Permission mode:"), "{system}");
+    let child = body_asking(&mut bodies, &from, "Tally the lines").await?;
+    let child = child["system"].to_string();
+    assert!(
+        child.contains("Permission mode: ask."),
+        "a root child under the same broker still hears the mode: {child}"
+    );
     Ok(())
 }

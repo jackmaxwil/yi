@@ -13,6 +13,7 @@ use super::ops::{Actor, Op, PlanEngine, PlanOpError};
 use super::render::render_outcome;
 use super::table::OpKind;
 use super::tool::{PlanToolError, declared};
+use crate::schedule::GateFn;
 
 /// ponytail: a linear scan over 64 replies keyed on request id and args digest, holding only
 /// refusals that never reached the journal (a refused parse or actor); the journal replays the rest.
@@ -126,7 +127,7 @@ fn refusal(
     );
     reply.insert(
         "refusal".to_owned(),
-        json!({"code": code, "message": message}),
+        json!({"code": code, "message": super::tool::ops_spelling(&message)}),
     );
     reply
 }
@@ -225,13 +226,34 @@ fn guarded(op: &Op) -> bool {
     !matches!(op.kind(), OpKind::View | OpKind::Init)
 }
 
-fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, Value> {
+/// What a call arms on the host, read from the args as sent and as the whole-plan reading mends
+/// a string of rows, so a row's `on` meets the gate however it was spelled; each command once.
+pub(super) fn armed(args: &Map<String, Value>) -> Vec<String> {
+    let mended = super::apply::whole(args).map(|(args, _)| Value::Object(args));
+    let mut commands: Vec<String> = (std::iter::once(Value::Object(args.clone())).chain(mended))
+        .flat_map(|args| crate::schedule::clock::armed_commands(&args))
+        .collect();
+    commands.sort();
+    commands.dedup();
+    commands
+}
+
+fn answer(
+    engine: &PlanEngine,
+    actor: &Actor,
+    gate: Option<&GateFn>,
+    payload: Payload,
+) -> Map<String, Value> {
     let Payload {
         request_id,
         expected_revision,
         args,
         artifacts,
     } = payload;
+    let denied = gate.and_then(|gate| armed(&args).iter().find_map(|command| gate(command)));
+    if let Some(denial) = denied {
+        return refusal(&request_id, None, "denied", denial);
+    }
     let (mut request, blobs) = match declared(actor, &args) {
         Ok(declared) => declared,
         Err(error) => {
@@ -267,7 +289,7 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
         };
         return refusal(&request_id, None, code, message);
     }
-    match engine.apply_with(request, &blobs) {
+    match super::apply::apply_set(engine, request, &blobs) {
         Ok(outcome) => {
             let mut reply = Map::new();
             reply.insert("ok".to_owned(), Value::Bool(true));
@@ -337,14 +359,20 @@ fn remember(replay: &Replay, request_id: String, args: Digest, reply: &Map<Strin
     }
 }
 
-/// The principal is fixed here (`Owner` on the root kernel, `Child(name)` on a child's),
-/// never read from a payload.
-pub fn register(engine: Arc<PlanEngine>, actor: Actor, registry: &mut crate::kernel::HostRegistry) {
+/// The principal is fixed here (`Owner` on the root kernel, `Child(name)` on a child's), never
+/// read from a payload; an armed command meets `gate`, the one a heartbeat's `exec://` meets.
+pub fn register(
+    engine: Arc<PlanEngine>,
+    actor: Actor,
+    gate: Option<Arc<GateFn>>,
+    registry: &mut crate::kernel::HostRegistry,
+) {
     let replay: Replay = Arc::new(Mutex::new(VecDeque::new()));
     registry.register("plan.op", move |payload| {
         let engine = Arc::clone(&engine);
         let actor = actor.clone();
         let replay = Arc::clone(&replay);
+        let gate = gate.clone();
         Box::pin(async move {
             let payload = parse_payload(&payload)?;
             let args = canonical_digest(&Value::Object(payload.args.clone()))
@@ -353,9 +381,11 @@ pub fn register(engine: Arc<PlanEngine>, actor: Actor, registry: &mut crate::ker
                 return Ok(reply);
             }
             let request_id = payload.request_id.clone();
-            let reply = tokio::task::spawn_blocking(move || answer(&engine, &actor, payload))
-                .await
-                .map_err(|error| format!("plan.op task failed: {error}"))?;
+            let reply = tokio::task::spawn_blocking(move || {
+                answer(&engine, &actor, gate.as_deref(), payload)
+            })
+            .await
+            .map_err(|error| format!("plan.op task failed: {error}"))?;
             remember(&replay, request_id, args, &reply);
             Ok(reply)
         })

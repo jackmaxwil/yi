@@ -1,9 +1,11 @@
 //! `yi tui`, `yi console` and `yi serve` launchers, their shared drive-script loader, and the
 //! daemon socket they resolve. Lifted out of main.rs, which the console landing pushed past 1200.
 
+use crate::Args;
+#[cfg(feature = "tui")]
 use crate::{
-    Args, Resume, attach_store, build_session, config, default_session_dir, effective_cwd,
-    exit_refused, print_resume_hint, release_lane, session_target,
+    Resume, attach_store, build_session, config, default_session_dir, effective_cwd, exit_refused,
+    release_lane, session_target,
 };
 
 #[cfg(feature = "tui")]
@@ -13,15 +15,9 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         eprintln!("error: yi tui needs a terminal (use `yi ask` when piping)");
         return 2;
     }
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match crate::current_thread() {
         Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     let (ask_tx, ask_rx) = std::sync::mpsc::channel::<yi_tui::AskRequest>();
     let asker: yi_runtime::Asker =
@@ -147,12 +143,23 @@ fn control(args: &Args) -> Result<Option<yi_tui::drive::Control>, i32> {
         })
 }
 
+/// The exact command that brings this session back, printed only for a session
+/// that recorded something: resuming an empty one reads as a broken suggestion.
+#[cfg(feature = "tui")]
+fn print_resume_hint(session: &yi_runtime::AgentSession, id: &str) {
+    if session.messages().is_empty() {
+        return;
+    }
+    eprintln!();
+    crate::tty::eprint_dim(&format!("Resume this session with `yi --session {id}`"));
+}
+
 /// The quit line says where the work is before the slot is handed back.
 #[cfg(feature = "tui")]
 fn leave_lane(session: &yi_runtime::AgentSession) {
     let lane = session.lane();
     if let Some(line) = lane.as_ref().and_then(|lane| lane.describe()) {
-        eprintln!("\x1b[2m{line}\x1b[0m");
+        crate::tty::eprint_dim(&line);
     }
     release_lane(lane.as_deref());
 }
@@ -198,6 +205,7 @@ pub fn serve_flags(args: &Args) -> Vec<String> {
     flags
 }
 
+#[cfg(feature = "tui")]
 fn ensure_daemon(args: &Args, socket: &std::path::Path) {
     let _span = yi_types::trace::span("console.ensure_daemon");
     if std::os::unix::net::UnixStream::connect(socket).is_ok() {
@@ -223,16 +231,10 @@ pub fn daemon_socket(args: &Args) -> std::path::PathBuf {
     )
 }
 
-pub fn run_serve_command(args: &Args, version: &str) -> i32 {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+pub fn run_serve_command(args: &Args) -> i32 {
+    let runtime = match crate::current_thread() {
         Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            std::process::exit(1);
-        }
+        Err(code) => return code,
     };
     let socket = daemon_socket(args);
     let worker_args = serve_flags(args);
@@ -243,7 +245,7 @@ pub fn run_serve_command(args: &Args, version: &str) -> i32 {
         yi_acp::daemon::DaemonOptions {
             socket,
             worker_args,
-            agent_version: version.to_owned(),
+            agent_version: env!("ARCHITECTURE_VERSION").to_owned(),
             home: crate::home().to_path_buf(),
         },
         runtime,
@@ -359,6 +361,7 @@ pub fn run_console_command(args: &Args) -> i32 {
             .and_then(|browser| browser.path.as_ref())
             .map(std::path::PathBuf::from),
         chrome_pin: chrome_pin(),
+        home: std::env::var("HOME").ok(),
     };
     let control = match control(args) {
         Ok(control) => control,
@@ -386,6 +389,7 @@ pub fn run_console_command(args: &Args) -> i32 {
     yi_console::run_console(&options, control)
 }
 
+#[cfg(feature = "tui")]
 struct DriveCommon {
     frames_dir: Option<std::path::PathBuf>,
     record: Option<std::path::PathBuf>,
@@ -394,6 +398,7 @@ struct DriveCommon {
     height: u16,
 }
 
+#[cfg(feature = "tui")]
 fn drive_common(args: &Args) -> DriveCommon {
     DriveCommon {
         frames_dir: args.frames.clone().map(std::path::PathBuf::from),
@@ -421,15 +426,14 @@ pub(crate) fn session_extensions(
         home: crate::home().to_path_buf(),
         mode: args.mode,
         user_system: args.system.clone(),
-        schema_instruction: args
-            .schema
-            .as_deref()
-            .and_then(|spec| yi_runtime::schema::Schema::load(spec).ok())
+        schema_instruction: crate::schema(args)
+            .and_then(Result::ok)
             .map(|schema| schema.instruction()),
         global_skills: crate::config()
             .skills
             .as_ref()
             .and_then(|skills| skills.global.clone())
             .unwrap_or_default(),
+        can_delegate: true,
     })
 }

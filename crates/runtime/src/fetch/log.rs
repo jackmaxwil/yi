@@ -37,19 +37,25 @@ impl FetchLog {
     }
 
     pub fn record(&self, url: &Url, record: FetchRecord) {
-        let session = self.lock().session.clone().and_then(|handle| handle());
-        if let Some(session) = &session {
+        let (key, mut state) = (base_of(url), self.lock());
+        let seen =
+            (state.records.iter()).any(|(base, row)| *base == key && row.hash == record.hash);
+        let handle = state.session.clone().filter(|_| !seen);
+        Self::remember_locked(&mut state, key, record.clone());
+        drop(state);
+        if let Some(session) = &handle.and_then(|handle| handle()) {
             let _log_write_never_fails_a_fetch =
                 yi_session::lock_session(session).append_custom_record(&record);
         }
-        self.remember(url, record);
     }
 
     /// Invariant: [`Self::record`] without the session row, for a read of the very listing
     /// that row would grow: a paged walk must not chase the entries it writes (D213).
     pub(crate) fn remember(&self, url: &Url, record: FetchRecord) {
-        let key = base_of(url);
-        let mut state = self.lock();
+        Self::remember_locked(&mut self.lock(), base_of(url), record);
+    }
+
+    fn remember_locked(state: &mut LogState, key: String, record: FetchRecord) {
         match state.records.iter().position(|(base, _)| *base == key) {
             // Invariant: one row per address, so a daemon re-reading a file for a week logs
             // the latest hash, not a week of rows; every reader is a membership test.
@@ -161,15 +167,6 @@ fn measure(mut served: Vec<String>, supplied: &[Url]) -> Relevance {
             .filter(|base| !named.contains(base))
             .collect(),
     }
-}
-
-/// A workspace file's text and hash exactly as `local://` serves them whole, so a blob named
-/// by digest can be matched against the row a read of it left.
-pub fn as_served(raw: &str) -> (String, String) {
-    use yi_tools::hashline::normalize::{normalize_to_lf, strip_bom};
-    let text = normalize_to_lf(strip_bom(raw).text);
-    let hash = super::content_hash(&text);
-    (text, hash)
 }
 
 /// The fetch rows a transcript carries: a child's fetches are durable custom entries, so

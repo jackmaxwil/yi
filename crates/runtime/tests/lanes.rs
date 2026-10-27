@@ -33,11 +33,9 @@
 //! disposition through `fail` or `drop` as any other non-accept exit does. Writing it from
 //! the repossession needs a road from the host into the engine's journal, which F3a owns.
 
-#[path = "../../types/tests/support/repo.rs"]
-mod repo;
+use crate::repo::init_repo;
 use crate::scratch;
 use crate::support;
-use repo::init_repo;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -50,8 +48,8 @@ use yi_runtime::lane::settle::{
     Held, Prepared, Publish, Published, Quiescence, Unsettled, generation_of, prepare, publish,
 };
 use yi_runtime::lane::{
-    BranchName, ClaimBase, DEFAULT_SLOTS, Head, LaneError, Pool, SlotIndex, SlotView, TreeState,
-    head, toolchain,
+    BranchName, ClaimBase, DEFAULT_SLOTS, Head, Lane, LaneError, Pool, SlotIndex, SlotView,
+    TreeState, head, toolchain,
 };
 use yi_types::lane::PrNumber;
 
@@ -341,8 +339,6 @@ fn an_orphan_with_nothing_main_lacks_is_a_free_slot() -> TestResult {
     let lane = pool.claim("pid-2", ClaimBase::Main)?;
     std::fs::write(lane.path().join("draft.txt"), "unsaved\n")?;
     drop(lane);
-    git(&rig.repo, &["branch", "-q", "yi/pid-2", "main"])?;
-    orphan(&pool, slot, "pid-2")?;
     let refused = pool.claim("s-late", ClaimBase::Main);
     assert!(
         matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
@@ -450,6 +446,46 @@ fn a_child_lane_branches_from_the_parents_head() -> TestResult {
     Ok(())
 }
 
+/// A staging branch an earlier attempt left unmerged is never what the next merge builds on.
+#[test]
+fn a_left_staging_branch_is_not_the_next_merges_base() -> TestResult {
+    let rig = Rig::new("stale-stage")?;
+    let pool = rig.pool(3)?;
+    let parent = pool.claim("s-parent", ClaimBase::Main)?;
+    let generation = generation_of(parent.path(), None)?;
+    let base = ClaimBase::Commit(generation.base.as_str().to_owned());
+    let stale = pool.claim("stage-sub-1", base.clone())?;
+    std::fs::write(stale.path().join("stale.txt"), "stale\n")?;
+    git(stale.path(), &["add", "stale.txt"])?;
+    git(stale.path(), &["commit", "-qm", "an earlier attempt"])?;
+    drop(stale);
+    let child = pool.claim("sub-1", base)?;
+    std::fs::write(child.path().join("child.txt"), "child\n")?;
+    let settled = child.settle(&quiet(), None)?;
+    let Prepared::Merged(staging) = prepare(
+        &pool,
+        "stage-sub-1",
+        &generation,
+        &settled.candidate.commit,
+        None,
+    )?
+    else {
+        return Err("a clean candidate conflicted".into());
+    };
+    let lane = staging.path().ok_or("no staging lane")?;
+    assert_eq!(
+        git(lane, &["rev-parse", "HEAD^1"])?,
+        generation.base.as_str()
+    );
+    assert!(
+        !lane.join("stale.txt").exists(),
+        "the earlier attempt is not merged"
+    );
+    staging.release()?;
+    drop(parent);
+    Ok(())
+}
+
 #[test]
 fn branch_names_reject_flags_and_traversal() {
     for bad in ["", "-x", "a..b", "a b", "a//b", "a/", "a.lock"] {
@@ -488,7 +524,8 @@ fn forge_replies_parse_to_typed_numbers_and_slugs() {
 fn the_warmer_refuses_a_lockfile_no_session_synced() -> TestResult {
     let rig = Rig::new("warm")?;
     std::fs::write(rig.repo.join("Cargo.lock"), "# lock\n")?;
-    git(&rig.repo, &["add", "Cargo.lock"])?;
+    std::fs::write(rig.repo.join(".gitignore"), "/target\n")?;
+    git(&rig.repo, &["add", "Cargo.lock", ".gitignore"])?;
     git(&rig.repo, &["commit", "-qm", "lock"])?;
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-warm", ClaimBase::Main)?;
@@ -513,6 +550,19 @@ fn the_warmer_refuses_a_lockfile_no_session_synced() -> TestResult {
         state.warm.is_some(),
         "the release started a warm with a receipt"
     );
+    let built = pool
+        .dir()
+        .join(slot.to_string())
+        .join("target/debug/libyi.rlib");
+    std::fs::create_dir_all(built.parent().ok_or("a parent")?)?;
+    std::fs::write(&built, "warm\n")?;
+    let next = pool.claim("s-next", ClaimBase::Main)?;
+    assert_eq!(
+        next.slot(),
+        slot,
+        "ignored build output leaves the slot free"
+    );
+    assert!(built.is_file(), "and warm");
     Ok(())
 }
 
@@ -566,6 +616,268 @@ fn head_reads_a_branch_a_detached_sha_and_refuses_garbage() -> TestResult {
     Ok(())
 }
 
+/// Claims `s-one` on a one-slot pool and leaves an edit to a tracked file and an untracked
+/// non-ASCII file in it: the uncommitted work a quit must not hand to the next claim.
+fn dirty_lane(rig: &Rig) -> Result<(Pool, Lane, PathBuf, PathBuf), Box<dyn Error>> {
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let (readme, note) = dirty(lane.path())?;
+    Ok((pool, lane, readme, note))
+}
+
+fn dirty(tree: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    let (readme, note) = (tree.join("README.md"), tree.join("notes-é.txt"));
+    std::fs::write(&readme, "edited, not committed\n")?;
+    std::fs::write(&note, "brouillon\n")?;
+    Ok((readme, note))
+}
+
+fn assert_kept_from_the_next_claim(pool: &Pool, readme: &Path, note: &Path) -> TestResult {
+    let refused = pool.claim("s-two", ClaimBase::Main);
+    assert!(
+        matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
+        "{refused:?}"
+    );
+    assert_eq!(std::fs::read_to_string(readme)?, "edited, not committed\n");
+    assert!(note.is_file(), "the untracked file survived the claim");
+    Ok(())
+}
+
+/// Incident: a clean quit cleared a dirty slot's session, and the next claim ran
+/// `checkout -f -B` and `clean -qfd` over the only copy of the work.
+#[test]
+fn a_clean_quit_keeps_uncommitted_work_from_the_next_claim() -> TestResult {
+    let rig = Rig::new("quit-dirty")?;
+    let (pool, lane, readme, note) = dirty_lane(&rig)?;
+    assert_eq!(lane.release()?.to_string(), "2 uncommitted paths");
+    assert_kept_from_the_next_claim(&pool, &readme, &note)?;
+    let views = pool.list()?;
+    assert!(
+        matches!(&views[..], [SlotView::Orphan { holder, .. }] if holder.session == "s-one"),
+        "{views:?}"
+    );
+    let back = pool.claim("s-one", ClaimBase::Main)?;
+    assert!(
+        back.path().join("notes-é.txt").is_file(),
+        "its session resumes it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_dropped_lane_keeps_its_dirty_tree() -> TestResult {
+    let rig = Rig::new("drop-dirty")?;
+    let (pool, lane, readme, note) = dirty_lane(&rig)?;
+    drop(lane);
+    assert_kept_from_the_next_claim(&pool, &readme, &note)?;
+    let back = pool.claim("s-one", ClaimBase::Main)?;
+    assert!(
+        back.path().join("notes-é.txt").is_file(),
+        "its session resumes it"
+    );
+    Ok(())
+}
+
+/// An older binary's release detached the slot, deleted the merged branch and cleared the
+/// session whatever the tree held: a clean release with the work written after is that shape.
+#[test]
+fn a_slot_an_older_binary_released_dirty_is_never_wiped() -> TestResult {
+    let rig = Rig::new("old-release")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let tree = lane.path().to_path_buf();
+    drop(lane);
+    let (readme, note) = dirty(&tree)?;
+    assert_kept_from_the_next_claim(&pool, &readme, &note)?;
+    let text = format_lanes(&pool.list()?, None);
+    let line = text.lines().next().unwrap_or_default();
+    assert!(
+        line.starts_with("lane 0: left by no session on (detached) · 1 modified, 1 untracked, 0 ahead, 0 behind · ")
+            && line.ends_with(" — reap discards the uncommitted paths"),
+        "the refusal's listing names the slot it counted: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn reap_discards_a_dirty_tree_and_says_how_much() -> TestResult {
+    let rig = Rig::new("reap-dirty")?;
+    let (pool, lane, readme, note) = dirty_lane(&rig)?;
+    let slot = lane.slot();
+    lane.release()?;
+    let message = pool.reap(slot)?;
+    assert!(
+        message.contains("2 uncommitted paths discarded"),
+        "{message}"
+    );
+    let next = pool.claim("s-two", ClaimBase::Main)?;
+    assert_eq!(next.slot(), slot);
+    assert_eq!(git(next.path(), &["status", "--porcelain"])?, "");
+    assert_eq!(std::fs::read_to_string(&readme)?, "base\n");
+    assert!(!note.exists(), "the reap discarded the untracked file");
+    Ok(())
+}
+
+/// A status list past the capture cap is counted as a floor, never as the whole: 1,500
+/// twenty-byte rows are exactly the cap, and one byte more cuts the list.
+#[test]
+fn a_reap_past_the_status_cap_says_at_least() -> TestResult {
+    let rig = Rig::new("reap-cap")?;
+    let pool = rig.pool(1)?;
+    for (session, longer) in [("s-at", None), ("s-past", Some(0))] {
+        let lane = pool.claim(session, ClaimBase::Main)?;
+        for n in 0..1_500 {
+            let name = match longer {
+                Some(at) if at == n => format!("{n:017}"),
+                _ => format!("{n:016}"),
+            };
+            std::fs::write(lane.path().join(name), "")?;
+        }
+        let slot = lane.slot();
+        lane.release()?;
+        let message = pool.reap(slot)?;
+        match longer {
+            None => assert!(
+                message.starts_with("lane 0 freed; 1500 uncommitted paths discarded; branch"),
+                "{message}"
+            ),
+            Some(_) => {
+                let floor = message
+                    .strip_prefix("lane 0 freed; at least ")
+                    .and_then(|rest| rest.split_once(' '))
+                    .and_then(|(n, _)| n.parse::<usize>().ok())
+                    .ok_or(format!("no floor: {message}"))?;
+                assert!((1_490..1_500).contains(&floor), "{message}");
+                assert!(
+                    message.contains(
+                        " uncommitted paths (status read 30000 of 30001 bytes, OUTPUT_CAP 30000) discarded; branch"
+                    ),
+                    "{message}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A resume finds its own slot first: a lower slot freed meanwhile is not where its work is.
+#[test]
+fn a_resume_takes_its_own_dirty_slot_over_a_lower_free_one() -> TestResult {
+    for commit in [false, true] {
+        let rig = Rig::new(if commit {
+            "resume-own-commit"
+        } else {
+            "resume-own"
+        })?;
+        let pool = rig.pool(2)?;
+        let low = pool.claim("s-a", ClaimBase::Main)?;
+        let mine = pool.claim("s-b", ClaimBase::Main)?;
+        let slot = mine.slot();
+        if commit {
+            std::fs::write(mine.path().join("done.txt"), "committed\n")?;
+            git(mine.path(), &["add", "done.txt"])?;
+            git(mine.path(), &["commit", "-qm", "done"])?;
+        }
+        std::fs::write(mine.path().join("work.txt"), "only copy\n")?;
+        mine.release()?;
+        low.release()?;
+        let back = pool.claim("s-b", ClaimBase::Main)?;
+        assert_eq!(back.slot(), slot, "commit={commit}");
+        assert!(back.path().join("work.txt").is_file(), "commit={commit}");
+        assert_eq!(back.path().join("done.txt").is_file(), commit);
+    }
+    Ok(())
+}
+
+#[test]
+fn a_discard_says_what_it_dropped_and_frees_the_slot() -> TestResult {
+    let rig = Rig::new("discard-dirty")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("draft-é.txt"), "unsaved\n")?;
+    assert_eq!(lane.discard()?.to_string(), "1 uncommitted path");
+    let next = pool.claim("s-two", ClaimBase::Main)?;
+    assert_eq!(git(next.path(), &["status", "--porcelain"])?, "");
+    Ok(())
+}
+
+/// Incident: `status.showUntrackedFiles=no` hid new files from the dirty read, so a quit
+/// over them cleared the session and the next claim cleaned them away.
+#[test]
+fn a_quit_over_new_files_keeps_them_under_a_quiet_status_config() -> TestResult {
+    let rig = Rig::new("quiet-status")?;
+    git(&rig.repo, &["config", "status.showUntrackedFiles", "no"])?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let note = lane.path().join("notes-é.txt");
+    std::fs::write(&note, "brouillon\n")?;
+    lane.release()?;
+    let refused = pool.claim("s-two", ClaimBase::Main);
+    assert!(
+        matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
+        "{refused:?}"
+    );
+    assert!(note.is_file());
+    Ok(())
+}
+
+/// Incident: the same quiet config read a child's new files as no work, so its candidate
+/// was the base commit and the files were cleaned when the slot was handed back.
+#[test]
+fn a_candidate_commits_new_files_under_a_quiet_status_config() -> TestResult {
+    let rig = Rig::new("quiet-candidate")?;
+    git(&rig.repo, &["config", "status.showUntrackedFiles", "no"])?;
+    let lane = rig.pool(1)?.claim("s-one", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("notes-é.txt"), "brouillon\n")?;
+    let candidate = lane.candidate(&quiet(), None)?;
+    let files = git(
+        lane.path(),
+        &[
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--name-only",
+            "--format=",
+            candidate.commit.as_str(),
+        ],
+    )?;
+    assert_eq!(files, "notes-é.txt");
+    Ok(())
+}
+
+/// Incident: a resume claimed a free slot and `-B` reset its own unmerged branch to `main`.
+#[test]
+fn a_resumed_session_after_a_clean_quit_keeps_its_commits() -> TestResult {
+    let rig = Rig::new("quit-commits")?;
+    let pool = rig.pool(2)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("work.txt"), "committed\n")?;
+    git(lane.path(), &["add", "work.txt"])?;
+    git(lane.path(), &["commit", "-qm", "work"])?;
+    let tip = git(lane.path(), &["rev-parse", "HEAD"])?;
+    lane.release()?;
+    let other = pool.claim("s-two", ClaimBase::Main)?;
+    let free = other.slot();
+    let fresh = pool.claim("s-one", ClaimBase::Main)?;
+    assert_ne!(fresh.slot(), free, "the resume made a fresh slot");
+    assert_eq!(
+        git(fresh.path(), &["rev-parse", "HEAD"])?,
+        tip,
+        "fresh slot"
+    );
+    fresh.release()?;
+    other.release()?;
+    let reused = pool.claim("s-one", ClaimBase::Main)?;
+    assert_eq!(reused.slot(), free, "the resume reused a free slot");
+    assert_eq!(
+        git(reused.path(), &["rev-parse", "HEAD"])?,
+        tip,
+        "reused slot"
+    );
+    assert!(reused.path().join("work.txt").is_file());
+    Ok(())
+}
+
 /// The listing says what a reap would lose before anyone types it: an untracked path
 /// on a merged branch is named, and a clean merged slot is the next claim's.
 #[test]
@@ -574,17 +886,11 @@ fn a_listing_says_what_a_reap_would_lose() -> TestResult {
     let pool = rig.pool(2)?;
     let dirty = pool.claim("s-dirty", ClaimBase::Main)?;
     std::fs::write(dirty.path().join("scratch.txt"), "only copy\n")?;
-    let dirty_slot = dirty.slot();
     drop(dirty);
-    // A merged branch goes at release; the crash left it, so it is put back as the crash would.
-    git(
-        &pool.dir().join(dirty_slot.to_string()),
-        &["branch", "-q", "yi/s-dirty", "HEAD"],
-    )?;
-    orphan(&pool, dirty_slot, "s-dirty")?;
     let clean = pool.claim("s-clean", ClaimBase::Main)?;
     let clean_slot = clean.slot();
     drop(clean);
+    // A merged branch goes at release; the crash left it, so it is put back as the crash would.
     git(
         &pool.dir().join(clean_slot.to_string()),
         &["branch", "-q", "yi/s-clean", "HEAD"],
@@ -705,6 +1011,42 @@ fn handle_for(
             let _ = tx.send(format!("{message:?}"));
         });
     (LaneHandle::new(lane, None, land_command, events, steer), rx)
+}
+
+/// The `/discard` reply names the branch and how many uncommitted paths went with it.
+#[test]
+fn a_discard_reply_counts_the_paths_it_dropped() -> TestResult {
+    let rig = Rig::new("discard-reply")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    dirty(lane.path())?;
+    let (handle, _steers) = handle_for(Some(lane), None);
+    assert_eq!(
+        handle.discard()?,
+        "discarded yi/s-one; 2 uncommitted paths discarded; the transcript is kept"
+    );
+    Ok(())
+}
+
+/// A quit over a dirty tree prints where the work stayed and the one call that discards it;
+/// a clean quit prints nothing.
+#[test]
+fn a_quit_over_a_dirty_tree_says_where_the_work_stays() -> TestResult {
+    let rig = Rig::new("quit-reply")?;
+    let pool = rig.pool(2)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let path = yi_runtime::lane::land::tilde(lane.path());
+    dirty(lane.path())?;
+    let (handle, _steers) = handle_for(Some(lane), None);
+    assert_eq!(
+        handle.release()?,
+        Some(format!(
+            "lane 0 kept: 2 uncommitted paths in {path}; `yi lanes reap 0` discards them"
+        ))
+    );
+    let (clean, _steers) = handle_for(Some(pool.claim("s-two", ClaimBase::Main)?), None);
+    assert_eq!(clean.release()?, None);
+    Ok(())
 }
 
 /// The status row's lane label is the repo's name alone: the slot number the console's `_yi/workdir`
@@ -2101,7 +2443,7 @@ mod accept {
             lane.path(),
             &never,
             None,
-        );
+        )?;
         let busy = yi_runtime::lane::settle::quiescence_of_jobs(lane.path());
         assert_eq!(busy.running_commands(), 1);
         let refused = lane.candidate(&busy, None);
@@ -2164,7 +2506,7 @@ mod accept {
             lane.path(),
             &never,
             None,
-        );
+        )?;
         let mut held_lane = Some(lane);
         let refused = yi_runtime::subagent::SubagentHost::settle_lane(&mut held_lane, None, None);
         assert!(
@@ -2376,26 +2718,160 @@ mod accept {
     }
 }
 
-/// Dies with the `Retained` choice `repossess` sets before it settles: discard instead, or drop
-/// the lane unsettled, and a revoked child's uncommitted work goes with its checkout.
-#[tokio::test]
-async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
-    let rig = Rig::new("repossess")?;
-    let store = support::memory_store("lanes-repossess");
-    let hold = Some("echo unsaved > draft.txt; sleep 30");
-    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, hold);
+/// A worktree child `name` of `family`, run on its hold, once its `draft.txt` is on disk.
+async fn spawn_writer(family: &support::Family, name: &str) -> TestResult {
     let mut asked = serde_json::Map::new();
-    asked.insert("name".to_owned(), "writer".into());
+    asked.insert("name".to_owned(), name.into());
     asked.insert("role".to_owned(), "root".into());
     asked.insert("isolation".to_owned(), "worktree".into());
     family.host.spawn("write a draft".to_owned(), asked)?;
-    let tree = family.host.cwd_of("writer").ok_or("no worktree")?;
+    let tree = family.host.cwd_of(name).ok_or("no worktree")?;
     for _ in 0..400 {
         if tree.join("draft.txt").exists() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
+    Ok(())
+}
+
+/// A child named `writer` in a worktree of the rig's repository, run on `hold`.
+async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dyn Error>> {
+    let store = support::memory_store("lanes-writer");
+    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, Some(hold));
+    spawn_writer(&family, "writer").await?;
+    Ok(family)
+}
+
+/// A `name` hook in the rig's repository that sleeps two seconds the first time git runs it
+/// and leaves `hook-ran` behind.
+fn slow_hook(rig: &Rig, name: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let mark = rig.root.join("hook-ran");
+    let hook = rig.repo.join(".git/hooks").join(name);
+    let script = format!(
+        "#!/bin/sh\n[ -e '{0}' ] && exit 0\n: > '{0}'\nsleep 2\n",
+        mark.display()
+    );
+    std::fs::write(&hook, script)?;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+/// Runs `work` on this current-thread runtime and asks `rlm.status` every 20 ms meanwhile:
+/// the executor must keep answering, where a git inside the handler holds it for seconds.
+async fn served_while<T: Send + 'static>(
+    family: &support::Family,
+    work: impl std::future::Future<Output = T> + Send + 'static,
+) -> Result<T, Box<dyn Error>> {
+    use yi_kernel::client::HostHandlers;
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let job = tokio::spawn(work);
+    let (mut polls, mut slowest) = (0, std::time::Duration::ZERO);
+    while !job.is_finished() {
+        let asked = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let status = registry.dispatch("rlm.status", serde_json::Map::new());
+        status.ok_or("rlm.status")?.await?;
+        slowest = slowest.max(asked.elapsed());
+        polls += 1;
+    }
+    assert!(
+        polls >= 10 && slowest < std::time::Duration::from_millis(200),
+        "{polls} status polls ran while the git worked, the slowest after {slowest:?}"
+    );
+    Ok(job.await?)
+}
+
+/// Incident: the hand-back's git ran inside the async handler, so one slow hook held the
+/// session's one-thread runtime and every other host call waited behind it.
+#[tokio::test]
+async fn handing_a_worktree_back_leaves_the_executor_free() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    for (method, hook) in [
+        ("rlm.merge_worktree", "post-merge"),
+        ("rlm.discard_worktree", "pre-commit"),
+        ("rlm.delete_subagent", "pre-commit"),
+    ] {
+        let rig = Rig::new(hook)?;
+        slow_hook(&rig, hook)?;
+        let family = writer(&rig, "echo unsaved > draft.txt").await?;
+        assert!(family.reaches("writer", "finished").await);
+        if method == "rlm.delete_subagent" {
+            family
+                .host
+                .mark_disposed("writer", yi_types::plan::op::Choice::Retained)?;
+        }
+        let mut registry = yi_runtime::HostRegistry::default();
+        family.host.register(&mut registry);
+        let target = serde_json::json!({"target": "writer"});
+        let asked = target.as_object().cloned().unwrap_or_default();
+        let handing = registry.dispatch(method, asked).ok_or(method)?;
+        let reply = served_while(&family, handing).await??;
+        assert!(rig.root.join("hook-ran").exists(), "{method}: {reply:?}");
+        if method == "rlm.delete_subagent" {
+            assert!(reply.contains_key("disposition"), "{reply:?}");
+        } else {
+            assert_eq!(reply["merged"], method == "rlm.merge_worktree");
+        }
+    }
+    Ok(())
+}
+
+/// Incident: a lease expiry settled the repossessed lane's git inside the expire task, so a
+/// slow hook held the session's one-thread runtime and every host call behind it.
+#[tokio::test]
+async fn a_lease_expiry_leaves_the_executor_free() -> TestResult {
+    let rig = Rig::new("expiry")?;
+    slow_hook(&rig, "pre-commit")?;
+    let family = writer(&rig, "echo unsaved > draft.txt; sleep 30").await?;
+    family.host.revoke("writer", 0, "scope changed")?;
+    let host = std::sync::Arc::clone(&family.host);
+    let expired = served_while(&family, async move { host.expire().await }).await?;
+    assert_eq!(expired, ["writer"]);
+    assert!(rig.root.join("hook-ran").exists());
+    Ok(())
+}
+
+/// Incident: once the hand-back hopped to the blocking pool, concurrent `rlm.merge_worktree`
+/// calls published against one parent checkout at once, and the third lost the generation
+/// check twice and returned an error with its lane already released.
+#[tokio::test]
+async fn gathered_hand_backs_all_merge() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let rig = Rig::new("gathered")?;
+    let store = support::memory_store("lanes-gathered");
+    let hold = "echo unsaved > draft.txt; : > \"own-$$\"";
+    let root = rig.root.to_path_buf();
+    let family = support::family_with_slots(root, rig.repo.clone(), store, Some(hold), 6);
+    let names = ["first", "second", "third"];
+    for name in names {
+        spawn_writer(&family, name).await?;
+        assert!(family.reaches(name, "finished").await);
+    }
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let mut merges = Vec::new();
+    for name in names {
+        let target = serde_json::json!({"target": name});
+        let asked = target.as_object().cloned().unwrap_or_default();
+        let merge = registry.dispatch("rlm.merge_worktree", asked);
+        merges.push(tokio::spawn(merge.ok_or("rlm.merge_worktree")?));
+    }
+    for merge in merges {
+        let reply = merge.await??;
+        assert_eq!(reply["merged"], true, "{reply:?}");
+    }
+    Ok(())
+}
+
+/// Dies with the `Retained` choice `repossess` sets before it settles: discard instead, or drop
+/// the lane unsettled, and a revoked child's uncommitted work goes with its checkout.
+#[tokio::test]
+async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
+    let rig = Rig::new("repossess")?;
+    let family = writer(&rig, "echo unsaved > draft.txt; sleep 30").await?;
     family.host.revoke("writer", 0, "scope changed")?;
     assert_eq!(family.host.expire().await, ["writer"]);
     let journal = family.journal();
@@ -2484,5 +2960,321 @@ fn a_stale_fetch_does_not_hold_the_claim() -> TestResult {
     let local = rig.repo.to_string_lossy().into_owned();
     git(&rig.repo, &["remote", "set-url", "origin", &local])?;
     drop(lane);
+    Ok(())
+}
+
+/// The `git` of `args` in `cwd`, success or not, as its exit status and both streams.
+fn git_raw(cwd: &Path, args: &[&str]) -> Result<(bool, String), Box<dyn Error>> {
+    let out = yi_tools::command("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()?;
+    let text = [&out.stdout[..], &out.stderr[..]].concat();
+    Ok((
+        out.status.success(),
+        String::from_utf8_lossy(&text).into_owned(),
+    ))
+}
+
+/// Dies with a ref-only hand-back that replies `merged` and nothing more: the user's edit to a
+/// file the child changed stays on disk without the child's change, so the next commit undoes it.
+#[tokio::test]
+async fn a_ref_only_hand_back_lists_the_edits_it_kept() -> TestResult {
+    let rig = Rig::new("kept-yours")?;
+    std::fs::write(rig.repo.join("gone.txt"), "old\n")?;
+    git(&rig.repo, &["add", "gone.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "add gone"])?;
+    let hold =
+        "printf 'child\\n' >> README.md; printf 'c\\n' > café.txt; echo x > draft.txt; rm gone.txt";
+    let family = writer(&rig, hold).await?;
+    assert!(family.reaches("writer", "finished").await);
+    for (path, text) in [
+        ("README.md", "base\nmine\n"),
+        ("café.txt", "mine\n"),
+        ("gone.txt", "old\nmine\n"),
+        ("elsewhere.txt", "mine\n"),
+    ] {
+        std::fs::write(rig.repo.join(path), text)?;
+    }
+    let reply = family.host.merge_worktree("writer", None)?;
+    assert_eq!(reply["merged"], true, "{reply:?}");
+    assert_eq!(reply["published"], "ref_only", "{reply:?}");
+    let mut kept: Vec<&str> = reply
+        .get("kept_yours")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("no kept_yours: {reply:?}"))?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    kept.sort_unstable();
+    assert_eq!(kept, ["README.md", "café.txt", "gone.txt"], "{reply:?}");
+    let next = reply
+        .get("next")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("no next sentence: {reply:?}"))?;
+    assert!(
+        next.contains("git diff HEAD") && next.contains("git show HEAD:"),
+        "{next}"
+    );
+    let (_, diff) = git_raw(&rig.repo, &["diff", "HEAD", "--", "README.md"])?;
+    assert!(diff.contains("-child") && diff.contains("+mine"), "{diff}");
+    assert_eq!(git(&rig.repo, &["show", "HEAD:README.md"])?, "base\nchild");
+    let (_, gone) = git_raw(&rig.repo, &["status", "--porcelain", "--", "gone.txt"])?;
+    assert_eq!(gone.trim(), "?? gone.txt", "{gone}");
+    assert!(!git_raw(&rig.repo, &["show", "HEAD:gone.txt"])?.0);
+    assert!(
+        next.contains("missing from HEAD") && next.contains("deleted"),
+        "{next}"
+    );
+    Ok(())
+}
+
+/// Dies with a fast-forward reply that carries `kept_yours`: nothing was kept, and a list that
+/// is sometimes empty and sometimes absent makes the model test for both.
+#[tokio::test]
+async fn a_fast_forward_hand_back_keeps_nothing_and_says_so_by_omission() -> TestResult {
+    let rig = Rig::new("kept-none")?;
+    let family = writer(&rig, "printf 'child\\n' >> README.md; echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let reply = family.host.merge_worktree("writer", None)?;
+    assert_eq!(reply["published"], "fast_forward", "{reply:?}");
+    assert!(
+        !reply.contains_key("kept_yours") && !reply.contains_key("next"),
+        "{reply:?}"
+    );
+    Ok(())
+}
+
+/// Dies with a conflict reply that stops at `merged: false`: the child's lane is released, so
+/// only the branch it names and a git call that merges or drops it lead anywhere.
+#[tokio::test]
+async fn a_conflicting_hand_back_names_the_branch_it_kept_and_how_to_use_it() -> TestResult {
+    let rig = Rig::new("conflict-next")?;
+    let family = writer(&rig, "printf 'child\\n' > README.md; echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    std::fs::write(rig.repo.join("README.md"), "parent\n")?;
+    git(&rig.repo, &["commit", "-qam", "parent moved"])?;
+    let before = git(&rig.repo, &["rev-parse", "HEAD"])?;
+    let reply = family.host.merge_worktree("writer", None)?;
+    assert_eq!(reply["merged"], false, "{reply:?}");
+    let branch = reply["branch"].as_str().ok_or("no branch")?;
+    let next = reply
+        .get("next")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("no next sentence: {reply:?}"))?;
+    assert!(next.contains(&format!("git merge {branch}")), "{next}");
+    assert!(next.contains(&format!("git branch -D {branch}")), "{next}");
+    assert_eq!(git(&rig.repo, &["rev-parse", "HEAD"])?, before);
+    let (merged, said) = git_raw(&rig.repo, &["merge", "--no-edit", branch])?;
+    assert!(!merged && said.contains("CONFLICT"), "{said}");
+    let unmerged = git(&rig.repo, &["diff", "--name-only", "--diff-filter=U"])?;
+    assert_eq!(
+        unmerged,
+        reply["conflict_provenance"][0]["path"]
+            .as_str()
+            .ok_or("no path")?
+    );
+    git(&rig.repo, &["merge", "--abort"])?;
+    git(&rig.repo, &["branch", "-D", branch])?;
+    assert!(!git_raw(&rig.repo, &["rev-parse", "--verify", "-q", branch])?.0);
+    Ok(())
+}
+
+/// The kernel's own `rlm.merge_worktree` request for `writer`, carrying `check`.
+fn checked_merge(
+    family: &support::Family,
+    check: impl Into<serde_json::Value>,
+) -> Result<yi_kernel::client::HostFuture, Box<dyn Error>> {
+    use yi_kernel::client::HostHandlers;
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let asked = serde_json::json!({"target": "writer", "check": check.into()});
+    let asked = asked.as_object().cloned().unwrap_or_default();
+    Ok(registry
+        .dispatch("rlm.merge_worktree", asked)
+        .ok_or("rlm.merge_worktree")?)
+}
+
+/// Dies with the handler dropping `check`: a lane whose work fails it lands here anyway, and the
+/// red one must leave this checkout as it was and the work on the branch it names.
+#[tokio::test]
+async fn a_checked_hand_back_merges_only_a_lane_whose_check_passes() -> TestResult {
+    for (label, hold, passes) in [
+        ("check-green", "echo x > draft.txt; : > NEW", true),
+        ("check-red", "echo x > draft.txt", false),
+    ] {
+        let rig = Rig::new(label)?;
+        let family = writer(&rig, hold).await?;
+        assert!(family.reaches("writer", "finished").await);
+        let before = git(&rig.repo, &["rev-parse", "HEAD"])?;
+        let reply = checked_merge(&family, "test -f NEW")?.await?;
+        assert_eq!(reply["merged"], passes, "{label}: {reply:?}");
+        if passes {
+            assert!(rig.repo.join("NEW").is_file(), "{reply:?}");
+            continue;
+        }
+        assert_eq!(reply["check"]["exit"], 1, "{reply:?}");
+        assert_eq!(git(&rig.repo, &["rev-parse", "HEAD"])?, before);
+        assert!(!rig.repo.join("draft.txt").exists(), "{reply:?}");
+        let branch = reply["branch"].as_str().ok_or("no branch")?;
+        assert_eq!(
+            git(&rig.repo, &["show", &format!("{branch}:draft.txt")])?,
+            "x"
+        );
+        let next = reply["next"].as_str().ok_or("no next sentence")?;
+        assert!(next.contains(&format!("git merge {branch}")), "{next}");
+    }
+    Ok(())
+}
+
+/// Dies with `check` read as an optional string: a list is no check, and the work lands unrun.
+#[tokio::test]
+async fn a_check_that_is_not_a_string_is_refused_and_merges_nothing() -> TestResult {
+    let rig = Rig::new("check-list")?;
+    let family = writer(&rig, "echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let refused = checked_merge(&family, vec!["false"])?.await;
+    let error = refused.err().ok_or("a list check merged")?;
+    assert!(error.contains("check must be a string"), "{error}");
+    assert!(!rig.repo.join("draft.txt").exists());
+    let reply = checked_merge(&family, "true")?.await?;
+    assert_eq!(reply["merged"], true, "{reply:?}");
+    Ok(())
+}
+
+/// Dies with the red reply naming the branch unconditionally: a child that changed nothing has
+/// its branch deleted at release, and `git merge <branch>` would then fail.
+#[tokio::test]
+async fn a_red_check_on_a_child_that_changed_nothing_names_no_branch() -> TestResult {
+    let rig = Rig::new("check-noop")?;
+    let family = writer(&rig, "true").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let reply = checked_merge(&family, "false")?.await?;
+    assert_eq!(reply["merged"], false, "{reply:?}");
+    let branch = reply["branch"].as_str().ok_or("no branch")?;
+    assert!(!git_raw(&rig.repo, &["rev-parse", "--verify", "-q", branch])?.0);
+    let next = reply["next"].as_str().ok_or("no next sentence")?;
+    assert!(next.contains("no branch was kept"), "{next}");
+    assert!(!next.contains(branch), "{next}");
+    Ok(())
+}
+
+/// Dies with the quiescence read before the check: a job that ends while the check runs still
+/// reads as running, and the settle refuses the lane as busy.
+#[tokio::test]
+async fn a_job_that_ends_during_the_check_does_not_hold_the_lane() -> TestResult {
+    let rig = Rig::new("check-job")?;
+    let family = writer(&rig, "echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let listed = git(&rig.repo, &["worktree", "list", "--porcelain"])?;
+    let lane = listed
+        .split("\n\n")
+        .find(|entry| entry.contains("branch refs/heads/yi/sub-"))
+        .and_then(|entry| entry.lines().next()?.strip_prefix("worktree "))
+        .ok_or("no lane worktree")?;
+    let lane = rig
+        .home
+        .join(Path::new(lane).strip_prefix(rig.home.canonicalize()?)?);
+    let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
+    let _job = yi_tools::jobs::spawn_job("sleep 1", &lane, &never, None)?;
+    let reply = checked_merge(&family, "sleep 3")?.await?;
+    assert_eq!(reply["merged"], true, "{reply:?}");
+    Ok(())
+}
+
+/// A red check's tail is the view of its output: whole under the ceiling, past it (or past the
+/// capture's own cut) rows name kept over total and the rerun, and that rerun, run where the
+/// model would, writes the check's whole output to the file it names.
+#[tokio::test]
+async fn a_red_checks_tail_names_its_cut() -> TestResult {
+    let bytes = |lines: usize| (1..=lines).fold(2, |all, n| all + n.to_string().len() + 1);
+    let cases = [
+        ("tail-whole", 2_000),
+        ("tail-over", 5_000),
+        ("tail-captured", 20_000),
+    ];
+    for (label, lines) in cases {
+        let rig = Rig::new(label)?;
+        let family = writer(&rig, "echo x > draft.txt").await?;
+        assert!(family.reaches("writer", "finished").await);
+        let reply = checked_merge(
+            &family,
+            format!("cat draft.txt; seq 1 {lines}; exit 3").as_str(),
+        )?
+        .await?;
+        let before = git(&rig.repo, &["worktree", "list"])?;
+        assert_eq!(reply["check"]["exit"], 3, "{reply:?}");
+        let tail = reply["check"]["tail"].as_str().ok_or("no tail")?;
+        let (cut, captured) = (
+            tail.contains("VIEW_CEILING 16384"),
+            tail.contains("OUTPUT_CAP"),
+        );
+        assert_eq!(
+            (cut, captured),
+            (lines > 2_000, lines > 5_000),
+            "{label}: {tail:.300}"
+        );
+        if !cut {
+            assert_eq!(
+                tail.lines().count(),
+                lines + 1,
+                "whole under the ceiling: {tail:.200}"
+            );
+            continue;
+        }
+        assert!(
+            tail.contains(&format!("kept 30000 of {} bytes", bytes(lines))) == captured,
+            "{label}: {tail:.600}"
+        );
+        let (_, rest) = tail.split_once("the rest: bash ").ok_or(tail)?;
+        let (call, _) = rest.split_once(" > view.log 2>&1").ok_or(rest)?;
+        let scratch = Scratch::new("lane-rerun")?;
+        let script = format!("{call} > view.log 2>&1");
+        let mut bash = yi_tools::command("bash");
+        bash.args(["-c", &script]).current_dir(&*scratch);
+        let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
+        let rerun = yi_tools::run_captured(bash, None, &never, yi_tools::OUTPUT_CAP)?;
+        assert_eq!(
+            rerun.exit_code,
+            Some(3),
+            "the check's own exit survives the rerun"
+        );
+        let log = std::fs::read_to_string(scratch.join("view.log"))?;
+        let whole: String = (1..=lines).fold("x\n".to_owned(), |all, n| format!("{all}{n}\n"));
+        assert_eq!(log, whole, "the rerun holds the output the view cut");
+        assert_eq!(
+            git(&rig.repo, &["worktree", "list"])?,
+            before,
+            "the rerun cleans up"
+        );
+    }
+    Ok(())
+}
+
+/// Dies with the check run inside the async handler, where the session's one-thread runtime
+/// answers nothing until it ends; past the session deadline it is cut and the reply says so.
+#[tokio::test]
+async fn a_check_past_the_deadline_is_cut_while_the_executor_serves() -> TestResult {
+    let rig = Rig::new("check-deadline")?;
+    let family = writer(&rig, "echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let now = std::time::Instant::now();
+    let ends = now.checked_add(std::time::Duration::from_secs(2));
+    family.host.set_deadline(Some(ends.ok_or("no instant")?));
+    let merge = checked_merge(&family, "sleep 30")?;
+    let reply = served_while(&family, merge).await??;
+    assert!(
+        now.elapsed() < std::time::Duration::from_secs(20),
+        "{reply:?}"
+    );
+    assert_eq!(reply["merged"], false, "{reply:?}");
+    assert!(reply["check"]["exit"].is_null(), "{reply:?}");
+    let tail = reply["check"]["tail"].as_str().ok_or("no tail")?;
+    assert!(tail.contains("cut at the session deadline"), "{tail}");
+    let branch = reply["branch"].as_str().ok_or("no branch")?;
+    assert_eq!(
+        git(&rig.repo, &["show", &format!("{branch}:draft.txt")])?,
+        "x"
+    );
     Ok(())
 }

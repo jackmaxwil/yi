@@ -6,8 +6,10 @@ use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 use yi_runtime::{AgentSession, SubagentHost, session::user_input};
 use yi_types::event::AgentEvent;
+use yi_types::mail::Delivery;
 
 use super::{AskRequest, Command, UiEvent};
+use crate::port::Reply;
 
 const QUIT_GRACE: Duration = Duration::from_secs(3);
 
@@ -39,6 +41,18 @@ pub async fn forward(
             break;
         }
     }
+}
+
+/// Starts a turn. Invariant: the UI learns of a start from `AgentStart`, so a second Enter
+/// before it arrives meets a busy session; that text steers the run, never vanishes.
+pub fn submit(session: &AgentSession, text: &str) -> Option<String> {
+    let message = user_input(text);
+    if session.prompt_message(message.clone()).is_ok() {
+        return None;
+    }
+    // `wakes`: a run that ended since the refusal starts a turn rather than parking the text.
+    (session.deliver(message, true) == Delivery::Queued)
+        .then(|| "a turn was already running · your message steers it".to_owned())
 }
 
 type Bridge = (
@@ -106,7 +120,9 @@ pub(crate) fn spawn_runtime_bridge(
                 while let Some(command) = cmd_rx.recv().await {
                     match command {
                         Command::Prompt(text) => {
-                            let _ = driver_session.prompt_message(user_input(&text));
+                            if let Some(notice) = submit(&driver_session, &text) {
+                                let _ = reply_tx.send(UiEvent::Reply(Reply::Notice(notice)));
+                            }
                         }
                         Command::Steer(text) => driver_session.steer_message(user_input(&text)),
                         Command::SummarizeBranch(stub) => {

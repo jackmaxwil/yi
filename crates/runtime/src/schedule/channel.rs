@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -354,22 +355,47 @@ fn stamp(item: &Todo) -> Option<ChannelStamp> {
     serde_json::from_value(item.extra.get(CHANNEL_KEY)?.clone()).ok()
 }
 
+/// A channel no adapter feeds, holding nothing past the job's ack: its tick would deliver
+/// nothing, so the timer re-arms it without a claim or a ledger write.
+pub(super) fn idle(job: &Job) -> bool {
+    let Some(sub) = &job.channel else {
+        return false;
+    };
+    let channel = Channel::at(&sub.path);
+    let Ok(meta) = channel.meta() else {
+        return false;
+    };
+    let acked = meta.acks.get(&job.id).copied().unwrap_or(0);
+    meta.source.starts_with(CHANNEL_SCHEME)
+        && channel.last().is_none_or(|last| last.offset <= acked)
+}
+
 /// A channel tick: the batch past the job's ack, filtered, delivered to its target, then acked,
 /// so a crash between the two redelivers and the stamp's ids keep it from creating twice.
 pub fn fire(todos: &TodoStore, job: &Job, sub: &ChannelSub) -> Result<Fired, String> {
+    fire_with_hooks(todos, job, sub, None)
+}
+
+pub(crate) fn fire_with_hooks(
+    todos: &TodoStore,
+    job: &Job,
+    sub: &ChannelSub,
+    hooks: Option<&Arc<crate::claude_hooks::Hooks>>,
+) -> Result<Fired, String> {
     let channel = Channel::at(&sub.path);
     let meta = channel.meta()?;
     let cadence = job.schedule.interval_ms.unwrap_or(DEFAULT_CADENCE_MS);
-    if let Err(stopped) = super::adapter::ensure(
+    if let Err(stopped) = super::adapter::ensure_with_hooks(
         &meta.source,
         &channel,
         Path::new(&job.cwd),
         cadence,
         job.unblocks.is_none(),
+        hooks,
     ) {
         return Ok(Fired::Stopped(stopped));
     }
-    let acked = meta.acks.get(&job.id).copied().unwrap_or(0);
+    let acked = acked(&meta, job);
     let size = usize::try_from(sub.batch.unwrap_or(DEFAULT_BATCH).max(1)).unwrap_or(usize::MAX);
     let (mut scanned, mut batch) = (acked, Vec::new());
     for entry in channel
@@ -612,7 +638,46 @@ impl HeartbeatService {
     }
 }
 
+/// Whether the buffer holds an entry past the job's ack; read only for a session not loaded.
+pub(crate) fn unread(job: &Job, sub: &ChannelSub) -> bool {
+    let channel = Channel::at(&sub.path);
+    let acked = channel.meta().map_or(0, |meta| acked(&meta, job));
+    channel.last().is_some_and(|entry| entry.offset > acked)
+}
+
+fn acked(meta: &ChannelMeta, job: &Job) -> u64 {
+    meta.acks.get(&job.id).copied().unwrap_or(0)
+}
+
 impl HeartbeatService {
+    /// Keeps the timer of a session unloaded while idle that still has a job to come due; that
+    /// job asks `reload` to load it.
+    pub fn hold_unloaded(&self, reload: impl Fn(&str) -> bool + Send + Sync + 'static) {
+        let session = self.session_id();
+        let owes = (self.store().snapshot().jobs.iter())
+            .any(|job| job.session_id == session && super::claimable(job));
+        if let Some(hub) = self.hub().filter(|_| owes) {
+            hub.on_absent(std::sync::Arc::new(reload));
+            super::shared::park(&self.store());
+        }
+    }
+
+    /// A session loaded again for a wake reads its subscriptions now, not a retry later.
+    pub fn rearm_channels(&self) {
+        let session = self.session_id();
+        let paths: std::collections::HashSet<String> = self
+            .store()
+            .snapshot()
+            .jobs
+            .into_iter()
+            .filter(|job| job.session_id == session && super::claimable(job))
+            .filter_map(|job| job.channel.map(|sub| sub.path))
+            .collect();
+        for path in paths {
+            super::shared::poke_now(std::path::Path::new(&path));
+        }
+    }
+
     /// A durable root reads its mail through one subscription, made at its first bind and kept:
     /// one letter per todo, any number open at once, each waiting for the turn it lands in.
     pub(super) fn ensure_mailbox(&self, session_id: &str) {

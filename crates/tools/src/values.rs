@@ -16,16 +16,14 @@ pub(crate) fn write(path: &str, tag: Option<FileTag>, bytes: usize) -> Value {
 
 /// The streams before the reducer shortened them, and the row naming any cap that cut them.
 pub(crate) fn bash(capture: CommandCapture, timed_out: bool) -> Value {
-    let rows: Vec<String> = (capture.cut_row().into_iter())
-        .chain(capture.cut_note())
-        .collect();
+    let cut = capture.cut_row();
     let value = BashValue {
         exit_code: capture.exit_code.map(i64::from),
         stdout: capture.stdout,
         stderr: capture.stderr,
         timed_out,
         cancelled: capture.cancelled,
-        cut: (!rows.is_empty()).then(|| rows.join("\n")),
+        cut,
         job: None,
     };
     serde_json::to_value(value).unwrap_or(Value::Null)

@@ -9,7 +9,7 @@ use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
 use yi_types::acp::{DaemonLedger, DaemonLedgerEntry};
 
-use crate::{PROTOCOL_VERSION, negotiate};
+use crate::negotiate;
 
 pub struct DaemonOptions {
     pub socket: PathBuf,
@@ -118,6 +118,18 @@ fn ledger_path(socket: &std::path::Path) -> PathBuf {
     socket.with_extension("ledger.json")
 }
 
+/// Worker stderr lands here, owner-only beside the socket; /dev/null kept a worker's dying words.
+fn worker_log(socket: &std::path::Path) -> Stdio {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = socket.with_extension("worker.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path);
+    log.map_or_else(|_| Stdio::null(), Stdio::from)
+}
+
 /// Invariant: the ledger is written whole through a rename (D118), so a reader sees one
 /// version or none; the read is bounded because the file is a peer's to grow.
 const LEDGER_MAX_BYTES: u64 = 1 << 20;
@@ -182,7 +194,7 @@ fn prompt_title(frame: &Value) -> Option<String> {
     clippy::disallowed_methods,
     reason = "the ledger's timestamp is the job: when the last unattended update landed"
 )]
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
@@ -292,7 +304,7 @@ impl Supervisor {
             .args(&self.options.worker_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(worker_log(&self.options.socket));
         let mut child = command.spawn().map_err(|error| error.to_string())?;
         let stdin = child.stdin.take().ok_or("worker has no stdin")?;
         let stdout = child.stdout.take().ok_or("worker has no stdout")?;
@@ -935,10 +947,6 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
         let _ = std::fs::remove_file(&socket);
         0
     })
-}
-
-pub fn daemon_protocol_version() -> u16 {
-    PROTOCOL_VERSION
 }
 
 #[cfg(test)]
