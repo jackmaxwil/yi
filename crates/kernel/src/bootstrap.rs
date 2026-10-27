@@ -206,7 +206,7 @@ pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
 }
 
 /// Directory holding `yi_runtime` and `skills`: `python/` in the tree above the exe, then
-/// `~/.yi/python` unpacked from the embed, then `python` under the cwd (no build path).
+/// `~/.yi/python` unpacked from the embed, then `/nonexistent/yi/python`, which fails closed.
 fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBuf) -> PathBuf {
     let mut dir = exe.and_then(Path::parent);
     // deps/ -> debug/ -> target/ -> root is three; the spare levels cost a
