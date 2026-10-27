@@ -195,14 +195,33 @@ pub fn explain(command: &str, mode: PermissionMode, cwd: &Path) -> Report {
         command: Some(command),
     };
     let context = CatastrophicContext::detect(cwd);
-    let decision = match decide(&call, mode, &[], &SessionRules::new(), &[], &context) {
+    let nested = yi_tools::Sandbox::nested();
+    let mut decision = match decide(&call, mode, &[], &SessionRules::new(), &[], &context) {
         Decision::Contain { reason } if !yi_tools::Sandbox::available() => Decision::Ask {
             title: format!("{} requires permission", call.tool_name),
             description: format!("{reason}: {command}"),
-            reviewable: true,
+            reviewable: !nested,
         },
         other => other,
     };
+    if nested
+        && mode == PermissionMode::Yolo
+        && let Decision::Allow { .. } = decision
+        && let Decision::Contain { reason } = decide(
+            &call,
+            PermissionMode::Auto,
+            &[],
+            &SessionRules::new(),
+            &[],
+            &context,
+        )
+    {
+        decision = Decision::Deny {
+            reason: format!(
+                "{reason}: this process runs inside a sandbox Yi cannot nest a profile into, so nothing contains the command"
+            ),
+        };
+    }
     let sandboxed = match decision {
         Decision::Contain { .. } => true,
         Decision::Allow { .. } => {

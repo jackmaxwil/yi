@@ -67,21 +67,36 @@ impl Sandbox {
         cfg!(target_os = "macos")
             && Path::new(SEATBELT).is_file()
             && *APPLIES.get_or_init(|| {
-                let applied = crate::process::command(SEATBELT)
+                let probe = crate::process::command(SEATBELT)
                     .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
                     .output()
-                    .map_or(true, |probe| {
-                        probe.status.success()
-                            || nested_sandbox_note(&String::from_utf8_lossy(&probe.stderr))
-                                .is_none()
+                    .ok()
+                    .and_then(|probe| {
+                        let note =
+                            nested_sandbox_note(&String::from_utf8_lossy(&probe.stderr));
+                        if probe.status.success() || note.is_none() {
+                            None
+                        } else {
+                            note
+                        }
                     });
-                if !applied {
-                    eprintln!(
-                        "[sandbox: this process already runs inside a sandbox and sandbox-exec cannot apply a profile here; Yi's Seatbelt is off, kernels and bash run under the outer one, and the tests that need Seatbelt return early]"
-                    );
+                match probe {
+                    Some(note) => {
+                        eprintln!("{note}");
+                        eprintln!(
+                            "[sandbox: Yi's Seatbelt is off, kernels and bash run under the outer sandbox, a bash call the gate would have contained asks you (yolo refuses it), and the tests that need Seatbelt return early]"
+                        );
+                        false
+                    }
+                    None => true,
                 }
-                applied
             })
+    }
+
+    /// The probe above ran and a profile could not apply: nested, no containment this crate
+    /// enforces exists, so the broker may not settle a contained-class call without the user.
+    pub fn nested() -> bool {
+        cfg!(target_os = "macos") && Path::new(SEATBELT).is_file() && !Self::available()
     }
 
     /// Outside every writable root, or under a denied one; the devices the base policy grants

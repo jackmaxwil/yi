@@ -579,14 +579,10 @@ impl PermissionBroker {
                     .collect()
             })
             .unwrap_or_default();
-        let decision = decide(
-            &call,
-            self.mode(),
-            &self.config_rules,
-            &session_rules,
-            &active_holds,
-            &self.context,
-        );
+        let (decision, nested_refusal) = self.decide_nested(&call, &session_rules, &active_holds);
+        if let Some(reason) = nested_refusal {
+            return self.denied(reason);
+        }
         let judged = hooked::Judged {
             call: &call,
             config_rules: &self.config_rules,
@@ -625,12 +621,12 @@ impl PermissionBroker {
                     containment: self.containment_with(None, false),
                 };
             }
-            // A containment Yi cannot enforce, or one the sandbox already refused, is the same
-            // class of unknown as an unprovable command, so the reviewer may see it too.
+            // A containment Yi cannot enforce, or one the sandbox already refused, is the same class
+            // of unknown as an unprovable command; nested, the classifier's word is no sandbox's.
             Decision::Contain { reason } => (
                 format!("{tool_name} requires permission"),
                 format!("{reason}: {display}"),
-                true,
+                !yi_tools::Sandbox::nested(),
                 reason,
             ),
             Decision::Ask {

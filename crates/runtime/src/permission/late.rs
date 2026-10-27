@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use yi_types::event::AgentEvent;
 
 use super::{Answerer, AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
+use super::{Decision, Hold, SessionRules, ToolCall, decide};
 
 struct OwnedAsk {
     title: String,
@@ -182,5 +183,30 @@ impl PermissionBroker {
     pub(super) fn late(&self, ask: &PermissionAsk<'_>, late: &Late<'_>) -> Option<Answered> {
         (self.prompts_close_on_settle.load(Ordering::Relaxed))
             .then(|| ask_or_judge(self.asker.as_ref(), ask, late))
+    }
+}
+impl PermissionBroker {
+    pub(super) fn decide_nested(
+        &self,
+        call: &ToolCall<'_>,
+        rules: &SessionRules,
+        holds: &[Hold],
+    ) -> (Decision, Option<String>) {
+        let (config_rules, context) = (&self.config_rules, &self.context);
+        let decision = decide(call, self.mode(), config_rules, rules, holds, context);
+        let refusal = (yi_tools::Sandbox::nested()
+            && self.mode() == PermissionMode::Yolo
+            && call.command.is_some())
+        .then(|| decide(call, PermissionMode::Auto, config_rules, rules, holds, context))
+        .and_then(|decision| match decision {
+            Decision::Contain { reason } => Some(reason),
+            _ => None,
+        })
+        .map(|reason| {
+            format!(
+                "{reason}: this process runs inside a sandbox Yi cannot nest a profile into, so nothing contains the command; only a session rule you set may allow it"
+            )
+        });
+        (decision, refusal)
     }
 }

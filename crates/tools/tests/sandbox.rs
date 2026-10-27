@@ -1170,9 +1170,10 @@ fn a_network_refusal_behind_a_zero_exit_is_a_note_and_never_recorded() -> TestRe
 #[test]
 fn availability_reports_to_stdout() {
     println!("available={}", Sandbox::available());
+    println!("nested={}", Sandbox::nested());
 }
 
-fn reported_availability(outer: Option<&str>) -> Result<String, Box<dyn Error>> {
+fn reported_report(outer: Option<&str>) -> Result<(String, String), Box<dyn Error>> {
     let exe = std::env::current_exe()?;
     let args = [
         "--exact",
@@ -1188,10 +1189,16 @@ fn reported_availability(outer: Option<&str>) -> Result<String, Box<dyn Error>> 
         None => yi_tools::command(&exe),
     };
     let out = command.args(args).output()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find_map(|line| line.strip_prefix("available=").map(str::to_owned))
-        .ok_or_else(|| format!("no report: {}", String::from_utf8_lossy(&out.stderr)).into())
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parse = |key: &str| {
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(key).map(str::to_owned))
+    };
+    match (parse("available="), parse("nested=")) {
+        (Some(available), Some(nested)) => Ok((available, nested)),
+        _ => Err(format!("no report: {}", String::from_utf8_lossy(&out.stderr)).into()),
+    }
 }
 
 /// Incident: a process an outer sandbox contains read as sandbox-capable, so its bash and kernel
@@ -1202,7 +1209,13 @@ fn a_process_inside_a_sandbox_is_not_sandbox_capable() -> TestResult {
         return Ok(());
     }
     let outer = "(version 1)(allow default)(deny file-write* (subpath \"/yi-no-such-root\"))";
-    assert_eq!(reported_availability(None)?, "true");
-    assert_eq!(reported_availability(Some(outer))?, "false");
+    assert_eq!(
+        reported_report(None)?,
+        ("true".to_owned(), "false".to_owned())
+    );
+    assert_eq!(
+        reported_report(Some(outer))?,
+        ("false".to_owned(), "true".to_owned())
+    );
     Ok(())
 }
