@@ -70,7 +70,11 @@ impl Sandbox {
                 let applied = crate::process::command(SEATBELT)
                     .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
                     .output()
-                    .is_ok_and(|probe| probe.status.success());
+                    .map_or(true, |probe| {
+                        probe.status.success()
+                            || nested_sandbox_note(&String::from_utf8_lossy(&probe.stderr))
+                                .is_none()
+                    });
                 if !applied {
                     eprintln!(
                         "[sandbox: this process already runs inside a sandbox and sandbox-exec cannot apply a profile here; Yi's Seatbelt is off, kernels and bash run under the outer one, and the tests that need Seatbelt return early]"

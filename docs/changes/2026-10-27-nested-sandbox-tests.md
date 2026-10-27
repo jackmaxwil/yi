@@ -1,6 +1,6 @@
 ---
 issue: Closes #1672
-raise: crate tools +16, tests +44, comments +2
+raise: crate tools +20, tests +44, comments +2
 ---
 A process an outer sandbox already contains could not apply Yi's own Seatbelt profile: macOS refuses to nest, so every contained bash call and every kernel boot died on `sandbox-exec: sandbox_apply: Operation not permitted`. About 67 runtime tests failed that way under the workspace sandbox while passing on the host, and reviewers could not tell those reds from real ones.
 
