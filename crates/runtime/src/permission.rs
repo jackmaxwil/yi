@@ -74,8 +74,6 @@ pub struct PermissionBroker {
     config_rules: Vec<ConfigRule>,
     /// The holder's own: a child starts from a copy ([`PermissionBroker::for_child`]).
     session_rules: Mutex<SessionRules>,
-    /// Kept while no rule journal is attached, flushed to it by `set_rule_journal`.
-    pending_rules: Mutex<Vec<SessionPermissionRule>>,
     holds: Arc<Mutex<Vec<Hold>>>,
     context: CatastrophicContext,
     cwd: PathBuf,
@@ -216,7 +214,6 @@ impl PermissionBroker {
             mode: Arc::new(Mutex::new(mode)),
             config_rules,
             session_rules: Mutex::new(SessionRules::new()),
-            pending_rules: Mutex::new(Vec::new()),
             holds: Arc::new(Mutex::new(Vec::new())),
             context: CatastrophicContext::detect(&cwd),
             cwd,
