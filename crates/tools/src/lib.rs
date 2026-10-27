@@ -13,7 +13,7 @@ pub mod jobs;
 mod orient;
 pub mod plugin;
 #[cfg(test)]
-#[path = "../tests/support/poll.rs"]
+#[path = "../../types/tests/support/poll.rs"]
 mod poll;
 mod process;
 mod redact;
