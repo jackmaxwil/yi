@@ -153,17 +153,27 @@ impl PermissionBroker {
     /// Makes `dir` writable to every contained run, as an "always" on a widened retry would;
     /// refused where that retry is, a credential store or the session ledger. No sandbox, no-op.
     pub fn grant_write(&self, dir: &Path) -> Result<(), String> {
-        let Some(sandbox) = &self.sandbox else {
-            return Ok(());
-        };
         let real = dir
             .canonicalize()
             .map_err(|error| format!("{}: {error}", dir.display()))?;
-        if protected(sandbox, &real) {
+        let sandbox = self.sandbox.clone().unwrap_or_else(|| {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let mut sandbox = yi_tools::Sandbox::for_workspace(&self.cwd, &home, None);
+            sandbox
+                .host_owned
+                .extend(self.context.host_owned.iter().cloned());
+            sandbox
+        });
+        if protected(&sandbox, &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
             ));
+        }
+        if self.sandbox.is_none() {
+            return Ok(());
         }
         let grant = yi_permission::write_grant(&real);
         self.keep_grant(

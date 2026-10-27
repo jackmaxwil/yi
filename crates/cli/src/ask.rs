@@ -353,10 +353,7 @@ async fn follow(
             } => {
                 let args = calls.remove(tool_call_id);
                 let refused = *is_error
-                    && result
-                        .details
-                        .get("errorKind")
-                        .and_then(serde_json::Value::as_str)
+                    && yi_types::event::ToolErrorKind::from_details(&result.details)
                         == Some(yi_types::event::ToolErrorKind::Denied.as_str());
                 denied = refused.then(|| {
                     let reason = yi_types::message::join_text(&result.content, "\n");
@@ -425,7 +422,7 @@ async fn follow(
     } else if ended && !said_anything && exit == 0 {
         eprintln!("error: the run ended with no assistant text at all");
         exit = 1;
-    } else if !json && matches!(last_stop, Some((StopReason::Error, _))) {
+    } else if !json && exit == 0 && matches!(last_stop, Some((StopReason::Error, _))) {
         exit = 1;
     }
     exit
@@ -642,6 +639,43 @@ mod tests {
             let run = super::follow(receiver, [&never, &never], modes, None, None);
             assert_eq!(runtime.block_on(run), code, "headless {headless}");
         }
+        Ok(())
+    }
+
+    /// Dies with a later provider error replacing the distinct refusal exit a script depends on.
+    #[test]
+    fn a_refusal_followed_by_a_provider_error_still_exits_4()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use serde_json::json;
+        use yi_runtime::faux::faux_assistant_message;
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let (events, receiver) = tokio::sync::broadcast::channel(8);
+        for wire in [
+            json!({"type": "tool_execution_end", "toolCallId": "c0", "toolName": "bash",
+                "result": {"content": [], "details": {"errorKind": "denied"}}, "isError": true}),
+            serde_json::to_value(AgentEvent::MessageEnd {
+                message: faux_assistant_message(Vec::new(), StopReason::Error),
+            })?,
+            serde_json::to_value(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            })?,
+        ] {
+            events.send(serde_json::from_value(wire)?)?;
+        }
+        let never = || false;
+        let modes = super::Modes {
+            json: false,
+            eval: false,
+            no_deltas: false,
+            headless: true,
+        };
+        assert_eq!(
+            runtime.block_on(super::follow(receiver, [&never, &never], modes, None, None)),
+            4
+        );
         Ok(())
     }
 
