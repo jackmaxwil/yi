@@ -7,6 +7,7 @@ mod scratch;
 
 mod documents;
 mod endings;
+mod hashline_blocks;
 mod hashline_parser;
 mod hashline_patcher;
 mod kernel_cell;

@@ -59,8 +59,13 @@ pub fn indent_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
         return None;
     }
     let depth = indent_width(anchor);
+    let mut signature_depth = delimiter_delta(anchor);
     let mut end: Option<usize> = None;
     for (index, candidate) in lines.iter().enumerate().skip(anchor_index.checked_add(1)?) {
+        if signature_depth > 0 {
+            signature_depth = signature_depth.saturating_add(delimiter_delta(candidate));
+            continue;
+        }
         if candidate.trim().is_empty() {
             continue;
         }
@@ -71,6 +76,16 @@ pub fn indent_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
     }
     let end = u64::try_from(end?.checked_add(1)?).ok()?;
     Some(BlockSpan { start: line, end })
+}
+
+fn delimiter_delta(line: &str) -> i64 {
+    strip_line_noise(line)
+        .into_iter()
+        .fold(0_i64, |depth, byte| match byte {
+            b'{' | b'[' | b'(' => depth.saturating_add(1),
+            b'}' | b']' | b')' => depth.saturating_sub(1),
+            _ => depth,
+        })
 }
 
 fn indent_width(line: &str) -> usize {
@@ -101,6 +116,14 @@ fn strip_line_noise(line: &str) -> Vec<u8> {
             continue;
         }
         match byte {
+            b'\''
+                if bytes
+                    .get(index + 1)
+                    .is_some_and(|next| next.is_ascii_alphabetic() || *next == b'_')
+                    && bytes.get(index + 2) != Some(&b'\'') =>
+            {
+                out.push(byte)
+            }
             b'"' | b'\'' | b'`' => in_string = Some(byte),
             b'/' if bytes.get(index + 1) == Some(&b'/') => break,
             b'#' if index == 0 || bytes[index - 1].is_ascii_whitespace() => break,

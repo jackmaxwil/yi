@@ -1,5 +1,5 @@
 pub(crate) mod apply;
-pub(crate) mod blocks;
+pub mod blocks;
 pub(crate) mod clipboard;
 mod documents;
 pub mod format;
