@@ -76,7 +76,6 @@ pub struct TuiOptions {
     pub pace: u16,
 }
 
-// The viewport opens at an empty live region's height: starting tall anchors the composer mid-screen.
 const MIN_VIEWPORT_ROWS: u16 = 3;
 
 pub(crate) const SPINNER_PERIOD_MS: u128 = 80;
