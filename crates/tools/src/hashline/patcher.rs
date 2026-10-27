@@ -209,7 +209,7 @@ impl<'a> Patcher<'a> {
 
         let mut target = section.clone();
         let mut canonical_path = self.canonical_path(&target.path);
-        let mut read = self.try_read(&target.path);
+        let mut read = self.try_read(&target.path)?;
         // No tag names the version this session last showed for the path.
         let expected = match section.file_hash.as_deref() {
             Some(text) => FileTag::parse(text).ok_or_else(|| {
@@ -267,22 +267,31 @@ impl<'a> Patcher<'a> {
                 ));
                 target = target.with_path(resolved);
                 canonical_path = self.canonical_path(&target.path);
-                read = self.try_read(&target.path);
+                read = self.try_read(&target.path)?;
             }
         }
 
         let Some(raw_content) = read else {
-            return Err(format!(
-                "File not found: {}. Use the write tool to create new files.",
-                target.path
-            )
-            .into());
+            return Err(PatchError::Unreadable {
+                kind: std::io::ErrorKind::NotFound,
+                message: format!(
+                    "File not found: {}. Use the write tool to create new files.",
+                    target.path
+                ),
+            });
         };
 
         if let Some(FileOp::Move { dest }) = &file_op
             && self.canonical_path(dest) == canonical_path
         {
             return Err(format!("MV destination is the same as {}.", target.path).into());
+        }
+        if let Some(FileOp::Move { dest }) = &file_op
+            && self.resolve_path(dest).exists()
+        {
+            return Err(
+                format!("MV destination already exists: {dest}. Choose a new path.").into(),
+            );
         }
 
         let (normalized, endings) = split(&raw_content);
@@ -439,10 +448,26 @@ impl<'a> Patcher<'a> {
         ))
     }
 
-    fn try_read(&self, path: &str) -> Option<String> {
-        (self.gate.open(&self.resolve_path(path), &self.walls))
+    fn try_read(&self, path: &str) -> Result<Option<String>, PatchError> {
+        match (self.gate.open(&self.resolve_path(path), &self.walls))
             .and_then(std::io::read_to_string)
-            .ok()
+        {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => {
+                let kind = error.kind();
+                let message = match kind {
+                    std::io::ErrorKind::InvalidData => {
+                        format!("File is not UTF-8: {path}: {error}")
+                    }
+                    std::io::ErrorKind::PermissionDenied => {
+                        format!("Permission denied reading {path}: {error}")
+                    }
+                    _ => format!("Could not read {path}: {error}"),
+                };
+                Err(PatchError::Unreadable { kind, message })
+            }
+        }
     }
 
     fn assert_seen_lines(

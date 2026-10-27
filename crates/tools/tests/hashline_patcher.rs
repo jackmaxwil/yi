@@ -1156,3 +1156,39 @@ fn a_clipped_row_anchors_an_adjacent_insert_but_not_its_replacement() -> TestRes
     assert!(text.contains("grep"), "{text}");
     Ok(())
 }
+
+#[test]
+fn a_latin1_file_reports_not_utf8_instead_of_inviting_an_overwrite() -> TestResult {
+    let fixture = Fixture::new("latin1-read")?;
+    let utf8 = fixture.context.cwd.join("source.txt");
+    let latin1 = fixture.context.cwd.join("latin1.txt");
+    fs::write(&utf8, "café\n")?;
+    let converted = yi_tools::command("iconv")
+        .args(["-f", "UTF-8", "-t", "ISO-8859-1"])
+        .arg(&utf8)
+        .output()?;
+    assert!(converted.status.success(), "iconv: {converted:?}");
+    fs::write(&latin1, converted.stdout)?;
+
+    let edit = fixture.edit("[latin1.txt#ABCD]\nPUT 1.=1:\n+cafe\n");
+    let text = output_text(&edit);
+    assert!(edit.is_error, "{text}");
+    assert!(text.contains("not UTF-8"), "{text}");
+    assert!(!text.contains("Use the write tool"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn mv_onto_an_existing_file_is_refused_without_changing_either_file() -> TestResult {
+    let fixture = Fixture::new("mv-existing")?;
+    fixture.write("source.txt", "source\n")?;
+    fixture.write("dest.txt", "destination\n")?;
+    let tag = fixture.tag_of("source.txt")?;
+    let edit = fixture.edit(&format!("[source.txt#{tag}]\nMV dest.txt\n"));
+    let text = output_text(&edit);
+    assert!(edit.is_error, "{text}");
+    assert!(text.contains("MV destination already exists"), "{text}");
+    assert_eq!(fixture.content("source.txt")?, "source\n");
+    assert_eq!(fixture.content("dest.txt")?, "destination\n");
+    Ok(())
+}

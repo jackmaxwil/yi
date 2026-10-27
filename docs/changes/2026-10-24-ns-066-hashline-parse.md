@@ -1,7 +1,7 @@
 ---
 issue: Closes #1502, Closes #136, Refs #804, Refs #807, Refs #1442
-growth: +100 hashline parsing and typed errors, with deletion of string slices and message-prefix classification weighed first
-raise: tests +270, crate tools +90
+growth: +137 typed errors, block/read validation, anchor and I/O safety after splitting read arguments out of tool.rs and deleting string-slice and prefix-classification code
+raise: tests +226, crate tools +123, crate runtime +13
 ---
 This change combines HB-utf8-tools, HA-EDIT-typed, HA-EDIT-blocks, HA-EDIT-readargs, HA-EDIT-anchor, and HA-EDIT-mvread.
 
