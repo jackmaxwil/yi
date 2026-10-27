@@ -6,6 +6,8 @@ use std::error::Error;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::session_files::frames_text;
+
 use crate::scratch::Scratch;
 
 use crate::daemon::spawn_daemon;
@@ -92,7 +94,7 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
 
 /// The reply rows a frame dump shows, as the chat pane draws them after its `•`.
 fn reply_rows(frames: &Path) -> Result<Vec<String>, Box<dyn Error>> {
-    Ok(frames_of(frames)?
+    Ok(frames_text(frames)?
         .lines()
         .filter_map(|line| line.split_once("│ • "))
         .map(|(_, row)| row.trim_end_matches('"').trim().to_owned())
@@ -184,7 +186,7 @@ fn a_headless_console_renders_at_the_size_it_is_given() -> TestResult {
     let _ = daemon.kill();
     let _ = daemon.wait();
     outcome?;
-    let all = frames_of(&frames)?;
+    let all = frames_text(&frames)?;
     let widest = all
         .lines()
         .map(|line| line.trim_matches('"').chars().count())
@@ -234,16 +236,6 @@ fn a_console_start_is_covered_by_the_title_and_any_key_gives_the_screen_back() -
     Ok(())
 }
 
-fn frames_of(dir: &Path) -> Result<String, Box<dyn Error>> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    let mut all = String::new();
-    for entry in entries {
-        all.push_str(&std::fs::read_to_string(entry.path())?);
-    }
-    Ok(all)
-}
-
 /// One script, two hosts: the console pane and solo render the same prompt, reply and
 /// popup, because they run the same chat.
 #[test]
@@ -285,7 +277,7 @@ fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
     if !status.success() {
         return Err(format!("solo exited {status}").into());
     }
-    let solo = frames_of(&solo_frames)?;
+    let solo = frames_text(&solo_frames)?;
 
     // The console: the same script once a session is open in the pane.
     let (mut daemon, socket) = spawn_daemon(&dir)?;
@@ -323,7 +315,7 @@ fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
     let _ = daemon.kill();
     let _ = daemon.wait();
     outcome?;
-    let console = frames_of(&console_frames)?;
+    let console = frames_text(&console_frames)?;
 
     for needle in needles {
         assert!(solo.contains(needle), "solo frames lack {needle:?}");

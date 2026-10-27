@@ -93,11 +93,10 @@ pub(crate) fn headless_refusal(
     match refusal {
         yi_tools::SandboxRefusal::Path(path) => {
             let dir = path.parent().unwrap_or(path);
-            let widen =
-                match sandbox.is_some_and(|sandbox| crate::permission::protected(sandbox, dir)) {
-                    true => format!("`{}` is protected, so no approval widens it", dir.display()),
-                    false => format!("an interactive run asks to widen it by `{}`", dir.display()),
-                };
+            let widen = match crate::permission::protected(sandbox, dir) {
+                true => format!("`{}` is protected, so no approval widens it", dir.display()),
+                false => format!("an interactive run asks to widen it by `{}`", dir.display()),
+            };
             format!(
                 "{HEAD} writing `{}`, and {widen}. Rerun with --yolo, or keep the writes inside the working tree (for a build, set CARGO_TARGET_DIR under it).",
                 path.display()
