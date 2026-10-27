@@ -4852,3 +4852,20 @@ fn a_spill_past_the_read_limit_is_named_not_skipped() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn non_ascii_hashline_paths_and_rows_parse_without_byte_boundary_panics() -> TestResult {
+    use yi_tools::hashline::input::Patch;
+    use yi_tools::hashline::tokenizer::{tokenize_all, try_parse_header};
+
+    let header = try_parse_header("[crates/tui/src/cell-✱.rs#ABCD]").ok_or("Unicode header")?;
+    assert_eq!(header.path, "crates/tui/src/cell-✱.rs");
+    assert_eq!(tokenize_all("PUT 1.=1:\n+↳ done\n").len(), 2);
+    let patch = Patch::parse(
+        "[crates/tui/src/cell-✱.rs#ABCD]\n1:focus it (alt-↓) and type your answer\n",
+        None,
+    )
+    .map_err(|error| format!("Unicode patch refused: {error}"))?;
+    assert_eq!(patch.sections.len(), 1);
+    Ok(())
+}

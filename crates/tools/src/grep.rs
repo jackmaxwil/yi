@@ -200,29 +200,29 @@ struct FileHits {
     utf8: bool,
 }
 
-fn hits_in(matcher: &regex::Regex, normalized: &str, multiline: bool, def: bool) -> Vec<usize> {
+fn hits_in(matcher: &regex::Regex, s: &str, multiline: bool, def: bool) -> Vec<usize> {
     let mut hits: Vec<usize> = if multiline {
-        let mut hits: Vec<usize> = matcher
-            .find_iter(normalized)
-            .map(|found| normalized[..found.start()].matches('\n').count())
-            .collect();
-        hits.dedup();
-        hits
+        matcher
+            .find_iter(s)
+            .map(|found| {
+                s.as_bytes()
+                    .iter()
+                    .take(found.start())
+                    .filter(|&&c| c == b'\n')
+                    .count()
+            })
+            .collect::<Vec<_>>()
     } else {
-        normalized
-            .split('\n')
+        s.split('\n')
             .enumerate()
             .filter(|(_, line)| matcher.is_match(line))
             .map(|(index, _)| index)
             .collect()
     };
+    hits.dedup();
     if def {
-        let lines: Vec<&str> = normalized.split('\n').collect();
-        hits.retain(|index| {
-            lines
-                .get(*index)
-                .is_some_and(|line| crate::orient::is_decl(line))
-        });
+        let lines: Vec<&str> = s.split('\n').collect();
+        hits.retain(|index| lines.get(*index).is_some_and(|l| crate::orient::is_decl(l)));
     }
     hits
 }

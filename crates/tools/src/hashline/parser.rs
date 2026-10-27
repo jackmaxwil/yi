@@ -84,8 +84,8 @@ fn parse_top_level_snapshot_row(text: &str) -> Option<(u64, &str)> {
     if index >= bytes.len() || (bytes[index] != b':' && bytes[index] != b'|') {
         return None;
     }
-    let line: u64 = trimmed_start[..index].parse().ok()?;
-    Some((line, &text[offset + index + 1..]))
+    let line: u64 = trimmed_start.get(..index)?.parse().ok()?;
+    Some((line, text.get(offset + index + 1..)?))
 }
 
 fn parse_top_level_bare_range_header(text: &str) -> Option<ParsedRange> {
@@ -102,9 +102,9 @@ fn parse_top_level_bare_range_header(text: &str) -> Option<ParsedRange> {
     while index < bytes.len() && bytes[index].is_ascii_digit() {
         index += 1;
     }
-    let start: u64 = stripped[..index].parse().ok()?;
+    let start: u64 = stripped.get(..index)?.parse().ok()?;
     let mut saw_sep = false;
-    let rest = &stripped[index..];
+    let rest = stripped.get(index..)?;
     let mut chars = rest.char_indices();
     let mut end_start = None;
     for (position, ch) in chars.by_ref() {
@@ -119,7 +119,7 @@ fn parse_top_level_bare_range_header(text: &str) -> Option<ParsedRange> {
     }
     drop(chars);
     let end_start = end_start?;
-    let end_text = rest[end_start..].trim_end();
+    let end_text = rest.get(end_start..)?.trim_end();
     if end_text.is_empty() || !end_text.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
@@ -135,10 +135,9 @@ fn is_md_bullet_row(text: &str) -> bool {
     let trimmed = text.trim_start();
     trimmed.len() >= 3
         && trimmed.starts_with("- ")
-        && trimmed[2..]
-            .chars()
-            .next()
-            .is_some_and(|ch| !ch.is_whitespace())
+        && trimmed
+            .get(2..)
+            .is_some_and(|rest| rest.chars().next().is_some_and(|ch| !ch.is_whitespace()))
 }
 
 fn detect_apply_patch_contamination(text: &str) -> Option<String> {
