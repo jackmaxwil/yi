@@ -411,10 +411,8 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
     Ok(())
 }
 
-/// A granted directory that does not exist, or that the sandbox must keep closed, ended the run
-/// before the model answered; a good one let it through. Seatbelt only: without it there is no
-/// sandbox to widen and the grant is a no-op.
-#[cfg(target_os = "macos")]
+/// A granted directory that does not exist, or that must stay closed, ends the run before the
+/// model answers, from either the flag or config; a good one lets it through on every platform.
 #[test]
 fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> TestResult {
     let workspace = Workspace::new("allow-write")?;
@@ -428,6 +426,16 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
         assert_eq!(run.status.code(), Some(2), "{dir}: {stderr}");
         assert!(stderr.contains("allow-write"), "{stderr}");
     }
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [missing]}}).to_string(),
+    )?;
+    let configured = ask(&workspace, "look", &[])?;
+    assert_eq!(configured.status.code(), Some(2), "{configured:?}");
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [workspace.project()]}}).to_string(),
+    )?;
     let run = ask(
         &workspace,
         "look",
@@ -2859,6 +2867,10 @@ fn an_allow_entry_without_a_pattern_ends_the_run_with_exit_2() -> TestResult {
 #[test]
 fn a_run_past_its_deadline_answers_and_exits_inside_it() -> TestResult {
     let workspace = Workspace::new("deadline-last-word")?;
+    write_config(
+        &workspace,
+        r#"{"permissions":{"allow":["bash sleep 100"]}}"#,
+    )?;
     let script = bash_script(&workspace, "sleep 100", Some("the last word"))?;
     let started = std::time::Instant::now();
     let answered = ask(

@@ -343,7 +343,7 @@ fn tool_call_update(
 }
 
 fn tool_status(result: &yi_types::event::ToolResult, is_error: bool) -> AcpToolCallStatus {
-    let aborted = result.details.get("errorKind").and_then(Value::as_str)
+    let aborted = yi_types::event::ToolErrorKind::from_details(&result.details)
         == Some(yi_types::event::ToolErrorKind::Aborted.as_str());
     let cut = result.details.get("cancelled").and_then(Value::as_bool) == Some(true);
     match (
