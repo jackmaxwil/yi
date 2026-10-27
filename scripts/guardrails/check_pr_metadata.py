@@ -30,7 +30,7 @@ import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from _common import ROOT, FREE_BAND, fail  # noqa: E402
+from _common import ROOT, FREE_BAND, fail, row_key, table_rows  # noqa: E402
 from check_changes import DIR, pending  # noqa: E402
 from check_commit_style import NAMED, subject_errors  # noqa: E402
 from pr_body import base_commit, diff_stats, git, sentences, surface_delta, surface_diff, surface_entry, tally  # noqa: E402
@@ -63,31 +63,6 @@ def send(method, url, payload=None):
         if err.code == 404:
             return None
         raise
-
-
-def table_rows(text, heading):
-    """Data rows of the table under a heading, at whatever level it is written —
-    the changelog is its own file's title, the ledger a section of another. Rows
-    start after the `|---|` separator so the header row is not mistaken for a
-    feature named "feature"; a section with no table yields nothing."""
-    out, inside, started = [], False, False
-    for line in text.splitlines():
-        if line.startswith("#"):
-            inside, started = line.strip().lstrip("#").strip() == heading, False
-            continue
-        line = line.strip()
-        if not inside or not line.startswith("|"):
-            continue
-        if not set(line) - set("|-: "):
-            started = True
-        elif started:
-            out.append(line)
-    return out
-
-
-def row_key(row):
-    """A table row is identified by its first cell: the feature, or the version."""
-    return row.split("|")[1].strip()
 
 
 def added_rows(before, after, heading):
