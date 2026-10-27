@@ -206,7 +206,7 @@ pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
 }
 
 /// Directory holding `yi_runtime` and `skills`: `python/` in the tree above the exe, then
-/// `~/.yi/python` unpacked from the embed, then the compile-time path (the build machine's).
+/// `~/.yi/python` unpacked from the embed, then `python` under the cwd (no build path).
 fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBuf) -> PathBuf {
     let mut dir = exe.and_then(Path::parent);
     // deps/ -> debug/ -> target/ -> root is three; the spare levels cost a
@@ -240,10 +240,7 @@ pub fn python_root() -> PathBuf {
     resolve_python_root(
         std::env::current_exe().ok().as_deref(),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("python"),
+        PathBuf::from("python"),
     )
 }
 

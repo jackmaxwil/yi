@@ -38,6 +38,13 @@ def problems(size, budget, hard_cap=HARD_CAP_BYTES, name="binary_size_budget.jso
     return errs
 
 
+def leaks(blob, roots):
+    """Incident: three dist builds of one tree measured 8,653,648, 8,670,192 and 8,703,216 bytes
+    because the kernel crate embedded its checkout path, so the size tracked the directory name."""
+    return [f"dist binary embeds the build path {r}: size now depends on where it was built"
+            for r in dict.fromkeys(roots) if len(r) > 1 and r.encode() in blob]
+
+
 def cap_errors(was, now, decisions):
     return [f"{name} {was[name]} -> {cap}: a raise needs a `decision:` line in this branch's change file"
             for name, cap in now.items() if not decisions and cap > was.get(name, cap)]
@@ -94,6 +101,9 @@ def selfcheck():
     assert errs == ["dist binary 900000 > 800000 + 16384 bytes (binary_size_budget.json)"], errs
     # a compliant size and baseline is clean
     assert problems(700_000, 800_000, hard_cap=cap) == []
+    # a checkout path inside the binary is flagged; the same bytes without it, and a bare "/", are clean
+    assert len(leaks(b"x/w/yi/crates/kernel\0", ["/w/yi", "/h/.cargo"])) == 1
+    assert leaks(b"/c/foo/src/lib.rs", ["/w/yi", "/"]) == []
     # growth inside the jitter allowance passes, at the allowance too; one byte past it fails
     assert problems(800_016, 800_000, hard_cap=cap) == []
     assert problems(800_000 + JITTER, 800_000, hard_cap=cap) == []
@@ -128,6 +138,7 @@ def main(argv):
     path, cap = baseline()
     budget = json.loads(path.read_text())["max_bytes"]
     errs += problems(size, budget, hard_cap=cap, name=path.name)
+    errs += leaks(DIST_BIN.read_bytes(), [str(ROOT)])
     fail(errs, f"binary_size ({size} bytes; {path.name} {budget} + {JITTER}, cap {cap})")
     return 0
 
