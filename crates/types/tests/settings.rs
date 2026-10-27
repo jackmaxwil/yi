@@ -141,7 +141,11 @@ fn leaves() -> Vec<String> {
         ),
         (
             "permissions",
-            fields!(PermissionsConfig { mode, allow_write }),
+            fields!(PermissionsConfig {
+                mode,
+                allow_write,
+                allow
+            }),
         ),
         ("mail", fields!(MailConfig { hop_limit })),
         ("routing", vec!["order", "only"]),

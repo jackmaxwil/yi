@@ -208,11 +208,7 @@ async fn call(
     let signal = yi_loop::interrupt::InterruptSignal::default();
     let (outcome, value) = tool.execute_program(&id, args.clone(), &signal).await;
     let text = yi_types::message::join_text(&outcome.result.content, "\n");
-    let denied = (outcome
-        .result
-        .details
-        .get("errorKind")
-        .and_then(Value::as_str))
+    let denied = ToolErrorKind::from_details(&outcome.result.details)
         == Some(ToolErrorKind::Denied.as_str());
     let kind = match (outcome.is_error, denied) {
         (false, _) => None,
