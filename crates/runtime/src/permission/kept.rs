@@ -162,6 +162,9 @@ impl PermissionBroker {
                 real.display()
             ));
         }
+        if self.sandbox.is_none() {
+            return Ok(());
+        }
         let grant = yi_permission::write_grant(&real);
         self.keep_grant(
             Some(&grant),

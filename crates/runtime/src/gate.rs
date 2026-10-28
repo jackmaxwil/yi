@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::permission::CallOutcome;
 use serde_json::{Value, json};
 use yi_permission::{
     CatastrophicContext, Class, Decision, Parsed, PermissionMode, SessionRules, ToolCall,
@@ -148,6 +149,23 @@ pub(crate) fn headless_split(why: &str) -> String {
     )
 }
 
+/// A refusal with no one to ask gains a `permissions.allow` entry only when the display names
+/// one exact call: the pattern is a glob, so the call's own `*` and `[` are escaped.
+pub(crate) fn named_rule(
+    mut outcome: CallOutcome,
+    headless: bool,
+    (tool, display): (&str, &str),
+) -> CallOutcome {
+    if headless && (tool == "bash" || display != tool) {
+        let entry = Value::String(format!("{tool} {}", globset::escape(display)));
+        let said = std::mem::take(&mut outcome.reason);
+        outcome.reason = format!(
+            "{said} Allow exactly this call with the permissions.allow entry {entry} in ~/.yi/config.json."
+        );
+    }
+    outcome
+}
+
 pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Ask => "ask",
@@ -254,4 +272,26 @@ pub fn render(report: &Report) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::named_rule;
+    use crate::permission::{CallOutcome, Containment};
+
+    /// Dies with pathless advice allowing every later call of that tool, not only the denied one.
+    #[test]
+    fn only_a_call_with_an_exact_subject_gets_a_named_allow_entry() {
+        let outcome = || CallOutcome {
+            allowed: false,
+            reason: "denied".to_owned(),
+            containment: Containment::Uncontained,
+        };
+        let pathless = named_rule(outcome(), true, ("mail", "mail"));
+        assert!(!pathless.reason.contains("permissions.allow entry"));
+        let bash = named_rule(outcome(), true, ("bash", "bash"));
+        assert!(bash.reason.contains("permissions.allow entry"));
+        let pathed = named_rule(outcome(), true, ("read", "read note.rs"));
+        assert!(pathed.reason.contains("permissions.allow entry"));
+    }
 }

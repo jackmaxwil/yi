@@ -96,6 +96,8 @@ pub struct PermissionsConfig {
     pub mode: Option<ModeName>,
     /// Directories contained commands and write tools may write besides the workspace.
     pub allow_write: Option<Vec<String>>,
+    /// Calls that run unasked, each `TOOL PATTERN`: `bash cargo test*`. A refusal names its rule.
+    pub allow: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
