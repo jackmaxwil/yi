@@ -279,9 +279,15 @@ fn shift(before: &[String], now: &[String]) -> Option<usize> {
 /// Commits a `lines`-row fence at the bottom of a full pane and paints until its last line is
 /// on screen; returns each frame's move and whether every lagging frame asked for the next.
 fn roll_in(lines: usize) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
+    roll_in_sized(lines, AREA.height)
+}
+
+fn roll_in_sized(lines: usize, height: u16) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
+    let area = Rect::new(0, 0, AREA.width, height);
     let mut app = seeded();
+    app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
     let mut scroll = 0;
-    let (mut before, _) = paint(&mut app, &mut scroll);
+    let (mut before, _) = paint_in(&mut app, area, &mut scroll);
     let code: Vec<String> = (0..lines).map(|i| format!("let x{i:03} = {i};")).collect();
     app.commit_cell(&Cell::Assistant {
         markdown: format!("```rust\n{}\n```\n", code.join("\n")),
@@ -290,7 +296,7 @@ fn roll_in(lines: usize) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
     let (mut moves, mut asked, mut phase) = (Vec::new(), true, 0);
     for _ in 0..lines.saturating_mul(2) {
         let _ = app.take_redraw(&mut phase);
-        let (now, _) = paint(&mut app, &mut scroll);
+        let (now, _) = paint_in(&mut app, area, &mut scroll);
         moves.push(
             shift(&before, &now).ok_or(
                 "a frame shares no row with the one before: the column jumped past a screen",
@@ -303,6 +309,29 @@ fn roll_in(lines: usize) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
         before = now;
     }
     Err(format!("`{last}` never reached the screen: {moves:?}").into())
+}
+
+#[test]
+fn slide_keeps_the_pre_change_frame_sequence() -> TestResult {
+    let (moves, _) = roll_in_sized(20, 30)?;
+    assert_eq!(moves, vec![1; 22]);
+    Ok(())
+}
+
+#[test]
+fn page_moves_only_in_half_page_jumps() -> TestResult {
+    let (moves, _) = roll_in_sized(20, 30)?;
+    assert!(moves.iter().all(|rows| matches!(rows, 0 | 15)), "{moves:?}");
+    assert!(moves.contains(&15), "no page jump: {moves:?}");
+    Ok(())
+}
+
+#[test]
+fn page_moves_a_ten_row_pane_five_rows_at_a_time() -> TestResult {
+    let (moves, _) = roll_in_sized(20, 10)?;
+    assert!(moves.iter().all(|rows| matches!(rows, 0 | 5)), "{moves:?}");
+    assert!(moves.contains(&5), "no page jump: {moves:?}");
+    Ok(())
 }
 
 /// Dies with a block that landed at once moving the column by its height in one frame; the
