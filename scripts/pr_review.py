@@ -538,6 +538,7 @@ def survives(answers):
 
 
 _BUILT = threading.Lock()
+_REFRESHED = []
 
 
 def yi_bin():
@@ -547,10 +548,15 @@ def yi_bin():
         found = os.environ.get("YI_BIN") or next(
             (str(p) for p in (ROOT / "target/dist/yi", ROOT / "target/release/yi", ROOT / "target/debug/yi") if p.exists()),
             None)
-        if found or shutil.which("yi"):
-            return found or "yi"
-        subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"], cwd=ROOT, check=True)
-        return str(ROOT / "target/debug/yi")
+        if not (found or shutil.which("yi")):
+            subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"], cwd=ROOT, check=True)
+            found = str(ROOT / "target/debug/yi")
+        found = found or "yi"
+        if not _REFRESHED and not os.environ.get("YI_BIN"):
+            # Incident: the bundled catalog lags OpenRouter, so a fresh runner refused the reviewer's
+            # model as unknown; a failed refresh falls back to the bundle, and a pinned YI_BIN is left alone.
+            _REFRESHED.append(subprocess.run([found, "catalog", "refresh", "openrouter"], capture_output=True, check=False))
+        return found
 
 
 # Incident: rounds on #1138 and #1145 hit the job's limit and posted nothing; a round's retries had
@@ -1113,21 +1119,25 @@ def selfcheck():
     assert answered("Fix x\n\nThe fixer's answer to review round 2 on #733.\n", 2, 733)
     assert not answered("Fix x\n\nThe fixer's answer to review round 2 on #733.\n", 3, 733)
 
-    # A job with no yi builds it once, on the first model call, however many lenses ask at once.
+    # A job with no yi builds it once, on the first model call, however many lenses ask at once; it
+    # refreshes the OpenRouter catalog once, then.
     builds, keep = [], (subprocess.run, shutil.which, globals()["ROOT"], os.environ.pop("YI_BIN", None))
     root = pathlib.Path(tempfile.mkdtemp(prefix="yi-bin-check-"))
 
-    def build(argv, cwd, check):
+    def build(argv, cwd=None, check=False, **_):
         builds.append(argv)
         (root / "target/debug").mkdir(parents=True, exist_ok=True)
         (root / "target/debug/yi").write_text("")
 
     subprocess.run, shutil.which, globals()["ROOT"] = build, (lambda name: None), root
+    _REFRESHED.clear()
     try:
         with ThreadPoolExecutor(max_workers=8) as pool:
             got = set(pool.map(lambda _: yi_bin(), range(8)))
-        assert builds == [["cargo", "build", "-q", "-p", "yi-cli"]] and got == {str(root / "target/debug/yi")}, (builds, got)
+        yi = str(root / "target/debug/yi")
+        assert builds == [["cargo", "build", "-q", "-p", "yi-cli"], [yi, "catalog", "refresh", "openrouter"]] and got == {yi}, (builds, got)
     finally:
+        _REFRESHED.clear()
         subprocess.run, shutil.which, globals()["ROOT"] = keep[:3]
         if keep[3] is not None:
             os.environ["YI_BIN"] = keep[3]
