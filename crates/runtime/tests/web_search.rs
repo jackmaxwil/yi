@@ -279,7 +279,7 @@ fn a_malformed_paid_response_is_an_error_that_still_books_its_usage() -> TestRes
 fn provider_failures_keep_status_and_reason_without_remote_body_or_fence() -> TestResult {
     let (tool, _) = tool_with(Err(SearchError::Http {
         status: 400,
-        message: "Bad Request".to_owned(),
+        message: "HTTP 400: Bad Request".to_owned(),
     }));
     let output = tool.execute(
         args(json!({"query": "rust"})),
