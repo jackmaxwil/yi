@@ -10,6 +10,8 @@ use yi_types::record::LaneRecord;
 use crate::AgentSession;
 use crate::rollup::{DAY_MS, now_ms};
 
+pub(crate) const TOOL_USAGE_PREFIX: &str = "tool:";
+
 /// The one [`yi_types::record::LaneRecord::Usage`] row a call's spend lands on, always on the
 /// main lane so the session's cost total cannot undercount it.
 pub(crate) fn append_main_usage(

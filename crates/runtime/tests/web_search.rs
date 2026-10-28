@@ -125,6 +125,7 @@ fn a_result_is_one_untrusted_fence_with_citations_details_and_usage() -> TestRes
     assert_eq!(output.result.details["engine"], "exa");
     assert_eq!(output.result.details["mode"], "auto");
     assert_eq!(output.result.details["citationCount"], 1);
+    assert_eq!(output.result.details["costUsd"].as_f64(), Some(COST));
     assert_eq!(output.result.details["searches"], 1);
     assert_eq!(output.result.details["upstream"], "Venice");
     assert!(output.result.details["durationMs"].is_number());
@@ -157,6 +158,55 @@ fn the_excerpt_cap_is_exact_and_one_past_it_names_kept_total_and_no_continuation
     assert!(text.contains("EXCERPT_CAP_CHARS"));
     assert!(text.contains("narrower query or fewer results"));
     assert!(text.contains("no call returns the rest of this excerpt"));
+    Ok(())
+}
+
+#[test]
+fn the_whole_result_cap_is_exact_and_one_past_it_names_kept_total_and_continuation() -> TestResult {
+    const RESULT_CAP: usize = 12_000;
+    for extra in [0, 1] {
+        let mut result = response("answer", "excerpt");
+        result.citations.clear();
+        result.answer = "é".repeat(RESULT_CAP - "\n\nCitations".chars().count() + extra);
+        let (tool, _) = tool_with(Ok(result));
+        let output = tool.execute(
+            args(json!({"query": "rust"})),
+            &ToolContext::new(std::env::temp_dir()),
+        );
+        let text = text(&output);
+        assert_eq!(text.contains("RESULT_CAP_CHARS"), extra == 1, "{text}");
+        if extra == 1 {
+            assert!(text.contains(&format!("{RESULT_CAP} of {}", RESULT_CAP + 1)));
+            assert!(text.contains("narrower query or fewer results"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_tool_description_discloses_egress_and_approximate_cost() -> TestResult {
+    let (tool, _) = tool_with(Ok(response("answer", "excerpt")));
+    let description = tool.description();
+    assert!(description.contains("OpenRouter"), "{description}");
+    assert!(description.contains("Exa"), "{description}");
+    assert!(description.contains("leaves this machine"), "{description}");
+    assert!(description.contains("about $0.01"), "{description}");
+    Ok(())
+}
+
+#[test]
+fn a_malformed_paid_response_is_an_error_that_still_books_its_usage() -> TestResult {
+    let (tool, _) = tool_with(Err(SearchError::Billed {
+        error: Box::new(SearchError::NoCitations),
+        usage: Box::new(response("answer", "excerpt").usage),
+    }));
+    let output = tool.execute(
+        args(json!({"query": "rust"})),
+        &ToolContext::new(std::env::temp_dir()),
+    );
+    assert!(output.is_error);
+    let usage = output.result.usage.ok_or("paid error lost its usage")?;
+    assert_eq!(usage.cost.total.as_f64(), Some(COST));
     Ok(())
 }
 
@@ -288,5 +338,11 @@ fn search_usage_reaches_spend_alerts_and_tool_telemetry_once() -> TestResult {
     let span = std::fs::read_to_string(root.join("search.telemetry.jsonl"))?;
     assert!(span.contains("\"costUsd\":0.0075"), "{span}");
     assert!(span.contains("\"provider\":\"openrouter\""), "{span}");
+    Ok(())
+}
+
+#[test]
+fn identity_does_not_offer_search_when_registration_is_credential_gated() -> TestResult {
+    assert!(!yi_runtime::identity_fragment().contains("web_search"));
     Ok(())
 }

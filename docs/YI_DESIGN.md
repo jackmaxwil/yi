@@ -563,17 +563,21 @@ bytes written. Each cut is loud.
 `openrouter:web_search` server call and Exa as the default engine. A credential from
 `OPENROUTER_API_KEY` or the OpenRouter token store registers the tool; without one, its schema is
 absent. Root and full-child sessions inherit the provider; readers and workers keep their tool
-filters. `models.webSearch` defaults to `openrouter/deepseek/deepseek-v4-flash`, and a configured
-role outside OpenRouter is refused. Proxy and `routing` config reaches the search request.
+filters. `models.webSearch` defaults to `openrouter/deepseek/deepseek-v4-flash`. A configured role
+outside OpenRouter or an empty `webSearch.engine` disables only the tool with one warning that
+names the setting and its fix. Proxy and `routing` config reaches the search request, with the
+provider object omitted on a custom base URL just as for a streaming request.
 
 Arguments are `query` (non-empty), `count` (1–25, default 5), optional domain allowlist and `mode`
 (`instant|fast|auto|deep-lite|deep|deep-reasoning`, default `auto`). There is no `recency` argument.
 The result is one untrusted fence with the answer and numbered citations. Each excerpt is capped
-at 4,000 characters with a loud kept/total row; no call returns the rest of an excerpt. Details
-name provider, model, engine, mode, citation count, duration, search count and upstream host.
-Token and dollar usage reaches the tool result and is booked once in the ledger, live total,
-alerts, telemetry and rollups. Missing credentials, HTTP failures, malformed bodies and zero
-citations are distinct tool errors; the key never enters arguments, output, details or errors.
+at 4,000 characters and the whole result at 12,000 characters, each with a loud kept/total row and
+a narrower-query continuation. Details name provider, model, engine, mode, citation count, dollar
+cost, duration, search count and upstream host. Token and dollar usage reaches the tool result and
+is booked once in the ledger, live total, alerts, telemetry and rollups, including an HTTP 200 whose
+citations or counters are malformed. HTTP failures keep only status and reason, never the remote
+body. Missing credentials, malformed bodies and zero citations remain distinct tool errors; the key
+never enters arguments, output, details or errors.
 The tool is `Read` with `irreversible` false, so Ask, Auto and Yolo never prompt. The offline
 journey is `web_search_offline_citations_and_cost`.
 

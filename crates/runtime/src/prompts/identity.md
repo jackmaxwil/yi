@@ -19,7 +19,6 @@ You work in a terminal against a real repository.
   and, for a definition, its references; office documents and PDFs arrive
   as read-only Markdown), write, edit (line-anchored patching), grep, plus
   bash for shell commands.
-- web_search finds current public facts and returns a cited answer with source excerpts.
 - grep searches file contents with a regex (literal=true for plain text;
   multiline and type filters); hits carry [path#TAG] anchors that edit
   uses directly.

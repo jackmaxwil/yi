@@ -205,11 +205,17 @@ pub struct SearchResponse {
 pub enum SearchError {
     InvalidInput(String),
     MissingCredential,
-    Unsupported(String),
     Transport(String),
-    Http { status: u16, message: String },
+    Http {
+        status: u16,
+        message: String,
+    },
     Protocol(String),
     NoCitations,
+    Billed {
+        error: Box<SearchError>,
+        usage: Box<Usage>,
+    },
     Other(String),
 }
 
@@ -222,9 +228,6 @@ impl std::fmt::Display for SearchError {
             Self::MissingCredential => {
                 formatter.write_str("web search is unavailable: no OpenRouter credential resolved")
             }
-            Self::Unsupported(message) => {
-                write!(formatter, "unsupported web search configuration: {message}")
-            }
             Self::Transport(message) => write!(formatter, "web search transport failed: {message}"),
             Self::Http { status, message } => {
                 write!(formatter, "web search HTTP {status}: {message}")
@@ -233,6 +236,7 @@ impl std::fmt::Display for SearchError {
                 write!(formatter, "malformed web search response: {message}")
             }
             Self::NoCitations => formatter.write_str("web search returned no citations"),
+            Self::Billed { error, .. } => std::fmt::Display::fmt(error, formatter),
             Self::Other(message) => formatter.write_str(message),
         }
     }
@@ -260,12 +264,6 @@ impl OpenRouterSearch {
         proxy: Option<ProxyConfig>,
         routing: Option<Value>,
     ) -> Result<Self, SearchError> {
-        if model.provider != "openrouter" {
-            return Err(SearchError::Unsupported(format!(
-                "models.webSearch must name an OpenRouter model, got {}/{}",
-                model.provider, model.id
-            )));
-        }
         let credential = credential.ok_or(SearchError::MissingCredential)?;
         Ok(Self {
             model,
@@ -281,69 +279,78 @@ impl OpenRouterSearch {
     }
 
     fn parse(&self, body: Value, request: &SearchRequest) -> Result<SearchResponse, SearchError> {
-        let message = body
-            .get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("message"))
-            .ok_or_else(|| SearchError::Protocol("choices[0].message is missing".to_owned()))?;
-        let answer = message
-            .get("content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| SearchError::Protocol("message.content is missing".to_owned()))?
-            .to_owned();
-        let annotations = message
-            .get("annotations")
-            .and_then(Value::as_array)
-            .ok_or_else(|| SearchError::Protocol("message.annotations is missing".to_owned()))?;
-        let citations = annotations
-            .iter()
-            .filter(|annotation| {
-                annotation.get("type").and_then(Value::as_str) == Some("url_citation")
-            })
-            .map(|annotation| {
-                let source = annotation
-                    .get("url_citation")
-                    .ok_or_else(|| SearchError::Protocol("url_citation is missing".to_owned()))?;
-                let text = |field: &str| {
-                    source.get(field).and_then(Value::as_str).ok_or_else(|| {
-                        SearchError::Protocol(format!("url_citation.{field} is missing"))
-                    })
-                };
-                Ok(SearchCitation {
-                    title: text("title")?.to_owned(),
-                    url: SearchUrl::new(text("url")?),
-                    excerpt: text("content")?.to_owned(),
-                })
-            })
-            .collect::<Result<Vec<_>, SearchError>>()?;
-        if citations.is_empty() {
-            return Err(SearchError::NoCitations);
-        }
         let usage = body
             .get("usage")
             .ok_or_else(|| SearchError::Protocol("usage is missing".to_owned()))?;
-        let searches = usage
-            .get("server_tool_use_details")
-            .or_else(|| usage.get("server_tool_use"))
-            .and_then(|details| details.get("web_search_requests"))
-            .and_then(Value::as_u64)
-            .ok_or_else(|| {
-                SearchError::Protocol("usage server search count is missing".to_owned())
-            })?;
-        Ok(SearchResponse {
-            answer,
-            citations,
-            provider: "openrouter".to_owned(),
-            model: self.model.id.clone(),
-            engine: self.engine.clone(),
-            mode: request.mode,
-            searches,
-            upstream: body
-                .get("provider")
+        let parsed_usage = crate::openai::parse_chunk_usage(usage, &self.model);
+        let parsed = (|| -> Result<SearchResponse, SearchError> {
+            let message = body
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("message"))
+                .ok_or_else(|| SearchError::Protocol("choices[0].message is missing".to_owned()))?;
+            let answer = message
+                .get("content")
                 .and_then(Value::as_str)
-                .map(str::to_owned),
-            usage: crate::openai::parse_chunk_usage(usage, &self.model),
+                .ok_or_else(|| SearchError::Protocol("message.content is missing".to_owned()))?
+                .to_owned();
+            let annotations = message
+                .get("annotations")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    SearchError::Protocol("message.annotations is missing".to_owned())
+                })?;
+            let citations = annotations
+                .iter()
+                .filter(|annotation| {
+                    annotation.get("type").and_then(Value::as_str) == Some("url_citation")
+                })
+                .map(|annotation| {
+                    let source = annotation.get("url_citation").ok_or_else(|| {
+                        SearchError::Protocol("url_citation is missing".to_owned())
+                    })?;
+                    let text = |field: &str| {
+                        source.get(field).and_then(Value::as_str).ok_or_else(|| {
+                            SearchError::Protocol(format!("url_citation.{field} is missing"))
+                        })
+                    };
+                    Ok(SearchCitation {
+                        title: text("title")?.to_owned(),
+                        url: SearchUrl::new(text("url")?),
+                        excerpt: text("content")?.to_owned(),
+                    })
+                })
+                .collect::<Result<Vec<_>, SearchError>>()?;
+            if citations.is_empty() {
+                return Err(SearchError::NoCitations);
+            }
+            let searches = usage
+                .get("server_tool_use_details")
+                .or_else(|| usage.get("server_tool_use"))
+                .and_then(|details| details.get("web_search_requests"))
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    SearchError::Protocol("usage server search count is missing".to_owned())
+                })?;
+            Ok(SearchResponse {
+                answer,
+                citations,
+                provider: "openrouter".to_owned(),
+                model: self.model.id.clone(),
+                engine: self.engine.clone(),
+                mode: request.mode,
+                searches,
+                upstream: body
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                usage: parsed_usage.clone(),
+            })
+        })();
+        parsed.map_err(|error| SearchError::Billed {
+            error: Box::new(error),
+            usage: Box::new(parsed_usage),
         })
     }
 }
@@ -375,8 +382,12 @@ impl SearchProvider for OpenRouterSearch {
             ],
             "tools": [{"type": "openrouter:web_search", "parameters": parameters}],
         });
-        if let Some(routing) = &self.routing {
-            body["provider"] = routing.clone();
+        let options = crate::openai::OpenAiOptions {
+            routing: self.routing.clone(),
+            ..Default::default()
+        };
+        if let Some(routing) = crate::openai::routing_params(&self.model, &options, false) {
+            body["provider"] = routing;
         }
         let encoded =
             serde_json::to_string(&body).map_err(|error| SearchError::Other(error.to_string()))?;

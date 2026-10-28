@@ -769,7 +769,7 @@ impl ToolAdapter {
                     if let (Some(store), Some(usage)) = (&ledger, &output.result.usage) {
                         crate::spend::append_main_usage(
                             store,
-                            format!("tool:{name}"),
+                            format!("{}{name}", crate::spend::TOOL_USAGE_PREFIX),
                             usage.clone(),
                             Some(output.result.details.clone()),
                         )

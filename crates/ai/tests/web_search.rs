@@ -62,13 +62,6 @@ fn call(
     Ok((response, captured))
 }
 
-fn request_body(request: &str) -> Result<Value, Box<dyn Error>> {
-    let (_, body) = request
-        .split_once("\r\n{")
-        .ok_or("request has no JSON body")?;
-    Ok(serde_json::from_str(&format!("{{{body}"))?)
-}
-
 #[test]
 fn the_recorded_deepseek_exchange_preserves_request_citations_usage_and_cost() -> TestResult {
     let (response, captured) = call(
@@ -79,7 +72,7 @@ fn the_recorded_deepseek_exchange_preserves_request_citations_usage_and_cost() -
         None,
     )?;
     assert_eq!(
-        request_body(&captured)?,
+        crate::loopback::json_body(&captured)?,
         serde_json::from_str::<Value>(DEEPSEEK_REQUEST)?
     );
     assert!(
@@ -141,7 +134,7 @@ fn the_recorded_gpt_response_and_input_output_usage_aliases_parse() -> TestResul
         None,
     )?;
     assert_eq!(
-        request_body(&captured)?,
+        crate::loopback::json_body(&captured)?,
         serde_json::from_str::<Value>(GPT_REQUEST)?
     );
     let response = response?;
@@ -187,14 +180,14 @@ fn count_limits_domains_mode_and_routing_reach_the_exact_wire_fields() -> TestRe
             "deepseek/deepseek-v4-flash",
             Some(json!({"order": ["Venice"]})),
         )?;
-        let body = request_body(&captured)?;
+        let body = crate::loopback::json_body(&captured)?;
         let parameters = &body["tools"][0]["parameters"];
         assert_eq!(parameters["max_results"], count);
         assert_eq!(parameters["max_total_results"], count);
         assert_eq!(parameters["max_uses"], 1);
         assert_eq!(parameters["allowed_domains"], json!(["doc.rust-lang.org"]));
         assert_eq!(parameters["mode"], "deep-reasoning");
-        assert_eq!(body["provider"], json!({"order": ["Venice"]}));
+        assert!(body.get("provider").is_none());
         assert_eq!(body["messages"][0]["content"], INSTRUCTION);
         assert_eq!(body["stream"], false);
     }
@@ -236,7 +229,7 @@ fn http_failures_keep_their_status_and_hide_the_credential() -> TestResult {
         match response {
             Err(SearchError::Http { status, message }) => {
                 assert_eq!(status, code);
-                assert!(message.contains("bad engine"));
+                assert!(!message.contains("bad engine"));
                 assert!(!message.contains("sekrit"));
             }
             other => return Err(format!("expected HTTP {code}, got {other:?}").into()),
@@ -246,7 +239,7 @@ fn http_failures_keep_their_status_and_hide_the_credential() -> TestResult {
 }
 
 #[test]
-fn zero_annotations_is_distinct_from_a_malformed_response() -> TestResult {
+fn zero_annotations_is_distinct_from_a_malformed_response_and_keeps_its_cost() -> TestResult {
     let mut body: Value = serde_json::from_str(DEEPSEEK_RESPONSE)?;
     body["choices"][0]["message"]["annotations"] = json!([]);
     let (response, _) = call(
@@ -256,12 +249,16 @@ fn zero_annotations_is_distinct_from_a_malformed_response() -> TestResult {
         "deepseek/deepseek-v4-flash",
         None,
     )?;
-    assert!(matches!(response, Err(SearchError::NoCitations)));
+    let Err(SearchError::Billed { error, usage }) = response else {
+        return Err("a paid response without citations did not retain its usage".into());
+    };
+    assert!(matches!(*error, SearchError::NoCitations));
+    assert_eq!(usage.cost.total.as_f64(), Some(0.007516407500000001));
     Ok(())
 }
 
 #[test]
-fn missing_credentials_and_non_openrouter_models_are_refused() -> TestResult {
+fn missing_credentials_are_refused() -> TestResult {
     let model = crate::common::model(
         "deepseek/deepseek-v4-flash",
         "openai-completions",
@@ -272,17 +269,6 @@ fn missing_credentials_and_non_openrouter_models_are_refused() -> TestResult {
     assert!(matches!(
         OpenRouterSearch::new(model, None, SearchEngine::new("exa")?, None, None),
         Err(SearchError::MissingCredential)
-    ));
-    let model = crate::common::model("faux-1", "faux", "faux", "http://127.0.0.1:1", None);
-    assert!(matches!(
-        OpenRouterSearch::new(
-            model,
-            Some(Secret::new("sekrit".to_owned())),
-            SearchEngine::new("exa")?,
-            None,
-            None,
-        ),
-        Err(SearchError::Unsupported(_))
     ));
     Ok(())
 }

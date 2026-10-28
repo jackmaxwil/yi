@@ -151,11 +151,11 @@ pub fn host_of(url: &str) -> &str {
     rest.split_once(':').map_or(rest, |(host, _)| host)
 }
 
-fn agent(url: &str, proxy: Option<&ProxyConfig>) -> ureq::Agent {
+fn agent(url: &str, proxy: Option<&ProxyConfig>, read_timeout: std::time::Duration) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
         .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(std::time::Duration::from_secs(20));
+        .timeout_read(read_timeout);
     if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
         builder = builder.proxy(proxy.clone());
     }
@@ -181,7 +181,9 @@ pub fn get_json(
     proxy: Option<&ProxyConfig>,
     cap: usize,
 ) -> Result<Value, String> {
-    let mut request = agent(url, proxy).get(url).set("accept", "application/json");
+    let mut request = agent(url, proxy, std::time::Duration::from_secs(20))
+        .get(url)
+        .set("accept", "application/json");
     for (name, value) in headers {
         request = request.set(name, value);
     }
@@ -196,17 +198,15 @@ pub fn post_json(
     proxy: Option<&ProxyConfig>,
     cap: usize,
 ) -> Result<Value, String> {
-    let mut request = agent(url, proxy)
-        .post(url)
-        .set("accept", "application/json")
-        .set("content-type", "application/json");
-    for (name, value) in headers {
-        request = request.set(name, value);
-    }
-    let response = request
-        .send_string(body)
-        .map_err(|error| format!("{url}: {error}"))?;
-    read_capped(response, url, cap)
+    post_json_with_timeout(
+        url,
+        headers,
+        body,
+        proxy,
+        cap,
+        std::time::Duration::from_secs(20),
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[derive(Debug)]
@@ -235,15 +235,7 @@ pub fn post_json_with_timeout(
     cap: usize,
     read_timeout: std::time::Duration,
 ) -> Result<Value, PostJsonError> {
-    let mut builder = ureq::AgentBuilder::new()
-        .user_agent(yi_types::USER_AGENT)
-        .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(read_timeout);
-    if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
-        builder = builder.proxy(proxy.clone());
-    }
-    let mut request = builder
-        .build()
+    let mut request = agent(url, proxy, read_timeout)
         .post(url)
         .set("accept", "application/json")
         .set("content-type", "application/json");
@@ -251,21 +243,10 @@ pub fn post_json_with_timeout(
         request = request.set(name, value);
     }
     let response = request.send_string(body).map_err(|error| match error {
-        ureq::Error::Status(status, response) => {
-            let mut body = Vec::new();
-            let limit = u64::try_from(cap.saturating_add(1)).unwrap_or(u64::MAX);
-            let read = std::io::Read::read_to_end(
-                &mut std::io::Read::take(response.into_reader(), limit),
-                &mut body,
-            );
-            match read {
-                Ok(_) => PostJsonError::Http {
-                    status,
-                    message: String::from_utf8_lossy(&body).into_owned(),
-                },
-                Err(error) => PostJsonError::Transport(format!("{url}: {error}")),
-            }
-        }
+        ureq::Error::Status(status, response) => PostJsonError::Http {
+            status,
+            message: response.status_text().to_owned(),
+        },
         ureq::Error::Transport(error) => PostJsonError::Transport(format!("{url}: {error}")),
     })?;
     read_capped(response, url, cap).map_err(PostJsonError::Protocol)

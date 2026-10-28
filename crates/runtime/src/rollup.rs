@@ -191,7 +191,7 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
         });
         for line in lines.filter(|line| {
             line.contains("\"assistant\"")
-                || line.contains("tool:web_search")
+                || line.contains(crate::spend::TOOL_USAGE_PREFIX)
                 || line.contains(&plan_op)
         }) {
             if entry_stamp(line).is_some_and(|stamp| stamp > 0 && stamp < since_ms) {
@@ -216,7 +216,7 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                     },
             } = &parsed
             {
-                if cause != "tool:web_search" {
+                if !cause.starts_with(crate::spend::TOOL_USAGE_PREFIX) {
                     continue;
                 }
                 let at_ms = if *timestamp > 0 {

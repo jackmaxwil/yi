@@ -76,6 +76,57 @@ fn a_window_keeps_replies_by_their_own_timestamp() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn every_tool_usage_record_reaches_the_rollup_inside_its_time_window() -> TestResult {
+    use yi_types::message::Usage;
+    use yi_types::record::LaneRecord;
+    use yi_types::wire::Mutation;
+
+    let dir = laid_out("yi-rollup-tool-usage")?;
+    let usage_line =
+        |id: &str, cause: &str, at: u64, cost: f64| -> Result<String, Box<dyn Error>> {
+            let mut usage = Usage::zero();
+            usage.cost.total = serde_json::Number::from_f64(cost).ok_or("invalid fixture cost")?;
+            let record = LaneRecord::Usage {
+                id: id.to_owned(),
+                lane: "main".to_owned(),
+                usage,
+                cause: cause.to_owned(),
+                run_id: None,
+                entry_id: None,
+                attempt: None,
+                stop_reason: None,
+                tool_call_id: None,
+                details: Some(
+                    serde_json::json!({"provider": "openrouter", "model": "search-model"}),
+                ),
+                seq: 0,
+                timestamp: at,
+            };
+            Ok(serde_json::to_string(&Mutation::Record { record })?)
+        };
+    let root = format!(
+        "{ROOT}\n{}\n{}\n",
+        usage_line("search-usage", "tool:web_search", 2_000, 0.0075)?,
+        usage_line("other-usage", "tool:other", 1_000, 0.002)?
+    );
+    put(&dir, "tool-usage.jsonl", &root)?;
+    let all = scan(&dir, 0);
+    assert!(all.requests.iter().any(|request| {
+        request.at_ms == 1_000 && request.provider == "openrouter" && request.billed() == 0.002
+    }));
+    let recent = scan(&dir, 1_500);
+    let search = recent
+        .requests
+        .iter()
+        .find(|request| request.at_ms == 2_000)
+        .ok_or("web search usage missing from the window")?;
+    assert_eq!(search.model, "search-model");
+    assert_eq!(search.billed(), 0.0075);
+    assert!(!recent.requests.iter().any(|request| request.at_ms == 1_000));
+    Ok(())
+}
+
 /// One bad part among good ones: an empty file with no header and a torn assistant line are
 /// named, and the rest still count.
 #[test]

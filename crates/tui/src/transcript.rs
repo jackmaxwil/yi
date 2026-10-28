@@ -119,7 +119,7 @@ pub(crate) fn todo_finished(text: &str) -> Option<String> {
     (done == total && total.parse::<u64>().ok()? > 0).then(|| format!("Todos {total}/{total}"))
 }
 
-pub fn arg_summary(tool: &str, args: &Value) -> String {
+pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
     if tool == "ask_user"
         && let Some(question) = crate::question::Question::from_args(args)
     {
@@ -155,11 +155,17 @@ pub fn arg_summary(tool: &str, args: &Value) -> String {
         None => String::new(),
     }
 }
-pub fn explore_verb(tool: &str) -> Option<&'static str> {
-    match tool {
-        "read" => Some("Read"),
-        "grep" | "web_search" => Some("Search"),
-        _ => None,
+
+pub(crate) fn search_digest(details: &Value) -> Option<String> {
+    let count = details.get("citationCount")?.as_u64()?;
+    let count = usize::try_from(count).unwrap_or(usize::MAX);
+    let citations = crate::cell::count_label(count, "citation");
+    match details.get("costUsd").and_then(Value::as_f64) {
+        Some(cost) => Some(format!(
+            "{citations} · {}",
+            yi_types::message::fmt_cost(cost, false)
+        )),
+        None => Some(citations),
     }
 }
 

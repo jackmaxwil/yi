@@ -991,7 +991,12 @@ fn search_case(primary: &str, explicit_role: bool) -> TestResult {
         )?;
         Ok(request)
     });
-    let mut model = yi_runtime::resolve_model("openrouter", "deepseek/deepseek-v4-flash")
+    let search_id = if explicit_role {
+        "openai/gpt-5-nano"
+    } else {
+        "deepseek/deepseek-v4-flash"
+    };
+    let mut model = yi_runtime::resolve_model("openrouter", search_id)
         .ok_or("the bundled search model is missing")?;
     model.base_url = format!("http://127.0.0.1:{port}/api/v1");
     std::fs::create_dir_all(journey.root.join("home/.yi/catalog"))?;
@@ -1004,7 +1009,8 @@ fn search_case(primary: &str, explicit_role: bool) -> TestResult {
     )?;
     let mut config = json!({"kernel": {"prewarm": false}});
     if explicit_role {
-        config["models"] = json!({"webSearch": "openrouter/deepseek/deepseek-v4-flash"});
+        config["models"] = json!({"webSearch": format!("openrouter/{search_id}")});
+        config["webSearch"] = json!({"engine": "non-default-engine"});
     }
     std::fs::write(
         journey.root.join("home/.yi/config.json"),
@@ -1041,9 +1047,11 @@ fn search_case(primary: &str, explicit_role: bool) -> TestResult {
         .arg("--model")
         .arg(primary)
         .env("OPENROUTER_API_KEY", "x")
+        .stderr(Stdio::piped())
         .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
     let shown = succeeded(&output, "web search ask")?;
-    assert!(shown.contains("<<<yi-external"), "{shown}");
+    assert!(shown.contains("<<<yi-external"), "{shown}\n{stderr}");
     assert!(
         shown.contains("https://doc.rust-lang.org/stable/releases.html"),
         "{shown}"
@@ -1058,15 +1066,19 @@ fn search_case(primary: &str, explicit_role: bool) -> TestResult {
     assert!(stored.contains("0.007516407500000001"), "{stored}");
 
     let request = served.join().map_err(|_| "search server panicked")??;
-    let (_, body) = request
-        .split_once("\r\n{")
-        .ok_or("search request has no body")?;
-    let body: Value = serde_json::from_str(&format!("{{{body}"))?;
-    assert_eq!(body["model"], "deepseek/deepseek-v4-flash");
+    let body = crate::loopback::json_body(&request)?;
+    assert_eq!(body["model"], search_id);
     assert_eq!(body["stream"], false);
     assert_eq!(body["tools"][0]["type"], "openrouter:web_search");
     let parameters = &body["tools"][0]["parameters"];
-    assert_eq!(parameters["engine"], "exa");
+    assert_eq!(
+        parameters["engine"],
+        if explicit_role {
+            "non-default-engine"
+        } else {
+            "exa"
+        }
+    );
     assert_eq!(parameters["mode"], "auto");
     assert_eq!(parameters["max_results"], 5);
     assert_eq!(parameters["max_total_results"], 5);
@@ -1080,4 +1092,41 @@ fn search_case(primary: &str, explicit_role: bool) -> TestResult {
 fn web_search_offline_citations_and_cost() -> TestResult {
     search_case("openrouter/deepseek/deepseek-v4-flash", false)?;
     search_case("faux/faux-1", true)
+}
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn invalid_web_search_config_disables_only_the_tool_with_one_actionable_warning() -> TestResult {
+    for (name, config, setting, fix) in [
+        (
+            "model",
+            json!({"kernel": {"prewarm": false}, "models": {"webSearch": "faux/faux-1"}}),
+            "models.webSearch",
+            "choose an OpenRouter model or remove the setting",
+        ),
+        (
+            "engine",
+            json!({"kernel": {"prewarm": false}, "webSearch": {"engine": ""}}),
+            "webSearch.engine",
+            "choose a non-empty engine or remove the setting",
+        ),
+    ] {
+        let journey = Journey::new(&format!("web-search-invalid-{name}"))?;
+        std::fs::write(
+            journey.root.join("home/.yi/config.json"),
+            serde_json::to_string(&config)?,
+        )?;
+        let output = journey
+            .command(&["ask", "hello"])
+            .env("OPENROUTER_API_KEY", "x")
+            .stderr(Stdio::piped())
+            .output()?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{name}: {stderr}");
+        assert_eq!(stderr.matches(setting).count(), 1, "{name}: {stderr}");
+        assert!(stderr.contains("warning:"), "{name}: {stderr}");
+        assert!(stderr.contains(fix), "{name}: {stderr}");
+        journey.reclaim();
+    }
+    Ok(())
 }

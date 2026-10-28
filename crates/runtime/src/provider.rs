@@ -1,6 +1,13 @@
-mod auth;
+const HALF_MINUTE: std::time::Duration = std::time::Duration::from_secs(30);
 
-use auth::{HALF_MINUTE, auth_now};
+#[expect(
+    clippy::disallowed_methods,
+    reason = "deciding whether the streaming credential has expired is this fn's job"
+)]
+fn auth_now() -> std::time::SystemTime {
+    std::time::SystemTime::now()
+}
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 

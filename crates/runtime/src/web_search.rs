@@ -31,6 +31,7 @@ impl crate::provider::ProviderStream {
 }
 
 pub const EXCERPT_CAP_CHARS: usize = 4_000;
+pub const RESULT_CAP_CHARS: usize = 12_000;
 
 pub struct WebSearchTool {
     provider: Arc<dyn SearchProvider>,
@@ -85,24 +86,30 @@ impl WebSearchTool {
         Ok(SearchRequest::new(query, count, domains, mode))
     }
 
-    fn excerpt(text: &str) -> (String, Option<String>) {
+    fn capped(
+        text: &str,
+        cap: usize,
+        kept_label: &str,
+        cap_name: &str,
+        next: &str,
+    ) -> (String, Option<String>) {
         let mut chars = text.chars();
-        let kept: String = chars.by_ref().take(EXCERPT_CAP_CHARS).collect();
+        let kept: String = chars.by_ref().take(cap).collect();
         if chars.next().is_none() {
             return (kept, None);
         }
-        let total = text.chars().count();
-        let next =
-            "use a narrower query or fewer results; no call returns the rest of this excerpt";
-        let row = cut_row(
+        let row = cut_row(cap, text.chars().count(), kept_label, cap_name, cap, next);
+        (kept, Some(row))
+    }
+
+    fn excerpt(text: &str) -> (String, Option<String>) {
+        Self::capped(
+            text,
             EXCERPT_CAP_CHARS,
-            total,
             "excerpt chars kept",
             "EXCERPT_CAP_CHARS",
-            EXCERPT_CAP_CHARS,
-            next,
-        );
-        (kept, Some(row))
+            "use a narrower query or fewer results; no call returns the rest of this excerpt",
+        )
     }
 }
 
@@ -112,7 +119,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the web for current facts; returns a cited answer and source excerpts."
+        "Search current public facts through OpenRouter and Exa; the query leaves this machine and a call costs about $0.01; returns cited sources."
     }
 
     fn schema(&self) -> Value {
@@ -150,7 +157,11 @@ impl Tool for WebSearchTool {
                     SearchError::InvalidInput(_) => ToolErrorKind::InvalidArgs,
                     _ => ToolErrorKind::ToolError,
                 };
-                return error_output_kind(error.to_string(), kind);
+                let mut output = error_output_kind(error.to_string(), kind);
+                if let SearchError::Billed { usage, .. } = error {
+                    output.result.usage = Some(*usage);
+                }
+                return output;
             }
         };
         let mut body = response.answer;
@@ -169,6 +180,17 @@ impl Tool for WebSearchTool {
                 body.push_str(&cut);
             }
         }
+        let (mut body, cut) = Self::capped(
+            &body,
+            RESULT_CAP_CHARS,
+            "result chars kept",
+            "RESULT_CAP_CHARS",
+            "use a narrower query or fewer results; no call returns the rest of this result",
+        );
+        if let Some(cut) = cut {
+            body.push('\n');
+            body.push_str(&cut);
+        }
         let mut output = text_output(crate::fetch::fence_untrusted("web_search", &body));
         output.result.details = json!({
             "provider": response.provider,
@@ -176,6 +198,7 @@ impl Tool for WebSearchTool {
             "engine": response.engine.as_str(),
             "mode": response.mode.as_str(),
             "citationCount": response.citations.len(),
+            "costUsd": response.usage.cost.total,
             "durationMs": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             "searches": response.searches,
             "upstream": response.upstream,
