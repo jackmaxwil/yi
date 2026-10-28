@@ -2,6 +2,8 @@
 """Generate and validate the opt-in quick-test filter from nextest JUnit timings."""
 import json
 import re
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -180,6 +182,9 @@ def selfcheck_generator():
 
 def selfcheck():
     selfcheck_generator()
+    if shutil.which("cargo-nextest") is None and not os.environ.get("CI"):
+        print("skip slow_tests repo check (cargo-nextest is not installed; the generator selfcheck ran)")
+        return
     rows, all_tests, filtered_tests, recipe = repo_check()
     stale = ("fake::integration", "fake::no_such_test_anywhere")
     expect_failure(
@@ -210,12 +215,11 @@ def main(argv):
     if argv == ["--check"]:
         repo_check()
         return 0
-    if len(argv) not in (1, 2):
-        sys.exit("usage: slow_tests.py JUNIT [CONFIG] | --check | --selfcheck")
+    if len(argv) != 1:
+        sys.exit("usage: slow_tests.py JUNIT | --check | --selfcheck")
     rows = slow_rows(argv[0])
-    path = Path(argv[1]) if len(argv) == 2 else CONFIG
-    write_config(rows, path)
-    print(f"slow-tests: wrote {len(rows)} tests at >=5 s to {path}")
+    write_config(rows, CONFIG)
+    print(f"slow-tests: wrote {len(rows)} tests at >=5 s to {CONFIG}")
     return 0
 
 
