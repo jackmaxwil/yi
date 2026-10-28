@@ -145,7 +145,7 @@ def semgrep(paths, fixtures=False):
 
 
 def go_glob(pattern):
-    translated = fnmatch.translate(pattern)
+    translated = fnmatch.translate(pattern).replace("(?>", "(?:")
     translated = re.sub(r"\(\?=\(\?P<g\d+>(.*?)\)\)\(\?P=g\d+\)", r"\1", translated)
     return translated.replace(r"\Z", r"\z")
 
@@ -319,6 +319,10 @@ def selfcheck(off="", fixtures=None):
         errors.append("disabled baseline checks accepted a new rule id and a shrink")
     pattern = "crates/runtime/tests/fixtures/behavior/*planted*"
     nested = "crates/runtime/tests/fixtures/behavior/a/b/planted-key"
+    for pattern in unscanned():
+        translated = go_glob(pattern)
+        if any(token in translated for token in ("(?=", "(?>", "(?P=")) or translated.endswith(r"\Z"):
+            errors.append(f"gitleaks ignore is not RE2-compatible: {pattern}")
     if off == "ignores" or go_glob("**/fixtures/**/planted*") == r"^$":
         errors.append("shared gitleaks ignores are not converted to regular expressions")
     if fnmatch.fnmatch(nested, pattern) != bool(re.match(go_glob(pattern).replace(r"\z", r"\Z"), nested)):
