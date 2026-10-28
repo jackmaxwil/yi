@@ -102,7 +102,13 @@ def validate_recipe(text):
 
 
 def defined_in_source(name):
-    return subprocess.run(["git", "grep", "-q", "-E", rf"fn {name}\b", "--", "crates"], cwd=ROOT).returncode == 0
+    """Name only: a stale row that survives this check excludes nothing, so a false accept costs no test."""
+    return subprocess.run(["git", "grep", "-q", "-w", "-F", f"fn {name}", "--", "crates"], cwd=ROOT).returncode == 0
+
+
+def validate_recipe(text):
+    if re.search(r"\bquick(?:-ci)?\b|default-filter|--filterset|\s-E\s", text):
+        raise CheckFailure("just test selects the quick filterset")
 
 
 def validate(rows, all_tests, filtered_tests, recipe, defined=defined_in_source):
@@ -192,7 +198,10 @@ def selfcheck():
         lambda: validate(set(rows) | {stale}, all_tests, filtered_tests, recipe),
         "stale slow test: fake::integration fake::no_such_test_anywhere",
     )
-    validate(set(rows) | {stale}, all_tests, filtered_tests, recipe, defined=lambda name: name == "no_such_test_anywhere")
+    gated = sorted(rows)[0]
+    validate(set(rows) | {stale}, all_tests - {gated}, filtered_tests - {gated}, recipe,
+             defined=lambda name: name == "no_such_test_anywhere" or defined_in_source(name))
+    assert defined_in_source(gated[1].rsplit("::", 1)[-1])
     changed = set(rows)
     removed = changed.pop()
     expect_failure(
