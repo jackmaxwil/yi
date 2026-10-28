@@ -108,6 +108,10 @@ pub enum ErrorClass {
     Other(String),
 }
 
+/// The stamp the request layer lays on an exhausted quota; only this spelling is final, a
+/// plain 429 stays transport. One constant so a wording change cannot drift the scan.
+pub const QUOTA_STAMP: &str = "quota exhausted:";
+
 impl ErrorClass {
     /// A provider's error text names its transport class when it can; the rest is the provider.
     pub fn from_provider_text(text: &str) -> Self {
@@ -119,6 +123,10 @@ impl ErrorClass {
             && let Some(code) = rest.split(|c: char| !c.is_ascii_digit()).next()
             && let Ok(status) = code.parse::<u16>()
         {
+            // Incident: a quota 429 read as transport http and was re-sent; only the ai stamp is final.
+            if lower.contains(&format!("http {status} {QUOTA_STAMP}")) {
+                return Self::Provider("quota".to_owned());
+            }
             return Self::TransportHttp(status);
         }
         if lower.contains("timed out") || lower.contains("timeout") {
