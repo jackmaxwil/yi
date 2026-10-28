@@ -57,6 +57,8 @@ kernel + ipython + rlm() subagents | `requests_e2e::a_request_left_open_is_chase
 kernel + ipython + rlm() subagents | `requests_e2e::progress_reaches_an_idle_parent_at_its_next_turn_coalesced`
 kernel + ipython + rlm() subagents | `asks::the_reply_box_answers_a_childs_question`
 kernel + ipython + rlm() subagents | `recursion_e2e::a_respawned_forked_service_keeps_its_seed`
+kernel + ipython + rlm() subagents | `family::a_wide_wait_reply_counts_states_and_names_only_the_mover` (T1)
+kernel + ipython + rlm() subagents | `family::a_settled_wait_lists_every_finished_reader` (T1)
 mail between sessions | `acp_protocol::a_worker_keeps_eight_idle_sessions_and_reloads_the_one_it_evicted`
 mail between sessions | `acp_protocol::a_letter_to_an_evicted_session_loads_it_and_reads_the_letter`
 mail between sessions | `acp_protocol::a_session_with_a_steer_queued_is_not_the_one_unloaded`
