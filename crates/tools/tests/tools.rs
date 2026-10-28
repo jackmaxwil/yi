@@ -8,6 +8,7 @@ use serde_json::{Map, Value, json};
 use yi_tools::{BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools};
 use yi_types::message::Content;
 
+use crate::poll::poll_until;
 use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -1636,12 +1637,7 @@ fn a_running_poll_shows_output_and_kill_ends_the_job() -> TestResult {
     let yi_tools::Run::Backgrounded(id) = run else {
         return Err("the command did not become a job".into());
     };
-    for _ in 0..500 {
-        if dir.join("ready").exists() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    poll_until(|| dir.join("ready").exists().then_some(()))?;
     assert!(dir.join("ready").exists(), "producer did not print before");
     let running = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
     let running_text = output_text(&running);
@@ -1681,12 +1677,7 @@ fn a_running_poll_view_names_its_ceiling_only_one_byte_past_it() -> TestResult {
         let yi_tools::Run::Backgrounded(id) = run else {
             return Err("the command did not become a job".into());
         };
-        for _ in 0..500 {
-            if dir.join("ready").exists() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        poll_until(|| dir.join("ready").exists().then_some(()))?;
         assert!(
             dir.join("ready").exists(),
             "producer did not finish {bytes} bytes"
@@ -1719,15 +1710,21 @@ fn a_running_poll_names_output_dropped_from_its_live_buffer() -> TestResult {
     let yi_tools::Run::Backgrounded(id) = run else {
         return Err("the command did not become a job".into());
     };
-    for _ in 0..500 {
-        if dir.join("ready").exists() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    poll_until(|| dir.join("ready").exists().then_some(()))?;
     assert!(
         dir.join("ready").exists(),
         "producer did not emit 55,000 bytes"
+    );
+    poll_until(|| {
+        yi_tools::jobs::registry()
+            .output_since(id, 0)
+            .ok()
+            .filter(|chunk| chunk.next == 55_000)
+    })?;
+    assert_eq!(
+        yi_tools::jobs::registry().output_since(id, 0)?.next,
+        55_000,
+        "live reader did not drain 55,000 bytes"
     );
     let polled = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
     let text = output_text(&polled);

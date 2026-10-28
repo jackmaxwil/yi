@@ -236,20 +236,17 @@ fn delegation(declares: bool) -> Result<Delegation, TestCaseError> {
 
 /// A writer contract over one critical cmd item, its manifest staged under `plan`.
 fn contract_for(case: &Case, plan: &PlanId, passes: bool) -> Result<Contract, TestCaseError> {
-    let manifest = serde_json::json!({
-        "manifest": 1, "command": if passes { "true" } else { "exit 1" },
-        "cwd": "snapshot_root", "cwd_subdir": null, "protected": [], "timeout_ms": 5_000,
-        "env": [], "reads_outside_snapshot": false
-    });
-    let put = case
-        .store
-        .artifacts(plan)
-        .put(
-            &serde_json::to_vec(&manifest).map_err(fail)?,
-            "application/vnd.yi.checker-manifest+json",
-            &case.store.nonce(),
-        )
-        .map_err(fail)?;
+    let put = crate::checker::put_checker(
+        &case.store.artifacts(plan),
+        &crate::checker::checker_manifest(
+            if passes { "true" } else { "exit 1" },
+            5_000,
+            &[],
+            false,
+        ),
+        &case.store.nonce(),
+    )
+    .map_err(fail)?;
     serde_json::from_value(serde_json::json!({
         "class": "writer",
         "items": [{"id": "check", "critical": true, "weight": 100,
