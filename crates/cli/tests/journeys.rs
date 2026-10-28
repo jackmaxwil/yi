@@ -967,3 +967,117 @@ fn a_session_start_sweeps_an_aged_orphan_without_yi_gc() -> TestResult {
     journey.reclaim();
     Ok(())
 }
+
+const SEARCH_RESPONSE: &str =
+    include_str!("../../ai/tests/fixtures/openrouter-web-search-deepseek-q0.response.json");
+
+fn search_case(primary: &str, explicit_role: bool) -> TestResult {
+    use std::io::BufReader;
+    use std::net::TcpListener;
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+
+    let journey = Journey::new("web-search")?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let served = std::thread::spawn(move || -> std::io::Result<String> {
+        let (stream, _) = listener.accept()?;
+        let mut reader = BufReader::new(stream);
+        let request = crate::loopback::read_request(&mut reader);
+        write!(
+            reader.into_inner(),
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{SEARCH_RESPONSE}",
+            SEARCH_RESPONSE.len()
+        )?;
+        Ok(request)
+    });
+    let mut model = yi_runtime::resolve_model("openrouter", "deepseek/deepseek-v4-flash")
+        .ok_or("the bundled search model is missing")?;
+    model.base_url = format!("http://127.0.0.1:{port}/api/v1");
+    std::fs::create_dir_all(journey.root.join("home/.yi/catalog"))?;
+    std::fs::write(
+        journey.root.join("home/.yi/catalog/openrouter.json"),
+        serde_json::to_string(&json!({
+            "schema": 2,
+            "openai-completions": {model.id.clone(): serde_json::to_value(model)?}
+        }))?,
+    )?;
+    let mut config = json!({"kernel": {"prewarm": false}});
+    if explicit_role {
+        config["models"] = json!({"webSearch": "openrouter/deepseek/deepseek-v4-flash"});
+    }
+    std::fs::write(
+        journey.root.join("home/.yi/config.json"),
+        serde_json::to_string(&config)?,
+    )?;
+    let call = faux_tool_call(
+        "search-1",
+        "web_search",
+        json!({"query": "latest Rust", "count": 5})
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let script = journey.project().join("search.jsonl");
+    std::fs::write(
+        &script,
+        [
+            serde_json::to_string(&faux_assistant_message(vec![call], StopReason::ToolUse))?,
+            serde_json::to_string(&faux_assistant_message(
+                vec![faux_text("done")],
+                StopReason::Stop,
+            ))?,
+        ]
+        .join("\n"),
+    )?;
+    let output = journey
+        .command(&[
+            "ask",
+            "--json",
+            "--faux",
+            &script.display().to_string(),
+            "search",
+        ])
+        .arg("--model")
+        .arg(primary)
+        .env("OPENROUTER_API_KEY", "x")
+        .output()?;
+    let shown = succeeded(&output, "web search ask")?;
+    assert!(shown.contains("<<<yi-external"), "{shown}");
+    assert!(
+        shown.contains("https://doc.rust-lang.org/stable/releases.html"),
+        "{shown}"
+    );
+    let stored = crate::session_files::session_text(&journey.root.join("home/sessions"))?;
+    assert_eq!(
+        stored.matches("\"cause\":\"tool:web_search\"").count(),
+        1,
+        "{stored}"
+    );
+    assert!(stored.contains("\"toolName\":\"web_search\""), "{stored}");
+    assert!(stored.contains("0.007516407500000001"), "{stored}");
+
+    let request = served.join().map_err(|_| "search server panicked")??;
+    let (_, body) = request
+        .split_once("\r\n{")
+        .ok_or("search request has no body")?;
+    let body: Value = serde_json::from_str(&format!("{{{body}"))?;
+    assert_eq!(body["model"], "deepseek/deepseek-v4-flash");
+    assert_eq!(body["stream"], false);
+    assert_eq!(body["tools"][0]["type"], "openrouter:web_search");
+    let parameters = &body["tools"][0]["parameters"];
+    assert_eq!(parameters["engine"], "exa");
+    assert_eq!(parameters["mode"], "auto");
+    assert_eq!(parameters["max_results"], 5);
+    assert_eq!(parameters["max_total_results"], 5);
+    assert_eq!(parameters["max_uses"], 1);
+    journey.reclaim();
+    Ok(())
+}
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn web_search_offline_citations_and_cost() -> TestResult {
+    search_case("openrouter/deepseek/deepseek-v4-flash", false)?;
+    search_case("faux/faux-1", true)
+}
