@@ -119,7 +119,7 @@ fn build_session(
     asker: Option<yi_runtime::Asker>,
     session_id: Option<&str>,
     prompts_close: bool,
-    unattended: bool,
+    [unattended, exits_idle]: [bool; 2],
 ) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), Refused> {
     // Invariant: the first statement here, so no lever is read on both sides of the
     // override and a refused file stops the run before the session, and any model call.
@@ -236,11 +236,30 @@ fn build_session(
     let work = lane
         .as_ref()
         .map_or_else(|| cwd.clone(), |lane| lane.path().to_path_buf());
+    let settings = config();
+    let rules = (settings
+        .permissions
+        .as_ref()
+        .and_then(|p| p.allow.as_deref()))
+    .into_iter()
+    .flatten()
+    .map(|entry| {
+        let (tool, pattern) = entry
+            .split_once(' ')
+            .ok_or_else(|| format!("{entry:?} is not `TOOL PATTERN`"))?;
+        yi_runtime::ConfigRule::new(tool, pattern, yi_runtime::ConfigRuleAction::Allow)
+    })
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|reason| Refused {
+        code: 2,
+        reason: format!("permissions.allow: {reason}"),
+        class: yi_types::telemetry::ErrorClass::RefusalConfig,
+    })?;
     let broker = std::sync::Arc::new(
         yi_runtime::PermissionBroker::new(
             args.mode,
             work.clone(),
-            Vec::new(),
+            rules,
             asker,
             session.events_sender(),
         )
@@ -248,6 +267,20 @@ fn build_session(
         .with_session_store(&default_session_dir(args))
         .with_unattended(unattended),
     );
+    let configured = (settings.permissions.as_ref()).and_then(|p| p.allow_write.as_deref());
+    for dir in args
+        .allow_write
+        .iter()
+        .chain(configured.into_iter().flatten())
+    {
+        broker
+            .grant_write(&cwd.join(dir))
+            .map_err(|reason| Refused {
+                code: 2,
+                reason: format!("allow-write: {reason}"),
+                class: yi_types::telemetry::ErrorClass::RefusalConfig,
+            })?;
+    }
     if prompts_close {
         broker.prompts_close_on_settle();
     }
@@ -307,7 +340,7 @@ fn build_session(
                 .as_ref()
                 .and_then(|plan| plan.stale_reminder_turns),
             plans_dir: configured_plans_dir(&work),
-            auto_background: configured_auto_background(),
+            auto_background: configured_auto_background(exits_idle),
             deadline: args.deadline.map(std::time::Duration::from_secs),
             // A cold venv installs from PyPI; a scripted run boots it at its first cell.
             kernel_prewarm: !faux
@@ -618,16 +651,6 @@ fn attach_store(
     Ok(id)
 }
 
-/// The exact command that brings this session back, printed only for a session
-/// that recorded something: resuming an empty one reads as a broken suggestion.
-fn print_resume_hint(session: &AgentSession, id: &str) {
-    if session.messages().is_empty() {
-        return;
-    }
-    eprintln!();
-    tty::eprint_dim(&format!("Resume this session with `yi --session {id}`"));
-}
-
 /// Checkpoints (§7.7) restore the files the last turn changed, from the cwd's leaf session.
 fn run_undo(args: &Args) -> i32 {
     use yi_runtime::session_store::SessionRepo;
@@ -750,6 +773,7 @@ fn mcp_enabled() -> bool {
 }
 
 mod login;
+mod mcp_hooks;
 mod shells;
 use shells::{run_console_command, run_serve_command, run_tui_command};
 
@@ -768,8 +792,12 @@ fn mcp_fast_path() {
             .mcp
             .as_ref()
             .and_then(|mcp| mcp.token_store.as_deref());
+        let hooks = mcp_hooks::McpHooks::load();
+        let hooks = hooks
+            .as_ref()
+            .map(|hooks| hooks as &dyn yi_mcp_cli::CallHooks);
         let version = env!("ARCHITECTURE_VERSION");
-        std::process::exit(yi_mcp_cli::run(&raw, token_store, version));
+        std::process::exit(yi_mcp_cli::run(&raw, token_store, hooks, version));
     }
 }
 
@@ -864,7 +892,7 @@ fn run_rpc(args: &Args) -> i32 {
     };
     let session = {
         let _guard = runtime.enter();
-        match build_session(args, None, None, false, false) {
+        match build_session(args, None, None, false, [false; 2]) {
             Ok((session, _host)) => session,
             Err(refused) => return exit_refused(refused),
         }
@@ -890,7 +918,7 @@ fn run_acp(args: &Args) -> i32 {
         let runtime_handle = runtime.handle().clone();
         std::sync::Arc::new(move |asker, session| {
             let _guard = runtime_handle.enter();
-            build_session(&build_args, asker, session, false, false)
+            build_session(&build_args, asker, session, false, [false; 2])
                 .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
         })
     };

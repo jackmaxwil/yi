@@ -57,7 +57,7 @@ impl HostRegistry {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
                     })?;
                 let cancelled: CancelFlag = Arc::new(|| false);
-                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, sandbox.as_ref());
+                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, sandbox.as_ref())?;
                 lock(&spawned).push(id);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));
@@ -287,6 +287,13 @@ impl KernelService {
         if let Ok(mut slot) = self.on_death.lock() {
             *slot = Some(hook);
         }
+    }
+
+    /// A kernel in use or holding names its snapshot lacks; see [`KernelManager::unsaved`].
+    pub fn unsaved(&self) -> bool {
+        self.manager.try_lock().map_or(true, |slot| {
+            slot.as_ref().is_some_and(|kernel| kernel.unsaved())
+        })
     }
 
     pub fn take_death(&self) -> bool {

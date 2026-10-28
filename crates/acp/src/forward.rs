@@ -75,6 +75,7 @@ pub(crate) struct Parent {
     pub(crate) last_plan: Value,
     pub(crate) titled: bool,
     pub(crate) launch_cwd: std::path::PathBuf,
+    pub(crate) last_active: Arc<AtomicU64>,
 }
 
 impl Parent {
@@ -228,6 +229,7 @@ impl Parent {
                     self.watch_claims();
                 }
                 if matches!(event, AgentEvent::AgentEnd { .. }) {
+                    (self.last_active).store(crate::daemon::now_ms(), Ordering::Relaxed);
                     self.title();
                 }
             }
@@ -247,7 +249,7 @@ pub(crate) async fn forward_parent(
                 parent.forward.gap(gap.dropped);
                 // Invariant: a lag may have dropped an insertion; a refusal beats a success naming it.
                 let lost = "the update stream lagged past this prompt's insertion";
-                crate::refuse(&parent.forward.sink, parent.ids.waiting(), -32603, lost);
+                crate::resident::refuse(&parent.forward.sink, parent.ids.waiting(), -32603, lost);
             }
         }
     }

@@ -477,13 +477,12 @@ TEST_FN = re.compile(r"#\[(tokio::)?test\b|^\s*(async\s+)?def test_")
 ASSERT = re.compile(r"\bassert(_eq|_ne|_matches)?!|\bassert\b|\bself\.assert[A-Z]")
 
 
-def test_from(text, path):
-    """The first line of `path` that is test code: 1 in a test file, the inline `#[cfg(test)]`
-    module's line in a source file, none otherwise."""
+def test_lines(text, path):
+    """The lines of `path` that are test code: all of a test file, each inline `#[cfg(test)]`
+    item's in a source file."""
     if TEST_FILE.search(path):
-        return 1
-    before = len(_common.code_lines(text))
-    return before + 1 if before < len(text.splitlines()) else None
+        return range(1, len(text.splitlines()) + 2)
+    return {n for n, test in enumerate(_common.test_mask(text), 1) if test}
 
 
 def weakened(clone, spared=frozenset()):
@@ -498,13 +497,13 @@ def weakened(clone, spared=frozenset()):
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             path = line.split(" b/", 1)[-1]
-            starts = {"-": test_from(show("HEAD", path), path), "+": test_from(show("", path), path)}
+            starts = {"-": test_lines(show("HEAD", path), path), "+": test_lines(show("", path), path)}
         elif hunk := re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line):
             at = {"-": int(hunk.group(1)), "+": int(hunk.group(2))}
         elif line[:1] in "-+" and not line.startswith(("---", "+++")):
             side, sign = line[0], (1 if line[0] == "-" else -1)
             tests += sign * bool(TEST_FN.search(line[1:])) * (path not in spared)
-            if path not in spared and starts.get(side) is not None and at[side] >= starts[side] and ASSERT.search(line[1:]):
+            if path not in spared and at[side] in starts.get(side, ()) and ASSERT.search(line[1:]):
                 (gone if side == "-" else came).setdefault(path, Counter())[line[1:].strip()] += 1
             at[side] += 1
     if tests > 0:

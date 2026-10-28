@@ -1,0 +1,205 @@
+{
+  "commit": "d08356d885a805108b6386842e1890ffa8fb15dd",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "What is Yi's default maximum child delegation depth?",
+      "answer": "1",
+      "url": "local://crates/types/src/config.rs",
+      "line": 211,
+      "quote": "pub const DEFAULT_MAX_DEPTH: u8 = 1;"
+    },
+    {
+      "id": "q02",
+      "question": "What is the largest depth to which RlmConfig::depth clamps its configured value?",
+      "answer": "3",
+      "url": "local://crates/types/src/config.rs",
+      "line": 222,
+      "quote": "self.max_depth.unwrap_or(DEFAULT_MAX_DEPTH).clamp(1, 3)"
+    },
+    {
+      "id": "q03",
+      "question": "What is the byte capacity of a reader partition?",
+      "answer": "65536",
+      "url": "local://crates/runtime/src/subagent/reader.rs",
+      "line": 18,
+      "quote": "pub(crate) const PARTITION_CAP: usize = 65_536;"
+    },
+    {
+      "id": "q04",
+      "question": "How many turns does a reader child get by default?",
+      "answer": "3",
+      "url": "local://crates/runtime/src/subagent/reader.rs",
+      "line": 54,
+      "quote": "Self::Reader => 3,"
+    },
+    {
+      "id": "q05",
+      "question": "What is the maximum turn count a reader child accepts?",
+      "answer": "10",
+      "url": "local://crates/runtime/src/subagent/reader.rs",
+      "line": 61,
+      "quote": "Self::Reader => 10,"
+    },
+    {
+      "id": "q06",
+      "question": "How many turns does a worker child get by default?",
+      "answer": "12",
+      "url": "local://crates/runtime/src/subagent/reader.rs",
+      "line": 55,
+      "quote": "Self::Worker => 12,"
+    },
+    {
+      "id": "q07",
+      "question": "What is the maximum turn count a worker child accepts?",
+      "answer": "40",
+      "url": "local://crates/runtime/src/subagent/reader.rs",
+      "line": 62,
+      "quote": "Self::Worker => 40,"
+    },
+    {
+      "id": "q08",
+      "question": "Which two tools can a reader child call?",
+      "answer": "read and grep",
+      "url": "local://crates/runtime/src/subagent/reader.rs",
+      "line": 40,
+      "quote": "Self::Reader => &[\"read\", \"grep\"],"
+    },
+    {
+      "id": "q09",
+      "question": "What is Yi's default maximum number of retained children per parent?",
+      "answer": "8",
+      "url": "local://crates/runtime/src/subagent.rs",
+      "line": 32,
+      "quote": "pub const DEFAULT_MAX_CHILDREN: usize = 8;"
+    },
+    {
+      "id": "q10",
+      "question": "What is the live-child cap for a whole family?",
+      "answer": "16",
+      "url": "local://crates/runtime/src/subagent.rs",
+      "line": 34,
+      "quote": "pub const FAMILY_CAP: usize = 16;"
+    },
+    {
+      "id": "q11",
+      "question": "At most how many context keys can be scoped into a child?",
+      "answer": "8",
+      "url": "local://crates/runtime/src/mailbox.rs",
+      "line": 23,
+      "quote": "pub(crate) const CONTEXT_MAX_KEYS: usize = 8;"
+    },
+    {
+      "id": "q12",
+      "question": "What is the character cap on one context value passed to a child?",
+      "answer": "4096",
+      "url": "local://crates/runtime/src/mailbox.rs",
+      "line": 24,
+      "quote": "pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;"
+    },
+    {
+      "id": "q13",
+      "question": "What is the total character cap on the context block passed to a child?",
+      "answer": "16384",
+      "url": "local://crates/runtime/src/mailbox.rs",
+      "line": 25,
+      "quote": "pub(crate) const CONTEXT_TOTAL_CAP: usize = 16_384;"
+    },
+    {
+      "id": "q14",
+      "question": "What is the minimum wait accepted by the mailbox, in milliseconds?",
+      "answer": "1000",
+      "url": "local://crates/runtime/src/mailbox.rs",
+      "line": 17,
+      "quote": "pub(crate) const WAIT_MIN_MS: u64 = 1_000;"
+    },
+    {
+      "id": "q15",
+      "question": "What is the maximum wait accepted by the mailbox, in milliseconds?",
+      "answer": "300000",
+      "url": "local://crates/runtime/src/mailbox.rs",
+      "line": 18,
+      "quote": "pub(crate) const WAIT_MAX_MS: u64 = 300_000;"
+    },
+    {
+      "id": "q16",
+      "question": "How many characters of a child result does the mailbox tail retain?",
+      "answer": "2000",
+      "url": "local://crates/runtime/src/mailbox.rs",
+      "line": 26,
+      "quote": "const RESULT_TAIL_CHARS: usize = 2_000;"
+    },
+    {
+      "id": "q17",
+      "question": "What byte cap applies separately to retained process stdout and stderr?",
+      "answer": "30000",
+      "url": "local://crates/tools/src/process.rs",
+      "line": 12,
+      "quote": "pub const OUTPUT_CAP: usize = 30_000;"
+    },
+    {
+      "id": "q18",
+      "question": "What is the reducer's error byte ceiling in bytes?",
+      "answer": "16384",
+      "url": "local://crates/tools/src/reduce.rs",
+      "line": 20,
+      "quote": "const ERROR_BYTES: usize = 16 * 1024;"
+    },
+    {
+      "id": "q19",
+      "question": "At most how many signal rows does the reducer keep around errors and failures?",
+      "answer": "60",
+      "url": "local://crates/tools/src/reduce.rs",
+      "line": 25,
+      "quote": "const SIGNAL_ROWS: usize = 60;"
+    },
+    {
+      "id": "q20",
+      "question": "How many head lines does the output reducer keep?",
+      "answer": "80",
+      "url": "local://crates/tools/src/reduce.rs",
+      "line": 15,
+      "quote": "const HEAD_LINES: usize = 80;"
+    },
+    {
+      "id": "q21",
+      "question": "How many tail lines does the output reducer keep?",
+      "answer": "40",
+      "url": "local://crates/tools/src/reduce.rs",
+      "line": 16,
+      "quote": "const TAIL_LINES: usize = 40;"
+    },
+    {
+      "id": "q22",
+      "question": "How many lines does the reducer keep for grep-shaped output?",
+      "answer": "60",
+      "url": "local://crates/tools/src/reduce.rs",
+      "line": 17,
+      "quote": "const GREP_LINES: usize = 60;"
+    },
+    {
+      "id": "q23",
+      "question": "How many context lines does the reducer retain on each side of a signal row?",
+      "answer": "3",
+      "url": "local://crates/tools/src/reduce.rs",
+      "line": 24,
+      "quote": "const SIGNAL_CONTEXT: usize = 3;"
+    },
+    {
+      "id": "q24",
+      "question": "What is the default maximum snapshot size in bytes?",
+      "answer": "268435456",
+      "url": "local://crates/kernel/src/snapshot.rs",
+      "line": 12,
+      "quote": "pub const DEFAULT_SNAPSHOT_MAX_BYTES: u64 = 256 * 1024 * 1024;"
+    },
+    {
+      "id": "q25",
+      "question": "What is the default maximum size of one snapshotted variable in bytes?",
+      "answer": "16777216",
+      "url": "local://crates/kernel/src/snapshot.rs",
+      "line": 13,
+      "quote": "pub const DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES: u64 = 16 * 1024 * 1024;"
+    }
+  ]
+}

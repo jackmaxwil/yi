@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::claude_hooks::Verdict;
 use serde_json::{Map, Value};
 use tokio::sync::broadcast;
 use yi_permission::{
@@ -16,6 +17,8 @@ use yi_types::permission::{
     Answerer, PermissionRecord, RuleDecision, RuleKind, SessionPermissionRule,
 };
 
+mod hooked;
+pub(crate) use hooked::claude_dir;
 mod kept;
 mod late;
 use late::{Answered, Late};
@@ -91,6 +94,8 @@ pub struct PermissionBroker {
     walled: bool,
     /// Nobody is attached to answer a question, so a root's `ask_user` cannot end the run.
     unattended: bool,
+    /// Loaded once from the root's tree and shared down: a lane child reads the root's project.
+    claude_hooks: std::sync::OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
 }
 
 pub struct CallOutcome {
@@ -138,7 +143,7 @@ pub(crate) fn leaves_sandbox(
 
 /// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
 /// daemon socket), a credential store, or a git path the host runs.
-pub(crate) fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
+pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let yi = home.iter().map(|home| home.join(".yi"));
     let overlaps = |guarded: &PathBuf| {
@@ -149,9 +154,8 @@ pub(crate) fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
     };
     home.as_deref()
         .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
-        || (sandbox.deny_read.iter())
-            .chain(&sandbox.deny_write)
-            .chain(&sandbox.host_owned)
+        || (sandbox.into_iter())
+            .flat_map(|s| s.deny_read.iter().chain(&s.deny_write).chain(&s.host_owned))
             .cloned()
             .chain(yi)
             .any(|guarded| overlaps(&guarded))
@@ -227,7 +231,14 @@ impl PermissionBroker {
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
             walled: false,
             unattended: false,
+            claude_hooks: std::sync::OnceLock::new(),
         }
+    }
+
+    pub(crate) fn claude_hooks(&self) -> Option<Arc<crate::claude_hooks::Hooks>> {
+        (self.claude_hooks)
+            .get_or_init(|| crate::claude_hooks::Hooks::load(&self.cwd))
+            .clone()
     }
 
     pub fn set_journal(&self, journal: Journal) {
@@ -399,7 +410,7 @@ impl PermissionBroker {
             Some(yi_tools::SandboxRefusal::Path(path)) => {
                 let dir = path.parent().unwrap_or(path);
                 let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-                if protected(sandbox, &dir) {
+                if protected(Some(sandbox), &dir) {
                     return outside(&format!("`{}` is protected", dir.display()));
                 }
                 let note = format!("; approving widens this run by `{}`", dir.display());
@@ -427,6 +438,7 @@ impl PermissionBroker {
         };
         profile.writable.extend_from_slice(widen);
         profile.deny_write.extend_from_slice(&wall.deny_write);
+        profile.deny_write.extend(claude_dir(Some(self)));
         profile.deny_read.extend_from_slice(&wall.deny_read);
         Some(profile)
     }
@@ -493,6 +505,17 @@ impl PermissionBroker {
         tool_call_id: &str,
         args: &Map<String, Value>,
         preview: Option<&str>,
+    ) -> CallOutcome {
+        let call = (tool_name, kind, irreversible, tool_call_id);
+        self.decide_hooked(call, args, preview, &Verdict::Silent)
+    }
+
+    pub(crate) fn decide_hooked(
+        &self,
+        (tool_name, kind, irreversible, tool_call_id): (&str, ToolKind, bool, &str),
+        args: &Map<String, Value>,
+        preview: Option<&str>,
+        hook: &Verdict,
     ) -> CallOutcome {
         let command = if tool_name == "bash" {
             args.get("command").and_then(Value::as_str)
@@ -563,6 +586,13 @@ impl PermissionBroker {
             &active_holds,
             &self.context,
         );
+        let judged = hooked::Judged {
+            call: &call,
+            config_rules: &self.config_rules,
+            session_rules: &session_rules,
+            holds: &active_holds,
+        };
+        let (decision, hook_answers) = self.hooked(decision, hook, &judged);
         // The session pass is the exact command an "always" kept, never a scope (review of #933).
         let passed = session_rules.decision_for(rule_kind, &canonical) == Some(RuleDecision::Allow);
         drop(session_rules);
@@ -608,6 +638,17 @@ impl PermissionBroker {
                 reviewable,
             } => (title, description.clone(), reviewable, description),
         };
+        if hook_answers {
+            let ask = PermissionAsk {
+                title: &title,
+                description: &description,
+                patch: preview,
+                changes: &targets,
+                grants: &[],
+                tool_call_id: Some(tool_call_id),
+            };
+            return self.hook_answered(&ask, &reason, command);
+        }
         let (containment, note) = self.approved_containment(command, refusal.as_ref());
         // An "always" on a widened retry keeps the directory, never a rule that would run the
         // command itself outside the sandbox.
@@ -660,7 +701,7 @@ impl PermissionBroker {
                 (None, Some(refusal)) if self.asker.is_none() => self.denied(
                     crate::gate::headless_refusal(self.sandbox.as_ref(), refusal),
                 ),
-                _ => outcome,
+                _ => crate::gate::named_rule(outcome, self.asker.is_none(), (tool_name, &display)),
             };
         }
         if let (Some(grant), Some(refusal), Containment::Contained { .. }) =

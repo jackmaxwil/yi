@@ -254,7 +254,6 @@ pub struct ParsedSection {
 pub struct Executor {
     edits: Vec<Edit>,
     warnings: Vec<String>,
-    edit_index: usize,
     pending: Option<Pending>,
     file_op: Option<FileOp>,
     terminated: bool,
@@ -621,27 +620,16 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
     }
 
     fn push_insert(&mut self, cursor: Cursor, text: String, line_num: u64, replacement: bool) {
-        let index = self.edit_index;
-        self.edit_index += 1;
         self.edits.push(Edit::Insert {
             cursor,
             text,
             line_num,
-            index,
             replacement,
-            block_start: None,
         });
     }
 
     fn push_delete(&mut self, anchor: Anchor, line_num: u64) {
-        let index = self.edit_index;
-        self.edit_index += 1;
-        self.edits.push(Edit::Delete {
-            anchor,
-            line_num,
-            index,
-            old_assertion: None,
-        });
+        self.edits.push(Edit::Delete { anchor, line_num });
     }
 
     fn push_delete_range(&mut self, range: &ParsedRange, line_num: u64) {
@@ -651,13 +639,10 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
     }
 
     fn push_cut(&mut self, range: ParsedRange, line_num: u64, register: Option<String>) {
-        let index = self.edit_index;
-        self.edit_index += 1;
         self.edits.push(Edit::Cut {
             range,
             register,
             line_num,
-            index,
         });
         // Capture before ordinary per-line deletes are applied. Keeping deletion
         // as low-level edits preserves overlap validation and recovery remapping.
@@ -665,14 +650,10 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
     }
 
     fn push_paste(&mut self, at: PasteTarget, register: Option<String>, line_num: u64) {
-        let index = self.edit_index;
-        self.edit_index += 1;
         self.edits.push(Edit::Paste {
             at,
             register,
             line_num,
-            index,
-            block_start: None,
         });
     }
 
@@ -684,15 +665,12 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
         mode: BlockMode,
         register: Option<String>,
     ) {
-        let index = self.edit_index;
-        self.edit_index += 1;
         self.edits.push(Edit::Block {
             anchor,
             payloads: payloads.iter().map(|row| row.text.clone()).collect(),
             mode,
             register,
             line_num,
-            index,
         });
     }
 

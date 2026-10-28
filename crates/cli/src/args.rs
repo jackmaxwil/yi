@@ -3,6 +3,10 @@ use crate::{debug, stats, trace_sink};
 use yi_types::model::{Effort, UnknownEffort};
 
 #[derive(Clone)]
+#[cfg_attr(
+    not(feature = "tui"),
+    expect(dead_code, reason = "the drive flags feed the TUI only")
+)]
 pub(crate) struct Args {
     pub(crate) command: String,
     pub(crate) help: bool,
@@ -17,6 +21,7 @@ pub(crate) struct Args {
     pub(crate) no_deltas: bool,
     pub(crate) mode: yi_runtime::PermissionMode,
     pub(crate) mode_pinned: bool,
+    pub(crate) allow_write: Vec<String>,
     pub(crate) session_dir: Option<String>,
     pub(crate) cwd: Option<String>,
     pub(crate) here: bool,
@@ -66,6 +71,7 @@ pub(super) fn parse_from(
     let mut json = false;
     let mut no_deltas = false;
     let mut mode = None;
+    let mut allow_write = Vec::new();
     let mut session_dir = None;
     let mut cwd = None;
     let mut here = false;
@@ -107,6 +113,7 @@ pub(super) fn parse_from(
             Long("yolo") => mode = Some(yi_runtime::PermissionMode::Yolo),
             Long("auto") => mode = Some(yi_runtime::PermissionMode::Auto),
             Long("confirm") => mode = Some(yi_runtime::PermissionMode::Ask),
+            Long("allow-write") => allow_write.push(parser.value()?.string()?),
             Long("session-dir") => session_dir = Some(parser.value()?.string()?),
             Long("cwd") => cwd = Some(parser.value()?.string()?),
             Long("here") => here = true,
@@ -161,6 +168,7 @@ pub(super) fn parse_from(
         no_deltas,
         mode: mode.unwrap_or_else(configured_mode),
         mode_pinned: mode.is_some(),
+        allow_write,
         session_dir,
         cwd,
         here,
