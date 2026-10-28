@@ -58,10 +58,10 @@ jobs:
           save-if: false
       - if: steps.queue.outputs.newer == '0'
         run: cargo build -p yi-cli
-      # The low tier goes to Together first, as in review.yml; no fallback ban, because the higher
-      # tiers' models may not be on Together and a strict pin would refuse them.
+      # The low tier goes to wafer/mxfp4 first, as in review.yml; no fallback ban, because the higher
+      # tiers' models may not be on wafer/mxfp4 and a strict pin would refuse them.
       - if: steps.queue.outputs.newer == '0'
-        run: mkdir -p ~/.yi && echo '{"routing":{"order":["together"]}}' > ~/.yi/config.json
+        run: mkdir -p ~/.yi && echo '{"routing":{"order":["wafer/mxfp4"]}}' > ~/.yi/config.json
       - name: fix conflicted PRs as yi-bot
         if: steps.queue.outputs.newer == '0'
         env:
