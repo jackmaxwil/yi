@@ -701,7 +701,7 @@ impl PermissionBroker {
                 (None, Some(refusal)) if self.asker.is_none() => self.denied(
                     crate::gate::headless_refusal(self.sandbox.as_ref(), refusal),
                 ),
-                _ => outcome,
+                _ => crate::gate::named_rule(outcome, self.asker.is_none(), (tool_name, &display)),
             };
         }
         if let (Some(grant), Some(refusal), Containment::Contained { .. }) =
