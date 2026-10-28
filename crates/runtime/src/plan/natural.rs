@@ -622,6 +622,13 @@ fn weights(args: &mut Map<String, Value>, said: &mut Vec<String>) {
             todo.entry("contract").or_insert(contract);
             said.push("a contract inside the delegation is the row's".to_owned());
         }
+        if let Some(Value::Object(contract)) = todo.get_mut("contract")
+            && contract.remove("covers").is_some()
+        {
+            said.push(
+                "the contract's covers globs were left out; the cmd items run at done".to_owned(),
+            );
+        }
         let check = contract_check(todo);
         if let Some(Value::Object(delegation)) = todo.get_mut("delegation") {
             delegation_shape(delegation, label.as_deref(), said);
