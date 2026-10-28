@@ -307,7 +307,7 @@ def selfcheck(off="", fixtures=None):
                 BASELINE = original
     if off == "history":
         errors.append("disabled rewritten-history repository check")
-    else:
+    elif "gitleaks" in fixtures:
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(["git", "init", "-q", tmp], check=True)
             key = "AKIA" + "J7K2Q9M4X8C6V3P5"
@@ -383,9 +383,10 @@ def main(argv):
         if args.disable:
             fail(selfcheck(args.disable, fixtures), f"scan selfcheck with {args.disable} disabled")
         errors = selfcheck(fixtures=fixtures)
-        checks = {rule for rules in ZIZMOR_CASES.values() for rule in rules}
-        checks |= {rule for rules in SEMGREP_CASES.values() for rule in rules}
-        checks |= set(GITLEAKS_CASES.values()) | {"baseline", "ignores", "update", "history"}
+        checks = {rule for rules in ZIZMOR_CASES.values() for rule in rules} if "zizmor" in fixtures else set()
+        checks |= {rule for rules in SEMGREP_CASES.values() for rule in rules} if "semgrep" in fixtures else set()
+        checks |= set(GITLEAKS_CASES.values()) if "gitleaks" in fixtures else set()
+        checks |= {"baseline", "ignores", "update", "history"}
         for off in sorted(checks):
             if not selfcheck(off, fixtures):
                 errors.append(f"selfcheck passes with the {off} check disabled")
