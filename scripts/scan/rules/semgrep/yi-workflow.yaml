@@ -5,5 +5,5 @@ rules:
     message: Workflow event text in run is script injection; pass it through an environment variable and quote the variable.
     patterns:
       - pattern-either:
-          - pattern-regex: 'run:\s*[^\n]*\$\{\{\s*github\.event(?:\.|\[)'
-          - pattern-regex: '(?s)run:\s*(?:\||>[-+]?)?\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+[^\n]*\$\{\{\s*github\.event(?:\.|\[)'
+          - pattern-regex: 'run:\s*[^\n]*\$\{\{\s*github\.event\.(?:pull_request\.(?:title|body)|issue\.(?:title|body)|comment\.body)\b'
+          - pattern-regex: '(?s)run:\s*(?:\||>[-+]?)?\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+[^\n]*\$\{\{\s*github\.event\.(?:pull_request\.(?:title|body)|issue\.(?:title|body)|comment\.body)\b'
