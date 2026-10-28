@@ -97,13 +97,13 @@ fn a_resumed_pane_shows_the_context_its_last_counted_reply_reported() -> TestRes
         ),
     ]));
     let row = status_row(&mut app)?;
-    assert!(row.contains("103,212 / 128K"), "resumed: {row:?}");
+    assert!(row.contains("80% / 128K"), "resumed: {row:?}");
     app.reduce_agent(AgentEvent::MessageEnd {
         message: reply(json!([{"type": "text", "text": "again"}]), 0, true)?,
     });
     let row = status_row(&mut app)?;
     assert!(
-        row.contains("103,212 / 128K"),
+        row.contains("80% / 128K"),
         "after a usage-less reply: {row:?}"
     );
     Ok(())

@@ -1,5 +1,6 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
@@ -209,7 +210,7 @@ pub struct ChatLayout {
     working: Vec<Line<'static>>,
     hud: Vec<Line<'static>>,
     bottom: Option<Vec<Line<'static>>>,
-    status: Line<'static>,
+    status: Option<Line<'static>>,
     composer_height: u16,
     composer_too: bool,
     show_working: bool,
@@ -271,6 +272,9 @@ pub fn layout_chat(
         cwd: app.options.cwd.clone(),
         lane: app.options.lane.clone(),
         branch: app.branch.clone(),
+        dirty: app
+            .dirty
+            .count(app.running, app.options.lane.is_some(), &app.options.cwd),
         landing: app.landing.as_ref().and_then(|landing| {
             crate::status::landing_segment(landing, app.landing_at.map(|at| app.clock.since(at)))
         }),
@@ -290,7 +294,6 @@ pub fn layout_chat(
         context_window: app.options.context_window,
         focused_child: app.focused.clone(),
     };
-    let status_row = crate::status::render(&status_input, width, &theme);
     let bottom_lines: Option<Vec<Line<'static>>> = if let Some(tree) = &app.tree {
         Some(tree.lines(width, &theme, tree_rows(app.rows)))
     } else if let Some(plan_tree) = &app.plan_tree {
@@ -345,8 +348,23 @@ pub fn layout_chat(
         theme.muted_style()
     };
     app.bind_reply();
+    // The status is the composer's top border while that border is free; any title, search or
+    // popup in its place sends it back to a row of its own.
+    let reply = app.reply_title();
+    let on_rule = bottom_lines.is_none() && reply.is_none() && !app.composer.search_active();
+    let status_row = if on_rule {
+        crate::status::render_rule(&status_input, width.saturating_sub(4), &theme, border)
+    } else {
+        crate::status::render(&status_input, width, &theme)
+    };
+    let cursor = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::REVERSED);
+    let title = reply
+        .map(ratatui::text::Line::from)
+        .or_else(|| on_rule.then(|| status_row.clone()));
     app.composer
-        .set_frame(border, theme.dim_style(), app.reply_title());
+        .set_frame(border, theme.dim_style(), cursor, title);
     let composer_height = app.composer.layout(
         u16::try_from(width).unwrap_or(u16::MAX),
         u16::try_from(app.rows).unwrap_or(u16::MAX),
@@ -372,7 +390,7 @@ pub fn layout_chat(
             0
         })
         .saturating_add(bottom_height)
-        .saturating_add(1);
+        .saturating_add(u16::from(!on_rule));
     let budget = total.saturating_sub(floor);
     if rows(&live_lines) > budget {
         live_lines = keep_last(live_lines, usize::from(budget));
@@ -382,7 +400,7 @@ pub fn layout_chat(
         working,
         hud: hud_lines,
         bottom: bottom_lines,
-        status: status_row,
+        status: (!on_rule).then_some(status_row),
         composer_height,
         composer_too,
         show_working,
@@ -449,7 +467,9 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
         app.composer.render(rect, buffer);
         y = y.saturating_add(height);
     }
-    put(buffer, std::slice::from_ref(&layout.status), &mut y);
+    if let Some(status) = &layout.status {
+        put(buffer, std::slice::from_ref(status), &mut y);
+    }
     Placed {
         orb: orb_at,
         bottom: bottom_at,
