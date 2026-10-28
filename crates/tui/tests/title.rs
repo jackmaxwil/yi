@@ -367,10 +367,14 @@ fn the_small_mark_waits_for_the_big_one_to_land() {
         yi_tui::render::paint_pane(&mut app, None, &mut buffer, area, &mut scroll);
         let mut out = Vec::new();
         yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default(), true);
+        let pane: Vec<String> = rows(&buffer, area)
+            .iter()
+            .map(|row| row.iter().collect())
+            .collect();
         assert!(
-            rows(&buffer, area)
-                .last()
-                .is_some_and(|row| row.contains(&'╰') && row.contains(&'╯'))
+            common::composer_bottom(&pane).is_some(),
+            "composer bottom is not the pane's last row: {:?}",
+            pane.last()
         );
         (
             String::from_utf8_lossy(&out).contains("a=p"),
