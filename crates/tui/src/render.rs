@@ -601,8 +601,15 @@ pub fn paint_pane(
         floor,
     );
     let placed = paint_chat(app, &layout, buffer, chat_area);
-    app.orb_slot = placed.orb;
-    app.orb_placement = placed.orb.filter(|_| !app.title_cover);
+    let orb = placed.orb.map(|at| {
+        if app.title_idle() {
+            (area.left(), area.top())
+        } else {
+            at
+        }
+    });
+    app.orb_slot = orb;
+    app.orb_placement = orb.filter(|_| !app.title_cover);
     app.logo_rows = logo_rows(placed.bottom);
     app.card_at = placed
         .bottom
