@@ -500,6 +500,13 @@ pub fn paint_pane(
     app.set_width(usize::from(area.width));
     app.set_rows(usize::from(area.height));
     let mut layout = layout_chat(app, goal, None, u16::MAX);
+    let top_orb =
+        (app.title_idle() && layout.kitty && !layout.show_working && area.height >= ORB_ROWS)
+            .then_some((area.left(), area.top()));
+    if top_orb.is_some() {
+        layout.kitty = false;
+        layout.floor = layout.floor.saturating_sub(ORB_ROWS);
+    }
     let live = std::mem::take(&mut layout.live);
     let floor = layout.floor.min(area.height);
     let above = usize::from(area.height.saturating_sub(floor));
@@ -596,13 +603,13 @@ pub fn paint_pane(
     }
     let chat_area = Rect::new(
         area.left(),
-        area.top().saturating_add(rows),
+        area.bottom().saturating_sub(floor),
         area.width,
-        area.height.saturating_sub(rows),
+        floor,
     );
     let placed = paint_chat(app, &layout, buffer, chat_area);
-    app.orb_slot = placed.orb;
-    app.orb_placement = placed.orb.filter(|_| !app.title_cover);
+    app.orb_slot = top_orb.or(placed.orb);
+    app.orb_placement = app.orb_slot.filter(|_| !app.title_cover);
     app.logo_rows = logo_rows(placed.bottom);
     app.card_at = placed
         .bottom
