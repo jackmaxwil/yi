@@ -1416,6 +1416,45 @@ fn dropped_stream() -> AgentMessage {
     error
 }
 
+/// Dies with a quota 429 classed as transport: the exhausted window got a second request and a steer.
+#[tokio::test]
+async fn an_exhausted_quota_is_not_retried() {
+    let mut quota = faux_assistant_message(Vec::new(), StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut quota {
+        *error_message = Some("HTTP 429 quota exhausted: {\"error\":{}}".to_owned());
+    }
+    let stream = Scripted::new(vec![
+        quota,
+        faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
+    ]);
+    let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
+    assert!(
+        !collected.iter().any(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE)),
+        "a refused quota is final"
+    );
+}
+
+/// Dies with a read timeout that delivered nothing ending the run: the driver saw a crash, not a resume.
+#[tokio::test]
+async fn a_read_timeout_that_showed_nothing_continues_the_run() {
+    let mut timeout = faux_assistant_message(Vec::new(), StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut timeout {
+        *error_message = Some("Network Error: timed out reading response".to_owned());
+    }
+    let stream = Scripted::new(vec![
+        timeout,
+        faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
+    ]);
+    let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
+    assert!(matches!(
+        collected.last(),
+        Some(AgentMessage::Assistant {
+            stop_reason: StopReason::Stop,
+            ..
+        })
+    ));
+}
+
 #[tokio::test]
 async fn a_dropped_stream_that_showed_nothing_is_retried_once() {
     let stream = Scripted::new(vec![
