@@ -103,6 +103,51 @@ fn doctrine_names_only_ops_the_todo_tool_accepts() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn shipped_skills_name_only_ops_the_plan_and_todo_tools_accept() -> TestResult {
+    let pattern = regex::Regex::new(r"\b(?:plan|todo)\.[a-z_][a-z0-9_]*")?;
+    let schemas = [
+        ("plan", yi_runtime::plan::tool::schema()),
+        ("todo", yi_runtime::todo::tool::schema()),
+    ];
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.ancestors().nth(2).ok_or("the repository root")?;
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(manifest.join("src/prompts"))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .collect();
+    for set in std::fs::read_dir(root.join("skills"))?.flatten() {
+        for skill in std::fs::read_dir(set.path())?.flatten() {
+            let manifest = skill.path().join("SKILL.md");
+            if manifest.is_file() {
+                files.push(manifest);
+            }
+        }
+    }
+    let mut stale = Vec::new();
+    for path in files {
+        let text = std::fs::read_to_string(&path)?;
+        for captures in pattern.captures_iter(&text) {
+            let token = captures.get(0).ok_or("no token")?.as_str();
+            if matches!(token, "plan.run" | "plan.todo") {
+                continue;
+            }
+            let (tool, op) = token.split_once('.').ok_or("no op")?;
+            let (_, schema) = schemas.iter().find(|(name, _)| *name == tool).ok_or(tool)?;
+            let accepted = schema["properties"]["op"]["enum"]
+                .as_array()
+                .ok_or("no op enum")?
+                .iter()
+                .any(|value| value.as_str() == Some(op));
+            if !accepted {
+                stale.push(format!("{}: {token}", path.display()));
+            }
+        }
+    }
+    assert!(stale.is_empty(), "stale tool ops in {stale:?}");
+    Ok(())
+}
+
 /// Dies with the text a model reads behind the engine: with a plan open the todo tool sold its
 /// ops as the list's, and the plan schema offered a worktree with no contract (D223, D226).
 #[test]

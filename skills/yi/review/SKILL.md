@@ -21,7 +21,7 @@ cannot.
 Spawn a subagent whose prompt contains **only the standard, never your
 implementation story**:
 
-- the plan's tasks with their acceptance criteria, verbatim (`plan.get`);
+- the plan's tasks with their acceptance criteria, verbatim (`plan.view`);
 - each todo's `contract` and the goal's `check`; a contract item, rendered
   from the plan tool's schema:
 
@@ -72,8 +72,8 @@ hides it from the implementer as well.
 One line per acceptance item: `task-id · verdict · decisive evidence
 (command + exit, or file:line)`. Then a coverage line: what was not
 checked and why. Contradicted and unverifiable items reopen tasks
-(`plan.edit reopen`, `plan.update ... blocked`) — they never narrow the
-claim.
+(`plan.set` with the row state `pending` or `running`) or block them
+(`plan.set` with state `blocked`) — they never narrow the claim.
 
 ## The todo audit
 
