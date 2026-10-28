@@ -646,6 +646,21 @@ fn every_tool_a_recorded_session_calls_has_its_own_glyph_and_hue() -> TestResult
     Ok(())
 }
 
+#[test]
+fn web_search_card_has_its_query_glyph_hue_and_citation_count() -> TestResult {
+    let theme = theme();
+    let summary = ToolCell::summary_of("web_search", "latest Rust");
+    assert!(summary.starts_with('⌕'), "{summary}");
+    assert!(summary.contains("latest Rust"));
+    assert_eq!(yi_tui::card::tool_hue(&theme, "web_search"), theme.cyan);
+    assert_eq!(yi_tui::cell::explore_verb("web_search"), Some("Search"));
+    let digest = ToolCell::digest_of("web_search", "answer", &json!({"citationCount": 5}), false);
+    assert_eq!(digest.as_deref(), Some("5 citations"));
+    let query = yi_tui::transcript::arg_summary("web_search", &json!({"query": "latest Rust"}));
+    assert_eq!(query, "latest Rust");
+    Ok(())
+}
+
 /// The session `source` with every result's `[path#TAG]` header spread over two lines: the same
 /// results worded differently, as a token-saving change to the model-facing text would.
 fn reworded(source: &std::path::Path, into: &std::path::Path) -> TestResult {

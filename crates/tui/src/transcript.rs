@@ -119,7 +119,7 @@ pub(crate) fn todo_finished(text: &str) -> Option<String> {
     (done == total && total.parse::<u64>().ok()? > 0).then(|| format!("Todos {total}/{total}"))
 }
 
-pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
+pub fn arg_summary(tool: &str, args: &Value) -> String {
     if tool == "ask_user"
         && let Some(question) = crate::question::Question::from_args(args)
     {
@@ -139,6 +139,7 @@ pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
         "bash" => args.get("command"),
         "read" | "edit" | "write" => args.get("path"),
         "grep" => args.get("pattern"),
+        "web_search" => args.get("query"),
         "ipython" => args.get("code"),
         _ => None,
     };
@@ -152,6 +153,13 @@ pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
             text
         }
         None => String::new(),
+    }
+}
+pub fn explore_verb(tool: &str) -> Option<&'static str> {
+    match tool {
+        "read" => Some("Read"),
+        "grep" | "web_search" => Some("Search"),
+        _ => None,
     }
 }
 
