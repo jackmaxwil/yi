@@ -110,6 +110,27 @@ fn root_session(
     Ok((session, file, id))
 }
 
+async fn held_child(
+    label: &str,
+) -> Result<(Scratch, PathBuf, Arc<SubagentHost>, Arc<ProviderStream>), Box<dyn Error>> {
+    let scratch = Scratch::new(label)?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let (host, providers) =
+        host_with_providers(0, scratch.join("rlm-1"), slot(Some(session)), true);
+    host.spawn("Keep running.".to_owned(), kwargs("closed"))?;
+    let provider = providers
+        .lock()
+        .map_err(|_| "poisoned")?
+        .first()
+        .cloned()
+        .ok_or("no child provider")?;
+    assert!(
+        crate::support::wait_until(2_000, || provider.faux_hold.reached()).await,
+        "the stream never held"
+    );
+    Ok((scratch, root_file, host, provider))
+}
+
 fn kwargs(name: &str) -> Map<String, Value> {
     json!({"name": name, "role": "root"})
         .as_object()
@@ -259,22 +280,25 @@ async fn a_repossession_after_parent_close_journals_that_cause() -> TestResult {
 }
 
 #[tokio::test]
+async fn an_interruption_during_parent_close_grace_keeps_that_cause() -> TestResult {
+    let (_scratch, root_file, host, _provider) =
+        held_child("yi-child-trail-parent-close-interrupted").await?;
+    assert_eq!(host.close(), ["closed"]);
+    host.interrupt("closed")?;
+    let lines = ended(&root_file).await?;
+    let end = lines
+        .iter()
+        .find(|line| line["event"] == "ended")
+        .ok_or("no end line")?;
+    assert_eq!(end["exit"]["kind"], "interrupted");
+    assert_eq!(end["error"], "parent closed", "{lines:?}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_child_completing_during_parent_close_grace_ends_done() -> TestResult {
-    let scratch = Scratch::new("yi-child-trail-parent-close-done")?;
-    let (session, root_file, _) = root_session(&scratch)?;
-    let (host, providers) =
-        host_with_providers(0, scratch.join("rlm-1"), slot(Some(session)), true);
-    host.spawn("Keep running.".to_owned(), kwargs("closed"))?;
-    let provider = providers
-        .lock()
-        .map_err(|_| "poisoned")?
-        .first()
-        .cloned()
-        .ok_or("no child provider")?;
-    assert!(
-        crate::support::wait_until(2_000, || provider.faux_hold.reached()).await,
-        "the stream never held"
-    );
+    let (_scratch, root_file, host, provider) =
+        held_child("yi-child-trail-parent-close-done").await?;
     assert_eq!(host.close(), ["closed"]);
     assert!(provider.faux_hold.release());
     let lines = ended(&root_file).await?;

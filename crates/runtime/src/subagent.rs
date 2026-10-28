@@ -22,8 +22,8 @@ mod record;
 mod runs;
 pub(crate) mod service;
 pub(crate) mod trail;
-pub(crate) use record::{AMBIGUOUS, INTERRUPTED, PARENT_CLOSED, Step, preview};
-pub use record::{ChildFeed, PARENT_NAME};
+pub(crate) use record::{AMBIGUOUS, INTERRUPTED, Step, preview};
+pub use record::{ChildFeed, PARENT_CLOSED, PARENT_NAME};
 pub(crate) use runs::schema_answer;
 pub(crate) use service::Standing;
 

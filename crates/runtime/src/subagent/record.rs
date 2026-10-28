@@ -8,7 +8,7 @@ use crate::session::AgentSession;
 
 pub const PARENT_NAME: &str = "parent";
 pub(crate) const INTERRUPTED: &str = "interrupted";
-pub(crate) const PARENT_CLOSED: &str = "parent closed";
+pub const PARENT_CLOSED: &str = "parent closed";
 pub(crate) const AMBIGUOUS: &str = "names more than one child, so give its full name:";
 
 /// A child's session as a reader holds it: its events, transcript, model and status. It has
@@ -233,7 +233,7 @@ impl ChildRecord {
                 self.phase = Phase::Live;
                 self.exit = Some(exit);
                 self.activity = ChildActivity::Waiting;
-                self.error = if exit == ChildExit::Repossessed
+                self.error = if exit != ChildExit::Completed
                     && self.error.as_deref() == Some(super::PARENT_CLOSED)
                 {
                     self.error.clone()

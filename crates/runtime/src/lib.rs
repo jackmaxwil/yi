@@ -88,7 +88,8 @@ pub use rewind::{BranchStub, Rewound, ensure_idle, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status, next_event};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{
-    ChildBuild, ChildFeed, ChildStatus, ChildUpdate, ChildView, SubagentHost, SubagentHostOptions,
+    ChildBuild, ChildFeed, ChildStatus, ChildUpdate, ChildView, PARENT_CLOSED, SubagentHost,
+    SubagentHostOptions,
 };
 pub use telemetry::Telemetry;
 pub use tools::ToolAdapter;
