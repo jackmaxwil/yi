@@ -15,10 +15,12 @@ Transport and the model are parameters where the decisions are, so the selfcheck
 without a forge or a model; the verbs are `just pr review|fix|sweep`.
 """
 import argparse
+import contextlib
 import fcntl
 import fnmatch
 import functools
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -230,6 +232,20 @@ def promotes(rounds, head, holds=on_head):
     """A draft leaves draft on its own (owner, 2026-10-03): two rounds, the last holding for the
     head and not blocked, and nothing in it still holding the draft."""
     return not ready_problems(rounds, head, holds) and not holding(rounds[-1])
+
+
+def blocked_head(rounds, head, holds=on_head):
+    """The round that blocked this head after reading all of it, else None: a round that lost a lens
+    read only part, and `--again` is the remedy `ready_problems` prints for it."""
+    here = [r for r in rounds if holds(r["sha"], head)]
+    last = here[-1] if here else None
+    return last if last and not twin_round(last) and last["verdict"] == "blocked" and not silent(last) else None
+
+
+def runs_past(why, rounds, head, holds, dry_run, again):
+    """Whether a round is posted despite `why`. Incident: #1725, #1727 and #1728 each paid for a second
+    round on a head the first had blocked, since `--again` skipped every reason."""
+    return not why or dry_run or (again and not blocked_head(rounds, head, holds))
 
 
 def skip_reason(rounds, head, wanted=2, holds=on_head):
@@ -840,12 +856,11 @@ def cmd_review(args):
             return 0
         allowed = authors()
         pr = forge_pr.pull(number)
-        why = skip_reason(rounds_of(comments(repo, number), allowed, number), pr["head"]["sha"],
-                          holds=holds_for(number, pr["base"]["ref"]))
-        if why and not (args.dry_run or getattr(args, "again", False)):
+        rounds, holds = rounds_of(comments(repo, number), allowed, number), holds_for(number, pr["base"]["ref"])
+        why = skip_reason(rounds, pr["head"]["sha"], holds=holds)
+        if not runs_past(why, rounds, pr["head"]["sha"], holds, args.dry_run, getattr(args, "again", False)):
             print(f"#{number}: no round — {why}")
             return 0
-        rounds = rounds_of(comments(repo, number), allowed, number)
         twin = rounds[-1] if rounds and twin_round(rounds[-1]) and rounds[-1]["verdict"] != "override" else None
         if twin and not args.dry_run:
             try:
@@ -1106,6 +1121,34 @@ def selfcheck():
     assert skip_reason([{"n": 1, "sha": "0000000", "verdict": "clean"}] + one, "abc1234ff"), "a PR with two rounds reads a head once"
     assert skip_reason(one + [{"n": 2, "sha": "abc1234", "verdict": "clean"}], "abc1234ff"), "never a third"
     assert skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "abc1234ff"), "a blocked head is the fixer's"
+    note = [{"user": {"login": BOT}, "id": 1, "body": render(1, 9, "abcdef1ff", "base000", [finding], 0, None, "blocking")}]
+    stubs = {"comments": lambda repo, n: note, "authors": lambda: {BOT}, "holds_for": lambda n, base: on_head,
+             "review_model": lambda: "openrouter/z-ai/glm-5.3-flash"}
+    saved = {k: globals()[k] for k in stubs}
+    saved_forge = (forge_pr.repo, forge_pr.pull_number, forge_pr.pull)
+    try:
+        globals().update(stubs)
+        forge_pr.repo, forge_pr.pull_number = (lambda: "o/r"), (lambda arg: 9)
+        forge_pr.pull = lambda n: {"head": {"sha": "abcdef1ff"}, "base": {"ref": "main"}}
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            try:
+                code = cmd_review(argparse.Namespace(number=9, dry_run=False, again=True))
+            except (RuntimeError, SystemExit) as err:
+                code = f"began a round: {err}"
+        assert code == 0 and "no round" in said.getvalue() and "blocked this head" in said.getvalue(), \
+            f"cmd_review --again on a blocked head posted a round or said nothing: {code} {said.getvalue()!r}"
+    finally:
+        globals().update(saved)
+        forge_pr.repo, forge_pr.pull_number, forge_pr.pull = saved_forge
+    blocked = [{"n": 1, "sha": "abc1234", "verdict": "blocked"}]
+    why = skip_reason(blocked, "abc1234ff")
+    assert not runs_past(why, blocked, "abc1234ff", on_head, False, True), "--again does not resample a blocked head"
+    assert runs_past(why, [dict(blocked[0], skipped="1")], "abc1234ff", on_head, False, True), "--again re-reads a blocked round that lost a lens"
+    assert runs_past(why, blocked, "abc1234ff", on_head, True, False), "--dry-run prints the round past any reason"
+    assert not runs_past(why, blocked, "abc1234ff", on_head, False, False), "no flag reads nothing past a reason"
+    assert runs_past(None, blocked, "0000000ff", on_head, False, False), "a head with no reason is read"
+    assert runs_past("round 1 read this head; the fixer or the next push is next", [{"n": 1, "sha": "abc1234", "verdict": "clean"}], "abc1234ff", on_head, False, True), "--again reads a clean head a second time"
     twin_block = {"n": 1, "sha": "abc1234", "verdict": "blocked", "findings": [{"lens": "duplicate", "severity": "high", "claim": "#9 (open) also closes #4: x"}]}
     assert skip_reason([twin_block], "abc1234ff") is None, "a head a twin blocked is read again, since no lens read it"
     assert skip_reason([dict(twin_block, verdict="override")], "abc1234ff"), "an overridden twin is settled, not read again"
