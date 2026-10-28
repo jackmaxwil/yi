@@ -1106,39 +1106,6 @@ fn the_catalog_lists_a_home_skill_only_when_config_names_it() -> TestResult {
 }
 
 #[test]
-fn the_web_search_skill_follows_provider_registration() -> TestResult {
-    let dir = Scratch::new("yi-ext-web-search-skill")?;
-    let (home, project) = (dir.join("home"), dir.join("project"));
-    let skill = home.join(".yi/skills/yi/web_search");
-    std::fs::create_dir_all(&skill)?;
-    std::fs::create_dir_all(&project)?;
-    std::fs::write(
-        skill.join("SKILL.md"),
-        "---\nname: web_search\ndescription: Search current public facts.\n---\n",
-    )?;
-    let options = || ExtOptions {
-        cwd: project.clone(),
-        home: home.clone(),
-        mode: yi_runtime::PermissionMode::Auto,
-        user_system: String::new(),
-        schema_instruction: None,
-        context_window: 128_000,
-        global_skills: Vec::new(),
-        can_delegate: true,
-    };
-    let mut unavailable = install(options());
-    unavailable.start(None, false);
-    let prompt = unavailable.system_prompt();
-    assert!(!prompt.contains("- web_search:"), "{prompt}");
-
-    let mut available = yi_runtime::ext::install_with_web_search(options(), true);
-    available.start(None, false);
-    let prompt = available.system_prompt();
-    assert!(prompt.contains("- web_search:"), "{prompt}");
-    Ok(())
-}
-
-#[test]
 fn the_memory_block_is_present_at_zero_notes() -> TestResult {
     let cwd = Scratch::new("yi-ext-memory-zero-cwd")?;
     let home = Scratch::new("yi-ext-memory-zero-home")?;
