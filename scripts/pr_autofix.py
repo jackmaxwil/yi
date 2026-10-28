@@ -1684,11 +1684,12 @@ def selfcheck():
             f"import json, pathlib\np = pathlib.Path({ROLES!r})\np.write_text(json.dumps({{'leaf': int(json.loads(p.read_text())['leaf'] * 1.09)}}))\n")
         for args in (("init", "-q", "-b", "main"), ("add", "-A"), ("commit", "-qm", "seed")):
             sh(roles, "git", "-c", "user.name=t", "-c", "user.email=t@t", *args)
+        (roles / ROLES).write_text(merge_baseline.layout({"leaf": 120}))
         remeasure(roles)
-        if json.loads((roles / ROLES).read_text()) != {"leaf": 109}:
-            errs.append("a 9% re-measure was not kept")
+        if json.loads((roles / ROLES).read_text()) != {"leaf": 130}:
+            errs.append("a 9% re-measure of a merged baseline was judged against HEAD's older file")
         remeasure(roles)
-        if json.loads((roles / ROLES).read_text()) != {"leaf": 100} or sh(roles, "git", "diff", "HEAD", "--stat").stdout.strip():
+        if json.loads((roles / ROLES).read_text()) != {"leaf": 120}:
             errs.append("a second 9% re-measure of one run, 18% over the file it started from, was kept")
     finally:
         shutil.rmtree(roles)
