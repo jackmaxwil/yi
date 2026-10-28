@@ -2,6 +2,8 @@
 //! binary here, not 11. Cargo.toml sets `autotests = false`, so a new file here runs only
 //! once it has a line below.
 
+#[path = "../../types/tests/support/poll.rs"]
+mod poll;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 

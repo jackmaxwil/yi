@@ -780,25 +780,14 @@ pub(crate) fn backgrounded_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::poll::poll_until;
     use crate::scratch::Scratch;
     use std::error::Error;
-    use std::time::Instant;
 
     type Fallible = Result<(), Box<dyn Error>>;
 
     fn never() -> CancelFlag {
         Arc::new(|| false)
-    }
-
-    fn poll_until<T>(mut probe: impl FnMut() -> Option<T>) -> Result<T, Box<dyn Error>> {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while Instant::now() < deadline {
-            if let Some(value) = probe() {
-                return Ok(value);
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        Err("timed out waiting for the job state under test".into())
     }
 
     fn settled(id: JobId) -> Result<Outcome, Box<dyn Error>> {
