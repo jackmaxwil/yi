@@ -1,0 +1,40 @@
+title = "Yi provider keys and shared path ignores"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "yi-gemini-api-key"
+description = "Gemini API key"
+regex = '''\bAIza[0-9A-Za-z_-]{35}\b'''
+keywords = ["aiza"]
+
+[[rules]]
+id = "yi-openrouter-api-key"
+description = "OpenRouter API key"
+regex = '''\bsk-or-v1-[0-9a-f]{64}\b'''
+keywords = ["sk-or-v1-"]
+
+[[rules]]
+id = "yi-anthropic-api-key"
+description = "Anthropic API key"
+regex = '''\bsk-ant-api03-[0-9A-Za-z_-]{80,}\b'''
+keywords = ["sk-ant-api03-"]
+
+[[rules]]
+id = "yi-openai-api-key"
+description = "OpenAI API key"
+regex = '''\bsk-[0-9A-Za-z]{48}\b'''
+keywords = ["sk-"]
+
+[[rules]]
+id = "yi-github-pat"
+description = "GitHub personal access token"
+regex = '''\bghp_[0-9A-Za-z]{36}\b'''
+keywords = ["ghp_"]
+
+[[rules]]
+id = "yi-aws-access-key"
+description = "AWS access key pair"
+regex = '''\bAKIA[0-9A-Z]{16}\b'''
+keywords = ["akia"]
