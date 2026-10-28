@@ -249,7 +249,9 @@ fn refresh_cursor(
         "{}",
         proxy,
         CAP_BYTES,
-    )?;
+        std::time::Duration::from_secs(20),
+    )
+    .map_err(|error| error.to_string())?;
     let catalog = cursor_catalog(&list)?;
     let count = catalog["cursor-agent"]
         .as_object()

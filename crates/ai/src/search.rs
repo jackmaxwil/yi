@@ -3,7 +3,7 @@ use yi_types::message::Usage;
 use yi_types::model::Model;
 
 use crate::auth::Secret;
-use crate::request::{PostJsonError, ProxyConfig, post_json_with_timeout};
+use crate::request::{PostJsonError, ProxyConfig};
 
 const RESPONSE_CAP: usize = 8 * 1024 * 1024;
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
@@ -207,10 +207,17 @@ pub enum SearchError {
     MissingCredential,
     Unsupported(String),
     Transport(String),
-    Http { status: u16, message: String },
+    Http {
+        status: u16,
+        message: String,
+    },
     Protocol(String),
     NoCitations,
     Other(String),
+    Billed {
+        usage: Box<Usage>,
+        error: Box<SearchError>,
+    },
 }
 
 impl std::fmt::Display for SearchError {
@@ -234,6 +241,7 @@ impl std::fmt::Display for SearchError {
             }
             Self::NoCitations => formatter.write_str("web search returned no citations"),
             Self::Other(message) => formatter.write_str(message),
+            Self::Billed { error, .. } => error.fmt(formatter),
         }
     }
 }
@@ -281,6 +289,24 @@ impl OpenRouterSearch {
     }
 
     fn parse(&self, body: Value, request: &SearchRequest) -> Result<SearchResponse, SearchError> {
+        let billed = body
+            .get("usage")
+            .map(|usage| crate::openai::parse_chunk_usage(usage, &self.model));
+        self.parse_paid(&body, request)
+            .map_err(|error| match billed {
+                Some(usage) => SearchError::Billed {
+                    usage: Box::new(usage),
+                    error: Box::new(error),
+                },
+                None => error,
+            })
+    }
+
+    fn parse_paid(
+        &self,
+        body: &Value,
+        request: &SearchRequest,
+    ) -> Result<SearchResponse, SearchError> {
         let message = body
             .get("choices")
             .and_then(Value::as_array)
@@ -388,7 +414,7 @@ impl SearchProvider for OpenRouterSearch {
             "authorization",
             format!("Bearer {}", self.credential.expose()),
         )];
-        let response = post_json_with_timeout(
+        let response = crate::request::post_json(
             &url,
             &headers,
             &encoded,

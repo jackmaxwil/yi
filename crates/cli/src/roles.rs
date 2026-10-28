@@ -50,20 +50,29 @@ pub(crate) fn web_search_provider(
     else {
         return Ok(None);
     };
-    let engine = crate::config()
+    let configured = crate::config()
         .web_search
         .as_ref()
-        .and_then(|search| search.engine.clone())
-        .unwrap_or_else(|| "exa".to_owned());
-    let engine =
-        yi_runtime::search::SearchEngine::new(engine).map_err(|error| error.to_string())?;
-    let provider = yi_runtime::search::OpenRouterSearch::new(
-        model,
-        Some(credential.secret),
-        engine,
-        proxy,
-        crate::config().routing.clone(),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(Some(std::sync::Arc::new(provider)))
+        .and_then(|search| search.engine.clone());
+    let provider = configured
+        .map_or_else(
+            || Ok(yi_runtime::search::SearchEngine::default()),
+            yi_runtime::search::SearchEngine::new,
+        )
+        .and_then(|engine| {
+            yi_runtime::search::OpenRouterSearch::new(
+                model,
+                Some(credential.secret),
+                engine,
+                proxy,
+                crate::config().routing.clone(),
+            )
+        });
+    match provider {
+        Ok(provider) => Ok(Some(std::sync::Arc::new(provider))),
+        Err(error) => {
+            eprintln!("{error}; web search stays off");
+            Ok(None)
+        }
+    }
 }

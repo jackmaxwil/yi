@@ -256,7 +256,10 @@ fn zero_annotations_is_distinct_from_a_malformed_response() -> TestResult {
         "deepseek/deepseek-v4-flash",
         None,
     )?;
-    assert!(matches!(response, Err(SearchError::NoCitations)));
+    assert!(matches!(
+        response,
+        Err(SearchError::Billed { error, .. }) if matches!(*error, SearchError::NoCitations)
+    ));
     Ok(())
 }
 
