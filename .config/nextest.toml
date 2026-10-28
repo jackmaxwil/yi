@@ -47,3 +47,8 @@ binary(ready_check) + binary(request_budget)
 | (package(yi-tools) & binary(integration) & test(/^(orient|tools)::/))
 '''
 test-group = 'subprocess-wide'
+[profile.timing]
+inherits = "local"
+
+[profile.timing.junit]
+path = "timing.xml"
