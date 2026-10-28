@@ -367,6 +367,11 @@ fn the_small_mark_waits_for_the_big_one_to_land() {
         yi_tui::render::paint_pane(&mut app, None, &mut buffer, area, &mut scroll);
         let mut out = Vec::new();
         yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default(), true);
+        assert!(
+            rows(&buffer, area)
+                .last()
+                .is_some_and(|row| row.contains(&'╰') && row.contains(&'╯'))
+        );
         (
             String::from_utf8_lossy(&out).contains("a=p"),
             app.orb_rect(),
@@ -376,7 +381,7 @@ fn the_small_mark_waits_for_the_big_one_to_land() {
     assert!(!covered, "no second logo while the name plays");
     assert_eq!(
         slot,
-        Some(Rect::new(0, 22, 10, 5)),
+        Some(Rect::new(0, 0, 10, 5)),
         "but the landing cells are known"
     );
     assert!(placed(false).0, "the small mark is there once it ends");

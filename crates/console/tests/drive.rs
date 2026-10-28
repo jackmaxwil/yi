@@ -398,7 +398,7 @@ fn last_frame(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
     let last = names.last().ok_or("no frames were dumped")?;
     Ok(std::fs::read_to_string(last)?)
 }
-fn assert_composer_above_hint(frame: &str, height: u16, case: &str) -> TestResult {
+fn assert_composer_above_hint(frame: &str, height: u16, expected: u16, case: &str) -> TestResult {
     let rows: Vec<&str> = frame.lines().collect();
     assert_eq!(
         rows.len(),
@@ -410,7 +410,7 @@ fn assert_composer_above_hint(frame: &str, height: u16, case: &str) -> TestResul
         .rposition(|row| row.contains('╰') && row.contains('╯'));
     assert_eq!(
         bottom,
-        Some(usize::from(height.saturating_sub(2))),
+        Some(usize::from(expected)),
         "{case}: composer bottom is not above the hint row\n{frame}"
     );
     assert!(
@@ -430,9 +430,10 @@ fn new_session_steps() -> Vec<Step> {
     ]
 }
 
-fn new_session_script(lines: usize) -> String {
+fn new_session_script(lines: usize, action: &str) -> String {
     let mut script =
         String::from("wait-frame 5000 command palette\nkey alt-n\nwait-frame 5000 s-new\n");
+    script.push_str(action);
     for line in 1..=lines {
         script.push_str(&format!("type line {line}\n"));
         if line < lines {
@@ -448,11 +449,11 @@ fn check_new_session(height: u16, sidebar: SidebarMode, lines: usize) -> TestRes
     let frame = run_frames_sized(
         &case,
         new_session_steps(),
-        &new_session_script(lines),
+        &new_session_script(lines, ""),
         sidebar,
         (120, height),
     )?;
-    assert_composer_above_hint(&frame, height, &case)
+    assert_composer_above_hint(&frame, height, height.saturating_sub(2), &case)
 }
 
 #[test]
@@ -471,14 +472,18 @@ fn resume_blank(frame: &Value) -> Vec<Value> {
     resume_with(frame, &[])
 }
 
+fn ready_marker(sidebar: SidebarMode) -> &'static str {
+    match sidebar {
+        SidebarMode::Full => "s-alpha",
+        SidebarMode::Rail => "1 SA",
+    }
+}
+
 #[test]
 fn composer_stays_above_hint_for_empty_sessions() -> TestResult {
     for sidebar in [SidebarMode::Full, SidebarMode::Rail] {
         let case = format!("empty-{sidebar:?}");
-        let marker = match sidebar {
-            SidebarMode::Full => "s-alpha",
-            SidebarMode::Rail => "1 SA",
-        };
+        let marker = ready_marker(sidebar);
         let script =
             format!("wait-frame 5000 {marker}\nkey enter\nwait-frame 5000 0.0% / 128K\nquit\n");
         let frame = run_frames_sized(
@@ -489,7 +494,7 @@ fn composer_stays_above_hint_for_empty_sessions() -> TestResult {
             (120, 40),
         )
         .map_err(|error| format!("{case}: {error}"))?;
-        assert_composer_above_hint(&frame, 40, &case)?;
+        assert_composer_above_hint(&frame, 40, 38, &case)?;
     }
     Ok(())
 }
@@ -524,16 +529,13 @@ fn composer_stays_above_hint_for_short_and_long_transcripts() -> TestResult {
     ] {
         for sidebar in [SidebarMode::Full, SidebarMode::Rail] {
             let case = format!("{name}-{sidebar:?}");
-            let ready = match sidebar {
-                SidebarMode::Full => "s-alpha",
-                SidebarMode::Rail => "1 SA",
-            };
+            let ready = ready_marker(sidebar);
             let script =
                 format!("wait-frame 5000 {ready}\nkey enter\nwait-frame 15000 {marker}\nquit\n");
             let frame =
                 run_frames_sized(&case, replayed_session(resume), &script, sidebar, (120, 40))
                     .map_err(|error| format!("{case}: {error}"))?;
-            assert_composer_above_hint(&frame, 40, &case)?;
+            assert_composer_above_hint(&frame, 40, 38, &case)?;
         }
     }
     Ok(())
@@ -548,7 +550,7 @@ fn composer_stays_above_hint_for_a_recorded_session() -> TestResult {
         SidebarMode::Full,
         (120, 60),
     )?;
-    assert_composer_above_hint(&frame, 60, "recorded session")
+    assert_composer_above_hint(&frame, 60, 58, "recorded session")
 }
 
 #[test]
@@ -558,13 +560,11 @@ fn composer_stays_above_hint_in_a_ten_row_window() -> TestResult {
 
 #[test]
 fn composer_stays_above_hint_with_search_and_a_popup() -> TestResult {
-    for (name, action, marker) in [
-        ("search", "key ctrl-r\n", "reverse-i-search"),
-        ("popup", "type /\n", "plantree"),
+    for (name, action) in [
+        ("search", "key ctrl-r\nwait-frame 5000 reverse-i-search\n"),
+        ("popup", "type /\nwait-frame 5000 plantree\n"),
     ] {
-        let script = format!(
-            "wait-frame 5000 command palette\nkey alt-n\nwait-frame 5000 s-new\n{action}wait-frame 5000 {marker}\nquit\n"
-        );
+        let script = new_session_script(0, action);
         let frame = run_frames_sized(
             &format!("composer-pin-{name}"),
             new_session_steps(),
@@ -583,14 +583,7 @@ fn composer_stays_above_hint_with_search_and_a_popup() -> TestResult {
             "{name}: bottom view moved away from the hint row\n{frame}"
         );
         if name == "search" {
-            let composer = rows
-                .iter()
-                .rposition(|row| row.contains('╰') && row.contains('╯'));
-            assert_eq!(
-                composer,
-                Some(37),
-                "search composer is not above its status row\n{frame}"
-            );
+            assert_composer_above_hint(&frame, 40, 37, name)?;
         }
     }
     Ok(())
