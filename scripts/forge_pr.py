@@ -803,7 +803,6 @@ def build_parser():
         sub.set_defaults(run=run)
     pr.choices["review"].add_argument("--dry-run", action="store_true", help="print the round, post nothing")
     pr.choices["review"].add_argument("--again", action="store_true", help="read a head the rule says is read enough, except one a round blocked")
-    pr.choices["review"].add_argument("--force", action="store_true", help="read a head a round blocked: a fresh draw, not a fix")
     pr.add_parser("sweep").set_defaults(run=pr_review.cmd_sweep)
     import pr_autofix
 

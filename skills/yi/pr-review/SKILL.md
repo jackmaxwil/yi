@@ -31,7 +31,7 @@ a repeated or late message does nothing. It never merges. A blocked round is the
 ## By hand
 
 - `just pr review N` posts one round; `--dry-run` prints it instead; `--again` reads a head the
-  rule says is read enough, except one a round blocked (push a fix; `--force` is a fresh draw).
+  rule says is read enough, except one a round blocked (push a fix).
 - `just pr autofix N` answers the last round's findings, or a conflict, on the PR branch now;
   `just pr spend` totals what the bots spent, from their comments' meta lines.
 - `just pr ready N` lists what a draft still owes.
