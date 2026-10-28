@@ -869,10 +869,6 @@ impl TaskCell {
             let more = format!("… {} more lines", total.saturating_sub(take));
             body.push(Line::from(Span::styled(more, theme.dim_style())));
         }
-        if running && width.saturating_sub(6) >= 8 {
-            let shown = len.saturating_add(usize::from(total > skip.saturating_add(take)));
-            body.extend((shown..PREVIEW_ROWS.saturating_add(1)).map(|_| Line::default()));
-        }
         boxed(&title, body, width, Style::default().fg(tone))
     }
 }
