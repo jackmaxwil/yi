@@ -520,3 +520,6 @@ console settings pane | `settings::tests::a_list_row_is_typed_as_comma_separated
 console settings pane | `settings::tests::a_wide_strip_shows_every_tab_and_a_narrow_one_keeps_the_current_in_view`
 console settings pane | `tests::the_gear_is_placed_as_an_image_and_a_popup_hides_it`
 console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ring_and_tooth_gaps` (T0)
+TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
+TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
+TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
