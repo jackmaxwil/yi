@@ -93,7 +93,7 @@ class FakeHost:
             self.changes += [item for item in self.children.items() if latest.get(item[0]) != item[1]]
             changed = sorted({name for name, _ in self.changes[payload.get("cursor") or 0 :]})
             self.waits.append((payload.get("cursor"), changed))
-            return {"cursor": len(self.changes), "changed": changed, "states": dict(self.children), "notes": dict(self.notes)}
+            return self.digest(len(self.changes), changed)
         if kind == "rlm.result":
             answer = self.results[payload["target"]]
             if isinstance(answer, Exception):
@@ -110,6 +110,14 @@ class FakeHost:
             return {"text": text}
         raise AssertionError(f"unexpected host request {kind}")
 
+    def digest(self, cursor: int, changed: list[str]) -> dict:
+        events = dict(self.changes)
+        counts = dict(collections.Counter(self.children.values()))
+        states = {name: self.children[name] for name in changed if name in self.children}
+        notes = {name: self.notes[name] for name in changed if name in self.notes}
+        causes = {name: events[name] for name in changed}
+        return {"cursor": cursor, "changed": changed, "causes": causes, "counts": counts,
+                "states": states, "notes": notes}
     async def quiet_wait(self, payload: dict) -> dict:
         """`mailbox.rs` wait: it answers once a child moved past the cursor, or at the timeout."""
         loop = asyncio.get_running_loop()
@@ -120,7 +128,7 @@ class FakeHost:
             if len(self.changes) > cursor or loop.time() >= ends:
                 changed = sorted({name for name, _ in self.changes[cursor:]})
                 self.waits.append((payload.get("cursor"), changed))
-                return {"cursor": len(self.changes), "changed": changed, "states": dict(self.children), "notes": dict(self.notes)}
+                return self.digest(len(self.changes), changed)
             await asyncio.sleep(0.01)
 
     def plan_op(self, payload: dict) -> dict:

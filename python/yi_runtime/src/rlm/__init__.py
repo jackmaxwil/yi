@@ -309,7 +309,7 @@ class RLMSpawnHandle:
         deadline = loop.time() + timeout
         # Invariant: a bare wait resumes from the model's last bare wait, which may already
         # have seen this child finish; cursor 0 reads the family as it stands now.
-        cursor = 0
+        cursor, state, note = 0, None, None
         while True:
             # Float rounding can put `(now + timeout) - now` an ulp past `timeout`.
             remaining = min(timeout, deadline - loop.time())
@@ -324,15 +324,18 @@ class RLMSpawnHandle:
             next_cursor = reply.get("cursor")
             if isinstance(next_cursor, int):
                 cursor = next_cursor
-            state = states.get(self.name)
-            if state is None:
+            causes = reply.get("causes")
+            if self.name in states:
+                state = states[self.name]
+            elif not isinstance(causes, dict) or causes.get(self.name) == "reaped":
                 raise RuntimeError(
                     f"child {self.name} ({self.rlm_child_id}) is no longer registered with "
                     "the parent; rlm.delete_subagent reaps a child and its answer with it"
                 )
-            if state == "stuck":
+            if self.name in states or (isinstance(causes, dict) and self.name in causes):
                 notes = reply.get("notes")
                 note = notes.get(self.name) if isinstance(notes, dict) else None
+            if state == "stuck":
                 raise RuntimeError(
                     f"child {self.name} is stuck ({note or 'no progress in its records'}); "
                     "rlm.send it a nudge, rlm.interrupt it, or call result() again to keep waiting"
@@ -344,8 +347,6 @@ class RLMSpawnHandle:
                     # Another run can start between the wait and the read; it is waited on.
                     if "still running" not in str(error):
                         raise
-                    notes = reply.get("notes")
-                    note = notes.get(self.name) if isinstance(notes, dict) else None
                     if isinstance(note, str) and note.startswith("asks "):
                         raise RuntimeError(
                             f"child {self.name} {note}; answer it with rlm.send({self.name!r}, "
@@ -951,9 +952,10 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
     The reply carries ``cursor`` (pass it back on the next call and no other
     waiter can steal your updates), ``changed`` and its one-release alias
     ``updated`` (the names that moved), ``causes`` (why each moved, by name:
-    ``mail``, ``finished``, ``asked``, ``reaped`` and the like), ``states`` (every
-    registered child by name: ``running``, ``finished``, ``failed``, ``needs_you``
-    or ``stuck``) and ``notes``. With no cursor the host keeps your last one: the first call
+    ``mail``, ``finished``, ``asked``, ``reaped`` and the like), ``counts`` (the whole
+    roster's totals by state), and ``states`` and ``notes`` for the members named by
+    ``causes``: ``running``, ``finished``, ``failed``, ``needs_you`` or ``stuck``.
+    With no cursor the host keeps your last one: the first call
     answers at once with the family as it stands, each later one blocks until a child moves.
     ``state`` says why it returned: ``moved``, ``timeout``, ``asks`` (a child waits on
     your answer, cause ``asks``) or ``settled`` (nothing in the family is live, with

@@ -37,14 +37,15 @@ check; it is the rare case and the one that needs ownership.
    quotes the checks that passed; never rerun them.
 4. Ownership and waiting. Readers own nothing and share your tree. Two
    writers never own one file: `isolation='worktree'` each and
-   `merge_worktree` in dependency order, or a `deny_write` list that is
-   the complement of the scope. Keep working what you kept;
+   `merge_worktree` in dependency order, or a complementary `deny_write` list.
+   Keep working what you kept;
    `await rlm.wait(120)` only when the next step needs a result, and read
-   the `counts` and the `states` of the members that moved. Between waits
+   `counts` and `states` of the members that moved. Between waits
    `rlm.status()` is the full roster: `needs_you` gets
-   `send(name, text, reply_to=id)`; `stuck` gets its tail
+   `send(name, text, reply_to=id)`; `stuck` gets `history://<name>/tail/20`,
+   `interrupt`, and a corrected respawn.
    Collect with `await h.result(schema=SCHEMA, timeout=420)`; reap with
-   `rlm.delete_subagent`. Depth is one unless the config raises it.
+   `rlm.delete_subagent`. Depth is one unless config raises it.
 5. Data stays in kernels. A large result comes home by `rlm.put(name, obj)`
    and your `rlm.get(name)`, a file in a worktree by
    `tree://<name>/<path>`, a live value by
