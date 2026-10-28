@@ -396,13 +396,19 @@ fn composer_bottom_uses_the_panes_bottom_at_a_nonzero_offset() -> TestResult {
     let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 40));
     let mut app = app();
     let _ = yi_tui::render::paint_pane(&mut app, None, &mut buffer, area, &mut 0);
-    let y = area.bottom().saturating_sub(1);
-    let row: String = (0..buffer.area.width)
-        .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+    let bottom = usize::from(area.bottom().saturating_sub(1));
+    let rows: Vec<String> = (0..area.bottom())
+        .map(|y| {
+            (0..buffer.area.width)
+                .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+                .collect()
+        })
         .collect();
-    assert!(
-        row.contains('╰') && row.contains('╯'),
-        "composer bottom is not on row {y}: {row:?}"
+    assert_eq!(
+        common::composer_bottom(&rows),
+        Some(bottom),
+        "composer bottom is not on row {bottom}: {:?}",
+        rows.last()
     );
     Ok(())
 }
