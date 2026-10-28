@@ -13,6 +13,29 @@ DIST_BIN = ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "dist/yi"
 SRC = re.compile(r"^crates/[^/]+/src/.+\.rs$")
 TESTS = re.compile(r"^crates/[^/]+/tests/.+\.rs$")
 
+def table_rows(text, heading):
+    """Data rows of the table under a heading, at whatever level it is written —
+    the changelog is its own file's title, the ledger a section of another. Rows
+    start after the `|---|` separator so the header row is not mistaken for a
+    feature named "feature"; a section with no table yields nothing."""
+    out, inside, started = [], False, False
+    for line in text.splitlines():
+        if line.startswith("#"):
+            inside, started = line.strip().lstrip("#").strip() == heading, False
+            continue
+        line = line.strip()
+        if not inside or not line.startswith("|"):
+            continue
+        if not set(line) - set("|-: "):
+            started = True
+        elif started:
+            out.append(line)
+    return out
+
+def row_key(row):
+    """A table row is identified by its first cell: the feature, or the version."""
+    return row.split("|")[1].strip()
+
 def src_files():
     return sorted((ROOT / "crates").glob("*/src/**/*.rs"))
 
