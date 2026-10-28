@@ -41,6 +41,25 @@ test:
     # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
     cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
+# A local inner loop, never a gate: the generated quick profiles omit tests measured at 5 s or more.
+test-quick:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just test-quick
+    PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)
+    "$PY" scripts/slow_tests.py --check
+    profile=quick
+    [ -z "${CI:-}" ] || profile=quick-ci
+    cargo nextest run --workspace --profile "$profile"
+
+# Record fresh JUnit timings, then regenerate the checked-in quick filter; this runs every test once.
+slow-tests:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just slow-tests
+    cargo nextest run --workspace --profile timing
+    PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)
+    "$PY" scripts/slow_tests.py target/nextest/timing/timing.xml
 
 # Frees what an edit loop leaves behind in target/: artifacts of superseded units and
 # incremental caches beyond the newest each live unit needs. Builds the gate resolutions first, so run it idle.
