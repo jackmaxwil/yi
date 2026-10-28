@@ -414,7 +414,7 @@ fn ends_on_status(rows: &[String]) -> bool {
         .checked_sub(3)
         .and_then(|at| rows.get(at))
         .is_some_and(|row| row.contains("faux-1"))
-        && rows.last().is_some_and(|row| row.contains('╰'))
+        && common::composer_bottom(rows).is_some()
 }
 
 /// Streams paragraphs of `sentences`, one sentence a draw, on an 80-column screen `rows` high and
