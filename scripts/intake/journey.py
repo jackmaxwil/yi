@@ -62,6 +62,9 @@ class FakeTransport:
         subprocess.run(["git", "-C", str(self.repo), "update-ref", f"refs/heads/{branch}", imported], check=True)
         self.pushes.append((imported, branch))
 
+    def supersede(self, case: bridge.Case, new_number: int) -> None:
+        self.forge_calls.append(("SUPERSEDE", str(case.number), new_number))
+
     def run_ci(self) -> None:
         raise AssertionError("external import started CI without an owner action")
 
@@ -116,6 +119,16 @@ def main() -> int:
     assert result.audit["github_pr"] == case.number and result.audit["mirror_merge_base"] == case.merge_base
     assert len(result.audit["checks"]) == 25 and all(row["decision"] == "ALLOW" for row in result.audit["checks"])
     assert any(call[1].endswith("/issues/42/comments") for call in transport.forge_calls)
+    assert transport.github_writes[-1][2]["body"].endswith(json.dumps(result.audit, indent=2, sort_keys=True) + "\n```")
+
+    overridden = dataclasses.replace(case, commits=test_bridge.many_commits(case, case.contributor["caps"]["commits"] + 1))
+    second_repo, _ = repository(overridden)
+    second = FakeTransport(overridden, second_repo)
+    override = {"check": "commits", "sha": overridden.head, "reason": "owner reviewed the extra commit"}
+    accepted = bridge.import_case(overridden, second, override)
+    assert accepted.decision == bridge.ALLOW
+    assert accepted.audit["override"] == override
+    assert accepted.audit["original_refusal"] == "intake: commits: 21 exceeds per-login cap 20"
     print(line)
     print(f"ALLOW {expected_branch} draft=42 labels={','.join(labels)} run-ci=held strict-base={base}")
     print("ok   intake journey (real git, fake HTTP, zero network)")

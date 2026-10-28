@@ -418,6 +418,7 @@ def check_25_lens(case: Case) -> Any:
     if not isinstance(answer, dict) or set(answer) != {"refusals"} or not isinstance(answer["refusals"], list):
         return refusal("lens unavailable", "invalid lens output")
     added = {(line.path, line.line) for line in added_lines(case)}
+    reasons = []
     for item in answer["refusals"]:
         if not isinstance(item, dict) or set(item) != {"path", "line", "reason"}:
             return refusal("lens unavailable", "invalid lens output")
@@ -425,7 +426,9 @@ def check_25_lens(case: Case) -> Any:
             return refusal("lens unavailable", "invalid lens output")
         if (item["path"], item["line"]) not in added:
             return refusal("lens unavailable", "invalid lens output")
-        return refusal("lens", bounded(item["reason"], 500))
+        reasons.append(item["reason"])
+    if reasons:
+        return refusal("lens", bounded(reasons[0], 500))
     return ALLOW
 
 
@@ -583,6 +586,8 @@ def import_case(case: Case, transport: Any, override: Optional[dict[str, str]] =
     code = override.get("check") if override else None
     if code and code not in OVERRIDABLE:
         return ImportResult(refusal("override", f"code '{code}' is not {'override' + 'able'}"))
+    if override and (transport.actor() != "jack" or override.get("sha") != case.head or not override.get("reason")):
+        return ImportResult(Refusal("override", "intake: override: owner actor, full --sha, --check and --reason are required"))
     outcome = run_checks(case, override=code)
     if outcome.decision != ALLOW:
         transport.github("POST", f"repos/{GITHUB_REPO}/issues/{case.number}/comments", {"body": f"{outcome.decision.text}\n\nHead: {case.head}\n\nPush a corrected head; every check will rerun"})
@@ -607,7 +612,9 @@ def import_case(case: Case, transport: Any, override: Optional[dict[str, str]] =
     audit = audit_payload(case, imported, outcome, transport.actor(), override)
     comment = "<!-- yi-intake -->\n```json\n" + json.dumps(audit, indent=2, sort_keys=True) + "\n```"
     transport.forge("POST", f"repos/{FORGE_REPO}/issues/{number}/comments", {"body": comment})
-    transport.github("POST", f"repos/{GITHUB_REPO}/issues/{case.number}/comments", {"body": f"Imported for owner review as {FORGE_REPO}#{number} at {case.head}; no CI runs before owner approval."})
+    transport.forge("POST", f"repos/{FORGE_REPO}/issues/{number}/comments", {"body": f"GitHub source: {GITHUB_REPO}#{case.number}"})
+    transport.github("POST", f"repos/{GITHUB_REPO}/issues/{case.number}/comments", {"body": f"Imported for owner review as {FORGE_REPO}#{number}; no CI runs before owner approval.\n\n{comment}"})
+    transport.supersede(case, number)
     return ImportResult(ALLOW, branch, draft, audit)
 
 
@@ -735,6 +742,8 @@ class RealTransport:
         login = pr.get("user", {}).get("login", "")
         contributor = load_allowed()["contributors"].get(login, {"emails": [], "caps": {key: 0 for key in CAPS}, "dependencies": False})
         head = pr.get("head", {}).get("sha", "")
+        if login not in load_allowed()["contributors"]:
+            return Case(number, login, pr.get("state", ""), pr.get("base", {}).get("repo", {}).get("full_name", ""), pr.get("base", {}).get("ref", ""), head, head, head, "", "", self.current_main, [], [], b"", contributor)
         git(["-C", str(self.mirror_repo), "fetch", "--quiet", f"https://github.com/{GITHUB_REPO}.git", "main"])
         mirror_tip = git_text(["-C", str(self.mirror_repo), "rev-parse", "FETCH_HEAD"])
         fetched = git_text(["-C", str(self.mirror_repo), "fetch", "--quiet", f"https://github.com/{GITHUB_REPO}.git", f"refs/pull/{number}/head"])
@@ -788,8 +797,8 @@ class RealTransport:
             staged = git(["-C", str(work), "diff", "--cached", "--no-renames", "--binary", "--full-index"]).stdout
             if change_signature(parse_diff(staged)) != change_signature(case.changes):
                 raise ValueError("staged diff differs from checked diff")
-            author = git_text(["-C", str(self.mirror_repo), "show", "-s", "--format=%an", case.head])
-            env = dict(os.environ, GIT_AUTHOR_NAME=author, GIT_AUTHOR_EMAIL=case.contributor["emails"][0], GIT_COMMITTER_NAME="yi-bot", GIT_COMMITTER_EMAIL="yi-bot@localhost")
+            identity = git_text(["-C", str(self.mirror_repo), "show", "-s", "--format=%an%n%ae", case.head]).splitlines()
+            env = dict(os.environ, GIT_AUTHOR_NAME=identity[0], GIT_AUTHOR_EMAIL=identity[1], GIT_COMMITTER_NAME="yi-bot", GIT_COMMITTER_EMAIL="yi-bot@localhost")
             message = f"Import GitHub PR #{case.number}\n\nGitHub-Head: {case.head}\nMirror-Base: {case.merge_base}\nForge-Base: {case.forge_base}\n"
             subprocess.run(["git", "-C", str(work), "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-m", message], env=env, capture_output=True, check=True)
             return git_text(["-C", str(work), "rev-parse", "HEAD"])
@@ -808,6 +817,16 @@ class RealTransport:
 
     def push(self, imported: str, branch: str) -> None:
         git(["-C", str(self.source_repo), "push", "--no-force", self.source, f"{imported}:refs/heads/{branch}"])
+
+    def supersede(self, case: Case, new_number: int) -> None:
+        prefix = f"gh/{case.login}/{case.number}-"
+        pulls = self.forge("GET", f"repos/{FORGE_REPO}/pulls?state=open&limit=50") or []
+        for pull in pulls:
+            number = pull.get("number")
+            branch = pull.get("head", {}).get("ref", "")
+            if number != new_number and branch.startswith(prefix):
+                self.forge("POST", f"repos/{FORGE_REPO}/issues/{number}/comments", {"body": f"superseded by #{new_number}"})
+                self.forge("PATCH", f"repos/{FORGE_REPO}/pulls/{number}", {"state": "closed"})
 
 
 def change_signature(changes: list[Change]) -> list[Any]:
