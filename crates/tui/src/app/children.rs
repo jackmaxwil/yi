@@ -1,10 +1,31 @@
+use std::collections::{HashMap, HashSet};
+
 use yi_runtime::{ChildFeed, ChildStatus, ChildUpdate};
 use yi_types::message::{AgentMessage, Content};
+use yi_types::subagent::ChildExit;
 
-use super::{App, TaskState};
+use super::App;
 use crate::cell::{Cell, TaskCell, TaskStatus, ToolStatus};
 use crate::motion::elapsed_ms;
 use crate::transcript::{arg_summary, text_of};
+
+pub struct TaskState {
+    pub(crate) cell: TaskCell,
+    pub(crate) streaming: Option<AgentMessage>,
+    pub(crate) started: std::time::Instant,
+    pub(crate) finished: Option<std::time::Instant>,
+    pub(crate) born_under: Option<String>,
+    pub(crate) session: Option<yi_runtime::ChildFeed>,
+    pub(crate) rows: crate::cell::AnswerRows,
+}
+
+#[derive(Default)]
+pub(crate) struct ChildProjection {
+    pub(crate) rows: HashMap<String, ChildRow>,
+    pub(crate) order: Vec<String>,
+    pub(crate) settled_calls: HashSet<String>,
+    pub(crate) task_keys: HashMap<String, String>,
+}
 
 /// The cause a card carries when the roster stopped listing a child it still showed running.
 const GONE: &str = "gone";
@@ -37,6 +58,102 @@ fn last_tool_of(session: &ChildFeed) -> Option<String> {
         })
 }
 
+pub(crate) struct ChildRow {
+    id: String,
+    start: Cell,
+    end: Option<Cell>,
+    born_under: Option<String>,
+    deferred: bool,
+    terminal: bool,
+    start_committed: bool,
+    end_committed: bool,
+}
+
+impl ChildRow {
+    fn new(update: &ChildUpdate, born_under: Option<String>) -> Self {
+        let mut text = format!("subagent {} ({})", update.name, update.id.as_str());
+        if let Some(role) = &update.role {
+            text.push_str(&format!(" · {role}"));
+        }
+        if let Some(task) = &update.task {
+            text.push_str(&format!(" · {task}"));
+        }
+        Self {
+            id: update.id.as_str().to_owned(),
+            start: Cell::Rule {
+                text,
+                accent_name: update.id.as_str().to_owned(),
+            },
+            end: None,
+            born_under: born_under.clone(),
+            deferred: born_under.is_some(),
+            terminal: false,
+            start_committed: false,
+            end_committed: false,
+        }
+    }
+
+    fn take_ready(&mut self) -> Vec<Cell> {
+        let mut cells = Vec::new();
+        if !self.start_committed {
+            self.start_committed = true;
+            cells.push(self.start.clone());
+        }
+        if self.terminal
+            && !self.end_committed
+            && let Some(end) = &self.end
+        {
+            self.end_committed = true;
+            cells.push(end.clone());
+        }
+        cells
+    }
+}
+
+fn end_rule(update: &ChildUpdate) -> Cell {
+    let completed = update.exit == Some(ChildExit::Completed)
+        || (update.exit.is_none() && update.status == ChildStatus::Completed);
+    let parent_closed = update.error.as_deref() == Some("parent closed");
+    let outcome = if parent_closed {
+        "parent closed"
+    } else {
+        match update.exit {
+            Some(ChildExit::Completed) => "done",
+            Some(ChildExit::Failed { .. } | ChildExit::Other) => "failed",
+            Some(ChildExit::Interrupted) => "cancelled",
+            Some(ChildExit::Reaped) => "reaped",
+            Some(ChildExit::Repossessed) => "revoked",
+            None if completed => "done",
+            None => "failed",
+        }
+    };
+    let mut text = format!(
+        "subagent {} ({}) · {outcome}",
+        update.name,
+        update.id.as_str()
+    );
+    if let Some(ms) = update.elapsed_ms {
+        text.push_str(&format!(" · {}", crate::cell::elapsed_label(ms)));
+    }
+    text.push_str(&format!(" · {} tokens", update.token_count));
+    if let Some(cost) = update.cost.as_ref().and_then(serde_json::Number::as_f64) {
+        text.push_str(&format!(" · {}", yi_types::message::fmt_cost(cost, false)));
+    }
+    text.push_str(&format!(" · start {}", update.id.as_str()));
+    let detail = if completed {
+        update.answer_preview.as_deref()
+    } else {
+        update.error.as_deref().filter(|_| !parent_closed)
+    };
+    if let Some(line) = detail.and_then(|text| text.lines().next()) {
+        text.push_str(&format!(" · {line}"));
+    }
+    Cell::Rule {
+        text,
+        accent_name: update.id.as_str().to_owned(),
+    }
+}
+
 impl App {
     /// A `/new` or a rewind drops every card with the transcript it belonged to.
     pub(crate) fn reset_transcript(&mut self) {
@@ -48,6 +165,10 @@ impl App {
         self.retired_tasks.extend(self.task_order.drain(..));
         self.tasks.clear();
         self.committed_tasks.clear();
+        self.projection.rows.clear();
+        self.projection.order.clear();
+        self.projection.settled_calls.clear();
+        self.projection.task_keys.clear();
         self.dropped_tasks = 0;
         self.focused = None;
     }
@@ -108,11 +229,27 @@ impl App {
         spawned_by: Option<&str>,
     ) {
         let id = update.id.as_str().to_owned();
+        let key = update.session.as_deref().unwrap_or(&id).to_owned();
         let running = matches!(update.status, ChildStatus::Running | ChildStatus::Other(_));
-        if !running && self.retired_tasks.contains(&id) {
+        if !running
+            && (self.retired_tasks.contains(&id)
+                || self
+                    .projection
+                    .rows
+                    .get(&key)
+                    .is_some_and(|row| row.end_committed))
+        {
             return;
         }
         self.retired_tasks.remove(&id);
+        if self.tasks.get(&id).is_some_and(|state| {
+            self.projection.task_keys.get(&id) != Some(&key)
+                && (state.cell.status != TaskStatus::Running || self.committed_tasks.contains(&id))
+        }) {
+            self.tasks.remove(&id);
+            self.task_order.retain(|held| held != &id);
+            self.committed_tasks.remove(&id);
+        }
         if !self.tasks.contains_key(&id) {
             // Invariant: a feed comes only with the roster's record, where no cell means none ran.
             let (spawn, born_under) = self.spawned_under(spawned_by, session.is_some());
@@ -139,12 +276,23 @@ impl App {
                     },
                     started: self.clock.now(),
                     finished: None,
-                    born_under,
+                    born_under: born_under.clone(),
                     session,
                     rows: crate::cell::AnswerRows::default(),
                 },
             );
             self.scheduler.request();
+        }
+        self.projection.task_keys.insert(id.clone(), key.clone());
+        if !self.projection.rows.contains_key(&key) {
+            let born_under = self
+                .tasks
+                .get(&id)
+                .and_then(|state| state.born_under.clone());
+            self.projection.order.push(key.clone());
+            self.projection
+                .rows
+                .insert(key, ChildRow::new(update, born_under));
         }
         self.reduce_child_update(update);
     }
@@ -162,18 +310,31 @@ impl App {
             ChildStatus::Error => TaskStatus::Failed,
         };
         let toolcalls = u32::try_from(update.tool_use_count).unwrap_or(u32::MAX);
+        let row_key = self
+            .projection
+            .task_keys
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| update.session.as_deref().unwrap_or(id).to_owned());
         if state.cell.status != status
             || state.cell.toolcalls != toolcalls
             || state.cell.tokens != update.token_count
             || state.cell.activity != update.activity
             || state.cell.flag != update.flag
         {
-            if status == TaskStatus::Running && state.finished.is_some() {
-                state.finished = None;
-                state.started = self.clock.now();
-                state.cell.answer = None;
-                state.cell.answer_dropped = 0;
+            if status == TaskStatus::Running {
+                if let Some(row) = self.projection.rows.get_mut(&row_key) {
+                    row.terminal = false;
+                    row.end = None;
+                    row.end_committed = false;
+                }
                 self.committed_tasks.remove(id);
+                if state.finished.is_some() {
+                    state.finished = None;
+                    state.started = self.clock.now();
+                    state.cell.answer = None;
+                    state.cell.answer_dropped = 0;
+                }
             }
             state.cell.flag = update.flag.clone();
             state.cell.status = status;
@@ -214,20 +375,59 @@ impl App {
             }
             self.scheduler.request();
         }
+        if status != TaskStatus::Running
+            && let Some(row) = self.projection.rows.get_mut(&row_key)
+        {
+            row.end = Some(end_rule(update));
+            row.terminal = true;
+        }
         self.commit_finished_tasks();
     }
 
-    /// The spawning cell is an ordering hint, not a gate: a finished card waits only on the
-    /// one cell it was born under, so a lost cell end cannot hold every other card.
+    /// The spawning cell is an ordering hint, not a gate: a missing cell end is released at turn settlement.
     pub(super) fn commit_finished_tasks(&mut self) {
-        while let Some(id) = self.task_order.iter().find(|id| self.ready(id)).cloned() {
-            let cell = self.tasks.get_mut(&id).map(|state| {
-                state.rows = crate::cell::AnswerRows::default();
-                Cell::Task(state.cell.clone())
-            });
-            self.committed_tasks.insert(id);
-            if let Some(cell) = cell {
-                self.commit_cell(&cell);
+        for row in self.projection.rows.values_mut() {
+            if row
+                .born_under
+                .as_ref()
+                .is_some_and(|call| self.projection.settled_calls.contains(call))
+            {
+                row.deferred = false;
+            }
+        }
+        loop {
+            let order = self.projection.order.clone();
+            let mut moved = false;
+            for key in order {
+                let ready = self.projection.rows.get(&key).is_some_and(|row| {
+                    !row.deferred
+                        && !row.born_under.as_deref().is_some_and(|call| {
+                            self.live_tools
+                                .iter()
+                                .any(|tool| tool.call_id == call && tool.status != ToolStatus::Done)
+                        })
+                        && (!row.start_committed
+                            || (row.terminal && !row.end_committed && row.end.is_some()))
+                });
+                if !ready {
+                    continue;
+                }
+                let Some((cells, id)) = self.projection.rows.get_mut(&key).map(|row| {
+                    let cells = row.take_ready();
+                    (cells, row.end_committed.then(|| row.id.clone()))
+                }) else {
+                    continue;
+                };
+                if let Some(id) = id {
+                    self.committed_tasks.insert(id);
+                }
+                for cell in cells {
+                    self.commit_cell(&cell);
+                    moved = true;
+                }
+            }
+            if !moved {
+                break;
             }
         }
         while self.committed_tasks.len() > crate::agents::FINISHED_CARDS {
@@ -245,17 +445,10 @@ impl App {
         }
     }
 
-    fn ready(&self, id: &str) -> bool {
-        let Some(state) = self.tasks.get(id) else {
-            return false;
-        };
-        let under_live_cell = state.born_under.as_deref().is_some_and(|call| {
-            self.live_tools
-                .iter()
-                .any(|tool| tool.call_id == call && tool.status != ToolStatus::Done)
-        });
-        !under_live_cell
-            && state.cell.status != TaskStatus::Running
-            && !self.committed_tasks.contains(id)
+    pub(crate) fn release_child_rows(&mut self) {
+        for row in self.projection.rows.values_mut() {
+            row.deferred = false;
+        }
+        self.commit_finished_tasks();
     }
 }

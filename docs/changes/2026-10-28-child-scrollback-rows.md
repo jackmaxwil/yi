@@ -1,6 +1,6 @@
 ---
 issue: Closes #1718
-raise: tests +107, crate console +4, crate runtime +92, crate tui +4, crate types +18
+raise: tests +452, crate console +4, crate runtime +92, crate tui +190, crate types +18
 decision: Subagents should be persistent in their two locations in the scrollback: at start and end | One shared formatter projects the durable spawn and end records into two concise rows, so the live card no longer needs to become the permanent end record | Remove the replay projection and restore the committed full Task cell; the added optional wire fields remain additive and old readers ignore them
 ---
 A child now gets one persistent start row when it is admitted and one persistent end row for each run. The rows name the child and its role and task at the start, then its actual outcome, elapsed time, tokens, optional cost, start id, and first result or error line. The committed end row replaces the full finished card; the live card and its focus view stay unchanged. The 32-card live-tracking cap still applies only to live state, not to committed rows.

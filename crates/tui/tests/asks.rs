@@ -106,7 +106,9 @@ fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
     app.reduce_child_update(&update(ChildStatus::Completed, None));
     let first = flat(&app.take_commits());
     assert!(
-        first.iter().any(|line| line.contains("↳ Writer")),
+        first
+            .iter()
+            .any(|line| line.contains("subagent writer (sub-writer) · done")),
         "{first:?}"
     );
     app.reduce_child_update(&update(ChildStatus::Running, None));
@@ -119,8 +121,10 @@ fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
     app.reduce_child_update(&update(ChildStatus::Completed, None));
     let second = flat(&app.take_commits());
     assert!(
-        second.iter().any(|line| line.contains("↳ Writer")),
-        "its second answer commits a second card: {second:?}"
+        second
+            .iter()
+            .any(|line| line.contains("subagent writer (sub-writer) · done")),
+        "its second run commits a second end row: {second:?}"
     );
     Ok(())
 }
