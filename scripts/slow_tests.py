@@ -99,10 +99,18 @@ def validate_recipe(text):
         raise CheckFailure("just test selects the quick filterset")
 
 
-def validate(rows, all_tests, filtered_tests, recipe):
-    errors = [f"stale slow test: {binary} {name}" for binary, name in sorted(rows - all_tests)]
+def defined_in_source(name):
+    return subprocess.run(["git", "grep", "-q", "-E", rf"fn {name}\b", "--", "crates"], cwd=ROOT).returncode == 0
+
+
+def validate(rows, all_tests, filtered_tests, recipe, defined=defined_in_source):
+    """A row absent from this platform's listing is stale unless its function is still defined:
+    Incident: the macOS-only sandbox tests were red on the Linux gate as "stale"."""
+    absent = rows - all_tests
+    gated = {row for row in absent if defined(row[1].rsplit("::", 1)[-1])}
+    errors = [f"stale slow test: {binary} {name}" for binary, name in sorted(absent - gated)]
     excluded = all_tests - filtered_tests
-    errors += [f"slow filter failed to exclude: {binary} {name}" for binary, name in sorted(rows - excluded)]
+    errors += [f"slow filter failed to exclude: {binary} {name}" for binary, name in sorted((rows - gated) - excluded)]
     errors += [f"slow filter excludes unlisted test: {binary} {name}" for binary, name in sorted(excluded - rows)]
     try:
         validate_recipe(recipe)
@@ -110,6 +118,8 @@ def validate(rows, all_tests, filtered_tests, recipe):
         errors.append(str(error))
     if errors:
         raise CheckFailure("\n".join(errors))
+    if gated:
+        print(f"quick: {len(gated)} listed tests are not compiled on this platform: " + ", ".join(sorted(name for _, name in gated)))
 
 
 def repo_check():
@@ -171,12 +181,13 @@ def selfcheck_generator():
 def selfcheck():
     selfcheck_generator()
     rows, all_tests, filtered_tests, recipe = repo_check()
-    stale = ("fake::integration", "fake::test")
+    stale = ("fake::integration", "fake::no_such_test_anywhere")
     expect_failure(
         "stale entry",
         lambda: validate(set(rows) | {stale}, all_tests, filtered_tests, recipe),
-        "stale slow test: fake::integration fake::test",
+        "stale slow test: fake::integration fake::no_such_test_anywhere",
     )
+    validate(set(rows) | {stale}, all_tests, filtered_tests, recipe, defined=lambda name: name == "no_such_test_anywhere")
     changed = set(rows)
     removed = changed.pop()
     expect_failure(
