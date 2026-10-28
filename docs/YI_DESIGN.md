@@ -1164,9 +1164,9 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - Resize and mode change rebuild scrollback from the transcript; text wraps at width less 2; a
   frame draws only on change.
 - A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, 3 result
-  rows then `… N more lines` when collapsed. Running tool and child cards reserve that bounded
-  preview region and its elision row, so a collapsed result fills in place; verbose rows still
-  use the existing row pacing.
+  rows then `… N more lines` when collapsed. Running tool cards reserve that bounded preview
+  region and its elision row, so a collapsed result fills in place; child cards use a bounded
+  four-row answer window, and verbose rows still use the existing row pacing.
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block
   `Todos done/total`; `ctrl+t` hides it), composer or bottom view, status row (model, effort,
   lane row, landing, cost, `used / window`, session name).
