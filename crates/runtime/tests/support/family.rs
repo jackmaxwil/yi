@@ -76,6 +76,17 @@ pub fn memory_store(id: &str) -> yi_session::SharedSession {
     )))
 }
 
+pub async fn wait_until(within_ms: u64, mut ready: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(within_ms);
+    while std::time::Instant::now() <= deadline {
+        if ready() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    ready()
+}
+
 pub async fn wait_for_path(path: &Path, message: &str) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..200 {
         if path.exists() {

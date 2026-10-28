@@ -602,26 +602,28 @@ impl SubagentHost {
                 causes.insert(name, Value::from("asks"));
             }
         }
-        let mut states = Map::new();
-        let mut notes = Map::new();
-        for view in self.states() {
-            states.insert(
-                view.name.clone(),
-                Value::String(view.state.as_str().to_owned()),
-            );
-            if let Some(note) = view.note {
-                notes.insert(view.name, Value::String(note));
+        let (counts, views) = self.wait_states(&causes);
+        let (mut states, mut notes) = (Map::new(), Map::new());
+        for v in &views {
+            if causes.contains_key(&v.name) {
+                states.insert(v.name.clone(), json!(v.state.as_str()));
+                notes.extend(v.note.as_ref().map(|n| (v.name.clone(), json!(n))));
             }
         }
         let mut reply = Map::new();
         reply.insert("state".to_owned(), Value::from(state));
         if state == "settled" {
-            let finished: Vec<&String> = states.keys().collect();
+            let finished: Vec<&str> = views
+                .iter()
+                .filter(|view| causes.contains_key(&view.name))
+                .map(|view| view.name.as_str())
+                .collect();
             reply.insert("finished".to_owned(), json!(finished));
         }
         reply.insert("cursor".to_owned(), Value::from(epoch));
         reply.insert("changed".to_owned(), json!(changed));
         reply.insert("causes".to_owned(), Value::Object(causes));
+        reply.insert("counts".to_owned(), json!(counts));
         reply.insert("states".to_owned(), Value::Object(states));
         reply.insert("notes".to_owned(), Value::Object(notes));
         reply.insert("updated".to_owned(), json!(changed));

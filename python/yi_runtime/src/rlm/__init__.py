@@ -206,6 +206,38 @@ async def _watch(timeout: float, cursor: int | None) -> "Reply | None":
     return None
 
 
+def _merge_digest(reply: dict[str, Any], states: dict, notes: dict) -> tuple[dict, dict]:
+    if "counts" not in reply:
+        return reply.get("states") or {}, reply.get("notes") or {}
+    states, notes = states.copy(), notes.copy()
+    for child, cause in (reply.get("causes") or {}).items():
+        notes.pop(child, None)
+        if cause == "reaped":
+            states.pop(child, None)
+    states.update(reply.get("states") or {})
+    notes.update(reply.get("notes") or {})
+    return states, notes
+
+
+async def _digest_child(reply: dict[str, Any], name: str) -> tuple[Any, Any]:
+    states = reply.get("states")
+    if not isinstance(states, dict):
+        raise RuntimeError("rlm.wait returned an invalid state map")
+    causes = reply.get("causes")
+    if isinstance(causes, dict) and causes.get(name) == "reaped":
+        raise NoSuchChild(name)
+    if name not in states:
+        if "counts" not in reply:
+            raise NoSuchChild(name)
+        current = await status(name)
+        return current.get("state"), current.get("note")
+    note = None
+    if name in states or (isinstance(causes, dict) and name in causes):
+        notes = reply.get("notes")
+        note = notes.get(name) if isinstance(notes, dict) else None
+    return states[name], note
+
+
 class Reply(dict):
     """A reply that reads by key or by attribute: ``r["changed"]`` or ``r.changed``."""
 
@@ -309,7 +341,7 @@ class RLMSpawnHandle:
         deadline = loop.time() + timeout
         # Invariant: a bare wait resumes from the model's last bare wait, which may already
         # have seen this child finish; cursor 0 reads the family as it stands now.
-        cursor = 0
+        cursor, state, note = 0, None, None
         while True:
             # Float rounding can put `(now + timeout) - now` an ulp past `timeout`.
             remaining = min(timeout, deadline - loop.time())
@@ -318,21 +350,17 @@ class RLMSpawnHandle:
             reply = await _watch(remaining, cursor)
             if reply is None:
                 continue
-            states = reply.get("states")
-            if not isinstance(states, dict):
-                raise RuntimeError("rlm.wait returned an invalid state map")
             next_cursor = reply.get("cursor")
             if isinstance(next_cursor, int):
                 cursor = next_cursor
-            state = states.get(self.name)
-            if state is None:
+            try:
+                state, note = await _digest_child(reply, self.name)
+            except NoSuchChild as error:
                 raise RuntimeError(
                     f"child {self.name} ({self.rlm_child_id}) is no longer registered with "
                     "the parent; rlm.delete_subagent reaps a child and its answer with it"
-                )
+                ) from error
             if state == "stuck":
-                notes = reply.get("notes")
-                note = notes.get(self.name) if isinstance(notes, dict) else None
                 raise RuntimeError(
                     f"child {self.name} is stuck ({note or 'no progress in its records'}); "
                     "rlm.send it a nudge, rlm.interrupt it, or call result() again to keep waiting"
@@ -344,8 +372,6 @@ class RLMSpawnHandle:
                     # Another run can start between the wait and the read; it is waited on.
                     if "still running" not in str(error):
                         raise
-                    notes = reply.get("notes")
-                    note = notes.get(self.name) if isinstance(notes, dict) else None
                     if isinstance(note, str) and note.startswith("asks "):
                         raise RuntimeError(
                             f"child {self.name} {note}; answer it with rlm.send({self.name!r}, "
@@ -951,13 +977,14 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
     The reply carries ``cursor`` (pass it back on the next call and no other
     waiter can steal your updates), ``changed`` and its one-release alias
     ``updated`` (the names that moved), ``causes`` (why each moved, by name:
-    ``mail``, ``finished``, ``asked``, ``reaped`` and the like), ``states`` (every
-    registered child by name: ``running``, ``finished``, ``failed``, ``needs_you``
-    or ``stuck``) and ``notes``. With no cursor the host keeps your last one: the first call
+    ``mail``, ``finished``, ``asked``, ``reaped`` and the like), ``counts`` (the whole
+    roster's totals by state), and ``states`` and ``notes`` for the members named by
+    ``causes``: ``running``, ``finished``, ``failed``, ``needs_you`` or ``stuck``.
+    With no cursor the host keeps your last one: the first call
     answers at once with the family as it stands, each later one blocks until a child moves.
     ``state`` says why it returned: ``moved``, ``timeout``, ``asks`` (a child waits on
     your answer, cause ``asks``) or ``settled`` (nothing in the family is live, with
-    ``finished``). ``asks`` and ``settled`` return at once, once: a wait repeated at the
+    ``finished`` naming the movers that finished). ``asks`` and ``settled`` return at once, once:
     same state with nothing moved raises RuntimeError naming it, so answer the question, or
     stop waiting on a family with nothing running. The host clamps the timeout and says so
     in the reply (``clamped``). The reply reads by key or attribute::

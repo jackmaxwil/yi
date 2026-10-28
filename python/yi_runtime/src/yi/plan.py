@@ -306,15 +306,16 @@ class Todo:
         if child is None:
             raise PlanError(f"todo {self.key!r} has no child; only a running delegated todo does")
         loop = asyncio.get_running_loop()
-        deadline, cursor = loop.time() + timeout, 0
+        deadline, cursor, state, note = loop.time() + timeout, 0, None, None
         while (remaining := deadline - loop.time()) > 0:
             reply = await rlm._watch(min(remaining, WAIT_SECONDS), cursor)
             if reply is None:
                 continue
             cursor = reply.get("cursor", cursor)
-            state = (reply.get("states") or {}).get(child)
-            if state is None:
-                raise PlanError(f"child {child} is not registered with this session")
+            try:
+                state, note = await rlm._digest_child(reply, child)
+            except rlm.NoSuchChild as error:
+                raise PlanError(f"child {child} is not registered with this session") from error
             if state in ("finished", "failed", "needs_you"):
                 try:
                     return await rlm.result(child, schema=schema)
@@ -322,7 +323,6 @@ class Todo:
                     # needs_you also names a child still running with a question for you.
                     if state != "needs_you" or "still running" not in str(error):
                         raise
-                    note = (reply.get("notes") or {}).get(child)
                     if isinstance(note, str) and note.startswith("asks "):
                         raise PlanError(
                             f"child {child} {note}; answer it with rlm.send({child!r}, text, "
@@ -700,8 +700,7 @@ class Run:
             if reply is None:
                 return settled
             self._cursor = reply.get("cursor", self._cursor)
-            self._states = reply.get("states") or {}
-            self._notes = reply.get("notes") or {}
+            self._states, self._notes = rlm._merge_digest(reply, self._states, self._notes)
         elif not self._reaped:
             return settled
         self._reaped = False

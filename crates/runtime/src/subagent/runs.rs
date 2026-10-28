@@ -1,3 +1,4 @@
+use serde_json::{Map, Value};
 use std::sync::Arc;
 
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason};
@@ -340,9 +341,59 @@ impl SubagentHost {
         });
     }
 
+    pub(crate) fn wait_states(
+        &self,
+        causes: &Map<String, Value>,
+    ) -> (
+        std::collections::BTreeMap<&'static str, u64>,
+        Vec<crate::family::MemberView>,
+    ) {
+        let asking = self
+            .mail
+            .lock()
+            .map(|desk| desk.asking())
+            .unwrap_or_default();
+        let counts = self.children.lock().ok().and_then(|children| {
+            let mut counts = std::collections::BTreeMap::<&'static str, u64>::new();
+            for record in children.values() {
+                let state = if asking.contains_key(&record.session_name) && record.exit.is_none() {
+                    crate::family::MemberState::NeedsYou
+                } else {
+                    match (record.exit, record.phase) {
+                        (Some(_), _) => crate::family::read_exit(record.exit).state,
+                        (None, crate::family::Phase::Queued) => crate::family::MemberState::Queued,
+                        (None, crate::family::Phase::Failed) => crate::family::MemberState::Failed,
+                        (None, crate::family::Phase::Pending) => {
+                            crate::family::MemberState::RepossessionPending
+                        }
+                        _ => return None,
+                    }
+                };
+                let count = counts.entry(state.as_str()).or_insert(0);
+                *count = count.saturating_add(1);
+            }
+            Some(counts)
+        });
+        if let Some(counts) = counts {
+            let mut views: Vec<_> = causes
+                .keys()
+                .flat_map(|name| self.member_states(Some(name)))
+                .collect();
+            views.sort_by(|left, right| left.name.cmp(&right.name));
+            return (counts, views);
+        }
+        let views = self.states();
+        let mut counts = std::collections::BTreeMap::<&'static str, u64>::new();
+        for view in &views {
+            let count = counts.entry(view.state.as_str()).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        (counts, views)
+    }
+
     /// Invariant: a derived `stuck` moves no record, so a newly stuck member moves the epoch.
     pub(crate) fn mark_stuck(&self) {
-        let views = self.states();
+        let views = self.wait_states(&Map::new()).1;
         let stuck: Vec<&str> = views
             .iter()
             .filter(|view| view.state == crate::family::MemberState::Stuck)
