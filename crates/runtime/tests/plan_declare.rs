@@ -616,6 +616,36 @@ fn every_dogfood_call_lands_or_says_where_it_goes() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn review_covers_inside_delegation_is_left_out() -> TestResult {
+    let rig = rig("covers-inside-delegation")?;
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "g", "todos": [{
+            "label": "x",
+            "delegation": {
+                "spec": {"isolation": "worktree"},
+                "contract": {
+                    "class": "writer", "covers": ["src/*.rs"],
+                    "items": [{"critical": true, "id": "t", "weight": 1, "decider": {"cmd": "true"}}]
+                }
+            }
+        }]}),
+    );
+    assert!(!refused, "{text}");
+    assert!(text.contains("covers globs were left out"), "{text}");
+    let id = rig.store.roots()?.into_iter().next().ok_or("no plan")?;
+    let plan = rig.store.read(&id)?;
+    let todo = todo_of(&plan, "x")?;
+    assert!(todo.contract.as_ref().ok_or("contract")?.covers.is_empty());
+    assert!(
+        matches!(todo.state, TodoState::Running { .. }),
+        "{:?}",
+        todo.state
+    );
+    Ok(())
+}
+
 /// Dies on a set whose todo rows carry a contract: each row became a checklist line, so the
 /// contract was dropped without a word and the todo would land unverified.
 #[test]
