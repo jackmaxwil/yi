@@ -1121,9 +1121,9 @@ def selfcheck():
     assert skip_reason([{"n": 1, "sha": "0000000", "verdict": "clean"}] + one, "abc1234ff"), "a PR with two rounds reads a head once"
     assert skip_reason(one + [{"n": 2, "sha": "abc1234", "verdict": "clean"}], "abc1234ff"), "never a third"
     assert skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "abc1234ff"), "a blocked head is the fixer's"
-    finding_row = {"lens": "correctness", "severity": "high", "claim": "c", "path": "a.rs", "line": 1, "quote": "q", "fix": "f"}
-    note = [{"user": {"login": BOT}, "id": 1, "body": render(1, 9, "abcdef1ff", "base000", [finding_row], 0, None, "blocking")}]
-    stubs = {"comments": lambda repo, n: note, "authors": lambda: {BOT}, "holds_for": lambda n, base: on_head}
+    note = [{"user": {"login": BOT}, "id": 1, "body": render(1, 9, "abcdef1ff", "base000", [finding], 0, None, "blocking")}]
+    stubs = {"comments": lambda repo, n: note, "authors": lambda: {BOT}, "holds_for": lambda n, base: on_head,
+             "review_model": lambda: "openrouter/z-ai/glm-5.3-flash"}
     saved = {k: globals()[k] for k in stubs}
     saved_forge = (forge_pr.repo, forge_pr.pull_number, forge_pr.pull)
     try:
