@@ -1,7 +1,7 @@
 ---
 issue: Closes #1519, Refs #1442
-growth: +7 one roster fold that counts each state and keeps only the movers' details, with the existing roster retained for a settled reply's finished list; no second roster read or new helper
-raise: crate runtime +7, tests +103
+growth: +1 the per-state count and mover filter added to the existing roster fold, with the full roster retained for a settled reply's finished list; no second roster read or new helper
+raise: crate runtime +1, tests +103
 decision: rlm.wait reports counts by state and the states of the members that moved; rlm.status holds the roster | a 128-wide family pays the whole roster on every wait | restore the full states map in wait_reply
 ---
 

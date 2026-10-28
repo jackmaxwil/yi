@@ -603,20 +603,14 @@ impl SubagentHost {
             }
         }
         let mut counts = std::collections::BTreeMap::<&str, u64>::new();
-        let mut states = Map::new();
-        let mut notes = Map::new();
+        let (mut states, mut notes) = (Map::new(), Map::new());
         let views = self.states();
-        for view in &views {
-            let count = counts.entry(view.state.as_str()).or_default();
-            *count = count.saturating_add(1);
-            if causes.contains_key(&view.name) {
-                states.insert(
-                    view.name.clone(),
-                    Value::String(view.state.as_str().to_owned()),
-                );
-                if let Some(note) = &view.note {
-                    notes.insert(view.name.clone(), Value::String(note.clone()));
-                }
+        for v in &views {
+            let c = counts.entry(v.state.as_str()).or_default();
+            *c = c.saturating_add(1);
+            if causes.contains_key(&v.name) {
+                states.insert(v.name.clone(), json!(v.state.as_str()));
+                notes.extend(v.note.as_ref().map(|n| (v.name.clone(), json!(n))));
             }
         }
         let mut reply = Map::new();
