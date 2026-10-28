@@ -559,14 +559,16 @@ bytes written. Each cut is loud.
 
 ### 7.10 Web search
 `web_search` answers current public questions through a synchronous `SearchProvider` in yi-ai.
-`OpenRouterSearch` makes one non-streaming chat completion with a 120 s read timeout, one
-`openrouter:web_search` server call and Exa as the default engine. A credential from
+`OpenRouterSearch` makes one non-streaming chat completion with a 120 s read and write timeout,
+one `openrouter:web_search` server call and Exa as the default engine. A credential from
 `OPENROUTER_API_KEY` or the OpenRouter token store registers the tool; without one, its schema is
 absent. Root and full-child sessions inherit the provider; readers and workers keep their tool
-filters. `models.webSearch` defaults to `openrouter/deepseek/deepseek-v4-flash`. A configured role
-outside OpenRouter or an empty `webSearch.engine` disables only the tool with one warning that
-names the setting and its fix. Proxy and `routing` config reaches the search request, with the
-provider object omitted on a custom base URL just as for a streaming request.
+filters. `models.webSearch` defaults to `openrouter/deepseek/deepseek-v4-flash`. Credential and
+role resolution come first: no credential leaves search off, and an unknown role warns and leaves
+it off. Only then does an explicitly configured role outside OpenRouter or an empty
+`webSearch.engine` refuse session construction with exit 2, naming the setting and its fix.
+Proxy and `routing` config reaches the search request, with the provider object omitted on a
+custom base URL just as for a streaming request.
 
 Arguments are `query` (non-empty), `count` (1–25, default 5), optional domain allowlist and `mode`
 (`instant|fast|auto|deep-lite|deep|deep-reasoning`, default `auto`). There is no `recency` argument.
