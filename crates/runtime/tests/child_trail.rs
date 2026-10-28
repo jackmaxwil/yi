@@ -38,6 +38,7 @@ fn faux_model() -> Model {
 
 /// A host whose parent has a real transcript on disk, as every CLI root does at spawn time.
 type Slot = Arc<std::sync::Mutex<Option<yi_session::SharedSession>>>;
+type Providers = Arc<std::sync::Mutex<Vec<Arc<ProviderStream>>>>;
 
 fn slot(parent: Option<yi_session::SharedSession>) -> Slot {
     Arc::new(std::sync::Mutex::new(parent))
@@ -48,9 +49,20 @@ fn host(depth: u8, parent_dir: PathBuf, parent: Slot) -> Arc<SubagentHost> {
 }
 
 fn host_with_hold(depth: u8, parent_dir: PathBuf, parent: Slot, hold: bool) -> Arc<SubagentHost> {
+    host_with_providers(depth, parent_dir, parent, hold).0
+}
+
+fn host_with_providers(
+    depth: u8,
+    parent_dir: PathBuf,
+    parent: Slot,
+    hold: bool,
+) -> (Arc<SubagentHost>, Providers) {
+    let providers = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let factory_providers = Arc::clone(&providers);
     let (events, _keep) = tokio::sync::broadcast::channel(64);
     let spawned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    Arc::new(SubagentHost::new(SubagentHostOptions {
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         provider: Arc::new(ProviderStream::new(None)),
         depth,
         max_depth: depth.saturating_add(1),
@@ -62,6 +74,9 @@ fn host_with_hold(depth: u8, parent_dir: PathBuf, parent: Slot, hold: bool) -> A
         defaults: Arc::new(|| (faux_model(), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let provider = Arc::new(ProviderStream::new(None));
+            if let Ok(mut held) = factory_providers.lock() {
+                held.push(Arc::clone(&provider));
+            }
             let n = spawned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let answer = format!("the token is minted in auth.rs, answer {n}");
             provider.queue_faux(vec![crate::support::priced_reply(&answer, 0.012)]);
@@ -78,7 +93,8 @@ fn host_with_hold(depth: u8, parent_dir: PathBuf, parent: Slot, hold: bool) -> A
         store: Arc::new(move || parent.lock().ok().and_then(|held| held.clone())),
         plans_dir: std::env::temp_dir().join(".yi/plans"),
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }))
+    }));
+    (host, providers)
 }
 
 fn root_session(
@@ -239,6 +255,38 @@ async fn a_repossession_after_parent_close_journals_that_cause() -> TestResult {
     assert_eq!(ends.len(), 1, "{lines:?}");
     assert_eq!(ends[0]["exit"]["kind"], "repossessed");
     assert_eq!(ends[0]["error"], "parent closed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_child_completing_during_parent_close_grace_ends_done() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-parent-close-done")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let (host, providers) =
+        host_with_providers(0, scratch.join("rlm-1"), slot(Some(session)), true);
+    host.spawn("Keep running.".to_owned(), kwargs("closed"))?;
+    let provider = providers
+        .lock()
+        .map_err(|_| "poisoned")?
+        .first()
+        .cloned()
+        .ok_or("no child provider")?;
+    assert!(
+        crate::support::wait_until(2_000, || provider.faux_hold.reached()).await,
+        "the stream never held"
+    );
+    assert_eq!(host.close(), ["closed"]);
+    assert!(provider.faux_hold.release());
+    let lines = ended(&root_file).await?;
+    let end = lines
+        .iter()
+        .find(|line| line["event"] == "ended")
+        .ok_or("no end line")?;
+    assert_eq!(end["exit"]["kind"], "completed");
+    assert_eq!(end["error"], Value::Null, "{lines:?}");
+    let children = host.children_view();
+    let update = &children.first().ok_or("no child update")?.update;
+    assert_eq!(update.error, None);
     Ok(())
 }
 

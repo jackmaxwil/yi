@@ -231,9 +231,12 @@ impl ChildRecord {
                 self.phase = Phase::Live;
                 self.exit = Some(exit);
                 self.activity = ChildActivity::Waiting;
-                self.error = match self.error.as_deref() {
-                    Some(super::PARENT_CLOSED) => self.error.clone(),
-                    _ => error,
+                self.error = if exit == ChildExit::Repossessed
+                    && self.error.as_deref() == Some(super::PARENT_CLOSED)
+                {
+                    self.error.clone()
+                } else {
+                    error
                 };
                 true
             }

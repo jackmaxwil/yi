@@ -112,21 +112,16 @@ impl ChildRow {
 }
 
 fn end_rule(update: &ChildUpdate) -> Cell {
+    let reading = yi_runtime::family::read_exit(update.exit);
     let completed = update.exit == Some(ChildExit::Completed)
         || (update.exit.is_none() && update.status == ChildStatus::Completed);
     let parent_closed = update.error.as_deref() == Some("parent closed");
     let outcome = if parent_closed {
         "parent closed"
+    } else if update.exit.is_none() && completed {
+        "done"
     } else {
-        match update.exit {
-            Some(ChildExit::Completed) => "done",
-            Some(ChildExit::Failed { .. } | ChildExit::Other) => "failed",
-            Some(ChildExit::Interrupted) => "cancelled",
-            Some(ChildExit::Reaped) => "reaped",
-            Some(ChildExit::Repossessed) => "revoked",
-            None if completed => "done",
-            None => "failed",
-        }
+        reading.row
     };
     let mut text = format!(
         "subagent {} ({}) · {outcome}",
