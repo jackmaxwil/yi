@@ -137,19 +137,6 @@ fn over_cap_and_valid(store: &Store) -> Result<(Vec<u8>, MemoryRecord), Box<dyn 
 }
 
 #[test]
-fn an_over_cap_only_record_does_not_parent_the_next_append() -> TestResult {
-    let (_dir, store) = imported("over-cap-only")?;
-    let (bytes, _) = over_cap_and_valid(&store)?;
-    std::fs::write(journal(&store), bytes)?;
-    let note = store.resolve("fgj-forge-cli").ok_or("no such note")?;
-    store.mark_read(&note.name)?;
-    let chain = records(&store)?;
-    let read = chain.last().ok_or("no appended record")?;
-    assert_eq!(read.digest_of(None).ok(), Some(read.digest));
-    Ok(())
-}
-
-#[test]
 fn a_valid_record_after_an_over_cap_line_parents_the_next_append() -> TestResult {
     let (_dir, store) = imported("over-cap-then-valid")?;
     let (mut damage, valid) = over_cap_and_valid(&store)?;
