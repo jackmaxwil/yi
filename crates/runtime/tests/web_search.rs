@@ -276,11 +276,8 @@ fn a_malformed_paid_response_is_an_error_that_still_books_its_usage() -> TestRes
 }
 
 #[test]
-fn provider_failures_keep_status_and_reason_without_remote_body_or_fence() -> TestResult {
-    let (tool, _) = tool_with(Err(SearchError::Http {
-        status: 400,
-        message: ": Bad Request".to_owned(),
-    }));
+fn provider_failures_keep_status_and_fixed_advice_without_remote_body_or_fence() -> TestResult {
+    let (tool, _) = tool_with(Err(SearchError::Http { status: 400 }));
     let output = tool.execute(
         args(json!({"query": "rust"})),
         &ToolContext::new(std::env::temp_dir()),
@@ -289,7 +286,7 @@ fn provider_failures_keep_status_and_reason_without_remote_body_or_fence() -> Te
     assert_eq!(output.result.details["errorKind"], "tool_error");
     let text = text(&output);
     assert!(text.contains("HTTP 400"), "{text}");
-    assert!(text.contains("Bad Request"), "{text}");
+    assert!(text.contains("check webSearch.engine"), "{text}");
     assert!(!text.contains("provider's body follows"), "{text}");
     assert!(!text.contains("<<<yi-external"), "{text}");
     assert!(!text.contains("sekrit"), "{text}");

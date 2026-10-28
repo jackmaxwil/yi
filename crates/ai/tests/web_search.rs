@@ -305,17 +305,17 @@ fn http_failures_use_fixed_local_diagnostics_without_remote_text_or_credential()
         (
             "408 remote instructions",
             408,
-            "web search HTTP 408: rate limited or timed out; retry later",
+            "web search HTTP 408: rate limited, timed out or failed upstream; retry later",
         ),
         (
             "429 remote instructions",
             429,
-            "web search HTTP 429: rate limited or timed out; retry later",
+            "web search HTTP 429: rate limited, timed out or failed upstream; retry later",
         ),
         (
             "500 remote instructions",
             500,
-            "web search HTTP 500: the provider failed; retry later",
+            "web search HTTP 500: rate limited, timed out or failed upstream; retry later",
         ),
         ("302 remote instructions", 302, "web search HTTP 302"),
     ] {

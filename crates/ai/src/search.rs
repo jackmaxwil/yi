@@ -236,16 +236,16 @@ pub struct SearchResponse {
     pub usage: Usage,
 }
 
-fn http_advice(status: u16) -> Option<&'static str> {
-    match status {
-        400 | 401 | 403 | 404 => {
-            Some("check webSearch.engine, the model id, and the OpenRouter key")
+fn http_advice(status: u16) -> String {
+    let advice = match status {
+        400 | 401 | 403 | 404 => "check webSearch.engine, the model id, and the OpenRouter key",
+        402 => "out of credits",
+        s if crate::retry::is_retryable_status(s) => {
+            "rate limited, timed out or failed upstream; retry later"
         }
-        402 => Some("out of credits"),
-        408 | 429 => Some("rate limited or timed out; retry later"),
-        500..=599 => Some("the provider failed; retry later"),
-        _ => None,
-    }
+        _ => return String::new(),
+    };
+    format!(": {advice}")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -256,8 +256,8 @@ pub enum SearchError {
     MissingCredential,
     #[error("web search transport failed: {0}")]
     Transport(String),
-    #[error("web search HTTP {status}{message}")]
-    Http { status: u16, message: String },
+    #[error("web search HTTP {status}{}", http_advice(*status))]
+    Http { status: u16 },
     #[error("malformed web search response: {0}")]
     Protocol(String),
     #[error("web search returned no citations")]
@@ -447,11 +447,7 @@ impl SearchProvider for OpenRouterSearch {
         )
         .map_err(|error| match error {
             PostJsonError::Transport(message) => SearchError::Transport(self.redact(message)),
-            PostJsonError::Http { status } => SearchError::Http {
-                status,
-                message: http_advice(status)
-                    .map_or_else(String::new, |advice| format!(": {advice}")),
-            },
+            PostJsonError::Http { status } => SearchError::Http { status },
             PostJsonError::Protocol(message) => self.billed(
                 SearchError::Protocol(self.redact(message)),
                 Usage::unknown(),
