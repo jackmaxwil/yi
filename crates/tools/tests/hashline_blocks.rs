@@ -123,3 +123,34 @@ fn non_rust_block_comment_apostrophes_do_not_hide_delimiters() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn multiline_block_comments_do_not_close_the_enclosing_block() -> TestResult {
+    let dir = temp_dir("hashline-multiline-block-comments")?;
+    fs::write(
+        dir.join("comment.js"),
+        "function f() {\n    /* disabled {\n     * still disabled\n    } */\n    return 1;\n}\n",
+    )?;
+    let output = find(&dir, "comment.js", "function f()");
+    assert!(output.contains("[find: block at lines 1-6 of"), "{output}");
+    Ok(())
+}
+
+#[test]
+fn comment_markers_inside_regex_classes_do_not_hide_delimiters() -> TestResult {
+    let dir = temp_dir("hashline-regex-comment-markers")?;
+    for (name, literal) in [("leading.js", "/[/*]/"), ("middle.js", "/a[/*]/")] {
+        fs::write(
+            dir.join(name),
+            format!(
+                "function f() {{\n    const pattern = {literal};\n    const value = total / count / 2;\n    return pattern.test(\"/*\");\n}}\n"
+            ),
+        )?;
+        let output = find(&dir, name, "function f()");
+        assert!(
+            output.contains("[find: block at lines 1-5 of"),
+            "{name}: {output}"
+        );
+    }
+    Ok(())
+}
