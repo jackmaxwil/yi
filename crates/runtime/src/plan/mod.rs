@@ -18,7 +18,6 @@ pub(crate) mod ask;
 pub mod authority;
 mod brief;
 pub mod capacity;
-pub mod covers;
 pub mod declare;
 pub mod dispatch;
 pub mod done;
