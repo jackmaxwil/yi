@@ -347,3 +347,106 @@ fn only_the_newest_todo_record_says_a_child_needs_you() -> TestResult {
     assert_eq!((state, note), (MemberState::Running, None));
     Ok(())
 }
+
+fn faux_reader_family(count: usize) -> Result<crate::reader_e2e::Family, Box<dyn Error>> {
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
+    provider.queue_faux((0..count).map(|_| crate::reader_e2e::reply("ok")).collect());
+    crate::reader_e2e::wired_family(
+        count,
+        Arc::new(Mutex::new(Vec::new())),
+        crate::reader_e2e::Setup {
+            provider: Some(provider),
+            ..crate::reader_e2e::Setup::default()
+        },
+    )
+    .map_err(Into::into)
+}
+
+fn spawn_reader(family: &crate::reader_e2e::Family) -> Result<String, Box<dyn Error>> {
+    let reply = family.host.spawn(
+        "answer briefly".to_owned(),
+        crate::reader_e2e::kwargs(json!({"role": "reader"})),
+    )?;
+    reply["name"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "reader name".into())
+}
+
+async fn all_readers_finished(family: &crate::reader_e2e::Family, count: usize) -> bool {
+    for _ in 0..400 {
+        let states = family.host.states();
+        if states.len() == count
+            && states
+                .iter()
+                .all(|view| view.state == MemberState::Finished)
+        {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn a_wide_wait_reply_counts_states_and_names_only_the_mover() -> TestResult {
+    if std::env::var_os("RLM_WIDE_WAIT_CHILD").is_none() {
+        let dir = crate::scratch::Scratch::new("yi-wide-wait")?;
+        let overrides = dir.join("levers.json");
+        std::fs::write(
+            &overrides,
+            r#"{"family.cap":128,"family.max_children":128}"#,
+        )?;
+        let output = yi_tools::command(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "family::a_wide_wait_reply_counts_states_and_names_only_the_mover",
+                "--nocapture",
+            ])
+            .env("RLM_WIDE_WAIT_CHILD", "1")
+            .env("YI_LEVERS", &overrides)
+            .output()?;
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        assert!(output.status.success(), "wide child failed: {output:?}");
+        return Ok(());
+    }
+    yi_runtime::levers::init(true)?;
+    let family = faux_reader_family(128)?;
+    for _ in 0..127 {
+        spawn_reader(&family)?;
+    }
+    assert!(all_readers_finished(&family, 127).await);
+    let cursor = family.host.wait(1_000, Some(0)).await?["cursor"]
+        .as_u64()
+        .ok_or("cursor")?;
+    let last = spawn_reader(&family)?;
+    assert!(all_readers_finished(&family, 128).await);
+    let reply = family.host.wait(1_000, Some(cursor)).await?;
+    let bytes = serde_json::to_vec(&reply)?.len();
+    println!("WAIT_REPLY_BYTES={bytes}");
+    assert_eq!(reply["states"].as_object().map(Map::len), Some(1));
+    assert_eq!(reply["states"][&last], json!("finished"));
+    let counts = reply["counts"].as_object().ok_or("counts")?;
+    assert_eq!(counts.values().filter_map(|n| n.as_u64()).sum::<u64>(), 128);
+    assert_eq!(counts["finished"], json!(128));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_settled_wait_lists_every_finished_reader() -> TestResult {
+    let family = faux_reader_family(3)?;
+    let mut names = vec![spawn_reader(&family)?, spawn_reader(&family)?];
+    assert!(all_readers_finished(&family, 2).await);
+    let cursor = family.host.wait(1_000, Some(0)).await?["cursor"]
+        .as_u64()
+        .ok_or("cursor")?;
+    names.push(spawn_reader(&family)?);
+    assert!(all_readers_finished(&family, 3).await);
+    let reply = family.host.wait(1_000, Some(cursor)).await?;
+    names.sort();
+    assert_eq!(reply["state"], json!("settled"));
+    assert_eq!(reply["states"].as_object().map(Map::len), Some(1));
+    assert_eq!(reply["finished"], json!(names));
+    Ok(())
+}
