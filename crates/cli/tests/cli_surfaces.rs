@@ -453,7 +453,7 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
     let made = granted.join("made");
     let command = format!("touch '{}'", made.display());
     let script = bash_script(&workspace, &command, Some("done"))?;
-    let configured = ask(&workspace, "look", &["--faux", &script])?;
+    let configured = ask(&workspace, "look", &["--faux", &script, "--yolo"])?;
     assert_eq!(configured.status.code(), Some(0), "{configured:?}");
     assert!(made.exists());
     std::fs::remove_dir_all(granted)?;

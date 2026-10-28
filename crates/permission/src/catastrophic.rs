@@ -176,6 +176,28 @@ pub fn resolve_target(raw: &str, cwd: &Path) -> PathBuf {
     cwd.join(expand_home(Path::new(raw), home_dir().as_deref()))
 }
 
+pub fn cd_target(word: &str, after_cd: &mut bool) -> bool {
+    let target = *after_cd && !word.starts_with('-');
+    *after_cd = matches!(word, "cd" | "pushd") || *after_cd && word.starts_with('-');
+    target
+}
+
+/// The next shell word, quotes dropped; none when it is empty or built by expansion.
+pub(crate) fn word(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+    while chars.next_if(|next| next.is_whitespace()).is_some() {}
+    let (mut text, mut quote) = (String::new(), None);
+    while let Some(c) =
+        chars.next_if(|c| quote.is_some() || !(c.is_whitespace() || ";&|()<>".contains(*c)))
+    {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            _ => text.push(c),
+        }
+    }
+    (!text.is_empty() && !text.contains(['$', '`'])).then_some(text)
+}
+
 /// Never touches the filesystem: canonicalize() fails on a file being created and a hostile
 /// argument cannot slow a lexical pass. The write-time symlink recheck (§7.2) compensates.
 pub fn lexical_normalize(path: &Path) -> PathBuf {

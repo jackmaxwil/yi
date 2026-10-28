@@ -1,3 +1,5 @@
+use crate::catastrophic::word;
+
 /// Ordered by severity, so the worst of several readings of one argv is the greatest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Class {
@@ -726,6 +728,7 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
     let (mut files, mut quote, mut ends) = (Vec::new(), None, Vec::<String>::new());
     let (mut depth, mut command_start) = (0_u8, true);
     let (mut directory, mut pipeline_tail) = (Some(std::path::PathBuf::new()), false);
+    let (mut command_directory, mut continued) = (directory.clone(), false);
     let mut cd_applies = true;
     for line in command.split('\n') {
         if let Some(end) = ends.first() {
@@ -734,16 +737,20 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
             }
             continue;
         }
-        if quote.is_none() && depth == 0 {
+        let continuing = std::mem::take(&mut continued);
+        if quote.is_none() && depth == 0 && !continuing {
             command_start = true;
             cd_applies = !pipeline_tail;
+            command_directory = directory.clone();
         }
         let (mut chars, mut prev) = (line.chars().peekable(), ' ');
         while let Some(c) = chars.next() {
             match (quote, c) {
                 (Some(open), c) if c == open => quote = None,
                 (Some('"') | None, '\\') => {
-                    chars.next();
+                    if chars.next().is_none() {
+                        continued = true;
+                    }
                     command_start = false;
                 }
                 (Some(_), _) => {}
@@ -789,36 +796,39 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                     depth = depth.saturating_sub(1);
                     command_start = false;
                 }
-                (None, ';') => {
+                (None, ';' | '|' | '&') => {
+                    cd_applies = c == ';' || chars.next_if_eq(&c).is_some();
+                    if c != ';' && !cd_applies {
+                        directory = command_directory.clone();
+                    }
                     command_start = depth == 0;
-                    cd_applies = true;
+                    command_directory = directory.clone();
                 }
-                (None, '|') => {
-                    command_start = depth == 0;
-                    cd_applies = chars.next_if_eq(&'|').is_some();
-                }
-                (None, '&') => {
-                    command_start = depth == 0;
-                    cd_applies = chars.next_if_eq(&'&').is_some();
-                }
-                (None, 'c') if depth == 0 && command_start => {
-                    if chars.next_if_eq(&'d').is_some()
+                (None, 'c' | 'p') if depth == 0 && command_start => {
+                    let mut name = c.to_string();
+                    while let Some(next) = chars.next_if(|next| next.is_alphabetic()) {
+                        name.push(next);
+                    }
+                    if matches!(name.as_str(), "cd" | "pushd")
                         && chars
                             .peek()
                             .is_none_or(|next| next.is_whitespace() || ";&|<>()".contains(*next))
                         && resolve_cd
                         && cd_applies
                     {
-                        let target = word(&mut chars);
+                        let (mut after_cd, mut target) = (true, None);
+                        while let Some(next) = word(&mut chars) {
+                            if crate::catastrophic::cd_target(&next, &mut after_cd) {
+                                target = Some(next);
+                            }
+                            if !after_cd {
+                                break;
+                            }
+                        }
                         directory = match target {
-                            Some(target)
-                                if target != "-" && std::path::Path::new(&target).is_absolute() =>
-                            {
-                                Some(std::path::PathBuf::from(target))
-                            }
-                            Some(target) if target != "-" => {
-                                directory.map(|base| base.join(target))
-                            }
+                            Some(target) if target != "-" => directory
+                                .as_deref()
+                                .map(|base| crate::catastrophic::resolve_target(&target, base)),
                             _ => None,
                         };
                     }
@@ -829,25 +839,9 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
             }
             prev = c;
         }
-        pipeline_tail = !cd_applies && line.trim_end().ends_with(['|', '&']);
+        pipeline_tail = !cd_applies && line.trim_end().ends_with('|');
     }
     files
-}
-
-/// The next shell word, quotes dropped; none when it is empty or built by expansion.
-fn word(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
-    while chars.next_if(|next| next.is_whitespace()).is_some() {}
-    let (mut text, mut quote) = (String::new(), None);
-    while let Some(c) =
-        chars.next_if(|c| quote.is_some() || !(c.is_whitespace() || ";&|()<>".contains(*c)))
-    {
-        match (quote, c) {
-            (Some(open), c) if c == open => quote = None,
-            (None, '\'' | '"') => quote = Some(c),
-            _ => text.push(c),
-        }
-    }
-    (!text.is_empty() && !text.contains(['$', '`'])).then_some(text)
 }
 
 /// What a command writes as an honest agent spells it: redirects (which the lenient splitter
