@@ -168,10 +168,8 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
             let details = details.clone().unwrap_or(Value::Null);
             if *is_error {
                 row.errors = row.errors.saturating_add(1);
-                let kind = details
-                    .get("errorKind")
-                    .and_then(Value::as_str)
-                    .unwrap_or("tool_error");
+                let kind =
+                    yi_types::event::ToolErrorKind::from_details(&details).unwrap_or("tool_error");
                 let seen = row.error_kinds.entry(kind.to_owned()).or_default();
                 *seen = seen.saturating_add(1);
             }
