@@ -182,7 +182,8 @@ One file, `~/.yi/config.json`; every key is in
 ## Develop
 
 `just dev` builds, stops a daemon a previous build left running, and starts `yi`.
-`just check` runs fmt, clippy, the guardrails and the tests. Read
+`just test-quick` runs the workspace without the tests last measured at 5 seconds or more; it prints the skipped count and never replaces a gate. `just slow-tests` records fresh JUnit timings and regenerates that list.
+`just check` runs fmt, clippy, the guardrails and the complete tests. Read
 [YI_DESIGN.md](docs/YI_DESIGN.md) (the law) and [ARCHITECTURE.md](docs/ARCHITECTURE.md)
 (the map) first; where changes land is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
