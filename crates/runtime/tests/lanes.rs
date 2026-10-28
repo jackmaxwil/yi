@@ -1396,13 +1396,9 @@ mod accept {
         let pool = Pool::open(&rig.home, &parent, 3)?;
         let store = PlanStore::open(rig.root.join("plans"))?;
         let plan = PlanId::slug(GOAL)?;
-        let manifest = json!({
-            "manifest": 1, "command": CHECK, "cwd": "snapshot_root", "cwd_subdir": null,
-            "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
-        });
-        let checker = store.artifacts(&plan).put(
-            &serde_json::to_vec(&manifest)?,
-            "application/vnd.yi.checker-manifest+json",
+        let checker = crate::checker::put_checker(
+            &store.artifacts(&plan),
+            &crate::checker::checker_manifest(CHECK, 10_000, &[], false),
             &store.nonce(),
         )?;
         let contract: Contract = serde_json::from_value(json!({
