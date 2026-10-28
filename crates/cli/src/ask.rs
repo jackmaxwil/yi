@@ -519,6 +519,10 @@ async fn follow(
     // Incident: a hold that expired with no `--deadline` set closed as kind `deadline`.
     let deadline = !finished && ends.is_some_and(|at| Instant::now() >= at);
     let mut line = final_event(deadline, final_answer, last_error.as_deref());
+    if exit == EXIT_DENIED && matches!(line["kind"].as_str(), Some("stop" | "no_answer")) {
+        let class = ErrorClass::Harness("denied".to_owned());
+        line = error_final(&class, "the run ended on a denied tool call");
+    }
     // The final line describes the run's exit, so a clean stop whose answer broke the schema is an error.
     if schema_failed && matches!(line["kind"].as_str(), Some("stop" | "no_answer")) {
         let class = ErrorClass::Harness("schema".to_owned());

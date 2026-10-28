@@ -2916,6 +2916,8 @@ fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -
     let mut lines = out.lines().rev();
     let last: Value = serde_json::from_str(lines.next().ok_or("no output")?)?;
     assert_eq!(last["type"], "final", "{out}");
+    assert_eq!(last["kind"], "error", "{out}");
+    assert_eq!(last["class"], "harness:denied", "{out}");
     let denied: Value = serde_json::from_str(lines.next().ok_or("no denial")?)?;
     assert_eq!(denied["type"], "denied", "{out}");
     assert_eq!(denied["tool"], "bash", "{out}");
