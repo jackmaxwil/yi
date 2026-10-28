@@ -23,23 +23,7 @@ fn theme() -> Theme {
 }
 
 fn test_app() -> yi_tui::app::App {
-    yi_tui::app::App::new(
-        yi_tui::app::TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-            follow: yi_types::config::FollowMode::default(),
-        },
-        theme(),
-        default_keymap(),
-        80,
-    )
+    common::app()
 }
 
 fn flat(line: &Line<'_>) -> String {

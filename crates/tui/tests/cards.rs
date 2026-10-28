@@ -24,16 +24,8 @@ fn theme() -> Theme {
 fn app() -> App {
     App::new(
         TuiOptions {
-            model: common::test_model("faux-1"),
             session_name: "cards".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-            follow: yi_types::config::FollowMode::default(),
+            ..common::options()
         },
         theme(),
         default_keymap(),

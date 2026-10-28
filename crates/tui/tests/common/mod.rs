@@ -387,6 +387,32 @@ pub fn test_model(id: &str) -> yi_types::model::Model {
     }
 }
 
+#[allow(dead_code, reason = "the shared harness serves several test binaries")]
+pub fn options() -> yi_tui::app::TuiOptions {
+    yi_tui::app::TuiOptions {
+        model: test_model("faux-1"),
+        session_name: "s".to_owned(),
+        cwd: "/tmp".to_owned(),
+        lane: None,
+        context_window: 128_000,
+        session_dir: String::new(),
+        keys: Vec::new(),
+        initial_prompt: None,
+        pace: 0,
+        follow: yi_types::config::FollowMode::default(),
+    }
+}
+
+#[allow(dead_code, reason = "the shared harness serves several test binaries")]
+pub fn app() -> yi_tui::app::App {
+    yi_tui::app::App::new(
+        options(),
+        yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true),
+        yi_tui::keymap::default_keymap(),
+        80,
+    )
+}
+
 /// Replay a recorded session as the event stream the reducer sees live: each
 /// assistant entry re-streamed through `stream_with_deltas`, each tool result
 /// paired with the call it answers, and every turn a typed prompt opens is

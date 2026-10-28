@@ -5,9 +5,8 @@ use std::error::Error;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::Event as CtEvent;
 use ratatui::layout::Rect;
-use yi_tui::app::{App, TuiOptions};
+use yi_tui::app::App;
 use yi_tui::cell::{Cell, ToolCell, ToolStatus};
-use yi_tui::colors::{ColorTier, Theme};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, StopReason};
 
@@ -19,23 +18,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 const AREA: Rect = Rect::new(0, 0, 60, 20);
 
 fn app() -> App {
-    App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-            follow: yi_types::config::FollowMode::default(),
-        },
-        Theme::new(ColorTier::TrueColor, true),
-        yi_tui::keymap::default_keymap(),
-        80,
-    )
+    common::app()
 }
 
 fn tool(id: &str, rows: usize) -> Cell {
@@ -381,7 +364,7 @@ fn page_clamps_its_jump_when_the_floor_is_over_half_the_pane() -> TestResult {
         CtEvent::Paste("draft\nline".to_owned()),
     );
     app.set_kitty(true);
-    let floor = yi_tui::render::layout_chat(&mut app, None, None, area.height).floor;
+    let floor = yi_tui::render::layout_chat(&mut app, None, None).floor;
     assert!(
         floor > area.height / 2 && floor < area.height,
         "floor {floor}"
@@ -395,9 +378,15 @@ fn page_clamps_its_jump_when_the_floor_is_over_half_the_pane() -> TestResult {
     app.commit_cell(&Cell::Assistant {
         markdown: format!("```rust\n{}\n```\n", code.join("\n")),
     });
-    for _ in 0..10 {
-        let _ = paint_in(&mut app, area, &mut scroll);
-    }
+    let visible = usize::from(area.height.saturating_sub(floor));
+    let _ = paint_in(&mut app, area, &mut scroll);
+    let (after, _) = paint_in(&mut app, area, &mut scroll);
+    assert_eq!(visible, 5, "test setup: visible transcript rows");
+    assert!(
+        after.iter().any(|row| row.contains("let x003"))
+            && !after.iter().any(|row| row.contains("let x008")),
+        "second page window: {after:#?}"
+    );
     Ok(())
 }
 
@@ -456,9 +445,16 @@ fn still_marker_lands_on_vt100_at_a_nonzero_offset() -> TestResult {
     let rows: Vec<String> = (0..40)
         .map(|row| terminal.backend().row_text(row))
         .collect();
+    let reserved = area.bottom().saturating_sub(4);
     assert!(
-        rows.iter().any(|row| row.contains("more rows · PgDn")),
-        "{rows:#?}"
+        rows.get(usize::from(reserved))
+            .is_some_and(|row| row.contains("more rows · PgDn")),
+        "reserved row {reserved}: {rows:#?}"
+    );
+    assert!(
+        rows.get(usize::from(area.bottom().saturating_sub(1)))
+            .is_some_and(|row| row.contains('╰') && row.contains('╯')),
+        "composer bottom: {rows:#?}"
     );
     Ok(())
 }

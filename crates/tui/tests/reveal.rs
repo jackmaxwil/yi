@@ -122,16 +122,9 @@ use crate::common;
 fn app_with_pace(pace: u16) -> yi_tui::app::App {
     yi_tui::app::App::new(
         yi_tui::TuiOptions {
-            model: common::test_model("faux-1"),
             session_name: "reveal".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
             pace,
-            follow: yi_types::config::FollowMode::default(),
+            ..common::options()
         },
         yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true),
         yi_tui::keymap::default_keymap(),

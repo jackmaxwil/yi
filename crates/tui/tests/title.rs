@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use yi_tui::app::{App, TuiOptions};
+use yi_tui::app::App;
 use yi_tui::cell::Cell;
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::title::{self, Scene};
@@ -335,23 +335,7 @@ fn a_scene_is_found_by_its_name_and_by_no_other() {
 }
 
 fn app() -> App {
-    App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-            follow: yi_types::config::FollowMode::Page,
-        },
-        theme(),
-        yi_tui::keymap::default_keymap(),
-        80,
-    )
+    common::app()
 }
 
 /// Incident: the small mark showed beside the big one, two logos at once. While the title covers

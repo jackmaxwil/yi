@@ -6,7 +6,7 @@ use std::error::Error;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use yi_tui::app::{App, TuiOptions};
+use yi_tui::app::App;
 use yi_tui::cell::Cell;
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::markdown::{Settled, StableScan, render, stable_stream, work};
@@ -190,23 +190,7 @@ fn a_resumed_scan_cuts_where_a_whole_scan_does() -> TestResult {
 }
 
 fn app() -> App {
-    let mut app = App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-            follow: yi_types::config::FollowMode::default(),
-        },
-        theme(),
-        yi_tui::keymap::default_keymap(),
-        80,
-    );
+    let mut app = common::app();
     app.set_pane();
     app
 }

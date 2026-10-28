@@ -119,14 +119,14 @@ fn draw_frame<B>(
         .and_then(|feed| feed.hud());
     app.sync_port(port);
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
-    let mut layout = layout_chat(app, goal, memory, u16::MAX);
+    let mut layout = layout_chat(app, goal, memory);
     let above = usize::from(total.saturating_sub(layout.floor.min(total)));
     let live = std::mem::take(&mut layout.live);
     let followed = follow_column(app, live, above, usize::from(total));
     layout.live = followed.live;
-    layout.follow_more = followed.more;
+    let rows = layout.rows().saturating_add(u16::from(followed.more > 0));
     let resized = terminal
-        .resize_viewport(layout.rows(), layout.floor)
+        .resize_viewport(rows, layout.floor)
         .unwrap_or(false);
     if resized || mode_changed {
         terminal.invalidate_viewport();
@@ -134,7 +134,7 @@ fn draw_frame<B>(
     let mut placed = Placed::default();
     let _ = terminal.draw(|frame| {
         let area = frame.area();
-        placed = paint_chat(app, &layout, frame.buffer_mut(), area);
+        placed = paint_chat(app, &layout, frame.buffer_mut(), area, followed.more);
     });
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
@@ -212,7 +212,6 @@ fn join_live(out: &mut Vec<Line<'static>>, blank_above: bool, rows: Vec<Line<'st
 
 pub struct ChatLayout {
     live: Vec<Line<'static>>,
-    follow_more: usize,
     working: Vec<Line<'static>>,
     hud: Vec<Line<'static>>,
     bottom: Option<Vec<Line<'static>>>,
@@ -228,33 +227,11 @@ impl ChatLayout {
     pub fn rows(&self) -> u16 {
         u16::try_from(self.live.len())
             .unwrap_or(u16::MAX)
-            .saturating_add(u16::try_from(self.follow_more).unwrap_or(u16::MAX))
             .saturating_add(self.floor)
     }
 }
 
-/// Everything the chat shows for a frame of `total` rows, assembled from the app alone;
-/// the live tail is trimmed to what the rest leaves.
-pub fn layout_chat(
-    app: &mut App,
-    goal: Option<GoalView>,
-    memory: Option<String>,
-    total: u16,
-) -> ChatLayout {
-    let spinner = app.spinner_phase();
-    let theme = app.theme;
-    let width = app.width;
-
-    let mut live_lines = live_lines(app, spinner, &theme);
-    let hud_lines = if app.hud_hidden {
-        Vec::new()
-    } else {
-        crate::hud::render(&crate::hud::input(app, goal, memory), &theme)
-            .into_iter()
-            .map(|line| crate::wrap::fit(line, width))
-            .collect()
-    };
-
+fn status_input(app: &App) -> StatusInput {
     let selected = &app.selection.model;
     // OpenRouter is the one router yi reaches; its `vendor/` prefix names the maker, not the route.
     let routed = selected.provider == "openrouter";
@@ -270,7 +247,7 @@ pub fn layout_chat(
             .cache_read
             .as_f64()
             .is_some_and(|price| price > 0.0);
-    let status_input = StatusInput {
+    StatusInput {
         model,
         provider,
         thinking: (app.selection.effort != yi_types::model::Effort::Off)
@@ -300,7 +277,26 @@ pub fn layout_chat(
         context_used: app.context_used,
         context_window: app.options.context_window,
         focused_child: app.focused.clone(),
+    }
+}
+
+/// Everything the chat shows for a frame, assembled from the app alone.
+pub fn layout_chat(app: &mut App, goal: Option<GoalView>, memory: Option<String>) -> ChatLayout {
+    let spinner = app.spinner_phase();
+    let theme = app.theme;
+    let width = app.width;
+
+    let live_lines = live_lines(app, spinner, &theme);
+    let hud_lines = if app.hud_hidden {
+        Vec::new()
+    } else {
+        crate::hud::render(&crate::hud::input(app, goal, memory), &theme)
+            .into_iter()
+            .map(|line| crate::wrap::fit(line, width))
+            .collect()
     };
+
+    let status_input = status_input(app);
     let bottom_lines: Option<Vec<Line<'static>>> = if let Some(tree) = &app.tree {
         Some(tree.lines(width, &theme, tree_rows(app.rows)))
     } else if let Some(plan_tree) = &app.plan_tree {
@@ -398,13 +394,8 @@ pub fn layout_chat(
         })
         .saturating_add(bottom_height)
         .saturating_add(u16::from(!on_rule));
-    let budget = total.saturating_sub(floor);
-    if rows(&live_lines) > budget {
-        live_lines = keep_last(live_lines, usize::from(budget));
-    }
     ChatLayout {
         live: live_lines,
-        follow_more: 0,
         working,
         hud: hud_lines,
         bottom: bottom_lines,
@@ -431,7 +422,13 @@ fn logo_rows(bottom_at: Option<(u16, u16)>) -> Option<(u16, u16)> {
 
 /// Paints a layout into any rectangle of a buffer; returns where the orb and the bottom
 /// block belong.
-pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rect) -> Placed {
+pub fn paint_chat(
+    app: &App,
+    layout: &ChatLayout,
+    buffer: &mut Buffer,
+    area: Rect,
+    follow_more: usize,
+) -> Placed {
     let mut orb_at = None;
     let mut bottom_at = None;
     let mut y = area.top();
@@ -446,15 +443,8 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
         *y = y.saturating_add(height);
     };
     put(buffer, &layout.live, &mut y);
-    if layout.follow_more > 0 {
-        let marker = Line::styled(
-            format!(
-                "↓ {} more rows · PgDn",
-                layout.follow_more.saturating_add(1)
-            ),
-            app.theme.dim_style(),
-        );
-        put(buffer, &[marker], &mut y);
+    if follow_more > 0 {
+        put(buffer, &[follow_marker(app, follow_more)], &mut y);
     }
     // Incident (D46): the mark trails the live tail. §17.3 makes the viewport's top row the
     // commit boundary, so a leading mark walked down a paragraph at a time.
@@ -494,6 +484,13 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
     }
 }
 
+fn follow_marker(app: &App, more: usize) -> Line<'static> {
+    Line::styled(
+        format!("↓ {} more rows · PgDn", more.saturating_add(1)),
+        app.theme.dim_style(),
+    )
+}
+
 /// Rows that land at once roll in one a frame, as the owner chose, faster only when far behind:
 /// past this many rows behind the step grows, so 200 rows land in under 70 frames, not 200.
 const ROLL_ROWS: usize = 24;
@@ -531,9 +528,8 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
                 yi_types::config::FollowMode::Slide => {
                     Some(base.saturating_add(behind.div_ceil(ROLL_ROWS)))
                 }
-                yi_types::config::FollowMode::Page if base < above => Some(column.len().min(above)),
                 yi_types::config::FollowMode::Page if column.len() > base => {
-                    Some(base.saturating_add((height / 2).max(1)))
+                    Some(base.saturating_add((height / 2).max(1).min(above)))
                 }
                 yi_types::config::FollowMode::Page => Some(base),
                 yi_types::config::FollowMode::Still if base < above => {
@@ -596,7 +592,7 @@ pub fn paint_pane(
     let _ = app.take_pending_repaint();
     app.set_width(usize::from(area.width));
     app.set_rows(usize::from(area.height));
-    let mut layout = layout_chat(app, goal, None, u16::MAX);
+    let mut layout = layout_chat(app, goal, None);
     let top_orb =
         (app.title_idle() && layout.kitty && !layout.show_working && area.height >= ORB_ROWS)
             .then_some((area.left(), area.top()));
@@ -608,9 +604,10 @@ pub fn paint_pane(
     let floor = layout.floor.min(area.height);
     let above = usize::from(area.height.saturating_sub(floor));
     let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
+    let mut follow_more = 0;
     let result = if *scroll == 0 {
         let followed = follow_column(app, live, above, usize::from(area.height));
-        layout.follow_more = followed.more;
+        follow_more = followed.more;
         (followed.rows, followed.owners, None)
     } else {
         app.pane_follow = None;
@@ -663,7 +660,16 @@ pub fn paint_pane(
         area.width,
         floor,
     );
-    let placed = paint_chat(app, &layout, buffer, chat_area);
+    let placed = paint_chat(app, &layout, buffer, chat_area, 0);
+    if follow_more > 0
+        && let Some(y) = chat_area.top().checked_sub(1)
+    {
+        Widget::render(
+            Paragraph::new(follow_marker(app, follow_more)),
+            Rect::new(area.left(), y, area.width, 1),
+            buffer,
+        );
+    }
     app.orb_slot = top_orb.or(placed.orb);
     app.orb_placement = app.orb_slot.filter(|_| !app.title_cover);
     app.logo_rows = logo_rows(placed.bottom);

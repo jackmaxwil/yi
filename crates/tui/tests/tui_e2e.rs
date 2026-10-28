@@ -125,14 +125,7 @@ fn options() -> TuiOptions {
     TuiOptions {
         model: faux_model(),
         session_name: "e2e".to_owned(),
-        cwd: "/tmp".to_owned(),
-        lane: None,
-        context_window: 128_000,
-        session_dir: String::new(),
-        keys: Vec::new(),
-        initial_prompt: None,
-        pace: 0,
-        follow: yi_types::config::FollowMode::Page,
+        ..common::options()
     }
 }
 
@@ -680,7 +673,9 @@ fn a_streamed_line_is_written_as_an_append() -> TestResult {
 
 #[test]
 fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
-    let backend = VT100Backend::with_scrollback(80, 12, 200);
+    use std::io::Write;
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    backend.write_all(&b"\n".repeat(23))?;
     let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.set_rows(12);
@@ -692,8 +687,10 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
         .join("\n");
     app.reduce_agent(streamed(&body));
     yi_tui::render::draw(&mut app, &mut terminal, None);
+    assert_eq!(terminal.viewport_area().height, 5);
+    let marker = terminal.backend().row_text(19);
+    assert!(marker.contains("more rows · PgDn"), "{marker:?}");
     let contents = terminal.backend().contents();
-    assert!(contents.contains("more rows · PgDn"), "{contents}");
     assert!(!contents.contains("row 29 of the answer"), "{contents}");
     Ok(())
 }
@@ -2919,7 +2916,7 @@ fn the_chat_paints_into_a_rectangle_and_stays_inside_it() -> TestResult {
     }
     let _ = app.take_commits();
     let rect = Rect::new(10, 5, 60, 12);
-    let layout = yi_tui::render::layout_chat(&mut app, None, None, rect.height);
+    let layout = yi_tui::render::layout_chat(&mut app, None, None);
     let used = layout.rows().min(rect.height);
     let above = rect.height.saturating_sub(used);
     let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
@@ -2932,6 +2929,7 @@ fn the_chat_paints_into_a_rectangle_and_stays_inside_it() -> TestResult {
         &layout,
         &mut buffer,
         Rect::new(rect.x, rect.y.saturating_add(above), rect.width, used),
+        0,
     );
     let row = |y: u16| text_of(&buffer, y);
     let top = row(rect.y + rect.height - 3);
@@ -3584,11 +3582,11 @@ fn solo_session_verbs_answer_as_the_console_does() -> TestResult {
 
 fn painted(app: &mut App) -> ratatui::buffer::Buffer {
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    let layout = yi_tui::render::layout_chat(app, None, None, area.height);
+    let layout = yi_tui::render::layout_chat(app, None, None);
     let used = layout.rows().min(area.height);
     let mut buffer = ratatui::buffer::Buffer::empty(area);
     let at = ratatui::layout::Rect::new(0, area.height - used, area.width, used);
-    yi_tui::render::paint_chat(app, &layout, &mut buffer, at);
+    yi_tui::render::paint_chat(app, &layout, &mut buffer, at, 0);
     buffer
 }
 

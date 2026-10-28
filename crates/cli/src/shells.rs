@@ -323,18 +323,102 @@ fn follow_mode(
     })
 }
 
+#[cfg(feature = "tui")]
+fn reduce_motion_plist(bytes: &[u8]) -> Option<bool> {
+    if bytes.starts_with(b"bplist00") {
+        return binary_reduce_motion(bytes);
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let (_, tail) = text.split_once("<key>reduceMotion</key>")?;
+    let tail = tail.split("<key>").next()?;
+    if ["<true/>", "<true />"].iter().any(|tag| tail.contains(tag)) {
+        Some(true)
+    } else if ["<false/>", "<false />"]
+        .iter()
+        .any(|tag| tail.contains(tag))
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "tui")]
+fn binary_reduce_motion(bytes: &[u8]) -> Option<bool> {
+    let trailer = bytes.len().checked_sub(32)?;
+    let offset_size = usize::from(*bytes.get(trailer.checked_add(6)?)?);
+    let ref_size = usize::from(*bytes.get(trailer.checked_add(7)?)?);
+    let root = be_uint(bytes, trailer.checked_add(16)?, 8)?;
+    let offset_table = be_uint(bytes, trailer.checked_add(24)?, 8)?;
+    let object_at = |index: usize| {
+        let at = offset_table.checked_add(index.checked_mul(offset_size)?)?;
+        be_uint(bytes, at, offset_size)
+    };
+    let (kind, count, keys) = binary_object(bytes, object_at(root)?)?;
+    if kind != 0x0d {
+        return None;
+    }
+    let values = keys.checked_add(count.checked_mul(ref_size)?)?;
+    for index in 0..count {
+        let key_at = keys.checked_add(index.checked_mul(ref_size)?)?;
+        let key = object_at(be_uint(bytes, key_at, ref_size)?)?;
+        if !binary_string_is(bytes, key, b"reduceMotion") {
+            continue;
+        }
+        let value_at = values.checked_add(index.checked_mul(ref_size)?)?;
+        let value = object_at(be_uint(bytes, value_at, ref_size)?)?;
+        return match bytes.get(value) {
+            Some(0x09) => Some(true),
+            Some(0x08) => Some(false),
+            _ => None,
+        };
+    }
+    None
+}
+
+#[cfg(feature = "tui")]
+fn binary_object(bytes: &[u8], at: usize) -> Option<(u8, usize, usize)> {
+    let marker = *bytes.get(at)?;
+    let kind = marker >> 4;
+    let short = usize::from(marker & 0x0f);
+    if short < 15 {
+        return Some((kind, short, at.checked_add(1)?));
+    }
+    let integer = *bytes.get(at.checked_add(1)?)?;
+    if integer >> 4 != 1 {
+        return None;
+    }
+    let width = 1usize.checked_shl(u32::from(integer & 0x0f))?;
+    let start = at.checked_add(2)?;
+    let count = be_uint(bytes, start, width)?;
+    Some((kind, count, start.checked_add(width)?))
+}
+
+#[cfg(feature = "tui")]
+fn binary_string_is(bytes: &[u8], at: usize, expected: &[u8]) -> bool {
+    let Some((0x05, count, start)) = binary_object(bytes, at) else {
+        return false;
+    };
+    start
+        .checked_add(count)
+        .and_then(|end| bytes.get(start..end))
+        == Some(expected)
+}
+
+#[cfg(feature = "tui")]
+fn be_uint(bytes: &[u8], at: usize, size: usize) -> Option<usize> {
+    let end = at.checked_add(size)?;
+    bytes.get(at..end)?.iter().try_fold(0usize, |value, byte| {
+        value.checked_mul(256)?.checked_add(usize::from(*byte))
+    })
+}
+
 #[cfg(all(feature = "tui", target_os = "macos"))]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "startup reads macOS Reduce Motion once with the platform defaults tool"
-)]
 fn reduce_motion() -> Option<bool> {
-    let output = std::process::Command::new("defaults")
-        .args(["read", "com.apple.universalaccess", "reduceMotion"])
-        .output()
-        .ok()?;
-    (output.status.success() && output.stdout.iter().copied().eq(b"1\n".iter().copied()))
-        .then_some(true)
+    let home = std::env::var_os("HOME")?;
+    let path =
+        std::path::PathBuf::from(home).join("Library/Preferences/com.apple.universalaccess.plist");
+    reduce_motion_plist(&std::fs::read(path).ok()?)
 }
 
 #[cfg(all(feature = "tui", not(target_os = "macos")))]
@@ -496,5 +580,33 @@ mod tests {
             super::follow_mode(Some(FollowMode::Slide), || Some(true)),
             FollowMode::Slide
         );
+    }
+    #[test]
+    fn reduce_motion_reads_xml_and_binary_plists() {
+        let xml = |value: &str| {
+            format!(
+                "<?xml version=\"1.0\"?><plist><dict><key>reduceMotion</key>{value}</dict></plist>"
+            )
+        };
+        assert_eq!(
+            super::reduce_motion_plist(xml("<true/>").as_bytes()),
+            Some(true)
+        );
+        assert_eq!(
+            super::reduce_motion_plist(xml("<false/>").as_bytes()),
+            Some(false)
+        );
+        let binary = [
+            0x62, 0x70, 0x6c, 0x69, 0x73, 0x74, 0x30, 0x30, 0xd1, 0x01, 0x02, 0x5c, 0x72, 0x65,
+            0x64, 0x75, 0x63, 0x65, 0x4d, 0x6f, 0x74, 0x69, 0x6f, 0x6e, 0x09, 0x08, 0x0b, 0x18,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x19,
+        ];
+        assert_eq!(super::reduce_motion_plist(&binary), Some(true));
+        let mut disabled = binary;
+        disabled[24] = 0x08;
+        assert_eq!(super::reduce_motion_plist(&disabled), Some(false));
+        assert_eq!(super::reduce_motion_plist(b"bplist00"), None);
     }
 }
