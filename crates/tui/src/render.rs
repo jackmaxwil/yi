@@ -596,9 +596,9 @@ pub fn paint_pane(
     }
     let chat_area = Rect::new(
         area.left(),
-        area.top().saturating_add(rows),
+        area.bottom().saturating_sub(floor),
         area.width,
-        area.height.saturating_sub(rows),
+        floor,
     );
     let placed = paint_chat(app, &layout, buffer, chat_area);
     app.orb_slot = placed.orb;

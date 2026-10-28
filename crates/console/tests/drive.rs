@@ -475,13 +475,20 @@ fn resume_blank(frame: &Value) -> Vec<Value> {
 fn composer_stays_above_hint_for_empty_sessions() -> TestResult {
     for sidebar in [SidebarMode::Full, SidebarMode::Rail] {
         let case = format!("empty-{sidebar:?}");
+        let marker = match sidebar {
+            SidebarMode::Full => "s-alpha",
+            SidebarMode::Rail => "1 SA",
+        };
+        let script =
+            format!("wait-frame 5000 {marker}\nkey enter\nwait-frame 5000 0.0% / 128K\nquit\n");
         let frame = run_frames_sized(
             &case,
             replayed_session(resume_blank),
-            "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 0.0% / 128K\nquit\n",
+            &script,
             sidebar,
             (120, 40),
-        )?;
+        )
+        .map_err(|error| format!("{case}: {error}"))?;
         assert_composer_above_hint(&frame, 40, &case)?;
     }
     Ok(())
@@ -517,10 +524,15 @@ fn composer_stays_above_hint_for_short_and_long_transcripts() -> TestResult {
     ] {
         for sidebar in [SidebarMode::Full, SidebarMode::Rail] {
             let case = format!("{name}-{sidebar:?}");
+            let ready = match sidebar {
+                SidebarMode::Full => "s-alpha",
+                SidebarMode::Rail => "1 SA",
+            };
             let script =
-                format!("wait-frame 5000 s-alpha\nkey enter\nwait-frame 15000 {marker}\nquit\n");
+                format!("wait-frame 5000 {ready}\nkey enter\nwait-frame 15000 {marker}\nquit\n");
             let frame =
-                run_frames_sized(&case, replayed_session(resume), &script, sidebar, (120, 40))?;
+                run_frames_sized(&case, replayed_session(resume), &script, sidebar, (120, 40))
+                    .map_err(|error| format!("{case}: {error}"))?;
             assert_composer_above_hint(&frame, 40, &case)?;
         }
     }
@@ -548,7 +560,7 @@ fn composer_stays_above_hint_in_a_ten_row_window() -> TestResult {
 fn composer_stays_above_hint_with_search_and_a_popup() -> TestResult {
     for (name, action, marker) in [
         ("search", "key ctrl-r\n", "reverse-i-search"),
-        ("popup", "type /\n", "compact"),
+        ("popup", "type /\n", "plantree"),
     ] {
         let script = format!(
             "wait-frame 5000 command palette\nkey alt-n\nwait-frame 5000 s-new\n{action}wait-frame 5000 {marker}\nquit\n"
@@ -571,7 +583,14 @@ fn composer_stays_above_hint_with_search_and_a_popup() -> TestResult {
             "{name}: bottom view moved away from the hint row\n{frame}"
         );
         if name == "search" {
-            assert_composer_above_hint(&frame, 40, name)?;
+            let composer = rows
+                .iter()
+                .rposition(|row| row.contains('╰') && row.contains('╯'));
+            assert_eq!(
+                composer,
+                Some(37),
+                "search composer is not above its status row\n{frame}"
+            );
         }
     }
     Ok(())
