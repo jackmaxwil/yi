@@ -1,5 +1,6 @@
 ---
 issue: Closes #1718
+growth: +391 additive wire metadata and one shared live/replay projection; a second renderer, timeline, console implementation and persistent terminal bytes were weighed for deletion and rejected as duplicates
 raise: tests +699, crate console +4, crate runtime +95, crate tui +274, crate types +18
 decision: Subagents should be persistent in their two locations in the scrollback: at start and end | One shared formatter projects the durable spawn and end records into two concise rows, so the live card no longer needs to become the permanent end record | Remove the replay projection and restore the committed full Task cell; the added optional wire fields remain additive and old readers ignore them
 ---

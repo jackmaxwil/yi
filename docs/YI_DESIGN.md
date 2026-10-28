@@ -788,6 +788,11 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   exit. `retire` is the only exit from the roster: it refuses a worktree child with no
   disposition, aborts a live run, disposes the kernel, settles the lane, returns the lease and
   publishes one final `ChildUpdate`. A `worktree` lane goes back by `rlm.merge_worktree` (§14).
+- `ChildUpdate` adds optional `session`, `role`, `task`, and terminal `elapsedMs`; the spawn trail
+  adds `role` and `task`, and the end trail adds `elapsedMs`, `cost`, and `answerPreview`. Admission
+  keeps the child session id, role, capped task and start instant; one terminal snapshot supplies
+  both the update and trail. Fresh reap, repossession and parent close journal one end, never a
+  duplicate after conclusion, and `parent closed` outranks generic interrupted or revoked text.
 - State: `ChildExit { Completed, Failed { class }, Interrupted, Reaped, Repossessed }`,
   `FailClass { RefusedSpawn, Provider, KernelDeath, RedCheck, Deadline }`, `ChildStatus`,
   `ChildActivity`, `ChildFlag { NeedsYou, Stuck }`; `family.rs` holds `Cause` and
@@ -1156,6 +1161,12 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   paces the painted tail.
 - Resize and mode change rebuild scrollback from the transcript; text wraps at width less 2; a
   frame draws only on change.
+- A child commits one `Rule` at admission and one `Rule` per run's end: role and task first, then
+  outcome, elapsed time, tokens, optional cost, `start <child-id>`, and the first result or error
+  line. The full card stays live, while the concise end row replaces the old committed full card.
+  A `spawnedBy` row waits for that antecedent, unresolved references flush at turn or replay
+  settlement, and a late end appends at finish. Entry-zero replay rebuilds the same rows without
+  creating live cards; eviction, resize and every transcript mode preserve them.
 - A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, 3 result
   rows then `… N more lines` when collapsed.
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block
@@ -1181,6 +1192,8 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
 
 - The protocol reducer runs synchronously in the UI loop; IO threads only move frames.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
+- Console inherits the persistent child start and end rows through that same `yi-tui` reducer,
+  including entry-zero replay; its sidebar's separate live-status cache is unchanged.
 - A drag copies the words under it, without Yi's rails and gutters, over OSC 52.
 - A right-click opens a menu for what is under it: a message (Copy, Copy as plain text or raw
   JSON, Quote, Inspect; on a prompt Re-ask from here and Rewind to here, the conversation or it and
