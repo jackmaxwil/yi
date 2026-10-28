@@ -284,9 +284,10 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
     app.wake = Some(event_tx.clone());
-    app.kitty = crate::kitty::supported(
+    app.kitty = yi_tui::orb::kitty::supported_in(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
     );
     configure(&mut app, options);
     app.animate = true;
@@ -294,11 +295,10 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
         std::env::var("TERM_PROGRAM").ok().as_deref(),
         std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
     );
-    app.cmd_hints = crate::kitty::supported(
+    app.cmd_hints = crate::kitty::command_chords(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
     );
-
     if let Err(error) = enable_raw_mode() {
         eprintln!("error: raw mode: {error}");
         return 1;

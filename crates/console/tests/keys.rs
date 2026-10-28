@@ -70,3 +70,39 @@ fn the_header_buttons_and_terminal_keep_chords_the_terminal_leaves_alone() {
         assert_eq!(direct(&key), Some(want), "{modifiers:?} {c}");
     }
 }
+
+#[test]
+fn terminal_environments_share_graphics_support_but_not_chord_support() {
+    let environments = [
+        (
+            "Ghostty",
+            "xterm-ghostty",
+            Some("ghostty"),
+            None,
+            true,
+            true,
+        ),
+        ("kitty", "xterm-kitty", None, Some("1"), true, true),
+        (
+            "tmux in kitty",
+            "tmux-256color",
+            Some("tmux"),
+            Some("1"),
+            true,
+            false,
+        ),
+        ("xterm", "xterm-256color", None, None, false, false),
+    ];
+    for (name, term, program, window_id, graphics, chords) in environments {
+        assert_eq!(
+            yi_tui::orb::kitty::supported_in(Some(term), program, window_id),
+            graphics,
+            "{name} graphics"
+        );
+        assert_eq!(
+            yi_console::kitty::command_chords(Some(term), program),
+            chords,
+            "{name} chords"
+        );
+    }
+}

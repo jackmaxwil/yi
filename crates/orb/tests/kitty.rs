@@ -91,6 +91,42 @@ fn kitty_emit_transmits_an_inflatable_zlib_stream() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn base64_payloads_leave_in_bounded_chunks() -> TestResult {
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4+3g/AATwAnDE8Xs+AAAAAElFTkSuQmCC";
+    for len in [4096, 4097, 10000] {
+        let payload: String = PNG.chars().cycle().take(len).collect();
+        let mut wire = Vec::new();
+        orb::kitty::transmit_base64(&mut wire, 42, &payload, "f=100")?;
+        let wire = String::from_utf8(wire)?;
+        let escapes: Vec<&str> = wire
+            .split("\x1b\\")
+            .filter(|part| !part.is_empty())
+            .collect();
+        assert_eq!(escapes.len(), len.div_ceil(4096), "{len} bytes");
+        let mut offset = 0_usize;
+        for (index, escape) in escapes.into_iter().enumerate() {
+            let (control, body) = escape
+                .strip_prefix("\x1b_G")
+                .ok_or("no APC")?
+                .split_once(';')
+                .ok_or("no payload")?;
+            let end = offset.saturating_add(4096).min(len);
+            let more = u8::from(end < len);
+            let expected = if index == 0 {
+                format!("f=100,a=t,i=42,q=2,m={more}")
+            } else {
+                format!("m={more}")
+            };
+            assert_eq!(control, expected, "{len} bytes, chunk {index}");
+            assert_eq!(body, payload.get(offset..end).ok_or("payload boundary")?);
+            offset = end;
+        }
+        assert_eq!(offset, len);
+    }
+    Ok(())
+}
+
 fn decode_base64(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = Vec::with_capacity(text.len() / 4 * 3);

@@ -13,9 +13,7 @@ pub(crate) fn next_notebook_id(old: Option<u32>) -> u32 {
     let [even, odd] = NOTEBOOK_IDS;
     if old == Some(even) { odd } else { even }
 }
-const CHUNK: usize = 4096;
-
-pub fn supported(term: Option<&str>, term_program: Option<&str>) -> bool {
+pub fn command_chords(term: Option<&str>, term_program: Option<&str>) -> bool {
     term.is_some_and(|term| term.contains("kitty") || term.contains("ghostty"))
         || term_program.is_some_and(|program| program == "ghostty")
 }
@@ -33,7 +31,7 @@ pub fn place_png(
     if !yi_types::image::is_strict_base64(base64_png) {
         return Ok(());
     }
-    transmit_base64(out, id, base64_png)?;
+    yi_tui::orb::kitty::transmit_base64(out, id, base64_png, "f=100")?;
     yi_tui::orb::kitty::place(
         out,
         id,
@@ -42,28 +40,6 @@ pub fn place_png(
         rect.width.max(1),
         rect.height.max(1),
     )
-}
-
-/// Transmits base64 its caller already checked with [`yi_types::image::is_strict_base64`].
-pub fn transmit_base64(out: &mut impl Write, id: u32, base64_png: &str) -> std::io::Result<()> {
-    let bytes = base64_png.as_bytes();
-    let mut offset = 0;
-    let mut first = true;
-    while offset < bytes.len() {
-        let end = offset.saturating_add(CHUNK).min(bytes.len());
-        let chunk = bytes.get(offset..end).unwrap_or_default();
-        let more = u8::from(end < bytes.len());
-        if first {
-            write!(out, "\u{1b}_Gf=100,a=t,i={id},q=2,m={more};")?;
-            first = false;
-        } else {
-            write!(out, "\u{1b}_Gm={more};")?;
-        }
-        out.write_all(chunk)?;
-        write!(out, "\u{1b}\\")?;
-        offset = end;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
