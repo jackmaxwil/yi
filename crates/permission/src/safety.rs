@@ -728,6 +728,7 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
     let (mut directory, mut pipeline_tail) = (Some(std::path::PathBuf::new()), false);
     let (mut command_directory, mut continued) = (directory.clone(), false);
     let (mut cd_applies, mut moved, mut chained) = (true, false, false);
+    let mut entered: Option<Option<std::path::PathBuf>> = None;
     for line in command.split('\n') {
         let continuing = std::mem::take(&mut continued);
         if let Some(end) = ends.first() {
@@ -797,10 +798,13 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                     command_start = false;
                 }
                 (None, ';' | '|' | '&') => {
+                    if let Some(next) = entered.take() {
+                        directory = next;
+                    }
                     let doubled = chars.next_if_eq(&c).is_some();
                     cd_applies = c != '|' || doubled;
                     if c == '|' && doubled {
-                        directory = directory.filter(|_| !moved);
+                        directory = directory.filter(|_| !moved || depth > 0);
                     } else if c == '|' || (c == '&' && !doubled) {
                         directory = command_directory.clone();
                     }
@@ -826,7 +830,7 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                         )
                     {
                         moved = true;
-                        directory = next;
+                        entered = Some(next);
                     }
                     command_start = false;
                 }
@@ -834,6 +838,9 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                 (None, _) => command_start = false,
             }
             prev = c;
+        }
+        if let Some(next) = entered.take_if(|_| !continued) {
+            directory = next;
         }
         pipeline_tail = !cd_applies && line.trim_end().ends_with('|');
         chained = line.trim_end().ends_with("&&") || line.trim_end().ends_with("||");

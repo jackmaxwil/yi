@@ -313,6 +313,9 @@ fn a_redirect_after_cd_is_judged_from_the_directory_the_shell_uses() -> TestResu
             "crates/lock.rs",
         ),
         ("cd crates || true; echo hi > evals", "evals"),
+        ("cd evals 2>crates/lock.rs", "crates/lock.rs"),
+        ("cd evals >crates/lock.rs && echo hi", "crates/lock.rs"),
+        ("cd evals && make || echo failed > log", "log"),
     ] {
         let decision = scoped.bash(command);
         let reason = refusal(&decision).ok_or_else(|| format!("{command:?} was allowed"))?;
@@ -336,6 +339,8 @@ fn a_redirect_after_cd_is_judged_from_the_directory_the_shell_uses() -> TestResu
         "cd evals # note\necho hi > probe.py",
         "cd evals && pushd -n /tmp && echo hi > probe.py",
         "false || cd evals; echo hi > probe.py",
+        "cd evals && (make || echo failed > log)",
+        "cd evals &&\n(make || echo failed > log)",
     ] {
         let decision = scoped.bash(command);
         assert!(refusal(&decision).is_none(), "{command:?}: {decision:?}");
