@@ -19,6 +19,7 @@ pub(crate) struct Args {
     pub(crate) thinking_pinned: bool,
     pub(crate) json: bool,
     pub(crate) no_deltas: bool,
+    pub(crate) no_tools: bool,
     pub(crate) mode: yi_runtime::PermissionMode,
     pub(crate) mode_pinned: bool,
     pub(crate) allow_write: Vec<String>,
@@ -70,6 +71,7 @@ pub(super) fn parse_from(
     let mut thinking = None;
     let mut json = false;
     let mut no_deltas = false;
+    let mut no_tools = false;
     let mut mode = None;
     let mut allow_write = Vec::new();
     let mut session_dir = None;
@@ -110,6 +112,7 @@ pub(super) fn parse_from(
             Long("thinking") => thinking = Some(parse_effort(&parser.value()?.string()?)?),
             Long("json") => json = true,
             Long("no-deltas") => no_deltas = true,
+            Long("no-tools") => no_tools = true,
             Long("yolo") => mode = Some(yi_runtime::PermissionMode::Yolo),
             Long("auto") => mode = Some(yi_runtime::PermissionMode::Auto),
             Long("confirm") => mode = Some(yi_runtime::PermissionMode::Ask),
@@ -166,6 +169,7 @@ pub(super) fn parse_from(
         thinking: thinking.or(config().thinking),
         json,
         no_deltas,
+        no_tools,
         mode: mode.unwrap_or_else(configured_mode),
         mode_pinned: mode.is_some(),
         allow_write,
@@ -230,6 +234,9 @@ fn inert_flags(args: &Args) -> Result<(), lexopt::Error> {
         return Err(lexopt::Error::Custom(
             "--faux runs in-process only: use `yi tui`, `yi ask`, `yi rpc` or `yi --solo`".into(),
         ));
+    }
+    if args.no_tools && args.command != "ask" {
+        return Err(lexopt::Error::Custom("--no-tools needs `yi ask`".into()));
     }
     Ok(())
 }
