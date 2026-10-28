@@ -3,6 +3,7 @@
 
 use crate::RED_PYTEST;
 use crate::scratch;
+use crate::support::wait_until;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -122,17 +123,6 @@ fn start(store: &Arc<JobStore>, deliver: Arc<DeliverFn>) -> Scheduler {
         counter = counter.saturating_add(1);
         format!("dsp-{counter}")
     })
-}
-
-async fn wait_until(within_ms: u64, mut ready: impl FnMut() -> bool) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(within_ms);
-    while std::time::Instant::now() <= deadline {
-        if ready() {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    ready()
 }
 
 fn script(dir: &Path, name: &str, body: &str) -> Result<(), Box<dyn Error>> {

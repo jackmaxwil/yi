@@ -128,19 +128,34 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(waits and all(asked <= 0.05 for asked in waits))
     async def test_a_siblings_digest_does_not_reap_this_child(self) -> None:
         replies = [
-            {"cursor": 1, "causes": {"other": "finished"}, "states": {"other": "finished"}, "notes": {}},
+            {"cursor": 1, "counts": {"finished": 1, "running": 1}, "causes": {"other": "finished"}, "states": {"other": "finished"}, "notes": {}},
             _wait_reply("finished", cursor=2),
         ]
 
         async def fake_wait(timeout: float, cursor: int | None = None) -> dict:
             return replies.pop(0)
 
+
         async def fake_result(*args, **kwargs):
             return {"text": "ok"}
+        async def fake_status(name):
+            return {"name": name, "state": "running", "note": None}
 
-        with mock.patch.object(rlm, "wait", fake_wait), mock.patch.object(rlm, "result", fake_result):
+        with mock.patch.object(rlm, "wait", fake_wait), mock.patch.object(
+            rlm, "status", fake_status
+        ), mock.patch.object(rlm, "result", fake_result):
             self.assertEqual(await _handle().result(timeout=1), {"text": "ok"})
 
+    async def test_a_reap_missing_from_the_digest_does_not_wait_out(self) -> None:
+        async def fake_wait(timeout: float, cursor: int | None = None) -> dict:
+            return {"cursor": 1, "counts": {}, "causes": {}, "states": {}, "notes": {}}
+
+        async def fake_status(name):
+            raise rlm.NoSuchChild(name)
+
+        with mock.patch.object(rlm, "wait", fake_wait), mock.patch.object(rlm, "status", fake_status):
+            with self.assertRaisesRegex(RuntimeError, "no longer registered"):
+                await _handle().result(timeout=0.05)
     async def test_a_finished_child_woken_again_is_waited_on_not_refused(self) -> None:
         """Dies with only needs_you retried: a sibling's request woke the finished child
         between the wait and the read, and the handle raised "still running"."""

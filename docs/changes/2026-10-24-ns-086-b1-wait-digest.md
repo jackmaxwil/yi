@@ -1,10 +1,10 @@
 ---
 issue: Closes #1519, Refs #1442
-growth: +1 the per-state count and mover filter added to the existing roster fold, with the full roster retained for a settled reply's finished list; no second roster read or new helper
-raise: crate runtime +1, tests +103
+growth: +53 the digest adds a settled-family count path and builds full views only for movers; no full roster is retained in a settled reply
+raise: crate runtime +53, tests +85
 decision: rlm.wait reports counts by state and the states of the members that moved; rlm.status holds the roster | a 128-wide family pays the whole roster on every wait | restore the full states map in wait_reply
 ---
 
-B1-wait-digest: `rlm.wait` now returns `counts` by state and limits `states` and `notes` to the members named by `causes`. A settled reply still lists every finished child in `finished`, and `rlm.status` remains the full roster. Python result waiters treat an unmoved target as retained rather than reaped, and the scheduler merges mover states into its roster. The delegation prompt teaches that split.
+B1-wait-digest: `rlm.wait` now returns `counts` by state and limits `states`, `notes` and a settled reply's `finished` list to the members named by `causes`; `rlm.status` remains the full roster. A settled family counts terminal records without reading every child's session and builds full views only for movers. Python result waiters share one digest resolver, which checks registration independently of the bounded reap log, and the scheduler shares one digest merge. The delegation prompt teaches the split.
 
-The pre-registered zero-spend gate measured a 9,325 B reply from 128 runtime-built faux readers with one mover, above the 4,096 B build threshold. The same reply is 4,144 B after the change. Tests cover that wide reply, a three-reader settled family, and sibling-only digests through all three Python consumers.
+The pre-registered zero-spend gate measured a 9,325 B reply from 128 runtime-built faux readers with one mover, above the 4,096 B build threshold. The same reply is 334 B after the change, with the threshold asserted in the test. Tests cover that wide reply, a three-reader settled family, a reap missing from the digest, and sibling-only digests through all three Python consumers.
