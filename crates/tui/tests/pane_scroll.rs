@@ -352,8 +352,7 @@ fn slide_keeps_the_pre_change_frame_sequence() -> TestResult {
 #[test]
 fn page_moves_only_in_half_page_jumps() -> TestResult {
     let (moves, _) = roll_in_mode(20, 30, FollowMode::Page)?;
-    assert!(moves.iter().all(|rows| matches!(rows, 0 | 15)), "{moves:?}");
-    assert!(moves.contains(&15), "no page jump: {moves:?}");
+    assert_eq!(moves, vec![15, 15]);
     Ok(())
 }
 
@@ -372,13 +371,20 @@ fn still_holds_the_view_and_marks_hidden_rows_at_a_nonzero_offset() -> TestResul
     app.set_follow(FollowMode::Still);
     app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
     let mut scroll = 0;
-    let (before, _) = paint_in(&mut app, area, &mut scroll);
+    let (mut before, _) = paint_in(&mut app, area, &mut scroll);
     let code: Vec<String> = (0..20).map(|i| format!("let x{i:03} = {i};")).collect();
     app.commit_cell(&Cell::Assistant {
         markdown: format!("```rust\n{}\n```\n", code.join("\n")),
     });
-    let (after, _) = paint_in(&mut app, area, &mut scroll);
-    assert_eq!(shift(&before, &after), Some(0), "{after:#?}");
+    let mut moves = Vec::new();
+    let mut after = before.clone();
+    for _ in 0..5 {
+        let (now, _) = paint_in(&mut app, area, &mut scroll);
+        moves.push(shift(&before, &now));
+        before = now.clone();
+        after = now;
+    }
+    assert_eq!(moves, vec![Some(0); 5], "{after:#?}");
     assert!(
         after.iter().any(|row| row.contains("more rows · PgDn")),
         "{after:#?}"
