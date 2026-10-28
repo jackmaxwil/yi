@@ -335,12 +335,26 @@ def reprice(clone, base="MERGE_HEAD"):
     sh(clone, "git", "add", str(path.relative_to(clone)))
 
 
+ROLES = "scripts/guardrails/baselines/role_prefix.json"
+
+
+def inflated(old, new):
+    """Incident: the runner measured the bare write roles 45 KB past main on five PRs and the Ratchet
+    commit wrote that in as their ceiling. A raise past 10% of a row is a fault, not a fix."""
+    return any(v > old.get(k, v) * 1.1 for k, v in new.items())
+
+
 def remeasure(clone):
     """A merge re-measures the stored baselines into its own commit, which may carry them; the model
     may not touch them. Incident: #1110 and #1111 merged main, each side had raised the request
     budget and moved tool hashes, and the hook refused a ceiling no file the model owns could meet."""
     for gate in ("check_schemas_lock.py", "check_request_budget.py"):
         sh(clone, sys.executable, f"scripts/guardrails/{gate}", "--update", env=scrubbed(), check=False)
+    try:
+        if inflated(json.loads(sh(clone, "git", "show", f"HEAD:{ROLES}").stdout), json.loads((clone / ROLES).read_text())):
+            sh(clone, "git", "checkout", "HEAD", "--", ROLES)
+    except (OSError, ValueError, RuntimeError):
+        pass
     relayout(clone)
 
 
@@ -1649,6 +1663,8 @@ def selfcheck():
     hook = "noise\nFAIL codespell\n  ./x.d:1: a misspelling\nok   panic\nFAIL file_size\n  a.rs: 1203 lines > 1200\nguardrails: 2 failing\n"
     if failures(hook) != "FAIL codespell\n  ./x.d:1: a misspelling\nFAIL file_size\n  a.rs: 1203 lines > 1200":
         errs.append(f"a hook's failure reads {failures(hook)!r}, not its FAIL blocks")
+    if not inflated({"leaf": 41937}, {"leaf": 87107}) or inflated({"root": 50416}, {"root": 50477}):
+        errs.append("a role prefix that doubled passes as a re-measure, or a 61-byte raise is refused")
     if "Autofix failed" not in render(1, {}, "failed", "boom") or "boom" not in render(1, {}, "failed", "boom"):
         errs.append("a failure's comment does not carry its reason")
     stack = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-stack-"))
