@@ -1,5 +1,5 @@
 ---
 issue: Closes #1710
-raise: tests +195
+raise: tests +214
 ---
 The console chat composer stays pinned immediately above the hint bar in empty, new, and resumed sessions. Transcript rows and the empty-state mark remain top-aligned, while drafts, search titles, and popups grow upward into the space between the transcript and composer instead of moving the hint bar.
