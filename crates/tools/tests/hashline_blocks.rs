@@ -154,3 +154,43 @@ fn comment_markers_inside_regex_classes_do_not_hide_delimiters() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn division_operators_and_continuations_do_not_hide_delimiters() -> TestResult {
+    let dir = temp_dir("hashline-division-not-regex")?;
+    for (name, source, span) in [
+        (
+            "calc.css",
+            ".rule {\n    width: calc(100% / 3);\n    color: red;\n}\n",
+            "[find: block at lines 1-4 of",
+        ),
+        (
+            "increment.js",
+            "function f() {\n    const value = i++ / 2;\n    return value;\n}\n",
+            "[find: block at lines 1-4 of",
+        ),
+        (
+            "continued.rs",
+            "fn f() {\n    let value = (a\n        / b);\n    value\n}\n",
+            "[find: block at lines 1-5 of",
+        ),
+    ] {
+        fs::write(dir.join(name), source)?;
+        let anchor = if name == "calc.css" { ".rule" } else { "f()" };
+        let output = find(&dir, name, anchor);
+        assert!(output.contains(span), "{name}: {output}");
+    }
+    Ok(())
+}
+
+#[test]
+fn shell_globs_do_not_start_block_comments() -> TestResult {
+    let dir = temp_dir("hashline-shell-glob-not-comment")?;
+    fs::write(
+        dir.join("run.sh"),
+        "run() {\n    cp *.log /var/backups/*\n    echo done\n}\n",
+    )?;
+    let output = find(&dir, "run.sh", "run()");
+    assert!(output.contains("[find: block at lines 1-4 of"), "{output}");
+    Ok(())
+}

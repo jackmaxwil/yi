@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use super::apply::apply_edits;
-use super::blocks::{brace_block_resolver, indent_block_resolver, resolve_block_edits};
+use super::blocks::{
+    BraceSyntax, brace_block_resolver, indent_block_resolver, resolve_block_edits,
+};
 use super::clipboard::{fork_clipboard, start_clipboard_batch};
 use super::format::{
     FileTag, HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, compute_file_hash, format_hashline_header,
@@ -89,8 +91,15 @@ pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
     match extension {
         "py" | "pyi" | "yaml" | "yml" => indent_block_resolver(request.text, request.line),
         "md" | "markdown" => super::blocks::markdown_section_resolver(request.text, request.line),
-        "rs" => brace_block_resolver(request.text, request.line, true),
-        _ => brace_block_resolver(request.text, request.line, false),
+        "rs" => brace_block_resolver(request.text, request.line, BraceSyntax::Rust),
+        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" => {
+            brace_block_resolver(request.text, request.line, BraceSyntax::JavaScript)
+        }
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "java" | "go" | "css" | "scss" | "less"
+        | "swift" | "kt" | "kts" | "cs" | "php" | "json" | "jsonc" => {
+            brace_block_resolver(request.text, request.line, BraceSyntax::CStyle)
+        }
+        _ => brace_block_resolver(request.text, request.line, BraceSyntax::Plain),
     }
 }
 
