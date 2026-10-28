@@ -11,6 +11,7 @@ use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, StopReason};
 
 use crate::common;
+use yi_types::config::FollowMode;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -58,11 +59,11 @@ fn paint_in(
     area: Rect,
     scroll: &mut usize,
 ) -> (Vec<String>, Option<(usize, usize)>) {
-    let mut buffer = Buffer::empty(area);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, area.right(), area.bottom()));
     let thumb = yi_tui::render::paint_pane(app, None, &mut buffer, area, scroll);
-    let rows = (0..area.height)
+    let rows = (area.top()..area.bottom())
         .map(|y| {
-            (0..area.width)
+            (area.left()..area.right())
                 .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
                 .collect::<String>()
         })
@@ -100,7 +101,17 @@ fn message(thinking: &str, text: &str) -> AgentMessage {
 /// Streams `thinking` then `text` seven bytes at a time under a view held `hold` rows up,
 /// and names every frame whose top row moved.
 fn moves_while_streaming(thinking: &str, text: &str, hold: usize) -> Vec<String> {
+    moves_while_streaming_mode(thinking, text, hold, FollowMode::Slide)
+}
+
+fn moves_while_streaming_mode(
+    thinking: &str,
+    text: &str,
+    hold: usize,
+    follow: FollowMode,
+) -> Vec<String> {
     let mut app = seeded();
+    app.set_follow(follow);
     app.commit_cell(&Cell::User {
         text: "go".to_owned(),
     });
@@ -143,6 +154,17 @@ fn moves_while_streaming(thinking: &str, text: &str, hold: usize) -> Vec<String>
         moves.push(format!("end: top {:?}", after.first()));
     }
     moves
+}
+
+#[test]
+fn every_follow_mode_preserves_a_held_view() {
+    for mode in [FollowMode::Slide, FollowMode::Page, FollowMode::Still] {
+        let text = (0..20)
+            .map(|i| format!("paragraph {i}\n\n"))
+            .collect::<String>();
+        let moves = moves_while_streaming_mode("", &text, 12, mode);
+        assert!(moves.is_empty(), "{mode:?}: {moves:#?}");
+    }
 }
 
 /// Incident: a multi-row card committed one more row than the transcript grew, so each
@@ -283,8 +305,17 @@ fn roll_in(lines: usize) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
 }
 
 fn roll_in_sized(lines: usize, height: u16) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
+    roll_in_mode(lines, height, FollowMode::Slide)
+}
+
+fn roll_in_mode(
+    lines: usize,
+    height: u16,
+    follow: FollowMode,
+) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
     let area = Rect::new(0, 0, AREA.width, height);
     let mut app = seeded();
+    app.set_follow(follow);
     app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
     let mut scroll = 0;
     let (mut before, _) = paint_in(&mut app, area, &mut scroll);
@@ -320,7 +351,7 @@ fn slide_keeps_the_pre_change_frame_sequence() -> TestResult {
 
 #[test]
 fn page_moves_only_in_half_page_jumps() -> TestResult {
-    let (moves, _) = roll_in_sized(20, 30)?;
+    let (moves, _) = roll_in_mode(20, 30, FollowMode::Page)?;
     assert!(moves.iter().all(|rows| matches!(rows, 0 | 15)), "{moves:?}");
     assert!(moves.contains(&15), "no page jump: {moves:?}");
     Ok(())
@@ -328,9 +359,63 @@ fn page_moves_only_in_half_page_jumps() -> TestResult {
 
 #[test]
 fn page_moves_a_ten_row_pane_five_rows_at_a_time() -> TestResult {
-    let (moves, _) = roll_in_sized(20, 10)?;
+    let (moves, _) = roll_in_mode(20, 10, FollowMode::Page)?;
     assert!(moves.iter().all(|rows| matches!(rows, 0 | 5)), "{moves:?}");
     assert!(moves.contains(&5), "no page jump: {moves:?}");
+    Ok(())
+}
+
+#[test]
+fn still_holds_the_view_and_marks_hidden_rows_at_a_nonzero_offset() -> TestResult {
+    let area = Rect::new(7, 5, AREA.width, 30);
+    let mut app = seeded();
+    app.set_follow(FollowMode::Still);
+    app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
+    let mut scroll = 0;
+    let (before, _) = paint_in(&mut app, area, &mut scroll);
+    let code: Vec<String> = (0..20).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    let (after, _) = paint_in(&mut app, area, &mut scroll);
+    assert_eq!(shift(&before, &after), Some(0), "{after:#?}");
+    assert!(
+        after.iter().any(|row| row.contains("more rows · PgDn")),
+        "{after:#?}"
+    );
+    assert!(
+        !after.iter().any(|row| row.contains("let x019")),
+        "{after:#?}"
+    );
+    assert_eq!(scroll, 0);
+    Ok(())
+}
+
+#[test]
+fn still_page_down_reveals_rows_and_a_prompt_returns_to_bottom() -> TestResult {
+    let mut app = seeded();
+    app.set_follow(FollowMode::Still);
+    let mut scroll = 0;
+    let _ = paint(&mut app, &mut scroll);
+    let code: Vec<String> = (0..20).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    let (held, _) = paint(&mut app, &mut scroll);
+    assert!(!held.iter().any(|row| row.contains("let x")), "{held:#?}");
+    app.advance_follow(20);
+    let (paged, _) = paint(&mut app, &mut scroll);
+    assert!(paged.iter().any(|row| row.contains("let x")), "{paged:#?}");
+    app.follow_bottom();
+    let (bottom, _) = paint(&mut app, &mut scroll);
+    assert!(
+        bottom.iter().any(|row| row.contains("let x019")),
+        "{bottom:#?}"
+    );
+    assert!(
+        !bottom.iter().any(|row| row.contains("more rows")),
+        "{bottom:#?}"
+    );
     Ok(())
 }
 

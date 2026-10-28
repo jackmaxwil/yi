@@ -21,4 +21,14 @@ impl App {
     pub fn set_follow(&mut self, follow: yi_types::config::FollowMode) {
         self.follow = follow;
     }
+
+    pub fn advance_follow(&mut self, rows: usize) {
+        if let Some((width, mode, pinned, below)) = self.pane_follow {
+            self.pane_follow = Some((width, mode, pinned, below.saturating_add(rows)));
+        }
+    }
+
+    pub fn follow_bottom(&mut self) {
+        self.pane_follow = None;
+    }
 }

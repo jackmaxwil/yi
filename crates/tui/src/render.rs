@@ -504,7 +504,7 @@ pub fn paint_pane(
     let floor = layout.floor.min(area.height);
     let above = usize::from(area.height.saturating_sub(floor));
     let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
-    let (shown, owners, thumb) = if *scroll == 0 {
+    let result = if *scroll == 0 {
         let history = yi_types::trace::span("tui.history_rows");
         // A turn's first cell has nothing above it to pin to yet; it rolls in from its own top,
         // unless the pane was just scrolled or resized away from it, which settles in place.
@@ -526,13 +526,30 @@ pub fn paint_pane(
             .and_then(|(_, _, pinned, below)| {
                 let at = owners.iter().position(|&cell| cell == pinned)?;
                 let behind = column.len().saturating_sub(at).saturating_sub(below);
-                Some(
-                    at.saturating_add(below)
-                        .saturating_add(behind.div_ceil(ROLL_ROWS)),
-                )
+                let base = at.saturating_add(below);
+                match app.follow() {
+                    yi_types::config::FollowMode::Slide => {
+                        Some(base.saturating_add(behind.div_ceil(ROLL_ROWS)))
+                    }
+                    yi_types::config::FollowMode::Page if base < above => {
+                        Some(column.len().min(above))
+                    }
+                    yi_types::config::FollowMode::Page if column.len() > base => {
+                        let page = (usize::from(area.height) / 2).max(1);
+                        Some(base.saturating_add(page))
+                    }
+                    yi_types::config::FollowMode::Page => Some(base),
+                    yi_types::config::FollowMode::Still if base < above => {
+                        Some(column.len().min(above))
+                    }
+                    yi_types::config::FollowMode::Still => Some(base.min(column.len())),
+                }
             })
-            .map_or(column.len(), |end| end.min(column.len()));
-        if end < column.len() {
+            .map_or(column.len(), |end| match app.follow() {
+                yi_types::config::FollowMode::Slide => end.min(column.len()),
+                yi_types::config::FollowMode::Page | yi_types::config::FollowMode::Still => end,
+            });
+        if end < column.len() && app.follow() != yi_types::config::FollowMode::Still {
             app.scheduler.request();
         }
         let start = end.saturating_sub(above);
@@ -541,6 +558,11 @@ pub fn paint_pane(
             let at = owners.iter().position(|&owner| owner == cell)?;
             Some((width, mode, cell, end.saturating_sub(at)))
         });
+        let more = if app.follow() == yi_types::config::FollowMode::Still {
+            column.len().saturating_sub(end)
+        } else {
+            0
+        };
         column.truncate(end);
         (
             column.split_off(start),
@@ -549,6 +571,7 @@ pub fn paint_pane(
                 .unwrap_or_default()
                 .to_vec(),
             None,
+            more,
         )
     } else {
         app.pane_follow = None;
@@ -584,8 +607,13 @@ pub fn paint_pane(
             .saturating_add(usize::from(floor));
         let thumb =
             (total > usize::from(area.height)).then_some((total, before.saturating_add(start)));
-        (shown, owners, thumb)
+        (shown, owners, thumb, 0)
     };
+    let (mut shown, mut owners, thumb, more) = result;
+    if more > 0 {
+        shown.truncate(above.saturating_sub(1));
+        owners.truncate(above.saturating_sub(1));
+    }
     let mut owned: Vec<Option<usize>> = owners.into_iter().map(Some).collect();
     owned.resize(shown.len(), None);
     app.pane_rows = (area.top(), owned);
@@ -600,6 +628,19 @@ pub fn paint_pane(
         area.width,
         floor,
     );
+    if more > 0
+        && let Some(y) = chat_area.top().checked_sub(1)
+    {
+        let marker = ratatui::text::Line::styled(
+            format!("↓ {} more rows · PgDn", more.saturating_add(1)),
+            app.theme.dim_style(),
+        );
+        Widget::render(
+            ratatui::widgets::Paragraph::new(marker),
+            Rect::new(area.left(), y, area.width, 1),
+            buffer,
+        );
+    }
     let placed = paint_chat(app, &layout, buffer, chat_area);
     app.orb_slot = placed.orb;
     app.orb_placement = placed.orb.filter(|_| !app.title_cover);
