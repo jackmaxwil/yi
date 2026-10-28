@@ -403,6 +403,20 @@ impl App {
         let _span = yi_types::trace::span("tui.replay_entries").arg("entries", entries.len());
         let mut calls: HashMap<&str, Value> = HashMap::new();
         for entry in entries {
+            if let Entry::Custom {
+                custom_type,
+                data: Some(data),
+                ..
+            } = entry
+            {
+                if custom_type == yi_types::subagent::CHILD_ENTRY
+                    && let Ok(trail) =
+                        serde_json::from_value::<yi_types::subagent::ChildTrail>(data.clone())
+                {
+                    self.replay_child(&trail);
+                }
+                continue;
+            }
             let Entry::Message {
                 message,
                 timestamp,
@@ -477,10 +491,12 @@ impl App {
                     let details = details.clone().unwrap_or(Value::Null);
                     let terminate = *terminate == Some(true);
                     self.settle_tool(cell, &text_of(content), *is_error, details, terminate);
+                    self.commit_finished_tasks();
                 }
                 _ => {}
             }
         }
+        self.release_child_rows();
     }
 
     /// The one writer for whatever a port answers, now or later.

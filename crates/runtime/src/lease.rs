@@ -307,9 +307,12 @@ impl SubagentHost {
             .unwrap_or_default();
         live.into_iter()
             .filter_map(|(name, grace)| {
-                self.revoke(&name, grace, "the parent closed")
-                    .ok()
-                    .map(|_| name)
+                self.revoke(&name, grace, "the parent closed").ok()?;
+                if grace == 0 {
+                    let at = self.lease_now();
+                    self.settle_repossessed(&name, at).ok()?;
+                }
+                Some(name)
             })
             .collect()
     }

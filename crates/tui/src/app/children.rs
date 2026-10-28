@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use yi_runtime::{ChildFeed, ChildStatus, ChildUpdate};
 use yi_types::message::{AgentMessage, Content};
-use yi_types::subagent::ChildExit;
+use yi_types::subagent::{ChildActivity, ChildExit, ChildTrail};
 
 use super::App;
 use crate::cell::{Cell, TaskCell, TaskStatus, ToolStatus};
@@ -25,6 +25,7 @@ pub(crate) struct ChildProjection {
     pub(crate) order: Vec<String>,
     pub(crate) settled_calls: HashSet<String>,
     pub(crate) task_keys: HashMap<String, String>,
+    pub(crate) sessions: HashMap<String, String>,
 }
 
 /// The cause a card carries when the roster stopped listing a child it still showed running.
@@ -169,6 +170,7 @@ impl App {
         self.projection.order.clear();
         self.projection.settled_calls.clear();
         self.projection.task_keys.clear();
+        self.projection.sessions.clear();
         self.dropped_tasks = 0;
         self.focused = None;
     }
@@ -284,6 +286,7 @@ impl App {
             self.scheduler.request();
         }
         self.projection.task_keys.insert(id.clone(), key.clone());
+        self.projection.sessions.insert(id.clone(), key.clone());
         if !self.projection.rows.contains_key(&key) {
             let born_under = self
                 .tasks
@@ -384,8 +387,73 @@ impl App {
         self.commit_finished_tasks();
     }
 
-    /// The spawning cell is an ordering hint, not a gate: a missing cell end is released at turn settlement.
-    pub(super) fn commit_finished_tasks(&mut self) {
+    pub(crate) fn replay_child(&mut self, trail: &ChildTrail) {
+        match trail {
+            ChildTrail::Spawned(line) => {
+                let key = line.session.clone();
+                self.projection
+                    .sessions
+                    .insert(line.id.as_str().to_owned(), key.clone());
+                if !self.projection.rows.contains_key(&key) {
+                    let update = ChildUpdate {
+                        id: line.id.clone(),
+                        name: line.name.clone(),
+                        status: ChildStatus::Running,
+                        activity: ChildActivity::Waiting,
+                        tool_use_count: 0,
+                        token_count: 0,
+                        cost: None,
+                        answer_preview: None,
+                        error: None,
+                        exit: None,
+                        flag: None,
+                        session: Some(key.clone()),
+                        role: line.role.clone(),
+                        task: line.task.clone(),
+                        elapsed_ms: None,
+                    };
+                    self.projection.order.push(key.clone());
+                    self.projection
+                        .rows
+                        .insert(key, ChildRow::new(&update, line.spawned_by.clone()));
+                }
+            }
+            ChildTrail::Ended(line) => {
+                let Some(key) = self.projection.sessions.get(line.id.as_str()).cloned() else {
+                    return;
+                };
+                let update = ChildUpdate {
+                    id: line.id.clone(),
+                    name: line.name.clone(),
+                    status: if line.exit == ChildExit::Completed {
+                        ChildStatus::Completed
+                    } else {
+                        ChildStatus::Error
+                    },
+                    activity: ChildActivity::Waiting,
+                    tool_use_count: 0,
+                    token_count: line.tokens,
+                    cost: line.cost.clone(),
+                    answer_preview: line.answer_preview.clone(),
+                    error: line.error.clone(),
+                    exit: Some(line.exit),
+                    flag: None,
+                    session: Some(key.clone()),
+                    role: None,
+                    task: None,
+                    elapsed_ms: line.elapsed_ms,
+                };
+                if let Some(row) = self.projection.rows.get_mut(&key) {
+                    row.end = Some(end_rule(&update));
+                    row.terminal = true;
+                }
+            }
+            ChildTrail::Other => {}
+        }
+        self.commit_finished_tasks();
+    }
+
+    pub(crate) fn commit_finished_tasks(&mut self) {
         for row in self.projection.rows.values_mut() {
             if row
                 .born_under

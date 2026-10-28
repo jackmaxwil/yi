@@ -3,12 +3,16 @@ use std::error::Error;
 use serde_json::Number;
 use yi_runtime::ChildStatus;
 use yi_tui::app::{App, TuiOptions};
-use yi_tui::cell::Cell;
+use yi_tui::cell::{Cell, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::keymap::default_keymap;
+use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, ToolResult};
 use yi_types::message::Content;
-use yi_types::subagent::{ChildActivity, ChildExit, ChildId, ChildUpdate, FailClass};
+use yi_types::subagent::{
+    CHILD_ENTRY, ChildActivity, ChildEnded, ChildExit, ChildId, ChildSpawned, ChildTrail,
+    ChildUpdate, FailClass,
+};
 
 use crate::common;
 
@@ -304,5 +308,191 @@ fn eviction_and_roster_ticks_never_duplicate_committed_rows() -> TestResult {
         rows.is_empty(),
         "a repeated terminal roster duplicates rows: {rows:?}"
     );
+    Ok(())
+}
+
+const ENRICHED_SESSION: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/sessions/01a00000.jsonl"
+);
+const LEGACY_SESSION: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/sessions/01a13357.jsonl"
+);
+
+fn recorded_entries(path: &str) -> Result<Vec<Entry>, Box<dyn Error>> {
+    std::fs::read_to_string(path)?
+        .lines()
+        .filter(|line| line.contains("\"kind\":\"entry\""))
+        .map(|line| serde_json::from_str(line).map_err(Into::into))
+        .collect()
+}
+
+fn replayed_children(app: &mut App, entries: &[Entry]) -> Vec<String> {
+    app.replay_entries(entries);
+    commits(app)
+        .into_iter()
+        .filter(|row| row.contains("── subagent"))
+        .collect()
+}
+
+fn custom(seq: u64, trail: &ChildTrail) -> Result<Entry, Box<dyn Error>> {
+    Ok(Entry::Custom {
+        id: format!("child-{seq}"),
+        custom_type: CHILD_ENTRY.to_owned(),
+        data: Some(serde_json::to_value(trail)?),
+        parent_id: None,
+        seq,
+        timestamp: seq,
+    })
+}
+
+fn trail_parts() -> Result<(ChildSpawned, ChildEnded), Box<dyn Error>> {
+    let entries = recorded_entries(ENRICHED_SESSION)?;
+    let spawn = entries.iter().find_map(|entry| match entry {
+        Entry::Custom {
+            data: Some(data), ..
+        } => match serde_json::from_value(data.clone()).ok()? {
+            ChildTrail::Spawned(line) => Some(line),
+            _ => None,
+        },
+        _ => None,
+    });
+    let end = entries.iter().find_map(|entry| match entry {
+        Entry::Custom {
+            data: Some(data), ..
+        } => match serde_json::from_value(data.clone()).ok()? {
+            ChildTrail::Ended(line) => Some(line),
+            _ => None,
+        },
+        _ => None,
+    });
+    Ok((
+        spawn.ok_or("no recorded spawn")?,
+        end.ok_or("no recorded end")?,
+    ))
+}
+
+fn recorded_update(status: ChildStatus) -> Result<ChildUpdate, Box<dyn Error>> {
+    let running = status == ChildStatus::Running;
+    let (spawn, end) = trail_parts()?;
+    Ok(ChildUpdate {
+        id: spawn.id,
+        name: spawn.name,
+        status,
+        activity: ChildActivity::Waiting,
+        tool_use_count: 0,
+        token_count: end.tokens,
+        cost: end.cost,
+        answer_preview: end.answer_preview,
+        error: end.error,
+        exit: (!running).then_some(end.exit),
+        flag: None,
+        session: Some(spawn.session),
+        role: spawn.role,
+        task: spawn.task,
+        elapsed_ms: end.elapsed_ms,
+    })
+}
+
+#[test]
+fn replay_builds_enriched_and_reduced_legacy_rows() -> TestResult {
+    let enriched = replayed_children(&mut app(), &recorded_entries(ENRICHED_SESSION)?);
+    assert_eq!(enriched.len(), 2, "{enriched:?}");
+    assert!(
+        enriched[0].contains("· reader · Inspect replay ordering"),
+        "{enriched:?}"
+    );
+    assert!(
+        enriched[1].contains(
+            "· done · 0ms · 0 tokens · start sub-5c90b1bb · The child has two persistent rows."
+        ),
+        "{enriched:?}"
+    );
+    let legacy = replayed_children(&mut app(), &recorded_entries(LEGACY_SESSION)?);
+    assert_eq!(legacy.len(), 2, "{legacy:?}");
+    assert!(!legacy[0].contains("· reader ·"), "{legacy:?}");
+    assert!(!legacy[1].contains("elapsed"), "{legacy:?}");
+    Ok(())
+}
+
+#[test]
+fn replayed_rows_match_live_bytes_in_every_mode_and_after_resize() -> TestResult {
+    for mode in [
+        TranscriptMode::Normal,
+        TranscriptMode::Thinking,
+        TranscriptMode::Verbose,
+    ] {
+        let mut live = app();
+        while live.mode() != mode {
+            live.cycle_mode();
+        }
+        live.reduce_agent(tool_start("call-child"));
+        live.reduce_agent(tool_end("call-child"));
+        live.adopt(
+            &recorded_update(ChildStatus::Running)?,
+            None,
+            Some("call-child"),
+        );
+        live.reduce_child_update(&recorded_update(ChildStatus::Completed)?);
+        let live_rows = child_rows(&mut live);
+        let mut replay = app();
+        while replay.mode() != mode {
+            replay.cycle_mode();
+        }
+        let replay_rows = replayed_children(&mut replay, &recorded_entries(ENRICHED_SESSION)?);
+        assert_eq!(live_rows, replay_rows, "{mode:?}");
+        replay.set_width(60);
+        let resized = common::flat_trimmed(&replay.reflowed(100));
+        let resized: Vec<_> = resized
+            .into_iter()
+            .filter(|row| row.contains("── subagent"))
+            .collect();
+        assert_eq!(resized.len(), 2, "{mode:?}: {resized:?}");
+        assert!(
+            resized[0]
+                .starts_with("── subagent scout (sub-5c90b1bb) · reader · Inspect replay ordering"),
+            "{mode:?}: resize"
+        );
+        assert!(resized[1].starts_with("── subagent scout (sub-5c90b1bb) · done · 0ms · 0 tokens · start sub-5c90b1bb · The child has two persistent rows."), "{mode:?}: resize");
+    }
+    Ok(())
+}
+
+#[test]
+fn replay_flushes_an_unresolved_antecedent_at_eof() -> TestResult {
+    let (spawn, end) = trail_parts()?;
+    let entries = [
+        custom(1, &ChildTrail::Spawned(spawn))?,
+        custom(2, &ChildTrail::Ended(end))?,
+    ];
+    let rows = replayed_children(&mut app(), &entries);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows[0].contains("· reader ·"), "{rows:?}");
+    assert!(rows[1].contains("· done ·"), "{rows:?}");
+    Ok(())
+}
+
+#[test]
+fn replayed_rows_reach_a_nonzero_vt100_offset_once() -> TestResult {
+    use std::io::Write;
+    let mut app = app();
+    let entries = recorded_entries(ENRICHED_SESSION)?;
+    app.replay_entries(&entries);
+    app.replay_entries(&entries);
+    let mut backend = common::VT100Backend::with_scrollback(140, 36, 200);
+    backend.write_all(b"\n\n\n\n\n\n\n\n")?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let rows: Vec<String> = (0..36)
+        .map(|row| terminal.backend().row_text(row))
+        .filter(|row| row.contains("── subagent"))
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        rows[0].starts_with("── subagent scout (sub-5c90b1bb) · reader · Inspect replay ordering"),
+        "{rows:?}"
+    );
+    assert!(rows[1].starts_with("── subagent scout (sub-5c90b1bb) · done · 0ms · 0 tokens · start sub-5c90b1bb · The child has two persistent rows."), "{rows:?}");
     Ok(())
 }
