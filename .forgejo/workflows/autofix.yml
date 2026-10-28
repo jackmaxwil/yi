@@ -45,13 +45,12 @@ jobs:
             || echo 0)
           echo "newer=$newer" >> "$GITHUB_OUTPUT"
           [ "$newer" = 0 ] || echo "autofix: skipped, $newer newer pass(es) queued"
-      # Main's tree: the merged PR's code runs only inside a token-free clone.
+      # Main's tree: the merged PR's code runs only after it lands.
       - if: steps.queue.outputs.newer == '0'
-        uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the fixer fetches PR heads with the checkout's scoped token.
         with:
           ref: main
           fetch-depth: 0
-          persist-credentials: false
       - if: steps.queue.outputs.newer == '0'
         run: rustup show
       - if: steps.queue.outputs.newer == '0'

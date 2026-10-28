@@ -40,11 +40,10 @@ jobs:
       - run: echo "REVIEW_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV" # zizmor: ignore[github-env] The value is a local timestamp, not event input.
       # Main's tree, never the PR's: this job holds yi-bot's token, whose comments count as rounds,
       # so a PR's own justfile, scripts or probes would judge themselves. The PR is read as data.
-      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the review scripts fetch PR heads with the checkout's scoped token.
         with:
           ref: main
           fetch-depth: 0
-          persist-credentials: false
       - run: rustup show
       # The same dev build the live job reads from postmerge's `test` cache.
       - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.

@@ -95,17 +95,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Mirror SHA is unverified offline.
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the body job fetches main with the checkout's scoped token.
         with:
           fetch-depth: 0
-          persist-credentials: false
       # The body rule measures this branch against the merge base, the way
       # pr_body.py does — the fetch is what gives it an origin/main to find.
-      - env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64)
-          git -c "http.${{ github.server_url }}/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags origin main
+      - run: git fetch --no-tags origin main
       - env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -149,10 +144,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; live_ledger.py fetches telemetry with the checkout's scoped token.
         with:
           fetch-depth: 0
-          persist-credentials: false
       - run: rustup show
       # Caches are readable across pull requests only when main saved them, and postmerge
       # saves `test`: the same dev-profile build this step needs. A key of its own stayed cold
