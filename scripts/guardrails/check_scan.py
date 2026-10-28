@@ -182,16 +182,15 @@ def load_baseline():
 def save_baseline(findings, tools):
     old = load_baseline() if BASELINE.is_file() else {}
     active = {key: value for key, value in old.items() if key[0] in tools}
-    errors, _ = baseline_problems(findings, active)
     new_tools = tools - {tool for tool, _ in old}
-    errors = [error for error in errors if error.split("/", 1)[0] not in new_tools]
+    checked = [row for row in findings if row[0] not in new_tools]
+    errors, _ = baseline_problems(checked, active)
     if errors:
         fail(errors + ["refusing to grow the scan baseline"], "scan --update")
     counts = collections.Counter((tool, rule) for tool, rule, _, _ in findings)
     for key in old:
         counts.setdefault(key, 0)
-    ordered = sorted((*key, count) for key, count in counts.items())
-    BASELINE.write_text(json.dumps(ordered, indent=2) + "\n")
+    ordered = sorted([list(key), count] for key, count in counts.items())
 
 
 def selfcheck(off="", fixtures=None):
