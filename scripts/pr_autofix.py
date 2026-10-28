@@ -417,6 +417,7 @@ def failures(output):
             keep = False
         if keep:
             blocks.append(line)
+    blocks = [b for b in blocks if not b.lower().startswith("error: recipe")]
     text = "\n".join(blocks[:60]) if blocks else output.strip()[-1500:]
     return text if len(blocks) <= 60 else text + f"\n[… {len(blocks) - 60} more lines cut at 60; the job log holds them]"
 
@@ -1649,6 +1650,10 @@ def selfcheck():
     hook = "noise\nFAIL codespell\n  ./x.d:1: a misspelling\nok   panic\nFAIL file_size\n  a.rs: 1203 lines > 1200\nguardrails: 2 failing\n"
     if failures(hook) != "FAIL codespell\n  ./x.d:1: a misspelling\nFAIL file_size\n  a.rs: 1203 lines > 1200":
         errs.append(f"a hook's failure reads {failures(hook)!r}, not its FAIL blocks")
+    for spelling in ("recipe", "Recipe"):
+        bare = f"check_x: a.py:3 something wrong\nerror: {spelling} `guardrails-fast` failed on line 71 with exit code 1\n"
+        if "a.py:3 something wrong" not in failures(bare):
+            errs.append(f"a hook whose gate prints no FAIL row reaches the repair turn as its `error: {spelling}` line alone")
     if "Autofix failed" not in render(1, {}, "failed", "boom") or "boom" not in render(1, {}, "failed", "boom"):
         errs.append("a failure's comment does not carry its reason")
     stack = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-stack-"))
