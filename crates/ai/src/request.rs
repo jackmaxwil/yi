@@ -213,26 +213,19 @@ pub fn post_json(
         ureq::Error::Status(status, _) => PostJsonError::Http { status },
         ureq::Error::Transport(error) => PostJsonError::Transport(format!("{url}: {error}")),
     })?;
-    read_capped(response, url, cap).map_err(PostJsonError::Protocol)
-}
-
-fn http_status_message(status: u16) -> &'static str {
-    match status {
-        401 | 403 => "the key was refused",
-        402 => "out of credits",
-        404 => "the model or engine was not found",
-        408 | 429 => "rate limited or timed out; retry later",
-        400..=499 => "the request was refused",
-        500..=599 => "the provider failed; retry later",
-        _ => "unexpected status",
+    if !(200..300).contains(&response.status()) {
+        return Err(PostJsonError::Http {
+            status: response.status(),
+        });
     }
+    read_capped(response, url, cap).map_err(PostJsonError::Protocol)
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum PostJsonError {
     #[error("{0}")]
     Transport(String),
-    #[error("HTTP {status}: {}", http_status_message(*status))]
+    #[error("HTTP {status}")]
     Http { status: u16 },
     #[error("{0}")]
     Protocol(String),

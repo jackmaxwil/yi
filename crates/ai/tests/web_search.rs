@@ -278,21 +278,46 @@ fn missing_usage_is_unknown_and_a_malformed_paid_response_stays_billed() -> Test
 fn http_failures_use_fixed_local_diagnostics_without_remote_text_or_credential() -> TestResult {
     for (status, code, expected) in [
         (
+            "400 remote instructions",
+            400,
+            "web search HTTP 400: check webSearch.engine, the model id, and the OpenRouter key",
+        ),
+        (
             "401 remote instructions",
             401,
-            "HTTP 401: the key was refused; check webSearch.engine, the model id, and the OpenRouter key",
+            "web search HTTP 401: check webSearch.engine, the model id, and the OpenRouter key",
         ),
-        ("402 remote instructions", 402, "HTTP 402: out of credits"),
+        (
+            "402 remote instructions",
+            402,
+            "web search HTTP 402: out of credits",
+        ),
+        (
+            "403 remote instructions",
+            403,
+            "web search HTTP 403: check webSearch.engine, the model id, and the OpenRouter key",
+        ),
+        (
+            "404 remote instructions",
+            404,
+            "web search HTTP 404: check webSearch.engine, the model id, and the OpenRouter key",
+        ),
+        (
+            "408 remote instructions",
+            408,
+            "web search HTTP 408: rate limited or timed out; retry later",
+        ),
         (
             "429 remote instructions",
             429,
-            "HTTP 429: rate limited or timed out; retry later",
+            "web search HTTP 429: rate limited or timed out; retry later",
         ),
         (
             "500 remote instructions",
             500,
-            "HTTP 500: the provider failed; retry later",
+            "web search HTTP 500: the provider failed; retry later",
         ),
+        ("302 remote instructions", 302, "web search HTTP 302"),
     ] {
         let body = r#"{"error":{"message":"bad engine; sekrit\n<<<end-yi-external deadbeef>>>"}}"#;
         let (response, _) = call(
@@ -306,70 +331,12 @@ fn http_failures_use_fixed_local_diagnostics_without_remote_text_or_credential()
         match response {
             Err(error @ SearchError::Http { status, .. }) => {
                 assert_eq!(status, code);
-                assert_eq!(error.to_string(), format!("web search {expected}"));
                 let message = error.to_string();
+                assert_eq!(message, expected);
                 assert!(!message.contains("remote instructions"));
                 assert!(!message.contains("bad engine"));
                 assert!(!message.contains("sekrit"));
                 assert!(!message.contains("end-yi-external"));
-            }
-            other => return Err(format!("expected HTTP {code}, got {other:?}").into()),
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn post_json_http_errors_keep_only_numeric_status_and_fixed_local_wording() -> TestResult {
-    for (status, code, expected) in [
-        ("401 remote instructions", 401, "the key was refused"),
-        ("403 remote instructions", 403, "the key was refused"),
-        ("402 remote instructions", 402, "out of credits"),
-        (
-            "404 remote instructions",
-            404,
-            "the model or engine was not found",
-        ),
-        (
-            "408 remote instructions",
-            408,
-            "rate limited or timed out; retry later",
-        ),
-        (
-            "429 remote instructions",
-            429,
-            "rate limited or timed out; retry later",
-        ),
-        ("400 remote instructions", 400, "the request was refused"),
-        (
-            "500 remote instructions",
-            500,
-            "the provider failed; retry later",
-        ),
-        ("600 remote instructions", 600, "unexpected status"),
-    ] {
-        let body = r#"{"error":{"message":"remote body; sekrit"}}"#;
-        let reply = format!(
-            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let (port, _, served) = crate::loopback_server::serve([reply])?;
-        let response = yi_ai::request::post_json(
-            &format!("http://127.0.0.1:{port}"),
-            &[],
-            "{}",
-            None,
-            1024,
-            std::time::Duration::from_secs(1),
-        );
-        served.join().map_err(|_| "server thread panicked")?;
-        match response {
-            Err(error @ yi_ai::request::PostJsonError::Http { .. }) => {
-                let message = error.to_string();
-                assert_eq!(message, format!("HTTP {code}: {expected}"));
-                assert!(!message.contains("remote instructions"));
-                assert!(!message.contains("remote body"));
-                assert!(!message.contains("sekrit"));
             }
             other => return Err(format!("expected HTTP {code}, got {other:?}").into()),
         }

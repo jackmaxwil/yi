@@ -236,6 +236,18 @@ pub struct SearchResponse {
     pub usage: Usage,
 }
 
+fn http_advice(status: u16) -> Option<&'static str> {
+    match status {
+        400 | 401 | 403 | 404 => {
+            Some("check webSearch.engine, the model id, and the OpenRouter key")
+        }
+        402 => Some("out of credits"),
+        408 | 429 => Some("rate limited or timed out; retry later"),
+        500..=599 => Some("the provider failed; retry later"),
+        _ => None,
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SearchError {
     #[error("invalid web search request: {0}")]
@@ -244,7 +256,7 @@ pub enum SearchError {
     MissingCredential,
     #[error("web search transport failed: {0}")]
     Transport(String),
-    #[error("web search {message}")]
+    #[error("web search HTTP {status}{message}")]
     Http { status: u16, message: String },
     #[error("malformed web search response: {0}")]
     Protocol(String),
@@ -435,14 +447,11 @@ impl SearchProvider for OpenRouterSearch {
         )
         .map_err(|error| match error {
             PostJsonError::Transport(message) => SearchError::Transport(self.redact(message)),
-            error @ PostJsonError::Http { status } => {
-                let message = if matches!(status, 401 | 403 | 404) {
-                    format!("{error}; check webSearch.engine, the model id, and the OpenRouter key")
-                } else {
-                    error.to_string()
-                };
-                SearchError::Http { status, message }
-            }
+            PostJsonError::Http { status } => SearchError::Http {
+                status,
+                message: http_advice(status)
+                    .map_or_else(String::new, |advice| format!(": {advice}")),
+            },
             PostJsonError::Protocol(message) => self.billed(
                 SearchError::Protocol(self.redact(message)),
                 Usage::unknown(),
