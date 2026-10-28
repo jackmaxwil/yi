@@ -1396,3 +1396,73 @@ Also run: `codespell`, the `python/yi_runtime` unittests, `evals/selftest.py`, e
 `--selfcheck`, `cargo doc` (§19), `cargo machete` and `cargo deny` (§18.1); a missing tool fails
 its gate. Settled by: D68, D70, D76, D91, D106, D109, D172, D188.
 
+
+## 22. External GitHub intake
+
+Stages 0 through 2 admit only explicitly configured GitHub logins into a manual,
+stateless intake path. The canonical forge and its review loop remain private.
+No schedule, webhook, database, persistent commit map, direct GitHub merge or
+arbitrary-contributor mode exists. Server-side branch and draft writes stay
+disabled until stage 3 installs the `run-ci` hold; stage 2 proves those writes
+only through injected transports, so no contributor code runs before an owner
+action.
+
+`scripts/intake/allowed.json` maps each login to its immutable GitHub user id
+when known, exact author and committer emails, SSH public-key fingerprints,
+per-login commit/file/line/byte caps and dependency permission. The starting
+caps are 20 commits, 40 files, 4,000 added-plus-deleted lines and 150,000 raw
+patch bytes. `allowed_signers` holds only the corresponding principals and
+public keys. Startup recomputes every fingerprint from the public key and
+refuses drift. A missing key fails closed. Adding or rotating a contributor is
+an owner-authored forge change; intake itself denies this registry. Max's login
+is unknown and is not guessed.
+
+One run rewrites canonical main once through `scripts/mirror/rewrite.sh`, the
+same helper used by `scripts/mirror/sync.sh`. The helper retains filter-repo's
+ephemeral `filter-repo/commit-map`; absence is `intake: mapping: filter-repo
+emitted no commit-map`. A mirror merge-base must map to exactly one Forgejo
+commit. The importer fetches and pins the full head, requires linear history,
+verifies every commit locally against that login's signer file and recomputes
+the diff with `git diff --no-renames --binary --full-index`. GitHub's
+`verification` badge is diagnostic, never proof.
+
+Twenty-five ordered checks return `ALLOW` or one typed `intake: …` refusal.
+They cover allowlist and base shape, signatures, identities, pinned head, all
+four caps at the cap and the cap plus one, unique mapping and linear history,
+the composed review/mirror/intake wall, symlinks, submodules, executable-bit
+transitions, binary data, LFS, both rename sides, hostile filenames, secrets,
+mirror replacement markers, network literals, `unsafe`, build-time execution,
+dependency edits and strict application. `build.rs` is always denied. Secret
+scanning uses the unmodified `scripts/mirror/deny.txt` patterns with no fixture
+ignore. Filenames reject traversal, absolute paths, controls, backslashes,
+case-fold collisions and non-ASCII/confusables. Application runs `git apply
+--check --whitespace=error`, then `git apply --index` with the same whitespace
+rule; no three-way merge or rename guessing is permitted.
+
+The final lens alone is non-deterministic. It receives only the bounded diff
+inside an escaped `yi-external trust="untrusted"` fence through `yi ask
+--no-tools`. The flag installs an empty session tool table, and the provider
+request therefore carries no tool table. Lens output is
+`{"refusals":[{"path","line","reason"}]}`. The host accepts only added diff
+lines, fails closed on invalid output or transport failure, and lets the lens
+add but never remove a refusal.
+
+Dry-run prints one `ALLOW` or exact `REFUSE` per open PR and wraps the transport
+so every write raises. A passing injected import creates one squash commit and
+deterministic branch `gh/<login>/<number>-<sha8>`, re-reads the head and current
+main before push, and emits a deterministic draft with `external` and
+`autofix:hold`, never `run-ci`, `live` or `autofix`. Its body fences GitHub prose
+as untrusted data. The audit comment records full head/base/import ids, branch,
+rule hashes, every decision, actor and any override. Overrides authenticate the
+owner, re-pin the full head, accept only one of `commits`, `files`, `lines`,
+`bytes`, `network-literal`, `unsafe` or `lens`, rerun every other check and are
+recorded with reason and original refusal.
+
+`scripts/intake/bridge.py --selfcheck` runs in guardrails over real GitHub REST,
+real SSH-signed object and real mirror-history fixtures. Each hostile case
+changes one part and is seen red by disabling its check. The T2
+`scripts/intake/journey.py` uses real git and fake HTTP for dry-run refusal,
+strict import, deterministic draft/audit and the server-write hold. Stage 3
+owns disposable runner hardening and CI conditions; stage 4 owns landing
+comments, close and schedule. Token provisioning and all live permission
+experiments remain outside these stages.

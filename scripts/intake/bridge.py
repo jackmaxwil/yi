@@ -81,6 +81,7 @@ class Case:
     base_is_ancestor: bool = True
     apply_check: Callable[[bytes, str], Optional[str]] = lambda _patch, _base: None
     lens: Callable[[str], Any] = lambda _prompt: {"refusals": []}
+    user_id: Optional[int] = None
 
 
 @dataclasses.dataclass
@@ -111,7 +112,11 @@ def paths(case: Case) -> set[str]:
 
 
 def check_01_allowlist(case: Case) -> Any:
-    if case.login not in load_allowed()["contributors"]:
+    contributors = load_allowed()["contributors"]
+    if case.login not in contributors:
+        return refusal("allowlist", f"GitHub login '{case.login}' is not allowed")
+    expected_id = contributors[case.login].get("user_id")
+    if expected_id is not None and case.user_id != expected_id:
         return refusal("allowlist", f"GitHub login '{case.login}' is not allowed")
     if case.state != "open" or (case.base_repo, case.base_ref) != (GITHUB_REPO, "main"):
         actual = f"{case.base_repo}:{case.base_ref}"
@@ -485,6 +490,27 @@ def branch_name(case: Case) -> str:
     return f"gh/{case.login}/{case.number}-{case.head[:8]}"
 
 
+def validate_registry() -> None:
+    allowed = load_allowed()["contributors"]
+    actual: dict[str, list[str]] = {login: [] for login in allowed}
+    emails = {email: login for login, row in allowed.items() for email in row["emails"]}
+    with tempfile.TemporaryDirectory(prefix="intake-fingerprints-") as temp:
+        for number, raw in enumerate((ROOT / "scripts/intake/allowed_signers").read_text().splitlines(), 1):
+            if not raw or raw.startswith("#"):
+                continue
+            principal, key = raw.split(maxsplit=1)
+            login = emails.get(principal)
+            if login is None:
+                raise ValueError(f"allowed_signers:{number}: principal {principal} is not pinned")
+            path = pathlib.Path(temp) / f"key-{number}.pub"
+            path.write_text(key + "\n")
+            out = subprocess.run(["ssh-keygen", "-lf", str(path)], capture_output=True, text=True, check=True).stdout.split()
+            actual[login].append(out[1])
+    for login, row in allowed.items():
+        if sorted(actual[login]) != sorted(row["fingerprints"]):
+            raise ValueError(f"allowed.json fingerprints do not match allowed_signers for {login}")
+
+
 def fence(text: str) -> str:
     return text.replace("<<<end-yi-external", "< < < end-yi-external")
 
@@ -664,6 +690,7 @@ def git_text(args: list[str], cwd: Optional[pathlib.Path] = None) -> str:
 
 class RealTransport:
     def __init__(self) -> None:
+        validate_registry()
         self.temp = tempfile.TemporaryDirectory(prefix="yi-intake-")
         self.work = pathlib.Path(self.temp.name)
         self.source = os.environ.get("MIRROR_SOURCE", f"ssh://git@{forge_pr.HOST}:2222/apex/yi.git")
@@ -728,6 +755,7 @@ class RealTransport:
         patch = git(["-C", str(self.mirror_repo), "diff", "--no-renames", "--binary", "--full-index", merge_base, fetched]).stdout
         case = Case(number, login, pr.get("state", ""), pr.get("base", {}).get("repo", {}).get("full_name", ""), pr.get("base", {}).get("ref", ""), head, fetched, head, merge_base, forge_base, self.current_main, commits, parse_diff(patch), patch, contributor, mapped, ancestor)
         case.title = pr.get("title") or ""
+        case.user_id = pr.get("user", {}).get("id")
         case.body = pr.get("body") or ""
         case.apply_check = self.apply_check
         case.lens = default_lens
@@ -815,6 +843,10 @@ class DryRunTransport:
         return value
 
 
+def server_import_refusal() -> Refusal:
+    return Refusal("import", "intake: import: server writes stay disabled until stage 3 installs the run-ci hold")
+
+
 def cli(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--selfcheck", action="store_true")
@@ -831,33 +863,17 @@ def cli(argv: Optional[list[str]] = None) -> int:
     if args.selfcheck:
         import test_bridge
         return test_bridge.selfcheck()
+    if not args.dry_run:
+        print(server_import_refusal().text)
+        return 1
     transport = RealTransport()
     try:
-        if args.dry_run:
-            numbers = [args.number] if args.number else [row["number"] for row in transport.github("GET", f"repos/{GITHUB_REPO}/pulls?state=open&per_page=100")]
-            for number in numbers:
-                case = DryRunTransport(transport).load_case(number)
-                decision = evaluate(case)
-                print(f"PR #{number} {decision if decision == ALLOW else 'REFUSE ' + decision.text}")
-            return 0
-        if not args.number:
-            parser.error("a GitHub PR number is required unless --selfcheck or --dry-run is used")
-        case = transport.load_case(args.number)
-        override = None
-        if args.override == "override":
-            if not args.sha or not args.check or not args.reason or transport.actor() != "jack":
-                print("intake: override: owner actor, full --sha, --check and --reason are required", file=sys.stderr)
-                return 2
-            if args.sha != case.head:
-                print(f"intake: head: override pinned {args.sha}, current {case.head}", file=sys.stderr)
-                return 1
-            override = {"check": args.check, "reason": args.reason, "sha": args.sha}
-        result = import_case(case, transport, override)
-        if result.decision == ALLOW:
-            print(f"ALLOW {result.branch} {json.dumps(result.draft, sort_keys=True)}")
-            return 0
-        print(result.decision.text)
-        return 1
+        numbers = [args.number] if args.number else [row["number"] for row in transport.github("GET", f"repos/{GITHUB_REPO}/pulls?state=open&per_page=100")]
+        for number in numbers:
+            case = DryRunTransport(transport).load_case(number)
+            decision = evaluate(case)
+            print(f"PR #{number} {decision if decision == ALLOW else 'REFUSE ' + decision.text}")
+        return 0
     finally:
         transport.close()
 

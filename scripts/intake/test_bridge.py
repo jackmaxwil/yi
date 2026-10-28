@@ -215,6 +215,7 @@ def selfcheck() -> int:
         red.append(f"{name} · disable {check}: expected {decision.text}; got {shown}")
     check_dry_run_write_detection()
     check_overrides()
+    assert bridge.server_import_refusal().text == "intake: import: server writes stay disabled until stage 3 installs the run-ci hold"
     payload = bridge.draft_payload(valid)
     labels = {"external", "autofix:hold"}
     assert labels == {"external", "autofix:hold"}
