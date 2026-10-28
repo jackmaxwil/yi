@@ -4,6 +4,8 @@
 mod common;
 #[path = "../../types/tests/support/model.rs"]
 mod fixture_model;
+#[path = "../../types/tests/support/repo.rs"]
+mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 #[path = "support/tool_cell.rs"]

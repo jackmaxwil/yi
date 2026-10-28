@@ -19,7 +19,6 @@ pub mod authority;
 mod brief;
 pub(crate) mod cache;
 pub mod capacity;
-pub mod covers;
 pub mod declare;
 pub mod dispatch;
 pub mod done;
