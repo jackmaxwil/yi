@@ -21,5 +21,10 @@
     "kind": "orphan empty-tree Ed25519 SSH-signed commit",
     "public_key_fingerprint": "SHA256:EqY9zglJtekWC9HagB36RsYFwXdC5yOQGihNER7fNr0",
     "private_key": "not recorded; generated under target/fixture-signing"
+  },
+  "mirror_blob_comparisons": {
+    "count": 147,
+    "producer": "git ls-tree -r and git cat-file blob over the real mirror rewrite",
+    "sha256": "df390618d0f2337400ec20683abf2be00b9e9c704ec4b8c61d66b9a55288688e"
   }
 }

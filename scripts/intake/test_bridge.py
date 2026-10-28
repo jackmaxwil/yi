@@ -102,6 +102,9 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("replacement", "marker", added(base, "the infra repository"), "content")
     add("url", "network-literal", added(base, "https://example.com/path"), "network-literal")
     add("ip", "network-literal", added(base, "8.8.8.8"), "network-literal")
+    add("hostname-edu", "network-literal", added(base, "example.edu"), "network-literal")
+    add("git-url", "network-literal", added(base, "git://host/repo"), "network-literal")
+    add("ipv6", "network-literal", added(base, "2001:4860:4860::8888"), "network-literal")
     add("unsafe", "unsafe", added(base, "unsafe { call(); }"), "unsafe")
     add("proc-macro", "build", added(base, "proc-macro = true", "crates/probe/Cargo.toml"), "build")
     add("dependency-section", "build", added(base, "[dependencies]", "Cargo.toml"), "build")
@@ -129,6 +132,28 @@ def check_caps() -> None:
     for case in at_cap:
         assert bridge.evaluate(case) == bridge.ALLOW
 
+def check_real_patch_edges() -> None:
+    env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+    with tempfile.TemporaryDirectory(prefix="intake-mode-patch-") as temp:
+        repo = pathlib.Path(temp)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "script.sh").write_text("exit 0\n")
+        subprocess.run(["git", "-C", str(repo), "add", "script.sh"], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "commit", "-m", "Base"], env=env, check=True, capture_output=True)
+        (repo / "script.sh").chmod(0o755)
+        patch = subprocess.check_output(["git", "-C", str(repo), "diff", "--no-renames", "--binary", "--full-index"])
+        case = dataclasses.replace(valid_case(), changes=bridge.parse_diff(patch), patch=patch)
+        assert bridge.check_13_executables(case).text == "intake: mode: 'script.sh' changes the executable bit"
+    with tempfile.TemporaryDirectory(prefix="intake-binary-patch-") as temp:
+        repo = pathlib.Path(temp)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "blob.dat").write_bytes(b"\x00\x01\x02")
+        subprocess.run(["git", "-C", str(repo), "add", "blob.dat"], check=True)
+        patch = subprocess.check_output(["git", "-C", str(repo), "diff", "--cached", "--no-renames", "--binary", "--full-index"])
+        case = dataclasses.replace(valid_case(), changes=bridge.parse_diff(patch), patch=patch)
+        assert bridge.check_14_binary(case).text == "intake: binary: 'blob.dat' is binary"
+
+
 
 def check_real_fixture() -> None:
     pr = json.loads((FIXTURES / "pull-request.json").read_text())
@@ -139,7 +164,14 @@ def check_real_fixture() -> None:
     mapping = bridge.parse_commit_map(FIXTURES / "commit-map.txt")
     for row in history["commits"]:
         assert mapping[row["forge"]] == row["mirror"]
-        assert len(row["forge_tree"]) == len(row["mirror_tree"]) == 40
+    comparisons = json.loads((FIXTURES / "mirror-files.json").read_text())["comparisons"]
+    assert comparisons
+    for row in comparisons:
+        assert row["mode_equal"], row["path"]
+        assert row["expected_sha256"] == row["mirror_sha256"], row["path"]
+        assert row["bytes_equal"] or row["replacement_applied"], row["path"]
+    assert any(row["bytes_equal"] for row in comparisons)
+    assert any(row["replacement_applied"] for row in comparisons)
 
 
 def check_signed_object() -> None:
@@ -151,8 +183,15 @@ def check_signed_object() -> None:
         empty = subprocess.run(["git", "-C", str(repo), "mktree"], input=b"", capture_output=True, check=True).stdout
         sha = subprocess.run(["git", "-C", str(repo), "hash-object", "-t", "commit", "-w", "--stdin"], input=raw, capture_output=True, check=True).stdout.decode().strip()
         assert empty.decode().strip() == raw.split(b"\n", 1)[0].split()[1].decode()
+        contributor = {"emails": ["intake-fixture@example.invalid"], "fingerprints": [], "caps": {"commits": 20, "files": 40, "lines": 4000, "bytes": 150000}, "dependencies": False}
+        registry = "intake-fixture@example.invalid " + public + "\n"
         signers = repo / "allowed_signers"
-        signers.write_text("intake-fixture@example.invalid " + public + "\n")
+        signers.write_text("\n".join(bridge.signer_lines(contributor, registry)) + "\n")
+        fingerprint = subprocess.check_output(["ssh-keygen", "-lf", FIXTURES / "signed-commit-key.pub"], text=True).split()[1]
+        contributor["fingerprints"] = [fingerprint]
+        allowed = repo / "allowed.json"
+        allowed.write_text(json.dumps({"contributors": {"fixture": contributor}}))
+        bridge.validate_registry(allowed, signers)
         verified = subprocess.run(["git", "-C", str(repo), "-c", "gpg.format=ssh", "-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", sha], capture_output=True, check=False)
         assert verified.returncode == 0, verified.stderr.decode()
         generated = repo / "throwaway"
@@ -176,13 +215,15 @@ def check_dry_run_write_detection() -> None:
 
     fake = Fake()
     dry = bridge.DryRunTransport(fake)
-    try:
-        dry.github("POST", "repos/x/issues/1/comments", {})
-    except RuntimeError as error:
-        assert str(error) == "dry-run write attempted"
-    else:
-        raise AssertionError("dry-run write prohibition did not fire")
-    fake.push("abc", "gh/jackmaxwil/1-abc")
+    for call in (lambda: dry.github("POST", "repos/x/issues/1/comments", {}), lambda: dry.push("abc", "gh/jackmaxwil/1-abc")):
+        try:
+            call()
+        except RuntimeError as error:
+            assert str(error) == "dry-run write attempted"
+        else:
+            raise AssertionError("dry-run write prohibition did not fire")
+    unguarded = bridge.DryRunTransport(fake, prohibit_writes=False)
+    unguarded.push("abc", "gh/jackmaxwil/1-abc")
     assert fake.pushes == [("abc", "gh/jackmaxwil/1-abc")]
 
 
@@ -196,9 +237,47 @@ def check_overrides() -> None:
     assert bridge.evaluate(case, override="signature").code == "commits"
 
 
+EXPECTED = {
+    "stranger": "intake: allowlist: GitHub login 'stranger' is not allowed",
+    "base-shape": "intake: base: PR #11636 targets octocat/Hello-World:master, expected jackmaxwil/yi:main",
+    "unsigned": f"intake: signature: commit {H} has no signature verifiable by jackmaxwil's pinned keys",
+    "wrong-author": f"intake: identity: commit {H} author 'other@example.invalid' or committer 'mazac@chapman.edu' is not pinned to jackmaxwil",
+    "fetch-pin": f"intake: head: fetched {'0' * 40}, expected pinned {H}",
+    "moved-head": f"intake: head: PR #11636 moved from {H} to {'0' * 40}; no branch pushed",
+    "commits-cap-plus-one": "intake: commits: 21 exceeds per-login cap 20",
+    "files-cap-plus-one": "intake: files: 41 exceeds per-login cap 40",
+    "lines-cap-plus-one": "intake: lines: 4001 exceeds per-login cap 4000",
+    "bytes-cap-plus-one": "intake: bytes: 150001 exceeds per-login cap 150000",
+    "unmappable-base": f"intake: base: mirror merge-base {M} has no unique Forgejo mapping",
+    "merge-commit": f"intake: history: merge commit {H} is not importable; rebase into linear signed commits",
+    "deny-path": "intake: path: 'scripts/intake/allowed.json' is denied by scripts/intake/",
+    "symlink": "intake: mode: 'README' is a symlink",
+    "submodule": "intake: mode: 'README' is a submodule",
+    "executable": "intake: mode: 'README' changes the executable bit",
+    "binary": "intake: binary: 'README' is binary",
+    "lfs": "intake: lfs: 'README' is an LFS pointer",
+    "rename-side": "intake: path: rename side 'scripts/intake/allowed.json' is denied by scripts/intake/",
+    "dot-dot": "intake: filename: 'docs/../escape' fails empty, '.' or '..' component",
+    "case-fold": "intake: filename: 'Readme' fails case-fold collision with 'README'",
+    "secret": "intake: content: 'README:2' matches secret/private pattern deny.txt:15",
+    "placeholder": "intake: content: 'README:2' contains mirror replacement marker placeholder",
+    "replacement": "intake: content: 'README:2' contains mirror replacement marker replace.txt:4",
+    "url": "intake: network-literal: 'README:2' contains URL; owner review is required",
+    "ip": "intake: network-literal: 'README:2' contains IP literal; owner review is required",
+    "unsafe": "intake: unsafe: 'README:2' adds unsafe",
+    "proc-macro": "intake: build: 'crates/probe/Cargo.toml:2' adds build-time execution proc-macro",
+    "dependency-section": "intake: build: 'Cargo.toml:2' adds build-time execution dependency section",
+    "dependency": "intake: dependencies: 'Cargo.toml' changes dependencies without per-login permission",
+    "replaced-context": f"intake: apply: patch does not apply strictly to Forgejo base {F}: error: patch failed: README:1",
+    "invalid-lens": "intake: lens unavailable: invalid lens output",
+    "lens-refusal": "intake: lens: model-added refusal",
+}
+
+
 def selfcheck() -> int:
     assert len(bridge.CHECKS) == 25
     check_real_fixture()
+    check_real_patch_edges()
     check_signed_object()
     valid = valid_case()
     assert bridge.evaluate(valid) == bridge.ALLOW
@@ -207,8 +286,9 @@ def selfcheck() -> int:
     for name, check, case, code in hostile_cases():
         decision = bridge.evaluate(case)
         assert isinstance(decision, bridge.Refusal), f"{name}: expected refusal, got {decision}"
-        assert decision.code == code, f"{name}: expected {code}, got {decision.text}"
         assert decision.text.startswith(f"intake: {code}: "), decision.text
+        if name in EXPECTED:
+            assert decision.text == EXPECTED[name], f"{name}: {decision.text}"
         without = bridge.evaluate(case, disabled=frozenset({check}))
         assert without != decision, f"{name}: disabling {check} kept {decision.text}"
         shown = without if isinstance(without, str) else without.text

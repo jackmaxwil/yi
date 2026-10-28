@@ -340,11 +340,11 @@ def check_19_markers(case: Case) -> Any:
 
 
 def network_literal(text: str) -> Optional[str]:
-    if re.search(r"(?i)\b(?:https?|ssh|ftp)://", text):
+    if re.search(r"(?i)\b[a-z][a-z0-9+.-]*://", text):
         return "URL"
-    if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text):
+    if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text) or re.search(r"(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b", text):
         return "IP literal"
-    if re.search(r"(?i)\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|lan|invalid)\b", text):
+    if re.search(r"(?i)\blocalhost\b", text) or re.search(r"(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b", text):
         return "hostname"
     return None
 
@@ -493,12 +493,17 @@ def branch_name(case: Case) -> str:
     return f"gh/{case.login}/{case.number}-{case.head[:8]}"
 
 
-def validate_registry() -> None:
-    allowed = load_allowed()["contributors"]
+def signer_lines(contributor: dict[str, Any], registry: str) -> list[str]:
+    return [raw for raw in registry.splitlines() if raw and not raw.startswith("#") and raw.split(maxsplit=1)[0] in contributor["emails"]]
+
+
+def validate_registry(allowed_path: Optional[pathlib.Path] = None, signers_path: Optional[pathlib.Path] = None) -> None:
+    allowed = json.loads((allowed_path or ROOT / "scripts/intake/allowed.json").read_text())["contributors"]
     actual: dict[str, list[str]] = {login: [] for login in allowed}
     emails = {email: login for login, row in allowed.items() for email in row["emails"]}
+    registry = (signers_path or ROOT / "scripts/intake/allowed_signers").read_text()
     with tempfile.TemporaryDirectory(prefix="intake-fingerprints-") as temp:
-        for number, raw in enumerate((ROOT / "scripts/intake/allowed_signers").read_text().splitlines(), 1):
+        for number, raw in enumerate(registry.splitlines(), 1):
             if not raw or raw.startswith("#"):
                 continue
             principal, key = raw.split(maxsplit=1)
@@ -639,7 +644,14 @@ def parse_diff(patch: bytes) -> list[Change]:
     in_hunk = False
     for raw in patch.decode("utf-8", "surrogateescape").splitlines():
         if raw.startswith("diff --git "):
-            current = Change("")
+            header = raw[len("diff --git "):]
+            quoted = re.fullmatch(r'("(?:\\.|[^"])+")\s+("(?:\\.|[^"])+")', header)
+            left, separator, right = header.rpartition(" b/")
+            current = Change(parse_diff_path(right) if separator else "")
+            if quoted:
+                current.old_path, current.path = (parse_diff_path(part) for part in quoted.groups())
+            elif separator:
+                current.old_path = parse_diff_path(left.removeprefix("diff --git ").removeprefix("a/"))
             changes.append(current)
             in_hunk = False
         elif current is None:
@@ -706,7 +718,7 @@ class RealTransport:
         git(["clone", "--quiet", "--bare", "--single-branch", "--branch", "main", "--no-tags", self.source, str(self.source_repo)])
         cloned = subprocess.run(["bash", str(ROOT / "scripts/mirror/rewrite.sh"), self.source, str(self.mirror_repo)], capture_output=True, text=True, check=True).stdout.strip()
         self.current_main = cloned
-        self.mapping = parse_commit_map(self.mirror_repo / "filter-repo/commit-map")
+        self.mirror_to_forge = {mirror: forge for forge, mirror in parse_commit_map(self.mirror_repo / "filter-repo/commit-map").items()}
 
     def close(self) -> None:
         self.temp.cleanup()
@@ -730,10 +742,7 @@ class RealTransport:
 
     def signer_file(self, case: Case) -> pathlib.Path:
         path = self.work / f"signers-{case.login}"
-        lines = []
-        for raw in (ROOT / "scripts/intake/allowed_signers").read_text().splitlines():
-            if raw and not raw.startswith("#") and raw.split()[0] in case.contributor["emails"]:
-                lines.append(raw)
+        lines = signer_lines(case.contributor, (ROOT / "scripts/intake/allowed_signers").read_text())
         path.write_text("\n".join(lines) + ("\n" if lines else ""))
         return path
 
@@ -749,8 +758,8 @@ class RealTransport:
         fetched = git_text(["-C", str(self.mirror_repo), "fetch", "--quiet", f"https://github.com/{GITHUB_REPO}.git", f"refs/pull/{number}/head"])
         fetched = git_text(["-C", str(self.mirror_repo), "rev-parse", "FETCH_HEAD"])
         merge_base = git_text(["-C", str(self.mirror_repo), "merge-base", fetched, mirror_tip])
-        forge_base = self.mapping.get(merge_base, merge_base)
-        mapped = (forge_base,) if merge_base in self.mapping else ()
+        forge_base = self.mirror_to_forge.get(merge_base, merge_base)
+        mapped = (forge_base,) if merge_base in self.mirror_to_forge else ()
         ancestor = git(["-C", str(self.mirror_repo), "merge-base", "--is-ancestor", merge_base, mirror_tip], check=False).returncode == 0
         commits = []
         rows = git_text(["-C", str(self.mirror_repo), "rev-list", "--reverse", "--parents", f"{merge_base}..{fetched}"]).splitlines()
@@ -847,17 +856,18 @@ def default_lens(prompt: str) -> Any:
 
 
 class DryRunTransport:
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, prohibit_writes: bool = True) -> None:
         self.inner = inner
+        self.prohibit_writes = prohibit_writes
 
     def github(self, method: str, path: str, payload: Optional[dict[str, Any]] = None) -> Any:
-        if method != "GET":
+        if self.prohibit_writes and method != "GET":
             raise RuntimeError("dry-run write attempted")
         return self.inner.github(method, path, payload)
 
     def __getattr__(self, name: str) -> Any:
         value = getattr(self.inner, name)
-        if name in ("forge", "apply_and_commit", "push"):
+        if self.prohibit_writes and name in ("forge", "apply_and_commit", "push"):
             raise RuntimeError("dry-run write attempted")
         return value
 
