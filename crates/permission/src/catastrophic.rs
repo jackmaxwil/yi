@@ -182,6 +182,36 @@ pub fn cd_target(word: &str, after_cd: &mut bool) -> bool {
     target
 }
 
+pub(crate) fn cd_directory(
+    name: &str,
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    directory: Option<&Path>,
+) -> Option<Option<PathBuf>> {
+    let (mut after_cd, mut target, mut kept) = (true, None, false);
+    let mut unknown = name == "popd";
+    loop {
+        while chars.next_if(|next| next.is_whitespace()).is_some() {}
+        if chars.peek() == Some(&'#') {
+            chars.by_ref().for_each(drop);
+        }
+        let Some(next) = word(chars) else { break };
+        if next.chars().all(|c| c.is_ascii_digit()) && chars.peek() == Some(&'>') {
+            break;
+        }
+        kept |= name == "pushd" && next == "-n";
+        unknown |=
+            target.is_some() || (name == "pushd" && next.starts_with(['-', '+']) && next != "-n");
+        if cd_target(&next, &mut after_cd) {
+            target = Some(next);
+        }
+    }
+    (!kept).then(|| match target.filter(|target| target != "-" && !unknown) {
+        Some(target) if Path::new(&target).is_absolute() => Some(target.into()),
+        Some(target) => directory.map(|base| resolve_target(&target, base)),
+        None => None,
+    })
+}
+
 /// The next shell word, quotes dropped; none when it is empty or built by expansion.
 pub(crate) fn word(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
     while chars.next_if(|next| next.is_whitespace()).is_some() {}
