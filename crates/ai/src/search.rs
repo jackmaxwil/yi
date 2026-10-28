@@ -8,7 +8,6 @@ use crate::request::{PostJsonError, ProxyConfig};
 const RESPONSE_CAP: usize = 8 * 1024 * 1024;
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const INSTRUCTION: &str = "Perform exactly one web search for the user's query, then answer in at most 150 words using only what the search returned, citing each claim with a markdown link to its source.";
-const MAX_COMPLETION_TOKENS: u32 = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchQuery(String);
@@ -403,7 +402,6 @@ impl SearchProvider for OpenRouterSearch {
         let mut body = json!({
             "model": self.model.id,
             "stream": false,
-            "max_completion_tokens": MAX_COMPLETION_TOKENS,
             "messages": [
                 {"role": "system", "content": INSTRUCTION},
                 {"role": "user", "content": request.query.as_str()},
@@ -437,9 +435,16 @@ impl SearchProvider for OpenRouterSearch {
         )
         .map_err(|error| match error {
             PostJsonError::Transport(message) => SearchError::Transport(self.redact(message)),
-            PostJsonError::Http { status, message } => SearchError::Http {
+            PostJsonError::Http { status, .. } => SearchError::Http {
                 status,
-                message: self.redact(message),
+                message: match status {
+                    400..=499 => {
+                        "client error; check webSearch.engine, the model id, and the OpenRouter key"
+                    }
+                    500..=599 => "server error; try again later",
+                    _ => "unexpected HTTP status",
+                }
+                .to_owned(),
             },
             PostJsonError::Protocol(message) => self.billed(
                 SearchError::Protocol(self.redact(message)),

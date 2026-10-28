@@ -210,9 +210,14 @@ pub fn post_json(
         request = request.set(name, value);
     }
     let response = request.send_string(body).map_err(|error| match error {
-        ureq::Error::Status(status, response) => PostJsonError::Http {
+        ureq::Error::Status(status, _) => PostJsonError::Http {
             status,
-            message: response.status_text().to_owned(),
+            message: match status {
+                400..=499 => "client error",
+                500..=599 => "server error",
+                _ => "unexpected HTTP status",
+            }
+            .to_owned(),
         },
         ureq::Error::Transport(error) => PostJsonError::Transport(format!("{url}: {error}")),
     })?;
