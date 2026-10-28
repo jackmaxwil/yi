@@ -40,7 +40,7 @@ class Unavailable(Exception):
 
 def environment():
     env = dict(os.environ)
-    env.setdefault("UV_CACHE_DIR", str(ROOT / "target/uv-cache"))
+    env["UV_CACHE_DIR"] = str(ROOT / "target/uv-cache")
     return env
 
 
