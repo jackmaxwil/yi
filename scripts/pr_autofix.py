@@ -338,9 +338,12 @@ def reprice(clone, base="MERGE_HEAD"):
 ROLES = BASELINES + "role_prefix.json"
 
 
+CEILING = {}
+
+
 def inflated(old, new):
     """Incident: the runner measured the bare write roles 45 KB past main on five PRs and the Ratchet
-    commit wrote that in as their ceiling. A raise past 10% of a row is a fault, not a fix."""
+    commit wrote that in as their ceiling. A raise past 10% of a row, over all of a run's re-measures, is a fault."""
     return any(v > old.get(k, v) * 1.1 for k, v in new.items())
 
 
@@ -349,7 +352,7 @@ def remeasure(clone):
     may not touch them. Incident: #1110 and #1111 merged main, each side had raised the request
     budget and moved tool hashes, and the hook refused a ceiling no file the model owns could meet."""
     roles = clone / ROLES
-    before = roles.read_text() if roles.is_file() else ""
+    before = CEILING.setdefault(str(clone), roles.read_text() if roles.is_file() else "")
     for gate in ("check_schemas_lock.py", "check_request_budget.py"):
         sh(clone, sys.executable, f"scripts/guardrails/{gate}", "--update", env=scrubbed(), check=False)
     try:
@@ -434,6 +437,7 @@ def failures(output):
             keep = False
         if keep:
             blocks.append(line)
+    blocks = [b for b in blocks if not b.lower().startswith("error: recipe")]
     text = "\n".join(blocks[:60]) if blocks else output.strip()[-1500:]
     return text if len(blocks) <= 60 else text + f"\n[… {len(blocks) - 60} more lines cut at 60; the job log holds them]"
 
@@ -1666,6 +1670,10 @@ def selfcheck():
     hook = "noise\nFAIL codespell\n  ./x.d:1: a misspelling\nok   panic\nFAIL file_size\n  a.rs: 1203 lines > 1200\nguardrails: 2 failing\n"
     if failures(hook) != "FAIL codespell\n  ./x.d:1: a misspelling\nFAIL file_size\n  a.rs: 1203 lines > 1200":
         errs.append(f"a hook's failure reads {failures(hook)!r}, not its FAIL blocks")
+    for spelling in ("recipe", "Recipe"):
+        bare = f"check_x: a.py:3 something wrong\nerror: {spelling} `guardrails-fast` failed on line 71 with exit code 1\n"
+        if "a.py:3 something wrong" not in failures(bare):
+            errs.append(f"a hook whose gate prints no FAIL row reaches the repair turn as its `error: {spelling}` line alone")
     if not inflated({"leaf": 41937}, {"leaf": 87107}) or inflated({"root": 50416}, {"root": 50477}):
         errs.append("a role prefix that doubled passes as a re-measure, or a 61-byte raise is refused")
     roles = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-roles-"))
@@ -1673,12 +1681,15 @@ def selfcheck():
         (roles / ROLES).parent.mkdir(parents=True)
         (roles / ROLES).write_text(merge_baseline.layout({"leaf": 100}))
         (roles / "scripts/guardrails/check_request_budget.py").write_text(
-            f"import pathlib\npathlib.Path({ROLES!r}).write_text('{{\"leaf\": 111}}')\n")
+            f"import json, pathlib\np = pathlib.Path({ROLES!r})\np.write_text(json.dumps({{'leaf': int(json.loads(p.read_text())['leaf'] * 1.09)}}))\n")
         for args in (("init", "-q", "-b", "main"), ("add", "-A"), ("commit", "-qm", "seed")):
             sh(roles, "git", "-c", "user.name=t", "-c", "user.email=t@t", *args)
         remeasure(roles)
+        if json.loads((roles / ROLES).read_text()) != {"leaf": 109}:
+            errs.append("a 9% re-measure was not kept")
+        remeasure(roles)
         if json.loads((roles / ROLES).read_text()) != {"leaf": 100} or sh(roles, "git", "diff", "HEAD", "--stat").stdout.strip():
-            errs.append("a re-measure that raised a role prefix past 10% left the raise in the worktree or the index")
+            errs.append("a second 9% re-measure of one run, 18% over the file it started from, was kept")
     finally:
         shutil.rmtree(roles)
     if "Autofix failed" not in render(1, {}, "failed", "boom") or "boom" not in render(1, {}, "failed", "boom"):
