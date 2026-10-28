@@ -185,10 +185,6 @@ impl Verifier {
         self
     }
 
-    pub(super) fn hook_config(&self) -> Option<&crate::claude_hooks::Hooks> {
-        self.hooks.as_deref()
-    }
-
     pub fn timeout_ms(&self) -> u64 {
         self.timeout_ms
     }
@@ -443,27 +439,6 @@ fn run_cmd_said(
         format!("`{}` exit 0\n{cut}{kept}", manifest.command)
     });
     (verdict_of(capture, manifest, &workdir, artifacts), said)
-}
-
-pub(super) fn run_cmd(
-    manifest: &CheckerManifest,
-    root: &Path,
-    artifacts: &Artifacts,
-    deadline: Instant,
-    stop: Option<&yi_tools::CancelFlag>,
-    hooks: Option<&crate::claude_hooks::Hooks>,
-) -> ItemVerdict {
-    let workdir = manifest.workdir(root);
-    let capture = run_check_in(
-        &workdir,
-        &manifest.command,
-        &manifest.env,
-        None,
-        deadline,
-        stop,
-        hooks,
-    );
-    verdict_of(capture, manifest, &workdir, artifacts)
 }
 
 fn verdict_of(

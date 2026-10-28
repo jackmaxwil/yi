@@ -60,18 +60,11 @@ use yi_types::plan::doc::{AttemptId, GoalText, PlanId, TodoLabel, TodoState};
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn manifest(command: &str, timeout_ms: u64, env: &[&str]) -> serde_json::Value {
-    json!({
-        "manifest": 1, "command": command, "cwd": "snapshot_root", "cwd_subdir": null,
-        "protected": [], "timeout_ms": timeout_ms, "env": env, "reads_outside_snapshot": false
-    })
+    crate::checker::checker_manifest(command, timeout_ms, env, false)
 }
 
 fn put(artifacts: &Artifacts, value: &serde_json::Value) -> Result<ArtifactRef, Box<dyn Error>> {
-    Ok(artifacts.put(
-        &serde_json::to_vec(value)?,
-        "application/vnd.yi.checker-manifest+json",
-        "test",
-    )?)
+    crate::checker::put_checker(artifacts, value, "test")
 }
 
 fn cmd_contract(checker: ArtifactRef, timeout_ms: u64) -> Result<Contract, Box<dyn Error>> {

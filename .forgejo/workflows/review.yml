@@ -57,14 +57,14 @@ jobs:
           echo "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39  /usr/local/bin/fgj" | sha256sum -c -
           chmod +x /usr/local/bin/fgj
       # Incident: unpinned, OpenRouter served glm-5.3-flash from hosts measured at 51 to 235 tok/s and
-      # rounds ran 36 to 113 minutes; CoreWeave took a 40k-token prompt in 1.6 to 2.9 s (2026-10-12).
-      - run: mkdir -p ~/.yi && echo '{"routing":{"order":["coreweave/nvfp4"],"allow_fallbacks":false}}' > ~/.yi/config.json
+      # rounds ran 36 to 113 minutes. The owner pinned DeepSeek V4.1 Flash to Together (2026-10-27).
+      - run: mkdir -p ~/.yi && echo '{"routing":{"order":["together"],"allow_fallbacks":false}}' > ~/.yi/config.json
       - name: review the head as yi-bot
         env:
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # The authors write with Anthropic models; the reviewer is from another family.
-          YI_REVIEW_MODEL: openrouter/z-ai/glm-5.3-flash
+          YI_REVIEW_MODEL: openrouter/deepseek/deepseek-v4.1-flash-1017
           # The owner's hand-written rounds count beside the bot's.
           YI_ROUND_AUTHORS: yi-bot,jack
         run: |

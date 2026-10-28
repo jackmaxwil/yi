@@ -117,7 +117,6 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Child asks the human | Envelope (request to parent) + child flag | D233 |
 | Shared family objects | Kernel `rlm.put` / `rlm.get` + Url (`family://`) | D164 |
 | Paged reading of anything | Url + `fetch` pages | D213 |
-| Checker after every covered write | Contract (`covers`) + Tool | D228 |
 | Heartbeat | Schedule + Todo + Session run queue (steer or follow-up) | D283 |
 | Next-step hints | Tool result + procedural graph | D219 |
 
@@ -136,7 +135,7 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 - A last line failing as JSON syntax or EOF is a torn write: the file is atomically rewritten to
   its valid prefix. Any other bad line fails the load.
 - `pi_v4_fixtures_roundtrip_byte_identical` re-serializes every line and whole file of
-  `crates/types/tests/fixtures/*.jsonl` byte-identically; `JsonlRepo` and `MemRepo` pass one
+  `crates/types/tests/fixtures/v4-*.jsonl` byte-identically; `JsonlRepo` and `MemRepo` pass one
   suite, `crates/session/tests/conformance.rs`. Ids are validated before any path join.
 - Owner: [`crates/session/src/`](../crates/session/src/); Settled by: D32, D33, D78, D115
 - State: `SessionRepo { create, open, list, delete, fork }` → `Arc<Mutex<SessionStore>>`;
@@ -890,8 +889,8 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 
 ### 13.1 Contracts
 A `Contract` ([`contract.rs`](../crates/types/src/plan/contract.rs)) is 1..=16 items
-`{id, critical, weight, decider}` with a `threshold`, a `min_coverage` and `covers` globs.
-
+`{id, critical, weight, decider}` with a `threshold` and a `min_coverage`. Its legacy `covers`
+field still decodes so an old contract keeps its frozen digest.
 - `Decider { Cmd, Schema, Example, Judge }`. `ContractClass { Writer, Reader, Inline, Service }`
   sets a floor (a critical `cmd`/`example`, `schema`, or either); `Service` is refused.
 - `start` freezes the contract by digest with the attempt. `done` commits
@@ -902,12 +901,11 @@ A `Contract` ([`contract.rs`](../crates/types/src/plan/contract.rs)) is 1..=16 i
   `plan.done_refusal_cap`-th refusal (default 3) derives `block{on: User}`.
 - `start` refuses a `judge` item and names the deciders that run (`cmd`, `schema`, `example`);
   the variant decodes so old journals replay, and a started one abstains `no judge`.
+- A legacy contract's retired `covers` globs are inert; its cmd items run at done.
 - `Resolution { VerifiedDone, AcceptedByUser, LegacyUnverified }`. A todo with a contract or a
   stated acceptance completes only beside one, on every path (`set`, `import`, `repair`,
   `supersede` share the validator); any other on the caller's word.
-- A non-error write to a path a running todo `covers` runs its `cmd` items on a copy of the
-  writer's tree within 60 s and appends `contract "<label>" check: <verdict>`; it journals nothing.
-- Owner: [`plan/done.rs`](../crates/runtime/src/plan/done.rs). Settled by: D194, D216, D228.
+- Owner: [`plan/done.rs`](../crates/runtime/src/plan/done.rs). Settled by: D194, D216.
 
 ### 13.2 Worktree acceptance
 A worktree todo needs a contract; it is Done only via acceptance or as `AcceptedByUser`.
