@@ -108,55 +108,30 @@ pub enum Phase {
     Pending,
 }
 
-/// One exit read four ways: the wire status, the member state, the notice's verb and the row's
-/// outcome.
+/// One exit read three ways: the wire status, the member state and the notice's verb.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reading {
     pub status: ChildStatus,
     pub state: MemberState,
     pub verb: &'static str,
-    pub row: &'static str,
 }
 
 /// Invariant: every surface reads a child's ending through here, so the TUI's status, the
 /// model's `wait` state and the parent's notice cannot disagree. `None` is a live run.
 pub fn read_exit(exit: Option<ChildExit>) -> Reading {
-    let (status, state, verb, row) = match exit {
-        None => (
-            ChildStatus::Running,
-            MemberState::Running,
-            "running",
-            "running",
-        ),
-        Some(ChildExit::Completed) => (
-            ChildStatus::Completed,
-            MemberState::Finished,
-            "finished",
-            "done",
-        ),
-        Some(ChildExit::Failed { .. }) => {
-            (ChildStatus::Error, MemberState::Failed, "failed", "failed")
-        }
-        Some(ChildExit::Interrupted) => (
-            ChildStatus::Error,
-            MemberState::Failed,
-            "interrupted",
-            "cancelled",
-        ),
-        Some(ChildExit::Reaped) => (ChildStatus::Error, MemberState::Failed, "reaped", "reaped"),
-        Some(ChildExit::Repossessed) => (
-            ChildStatus::Error,
-            MemberState::Failed,
-            "repossessed",
-            "revoked",
-        ),
-        Some(ChildExit::Other) => (ChildStatus::Error, MemberState::Failed, "ended", "failed"),
+    let (status, state, verb) = match exit {
+        None => (ChildStatus::Running, MemberState::Running, "running"),
+        Some(ChildExit::Completed) => (ChildStatus::Completed, MemberState::Finished, "finished"),
+        Some(ChildExit::Failed { .. }) => (ChildStatus::Error, MemberState::Failed, "failed"),
+        Some(ChildExit::Interrupted) => (ChildStatus::Error, MemberState::Failed, "interrupted"),
+        Some(ChildExit::Reaped) => (ChildStatus::Error, MemberState::Failed, "reaped"),
+        Some(ChildExit::Repossessed) => (ChildStatus::Error, MemberState::Failed, "repossessed"),
+        Some(ChildExit::Other) => (ChildStatus::Error, MemberState::Failed, "ended"),
     };
     Reading {
         status,
         state,
         verb,
-        row,
     }
 }
 

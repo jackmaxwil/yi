@@ -3049,26 +3049,12 @@ fn child_host(dir: &Scratch, reply: &'static str) -> Arc<SubagentHost> {
 }
 
 fn child_host_options(dir: &Scratch, reply: &'static str) -> SubagentHostOptions {
-    SubagentHostOptions {
-        provider: Arc::new(ProviderStream::new(None)),
-        depth: 0,
-        max_depth: 1,
-        max_children: 4,
-        parent_session_dir: dir.to_path_buf(),
-        cwd: dir.to_path_buf(),
-        home: dir.join("home"),
-        lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
-        factory: Arc::new(move |_build| Ok(faux_session(reply))),
-        notice: Arc::new(|_notice, _| {}),
-        events: tokio::sync::broadcast::channel(64).0,
-        parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message, _| {}),
-        attribute: Arc::new(|_usage| {}),
-        store: Arc::new(|| None),
-        plans_dir: dir.join(".yi/plans"),
-        family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }
+    common::child_host_options(
+        dir,
+        4,
+        Arc::new(|| None),
+        Arc::new(move |_build| Ok(faux_session(reply))),
+    )
 }
 
 fn kernel_cell(id: &str, code: &str) -> yi_types::event::AgentEvent {

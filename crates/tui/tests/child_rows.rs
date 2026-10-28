@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use serde_json::Number;
-use yi_runtime::ChildStatus;
+use yi_runtime::{ChildStatus, PARENT_CLOSED};
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::cell::{Cell, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme};
@@ -141,6 +141,27 @@ fn an_early_end_waits_for_its_cell_then_follows_its_start() -> TestResult {
 }
 
 #[test]
+fn terminal_updates_and_roster_ticks_commit_one_end_per_run() -> TestResult {
+    let mut app = app();
+    app.reduce_agent(AgentEvent::AgentStart);
+    app.reduce_agent(tool_start("cell-1"));
+    app.adopt(&running("sub-1", "session-1"), None, Some("cell-1"));
+    let ended = finished("sub-1", "session-1", ChildExit::Completed);
+    for _ in 0..3 {
+        app.reduce_child_update(&ended);
+    }
+    for _ in 0..5 {
+        app.adopt(&ended, None, Some("cell-1"));
+    }
+    app.reduce_agent(tool_end("cell-1"));
+    let rows = child_rows(&mut app);
+    let endings = rows.iter().filter(|row| row.contains("· done ·")).count();
+    assert_eq!(endings, 1, "{rows:?}");
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    Ok(())
+}
+
+#[test]
 fn a_late_end_appends_after_later_parent_cells_with_a_start_back_reference() -> TestResult {
     let mut app = app();
     app.reduce_agent(AgentEvent::AgentStart);
@@ -202,12 +223,15 @@ fn terminal_first_rows_name_every_actual_outcome() -> TestResult {
     }
     let mut app = app();
     let mut closed = finished("sub-close", "session", ChildExit::Repossessed);
-    closed.error = Some("parent closed".to_owned());
+    closed.error = Some(PARENT_CLOSED.to_owned());
     app.adopt(&closed, None, None);
     let rows = child_rows(&mut app);
-    assert!(rows[1].contains("· parent closed ·"), "{rows:?}");
     assert!(
-        !rows[1].ends_with("parent closed · parent closed"),
+        rows[1].contains(&format!("· {PARENT_CLOSED} ·")),
+        "{rows:?}"
+    );
+    assert!(
+        !rows[1].ends_with(&format!("{PARENT_CLOSED} · {PARENT_CLOSED}")),
         "{rows:?}"
     );
     Ok(())
@@ -287,9 +311,7 @@ fn start_rows_keep_legacy_fields_absent_and_task_caps_loud() -> TestResult {
 async fn a_host_caps_the_journaled_and_committed_start_task() -> TestResult {
     use std::sync::Arc;
     use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
-    use yi_runtime::{
-        AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions,
-    };
+    use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost};
 
     let dir = crate::scratch::Scratch::new("yi-tui-child-task-cap")?;
     let mut repo = JsonlRepo::new(dir.join("sessions"), "/tmp");
@@ -299,19 +321,11 @@ async fn a_host_caps_the_journaled_and_committed_start_task() -> TestResult {
         .cloned()
         .ok_or("no root file")?;
     let store = Arc::clone(&parent);
-    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
-        provider: Arc::new(ProviderStream::new(None)),
-        depth: 0,
-        max_depth: 1,
-        max_children: 1,
-        parent_session_dir: dir.join("children"),
-        defaults: Arc::new(|| {
-            (
-                common::test_model("faux-1"),
-                yi_types::model::Effort::Medium,
-            )
-        }),
-        factory: Arc::new(|build| {
+    let host = Arc::new(SubagentHost::new(common::child_host_options(
+        &dir,
+        1,
+        Arc::new(move || Some(Arc::clone(&store))),
+        Arc::new(|build| {
             Ok(AgentSession::new(
                 SessionConfig {
                     system_prompt: String::new(),
@@ -322,18 +336,7 @@ async fn a_host_caps_the_journaled_and_committed_start_task() -> TestResult {
                 Arc::new(ProviderStream::new(None)),
             ))
         }),
-        notice: Arc::new(|_, _| {}),
-        events: tokio::sync::broadcast::channel(8).0,
-        parent_messages: Arc::new(Vec::new),
-        cwd: dir.to_path_buf(),
-        home: dir.join("home"),
-        lane_slots: 1,
-        report: Arc::new(|_, _| {}),
-        attribute: Arc::new(|_| {}),
-        store: Arc::new(move || Some(Arc::clone(&store))),
-        plans_dir: dir.join(".yi/plans"),
-        family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }));
+    )));
     let args = serde_json::json!({"name": "scout", "role": "root"});
     host.spawn(
         "x".repeat(241),
