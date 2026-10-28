@@ -76,9 +76,7 @@ pub struct TuiOptions {
     pub pace: u16,
 }
 
-// Starting tall anchors the composer mid-screen until the first commit pushes it down,
-// so the viewport opens at an empty live region's height and grows upward from the cursor.
-const MIN_VIEWPORT_ROWS: u16 = 4;
+const MIN_VIEWPORT_ROWS: u16 = 3;
 
 pub(crate) const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 10;
@@ -196,6 +194,7 @@ pub struct App {
     pub(crate) options: TuiOptions,
     pub(crate) status_name_hidden: bool,
     pub(crate) branch: Option<String>,
+    pub(crate) dirty: Arc<crate::port::Dirty>,
     pub(crate) landing: Option<yi_types::lane::Landing>,
     /// When the landing last arrived; the row's age is this clock, not a wire field.
     pub(crate) landing_at: Option<Instant>,
@@ -322,6 +321,7 @@ impl App {
             options,
             status_name_hidden: false,
             branch: None,
+            dirty: Arc::default(),
             landing: None,
             landing_at: None,
             context_used: 0,

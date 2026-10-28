@@ -723,7 +723,7 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 ·  yi \n\
+         wait-frame 5000 › yi \n\
          wait-frame 3000 !⎇ lane\n\
          quit\n",
     )
@@ -904,9 +904,9 @@ fn a_resumed_session_shows_the_ledgers_spend_once_across_a_reconnect() -> TestRe
         ],
         "wait-frame 5000 s-alpha\n\
          key enter\n\
-         wait-frame 5000 ≥$86.20  ·  0 / 128K\n\
+         wait-frame 5000 ≥$86.20  › 0.0% / 128K\n\
          wait-frame 8000 replayed again\n\
-         wait-frame 1000 ≥$86.20  ·  0 / 128K\n\
+         wait-frame 1000 ≥$86.20  › 0.0% / 128K\n\
          quit\n",
     )
 }
@@ -3214,12 +3214,12 @@ fn the_status_row_shows_model_effort_cost_and_context() -> TestResult {
          wait-frame 3000 faux-1\n\
          wait-frame 3000 ◉ medium\n\
          wait-frame 3000 $0.12\n\
-         wait-frame 3000 2,000 / 200K\n\
+         wait-frame 3000 1.0% / 200K\n\
          quit\n",
     )
 }
 
-/// Dies with `2,000 / 200K` in the left third of a 254-column pane: every meter sat in the
+/// Dies with `1.0% / 200K` in the left third of a 254-column pane: every meter sat in the
 /// left group and the right one, the session name, is hidden in the console.
 #[test]
 fn the_wide_pane_puts_its_meters_on_the_right() -> TestResult {
@@ -3231,22 +3231,23 @@ fn the_wide_pane_puts_its_meters_on_the_right() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 3000 2,000 / 200K\n\
+         wait-frame 3000 1.0% / 200K\n\
          quit\n",
         SidebarMode::Full,
         254,
     )?;
     let row = frame
         .lines()
-        .find(|line| line.contains("2,000 / 200K"))
+        .find(|line| line.contains("1.0% / 200K"))
         .ok_or_else(|| format!("no status row:\n{frame}"))?;
     let (_, after) = row
         .trim_end_matches('"')
-        .split_once("2,000 / 200K")
+        .split_once("1.0% / 200K")
         .unwrap_or_default();
     let tail = ratatui::text::Line::from(after).width();
+    // The meter's trailing space, the box's corner and the margin either side of it.
     assert!(
-        tail <= 3,
+        tail <= 4,
         "the context meter ends {tail} cells short of the edge: {row}"
     );
     Ok(())

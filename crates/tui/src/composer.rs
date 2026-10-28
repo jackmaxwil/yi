@@ -73,20 +73,23 @@ impl Composer {
         self.textarea.move_cursor(tui_textarea::CursorMove::End);
     }
 
-    /// Re-styled per draw so theme and running state stay current.
+    /// Re-styled per draw so theme and running state stay current; a reverse-i-search title
+    /// takes the top border over `title`.
     pub fn set_frame(
         &mut self,
         border: ratatui::style::Style,
         placeholder: ratatui::style::Style,
-        title: Option<String>,
+        cursor: ratatui::style::Style,
+        title: Option<ratatui::text::Line<'static>>,
     ) {
         use ratatui::widgets::{Block, BorderType, Borders};
         self.textarea.set_placeholder_style(placeholder);
+        self.textarea.set_cursor_style(cursor);
         let mut block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(border);
-        if let Some(title) = self.search_title().or(title) {
+        if let Some(title) = self.search_title().map(Into::into).or(title) {
             block = block.title(title);
         }
         self.textarea.set_block(block);

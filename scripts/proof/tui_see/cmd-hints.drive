@@ -2,7 +2,7 @@
 wait-frame 15000 command palette
 key alt-n
 wait-frame 10000 untitled
-wait-frame 5000 0 / 128K
+wait-frame 5000 0.0% / 128K
 cmd-/
 wait-frame 3000 ↑↓ move · ←→ tab
 snap keys
