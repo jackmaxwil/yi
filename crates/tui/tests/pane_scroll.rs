@@ -384,3 +384,20 @@ fn a_first_prompt_scrolled_away_and_back_stays_where_it_was() -> TestResult {
     assert_eq!(back, settled, "the prompt rolled in again");
     Ok(())
 }
+
+#[test]
+fn composer_bottom_uses_the_panes_bottom_at_a_nonzero_offset() -> TestResult {
+    let area = Rect::new(7, 5, 60, 24);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 40));
+    let mut app = app();
+    let _ = yi_tui::render::paint_pane(&mut app, None, &mut buffer, area, &mut 0);
+    let y = area.bottom().saturating_sub(1);
+    let row: String = (0..buffer.area.width)
+        .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+        .collect();
+    assert!(
+        row.contains('╰') && row.contains('╯'),
+        "composer bottom is not on row {y}: {row:?}"
+    );
+    Ok(())
+}
