@@ -750,8 +750,9 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                 (Some('"') | None, '\\') => {
                     if chars.next().is_none() {
                         continued = true;
+                    } else {
+                        command_start = false;
                     }
-                    command_start = false;
                 }
                 (Some(_), _) => {}
                 (None, '#') if prev.is_whitespace() => break,
@@ -809,7 +810,7 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                     while let Some(next) = chars.next_if(|next| next.is_alphabetic()) {
                         name.push(next);
                     }
-                    if matches!(name.as_str(), "cd" | "pushd")
+                    if matches!(name.as_str(), "cd" | "pushd" | "popd")
                         && chars
                             .peek()
                             .is_none_or(|next| next.is_whitespace() || ";&|<>()".contains(*next))
@@ -817,7 +818,9 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                         && cd_applies
                     {
                         let (mut after_cd, mut target) = (true, None);
+                        let mut unknown = name == "popd";
                         while let Some(next) = word(&mut chars) {
+                            unknown |= name == "pushd" && next.starts_with(['-', '+']);
                             if crate::catastrophic::cd_target(&next, &mut after_cd) {
                                 target = Some(next);
                             }
@@ -826,7 +829,7 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                             }
                         }
                         directory = match target {
-                            Some(target) if target != "-" => directory
+                            Some(target) if target != "-" && !unknown => directory
                                 .as_deref()
                                 .map(|base| crate::catastrophic::resolve_target(&target, base)),
                             _ => None,

@@ -287,9 +287,18 @@ fn a_redirect_after_cd_is_judged_from_the_directory_the_shell_uses() -> TestResu
             "echo x \\\ncd /tmp && echo hi > crates/lock.rs",
             "crates/lock.rs",
         ),
+        (
+            "echo a && \\\ncd crates && echo hi > evals/probe.py",
+            "crates/evals/probe.py",
+        ),
         ("cd -P crates && echo hi > lock.rs", "crates/lock.rs"),
         ("cd -- crates && echo hi > lock.rs", "crates/lock.rs"),
         ("pushd crates && echo hi > lock.rs", "crates/lock.rs"),
+        (
+            "pushd -n evals && echo hi > crates/lock.rs",
+            "crates/lock.rs",
+        ),
+        ("pushd evals && popd && echo hi > probe.py", "probe.py"),
     ] {
         let decision = scoped.bash(command);
         let reason = refusal(&decision).ok_or_else(|| format!("{command:?} was allowed"))?;
@@ -304,6 +313,7 @@ fn a_redirect_after_cd_is_judged_from_the_directory_the_shell_uses() -> TestResu
         "cd evals\necho hi > probe.py",
         "cd -P evals && echo hi > probe.py",
         "cd -- evals && echo hi > probe.py",
+        "echo a && \\\ncd evals && echo hi > probe.py",
         "pushd evals && echo hi > probe.py",
         "echo hi | cat; echo hi > evals/probe.py",
         "cd /tmp && echo hi > probe.py",
