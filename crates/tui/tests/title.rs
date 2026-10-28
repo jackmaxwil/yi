@@ -383,6 +383,44 @@ fn the_small_mark_waits_for_the_big_one_to_land() {
 }
 
 #[test]
+fn the_idle_kitty_mark_keeps_the_composer_geometry() {
+    let paint = |kitty| {
+        let mut app = app();
+        app.set_kitty(kitty);
+        let area = Rect::new(0, 0, 80, 30);
+        let mut buffer = Buffer::empty(area);
+        let mut scroll = 0;
+        yi_tui::render::paint_pane(&mut app, None, &mut buffer, area, &mut scroll);
+        (rows(&buffer, area), app.orb_rect())
+    };
+    let geometry = |frame: &[Vec<char>]| {
+        let top = frame
+            .iter()
+            .position(|row| row.contains(&'╭') && row.contains(&'╮'));
+        let bottom = frame
+            .iter()
+            .position(|row| row.contains(&'╰') && row.contains(&'╯'));
+        let blank = top.map(|top| {
+            frame
+                .iter()
+                .take(top)
+                .rev()
+                .take_while(|row| row.iter().all(|cell| *cell == ' '))
+                .count()
+        });
+        (top, bottom, blank)
+    };
+    let (plain, _) = paint(false);
+    let (kitty, orb) = paint(true);
+    assert_eq!(orb, Some(Rect::new(0, 0, 10, 5)));
+    assert_eq!(
+        geometry(&kitty),
+        geometry(&plain),
+        "kitty must keep the non-kitty composer geometry"
+    );
+}
+
+#[test]
 fn the_first_message_makes_the_session_not_idle() {
     let mut app = app();
     assert!(app.title_idle());
