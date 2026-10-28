@@ -491,7 +491,6 @@ impl App {
                     let details = details.clone().unwrap_or(Value::Null);
                     let terminate = *terminate == Some(true);
                     self.settle_tool(cell, &text_of(content), *is_error, details, terminate);
-                    self.commit_finished_tasks();
                 }
                 _ => {}
             }

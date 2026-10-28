@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use yi_runtime::{ChildFeed, ChildStatus, ChildUpdate};
 use yi_types::message::{AgentMessage, Content};
-use yi_types::subagent::{ChildActivity, ChildExit, ChildTrail};
+use yi_types::subagent::{ChildEnded, ChildExit, ChildId, ChildTrail};
 
 use super::App;
 use crate::cell::{Cell, TaskCell, TaskStatus, ToolStatus};
@@ -24,7 +24,6 @@ pub(crate) struct ChildProjection {
     pub(crate) rows: HashMap<String, ChildRow>,
     pub(crate) order: Vec<String>,
     pub(crate) settled_calls: HashSet<String>,
-    pub(crate) task_keys: HashMap<String, String>,
     pub(crate) sessions: HashMap<String, String>,
 }
 
@@ -62,34 +61,40 @@ fn last_tool_of(session: &ChildFeed) -> Option<String> {
 pub(crate) struct ChildRow {
     id: String,
     start: Cell,
-    end: Option<Cell>,
+    ends: Vec<Cell>,
     born_under: Option<String>,
     deferred: bool,
-    terminal: bool,
     start_committed: bool,
+    replayed: bool,
     end_committed: bool,
 }
 
 impl ChildRow {
-    fn new(update: &ChildUpdate, born_under: Option<String>) -> Self {
-        let mut text = format!("subagent {} ({})", update.name, update.id.as_str());
-        if let Some(role) = &update.role {
+    fn new(
+        id: &ChildId,
+        name: &str,
+        role: Option<&str>,
+        task: Option<&str>,
+        born_under: Option<String>,
+    ) -> Self {
+        let mut text = format!("subagent {name} ({})", id.as_str());
+        if let Some(role) = role {
             text.push_str(&format!(" · {role}"));
         }
-        if let Some(task) = &update.task {
+        if let Some(task) = task {
             text.push_str(&format!(" · {task}"));
         }
         Self {
-            id: update.id.as_str().to_owned(),
+            id: id.as_str().to_owned(),
             start: Cell::Rule {
                 text,
-                accent_name: update.id.as_str().to_owned(),
+                accent_name: id.as_str().to_owned(),
             },
-            end: None,
+            ends: Vec::new(),
             born_under: born_under.clone(),
             deferred: born_under.is_some(),
-            terminal: false,
             start_committed: false,
+            replayed: false,
             end_committed: false,
         }
     }
@@ -100,53 +105,88 @@ impl ChildRow {
             self.start_committed = true;
             cells.push(self.start.clone());
         }
-        if self.terminal
-            && !self.end_committed
-            && let Some(end) = &self.end
-        {
+        if !self.ends.is_empty() {
             self.end_committed = true;
-            cells.push(end.clone());
+            cells.append(&mut self.ends);
         }
         cells
     }
 }
 
-fn end_rule(update: &ChildUpdate) -> Cell {
-    let reading = yi_runtime::family::read_exit(update.exit);
-    let completed = update.exit == Some(ChildExit::Completed)
-        || (update.exit.is_none() && update.status == ChildStatus::Completed);
-    let parent_closed = update.error.as_deref() == Some("parent closed");
-    let outcome = if parent_closed {
-        "parent closed"
-    } else if update.exit.is_none() && completed {
+struct ChildEnd<'a> {
+    name: &'a str,
+    id: &'a ChildId,
+    exit: Option<ChildExit>,
+    completed: bool,
+    elapsed_ms: Option<u64>,
+    tokens: u64,
+    cost: Option<&'a serde_json::Number>,
+    answer_preview: Option<&'a str>,
+    error: Option<&'a str>,
+}
+
+impl<'a> ChildEnd<'a> {
+    fn live(update: &'a ChildUpdate) -> Self {
+        let completed = update.exit == Some(ChildExit::Completed)
+            || (update.exit.is_none() && update.status == ChildStatus::Completed);
+        Self {
+            name: &update.name,
+            id: &update.id,
+            exit: update.exit,
+            completed,
+            elapsed_ms: update.elapsed_ms,
+            tokens: update.token_count,
+            cost: update.cost.as_ref(),
+            answer_preview: update.answer_preview.as_deref(),
+            error: update.error.as_deref(),
+        }
+    }
+
+    fn replay(line: &'a ChildEnded) -> Self {
+        Self {
+            name: &line.name,
+            id: &line.id,
+            exit: Some(line.exit),
+            completed: line.exit == ChildExit::Completed,
+            elapsed_ms: line.elapsed_ms,
+            tokens: line.tokens,
+            cost: line.cost.as_ref(),
+            answer_preview: line.answer_preview.as_deref(),
+            error: line.error.as_deref(),
+        }
+    }
+}
+
+fn end_rule(end: ChildEnd<'_>) -> Cell {
+    let reading = yi_runtime::family::read_exit(end.exit);
+    let parent_closed = !end.completed && end.error == Some("parent closed");
+    let outcome = if end.completed {
         "done"
+    } else if parent_closed {
+        "parent closed"
     } else {
         reading.row
     };
-    let mut text = format!(
-        "subagent {} ({}) · {outcome}",
-        update.name,
-        update.id.as_str()
-    );
-    if let Some(ms) = update.elapsed_ms {
+    let mut text = format!("subagent {} ({}) · {outcome}", end.name, end.id.as_str());
+    if let Some(ms) = end.elapsed_ms {
         text.push_str(&format!(" · {}", crate::cell::elapsed_label(ms)));
     }
-    text.push_str(&format!(" · {} tokens", update.token_count));
-    if let Some(cost) = update.cost.as_ref().and_then(serde_json::Number::as_f64) {
+    text.push_str(&format!(" · {} tokens", end.tokens));
+    if let Some(cost) = end.cost.and_then(serde_json::Number::as_f64) {
         text.push_str(&format!(" · {}", yi_types::message::fmt_cost(cost, false)));
     }
-    text.push_str(&format!(" · start {}", update.id.as_str()));
-    let detail = if completed {
-        update.answer_preview.as_deref()
+    text.push_str(&format!(" · start {}", end.id.as_str()));
+    let detail = if end.completed {
+        end.answer_preview
     } else {
-        update.error.as_deref().filter(|_| !parent_closed)
+        end.error.filter(|_| !parent_closed)
     };
     if let Some(line) = detail.and_then(|text| text.lines().next()) {
         text.push_str(&format!(" · {line}"));
     }
     Cell::Rule {
         text,
-        accent_name: update.id.as_str().to_owned(),
+        accent_name: end.id.as_str().to_owned(),
     }
 }
 
@@ -164,12 +204,10 @@ impl App {
         self.projection.rows.clear();
         self.projection.order.clear();
         self.projection.settled_calls.clear();
-        self.projection.task_keys.clear();
         self.projection.sessions.clear();
         self.dropped_tasks = 0;
         self.focused = None;
     }
-
     /// Invariant: the roster is the truth a card is reconciled against. A card still running
     /// that the roster no longer lists ends as `gone`, which heals every lost update.
     pub fn sync_children(&mut self, children: &[yi_runtime::ChildView]) {
@@ -240,7 +278,7 @@ impl App {
         }
         self.retired_tasks.remove(&id);
         if self.tasks.get(&id).is_some_and(|state| {
-            self.projection.task_keys.get(&id) != Some(&key)
+            self.projection.sessions.get(&id) != Some(&key)
                 && (state.cell.status != TaskStatus::Running || self.committed_tasks.contains(&id))
         }) {
             self.tasks.remove(&id);
@@ -280,7 +318,6 @@ impl App {
             );
             self.scheduler.request();
         }
-        self.projection.task_keys.insert(id.clone(), key.clone());
         self.projection.sessions.insert(id.clone(), key.clone());
         if !self.projection.rows.contains_key(&key) {
             let born_under = self
@@ -288,9 +325,16 @@ impl App {
                 .get(&id)
                 .and_then(|state| state.born_under.clone());
             self.projection.order.push(key.clone());
-            self.projection
-                .rows
-                .insert(key, ChildRow::new(update, born_under));
+            self.projection.rows.insert(
+                key,
+                ChildRow::new(
+                    &update.id,
+                    &update.name,
+                    update.role.as_deref(),
+                    update.task.as_deref(),
+                    born_under,
+                ),
+            );
         }
         self.reduce_child_update(update);
     }
@@ -310,7 +354,7 @@ impl App {
         let toolcalls = u32::try_from(update.tool_use_count).unwrap_or(u32::MAX);
         let row_key = self
             .projection
-            .task_keys
+            .sessions
             .get(id)
             .cloned()
             .unwrap_or_else(|| update.session.as_deref().unwrap_or(id).to_owned());
@@ -321,11 +365,6 @@ impl App {
             || state.cell.flag != update.flag
         {
             if status == TaskStatus::Running {
-                if let Some(row) = self.projection.rows.get_mut(&row_key) {
-                    row.terminal = false;
-                    row.end = None;
-                    row.end_committed = false;
-                }
                 self.committed_tasks.remove(id);
                 if state.finished.is_some() {
                     state.finished = None;
@@ -376,8 +415,7 @@ impl App {
         if status != TaskStatus::Running
             && let Some(row) = self.projection.rows.get_mut(&row_key)
         {
-            row.end = Some(end_rule(update));
-            row.terminal = true;
+            row.ends.push(end_rule(ChildEnd::live(update)));
         }
         self.commit_finished_tasks();
     }
@@ -390,57 +428,28 @@ impl App {
                     .sessions
                     .insert(line.id.as_str().to_owned(), key.clone());
                 if !self.projection.rows.contains_key(&key) {
-                    let update = ChildUpdate {
-                        id: line.id.clone(),
-                        name: line.name.clone(),
-                        status: ChildStatus::Running,
-                        activity: ChildActivity::Waiting,
-                        tool_use_count: 0,
-                        token_count: 0,
-                        cost: None,
-                        answer_preview: None,
-                        error: None,
-                        exit: None,
-                        flag: None,
-                        session: Some(key.clone()),
-                        role: line.role.clone(),
-                        task: line.task.clone(),
-                        elapsed_ms: None,
-                    };
                     self.projection.order.push(key.clone());
-                    self.projection
-                        .rows
-                        .insert(key, ChildRow::new(&update, line.spawned_by.clone()));
+                    self.projection.rows.insert(
+                        key,
+                        ChildRow::new(
+                            &line.id,
+                            &line.name,
+                            line.role.as_deref(),
+                            line.task.as_deref(),
+                            line.spawned_by.clone(),
+                        ),
+                    );
                 }
             }
             ChildTrail::Ended(line) => {
                 let Some(key) = self.projection.sessions.get(line.id.as_str()).cloned() else {
                     return;
                 };
-                let update = ChildUpdate {
-                    id: line.id.clone(),
-                    name: line.name.clone(),
-                    status: if line.exit == ChildExit::Completed {
-                        ChildStatus::Completed
-                    } else {
-                        ChildStatus::Error
-                    },
-                    activity: ChildActivity::Waiting,
-                    tool_use_count: 0,
-                    token_count: line.tokens,
-                    cost: line.cost.clone(),
-                    answer_preview: line.answer_preview.clone(),
-                    error: line.error.clone(),
-                    exit: Some(line.exit),
-                    flag: None,
-                    session: Some(key.clone()),
-                    role: None,
-                    task: None,
-                    elapsed_ms: line.elapsed_ms,
-                };
                 if let Some(row) = self.projection.rows.get_mut(&key) {
-                    row.end = Some(end_rule(&update));
-                    row.terminal = true;
+                    if row.replayed {
+                        return;
+                    }
+                    row.ends.push(end_rule(ChildEnd::replay(line)));
                 }
             }
             ChildTrail::Other => {}
@@ -458,39 +467,33 @@ impl App {
                 row.deferred = false;
             }
         }
-        loop {
-            let order = self.projection.order.clone();
-            let mut moved = false;
-            for key in order {
-                let ready = self.projection.rows.get(&key).is_some_and(|row| {
-                    !row.deferred
-                        && !row.born_under.as_deref().is_some_and(|call| {
-                            self.live_tools
-                                .iter()
-                                .any(|tool| tool.call_id == call && tool.status != ToolStatus::Done)
-                        })
-                        && (!row.start_committed
-                            || (row.terminal && !row.end_committed && row.end.is_some()))
-                });
-                if !ready {
-                    continue;
-                }
-                let Some((cells, id)) = self.projection.rows.get_mut(&key).map(|row| {
-                    let cells = row.take_ready();
-                    (cells, row.end_committed.then(|| row.id.clone()))
-                }) else {
-                    continue;
-                };
-                if let Some(id) = id {
-                    self.committed_tasks.insert(id);
-                }
-                for cell in cells {
-                    self.commit_cell(&cell);
-                    moved = true;
-                }
+        for at in 0..self.projection.order.len() {
+            let Some(key) = self.projection.order.get(at) else {
+                continue;
+            };
+            let ready = self.projection.rows.get(key).is_some_and(|row| {
+                !row.deferred
+                    && !row.born_under.as_deref().is_some_and(|call| {
+                        self.live_tools
+                            .iter()
+                            .any(|tool| tool.call_id == call && tool.status != ToolStatus::Done)
+                    })
+                    && (!row.start_committed || !row.ends.is_empty())
+            });
+            if !ready {
+                continue;
             }
-            if !moved {
-                break;
+            let Some((cells, id)) = self.projection.rows.get_mut(key).map(|row| {
+                let cells = row.take_ready();
+                (cells, row.end_committed.then(|| row.id.clone()))
+            }) else {
+                continue;
+            };
+            if let Some(id) = id {
+                self.committed_tasks.insert(id);
+            }
+            for cell in cells {
+                self.commit_cell(&cell);
             }
         }
         while self.committed_tasks.len() > crate::agents::FINISHED_CARDS {
@@ -511,6 +514,7 @@ impl App {
     pub(crate) fn release_child_rows(&mut self) {
         for row in self.projection.rows.values_mut() {
             row.deferred = false;
+            row.replayed = true;
         }
         self.commit_finished_tasks();
     }

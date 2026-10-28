@@ -290,6 +290,29 @@ async fn a_child_completing_during_parent_close_grace_ends_done() -> TestResult 
     Ok(())
 }
 
+#[tokio::test]
+async fn a_resumed_run_measures_only_its_own_elapsed_time() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-resumed-elapsed")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let host = host(0, scratch.join("rlm-1"), slot(Some(session)));
+    host.spawn("First run.".to_owned(), kwargs("scout"))?;
+    ended(&root_file).await?;
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    host.route("parent", "scout", "Second run.", true)?;
+    let lines = ended_n(&root_file, 2).await?;
+    let elapsed: Vec<u64> = lines
+        .iter()
+        .filter(|line| line["event"] == "ended")
+        .filter_map(|line| line["elapsedMs"].as_u64())
+        .collect();
+    assert_eq!(elapsed.len(), 2, "{lines:?}");
+    assert!(
+        elapsed[1] < 80,
+        "the second run includes the gap after the first: {elapsed:?}"
+    );
+    Ok(())
+}
+
 fn lines_of_header(path: &Path) -> Result<Value, Box<dyn Error>> {
     lines(path)?
         .into_iter()

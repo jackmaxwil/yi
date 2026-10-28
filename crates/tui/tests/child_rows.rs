@@ -460,6 +460,33 @@ fn replayed_rows_match_live_bytes_in_every_mode_and_after_resize() -> TestResult
 }
 
 #[test]
+fn replay_commits_every_ending_and_matches_the_live_rows() -> TestResult {
+    let (spawn, first_end) = trail_parts()?;
+    let mut second_end = first_end.clone();
+    second_end.exit = ChildExit::Interrupted;
+    second_end.error = Some("stopped".to_owned());
+    let mut live = app();
+    live.adopt(&recorded_update(ChildStatus::Running)?, None, None);
+    live.reduce_child_update(&recorded_update(ChildStatus::Completed)?);
+    live.reduce_child_update(&recorded_update(ChildStatus::Running)?);
+    let mut second_update = recorded_update(ChildStatus::Error)?;
+    second_update.exit = Some(ChildExit::Interrupted);
+    second_update.error = second_end.error.clone();
+    live.reduce_child_update(&second_update);
+    let live_rows = child_rows(&mut live);
+    assert_eq!(live_rows.len(), 3, "{live_rows:?}");
+
+    let entries = [
+        custom(1, &ChildTrail::Spawned(spawn))?,
+        custom(2, &ChildTrail::Ended(first_end))?,
+        custom(3, &ChildTrail::Ended(second_end))?,
+    ];
+    let replay_rows = replayed_children(&mut app(), &entries);
+    assert_eq!(replay_rows, live_rows);
+    Ok(())
+}
+
+#[test]
 fn replay_flushes_an_unresolved_antecedent_at_eof() -> TestResult {
     let (spawn, end) = trail_parts()?;
     let entries = [

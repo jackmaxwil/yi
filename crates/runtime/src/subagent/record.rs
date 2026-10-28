@@ -183,6 +183,7 @@ impl ChildRecord {
             Step::Respawn => {
                 self.phase = Phase::Queued;
                 self.rows.end_journaled = false;
+                self.rows.admitted = std::time::Instant::now();
                 (self.exit, self.error, self.replied, self.rows.elapsed_ms) =
                     (None, None, false, None);
                 // The lease was returned on the last incarnation's count and drawn again.
@@ -192,6 +193,7 @@ impl ChildRecord {
             }
             Step::Resumed if self.exit.is_some() => {
                 self.rows.end_journaled = false;
+                self.rows.admitted = std::time::Instant::now();
                 (self.exit, self.error, self.replied, self.rows.elapsed_ms) =
                     (None, None, false, None);
                 self.phase = Phase::Live;
