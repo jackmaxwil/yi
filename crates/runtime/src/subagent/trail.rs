@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
-use yi_types::subagent::{CHILD_ENTRY, ChildEnded, ChildExit, ChildId, ChildSpawned, ChildTrail};
+use yi_types::subagent::{CHILD_ENTRY, ChildEnded, ChildId, ChildSpawned, ChildTrail};
 
 use crate::session::AgentSession;
 
@@ -38,12 +38,40 @@ impl super::SubagentHost {
         Some(yi_session::lock_session(&store).metadata().id.clone())
     }
 
+    pub(super) fn trail_admission(
+        &self,
+        name: &str,
+        id: &str,
+        child: &AgentSession,
+        brief: &str,
+        role: Option<super::reader::Role>,
+        standing: &super::Standing,
+    ) -> (Option<PathBuf>, super::record::ChildRows) {
+        let session_id = child.store().and_then(|store| {
+            let store = yi_session::lock_session(&store);
+            store
+                .file_path()
+                .is_some()
+                .then(|| store.metadata().id.clone())
+        });
+        let role = match (standing, role) {
+            (super::Standing::Service(_), _) => "service",
+            (_, Some(super::reader::Role::Reader)) => "reader",
+            (_, Some(super::reader::Role::Worker)) => "worker",
+            _ => "root",
+        };
+        let task = super::record::preview(brief, name);
+        let trail = self.trail_spawned(name, id, child, brief, role, &task);
+        (trail, super::record::ChildRows::new(session_id, role, task))
+    }
     pub(super) fn trail_spawned(
         &self,
         name: &str,
         id: &str,
         child: &AgentSession,
         brief: &str,
+        role: &str,
+        task: &str,
     ) -> Option<PathBuf> {
         let parent = (self.options.store)()?;
         let parent_file = yi_session::lock_session(&parent).file_path().cloned()?;
@@ -62,32 +90,21 @@ impl super::SubagentHost {
                 path: path.to_string_lossy().into_owned(),
                 brief: crate::fetch::content_hash(brief),
                 spawned_by: self.spawning_cell(),
+                role: Some(role.to_owned()),
+                task: Some(task.to_owned()),
             }),
         );
         Some(parent_file)
     }
 
-    pub(super) fn trail_ended(
-        &self,
-        spawned_in: Option<&PathBuf>,
-        name: &str,
-        id: &str,
-        (exit, error, tokens): (ChildExit, Option<String>, u64),
-    ) {
+    pub(crate) fn trail_ended(&self, spawned_in: Option<&PathBuf>, line: ChildEnded) {
         let Some(store) = (self.options.store)() else {
             return;
         };
         if spawned_in.is_none() || yi_session::lock_session(&store).file_path() != spawned_in {
             return;
         }
-        let line = ChildTrail::Ended(ChildEnded {
-            name: name.to_owned(),
-            id: ChildId(id.to_owned()),
-            exit,
-            error,
-            tokens,
-        });
-        journal(&store, &line);
+        journal(&store, &ChildTrail::Ended(line));
     }
 
     pub fn trail(&self, name: &str) -> Option<PathBuf> {

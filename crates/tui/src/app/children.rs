@@ -88,6 +88,10 @@ impl App {
                 error: Some(GONE.to_owned()),
                 exit: None,
                 flag: None,
+                session: None,
+                role: None,
+                task: None,
+                elapsed_ms: None,
             })
             .collect();
         for update in &gone {

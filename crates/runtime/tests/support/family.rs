@@ -38,6 +38,21 @@ pub fn priced_reply(text: &str, dollars: f64) -> AgentMessage {
     message
 }
 
+pub fn child_session(
+    build: yi_runtime::ChildBuild<'_>,
+    provider: Arc<ProviderStream>,
+) -> AgentSession {
+    AgentSession::new(
+        SessionConfig {
+            system_prompt: "child sys".to_owned(),
+            model: build.model,
+            thinking_level: build.thinking,
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+        },
+        provider,
+    )
+}
+
 pub struct Built {
     pub wall: Wall,
     pub deadline: Option<std::time::Duration>,

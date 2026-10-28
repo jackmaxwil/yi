@@ -1955,6 +1955,10 @@ fn reader(id: &str, status: yi_runtime::ChildStatus, calls: u64) -> yi_runtime::
         error: None,
         exit: None,
         flag: None,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
 
@@ -3169,6 +3173,10 @@ fn a_card_adopted_after_the_first_tool_event_names_it() -> TestResult {
             error: None,
             exit: None,
             flag: None,
+            session: None,
+            role: None,
+            task: None,
+            elapsed_ms: None,
         },
         session: yi_runtime::ChildFeed::of(session),
         spawned_by: None,

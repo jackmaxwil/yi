@@ -6,10 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yi_ai::faux::{faux_assistant_message, faux_text};
-use yi_loop::ExecutionMode;
-use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
-use yi_types::message::StopReason;
+use yi_runtime::{ProviderStream, SubagentHost, SubagentHostOptions};
 use yi_types::model::{Effort, Model, ModelCost};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -47,6 +44,10 @@ fn slot(parent: Option<yi_session::SharedSession>) -> Slot {
 }
 
 fn host(depth: u8, parent_dir: PathBuf, parent: Slot) -> Arc<SubagentHost> {
+    host_with_hold(depth, parent_dir, parent, false)
+}
+
+fn host_with_hold(depth: u8, parent_dir: PathBuf, parent: Slot, hold: bool) -> Arc<SubagentHost> {
     let (events, _keep) = tokio::sync::broadcast::channel(64);
     let spawned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     Arc::new(SubagentHost::new(SubagentHostOptions {
@@ -63,19 +64,11 @@ fn host(depth: u8, parent_dir: PathBuf, parent: Slot) -> Arc<SubagentHost> {
             let provider = Arc::new(ProviderStream::new(None));
             let n = spawned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let answer = format!("the token is minted in auth.rs, answer {n}");
-            provider.queue_faux(vec![faux_assistant_message(
-                vec![faux_text(&answer)],
-                StopReason::Stop,
-            )]);
-            Ok(AgentSession::new(
-                SessionConfig {
-                    system_prompt: "child sys".to_owned(),
-                    model: build.model,
-                    thinking_level: build.thinking,
-                    tool_execution: ExecutionMode::Sequential,
-                },
-                provider,
-            ))
+            provider.queue_faux(vec![crate::support::priced_reply(&answer, 0.012)]);
+            if hold {
+                provider.faux_hold.arm("text_delta", 1);
+            }
+            Ok(crate::support::child_session(build, provider))
         }),
         notice: Arc::new(|_, _| {}),
         events,
@@ -177,6 +170,75 @@ async fn a_child_lives_inside_its_parent_and_the_parent_points_at_it() -> TestRe
         .ok_or("no end line")?;
     assert_eq!(end["exit"]["kind"], "completed");
     assert_eq!(end["name"], "scout");
+
+    assert_eq!(spawned["role"], "root");
+    assert_eq!(spawned["task"], "Where is the token minted?");
+    assert!(end["elapsedMs"].is_u64());
+    assert_eq!(end["cost"], json!(0.012));
+    assert_eq!(
+        end["answerPreview"].as_str().unwrap_or_default(),
+        "the token is minted in auth.rs, answer 0"
+    );
+    let children = host.children_view();
+    let update = &children.first().ok_or("no child update")?.update;
+    let live = serde_json::to_value(update)?;
+    assert_eq!(live["session"], spawned["session"]);
+    assert_eq!(live["role"], "root");
+    assert_eq!(live["task"], "Where is the token minted?");
+    assert_eq!(live["elapsedMs"], end["elapsedMs"]);
+    assert_eq!(live["cost"], end["cost"]);
+    assert_eq!(live["answerPreview"], end["answerPreview"]);
+    host.delete("scout")?;
+    assert_eq!(
+        trail(&root_file)?
+            .iter()
+            .filter(|line| line["event"] == "ended")
+            .count(),
+        1,
+        "reaping a concluded child repeats no end"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reap_journals_its_fresh_end() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-reap")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let host = host_with_hold(0, scratch.join("rlm-1"), slot(Some(session)), true);
+    host.spawn("Keep running.".to_owned(), kwargs("reap-me"))?;
+    host.delete("reap-me")?;
+    let lines = trail(&root_file)?;
+    let ends: Vec<_> = lines
+        .iter()
+        .filter(|line| line["event"] == "ended")
+        .collect();
+    assert_eq!(ends.len(), 1, "{lines:?}");
+    assert_eq!(ends[0]["exit"]["kind"], "reaped");
+    assert!(ends[0]["elapsedMs"].is_u64());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_repossession_after_parent_close_journals_that_cause() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-parent-close")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let host = host_with_hold(0, scratch.join("rlm-1"), slot(Some(session)), true);
+    let mut asked = kwargs("closed");
+    asked.insert(
+        "parent_close".to_owned(),
+        json!({"policy": "terminate", "grace_ms": 0}),
+    );
+    host.spawn("Keep running.".to_owned(), asked)?;
+    assert_eq!(host.close(), ["closed"]);
+    host.expire().await;
+    let lines = trail(&root_file)?;
+    let ends: Vec<_> = lines
+        .iter()
+        .filter(|line| line["event"] == "ended")
+        .collect();
+    assert_eq!(ends.len(), 1, "{lines:?}");
+    assert_eq!(ends[0]["exit"]["kind"], "repossessed");
+    assert_eq!(ends[0]["error"], "parent closed");
     Ok(())
 }
 

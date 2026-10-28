@@ -391,6 +391,10 @@ fn child_update(status: ChildStatus, answer_preview: Option<String>) -> ChildUpd
         error: None,
         exit: None,
         flag: None,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
 

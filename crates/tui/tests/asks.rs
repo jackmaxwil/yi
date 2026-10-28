@@ -58,6 +58,10 @@ fn update(status: ChildStatus, flag: Option<ChildFlag>) -> ChildUpdate {
         error: None,
         exit: None,
         flag,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
 /// Dies with the card reading only the child's status: a child blocked on a question drew as a

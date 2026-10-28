@@ -292,19 +292,7 @@ fn child_updates_become_a_subagent_update_notification() -> TestResult {
     let mut ids = IdMap::new(1000);
     let updates = to_updates(
         &AgentEvent::ChildUpdate {
-            update: yi_types::subagent::ChildUpdate {
-                id: yi_types::subagent::ChildId("sub-abc".to_owned()),
-                name: "sweeper".to_owned(),
-                status: yi_types::subagent::ChildStatus::Running,
-                activity: yi_types::subagent::ChildActivity::Executing,
-                tool_use_count: 3,
-                token_count: 1200,
-                cost: None,
-                answer_preview: None,
-                error: None,
-                exit: None,
-                flag: None,
-            },
+            update: child_update(),
         },
         &mut ids,
     );
@@ -644,6 +632,10 @@ fn child_update() -> yi_types::subagent::ChildUpdate {
         error: None,
         exit: None,
         flag: None,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
 
