@@ -2,6 +2,7 @@
 """Pinned static scanners, announced offline skips, and a shrink-only finding baseline."""
 import argparse
 import collections
+import concurrent.futures
 import json
 import os
 import pathlib
@@ -16,10 +17,19 @@ from _common import BASE, ROOT, fail
 BASELINE = BASE / "scan.json"
 ZIZMOR = "zizmor==1.31.1"
 FIXTURES = ROOT / "scripts/scan/fixtures"
+RULES = ROOT / "scripts/scan/rules"
 ZIZMOR_CASES = {
     "unpinned.yml": {"unpinned-uses", "artipacked"},
     "template-injection.yml": {"template-injection"},
     "dangerous-trigger.yml": {"dangerous-triggers"},
+}
+GITLEAKS_CASES = {
+    "planted-gemini.txt": "yi-gemini-api-key",
+    "planted-openrouter.txt": "yi-openrouter-api-key",
+    "planted-anthropic.txt": "yi-anthropic-api-key",
+    "planted-openai.txt": "yi-openai-api-key",
+    "planted-github.txt": "yi-github-pat",
+    "planted-aws.txt": "yi-aws-access-key",
 }
 SUPPRESSION = re.compile(r"zizmor:\s+ignore\[([^]]+)]\s*(.*)")
 
@@ -34,8 +44,8 @@ def environment():
     return env
 
 
-def run(argv):
-    return subprocess.run(argv, cwd=ROOT, env=environment(), capture_output=True, text=True, check=False)
+def run(argv, cwd=ROOT):
+    return subprocess.run(argv, cwd=cwd, env=environment(), capture_output=True, text=True, check=False)
 
 
 def uv_argv(package, executable, args):
@@ -50,6 +60,16 @@ def require_uv(package, executable, version):
     if proc.returncode or version not in proc.stdout:
         reason = (proc.stdout + proc.stderr).strip().splitlines()
         raise Unavailable(reason[-1] if reason else f"{executable} {version} is unavailable")
+
+
+def require_gitleaks():
+    executable = shutil.which("gitleaks")
+    if executable is None:
+        raise Unavailable("gitleaks 8.30.1 is not installed")
+    proc = run([executable, "version"])
+    if proc.returncode or proc.stdout.strip() != "8.30.1":
+        raise Unavailable(f"gitleaks 8.30.1 is required, found {proc.stdout.strip() or 'none'}")
+    return executable
 
 
 def zizmor(paths):
@@ -72,6 +92,53 @@ def zizmor(paths):
     return findings
 
 
+def shared_ignores():
+    text = (ROOT / ".gitguardian.yaml").read_text()
+    return re.findall(r'^\s*-\s*"([^"]+)"', text, re.M)
+
+def go_glob(pattern):
+    return r"(^|/)" + re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*") + "$"
+
+
+def gitleaks_config(ignores, name):
+    patterns = [go_glob(pattern) for pattern in shared_ignores()] + [r"(^|/)target/.*$"] if ignores else []
+    rows = ",\n".join(f"  '''{pattern}'''" for pattern in patterns)
+    path = ROOT / "target" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = (RULES / "gitleaks.toml").read_text()
+    if patterns:
+        text += f"\n[[allowlists]]\npaths = [\n{rows}\n]\n"
+    path.write_text(text)
+    return path
+
+
+def gitleaks(mode, config, tool="gitleaks", repo=ROOT):
+    executable = require_gitleaks()
+    args = [mode, "--no-banner", "--no-color", "--redact", "--config", str(config),
+            "--report-format", "json", "--report-path", "-"]
+    if mode == "git":
+        args += ["--log-opts", "origin/main..HEAD"] if tool == "gitleaks" else []
+        args.append(str(repo))
+    else:
+        args.append(str(repo))
+    proc = run([executable, *args], repo)
+    if proc.returncode not in (0, 1):
+        raise RuntimeError((proc.stdout + proc.stderr).strip())
+    try:
+        rows = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"gitleaks emitted invalid JSON: {error}: {proc.stderr.strip()}") from error
+    findings = []
+    for row in rows:
+        path = pathlib.Path(row["File"])
+        try:
+            name = str(path.relative_to(repo))
+        except ValueError:
+            name = str(path)
+        findings.append((tool, row["RuleID"], name, row["StartLine"]))
+    return findings
+
+
 def suppressions():
     out = []
     for path in sorted((ROOT / ".forgejo/workflows").glob("*.yml")):
@@ -80,6 +147,8 @@ def suppressions():
             if match:
                 for rule in match.group(1).split(","):
                     out.append(("zizmor", rule, str(path.relative_to(ROOT)), number, match.group(2)))
+    out += [("gitleaks", "paths-ignore", pattern, 0, "shared .gitguardian.yaml path exclusion")
+            for pattern in shared_ignores()]
     return out
 
 
@@ -110,10 +179,11 @@ def load_baseline():
     return {(tool, rule): count for (tool, rule), count in raw}
 
 
-def save_baseline(findings):
+def save_baseline(findings, tools):
     old = load_baseline() if BASELINE.is_file() else {}
-    errors, _ = baseline_problems(findings, old)
-    new_tools = {tool for tool, _, _, _ in findings} - {tool for tool, _ in old}
+    active = {key: value for key, value in old.items() if key[0] in tools}
+    errors, _ = baseline_problems(findings, active)
+    new_tools = tools - {tool for tool, _ in old}
     errors = [error for error in errors if error.split("/", 1)[0] not in new_tools]
     if errors:
         fail(errors + ["refusing to grow the scan baseline"], "scan --update")
@@ -124,22 +194,28 @@ def save_baseline(findings):
     BASELINE.write_text(json.dumps(ordered, indent=2) + "\n")
 
 
-def fixture_zizmor():
-    paths = sorted((FIXTURES / "zizmor").glob("*.yml"))
-    return zizmor(paths)
-
-
-def selfcheck(off="", fixture_results=None):
+def selfcheck(off="", fixtures=None):
+    fixtures = fixtures or {}
     errors = []
-    findings = list(fixture_results or [])
-    expected = {(path, rule) for path, rules in ZIZMOR_CASES.items() for rule in rules}
+    zizmor_findings = list(fixtures.get("zizmor", []))
     if off in {rule for rules in ZIZMOR_CASES.values() for rule in rules}:
-        findings = [row for row in findings if row[1] != off]
-    actual = {(pathlib.Path(path).name, rule) for _, rule, path, _ in findings}
-    for path, rule in sorted(expected - actual):
-        errors.append(f"zizmor fixture {path} produced no {rule} finding")
-    if any(pathlib.Path(path).name == "clean.yml" for _, _, path, _ in findings):
-        errors.append("zizmor clean fixture produced a finding")
+        zizmor_findings = [row for row in zizmor_findings if row[1] != off]
+    expected = {(path, rule) for path, rules in ZIZMOR_CASES.items() for rule in rules}
+    actual = {(pathlib.Path(path).name, rule) for _, rule, path, _ in zizmor_findings}
+    if "zizmor" in fixtures:
+        for path, rule in sorted(expected - actual):
+            errors.append(f"zizmor fixture {path} produced no {rule} finding")
+        if any(pathlib.Path(path).name == "clean.yml" for _, _, path, _ in zizmor_findings):
+            errors.append("zizmor clean fixture produced a finding")
+    gitleaks_findings = list(fixtures.get("gitleaks", []))
+    if off in set(GITLEAKS_CASES.values()):
+        gitleaks_findings = [row for row in gitleaks_findings if row[1] != off]
+    actual = {(pathlib.Path(path).name, rule) for _, rule, path, _ in gitleaks_findings}
+    if "gitleaks" in fixtures:
+        for path, rule in sorted(set(GITLEAKS_CASES.items()) - actual):
+            errors.append(f"gitleaks fixture {path} produced no {rule} finding")
+        if any(pathlib.Path(path).name == "clean.txt" for _, _, path, _ in gitleaks_findings):
+            errors.append("gitleaks clean fixture produced a finding")
     sample = [("zizmor", "new", "a.yml", 3), ("zizmor", "old", "b.yml", 4)]
     baseline = {("zizmor", "old"): 1, ("zizmor", "shrinking"): 2}
     problems, hints = baseline_problems(sample, baseline, off)
@@ -152,6 +228,8 @@ def selfcheck(off="", fixture_results=None):
             errors.append(f"baseline shrink hint was {hints}")
     if off == "baseline" and not problems and not hints:
         errors.append("disabled baseline checks accepted a new rule id and a shrink")
+    if off == "ignores" or go_glob("**/fixtures/**/planted*") == r"^$":
+        errors.append("shared gitleaks ignores are not converted to regular expressions")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
     return errors
@@ -164,35 +242,65 @@ def unavailable(error, strict):
     print(row)
 
 
+def gather(tasks, strict):
+    findings, tools = [], set()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        futures = {name: pool.submit(call) for name, call in tasks.items()}
+        for name, future in futures.items():
+            try:
+                rows = future.result()
+            except Unavailable as error:
+                unavailable(f"{name}: {error}", strict)
+                continue
+            tools.add(rows[0][0] if rows else name.split("-", 1)[0])
+            findings += rows
+    return findings, tools
+
+
+def normal_tasks(history=False):
+    if history:
+        config = gitleaks_config(True, "gitleaks-history.toml")
+        return {"gitleaks-history": lambda: gitleaks("git", config, "gitleaks-history")}
+    config = gitleaks_config(True, "gitleaks.toml")
+    return {
+        "zizmor": lambda: zizmor(sorted((ROOT / ".forgejo/workflows").glob("*.yml"))),
+        "gitleaks-tree": lambda: gitleaks("dir", config),
+        "gitleaks-diff": lambda: gitleaks("git", config),
+    }
+
+
+def fixture_tasks():
+    config = gitleaks_config(False, "gitleaks-fixtures.toml")
+    return {
+        "zizmor": lambda: zizmor(sorted((FIXTURES / "zizmor").glob("*.yml"))),
+        "gitleaks": lambda: gitleaks("dir", config, repo=FIXTURES / "gitleaks"),
+    }
+
+
 def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--selfcheck", action="store_true")
     parser.add_argument("--disable")
     parser.add_argument("--update", action="store_true")
+    parser.add_argument("--history", action="store_true")
     args = parser.parse_args(argv)
     strict = bool(os.environ.get("CI"))
     if args.selfcheck or args.disable:
-        try:
-            fixtures = fixture_zizmor()
-        except Unavailable as error:
-            unavailable(error, strict)
-            return
+        findings, tools = gather(fixture_tasks(), strict)
+        fixtures = {tool: [row for row in findings if row[0] == tool] for tool in tools}
         if args.disable:
             fail(selfcheck(args.disable, fixtures), f"scan selfcheck with {args.disable} disabled")
-        errors = selfcheck(fixture_results=fixtures)
-        checks = {rule for rules in ZIZMOR_CASES.values() for rule in rules} | {"baseline"}
+        errors = selfcheck(fixtures=fixtures)
+        checks = {rule for rules in ZIZMOR_CASES.values() for rule in rules}
+        checks |= set(GITLEAKS_CASES.values()) | {"baseline", "ignores"}
         for off in sorted(checks):
             if not selfcheck(off, fixtures):
                 errors.append(f"selfcheck passes with the {off} check disabled")
         fail(errors, "scan selfcheck")
         return
-    try:
-        findings = zizmor(sorted((ROOT / ".forgejo/workflows").glob("*.yml")))
-    except Unavailable as error:
-        unavailable(error, strict)
-        return
+    findings, tools = gather(normal_tasks(args.history), strict)
     if args.update:
-        save_baseline(findings)
+        save_baseline(findings, tools)
         print(f"ok   scan --update ({BASELINE.relative_to(ROOT)})")
         return
     try:
@@ -200,12 +308,14 @@ def main(argv):
     except Unavailable as error:
         unavailable(error, strict)
         return
-    errors, hints = baseline_problems(findings, baseline)
+    active = {key: value for key, value in baseline.items() if key[0] in tools}
+    errors, hints = baseline_problems(findings, active)
     for tool, rule, path, line, reason in suppressions():
         if not reason:
             errors.append(f"{path}:{line}: {tool}/{rule} suppression has no reason")
         else:
-            print(f"suppressed {tool}/{rule} {path}:{line}: {reason}")
+            location = f"{path}:{line}" if line else path
+            print(f"suppressed {tool}/{rule} {location}: {reason}")
     for hint in hints:
         print(hint)
     fail(errors, f"scan ({len(findings)} findings)")

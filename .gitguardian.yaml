@@ -13,3 +13,9 @@ paths-ignore:
   - "skills/yi/session-mining/extract.py"
   - "vendor/rtk/filters/ssh.toml"
   - "crates/runtime/src/memory/doc.rs"
+  # OAuth and permission fixtures plus archived prompt research hold examples, not credentials.
+  - "crates/oauth/tests/device_login.rs"
+  - "crates/oauth/tests/flow.rs"
+  - "crates/runtime/tests/kept_rules.rs"
+  - "docs/archive/plans/2026-09-06-prompt-surface/prior-art-codex-jcode.md"
+  - "docs/archive/plans/2026-09-06-prompt-surface/openai.md"

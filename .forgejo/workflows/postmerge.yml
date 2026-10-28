@@ -109,6 +109,8 @@ jobs:
         with:
           shared-key: ${{ matrix.lane }}
           cache-on-failure: true
+      - if: matrix.lane == 'guardrails'
+        run: scripts/scan/install_gitleaks.sh
       - run: just lane ${{ matrix.lane }}
 
   # The version, the changelog and the decision log are views written from docs/changes (#975).

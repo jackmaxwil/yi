@@ -69,6 +69,8 @@ jobs:
           # main saves (postmerge `warm`); a PR's own multi-GB save is readable
           # only by later runs of that PR and costs the shared disk every push.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - if: matrix.lane == 'guardrails'
+        run: scripts/scan/install_gitleaks.sh
       - run: just lane ${{ matrix.lane }}
       # A failing test keeps a copy of its scratch dir under target/tmp/failed, and every console
       # drive run its frames under target/tmp/drive.
