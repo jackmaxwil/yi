@@ -15,17 +15,7 @@ use ratatui::text::Line;
 mod session {
     include!("session.rs");
 }
-pub fn flat(lines: &[Line<'_>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect()
-}
+pub use crate::tool_cell_support::flat;
 
 pub fn flat_trimmed(lines: &[Line<'_>]) -> Vec<String> {
     flat(lines)

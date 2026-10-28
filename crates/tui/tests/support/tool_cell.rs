@@ -1,6 +1,9 @@
 use serde_json::Value;
 use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme};
+pub fn flat<L: ToString>(lines: &[L]) -> Vec<String> {
+    lines.iter().map(ToString::to_string).collect()
+}
 
 pub fn tool_cell(
     name: &str,
@@ -27,14 +30,5 @@ pub fn tool_cell(
 }
 
 pub fn rendered(cell: &ToolCell, width: usize, mode: TranscriptMode) -> Vec<String> {
-    Cell::Tool(cell.clone())
-        .lines(width, &Theme::new(ColorTier::Ansi16, true), mode, 0)
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect()
-        })
-        .collect()
+    flat(&Cell::Tool(cell.clone()).lines(width, &Theme::new(ColorTier::Ansi16, true), mode, 0))
 }
