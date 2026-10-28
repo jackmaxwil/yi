@@ -98,6 +98,88 @@ pub(crate) fn git_branch(cwd: &str) -> Option<String> {
         .map(|head| head.label())
 }
 
+/// The work tree's changed-path count, read off the render thread. A request that arrives
+/// while a read runs replaces it, so a count is never shown beside another directory's branch.
+#[derive(Default)]
+pub struct Dirty {
+    count: std::sync::atomic::AtomicU32,
+    read_while_idle: std::sync::atomic::AtomicBool,
+    reading: std::sync::Mutex<Reading>,
+}
+
+#[derive(Default)]
+struct Reading {
+    running: bool,
+    wanted: Option<std::path::PathBuf>,
+}
+
+impl Dirty {
+    pub fn get(&self) -> u32 {
+        self.count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The first idle draw after a turn starts one `git status`, so twenty tool rounds cost one.
+    pub fn count(self: &Arc<Self>, running: bool, lane: bool, cwd: &str) -> u32 {
+        use std::sync::atomic::Ordering::Relaxed;
+        if running {
+            self.read_while_idle.store(false, Relaxed);
+        } else if !self.read_while_idle.swap(true, Relaxed) {
+            self.refresh(lane, cwd);
+        }
+        self.get()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Reading> {
+        self.reading
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// An unanswered read leaves the badge off rather than claiming a clean tree. A lane's row
+    /// has no badge, so it reads nothing and counts 0.
+    pub fn refresh(self: &Arc<Self>, lane: bool, cwd: &str) {
+        if lane {
+            self.count.store(0, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        let mut reading = self.lock();
+        reading.wanted = Some(std::path::PathBuf::from(cwd));
+        if std::mem::replace(&mut reading.running, true) {
+            return;
+        }
+        drop(reading);
+        let cell = Arc::clone(self);
+        std::thread::spawn(move || cell.serve());
+    }
+
+    fn serve(&self) {
+        loop {
+            let cwd = {
+                let mut reading = self.lock();
+                match reading.wanted.take() {
+                    Some(cwd) => cwd,
+                    None => {
+                        reading.running = false;
+                        return;
+                    }
+                }
+            };
+            let count = yi_runtime::environment::git_summary(&cwd)
+                .map_or(0, |(_, modified, untracked)| {
+                    modified.saturating_add(untracked)
+                });
+            let mut reading = self.lock();
+            if reading.wanted.is_none() {
+                let count = u32::try_from(count).unwrap_or(u32::MAX);
+                self.count
+                    .store(count, std::sync::atomic::Ordering::Relaxed);
+                reading.running = false;
+                return;
+            }
+        }
+    }
+}
+
 pub(crate) fn child_of(
     host: &yi_runtime::SubagentHost,
     child_id: &str,
@@ -628,6 +710,7 @@ impl crate::app::App {
             return;
         }
         self.branch = git_branch(&cwd);
+        self.dirty.refresh(lane.is_some(), &cwd);
         self.options.cwd = cwd;
         self.options.lane = lane;
         self.scheduler.request();
