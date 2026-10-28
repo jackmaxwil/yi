@@ -63,19 +63,27 @@ fn fastest_read(store: &Store, query: &str) -> Result<Duration, Box<dyn Error>> 
     Ok(best)
 }
 
-#[test]
-fn an_append_after_fifty_thousand_records_costs_what_the_first_one_does() -> TestResult {
-    let (_dir, store) = imported("fifty-thousand")?;
-    fastest_read(&store, "fgj-forge-cli")?;
-    grow(&store, 1_000)?;
-    let small = fastest_read(&store, "fgj-forge-cli")?;
-    grow(&store, 50_000)?;
-    let large = fastest_read(&store, "fgj-forge-cli")?;
+fn fifty_thousand_record_chain(
+    store: &Store,
+    before_large: impl FnOnce() -> TestResult,
+) -> Result<Vec<MemoryRecord>, Box<dyn Error>> {
+    fastest_read(store, "fgj-forge-cli")?;
+    grow(store, 1_000)?;
+    let small = fastest_read(store, "fgj-forge-cli")?;
+    grow(store, 50_000)?;
+    before_large()?;
+    let large = fastest_read(store, "fgj-forge-cli")?;
     assert!(
         large <= small.saturating_mul(3),
         "a read at 50,000 records took {large:?}, at 1,000 {small:?}"
     );
-    let chain = records(&store)?;
+    records(store)
+}
+
+#[test]
+fn an_append_after_fifty_thousand_records_costs_what_the_first_one_does() -> TestResult {
+    let (_dir, store) = imported("fifty-thousand")?;
+    let chain = fifty_thousand_record_chain(&store, || Ok(()))?;
     assert_eq!(chain.len(), 50_005);
     for pair in chain.windows(2) {
         let [prev, next] = pair else { continue };
@@ -144,27 +152,20 @@ fn an_over_cap_only_record_does_not_parent_the_next_append() -> TestResult {
 #[test]
 fn a_valid_record_after_an_over_cap_line_parents_the_next_append() -> TestResult {
     let (_dir, store) = imported("over-cap-then-valid")?;
-    fastest_read(&store, "fgj-forge-cli")?;
-    grow(&store, 1_000)?;
-    let small = fastest_read(&store, "fgj-forge-cli")?;
-    grow(&store, 50_000)?;
     let (mut damage, valid) = over_cap_and_valid(&store)?;
-    let mut bytes = std::fs::read(journal(&store))?;
-    bytes.append(&mut damage);
-    bytes.extend_from_slice(&valid.line().map_err(|error| format!("{error:?}"))?);
+    let valid_line = valid.line().map_err(|error| format!("{error:?}"))?;
     let parent = valid.digest;
-    std::fs::write(journal(&store), bytes)?;
-    let note = store.resolve("fgj-forge-cli").ok_or("no such note")?;
-    let started = Instant::now();
-    store.mark_read(&note.name)?;
-    let large = started.elapsed();
-    let chain = records(&store)?;
-    let read = chain.last().ok_or("no appended record")?;
+    let chain = fifty_thousand_record_chain(&store, || {
+        let mut bytes = std::fs::read(journal(&store))?;
+        bytes.append(&mut damage);
+        bytes.extend_from_slice(&valid_line);
+        std::fs::write(journal(&store), bytes)?;
+        Ok(())
+    })?;
+    let [.., read, _, _, _, _] = chain.as_slice() else {
+        return Err("fewer than five appends followed the valid record".into());
+    };
     assert_eq!(read.digest_of(Some(&parent)).ok(), Some(read.digest));
-    let large = large.min(fastest_read(&store, "fgj-forge-cli")?);
-    assert!(
-        large <= small.saturating_mul(3),
-        "a read at 50,000 records took {large:?}, at 1,000 {small:?}"
-    );
+    assert_eq!(read.op, "read");
     Ok(())
 }
