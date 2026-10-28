@@ -12,7 +12,7 @@ use yi_types::plan::doc::PlanId;
 use crate::scratch::Scratch;
 
 use crate::prompt_slots_support::prompt_slots;
-use crate::session_files::{session_files, session_text};
+use crate::session_files::{recursive_files, session_files, session_text};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -2333,20 +2333,10 @@ fn telemetry_writes_spans_beside_the_session_and_stats_rolls_them_up() -> TestRe
         String::from_utf8_lossy(&answered.stderr)
     );
     let sessions = workspace.0.join("home/sessions");
-    let mut sidecars = Vec::new();
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    walk(&path, out)
-                } else if path.to_string_lossy().ends_with(".telemetry.jsonl") {
-                    out.push(path)
-                }
-            }
-        }
-    }
-    walk(&sessions, &mut sidecars);
+    let sidecars: Vec<_> = recursive_files(&sessions)?
+        .into_iter()
+        .filter(|path| path.to_string_lossy().ends_with(".telemetry.jsonl"))
+        .collect();
     assert_eq!(
         sidecars.len(),
         1,
@@ -2917,6 +2907,51 @@ fn memory_imports_lists_checks_and_forgets() -> TestResult {
     assert_eq!(show.status.code(), Some(1));
     let usage = workspace.yi(&["memory", "frobnicate"])?;
     assert_eq!(usage.status.code(), Some(2));
+    Ok(())
+}
+
+type Stamped = (PathBuf, Vec<u8>, std::time::SystemTime);
+
+fn files_at(dir: &std::path::Path) -> Result<Vec<Stamped>, Box<dyn Error>> {
+    Ok(recursive_files(dir)?
+        .into_iter()
+        .map(|path| {
+            let modified = std::fs::metadata(&path)?.modified()?;
+            let bytes = std::fs::read(&path)?;
+            Ok((path, bytes, modified))
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?)
+}
+
+#[test]
+fn yi_memory_list_changes_no_file() -> TestResult {
+    let workspace = Workspace::new("memory-list")?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runtime/tests/fixtures/memory/claude");
+    workspace.yi(&["memory", "import", &fixture.to_string_lossy()])?;
+    let projects = workspace.0.join("home/.yi/projects");
+    let store = std::fs::read_dir(&projects)?
+        .next()
+        .ok_or("the import made no project store")??
+        .path()
+        .join("memory");
+    std::fs::write(
+        store.join("harbor-json-stderr.md"),
+        "---\nname: harbor-json-stderr\ndescription: harbor exec merges stderr; parse --json from the first [ line\ntype: project\n---\nA --json command under harbor arrives with its stderr first.\n",
+    )?;
+    let before = files_at(&store)?;
+    let list = workspace.yi(&["memory", "list"])?;
+    let text = String::from_utf8_lossy(&list.stdout);
+    assert!(text.contains("memory · 4 repo · 0 global"), "{text}");
+    assert!(text.contains("  harbor-json-stderr "), "{text}");
+    let after = files_at(&store)?;
+    let changed: Vec<_> = after
+        .iter()
+        .filter(|file| !before.contains(file))
+        .map(|(path, _, _)| path.display().to_string())
+        .collect();
+    assert!(changed.is_empty(), "yi memory list wrote {changed:?}");
+    assert_eq!(before.len(), after.len());
     Ok(())
 }
 

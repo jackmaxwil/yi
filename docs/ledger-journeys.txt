@@ -198,6 +198,7 @@ trigger rules (gate + remind) | `recursion_e2e::a_rule_promoted_after_the_spawn_
 host-written memory (one file per fact, hook index) | `ext_e2e::the_memory_block_is_present_at_zero_notes` (T1)
 host-written memory (one file per fact, hook index) | `skills_e2e::save_read_forget_through_the_kernel` (T1)
 host-written memory (one file per fact, hook index) | `cli_surfaces::memory_imports_lists_checks_and_forgets` (T2)
+host-written memory (one file per fact, hook index) | `cli_surfaces::yi_memory_list_changes_no_file` (T2)
 advisor (LlmReviewer only) | `advisor_e2e::llm_reviewer_advises_through_the_advise_tool`
 advisor (LlmReviewer only) | `advisor_e2e::headless_hold_degrades_to_warn`
 advisor (LlmReviewer only) | `advisor_e2e::an_untargeted_hold_warns_instead_of_holding_every_call`
