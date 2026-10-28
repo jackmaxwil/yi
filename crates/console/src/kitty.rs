@@ -13,7 +13,7 @@ pub(crate) fn next_notebook_id(old: Option<u32>) -> u32 {
     let [even, odd] = NOTEBOOK_IDS;
     if old == Some(even) { odd } else { even }
 }
-pub fn command_chords(term: Option<&str>, term_program: Option<&str>) -> bool {
+pub fn kitty_named_terminal(term: Option<&str>, term_program: Option<&str>) -> bool {
     term.is_some_and(|term| term.contains("kitty") || term.contains("ghostty"))
         || term_program.is_some_and(|program| program == "ghostty")
 }

@@ -4,13 +4,16 @@ use yi_types::encoding::base64;
 
 use crate::core::OrbFrame;
 
-/// Kitty graphics protocol support: Ghostty and kitty advertise via TERM, TERM_PROGRAM or
-/// KITTY_WINDOW_ID. Everything else falls back to the plain spinner line.
+/// Invariant: tmux and screen fall back to text because transmit writes raw APC, not DCS
+/// passthrough; otherwise Ghostty and kitty advertise via TERM, TERM_PROGRAM or KITTY_WINDOW_ID.
 pub fn supported_in(
     term: Option<&str>,
     term_program: Option<&str>,
     kitty_window_id: Option<&str>,
 ) -> bool {
+    if term.is_some_and(|term| term.starts_with("tmux") || term.starts_with("screen")) {
+        return false;
+    }
     term.is_some_and(|term| term.contains("kitty") || term.contains("ghostty"))
         || term_program.is_some_and(|program| program == "ghostty")
         || kitty_window_id.is_some()

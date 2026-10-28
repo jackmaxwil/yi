@@ -76,7 +76,7 @@ fn terminal_environments_share_graphics_support_but_not_chord_support() {
     let environments = [
         (
             "Ghostty",
-            "xterm-ghostty",
+            "xterm-256color",
             Some("ghostty"),
             None,
             true,
@@ -88,7 +88,7 @@ fn terminal_environments_share_graphics_support_but_not_chord_support() {
             "tmux-256color",
             Some("tmux"),
             Some("1"),
-            true,
+            false,
             false,
         ),
         ("xterm", "xterm-256color", None, None, false, false),
@@ -100,7 +100,7 @@ fn terminal_environments_share_graphics_support_but_not_chord_support() {
             "{name} graphics"
         );
         assert_eq!(
-            yi_console::kitty::command_chords(Some(term), program),
+            yi_console::kitty::kitty_named_terminal(Some(term), program),
             chords,
             "{name} chords"
         );
