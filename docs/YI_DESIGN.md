@@ -258,6 +258,9 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   derived from the route. Any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
   `models.primary`, else `model`; none is built in.
+  Web search is a separate non-streaming completion: `models.webSearch`, else the built-in
+  `openrouter/deepseek/deepseek-v4-flash`, calls OpenRouter's server-side search with Exa by
+  default. This default does not select a primary model.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
@@ -276,8 +279,9 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   when the file is absent. A profile file at the same id still wins.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
-- State: `models { primary, summarizer, advisor, autoReview, classifier }` in `~/.yi/config.json`
-  ([`config.rs`](../crates/types/src/config.rs)), advisor, autoReview and classifier off until named;
+- State: `models { primary, summarizer, advisor, autoReview, classifier, webSearch }` and
+  `webSearch { engine }` in `~/.yi/config.json`
+  ([`config.rs`](../crates/types/src/config.rs)); advisor, autoReview and classifier off until named;
   [`RetryPolicy`](../crates/ai/src/retry.rs). Shapes: [`model.rs`](../crates/types/src/model.rs).
 - Settled by: D34, D57, D128, D191, D197, D231
 
@@ -552,6 +556,29 @@ names it, as Claude's does; a hook's output streams at `HOOK_OUTPUT_CAP` (1 MiB)
 bytes written. Each cut is loud.
 
 - Owner: [`claude_hooks`](../crates/runtime/src/claude_hooks/mod.rs), [`tools.rs`](../crates/runtime/src/tools.rs), [`mcp_hooks.rs`](../crates/cli/src/mcp_hooks.rs).
+
+### 7.10 Web search
+`web_search` answers current public questions through a synchronous `SearchProvider` in yi-ai.
+`OpenRouterSearch` makes one non-streaming chat completion with a 120 s read timeout, one
+`openrouter:web_search` server call and Exa as the default engine. A credential from
+`OPENROUTER_API_KEY` or the OpenRouter token store registers the tool; without one, its schema is
+absent. Root and full-child sessions inherit the provider; readers and workers keep their tool
+filters. `models.webSearch` defaults to `openrouter/deepseek/deepseek-v4-flash`, and a configured
+role outside OpenRouter is refused. Proxy and `routing` config reaches the search request.
+
+Arguments are `query` (non-empty), `count` (1–25, default 5), optional domain allowlist and `mode`
+(`instant|fast|auto|deep-lite|deep|deep-reasoning`, default `auto`). There is no `recency` argument.
+The result is one untrusted fence with the answer and numbered citations. Each excerpt is capped
+at 4,000 characters with a loud kept/total row; no call returns the rest of an excerpt. Details
+name provider, model, engine, mode, citation count, duration, search count and upstream host.
+Token and dollar usage reaches the tool result and is booked once in the ledger, live total,
+alerts, telemetry and rollups. Missing credentials, HTTP failures, malformed bodies and zero
+citations are distinct tool errors; the key never enters arguments, output, details or errors.
+The tool is `Read` with `irreversible` false, so Ask, Auto and Yolo never prompt. The offline
+journey is `web_search_offline_citations_and_cost`.
+
+- Owner: [`search.rs`](../crates/ai/src/search.rs), [`web_search.rs`](../crates/runtime/src/web_search.rs).
+  Settled by: D34.
 
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
@@ -1090,8 +1117,8 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 - `~/.yi/config.json` is the only config file, parsed strictly before dispatch and read again as each
   session starts, since the console's settings page saves it while workers run; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
-  `models{primary,summarizer,advisor,autoReview,classifier}`, `bash{autoBackgroundMs}`, `plans{dir}`,
-  `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
+  `models{primary,summarizer,advisor,autoReview,classifier,selector,webSearch}`, `webSearch{engine}`,
+  `bash{autoBackgroundMs}`, `plans{dir}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
   `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode,allowWrite,allow}`,
