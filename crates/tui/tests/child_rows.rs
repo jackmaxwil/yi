@@ -283,6 +283,83 @@ fn start_rows_keep_legacy_fields_absent_and_task_caps_loud() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn a_host_caps_the_journaled_and_committed_start_task() -> TestResult {
+    use std::sync::Arc;
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    use yi_runtime::{
+        AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions,
+    };
+
+    let dir = crate::scratch::Scratch::new("yi-tui-child-task-cap")?;
+    let mut repo = JsonlRepo::new(dir.join("sessions"), "/tmp");
+    let parent = repo.create(CreateOptions::default())?;
+    let root_file = lock_session(&parent)
+        .file_path()
+        .cloned()
+        .ok_or("no root file")?;
+    let store = Arc::clone(&parent);
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
+        depth: 0,
+        max_depth: 1,
+        max_children: 1,
+        parent_session_dir: dir.join("children"),
+        defaults: Arc::new(|| {
+            (
+                common::test_model("faux-1"),
+                yi_types::model::Effort::Medium,
+            )
+        }),
+        factory: Arc::new(|build| {
+            Ok(AgentSession::new(
+                SessionConfig {
+                    system_prompt: String::new(),
+                    model: build.model,
+                    thinking_level: build.thinking,
+                    tool_execution: yi_runtime::ExecutionMode::Sequential,
+                },
+                Arc::new(ProviderStream::new(None)),
+            ))
+        }),
+        notice: Arc::new(|_, _| {}),
+        events: tokio::sync::broadcast::channel(8).0,
+        parent_messages: Arc::new(Vec::new),
+        cwd: dir.to_path_buf(),
+        home: dir.join("home"),
+        lane_slots: 1,
+        report: Arc::new(|_, _| {}),
+        attribute: Arc::new(|_| {}),
+        store: Arc::new(move || Some(Arc::clone(&store))),
+        plans_dir: dir.join(".yi/plans"),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
+    }));
+    let args = serde_json::json!({"name": "scout", "role": "root"});
+    host.spawn(
+        "x".repeat(241),
+        args.as_object().cloned().unwrap_or_default(),
+    )?;
+    let entries = recorded_entries(&root_file.to_string_lossy())?;
+    let spawned = entries.iter().find_map(|entry| match entry {
+        Entry::Custom {
+            data: Some(data), ..
+        } => match serde_json::from_value(data.clone()).ok()? {
+            ChildTrail::Spawned(line) => Some(line),
+            _ => None,
+        },
+        _ => None,
+    });
+    let task = spawned
+        .and_then(|line| line.task)
+        .ok_or("no journaled task")?;
+    let cut = "[kept 240 of 241 chars · cap PREVIEW_CHARS = 240 · read history://scout]";
+    assert!(task.contains(cut), "{task}");
+    let rows = replayed_children(&mut app(), &entries);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains(cut), "{rows:?}");
+    Ok(())
+}
+
 #[test]
 fn eviction_and_roster_ticks_never_duplicate_committed_rows() -> TestResult {
     let mut app = app();
