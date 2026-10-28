@@ -341,7 +341,7 @@ ROLES = "scripts/guardrails/baselines/role_prefix.json"
 def inflated(old, new):
     """Incident: the runner measured the bare write roles 45 KB past main on five PRs and the Ratchet
     commit wrote that in as their ceiling. A raise past 10% of a row is a fault, not a fix."""
-    return any(v > old.get(k, v) * 1.1 for k, v in new.items())
+    return any(v * 10 > old.get(k, v) * 11 for k, v in new.items())
 
 
 def remeasure(clone):
@@ -351,10 +351,11 @@ def remeasure(clone):
     for gate in ("check_schemas_lock.py", "check_request_budget.py"):
         sh(clone, sys.executable, f"scripts/guardrails/{gate}", "--update", env=scrubbed(), check=False)
     try:
-        if inflated(json.loads(sh(clone, "git", "show", f"HEAD:{ROLES}").stdout), json.loads((clone / ROLES).read_text())):
-            sh(clone, "git", "checkout", "HEAD", "--", ROLES)
+        old, new = json.loads(sh(clone, "git", "show", f"HEAD:{ROLES}").stdout), json.loads((clone / ROLES).read_text())
     except (OSError, ValueError, RuntimeError):
-        pass
+        old = new = {}
+    if inflated(old, new):
+        sh(clone, "git", "checkout", "HEAD", "--", ROLES)
     relayout(clone)
 
 
@@ -1665,6 +1666,21 @@ def selfcheck():
         errs.append(f"a hook's failure reads {failures(hook)!r}, not its FAIL blocks")
     if not inflated({"leaf": 41937}, {"leaf": 87107}) or inflated({"root": 50416}, {"root": 50477}):
         errs.append("a role prefix that doubled passes as a re-measure, or a 61-byte raise is refused")
+    if inflated({"leaf": 100}, {"leaf": 110}) or not inflated({"leaf": 100}, {"leaf": 111}):
+        errs.append("the 10% limit moved: 110 over 100 must pass and 111 must not")
+    roles = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-roles-"))
+    try:
+        (roles / ROLES).parent.mkdir(parents=True)
+        (roles / ROLES).write_text(merge_baseline.layout({"leaf": 100}))
+        (roles / "scripts/guardrails/check_request_budget.py").write_text(
+            f"import pathlib\npathlib.Path({ROLES!r}).write_text('{{\"leaf\": 111}}')\n")
+        for args in (("init", "-q", "-b", "main"), ("add", "-A"), ("commit", "-qm", "seed")):
+            sh(roles, "git", "-c", "user.name=t", "-c", "user.email=t@t", *args)
+        remeasure(roles)
+        if json.loads((roles / ROLES).read_text()) != {"leaf": 100} or sh(roles, "git", "diff", "HEAD", "--stat").stdout.strip():
+            errs.append("a re-measure that raised a role prefix past 10% left the raise in the worktree or the index")
+    finally:
+        shutil.rmtree(roles)
     if "Autofix failed" not in render(1, {}, "failed", "boom") or "boom" not in render(1, {}, "failed", "boom"):
         errs.append("a failure's comment does not carry its reason")
     stack = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-stack-"))
