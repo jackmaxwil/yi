@@ -2015,7 +2015,8 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "lanes",
             "cache",
             "sandbox-listeners",
-            "plugins"
+            "plugins",
+            "exec-tools"
         ]
     );
     assert_eq!(rows[11]["detail"], "no session here", "{rows}");
@@ -2164,6 +2165,48 @@ fn doctor_judges_only_the_configured_lane_slots() -> TestResult {
         (Some("ok"), Some("1 slot(s) consistent")),
         "{rows}"
     );
+    Ok(())
+}
+
+/// Every skipped executable is named with its probe's outcome; healthy tools still load.
+#[test]
+fn doctor_names_each_skipped_exec_tool_and_its_reason() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let workspace = Workspace::new("doctor-exec-tools")?;
+    let dir = workspace.0.join("home/.yi/tools");
+    std::fs::create_dir_all(&dir)?;
+    for (name, body) in [
+        (
+            "good",
+            "#!/bin/sh\nprintf '{\"name\":\"good\",\"input_schema\":{\"type\":\"object\"}}'\n",
+        ),
+        ("hang", "#!/bin/sh\nsleep 30\n"),
+        ("fail", "#!/bin/sh\nexit 7\n"),
+        ("invalid", "#!/bin/sh\nprintf 'not json'\n"),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, body)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let seen = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&seen))?;
+    let row = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "exec-tools"))
+        .ok_or_else(|| format!("no exec-tools row: {rows}"))?;
+    assert_eq!(row["status"], "fail", "{row}");
+    let detail = row["detail"].as_str().ok_or("no detail")?;
+    assert!(detail.contains("1 loaded"), "{detail}");
+    for needle in [
+        "hang",
+        "timed out after 2s",
+        "fail",
+        "exited with code 7",
+        "invalid",
+        "no valid schema",
+    ] {
+        assert!(detail.contains(needle), "{needle}: {detail}");
+    }
     Ok(())
 }
 

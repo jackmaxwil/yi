@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yi_tools::{BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools};
+use yi_tools::{
+    BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools,
+    discover_exec_tools_within,
+};
 use yi_types::message::Content;
 
 use crate::scratch::Scratch;
@@ -438,7 +441,8 @@ fn discovers_and_runs_an_exec_tool_via_the_schema_contract() -> TestResult {
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
     fs::write(dir.join("not-executable.txt"), "ignored")?;
 
-    let tools = discover_exec_tools(&dir);
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(skipped.is_empty(), "{skipped:?}");
     assert_eq!(tools.len(), 1);
     let tool = &tools[0];
     assert_eq!(tool.name(), "greet");
@@ -463,7 +467,8 @@ fn an_exec_tool_hands_a_program_the_json_it_prints() -> TestResult {
         "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  printf '{\"name\":\"count\",\"description\":\"counts\",\"input_schema\":{\"type\":\"object\"},\"kind\":\"read\"}'\n  exit 0\nfi\nprintf '{\"files\": 3}'\n",
     )?;
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
-    let tools = discover_exec_tools(&dir);
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(skipped.is_empty(), "{skipped:?}");
     let tool = tools.first().ok_or("no exec tool found")?;
     let mut context = ToolContext::new(dir.to_path_buf());
     assert_eq!(
@@ -475,6 +480,80 @@ fn an_exec_tool_hands_a_program_the_json_it_prints() -> TestResult {
     assert_eq!(
         tool.execute(Map::new(), &context).value,
         Some(json!({"files": 3}))
+    );
+    Ok(())
+}
+
+/// One hanging schema probe cannot stall discovery or hide the healthy tools beside it.
+#[cfg(unix)]
+#[test]
+fn a_hung_exec_tool_is_skipped_and_the_others_load() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("exec-hung")?;
+    let hang = dir.join("hang");
+    fs::write(&hang, "#!/bin/sh\nsleep 30\n")?;
+    fs::set_permissions(&hang, fs::Permissions::from_mode(0o755))?;
+    let good = dir.join("good");
+    fs::write(
+        &good,
+        "#!/bin/sh\nprintf '{\"name\":\"good\",\"input_schema\":{\"type\":\"object\"}}'\n",
+    )?;
+    fs::set_permissions(&good, fs::Permissions::from_mode(0o755))?;
+    let started = std::time::Instant::now();
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name(), "good");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].path, hang);
+    assert!(
+        skipped[0].reason.contains("timed out after 2s"),
+        "{skipped:?}"
+    );
+    Ok(())
+}
+
+/// A 100 ms probe loads at a 300 ms deadline; a 600 ms probe is named as skipped.
+#[cfg(unix)]
+#[test]
+fn exec_tool_probes_stop_at_their_own_deadline() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("exec-deadline")?;
+    for (name, delay) in [("fast", "0.1"), ("slow", "0.6")] {
+        let script = dir.join(name);
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nsleep {delay}\nprintf '{{\"name\":\"{name}\",\"input_schema\":{{\"type\":\"object\"}}}}'\n"
+            ),
+        )?;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+    }
+    let mut discovered = None;
+    for _ in 0..5 {
+        let (tools, skipped) =
+            discover_exec_tools_within(&dir, std::time::Duration::from_millis(300));
+        assert!(
+            !tools.iter().any(|tool| tool.name() == "slow"),
+            "the 600 ms probe loaded past a 300 ms deadline"
+        );
+        if tools.iter().any(|tool| tool.name() == "fast") {
+            discovered = Some((tools, skipped));
+            break;
+        }
+    }
+    let (tools, skipped) = discovered.ok_or("the 100 ms probe timed out on all five attempts")?;
+    assert_eq!(tools.len(), 1, "{skipped:?}");
+    assert_eq!(tools[0].name(), "fast");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].path, dir.join("slow"));
+    assert!(
+        skipped[0].reason.contains("timed out after 0.3s"),
+        "{skipped:?}"
     );
     Ok(())
 }

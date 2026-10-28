@@ -31,7 +31,7 @@ pub use builtins::{BashTool, WriteTool, list_files, wall_refusal, walled};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};
-pub use exec::{ExecTool, discover_exec_tools};
+pub use exec::{ExecTool, SkippedExecTool, discover_exec_tools, discover_exec_tools_within};
 pub use grep::{GrepTool, line_matcher};
 pub use ipython::cell_output;
 pub use ipython::{CellCalls, CellSpill, IpythonTool, KernelBridge, KernelCellOutcome};

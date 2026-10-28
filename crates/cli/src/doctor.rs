@@ -44,7 +44,7 @@ struct Site {
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 14] = [
+const ROWS: [(&str, Check); 15] = [
     ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
@@ -59,6 +59,7 @@ const ROWS: [(&str, Check); 14] = [
     ("cache", cache_reads),
     ("sandbox-listeners", sandbox_listeners),
     ("plugins", plugins_pinned),
+    ("exec-tools", exec_tools),
 ];
 
 /// Never a failure: where yi runs decides what a contained command and a placement can reach.
@@ -363,6 +364,22 @@ fn plugins_pinned(site: &Site) -> Finding {
         return ok("none installed by yi; `yi plugin list` names them");
     }
     ok(installed.join(", "))
+}
+fn exec_tools(site: &Site) -> Finding {
+    let (tools, skipped) = yi_runtime::discover_exec_tools(&site.home.join(".yi/tools"));
+    if skipped.is_empty() {
+        return if tools.is_empty() {
+            ok("none installed")
+        } else {
+            ok(format!("{} loaded", tools.len()))
+        };
+    }
+    let reasons = skipped
+        .iter()
+        .map(|skipped| format!("{}: {}", skipped.path.display(), skipped.reason))
+        .collect::<Vec<_>>()
+        .join("; ");
+    fail(format!("{} loaded; skipped {reasons}", tools.len()))
 }
 
 /// Runs before the config loads, so a config that will not parse is a row, not a death.
