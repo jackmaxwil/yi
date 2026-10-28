@@ -164,6 +164,8 @@ fn end_rule(end: ChildEnd<'_>) -> Cell {
         "done"
     } else if parent_closed {
         "parent closed"
+    } else if end.exit.is_none() {
+        "failed"
     } else {
         reading.row
     };
