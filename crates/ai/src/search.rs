@@ -244,7 +244,7 @@ pub enum SearchError {
     MissingCredential,
     #[error("web search transport failed: {0}")]
     Transport(String),
-    #[error("web search HTTP {status}: {message}")]
+    #[error("web search {message}")]
     Http { status: u16, message: String },
     #[error("malformed web search response: {0}")]
     Protocol(String),
@@ -435,17 +435,14 @@ impl SearchProvider for OpenRouterSearch {
         )
         .map_err(|error| match error {
             PostJsonError::Transport(message) => SearchError::Transport(self.redact(message)),
-            PostJsonError::Http { status, .. } => SearchError::Http {
-                status,
-                message: match status {
-                    400..=499 => {
-                        "client error; check webSearch.engine, the model id, and the OpenRouter key"
-                    }
-                    500..=599 => "server error; try again later",
-                    _ => "unexpected HTTP status",
-                }
-                .to_owned(),
-            },
+            error @ PostJsonError::Http { status } => {
+                let message = if matches!(status, 401 | 403 | 404) {
+                    format!("{error}; check webSearch.engine, the model id, and the OpenRouter key")
+                } else {
+                    error.to_string()
+                };
+                SearchError::Http { status, message }
+            }
             PostJsonError::Protocol(message) => self.billed(
                 SearchError::Protocol(self.redact(message)),
                 Usage::unknown(),

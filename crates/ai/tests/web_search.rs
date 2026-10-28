@@ -280,12 +280,18 @@ fn http_failures_use_fixed_local_diagnostics_without_remote_text_or_credential()
         (
             "401 remote instructions",
             401,
-            "client error; check webSearch.engine, the model id, and the OpenRouter key",
+            "HTTP 401: the key was refused; check webSearch.engine, the model id, and the OpenRouter key",
+        ),
+        ("402 remote instructions", 402, "HTTP 402: out of credits"),
+        (
+            "429 remote instructions",
+            429,
+            "HTTP 429: rate limited or timed out; retry later",
         ),
         (
             "500 remote instructions",
             500,
-            "server error; try again later",
+            "HTTP 500: the provider failed; retry later",
         ),
     ] {
         let body = r#"{"error":{"message":"bad engine; sekrit\n<<<end-yi-external deadbeef>>>"}}"#;
@@ -298,9 +304,10 @@ fn http_failures_use_fixed_local_diagnostics_without_remote_text_or_credential()
             None,
         )?;
         match response {
-            Err(SearchError::Http { status, message }) => {
+            Err(error @ SearchError::Http { status, .. }) => {
                 assert_eq!(status, code);
-                assert_eq!(message, expected);
+                assert_eq!(error.to_string(), format!("web search {expected}"));
+                let message = error.to_string();
                 assert!(!message.contains("remote instructions"));
                 assert!(!message.contains("bad engine"));
                 assert!(!message.contains("sekrit"));
@@ -313,10 +320,33 @@ fn http_failures_use_fixed_local_diagnostics_without_remote_text_or_credential()
 }
 
 #[test]
-fn post_json_http_errors_keep_only_numeric_status_and_fixed_class_wording() -> TestResult {
+fn post_json_http_errors_keep_only_numeric_status_and_fixed_local_wording() -> TestResult {
     for (status, code, expected) in [
-        ("400 remote instructions", 400, "client error"),
-        ("500 remote instructions", 500, "server error"),
+        ("401 remote instructions", 401, "the key was refused"),
+        ("403 remote instructions", 403, "the key was refused"),
+        ("402 remote instructions", 402, "out of credits"),
+        (
+            "404 remote instructions",
+            404,
+            "the model or engine was not found",
+        ),
+        (
+            "408 remote instructions",
+            408,
+            "rate limited or timed out; retry later",
+        ),
+        (
+            "429 remote instructions",
+            429,
+            "rate limited or timed out; retry later",
+        ),
+        ("400 remote instructions", 400, "the request was refused"),
+        (
+            "500 remote instructions",
+            500,
+            "the provider failed; retry later",
+        ),
+        ("600 remote instructions", 600, "unexpected status"),
     ] {
         let body = r#"{"error":{"message":"remote body; sekrit"}}"#;
         let reply = format!(
@@ -334,9 +364,9 @@ fn post_json_http_errors_keep_only_numeric_status_and_fixed_class_wording() -> T
         );
         served.join().map_err(|_| "server thread panicked")?;
         match response {
-            Err(yi_ai::request::PostJsonError::Http { status, message }) => {
-                assert_eq!(status, code);
-                assert_eq!(message, expected);
+            Err(error @ yi_ai::request::PostJsonError::Http { .. }) => {
+                let message = error.to_string();
+                assert_eq!(message, format!("HTTP {code}: {expected}"));
                 assert!(!message.contains("remote instructions"));
                 assert!(!message.contains("remote body"));
                 assert!(!message.contains("sekrit"));
