@@ -376,7 +376,7 @@ fn the_small_mark_waits_for_the_big_one_to_land() {
     assert!(!covered, "no second logo while the name plays");
     assert_eq!(
         slot,
-        Some(Rect::new(0, 0, 10, 5)),
+        Some(Rect::new(0, 22, 10, 5)),
         "but the landing cells are known"
     );
     assert!(placed(false).0, "the small mark is there once it ends");
