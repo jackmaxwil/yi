@@ -141,6 +141,17 @@ impl App {
             let side = rows.iter().find(|row| row.id == "console.autoSide");
             self.state.auto_side = side.and_then(|row| row.value.as_bool()).unwrap_or(true);
         }
+        let follow = rows.as_ref().and_then(|rows| {
+            rows.iter()
+                .find(|row| row.id == "tui.follow")
+                .and_then(|row| {
+                    serde_json::from_value::<yi_types::config::FollowMode>(row.value.clone()).ok()
+                })
+        });
+        if rows.is_some() {
+            self.state
+                .set_follow(follow.unwrap_or(self.state.follow_fallback));
+        }
         let Some(settings) = self.settings_pane(pane) else {
             return;
         };
@@ -153,6 +164,54 @@ impl App {
                 settings.rows = Some(rows);
             }
             (None, None) => settings.status = Some("the daemon sent no settings".to_owned()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::SessionId;
+
+    #[test]
+    fn follow_applies_live_to_visible_and_parked_chats() {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        let session = SessionId("s-alpha".to_owned());
+        let pane = app.state.focused_pane_id().expect("a chat pane");
+        let chat = app.make_chat(&session);
+        if let Some(slot) = app.state.panes.get_mut(&pane) {
+            slot.content = PaneContent::Session {
+                session: Some(session.clone()),
+                chat: Some(chat),
+            };
+        }
+        app.state
+            .parked
+            .insert(session, app.make_chat(&SessionId("s-alpha".to_owned())));
+        let mut rows = yi_types::settings::rows();
+        for row in &mut rows {
+            if row.id == "tui.follow" {
+                row.value = Value::String("still".to_owned());
+            }
+        }
+        app.absorb_settings(pane, true, &json!({"result": {"rows": rows}}));
+        assert_eq!(app.state.chat_follow, yi_types::config::FollowMode::Still);
+        for chat in app
+            .state
+            .panes
+            .values()
+            .filter_map(|pane| match &pane.content {
+                PaneContent::Session {
+                    chat: Some(chat), ..
+                } => Some(chat),
+                _ => None,
+            })
+        {
+            assert_eq!(chat.app.follow(), yi_types::config::FollowMode::Still);
+        }
+        for chat in app.state.parked.values() {
+            assert_eq!(chat.app.follow(), yi_types::config::FollowMode::Still);
         }
     }
 }

@@ -100,12 +100,13 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             height: common.height,
         };
         let session = std::sync::Arc::new(session);
-        let code = yi_tui::run_headless(
+        let code = yi_tui::run_headless_follow(
             runtime,
             std::sync::Arc::clone(&session),
             host,
             ask_rx,
             options,
+            configured_follow(),
             drive,
         );
         leave_lane(&session);
@@ -119,6 +120,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         host,
         ask_rx,
         options,
+        configured_follow(),
         control,
     );
     leave_lane(&session);
@@ -304,6 +306,43 @@ fn reveal_pace(args: &Args) -> u16 {
         .unwrap_or(100)
 }
 
+#[cfg(feature = "tui")]
+fn configured_follow() -> yi_types::config::FollowMode {
+    let explicit = config().tui.as_ref().and_then(|tui| tui.follow);
+    follow_mode(explicit, reduce_motion)
+}
+
+#[cfg(feature = "tui")]
+fn follow_mode(
+    explicit: Option<yi_types::config::FollowMode>,
+    probe: impl FnOnce() -> Option<bool>,
+) -> yi_types::config::FollowMode {
+    use yi_types::config::FollowMode;
+    explicit.unwrap_or_else(|| match probe() {
+        Some(true) => FollowMode::Still,
+        _ => FollowMode::Page,
+    })
+}
+
+#[cfg(all(feature = "tui", target_os = "macos"))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "startup reads macOS Reduce Motion once with the platform defaults tool"
+)]
+fn reduce_motion() -> Option<bool> {
+    let output = std::process::Command::new("defaults")
+        .args(["read", "com.apple.universalaccess", "reduceMotion"])
+        .output()
+        .ok()?;
+    (output.status.success() && output.stdout.iter().copied().eq(b"1\n".iter().copied()))
+        .then_some(true)
+}
+
+#[cfg(all(feature = "tui", not(target_os = "macos")))]
+fn reduce_motion() -> Option<bool> {
+    None
+}
+
 /// Where `yi plugin add chrome` puts the headless shell; None on a target it pins no build for.
 #[cfg(feature = "tui")]
 fn chrome_pin() -> Option<yi_console::browser::Pinned> {
@@ -355,6 +394,7 @@ pub fn run_console_command(args: &Args) -> i32 {
             .collect(),
         sidebar: yi_console::model::SidebarMode::Rail,
         pace: reveal_pace(args),
+        follow: configured_follow(),
         browser: config()
             .browser
             .as_ref()
@@ -436,4 +476,26 @@ pub(crate) fn session_extensions(
             .unwrap_or_default(),
         can_delegate: true,
     })
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use yi_types::config::FollowMode;
+
+    #[test]
+    fn follow_precedence_reads_the_os_once_only_when_config_is_unset() {
+        let calls = std::cell::Cell::<usize>::new(0);
+        let probe = || {
+            calls.set(calls.get().saturating_add(1));
+            Some(true)
+        };
+        assert_eq!(super::follow_mode(None, probe), FollowMode::Still);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(super::follow_mode(None, || Some(false)), FollowMode::Page);
+        assert_eq!(super::follow_mode(None, || None), FollowMode::Page);
+        assert_eq!(
+            super::follow_mode(Some(FollowMode::Slide), || Some(true)),
+            FollowMode::Slide
+        );
+    }
 }

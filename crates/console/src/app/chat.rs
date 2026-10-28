@@ -77,6 +77,7 @@ impl App {
         };
         let mut app =
             yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
+        app.set_follow(self.state.chat_follow);
         let _ = app.take_title();
         app.set_clock(self.clock);
         app.set_status_name_shown(false);

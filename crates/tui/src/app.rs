@@ -63,18 +63,6 @@ pub type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
 pub fn command_channel() -> (CommandSender, CommandReceiver) {
     tokio::sync::mpsc::unbounded_channel()
 }
-pub struct TuiOptions {
-    pub model: yi_types::model::Model,
-    pub session_name: String,
-    pub cwd: String,
-    pub lane: Option<String>,
-    pub context_window: u64,
-    pub session_dir: String,
-    pub keys: Vec<(String, String)>,
-    pub initial_prompt: Option<String>,
-    /// The streamed reveal's speed as a percentage of the default; 0 paints text on arrival.
-    pub pace: u16,
-}
 
 const MIN_VIEWPORT_ROWS: u16 = 3;
 
@@ -220,6 +208,7 @@ pub struct App {
     pub(crate) rows: usize,
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
     pub(crate) pane_follow: Option<(usize, TranscriptMode, usize, usize)>,
+    pub(crate) follow: yi_types::config::FollowMode,
     /// The last pane paint's top row and each transcript row's cell, `None` on the live turn.
     pub(crate) pane_rows: (u16, Vec<Option<usize>>),
 }
@@ -228,6 +217,7 @@ mod asks;
 mod bridge;
 mod children;
 mod clock;
+mod options;
 mod stream;
 mod working;
 
@@ -235,6 +225,7 @@ pub use crate::frame::next_spinner_wake;
 pub(crate) use asks::mail_source;
 pub(crate) use bridge::spawn_runtime_bridge;
 pub use bridge::{forward, submit};
+pub use options::TuiOptions;
 
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {
@@ -344,6 +335,7 @@ impl App {
             rows: 24,
             pane_hold: None,
             pane_follow: None,
+            follow: yi_types::config::FollowMode::Slide,
             pane_rows: (0, Vec::new()),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
@@ -957,6 +949,7 @@ pub fn run_tui(
     host: Arc<SubagentHost>,
     ask_rx: Receiver<AskRequest>,
     options: TuiOptions,
+    follow: yi_types::config::FollowMode,
     mut control: Option<crate::drive::Control>,
 ) -> i32 {
     crate::highlight::prewarm();
@@ -1010,6 +1003,7 @@ pub fn run_tui(
     }
 
     let mut app = App::new(options, Theme::new(tier, dark), keymap, usize::from(cols));
+    app.set_follow(follow);
     app.set_rows(usize::from(rows));
     app.kitty = yi_orb::kitty::supported();
 

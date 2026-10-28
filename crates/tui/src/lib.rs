@@ -47,5 +47,5 @@ pub mod wrap;
 pub use app::{Command, TuiOptions, UiEvent, run_tui};
 pub use approval::AskChoice;
 pub use approval::AskRequest;
-pub use drive::{DriveOptions, parse_script, run_headless};
+pub use drive::{DriveOptions, parse_script, run_headless, run_headless_follow};
 pub use port::{Answer, Reply, SessionPort, tick};
