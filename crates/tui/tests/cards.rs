@@ -92,6 +92,19 @@ fn task(status: TaskStatus, answer: &str) -> TaskCell {
 }
 
 #[test]
+fn a_running_child_reserves_its_collapsed_answer_height() -> TestResult {
+    let running = task(TaskStatus::Running, "");
+    let running = running.lines(80, &theme(), TranscriptMode::Normal, 0).len();
+    let done = task(TaskStatus::Done, "- one\n- two\n- three");
+    let done = done.lines(80, &theme(), TranscriptMode::Normal, 0).len();
+    assert!(
+        done <= running,
+        "the child card grew when its answer landed"
+    );
+    Ok(())
+}
+
+#[test]
 fn palette_maps_tokens_and_headings() -> TestResult {
     let theme = theme();
     assert_eq!(

@@ -132,25 +132,25 @@ impl App {
             }
             _ => false,
         }
+    }
 
-        fn scroll_focused(&mut self, delta: isize) {
-            if let Some(pane) = self.state.focused_pane_mut() {
-                if delta < 0
-                    && pane.scroll_from_bottom == 0
-                    && let PaneContent::Session {
-                        chat: Some(chat), ..
-                    } = &mut pane.content
-                    && chat.app.follow() == yi_types::config::FollowMode::Still
-                {
-                    chat.app.advance_follow(delta.unsigned_abs());
-                }
-                pane.scroll_from_bottom = if delta >= 0 {
-                    pane.scroll_from_bottom.saturating_add(delta.unsigned_abs())
-                } else {
-                    pane.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
-                };
-                self.dirty = true;
+    pub(super) fn scroll_focused(&mut self, delta: isize) {
+        if let Some(pane) = self.state.focused_pane_mut() {
+            if delta < 0
+                && pane.scroll_from_bottom == 0
+                && let PaneContent::Session {
+                    chat: Some(chat), ..
+                } = &mut pane.content
+                && chat.app.follow() == yi_types::config::FollowMode::Still
+            {
+                chat.app.advance_follow(delta.unsigned_abs());
             }
+            pane.scroll_from_bottom = if delta >= 0 {
+                pane.scroll_from_bottom.saturating_add(delta.unsigned_abs())
+            } else {
+                pane.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
+            };
+            self.dirty = true;
         }
     }
 
