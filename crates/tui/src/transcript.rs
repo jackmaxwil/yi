@@ -119,7 +119,7 @@ pub(crate) fn todo_finished(text: &str) -> Option<String> {
     (done == total && total.parse::<u64>().ok()? > 0).then(|| format!("Todos {total}/{total}"))
 }
 
-pub fn arg_summary(tool: &str, args: &Value) -> String {
+pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
     if tool == "ask_user"
         && let Some(question) = crate::question::Question::from_args(args)
     {

@@ -20,3 +20,13 @@ pub fn read_request(reader: &mut BufReader<TcpStream>) -> String {
     let _ = reader.read_exact(&mut body);
     request + &String::from_utf8_lossy(&body)
 }
+
+/// The JSON body of a request [`read_request`] captured; it drops the blank line, so the
+/// object opens on the line after the last header.
+#[allow(dead_code, reason = "the shared harness serves several test binaries")]
+pub fn json_body(request: &str) -> Result<serde_json::Value, String> {
+    let (_, body) = request
+        .split_once("\r\n{")
+        .ok_or("request has no JSON body")?;
+    serde_json::from_str(&format!("{{{body}")).map_err(|error| error.to_string())
+}

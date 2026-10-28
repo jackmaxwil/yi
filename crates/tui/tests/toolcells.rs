@@ -656,8 +656,18 @@ fn web_search_card_has_its_query_glyph_hue_and_citation_count() -> TestResult {
     assert_eq!(yi_tui::cell::explore_verb("web_search"), Some("Search"));
     let digest = ToolCell::digest_of("web_search", "answer", &json!({"citationCount": 5}), false);
     assert_eq!(digest.as_deref(), Some("5 citations"));
-    let query = yi_tui::transcript::arg_summary("web_search", &json!({"query": "latest Rust"}));
-    assert_eq!(query, "latest Rust");
+    let mut app = app();
+    app.reduce_agent(AgentEvent::ToolExecutionStart {
+        tool_call_id: "w0".to_owned(),
+        tool_name: "web_search".to_owned(),
+        args: json!({"query": "latest Rust"}),
+    });
+    ended(&mut app, "w0", "web_search", "answer");
+    app.reduce_agent(AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let joined = flat(&app.take_commits()).join("\n");
+    assert!(joined.contains("latest Rust"), "{joined}");
     Ok(())
 }
 

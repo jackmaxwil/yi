@@ -134,10 +134,6 @@ impl Tool for WebSearchTool {
         ToolKind::Read
     }
 
-    fn irreversible(&self, _input: &Map<String, Value>) -> bool {
-        true
-    }
-
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
         Self::request(input).map(|_| ())
     }

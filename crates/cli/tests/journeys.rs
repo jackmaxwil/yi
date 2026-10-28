@@ -994,17 +994,23 @@ fn search_case(primary: &str, explicit_role: bool) -> TestResult {
     let mut model = yi_runtime::resolve_model("openrouter", "deepseek/deepseek-v4-flash")
         .ok_or("the bundled search model is missing")?;
     model.base_url = format!("http://127.0.0.1:{port}/api/v1");
+    let mut renamed = model.clone();
+    renamed.id = "deepseek/deepseek-v4-flash-search".to_owned();
     std::fs::create_dir_all(journey.root.join("home/.yi/catalog"))?;
     std::fs::write(
         journey.root.join("home/.yi/catalog/openrouter.json"),
         serde_json::to_string(&json!({
             "schema": 2,
-            "openai-completions": {model.id.clone(): serde_json::to_value(model)?}
+            "openai-completions": {
+                model.id.clone(): serde_json::to_value(model)?,
+                renamed.id.clone(): serde_json::to_value(renamed)?,
+            }
         }))?,
     )?;
     let mut config = json!({"kernel": {"prewarm": false}});
     if explicit_role {
-        config["models"] = json!({"webSearch": "openrouter/deepseek/deepseek-v4-flash"});
+        config["models"] = json!({"webSearch": "openrouter/deepseek/deepseek-v4-flash-search"});
+        config["webSearch"] = json!({"engine": "native"});
     }
     std::fs::write(
         journey.root.join("home/.yi/config.json"),
@@ -1058,15 +1064,17 @@ fn search_case(primary: &str, explicit_role: bool) -> TestResult {
     assert!(stored.contains("0.007516407500000001"), "{stored}");
 
     let request = served.join().map_err(|_| "search server panicked")??;
-    let (_, body) = request
-        .split_once("\r\n{")
-        .ok_or("search request has no body")?;
-    let body: Value = serde_json::from_str(&format!("{{{body}"))?;
-    assert_eq!(body["model"], "deepseek/deepseek-v4-flash");
+    let body = crate::loopback::json_body(&request)?;
+    let (model_id, engine) = if explicit_role {
+        ("deepseek/deepseek-v4-flash-search", "native")
+    } else {
+        ("deepseek/deepseek-v4-flash", "exa")
+    };
+    assert_eq!(body["model"], model_id);
     assert_eq!(body["stream"], false);
     assert_eq!(body["tools"][0]["type"], "openrouter:web_search");
     let parameters = &body["tools"][0]["parameters"];
-    assert_eq!(parameters["engine"], "exa");
+    assert_eq!(parameters["engine"], engine);
     assert_eq!(parameters["mode"], "auto");
     assert_eq!(parameters["max_results"], 5);
     assert_eq!(parameters["max_total_results"], 5);

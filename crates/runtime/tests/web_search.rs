@@ -233,15 +233,14 @@ async fn turn(mode: PermissionMode) -> Result<(usize, usize, f64, f64), Box<dyn 
 }
 
 #[tokio::test]
-async fn ask_and_auto_ask_before_a_search_and_every_mode_books_its_cost_once() -> TestResult {
+async fn every_permission_mode_runs_unasked_and_books_search_cost_once() -> TestResult {
     for mode in [
         PermissionMode::Ask,
         PermissionMode::Auto,
         PermissionMode::Yolo,
     ] {
         let (asked, booked, live, stored) = turn(mode).await?;
-        let expected = usize::from(mode != PermissionMode::Yolo);
-        assert_eq!(asked, expected, "{mode:?}");
+        assert_eq!(asked, 0, "{mode:?}");
         assert_eq!(booked, 1, "{mode:?}");
         assert!((live - COST).abs() < 1e-9, "{mode:?}: {live}");
         assert!((stored - COST).abs() < 1e-9, "{mode:?}: {stored}");

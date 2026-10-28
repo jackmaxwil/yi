@@ -401,7 +401,11 @@ impl SearchProvider for OpenRouterSearch {
             ],
             "tools": [{"type": "openrouter:web_search", "parameters": parameters}],
         });
-        if let Some(routing) = &self.routing {
+        if let Some(routing) = self
+            .routing
+            .as_ref()
+            .filter(|_| self.model.base_url.contains("openrouter.ai"))
+        {
             body["provider"] = routing.clone();
         }
         let encoded =
