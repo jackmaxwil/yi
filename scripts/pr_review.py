@@ -232,6 +232,15 @@ def promotes(rounds, head, holds=on_head):
     return not ready_problems(rounds, head, holds) and not holding(rounds[-1])
 
 
+BLOCKED = "blocked this head"
+
+
+def reread(why, again, force):
+    """Whether `--again` or `--force` reads a head past `why`. Incident: #1725, #1727 and #1728 each
+    paid for a second round on a head the first had blocked, since `--again` skipped every reason."""
+    return force or (again and BLOCKED not in why)
+
+
 def skip_reason(rounds, head, wanted=2, holds=on_head):
     """Why a new round on this head would repeat one: a redelivered message, or a sweep racing
     another, must not post again. A head is read once; a second read is only for a PR whose one
@@ -243,7 +252,7 @@ def skip_reason(rounds, head, wanted=2, holds=on_head):
     if here and twin_round(here[-1]) and here[-1]["verdict"] != "override":
         return None
     if here and here[-1]["verdict"] == "blocked":
-        return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
+        return f"round {here[-1]['n']} {BLOCKED}; the fixer or the owner is next"
     if here and (len([r for r in rounds if not twin_round(r)]) >= wanted or any(f.get("severity") in REPORTED for f in here[-1].get("findings", []))):
         return f"round {here[-1]['n']} read this head; the fixer or the next push is next"
     return None
@@ -842,7 +851,7 @@ def cmd_review(args):
         pr = forge_pr.pull(number)
         why = skip_reason(rounds_of(comments(repo, number), allowed, number), pr["head"]["sha"],
                           holds=holds_for(number, pr["base"]["ref"]))
-        if why and not (args.dry_run or getattr(args, "again", False)):
+        if why and not (args.dry_run or reread(why, getattr(args, "again", False), getattr(args, "force", False))):
             print(f"#{number}: no round — {why}")
             return 0
         rounds = rounds_of(comments(repo, number), allowed, number)
@@ -990,7 +999,7 @@ def cmd_sweep(args):
             if read >= SWEEP_HEADS or JOB_ENDS - time.monotonic() < ROUND_SECS:
                 print(f"sweep: {read} head(s) read in {int(time.monotonic() - started)}s; the rest wait for the next sweep")
                 break
-            if cmd_review(argparse.Namespace(number=pr["number"], dry_run=False, again=False)) != STANDS:
+            if cmd_review(argparse.Namespace(number=pr["number"], dry_run=False, again=False, force=False)) != STANDS:
                 read += 1
     return 0
 
@@ -1106,6 +1115,11 @@ def selfcheck():
     assert skip_reason([{"n": 1, "sha": "0000000", "verdict": "clean"}] + one, "abc1234ff"), "a PR with two rounds reads a head once"
     assert skip_reason(one + [{"n": 2, "sha": "abc1234", "verdict": "clean"}], "abc1234ff"), "never a third"
     assert skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "abc1234ff"), "a blocked head is the fixer's"
+    blocked_why = skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "abc1234ff")
+    assert not reread(blocked_why, True, False), "--again does not resample a blocked head"
+    assert reread(blocked_why, True, True), "--force resamples a blocked head"
+    assert reread("round 1 read this head; the fixer or the next push is next", True, False), "--again reads a clean head a second time"
+    assert not reread(blocked_why, False, False), "no flag reads nothing past a reason"
     twin_block = {"n": 1, "sha": "abc1234", "verdict": "blocked", "findings": [{"lens": "duplicate", "severity": "high", "claim": "#9 (open) also closes #4: x"}]}
     assert skip_reason([twin_block], "abc1234ff") is None, "a head a twin blocked is read again, since no lens read it"
     assert skip_reason([dict(twin_block, verdict="override")], "abc1234ff"), "an overridden twin is settled, not read again"
