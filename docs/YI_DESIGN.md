@@ -354,12 +354,14 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
 ### 7.1 Table and trait
 | Read | Write | Exec | Ledger |
 |---|---|---|---|
-| `read`, `grep`, `get_context`, `ask_user`, `annotate` | `edit`, `write` | `bash`, `ipython` | `plan`, `todo` |
+| `read`, `grep`, `get_context`, `ask_user`, `annotate`, `web_search` | `edit`, `write` | `bash`, `ipython` | `plan`, `todo` |
 
 - `builtin_tools_with` builds `read edit write grep bash get_context`; `session_tools` adds exec
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
-  `ipython`, `annotate`, `plan`, `todo`, and `ask_user`. `check_request_budget.py` prices system block plus tool
-  table against a shrink-only baseline and locks each tool's text and sha256 in `tool_surface.json`;
+  `ipython`, `annotate`, `plan`, `todo`, and `ask_user`, and `wire_search` adds `web_search` when
+  its provider is registered and gates its skill catalog entry on the same availability.
+  `check_request_budget.py` prices system block plus tool table against a shrink-only baseline
+  and locks each tool's text and sha256 in `tool_surface.json`;
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
@@ -1316,9 +1318,8 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `sha2` | — | types, oauth, permission, runtime, kernel | message signing, permission digests, PKCE, plan digests, the release digest | — |
 | `xxhash-rust` | `xxh32` | tools | hashline tags | — |
 | `globset` | — | permission, tools, runtime | permission patterns, file tools | `glob`: no brace sets |
-| `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools, runtime | the `grep` tool and Claude Code hook matchers; the Age and break-property tables stay out | — |
+| `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime, ai | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
-| `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |

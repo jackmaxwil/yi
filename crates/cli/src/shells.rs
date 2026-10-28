@@ -419,21 +419,25 @@ pub(crate) fn session_extensions(
     args: &crate::Args,
     work: &std::path::Path,
     context_window: u64,
+    web_search_available: bool,
 ) -> yi_runtime::ExtensionHost {
-    yi_runtime::ext::install(yi_runtime::ExtOptions {
-        context_window,
-        cwd: work.to_path_buf(),
-        home: crate::home().to_path_buf(),
-        mode: args.mode,
-        user_system: args.system.clone(),
-        schema_instruction: crate::schema(args)
-            .and_then(Result::ok)
-            .map(|schema| schema.instruction()),
-        global_skills: crate::config()
-            .skills
-            .as_ref()
-            .and_then(|skills| skills.global.clone())
-            .unwrap_or_default(),
-        can_delegate: true,
-    })
+    yi_runtime::ext::install_with_web_search(
+        yi_runtime::ExtOptions {
+            context_window,
+            cwd: work.to_path_buf(),
+            home: crate::home().to_path_buf(),
+            mode: args.mode,
+            user_system: args.system.clone(),
+            schema_instruction: crate::schema(args)
+                .and_then(Result::ok)
+                .map(|schema| schema.instruction()),
+            global_skills: crate::config()
+                .skills
+                .as_ref()
+                .and_then(|skills| skills.global.clone())
+                .unwrap_or_default(),
+            can_delegate: true,
+        },
+        web_search_available,
+    )
 }

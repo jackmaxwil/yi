@@ -35,6 +35,10 @@ fn rust_pack() -> Pack {
 }
 
 pub fn install(options: ExtOptions) -> Host {
+    install_with_web_search(options, false)
+}
+
+pub fn install_with_web_search(options: ExtOptions, web_search_available: bool) -> Host {
     let ExtOptions {
         cwd,
         home,
@@ -73,7 +77,8 @@ pub fn install(options: ExtOptions) -> Host {
     host.register(Box::new(
         ProjectResources::new(cwd.clone(), home.clone())
             .with_context_window(context_window)
-            .with_global_skills(global_skills),
+            .with_global_skills(global_skills)
+            .with_web_search_available(web_search_available),
     ));
     register_packs(&mut host, &cwd, &home);
     if can_delegate {

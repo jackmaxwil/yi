@@ -8,6 +8,7 @@ use crate::request::{PostJsonError, ProxyConfig};
 const RESPONSE_CAP: usize = 8 * 1024 * 1024;
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const INSTRUCTION: &str = "Perform exactly one web search for the user's query, then answer in at most 150 words using only what the search returned, citing each claim with a markdown link to its source.";
+const MAX_COMPLETION_TOKENS: u32 = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchQuery(String);
@@ -188,63 +189,77 @@ pub struct SearchCitation {
     pub excerpt: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRoute {
+    provider: String,
+    model: String,
+}
+
+impl SearchRoute {
+    pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+        }
+    }
+
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchCount(u64);
+
+impl SearchCount {
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchResponse {
     pub answer: String,
     pub citations: Vec<SearchCitation>,
-    pub provider: String,
-    pub model: String,
+    pub route: SearchRoute,
     pub engine: SearchEngine,
     pub mode: SearchMode,
-    pub searches: u64,
+    pub searches: SearchCount,
     pub upstream: Option<String>,
     pub usage: Usage,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SearchError {
+    #[error("invalid web search request: {0}")]
     InvalidInput(String),
+    #[error("web search is unavailable: no OpenRouter credential resolved")]
     MissingCredential,
+    #[error("web search transport failed: {0}")]
     Transport(String),
-    Http {
-        status: u16,
-        message: String,
-    },
+    #[error("web search HTTP {status}: {message}")]
+    Http { status: u16, message: String },
+    #[error("malformed web search response: {0}")]
     Protocol(String),
+    #[error("web search returned no citations")]
     NoCitations,
+    #[error("{error}")]
     Billed {
-        provider: String,
-        model: String,
+        route: SearchRoute,
         error: Box<SearchError>,
         usage: Box<Usage>,
     },
+    #[error("{0}")]
     Other(String),
 }
-
-impl std::fmt::Display for SearchError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidInput(message) => {
-                write!(formatter, "invalid web search request: {message}")
-            }
-            Self::MissingCredential => {
-                formatter.write_str("web search is unavailable: no OpenRouter credential resolved")
-            }
-            Self::Transport(message) => write!(formatter, "web search transport failed: {message}"),
-            Self::Http { status, message } => {
-                write!(formatter, "web search HTTP {status}: {message}")
-            }
-            Self::Protocol(message) => {
-                write!(formatter, "malformed web search response: {message}")
-            }
-            Self::NoCitations => formatter.write_str("web search returned no citations"),
-            Self::Billed { error, .. } => std::fmt::Display::fmt(error, formatter),
-            Self::Other(message) => formatter.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for SearchError {}
 
 pub trait SearchProvider: Send + Sync {
     fn search(&self, request: &SearchRequest) -> Result<SearchResponse, SearchError>;
@@ -280,11 +295,25 @@ impl OpenRouterSearch {
         text.replace(self.credential.expose(), "***")
     }
 
+    fn route(&self) -> SearchRoute {
+        SearchRoute::new("openrouter", self.model.id.clone())
+    }
+
+    fn billed(&self, error: SearchError, usage: Usage) -> SearchError {
+        SearchError::Billed {
+            route: self.route(),
+            error: Box::new(error),
+            usage: Box::new(usage),
+        }
+    }
+
     fn parse(&self, body: Value, request: &SearchRequest) -> Result<SearchResponse, SearchError> {
-        let usage = body
+        let empty_usage = Value::Null;
+        let usage = body.get("usage").unwrap_or(&empty_usage);
+        let parsed_usage = body
             .get("usage")
-            .ok_or_else(|| SearchError::Protocol("usage is missing".to_owned()))?;
-        let parsed_usage = crate::openai::parse_chunk_usage(usage, &self.model);
+            .map(|usage| crate::openai::parse_chunk_usage(usage, &self.model))
+            .unwrap_or_else(Usage::unknown);
         let parsed = (|| -> Result<SearchResponse, SearchError> {
             let message = body
                 .get("choices")
@@ -338,11 +367,10 @@ impl OpenRouterSearch {
             Ok(SearchResponse {
                 answer,
                 citations,
-                provider: "openrouter".to_owned(),
-                model: self.model.id.clone(),
+                route: self.route(),
                 engine: self.engine.clone(),
                 mode: request.mode,
-                searches,
+                searches: SearchCount::new(searches),
                 upstream: body
                     .get("provider")
                     .and_then(Value::as_str)
@@ -350,12 +378,7 @@ impl OpenRouterSearch {
                 usage: parsed_usage.clone(),
             })
         })();
-        parsed.map_err(|error| SearchError::Billed {
-            provider: "openrouter".to_owned(),
-            model: self.model.id.clone(),
-            error: Box::new(error),
-            usage: Box::new(parsed_usage),
-        })
+        parsed.map_err(|error| self.billed(error, parsed_usage))
     }
 }
 
@@ -380,6 +403,7 @@ impl SearchProvider for OpenRouterSearch {
         let mut body = json!({
             "model": self.model.id,
             "stream": false,
+            "max_completion_tokens": MAX_COMPLETION_TOKENS,
             "messages": [
                 {"role": "system", "content": INSTRUCTION},
                 {"role": "user", "content": request.query.as_str()},
@@ -417,7 +441,10 @@ impl SearchProvider for OpenRouterSearch {
                 status,
                 message: self.redact(message),
             },
-            PostJsonError::Protocol(message) => SearchError::Protocol(self.redact(message)),
+            PostJsonError::Protocol(message) => self.billed(
+                SearchError::Protocol(self.redact(message)),
+                Usage::unknown(),
+            ),
         })?;
         self.parse(response, request)
     }

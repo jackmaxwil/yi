@@ -114,9 +114,9 @@ pub struct ProjectResources {
     budget: yi_context::Bytes,
     catalog: yi_context::Bytes,
     global_skills: Vec<String>,
+    web_search_available: bool,
     lists_skills: bool,
 }
-
 impl ProjectResources {
     pub fn new(cwd: PathBuf, home: PathBuf) -> Self {
         let gate = TrustGate::new(&home);
@@ -127,6 +127,7 @@ impl ProjectResources {
             budget: yi_context::SourceBudgets::default().project_instructions,
             catalog: yi_context::SourceBudgets::default().skills_meta,
             global_skills: Vec::new(),
+            web_search_available: false,
             lists_skills: true,
         }
     }
@@ -140,6 +141,12 @@ impl ProjectResources {
     #[must_use]
     pub fn with_global_skills(mut self, names: Vec<String>) -> Self {
         self.global_skills = names;
+        self
+    }
+
+    #[must_use]
+    pub fn with_web_search_available(mut self, available: bool) -> Self {
+        self.web_search_available = available;
         self
     }
 
@@ -199,8 +206,12 @@ impl ProjectResources {
     }
 
     fn catalogs(&self, out: &mut Vec<Effect>) {
-        let (mut global, project) = crate::skills::discover_split(&self.cwd, &self.home);
+        let (mut global, mut project) = crate::skills::discover_split(&self.cwd, &self.home);
         global.retain(|skill| listed(skill, &self.home, &self.global_skills));
+        let available =
+            |skill: &crate::skills::Skill| skill.name != "web_search" || self.web_search_available;
+        global.retain(available);
+        project.retain(available);
         if let Some(catalog) = crate::skills::catalog_text(&global, self.catalog) {
             out.push(Effect::AttachFragment {
                 slot: Slot::new(Rank::Catalog, "skills"),

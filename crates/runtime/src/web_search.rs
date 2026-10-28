@@ -32,7 +32,6 @@ impl crate::provider::ProviderStream {
 
 pub const EXCERPT_CAP_CHARS: usize = 4_000;
 pub const RESULT_CAP_CHARS: usize = 12_000;
-pub const BODY_CAP_CHARS: usize = 12_000;
 
 pub struct WebSearchTool {
     provider: Arc<dyn SearchProvider>,
@@ -120,7 +119,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search current public facts through OpenRouter and Exa; the query leaves this machine and a call costs about $0.01; returns cited sources."
+        "Search current public facts through OpenRouter with Exa as the default engine; the query leaves this machine and a call costs about $0.01; returns cited sources."
     }
 
     fn schema(&self) -> Value {
@@ -160,27 +159,20 @@ impl Tool for WebSearchTool {
                 };
                 let (billed, route, error) = match error {
                     SearchError::Billed {
-                        provider,
-                        model,
+                        route,
                         usage,
                         error,
-                    } => (Some(*usage), Some((provider, model)), *error),
+                    } => (Some(*usage), Some(route), *error),
                     error => (None, None, error),
                 };
-                let text = match &error {
-                    SearchError::Http { status, message } => format!(
-                        "web search HTTP {status}; the provider's body follows as data\n{}",
-                        crate::fetch::fence_untrusted("web_search", message)
-                    ),
-                    _ => error.to_string(),
-                };
+                let text = error.to_string();
                 let mut output = error_output_kind(text, kind);
                 output.result.usage = billed;
-                if let Some((provider, model)) = route
+                if let Some(route) = route
                     && let Some(details) = output.result.details.as_object_mut()
                 {
-                    details.insert("provider".to_owned(), json!(provider));
-                    details.insert("model".to_owned(), json!(model));
+                    details.insert("provider".to_owned(), json!(route.provider()));
+                    details.insert("model".to_owned(), json!(route.model()));
                     details.insert(
                         "durationMs".to_owned(),
                         json!(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
@@ -192,6 +184,7 @@ impl Tool for WebSearchTool {
         let mut body = response.answer;
         body.push_str("\n\nCitations");
         let total = response.citations.len();
+        let mut citation_cut = false;
         for (index, citation) in response.citations.iter().enumerate() {
             let (excerpt, cut) = Self::excerpt(&citation.excerpt);
             let mut rendered = format!(
@@ -209,41 +202,53 @@ impl Tool for WebSearchTool {
                 .chars()
                 .count()
                 .saturating_add(rendered.chars().count());
-            if projected > BODY_CAP_CHARS {
+            if projected > RESULT_CAP_CHARS {
+                let (kept, _) = Self::capped(
+                    &body,
+                    RESULT_CAP_CHARS,
+                    "result chars kept",
+                    "RESULT_CAP_CHARS",
+                    "use a narrower query or a smaller count",
+                );
+                body = kept;
                 body.push('\n');
                 body.push_str(&cut_row(
                     index,
                     total,
                     "citations kept",
-                    "BODY_CAP_CHARS",
-                    BODY_CAP_CHARS,
+                    "RESULT_CAP_CHARS",
+                    RESULT_CAP_CHARS,
                     "use a narrower query or a smaller count",
                 ));
+                citation_cut = true;
                 break;
             }
             body.push_str(&rendered);
         }
-        let (mut body, cut) = Self::capped(
-            &body,
-            RESULT_CAP_CHARS,
-            "result chars kept",
-            "RESULT_CAP_CHARS",
-            "use a narrower query or fewer results; no call returns the rest of this result",
-        );
-        if let Some(cut) = cut {
-            body.push('\n');
-            body.push_str(&cut);
+        if !citation_cut {
+            let (kept, cut) = Self::capped(
+                &body,
+                RESULT_CAP_CHARS,
+                "result chars kept",
+                "RESULT_CAP_CHARS",
+                "use a narrower query or fewer results; no call returns the rest of this result",
+            );
+            body = kept;
+            if let Some(cut) = cut {
+                body.push('\n');
+                body.push_str(&cut);
+            }
         }
         let mut output = text_output(crate::fetch::fence_untrusted("web_search", &body));
         output.result.details = json!({
-            "provider": response.provider,
-            "model": response.model,
+            "provider": response.route.provider(),
+            "model": response.route.model(),
             "engine": response.engine.as_str(),
             "mode": response.mode.as_str(),
             "citationCount": response.citations.len(),
             "costUsd": response.usage.cost.total,
             "durationMs": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            "searches": response.searches,
+            "searches": response.searches.get(),
             "upstream": response.upstream,
         });
         output.result.usage = Some(response.usage);

@@ -152,13 +152,13 @@ pub fn host_of(url: &str) -> &str {
 }
 
 pub const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-const ERROR_BODY_CAP: u64 = 2048;
 
 fn agent(url: &str, proxy: Option<&ProxyConfig>, read_timeout: std::time::Duration) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
         .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(read_timeout);
+        .timeout_read(read_timeout)
+        .timeout_write(read_timeout);
     if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
         builder = builder.proxy(proxy.clone());
     }
@@ -210,47 +210,24 @@ pub fn post_json(
         request = request.set(name, value);
     }
     let response = request.send_string(body).map_err(|error| match error {
-        ureq::Error::Status(status, response) => {
-            let mut body = Vec::new();
-            let read = std::io::Read::read_to_end(
-                &mut std::io::Read::take(response.into_reader(), ERROR_BODY_CAP.saturating_add(1)),
-                &mut body,
-            );
-            let cut = u64::try_from(body.len()).is_ok_and(|len| len > ERROR_BODY_CAP);
-            body.truncate(usize::try_from(ERROR_BODY_CAP).unwrap_or(usize::MAX));
-            let mut message = String::from_utf8_lossy(&body).into_owned();
-            if cut {
-                message.push_str(&format!(
-                    "\n[… error body: first {ERROR_BODY_CAP} bytes kept (ERROR_BODY_CAP {ERROR_BODY_CAP}); the rest is not read]"
-                ));
-            }
-            match read {
-                Ok(_) => PostJsonError::Http { status, message },
-                Err(error) => PostJsonError::Transport(format!("{url}: {error}")),
-            }
-        }
+        ureq::Error::Status(status, response) => PostJsonError::Http {
+            status,
+            message: response.status_text().to_owned(),
+        },
         ureq::Error::Transport(error) => PostJsonError::Transport(format!("{url}: {error}")),
     })?;
     read_capped(response, url, cap).map_err(PostJsonError::Protocol)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PostJsonError {
+    #[error("{0}")]
     Transport(String),
+    #[error("HTTP {status}: {message}")]
     Http { status: u16, message: String },
+    #[error("{0}")]
     Protocol(String),
 }
-
-impl std::fmt::Display for PostJsonError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Transport(message) | Self::Protocol(message) => formatter.write_str(message),
-            Self::Http { status, message } => write!(formatter, "HTTP {status}: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for PostJsonError {}
 
 pub fn waiting(sender: &Sender<AssistantMessageEvent>) -> impl Fn(Wait) + '_ {
     move |wait| {

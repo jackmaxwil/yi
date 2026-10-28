@@ -286,15 +286,27 @@ fn build_session(
     }
     yi_runtime::post::configure(config().mail.as_ref().and_then(|mail| mail.hop_limit));
     let tools_home = home.clone();
+    let provider = std::sync::Arc::clone(session_provider(&session));
+    let search = roles::web_search_provider(proxy.clone()).map_err(|reason| Refused {
+        code: 2,
+        reason,
+        class: yi_types::telemetry::ErrorClass::RefusalConfig,
+    })?;
+    let search_available = search.is_some();
+    provider.set_web_search(search);
     let extensions = yi_types::trace::span("build_session.install_extensions");
-    let mut host = shells::session_extensions(args, &work, session.model().context_window);
+    let mut host = shells::session_extensions(
+        args,
+        &work,
+        session.model().context_window,
+        search_available,
+    );
     if unattended {
         let slot = yi_runtime::ext::Slot::new(yi_runtime::ext::Rank::Mode, "unattended");
         host.attach(slot, yi_runtime::unattended_fragment().to_owned());
     }
     session.install_extensions(host);
     drop(extensions);
-    let provider = std::sync::Arc::clone(session_provider(&session));
     let freeform_grammar = config()
         .edit
         .as_ref()
@@ -303,12 +315,6 @@ fn build_session(
     let selector = roles::selector_model()
         .map(|model| yi_runtime::select::Selector::new(std::sync::Arc::clone(&provider), model));
     session.set_selector(selector);
-    let search = roles::web_search_provider(proxy.clone()).map_err(|reason| Refused {
-        code: 2,
-        reason,
-        class: yi_types::telemetry::ErrorClass::RefusalConfig,
-    })?;
-    provider.set_web_search(search);
     let wiring = yi_types::trace::span("build_session.attach_runtime");
     let host = yi_runtime::attach_runtime(
         &mut session,

@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_ai::search::{
-    SearchCitation, SearchEngine, SearchError, SearchMode, SearchProvider, SearchRequest,
-    SearchResponse, SearchUrl,
+    SearchCitation, SearchCount, SearchEngine, SearchError, SearchMode, SearchProvider,
+    SearchRequest, SearchResponse, SearchRoute, SearchUrl,
 };
-use yi_runtime::web_search::{BODY_CAP_CHARS, EXCERPT_CAP_CHARS, WebSearchTool};
+use yi_runtime::web_search::{EXCERPT_CAP_CHARS, RESULT_CAP_CHARS, WebSearchTool};
 use yi_runtime::{PermissionBroker, PermissionMode, ProviderStream};
 use yi_tools::{Tool, ToolContext};
 use yi_types::message::{AgentMessage, StopReason, Usage};
@@ -62,11 +62,10 @@ fn response(answer: &str, excerpt: &str) -> SearchResponse {
             url: SearchUrl::new("https://doc.rust-lang.org/releases"),
             excerpt: excerpt.to_owned(),
         }],
-        provider: "openrouter".to_owned(),
-        model: "deepseek/deepseek-v4-flash".to_owned(),
+        route: SearchRoute::new("openrouter", "deepseek/deepseek-v4-flash"),
         engine: SearchEngine::default(),
         mode: SearchMode::Auto,
-        searches: 1,
+        searches: SearchCount::new(1),
         upstream: Some("Venice".to_owned()),
         usage,
     }
@@ -201,7 +200,7 @@ fn the_citation_body_cap_names_kept_total_cap_and_narrowing_advice() -> TestResu
     let text = text(&output);
     assert!(text.contains(" of 25 citations kept"), "{text}");
     assert!(
-        text.contains(&format!("BODY_CAP_CHARS {BODY_CAP_CHARS}")),
+        text.contains(&format!("RESULT_CAP_CHARS {RESULT_CAP_CHARS}")),
         "{text}"
     );
     assert!(
@@ -213,11 +212,44 @@ fn the_citation_body_cap_names_kept_total_cap_and_narrowing_advice() -> TestResu
 }
 
 #[test]
+fn a_citation_cut_at_the_result_boundary_keeps_one_loud_notice() -> TestResult {
+    let mut result = response("answer", "excerpt");
+    let first = format!(
+        "\n\n1. Rust release\n{}\nexcerpt",
+        result.citations[0].url.as_str()
+    );
+    result.answer =
+        "é".repeat(RESULT_CAP_CHARS - "\n\nCitations".chars().count() - first.chars().count());
+    result.citations.push(SearchCitation {
+        title: "Later source".to_owned(),
+        url: SearchUrl::new("https://example.com/later"),
+        excerpt: "later".to_owned(),
+    });
+    let (tool, _) = tool_with(Ok(result));
+    let output = tool.execute(
+        args(json!({"query": "rust", "count": 2})),
+        &ToolContext::new(std::env::temp_dir()),
+    );
+    let text = text(&output);
+    assert!(text.contains("1 of 2 citations kept"), "{text}");
+    assert_eq!(text.matches("RESULT_CAP_CHARS").count(), 1, "{text}");
+    assert!(!text.contains("BODY_CAP_CHARS"), "{text}");
+    assert!(
+        text.contains("use a narrower query or a smaller count"),
+        "{text}"
+    );
+    Ok(())
+}
+
+#[test]
 fn the_tool_description_discloses_egress_and_approximate_cost() -> TestResult {
     let (tool, _) = tool_with(Ok(response("answer", "excerpt")));
     let description = tool.description();
     assert!(description.contains("OpenRouter"), "{description}");
-    assert!(description.contains("Exa"), "{description}");
+    assert!(
+        description.contains("Exa as the default engine"),
+        "{description}"
+    );
     assert!(description.contains("leaves this machine"), "{description}");
     assert!(description.contains("about $0.01"), "{description}");
     Ok(())
@@ -226,8 +258,7 @@ fn the_tool_description_discloses_egress_and_approximate_cost() -> TestResult {
 #[test]
 fn a_malformed_paid_response_is_an_error_that_still_books_its_usage() -> TestResult {
     let (tool, _) = tool_with(Err(SearchError::Billed {
-        provider: "openrouter".to_owned(),
-        model: "deepseek/deepseek-v4-flash".to_owned(),
+        route: SearchRoute::new("openrouter", "deepseek/deepseek-v4-flash"),
         error: Box::new(SearchError::NoCitations),
         usage: Box::new(response("answer", "excerpt").usage),
     }));
@@ -245,10 +276,10 @@ fn a_malformed_paid_response_is_an_error_that_still_books_its_usage() -> TestRes
 }
 
 #[test]
-fn provider_failures_are_typed_tool_errors_without_secret_text() -> TestResult {
+fn provider_failures_keep_status_and_reason_without_remote_body_or_fence() -> TestResult {
     let (tool, _) = tool_with(Err(SearchError::Http {
         status: 400,
-        message: "bad engine; ***".to_owned(),
+        message: "Bad Request".to_owned(),
     }));
     let output = tool.execute(
         args(json!({"query": "rust"})),
@@ -256,8 +287,12 @@ fn provider_failures_are_typed_tool_errors_without_secret_text() -> TestResult {
     );
     assert!(output.is_error);
     assert_eq!(output.result.details["errorKind"], "tool_error");
-    assert!(text(&output).contains("HTTP 400"));
-    assert!(!text(&output).contains("sekrit"));
+    let text = text(&output);
+    assert!(text.contains("HTTP 400"), "{text}");
+    assert!(text.contains("Bad Request"), "{text}");
+    assert!(!text.contains("provider's body follows"), "{text}");
+    assert!(!text.contains("<<<yi-external"), "{text}");
+    assert!(!text.contains("sekrit"), "{text}");
     Ok(())
 }
 
@@ -345,8 +380,7 @@ async fn a_failed_billed_search_books_cost_and_route_once() -> TestResult {
     let (_, records, live, stored) = turn(
         PermissionMode::Yolo,
         Err(SearchError::Billed {
-            provider: "openrouter".to_owned(),
-            model: "deepseek/deepseek-v4-flash".to_owned(),
+            route: SearchRoute::new("openrouter", "deepseek/deepseek-v4-flash"),
             error: Box::new(SearchError::NoCitations),
             usage: Box::new(response("answer", "excerpt").usage),
         }),

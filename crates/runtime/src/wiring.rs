@@ -15,20 +15,20 @@ use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOption
 fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
     Arc::new(move |build: ChildBuild<'_>| {
         let provider = Arc::new(wiring.provider.for_child());
+        let child_cwd = build
+            .cwd
+            .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
         if let Some(reader) = build.reader.clone() {
-            let cwd = build
-                .cwd
-                .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
-            let broker = child_broker(&wiring, &build.wall, &cwd);
+            let broker = child_broker(&wiring, &build.wall, &child_cwd);
             let tools = (wiring.tools)();
-            let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
+            let rules = crate::rules::discover_armed(&child_cwd, &wiring.home).rules;
             let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
             return Ok(crate::subagent::reader::session(
                 provider,
                 build,
                 &reader,
                 tools,
-                (cwd, &wiring.home),
+                (child_cwd, &wiring.home),
                 broker,
                 rules,
             ));
@@ -42,22 +42,22 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             },
             Arc::clone(&provider),
         );
-        let child_cwd = build
-            .cwd
-            .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
-        child.install_extensions(crate::ext::install(crate::ext::ExtOptions {
-            cwd: child_cwd.clone(),
-            home: wiring.home.clone(),
-            mode: wiring
-                .broker
-                .as_ref()
-                .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode()),
-            user_system: String::new(),
-            schema_instruction: None,
-            context_window: child.model().context_window,
-            global_skills: Vec::new(),
-            can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
-        }));
+        child.install_extensions(crate::ext::install_with_web_search(
+            crate::ext::ExtOptions {
+                cwd: child_cwd.clone(),
+                home: wiring.home.clone(),
+                mode: wiring
+                    .broker
+                    .as_ref()
+                    .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode()),
+                user_system: String::new(),
+                schema_instruction: None,
+                context_window: child.model().context_window,
+                global_skills: Vec::new(),
+                can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
+            },
+            provider.web_search().is_some(),
+        ));
         let host = attach_runtime(
             &mut child,
             RuntimeWiring {
