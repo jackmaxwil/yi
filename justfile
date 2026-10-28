@@ -34,9 +34,9 @@ test:
       # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
       profile=local
       [ -z "${CI:-}" ] || profile=default
-      cargo nextest run --workspace --profile "$profile"
+      cargo nextest run --workspace --profile "$profile" -- --skip linked_tables
     else
-      cargo test --workspace -- --test-threads=1
+      cargo test --workspace -- --test-threads=1 --skip linked_tables
     fi
     # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
