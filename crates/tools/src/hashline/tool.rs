@@ -4,9 +4,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Map, Value, json};
 
 use super::format::{FileTag, format_hashline_header, format_numbered_line};
-use super::input::Patch;
+use super::input::{Patch, PatchError};
 use super::normalize::{normalize_to_lf, strip_bom};
 use super::patcher::{PatchSectionResult, Patcher, SectionOp};
+use super::read_args::{READ_LINE_CAP, integer_argument, read_windows};
 use super::snapshots::SnapshotStore;
 use super::types::Clipboard;
 use crate::diff::GitPatch;
@@ -15,7 +16,6 @@ use crate::tool::{
     Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path, text_output,
 };
 
-const READ_LINE_CAP: usize = 2_000;
 /// Model-facing byte budget: floor when no limit is asked, scaled with an
 /// explicit one, ceilinged so a deliberate big read stays bounded.
 const READ_BYTE_FLOOR: usize = 50 * 1024;
@@ -136,9 +136,6 @@ impl Tool for HashlineReadTool {
             Ok(path) => path.to_owned(),
             Err(message) => return error_output(message),
         };
-        if display_path.contains(['*', '?', '[']) {
-            return self.read_glob(&display_path, context);
-        }
         // Incident: grep prints hits under `[path#TAG]` and a reader passed that `path#TAG`
         // to read, which found no such file (#993). A file really named so still reads.
         let tagged = (!resolve_path(context, &display_path).exists())
@@ -150,6 +147,10 @@ impl Tool for HashlineReadTool {
             Some((bare, tag)) => (bare, Some(tag)),
             None => (display_path, None),
         };
+        if display_path.contains(['*', '?', '[']) && !resolve_path(context, &display_path).exists()
+        {
+            return self.read_glob(&display_path, context);
+        }
         let path = resolve_path(context, &display_path);
         if path.is_dir() {
             return read_dir(&display_path, &path, context);
@@ -514,6 +515,9 @@ impl HashlineReadTool {
             on_disk,
             first_look,
         } = view;
+        let invalid = |message: String| {
+            crate::tool::error_output_kind(message, yi_types::event::ToolErrorKind::InvalidArgs)
+        };
         let file_bytes = raw.len();
         let normalized = normalize_to_lf(strip_bom(raw).text);
         let all_lines: Vec<&str> = normalized.split('\n').collect();
@@ -522,20 +526,23 @@ impl HashlineReadTool {
         } else {
             all_lines.len()
         };
-        let explicit_limit = input
-            .get("limit")
-            .and_then(Value::as_u64)
-            .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX));
+        let explicit_limit = match integer_argument(input, "limit") {
+            Ok(limit) => limit.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
+            Err(message) => return invalid(message),
+        };
+        if explicit_limit == Some(0) {
+            return invalid("limit must be a positive integer".to_owned());
+        }
         let explicit_window = explicit_limit.is_some()
             || input.get("offset").is_some()
             || input.get("ranges").is_some();
         let needle = input.get("find").and_then(Value::as_str);
         let found = match needle {
             Some(_) if explicit_window => {
-                return crate::tool::error_output_kind(
-                    "pass find or offset/limit/ranges, not both".to_owned(),
-                    yi_types::event::ToolErrorKind::InvalidArgs,
-                );
+                return invalid("pass find or offset/limit/ranges, not both".to_owned());
+            }
+            Some(needle) if needle.contains(['\n', '\r']) => {
+                return invalid("find must be a single line".to_owned());
             }
             Some(needle) => {
                 match locate(
@@ -621,6 +628,9 @@ impl HashlineReadTool {
         });
         let mut state = lock_state(&self.state);
         let tag = state.snapshots.record(&canonical, &normalized, Some(&seen));
+        state
+            .snapshots
+            .record_clipped_lines(&canonical, tag, &clipped);
         if let Some((lines, _)) = &program {
             let numbers: Vec<u64> = lines.iter().map(|line| line.n).collect();
             state
@@ -753,80 +763,6 @@ fn output_text_of(output: &ToolOutput) -> String {
         .join("")
 }
 
-/// The requested line windows, 1-based inclusive, merged and clamped. `ranges` and
-/// `offset`/`limit` are two spellings of the same thing and never combine.
-fn read_windows(
-    input: &Map<String, Value>,
-    explicit_limit: Option<usize>,
-    line_count: usize,
-) -> Result<Vec<(usize, usize)>, Box<ToolOutput>> {
-    let invalid = |message: String| {
-        Err(Box::new(crate::tool::error_output_kind(
-            message,
-            yi_types::event::ToolErrorKind::InvalidArgs,
-        )))
-    };
-    if let Some(ranges) = input.get("ranges") {
-        if input.get("offset").is_some() || explicit_limit.is_some() {
-            return invalid("pass ranges or offset/limit, not both".to_owned());
-        }
-        let Some(items) = ranges.as_array() else {
-            return invalid("ranges must be an array of [start, end] pairs".to_owned());
-        };
-        let mut windows: Vec<(usize, usize)> = Vec::new();
-        for item in items {
-            let pair: Option<(u64, u64)> = item.as_array().and_then(|pair| {
-                match (
-                    pair.first().and_then(Value::as_u64),
-                    pair.get(1).and_then(Value::as_u64),
-                ) {
-                    (Some(start), Some(end)) if pair.len() == 2 => Some((start, end)),
-                    _ => None,
-                }
-            });
-            let Some((start, end)) = pair else {
-                return invalid(format!(
-                    "range {item} is not a [start, end] pair of positive integers"
-                ));
-            };
-            if start < 1 || end < start {
-                return invalid(format!(
-                    "range [{start}, {end}] is not ascending and 1-based"
-                ));
-            }
-            let start = usize::try_from(start).unwrap_or(usize::MAX);
-            let end = usize::try_from(end).unwrap_or(usize::MAX).min(line_count);
-            if start > line_count {
-                return invalid(format!(
-                    "range start {start} is beyond the file ({line_count} lines)"
-                ));
-            }
-            windows.push((start, end));
-        }
-        if windows.is_empty() {
-            return invalid("ranges is empty".to_owned());
-        }
-        windows.sort_unstable();
-        let mut merged: Vec<(usize, usize)> = Vec::new();
-        for (start, end) in windows {
-            match merged.last_mut() {
-                Some((_, previous_end)) if start <= previous_end.saturating_add(1) => {
-                    *previous_end = (*previous_end).max(end);
-                }
-                _ => merged.push((start, end)),
-            }
-        }
-        return Ok(merged);
-    }
-    let offset = input
-        .get("offset")
-        .and_then(Value::as_u64)
-        .map_or(0, |line| line.saturating_sub(1) as usize);
-    let limit = explicit_limit.unwrap_or(READ_LINE_CAP);
-    let end = offset.saturating_add(limit).min(line_count);
-    Ok(vec![(offset + 1, end)])
-}
-
 pub struct HashlineEditTool {
     pub state: SharedHashline,
     /// `edit.freeformGrammar`; the JSON argument is the default.
@@ -850,18 +786,26 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         // Invariant: an unchanged line the model saw is still a line it saw, so the prior
         // seen set rebases onto the new tag rather than shrinking to the hunk windows (#473).
-        let carried: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before) {
-            Some(prior) => {
-                let map = super::rebase::LineMap::between(&result.before, &result.after);
-                prior
-                    .seen_lines
-                    .iter()
-                    .flatten()
-                    .filter_map(|line| map.line(*line))
-                    .collect()
-            }
-            None => Vec::new(),
-        };
+        let (carried, carried_clipped): (Vec<u64>, Vec<u64>) =
+            match snapshots.by_content(&result.canonical_path, &result.before) {
+                Some(prior) => {
+                    let map = super::rebase::LineMap::between(&result.before, &result.after);
+                    (
+                        prior
+                            .seen_lines
+                            .iter()
+                            .flatten()
+                            .filter_map(|line| map.line(*line))
+                            .collect(),
+                        prior
+                            .clipped_lines
+                            .iter()
+                            .filter_map(|line| map.line(*line))
+                            .collect(),
+                    )
+                }
+                None => (Vec::new(), Vec::new()),
+            };
         let mut seen: Vec<u64> = Vec::new();
         // Every hunk gets a window, not just the first: a window the model cannot see is a
         // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
@@ -881,6 +825,7 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         }
         seen.extend(carried);
         snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
+        snapshots.record_clipped_lines(&result.canonical_path, result.file_hash, &carried_clipped);
     }
     for warning in &result.warnings {
         out.push(format!("warning: {warning}"));
@@ -1003,18 +948,16 @@ impl Tool for HashlineEditTool {
         *clipboard = host_clipboard;
         let results = match results {
             Ok(results) => results,
-            Err(message) => {
-                let stale = message.starts_with(super::mismatch::EDIT_REJECTED_PREFIX);
-                let grammar = message
-                    .strip_prefix("line ")
-                    .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+            Err(error) => {
+                let stale = matches!(&error, PatchError::Stale(_));
+                let grammar = matches!(&error, PatchError::Grammar { line: Some(_), .. });
                 let kind = if stale {
                     yi_types::event::ToolErrorKind::StaleTag
                 } else {
                     yi_types::event::ToolErrorKind::ToolError
                 };
                 let pointer = if stale || grammar { GUIDE_POINTER } else { "" };
-                return crate::tool::error_output_kind(format!("{message}{pointer}"), kind);
+                return crate::tool::error_output_kind(format!("{error}{pointer}"), kind);
             }
         };
 

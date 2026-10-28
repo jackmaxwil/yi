@@ -7,7 +7,7 @@ use super::format::{
     FileTag, HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, compute_file_hash, format_hashline_header,
     split_addressable_file_lines,
 };
-use super::input::{Patch, PatchSection};
+use super::input::{Patch, PatchError, PatchSection};
 use super::messages::{
     HEADTAIL_DRIFT_WARNING, RefusalRows, anchored_lines, missing_snapshot_tag_message,
     path_recovered_from_tag_message, rebased_warning, refusal_footer, refusal_rows,
@@ -89,7 +89,8 @@ pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
     match extension {
         "py" | "pyi" | "yaml" | "yml" => indent_block_resolver(request.text, request.line),
         "md" | "markdown" => super::blocks::markdown_section_resolver(request.text, request.line),
-        _ => brace_block_resolver(request.text, request.line),
+        "rs" => brace_block_resolver(request.text, request.line, true),
+        _ => brace_block_resolver(request.text, request.line, false),
     }
 }
 
@@ -129,7 +130,7 @@ impl<'a> Patcher<'a> {
         &mut self,
         patch: &Patch,
         host_clipboard: &mut Clipboard,
-    ) -> Result<Vec<PatchSectionResult>, String> {
+    ) -> Result<Vec<PatchSectionResult>, PatchError> {
         let mut clipboard = start_clipboard_batch(host_clipboard);
         let mut prepared: Vec<PreparedSection> = Vec::new();
         let mut section_states: Vec<Clipboard> = Vec::new();
@@ -146,7 +147,7 @@ impl<'a> Patcher<'a> {
                 return Err(format!(
                     "Multiple hashline sections resolve to the same file ({previous} and {}). Merge their ops under one header before applying.",
                     entry.section.path
-                ));
+                ).into());
             }
             seen_canonical.push((&entry.canonical_path, &entry.section.path));
         }
@@ -156,7 +157,8 @@ impl<'a> Patcher<'a> {
                     return Err(format!(
                         "Edits to {} resulted in no changes being made.",
                         entry.section.path
-                    ));
+                    )
+                    .into());
                 }
             }
         }
@@ -187,7 +189,7 @@ impl<'a> Patcher<'a> {
                             not_written.join(", ")
                         ));
                     }
-                    return Err(message);
+                    return Err(message.into());
                 }
             }
             if let Some(state) = section_states.get(index) {
@@ -201,14 +203,14 @@ impl<'a> Patcher<'a> {
         &mut self,
         section: &PatchSection,
         clipboard: &mut Clipboard,
-    ) -> Result<PreparedSection, String> {
+    ) -> Result<PreparedSection, PatchError> {
         let parsed = section.parse()?;
         let mut parse_warnings = parsed.warnings.clone();
         let file_op = parsed.file_op.clone();
 
         let mut target = section.clone();
         let mut canonical_path = self.canonical_path(&target.path);
-        let mut read = self.try_read(&target.path);
+        let mut read = self.try_read(&target.path)?;
         // No tag names the version this session last showed for the path.
         let expected = match section.file_hash.as_deref() {
             Some(text) => FileTag::parse(text).ok_or_else(|| {
@@ -220,7 +222,8 @@ impl<'a> Patcher<'a> {
                     return Err(match read.as_deref() {
                         Some(text) => self.missing_snapshot(section, &canonical_path, text)?,
                         None => missing_snapshot_tag_message(&section.path, None),
-                    });
+                    }
+                    .into());
                 }
             },
         };
@@ -265,21 +268,30 @@ impl<'a> Patcher<'a> {
                 ));
                 target = target.with_path(resolved);
                 canonical_path = self.canonical_path(&target.path);
-                read = self.try_read(&target.path);
+                read = self.try_read(&target.path)?;
             }
         }
 
         let Some(raw_content) = read else {
-            return Err(format!(
-                "File not found: {}. Use the write tool to create new files.",
-                target.path
-            ));
+            return Err(PatchError::Unreadable {
+                message: format!(
+                    "File not found: {}. Use the write tool to create new files.",
+                    target.path
+                ),
+            });
         };
 
         if let Some(FileOp::Move { dest }) = &file_op
             && self.canonical_path(dest) == canonical_path
         {
-            return Err(format!("MV destination is the same as {}.", target.path));
+            return Err(format!("MV destination is the same as {}.", target.path).into());
+        }
+        if let Some(FileOp::Move { dest }) = &file_op
+            && self.resolve_path(dest).exists()
+        {
+            return Err(
+                format!("MV destination already exists: {dest}. Choose a new path.").into(),
+            );
         }
 
         let (normalized, endings) = split(&raw_content);
@@ -423,7 +435,7 @@ impl<'a> Patcher<'a> {
         section: &PatchSection,
         canonical_path: &str,
         text: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, PatchError> {
         let (normalized, _) = split(text);
         let (anchors, total, shown) = section_rows(section, &normalized)?;
         let tag = self
@@ -436,10 +448,25 @@ impl<'a> Patcher<'a> {
         ))
     }
 
-    fn try_read(&self, path: &str) -> Option<String> {
-        (self.gate.open(&self.resolve_path(path), &self.walls))
+    fn try_read(&self, path: &str) -> Result<Option<String>, PatchError> {
+        match (self.gate.open(&self.resolve_path(path), &self.walls))
             .and_then(std::io::read_to_string)
-            .ok()
+        {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => {
+                let message = match error.kind() {
+                    std::io::ErrorKind::InvalidData => {
+                        format!("File is not UTF-8: {path}: {error}")
+                    }
+                    std::io::ErrorKind::PermissionDenied => {
+                        format!("Permission denied reading {path}: {error}")
+                    }
+                    _ => format!("Could not read {path}: {error}"),
+                };
+                Err(PatchError::Unreadable { message })
+            }
+        }
     }
 
     fn assert_seen_lines(
@@ -447,14 +474,16 @@ impl<'a> Patcher<'a> {
         section: &PatchSection,
         canonical_path: &str,
         normalized: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), PatchError> {
         // A live-hash tag with no snapshot behind it (evicted, prior session, collision): closed.
         let Some(snapshot) = self
             .snapshots
             .by_content(canonical_path, normalized)
             .cloned()
         else {
-            return Err(self.missing_snapshot(section, canonical_path, normalized)?);
+            return Err(self
+                .missing_snapshot(section, canonical_path, normalized)?
+                .into());
         };
         self.assert_seen_lines_in(section, canonical_path, &snapshot)
     }
@@ -464,7 +493,7 @@ impl<'a> Patcher<'a> {
         section: &PatchSection,
         canonical_path: &str,
         snapshot: &Snapshot,
-    ) -> Result<(), String> {
+    ) -> Result<(), PatchError> {
         let Some(seen) = &snapshot.seen_lines else {
             return Ok(());
         };
@@ -476,7 +505,7 @@ impl<'a> Patcher<'a> {
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         let read = |line: &u64| self.program && snapshot.program_lines.contains(line);
         let unseen: Vec<u64> = section
-            .collect_anchor_lines()?
+            .collect_seen_anchor_lines(&snapshot.clipped_lines)?
             .into_iter()
             .filter(|line| *line <= total && !seen.contains(line) && !read(line))
             .collect();
@@ -486,14 +515,13 @@ impl<'a> Patcher<'a> {
         let shown = refusal_rows(&anchored_lines(&unseen, total), &unseen, &lines);
         self.snapshots
             .record_seen_lines(canonical_path, snapshot.hash, &shown.seen);
+        self.snapshots
+            .record_clipped_lines(canonical_path, snapshot.hash, &shown.clipped);
         let footer = refusal_footer(&section.path, snapshot.hash, &shown, &unseen, total);
-        Err(unseen_lines_message(
-            &section.path,
-            &unseen,
-            snapshot.hash,
-            &shown.rows,
-            &footer,
-        ))
+        Err(
+            unseen_lines_message(&section.path, &unseen, snapshot.hash, &shown.rows, &footer)
+                .into(),
+        )
     }
 
     /// Anchors from an older version of the file move through the diff onto the current
@@ -506,7 +534,7 @@ impl<'a> Patcher<'a> {
         edits: Vec<Edit>,
         expected: FileTag,
         old: &Snapshot,
-    ) -> Result<Vec<Edit>, String> {
+    ) -> Result<Vec<Edit>, PatchError> {
         self.assert_seen_lines_in(section, canonical_path, old)?;
         let map = LineMap::between(&old.text, normalized);
         let old_block = |line: u64| {
@@ -532,7 +560,7 @@ impl<'a> Patcher<'a> {
         edits: Vec<Edit>,
         clipboard: &mut Clipboard,
         expected: FileTag,
-    ) -> Result<ApplyResult, String> {
+    ) -> Result<ApplyResult, PatchError> {
         let live_hash = compute_file_hash(normalized);
         let mut warnings: Vec<String> = Vec::new();
 
@@ -582,20 +610,20 @@ impl<'a> Patcher<'a> {
         normalized: &str,
         expected: FileTag,
         hash_recognized: bool,
-    ) -> Result<String, String> {
+    ) -> Result<PatchError, PatchError> {
         let (anchors, total, shown) = section_rows(section, normalized)?;
         let actual = self
             .snapshots
             .record(canonical_path, normalized, Some(&shown.seen));
         let footer = refusal_footer(&section.path, actual, &shown, &anchors, total);
-        Ok(mismatch_message(
+        Ok(PatchError::Stale(mismatch_message(
             &section.path,
             &expected.to_string(),
             actual,
             hash_recognized,
             &shown.rows,
             &footer,
-        ))
+        )))
     }
 }
 
@@ -603,7 +631,7 @@ impl<'a> Patcher<'a> {
 fn section_rows(
     section: &PatchSection,
     normalized: &str,
-) -> Result<(Vec<u64>, u64, RefusalRows), String> {
+) -> Result<(Vec<u64>, u64, RefusalRows), PatchError> {
     let lines = split_addressable_file_lines(normalized);
     let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
     let anchors = section.collect_anchor_lines()?;

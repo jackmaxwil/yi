@@ -68,7 +68,7 @@ pub fn refusal_rows(display: &[u64], anchors: &[u64], lines: &[impl AsRef<str>])
     }
 }
 
-/// What the rows unlock: whole, the retry; cut at the cap, nothing; a clipped anchor, never.
+/// What the rows unlock: whole, the retry; cut at the cap, nothing; a clipped anchor, gaps only.
 pub fn refusal_footer(
     section_path: &str,
     tag: FileTag,
@@ -96,9 +96,9 @@ Read them whole with `read` on {section_path} with {}, then re-issue the edit wi
         .collect();
     if !wide.is_empty() {
         return format!(
-            "Line(s) {} exceed {SEEN_LINE_REVEAL_MAX_COLUMNS} columns, and a read or a refusal never anchors one: \
+            "Line(s) {} exceed {SEEN_LINE_REVEAL_MAX_COLUMNS} columns, and a replacement cannot anchor one: \
 change them with `grep` on this file (path={section_path}, `replace` shows the rewrite, `apply` then writes it), \
-or rewrite the file with `write` (`sed -n 'Np' {section_path}` shows a whole line).",
+or rewrite the file with `write` (`sed -n 'Np' {section_path}` shows a whole line). Inserts beside the line are allowed.",
             format_line_ranges(&wide)
         );
     }

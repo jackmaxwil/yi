@@ -24,6 +24,7 @@ Only below `:` headers. Row: verbatim `+TEXT` (leading whitespace preserved); `+
 <rules>
 - Numbers: `LINE:TEXT` from any `read`/`grep`/`edit` output this session; the tool maps them onto the current file (`rebased` in the response). A cited line that itself changed since is rejected with the current text. Within one call numbers are original, never shifted by hunks.
 - Touch only lines displayed this session by `read`/`grep`/`write`/`edit` output or by an edit refusal that printed them; undisplayed hunks REJECTED. The refusal prints ≤40 rows (each such line ±2) and a retry then lands; past that, `read` with `ranges=[[a,b]]` first.
+- Clipped rows over 512 columns may anchor `PUT <N:` / `PUT >N:` gap inserts; replacing or deleting one needs `grep` `replace` with `apply`, or `write`.
 - Elisions UNSEEN: `…`, `..`, collapsed `N-M:` rows. NEVER hunk in/across one; `read` first.
 - NEVER start/end range mid-expression or mid-block.
 - Ranges: changed lines only; NEVER widen over keepers. Non-adjacent changes: separate hunks.

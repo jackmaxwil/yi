@@ -18,7 +18,7 @@ impl yi_types::trace::TraceSink for FileSink {
     clippy::disallowed_methods,
     reason = "the wall anchor is the job: it aligns the processes of one run"
 )]
-pub(crate) fn install() {
+pub fn install() {
     let Some(dir) = std::env::var_os("YI_TRACE").filter(|dir| !dir.is_empty()) else {
         return;
     };

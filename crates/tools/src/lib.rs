@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-
+#![deny(clippy::string_slice)]
 mod builtins;
 pub mod checkpoint;
 pub mod diff;
