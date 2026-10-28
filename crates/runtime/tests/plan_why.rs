@@ -48,13 +48,11 @@ fn an_edge_added_to_a_done_todo_keeps_its_resolution() -> TestResult {
         .with_verifier(Verifier::new(20_000))
         .with_op_sink(Arc::clone(&seen) as Arc<dyn OpSink>);
     let plan = yi_types::plan::doc::PlanId::slug("ship it")?;
-    let manifest = json!({"manifest": 1, "command": "true", "cwd": "snapshot_root", "cwd_subdir": null,
-        "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false});
-    let kind = "application/vnd.yi.checker-manifest+json";
-    let checker =
-        store
-            .artifacts(&plan)
-            .put(&serde_json::to_vec(&manifest)?, kind, &store.nonce())?;
+    let checker = crate::checker::put_checker(
+        &store.artifacts(&plan),
+        &crate::checker::checker_manifest("true", 10_000, &[], false),
+        &store.nonce(),
+    )?;
     let contract = serde_json::from_value(
         json!({"class": "writer", "threshold": 1000, "min_coverage": 1000,
         "items": [{"id": "check", "critical": true, "weight": 100,

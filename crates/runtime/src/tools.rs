@@ -24,7 +24,6 @@ pub struct ToolAdapter {
     rules: Option<Arc<crate::rules::RuleEngine>>,
     wall: crate::wall::Wall,
     ext: Option<crate::session::ExtHook>,
-    check: Option<Arc<crate::plan::covers::WriteCheck>>,
     job_owner: Option<yi_tools::jobs::JobOwner>,
     rejections: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
     hooks: Option<crate::claude_hooks::Attached>,
@@ -338,7 +337,6 @@ impl ToolAdapter {
             rules: None,
             wall: crate::wall::Wall::default(),
             ext: None,
-            check: None,
             job_owner: None,
             rejections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             hooks: None,
@@ -387,11 +385,6 @@ impl ToolAdapter {
 
     pub fn with_wall(mut self, wall: crate::wall::Wall) -> Self {
         self.wall = wall;
-        self
-    }
-
-    pub fn with_check(mut self, check: Option<Arc<crate::plan::covers::WriteCheck>>) -> Self {
-        self.check = check;
         self
     }
 
@@ -529,7 +522,6 @@ impl ToolAdapter {
         let rules = self.rules.clone();
         let wall = self.wall.clone();
         let ext = self.ext.clone();
-        let check = self.check.clone();
         let call_id = tool_call_id.to_owned();
         Box::pin(async move {
             let cancel = Arc::clone(&context.cancelled);
@@ -749,10 +741,7 @@ impl ToolAdapter {
                     yi_types::event::ToolErrorKind::Denied,
                 ));
             }
-            let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
-                .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
             let (cwd, hook_args) = (context.cwd.clone(), args.clone());
-            let check_cancel = Arc::clone(&cancel);
             let output = tokio::task::spawn_blocking(move || {
                 let _span = yi_types::trace::span("tool.execute").arg("tool", tool.name());
                 tool.execute(args, &context)
@@ -812,14 +801,6 @@ impl ToolAdapter {
                             .chain(outside)
                     {
                         crate::affordance::append(&mut output.result, &line);
-                    }
-                    if let (Some(check), Some(written), false) = (check, written, output.is_error) {
-                        let verdict = tokio::task::spawn_blocking(move || {
-                            check(&written, &cwd, &check_cancel)
-                        });
-                        if let Ok(Some(line)) = verdict.await {
-                            crate::affordance::append(&mut output.result, &line);
-                        }
                     }
                     let text = result_text(&output.result);
                     if let Some(rules) = &rules {

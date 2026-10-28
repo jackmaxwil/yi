@@ -366,7 +366,6 @@ pub struct PlanEngine {
     /// The pool's slots split between workers and verification (plan section 7.6).
     pub(super) capacity: Arc<super::capacity::Capacity>,
     pub(super) refused: super::schedule::Refused,
-    pub(super) previewed: super::covers::Previewed,
     pub(super) host: super::ledger::Host,
     pub(super) owner_words: Option<crate::goal::StoreHandle>,
 }
@@ -390,7 +389,6 @@ impl PlanEngine {
             lane_home: None,
             capacity: super::capacity::Capacity::for_slots(crate::lane::DEFAULT_SLOTS),
             refused: super::schedule::Refused::default(),
-            previewed: super::covers::Previewed::default(),
             host: super::ledger::Host::Bare,
             owner_words: None,
         }

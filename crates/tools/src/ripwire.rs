@@ -381,17 +381,13 @@ fn attr(element: &str, key: &str) -> String {
 static WARM: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 static COLD: Mutex<()> = Mutex::new(());
 
-fn warm(root: &Path) -> bool {
-    (WARM.lock()).is_ok_and(|tops| tops.contains(root))
-}
-
-/// The cold repository's one turn, or none once it is warm; a waiter still hears its cancel.
 fn turn(root: &Path, cancelled: &CancelFlag) -> Result<Option<MutexGuard<'static, ()>>, String> {
-    while !warm(root) {
+    let warm = || (WARM.lock()).is_ok_and(|tops| tops.contains(root));
+    while !warm() {
         match COLD.try_lock() {
-            Ok(guard) if !warm(root) => return Ok(Some(guard)),
+            Ok(guard) if !warm() && !cancelled() => return Ok(Some(guard)),
+            _ if cancelled() => return Err("cancelled".to_owned()),
             Ok(_) | Err(TryLockError::Poisoned(_)) => return Ok(None),
-            Err(TryLockError::WouldBlock) if cancelled() => return Err("cancelled".to_owned()),
             Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(25)),
         }
     }
