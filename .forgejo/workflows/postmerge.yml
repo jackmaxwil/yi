@@ -23,7 +23,7 @@ jobs:
       contents: write
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the telemetry ledger pushes with its scoped token.
         with:
           fetch-depth: 0
       - run: rustup show

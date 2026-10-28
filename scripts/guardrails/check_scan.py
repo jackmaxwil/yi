@@ -3,6 +3,8 @@
 import argparse
 import collections
 import concurrent.futures
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -14,24 +16,27 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import BASE, ROOT, fail, test_mask
+from check_public_surface import unscanned
 
 BASELINE = BASE / "scan.json"
+GITLEAKS = (ROOT / "scripts/scan/gitleaks.version").read_text().strip()
 ZIZMOR = "zizmor==1.31.1"
 SEMGREP = "semgrep==1.182.1"
 FIXTURES = ROOT / "scripts/scan/fixtures"
 RULES = ROOT / "scripts/scan/rules"
+SCAN_ROOTS = ("evals", "scripts", "python", ".forgejo", "crates")
 ZIZMOR_CASES = {
     "unpinned.yml": {"unpinned-uses", "artipacked"},
     "template-injection.yml": {"template-injection"},
     "dangerous-trigger.yml": {"dangerous-triggers"},
 }
 GITLEAKS_CASES = {
-    "planted-gemini.txt": "yi-gemini-api-key",
-    "planted-openrouter.txt": "yi-openrouter-api-key",
-    "planted-anthropic.txt": "yi-anthropic-api-key",
-    "planted-openai.txt": "yi-openai-api-key",
-    "planted-github.txt": "yi-github-pat",
-    "planted-aws.txt": "yi-aws-access-key",
+    "planted-gemini.txt": {"yi-gemini-api-key"},
+    "planted-openrouter.txt": {"yi-openrouter-api-key"},
+    "planted-anthropic.txt": {"yi-anthropic-api-key"},
+    "planted-openai.txt": {"yi-openai-api-key"},
+    "planted-github.txt": {"yi-github-pat"},
+    "planted-aws.txt": {"yi-aws-access-key"},
 }
 SEMGREP_CASES = {
     "shell_true.py": {"subprocess-shell-true", "yi-subprocess-shell-or-fstring"},
@@ -44,6 +49,11 @@ SEMGREP_CASES = {
     "env_command.rs": {"yi-rust-env-command"},
     "from_utf8_unchecked.rs": {"yi-rust-from-utf8-unchecked"},
     "template-injection.yml": {"yi-github-event-run-interpolation"},
+}
+FAMILIES = {
+    "zizmor": (ZIZMOR_CASES, {"clean.yml"}),
+    "gitleaks": (GITLEAKS_CASES, {"clean.txt"}),
+    "semgrep": (SEMGREP_CASES, {"clean.py", "clean.rs"}),
 }
 NOSEMGREP = re.compile(r"nosemgrep:\s*([A-Za-z0-9_.-]+)\s*(.*)")
 SUPPRESSION = re.compile(r"zizmor:\s+ignore\[([^]]+)]\s*(.*)")
@@ -80,10 +90,10 @@ def require_uv(package, executable, version):
 def require_gitleaks():
     executable = shutil.which("gitleaks")
     if executable is None:
-        raise Unavailable("gitleaks 8.30.1 is not installed")
+        raise Unavailable(f"gitleaks {GITLEAKS} is not installed")
     proc = run([executable, "version"])
-    if proc.returncode or proc.stdout.strip() != "8.30.1":
-        raise Unavailable(f"gitleaks 8.30.1 is required, found {proc.stdout.strip() or 'none'}")
+    if proc.returncode or proc.stdout.strip() != GITLEAKS:
+        raise Unavailable(f"gitleaks {GITLEAKS} is required, found {proc.stdout.strip() or 'none'}")
     return executable
 
 
@@ -134,16 +144,13 @@ def semgrep(paths, fixtures=False):
     return findings
 
 
-def shared_ignores():
-    text = (ROOT / ".gitguardian.yaml").read_text()
-    return re.findall(r'^\s*-\s*"([^"]+)"', text, re.M)
 
 def go_glob(pattern):
     return r"(^|/)" + re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*") + "$"
 
 
 def gitleaks_config(ignores, name):
-    patterns = [go_glob(pattern) for pattern in shared_ignores()] + [r"(^|/)target/.*$"] if ignores else []
+    patterns = [go_glob(pattern) for pattern in unscanned()] + [r"(^|/)target/.*$"] if ignores else []
     rows = ",\n".join(f"  '''{pattern}'''" for pattern in patterns)
     path = ROOT / "target" / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,7 +196,7 @@ def suppressions():
             if match:
                 for rule in match.group(1).split(","):
                     out.append(("zizmor", rule, str(path.relative_to(ROOT)), number, match.group(2)))
-    for base in ("scripts", "evals", "python", "crates", ".forgejo"):
+    for base in SCAN_ROOTS:
         for path in (ROOT / base).rglob("*"):
             if not path.is_file() or path.suffix not in (".py", ".rs", ".yml", ".yaml") or FIXTURES in path.parents:
                 continue
@@ -198,7 +205,7 @@ def suppressions():
                 if match:
                     out.append(("semgrep", match.group(1), str(path.relative_to(ROOT)), number, match.group(2)))
     out += [("gitleaks", "paths-ignore", pattern, 0, "shared .gitguardian.yaml path exclusion")
-            for pattern in shared_ignores()]
+            for pattern in unscanned()]
     return out
 
 
@@ -229,13 +236,13 @@ def load_baseline():
     return {(tool, rule): count for (tool, rule), count in raw}
 
 
-def save_baseline(findings, tools):
+def save_baseline(findings, tools, off=""):
     old = load_baseline() if BASELINE.is_file() else {}
     active = {key: value for key, value in old.items() if key[0] in tools}
     new_tools = tools - {tool for tool, _ in old}
     checked = [row for row in findings if row[0] not in new_tools]
     errors, _ = baseline_problems(checked, active)
-    if errors:
+    if errors and off != "update":
         fail(errors + ["refusing to grow the scan baseline"], "scan --update")
     counts = collections.Counter((tool, rule) for tool, rule, _, _ in findings)
     for key in old:
@@ -244,38 +251,39 @@ def save_baseline(findings, tools):
     BASELINE.write_text(json.dumps(ordered, indent=2) + "\n")
 
 
+def repository_fixtures():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp)
+        subprocess.run(["git", "init", "-q", tmp], check=True)
+        key = "AKIA" + "J7K2Q9M4X8C6V3P5"
+        (repo / ".env").write_text(f'AWS_ACCESS_KEY_ID = "{key}"\n')
+        subprocess.run(["git", "-C", tmp, "add", ".env"], check=True)
+        subprocess.run(["git", "-C", tmp, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], check=True)
+        subprocess.run(["git", "-C", tmp, "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        key = "AKIA" + "Q9M4X8C6V3P5J7K2"
+        (repo / ".env").write_text(f'AWS_ACCESS_KEY_ID = "{key}"\n')
+        subprocess.run(["git", "-C", tmp, "add", ".env"], check=True)
+        subprocess.run(["git", "-C", tmp, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "branch"], check=True)
+        config = gitleaks_config(False, "gitleaks-repository-fixtures.toml")
+        return {
+            "history": gitleaks("git", config, "gitleaks-history", repo=repo),
+            "diff": gitleaks("git", config, repo=repo),
+        }
+
+
 def selfcheck(off="", fixtures=None):
+    global BASELINE
     fixtures = fixtures or {}
     errors = []
-    zizmor_findings = list(fixtures.get("zizmor", []))
-    if off in {rule for rules in ZIZMOR_CASES.values() for rule in rules}:
-        zizmor_findings = [row for row in zizmor_findings if row[1] != off]
-    expected = {(path, rule) for path, rules in ZIZMOR_CASES.items() for rule in rules}
-    actual = {(pathlib.Path(path).name, rule) for _, rule, path, _ in zizmor_findings}
-    if "zizmor" in fixtures:
-        for path, rule in sorted(expected - actual):
-            errors.append(f"zizmor fixture {path} produced no {rule} finding")
-        if any(pathlib.Path(path).name == "clean.yml" for _, _, path, _ in zizmor_findings):
-            errors.append("zizmor clean fixture produced a finding")
-    gitleaks_findings = list(fixtures.get("gitleaks", []))
-    if off in set(GITLEAKS_CASES.values()):
-        gitleaks_findings = [row for row in gitleaks_findings if row[1] != off]
-    actual = {(pathlib.Path(path).name, rule) for _, rule, path, _ in gitleaks_findings}
-    if "gitleaks" in fixtures:
-        for path, rule in sorted(set(GITLEAKS_CASES.items()) - actual):
-            errors.append(f"gitleaks fixture {path} produced no {rule} finding")
-        if any(pathlib.Path(path).name == "clean.txt" for _, _, path, _ in gitleaks_findings):
-            errors.append("gitleaks clean fixture produced a finding")
-    semgrep_findings = list(fixtures.get("semgrep", []))
-    if off in {rule for rules in SEMGREP_CASES.values() for rule in rules}:
-        semgrep_findings = [row for row in semgrep_findings if row[1] != off]
-    expected = {(path, rule) for path, rules in SEMGREP_CASES.items() for rule in rules}
-    actual = {(pathlib.Path(path).name, rule) for _, rule, path, _ in semgrep_findings}
-    if "semgrep" in fixtures:
-        for path, rule in sorted(expected - actual):
-            errors.append(f"semgrep fixture {path} produced no {rule} finding")
-        if any(pathlib.Path(path).name in ("clean.py", "clean.rs") for _, _, path, _ in semgrep_findings):
-            errors.append("semgrep clean fixture produced a finding")
+    for tool, (cases, clean_names) in FAMILIES.items():
+        findings = [row for row in fixtures.get(tool, []) if row[1] != off]
+        expected = {(path, rule) for path, rules in cases.items() for rule in rules}
+        actual = {(pathlib.Path(path).name, rule) for _, rule, path, _ in findings}
+        if tool in fixtures:
+            for path, rule in sorted(expected - actual):
+                errors.append(f"{tool} fixture {path} produced no {rule} finding")
+            if any(pathlib.Path(path).name in clean_names for _, _, path, _ in findings):
+                errors.append(f"{tool} clean fixture produced a finding")
     sample = [("zizmor", "new", "a.yml", 3), ("zizmor", "old", "b.yml", 4)]
     baseline = {("zizmor", "old"): 1, ("zizmor", "shrinking"): 2}
     problems, hints = baseline_problems(sample, baseline, off)
@@ -292,36 +300,39 @@ def selfcheck(off="", fixtures=None):
         errors.append("shared gitleaks ignores are not converted to regular expressions")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
-    if off == "update":
-        errors.append("disabled baseline update check")
-    else:
-        global BASELINE
-        original = BASELINE
-        with tempfile.TemporaryDirectory() as tmp:
+    original = BASELINE
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            BASELINE = pathlib.Path(tmp) / "scan.json"
+            seeded = [[["probe", "rule"], 0]]
+            BASELINE.write_text(json.dumps(seeded) + "\n")
+            output = io.StringIO()
             try:
-                BASELINE = pathlib.Path(tmp) / "scan.json"
+                with contextlib.redirect_stdout(output):
+                    save_baseline([("probe", "rule", "planted.txt", 1)], {"probe"}, off)
+            except SystemExit as error:
+                if error.code != 1 or "refusing to grow the scan baseline" not in output.getvalue():
+                    errors.append("baseline --update refused growth for the wrong reason")
+            else:
+                errors.append("baseline --update grew an existing rule baseline")
+            if json.loads(BASELINE.read_text()) != seeded:
+                errors.append("baseline --update changed a refused baseline")
+            BASELINE.unlink()
+            with contextlib.redirect_stdout(io.StringIO()):
                 save_baseline([], {"probe"})
-                if not BASELINE.is_file():
-                    errors.append("baseline --update wrote no file")
-            finally:
-                BASELINE = original
-    if off == "history":
-        errors.append("disabled rewritten-history repository check")
-    elif "gitleaks" in fixtures:
-        with tempfile.TemporaryDirectory() as tmp:
-            subprocess.run(["git", "init", "-q", tmp], check=True)
-            key = "AKIA" + "J7K2Q9M4X8C6V3P5"
-            (pathlib.Path(tmp) / ".env").write_text(f'AWS_ACCESS_KEY_ID = "{key}"\n')
-            subprocess.run(["git", "-C", tmp, "add", ".env"], check=True)
-            subprocess.run(["git", "-C", tmp, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "plant"], check=True)
-            previous = os.getcwd()
-            try:
-                os.chdir(tmp)
-                history_findings = normal_tasks(True)["gitleaks-history"]()
-            finally:
-                os.chdir(previous)
-            if len(history_findings) != 1:
-                errors.append(f"rewritten-history scan returned {len(history_findings)} findings, expected 1")
+            if not BASELINE.is_file():
+                errors.append("baseline --update wrote no file")
+        finally:
+            BASELINE = original
+    if "history" in fixtures:
+        findings = [] if off == "history" else fixtures["history"]
+        if len(findings) != 2:
+            errors.append(f"rewritten-history scan returned {len(findings)} findings, expected 2")
+    if "diff" in fixtures:
+        findings = [] if off == "diff" else fixtures["diff"]
+        actual = [(rule, path) for _, rule, path, _ in findings]
+        if actual != [("yi-aws-access-key", ".env")]:
+            errors.append(f"PR-diff scan returned {actual}, expected only the branch key")
     return errors
 
 
@@ -356,7 +367,7 @@ def normal_tasks(history=False):
         "zizmor": lambda: zizmor(sorted((ROOT / ".forgejo/workflows").glob("*.yml"))),
         "gitleaks-tree": lambda: gitleaks("dir", config),
         "gitleaks-diff": lambda: gitleaks("git", config),
-        "semgrep": lambda: semgrep(["evals", "scripts", "python", ".forgejo", "crates"]),
+        "semgrep": lambda: semgrep(SCAN_ROOTS),
     }
 
 
@@ -372,21 +383,21 @@ def fixture_tasks():
 def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--selfcheck", action="store_true")
-    parser.add_argument("--disable")
     parser.add_argument("--update", action="store_true")
     parser.add_argument("--history", action="store_true")
     args = parser.parse_args(argv)
     strict = bool(os.environ.get("CI"))
-    if args.selfcheck or args.disable:
+    if args.selfcheck:
         findings, tools = gather(fixture_tasks(), strict)
         fixtures = {tool: [row for row in findings if row[0] == tool] for tool in tools}
-        if args.disable:
-            fail(selfcheck(args.disable, fixtures), f"scan selfcheck with {args.disable} disabled")
+        if "gitleaks" in fixtures:
+            fixtures.update(repository_fixtures())
         errors = selfcheck(fixtures=fixtures)
-        checks = {rule for rules in ZIZMOR_CASES.values() for rule in rules} if "zizmor" in fixtures else set()
-        checks |= {rule for rules in SEMGREP_CASES.values() for rule in rules} if "semgrep" in fixtures else set()
-        checks |= set(GITLEAKS_CASES.values()) if "gitleaks" in fixtures else set()
-        checks |= {"baseline", "ignores", "update", "history"}
+        checks = {rule for tool, (cases, _) in FAMILIES.items() if tool in fixtures
+                  for rules in cases.values() for rule in rules}
+        checks |= {"baseline", "ignores", "update"}
+        if "gitleaks" in fixtures:
+            checks |= {"history", "diff"}
         for off in sorted(checks):
             if not selfcheck(off, fixtures):
                 errors.append(f"selfcheck passes with the {off} check disabled")
