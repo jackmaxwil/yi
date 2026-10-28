@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import BASE, ROOT, fail, test_mask
@@ -240,6 +241,7 @@ def save_baseline(findings, tools):
     for key in old:
         counts.setdefault(key, 0)
     ordered = sorted([list(key), count] for key, count in counts.items())
+    BASELINE.write_text(json.dumps(ordered, indent=2) + "\n")
 
 
 def selfcheck(off="", fixtures=None):
@@ -290,6 +292,36 @@ def selfcheck(off="", fixtures=None):
         errors.append("shared gitleaks ignores are not converted to regular expressions")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
+    if off == "update":
+        errors.append("disabled baseline update check")
+    else:
+        global BASELINE
+        original = BASELINE
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                BASELINE = pathlib.Path(tmp) / "scan.json"
+                save_baseline([], {"probe"})
+                if not BASELINE.is_file():
+                    errors.append("baseline --update wrote no file")
+            finally:
+                BASELINE = original
+    if off == "history":
+        errors.append("disabled rewritten-history repository check")
+    else:
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            key = "AKIA" + "J7K2Q9M4X8C6V3P5"
+            (pathlib.Path(tmp) / ".env").write_text(f'AWS_ACCESS_KEY_ID = "{key}"\n')
+            subprocess.run(["git", "-C", tmp, "add", ".env"], check=True)
+            subprocess.run(["git", "-C", tmp, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "plant"], check=True)
+            previous = os.getcwd()
+            try:
+                os.chdir(tmp)
+                history_findings = normal_tasks(True)["gitleaks-history"]()
+            finally:
+                os.chdir(previous)
+            if len(history_findings) != 1:
+                errors.append(f"rewritten-history scan returned {len(history_findings)} findings, expected 1")
     return errors
 
 
@@ -318,7 +350,7 @@ def gather(tasks, strict):
 def normal_tasks(history=False):
     if history:
         config = gitleaks_config(True, "gitleaks-history.toml")
-        return {"gitleaks-history": lambda: gitleaks("git", config, "gitleaks-history")}
+        return {"gitleaks-history": lambda: gitleaks("git", config, "gitleaks-history", repo=pathlib.Path.cwd())}
     config = gitleaks_config(True, "gitleaks.toml")
     return {
         "zizmor": lambda: zizmor(sorted((ROOT / ".forgejo/workflows").glob("*.yml"))),
@@ -353,7 +385,7 @@ def main(argv):
         errors = selfcheck(fixtures=fixtures)
         checks = {rule for rules in ZIZMOR_CASES.values() for rule in rules}
         checks |= {rule for rules in SEMGREP_CASES.values() for rule in rules}
-        checks |= set(GITLEAKS_CASES.values()) | {"baseline", "ignores"}
+        checks |= set(GITLEAKS_CASES.values()) | {"baseline", "ignores", "update", "history"}
         for off in sorted(checks):
             if not selfcheck(off, fixtures):
                 errors.append(f"selfcheck passes with the {off} check disabled")
