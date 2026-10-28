@@ -29,7 +29,7 @@ fn lines(n: usize) -> String {
 /// Paints the box at a nonzero offset, the way the chat pane places it, and returns its rows.
 fn paint(composer: &mut Composer, width: u16, pane_rows: u16) -> Vec<String> {
     let height = composer.layout(width, pane_rows);
-    composer.set_frame(Style::default(), Style::default(), None);
+    composer.set_frame(Style::default(), Style::default(), Style::default(), None);
     let screen = Rect::new(0, 0, width, height.saturating_add(4));
     let mut buffer = Buffer::empty(screen);
     composer.render(
