@@ -12,10 +12,11 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import BASE, ROOT, fail
+from _common import BASE, ROOT, fail, test_mask
 
 BASELINE = BASE / "scan.json"
 ZIZMOR = "zizmor==1.31.1"
+SEMGREP = "semgrep==1.182.1"
 FIXTURES = ROOT / "scripts/scan/fixtures"
 RULES = ROOT / "scripts/scan/rules"
 ZIZMOR_CASES = {
@@ -31,6 +32,19 @@ GITLEAKS_CASES = {
     "planted-github.txt": "yi-github-pat",
     "planted-aws.txt": "yi-aws-access-key",
 }
+SEMGREP_CASES = {
+    "shell_true.py": {"subprocess-shell-true", "yi-subprocess-shell-or-fstring"},
+    "tainted_env.py": {"dangerous-subprocess-use-tainted-env-args"},
+    "fstring.py": {"dangerous-subprocess-use-tainted-env-args", "yi-subprocess-shell-or-fstring"},
+    "os_exec.py": {"dangerous-os-exec-tainted-env-args"},
+    "md5.py": {"insecure-hash-algorithm-md5"},
+    "sha1.py": {"insecure-hash-algorithm-sha1"},
+    "temp_dir.rs": {"yi-rust-temp-dir"},
+    "env_command.rs": {"yi-rust-env-command"},
+    "from_utf8_unchecked.rs": {"yi-rust-from-utf8-unchecked"},
+    "template-injection.yml": {"yi-github-event-run-interpolation"},
+}
+NOSEMGREP = re.compile(r"nosemgrep:\s*([A-Za-z0-9_.-]+)\s*(.*)")
 SUPPRESSION = re.compile(r"zizmor:\s+ignore\[([^]]+)]\s*(.*)")
 
 
@@ -91,6 +105,33 @@ def zizmor(paths):
         findings.append(("zizmor", row["ident"], path, line))
     return findings
 
+def semgrep(paths, fixtures=False):
+    require_uv(SEMGREP, "semgrep", "1.182.1")
+    args = ["scan", "--config", str(RULES / "semgrep"), "--json", "--metrics=off", "--disable-version-check", "--timeout", "30"]
+    if not fixtures:
+        args += ["--exclude", "scripts/scan/fixtures", "--exclude", "crates/**/tests"]
+    proc = run(uv_argv(SEMGREP, "semgrep", [*args, *map(str, paths)]))
+    if proc.returncode:
+        raise RuntimeError((proc.stdout + proc.stderr).strip())
+    try:
+        report = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"semgrep emitted invalid JSON: {error}") from error
+    if report["errors"]:
+        raise RuntimeError(json.dumps(report["errors"]))
+    findings = []
+    for row in report["results"]:
+        path, line = row["path"], row["start"]["line"]
+        if path.endswith(".rs"):
+            source = pathlib.Path(path)
+            if not source.is_absolute():
+                source = ROOT / source
+            mask = test_mask(source.read_text())
+            if line <= len(mask) and mask[line - 1]:
+                continue
+        findings.append(("semgrep", row["check_id"].rsplit(".", 1)[-1], path, line))
+    return findings
+
 
 def shared_ignores():
     text = (ROOT / ".gitguardian.yaml").read_text()
@@ -147,6 +188,14 @@ def suppressions():
             if match:
                 for rule in match.group(1).split(","):
                     out.append(("zizmor", rule, str(path.relative_to(ROOT)), number, match.group(2)))
+    for base in ("scripts", "evals", "python", "crates", ".forgejo"):
+        for path in (ROOT / base).rglob("*"):
+            if not path.is_file() or path.suffix not in (".py", ".rs", ".yml", ".yaml") or FIXTURES in path.parents:
+                continue
+            for number, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
+                match = NOSEMGREP.search(line)
+                if match:
+                    out.append(("semgrep", match.group(1), str(path.relative_to(ROOT)), number, match.group(2)))
     out += [("gitleaks", "paths-ignore", pattern, 0, "shared .gitguardian.yaml path exclusion")
             for pattern in shared_ignores()]
     return out
@@ -215,6 +264,16 @@ def selfcheck(off="", fixtures=None):
             errors.append(f"gitleaks fixture {path} produced no {rule} finding")
         if any(pathlib.Path(path).name == "clean.txt" for _, _, path, _ in gitleaks_findings):
             errors.append("gitleaks clean fixture produced a finding")
+    semgrep_findings = list(fixtures.get("semgrep", []))
+    if off in {rule for rules in SEMGREP_CASES.values() for rule in rules}:
+        semgrep_findings = [row for row in semgrep_findings if row[1] != off]
+    expected = {(path, rule) for path, rules in SEMGREP_CASES.items() for rule in rules}
+    actual = {(pathlib.Path(path).name, rule) for _, rule, path, _ in semgrep_findings}
+    if "semgrep" in fixtures:
+        for path, rule in sorted(expected - actual):
+            errors.append(f"semgrep fixture {path} produced no {rule} finding")
+        if any(pathlib.Path(path).name in ("clean.py", "clean.rs") for _, _, path, _ in semgrep_findings):
+            errors.append("semgrep clean fixture produced a finding")
     sample = [("zizmor", "new", "a.yml", 3), ("zizmor", "old", "b.yml", 4)]
     baseline = {("zizmor", "old"): 1, ("zizmor", "shrinking"): 2}
     problems, hints = baseline_problems(sample, baseline, off)
@@ -265,6 +324,7 @@ def normal_tasks(history=False):
         "zizmor": lambda: zizmor(sorted((ROOT / ".forgejo/workflows").glob("*.yml"))),
         "gitleaks-tree": lambda: gitleaks("dir", config),
         "gitleaks-diff": lambda: gitleaks("git", config),
+        "semgrep": lambda: semgrep(["evals", "scripts", "python", ".forgejo", "crates"]),
     }
 
 
@@ -273,6 +333,7 @@ def fixture_tasks():
     return {
         "zizmor": lambda: zizmor(sorted((FIXTURES / "zizmor").glob("*.yml"))),
         "gitleaks": lambda: gitleaks("dir", config, repo=FIXTURES / "gitleaks"),
+        "semgrep": lambda: semgrep([FIXTURES / "semgrep", FIXTURES / "zizmor/template-injection.yml"], True),
     }
 
 
@@ -291,6 +352,7 @@ def main(argv):
             fail(selfcheck(args.disable, fixtures), f"scan selfcheck with {args.disable} disabled")
         errors = selfcheck(fixtures=fixtures)
         checks = {rule for rules in ZIZMOR_CASES.values() for rule in rules}
+        checks |= {rule for rules in SEMGREP_CASES.values() for rule in rules}
         checks |= set(GITLEAKS_CASES.values()) | {"baseline", "ignores"}
         for off in sorted(checks):
             if not selfcheck(off, fixtures):
