@@ -1318,6 +1318,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `sha2` | — | types, oauth, permission, runtime, kernel | message signing, permission digests, PKCE, plan digests, the release digest | — |
 | `xxhash-rust` | `xxh32` | tools | hashline tags | — |
 | `globset` | — | permission, tools, runtime | permission patterns, file tools | `glob`: no brace sets |
+| `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools, runtime | the `grep` tool and Claude Code hook matchers; the Age and break-property tables stay out | — |
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime, ai | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
 | `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
