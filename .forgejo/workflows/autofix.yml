@@ -17,6 +17,9 @@ concurrency:
 env:
   CARGO_BUILD_JOBS: "5"
 
+permissions:
+  contents: read
+
 jobs:
   autofix:
     runs-on: ubuntu-latest
@@ -44,14 +47,15 @@ jobs:
           [ "$newer" = 0 ] || echo "autofix: skipped, $newer newer pass(es) queued"
       # Main's tree: the merged PR's code runs only inside a token-free clone.
       - if: steps.queue.outputs.newer == '0'
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           ref: main
           fetch-depth: 0
+          persist-credentials: false
       - if: steps.queue.outputs.newer == '0'
         run: rustup show
       - if: steps.queue.outputs.newer == '0'
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: test
           cache-on-failure: true

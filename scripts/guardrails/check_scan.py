@@ -78,7 +78,8 @@ def suppressions():
         for number, line in enumerate(path.read_text().splitlines(), 1):
             match = SUPPRESSION.search(line)
             if match:
-                out.append(("zizmor", match.group(1), str(path.relative_to(ROOT)), number, match.group(2)))
+                for rule in match.group(1).split(","):
+                    out.append(("zizmor", rule, str(path.relative_to(ROOT)), number, match.group(2)))
     return out
 
 

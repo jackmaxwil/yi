@@ -6,7 +6,7 @@ name: review
 # The workflow file is main's, never the PR's: a `pull_request` run reads the head's copy, so a PR
 # could edit this job to pass the required `review` check, and old branches kept a stale one.
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] Same-repository PRs only; checkout is main, never the head.
     types: [opened, synchronize, reopened]
   # The sweep: a draft whose push job died, or one opened before this job ran, had no round and
   # nothing read it again; a draft already clean never left draft. Every three hours, because a
@@ -21,6 +21,9 @@ concurrency:
   group: review-target-${{ github.event.pull_request.number || 'sweep' }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   review:
     # Every same-repo PR, draft or not: a PR opened without `just pr open` skipped review entirely.
@@ -34,16 +37,17 @@ jobs:
     timeout-minutes: 120
     steps:
       # pr_review.py budgets the round from the job's start, not its own: the build runs first.
-      - run: echo "REVIEW_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - run: echo "REVIEW_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV" # zizmor: ignore[github-env] The value is a local timestamp, not event input.
       # Main's tree, never the PR's: this job holds yi-bot's token, whose comments count as rounds,
       # so a PR's own justfile, scripts or probes would judge themselves. The PR is read as data.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           ref: main
           fetch-depth: 0
+          persist-credentials: false
       - run: rustup show
       # The same dev build the live job reads from postmerge's `test` cache.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: test
           cache-on-failure: true

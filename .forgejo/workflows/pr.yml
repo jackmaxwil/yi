@@ -29,6 +29,9 @@ env:
   # chunk with "unable to get local issuer certificate" against the forge's internal CA.
   NODE_EXTRA_CA_CERTS: /etc/ssl/certs/buildhost-root-ca.pem
 
+permissions:
+  contents: read
+
 jobs:
   gate:
     # `lint`, `guardrails` and `test` are the three lanes of `just check` and
@@ -46,9 +49,10 @@ jobs:
     steps:
       # check_commit_style.py resolves origin/main and refuses to pass blind on
       # a shallow clone, so the full history is the gate's precondition.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           fetch-depth: 0
+          persist-credentials: false
       # The image ships just, codespell, uv, cargo-deny, cargo-machete and
       # cargo-nextest, so taiki-e/install-action and the pipx/uv bootstrap the
       # GitHub file carries are both gone. `rustup show` stays: it prints — and
@@ -58,7 +62,7 @@ jobs:
       # The runner's cache server is on, so rust-cache works here as it does on
       # GitHub: one key per lane, and postmerge's `warm` job saves every lane's
       # key on main, which is what a branch's first push inherits.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: ${{ matrix.lane }}
           cache-on-failure: true
@@ -68,7 +72,7 @@ jobs:
       - run: just lane ${{ matrix.lane }}
       # A failing test keeps a copy of its scratch dir under target/tmp/failed, and every console
       # drive run its frames under target/tmp/drive.
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v3 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         if: failure() && matrix.lane == 'test'
         with:
           name: failed-tests
@@ -89,9 +93,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           fetch-depth: 0
+          persist-credentials: false
       # The body rule measures this branch against the merge base, the way
       # pr_body.py does — the fetch is what gives it an origin/main to find.
       - run: git fetch --no-tags origin main
@@ -138,14 +143,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           fetch-depth: 0
+          persist-credentials: false
       - run: rustup show
       # Caches are readable across pull requests only when main saved them, and postmerge
       # saves `test`: the same dev-profile build this step needs. A key of its own stayed cold
       # on every PR, and three cold builds in a row were cancelled by the runner's clock.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: test
           cache-on-failure: true
