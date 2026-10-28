@@ -29,6 +29,7 @@ fn app_at(width: usize) -> App {
             keys: Vec::new(),
             initial_prompt: None,
             pace: 0,
+            follow: yi_types::config::FollowMode::default(),
         },
         Theme::new(ColorTier::TrueColor, true),
         default_keymap(),

@@ -201,6 +201,7 @@ fn app() -> App {
             keys: Vec::new(),
             initial_prompt: None,
             pace: 0,
+            follow: yi_types::config::FollowMode::default(),
         },
         theme(),
         yi_tui::keymap::default_keymap(),

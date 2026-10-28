@@ -132,6 +132,7 @@ fn options() -> TuiOptions {
         keys: Vec::new(),
         initial_prompt: None,
         pace: 0,
+        follow: yi_types::config::FollowMode::Page,
     }
 }
 
@@ -674,6 +675,26 @@ fn a_streamed_line_is_written_as_an_append() -> TestResult {
         !written.contains("\u{1b}[J") && written.contains("\u{1b}[1S"),
         "a saturated tail scrolls its committed item off instead of repainting: {written:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 12, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    let mut app = app();
+    app.set_rows(12);
+    app.set_follow(yi_types::config::FollowMode::Still);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let body = (0..30)
+        .map(|row| format!("- row {row} of the answer"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.reduce_agent(streamed(&body));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    assert!(contents.contains("more rows · PgDn"), "{contents}");
+    assert!(!contents.contains("row 29 of the answer"), "{contents}");
     Ok(())
 }
 

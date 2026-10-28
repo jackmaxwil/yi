@@ -22,6 +22,26 @@ fn theme() -> Theme {
     Theme::new(ColorTier::TrueColor, true)
 }
 
+fn test_app() -> yi_tui::app::App {
+    yi_tui::app::App::new(
+        yi_tui::app::TuiOptions {
+            model: common::test_model("faux-1"),
+            session_name: "s".to_owned(),
+            cwd: "/tmp".to_owned(),
+            lane: None,
+            context_window: 128_000,
+            session_dir: String::new(),
+            keys: Vec::new(),
+            initial_prompt: None,
+            pace: 0,
+            follow: yi_types::config::FollowMode::default(),
+        },
+        theme(),
+        default_keymap(),
+        80,
+    )
+}
+
 fn flat(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
@@ -724,24 +744,7 @@ fn streamed(full: &str) -> yi_tui::app::App {
 
 /// The same stream with the message still open, so only what streaming committed shows.
 fn streamed_open(full: &str) -> yi_tui::app::App {
-    use yi_tui::app::{App, TuiOptions};
-    use yi_tui::keymap::default_keymap;
-    let mut app = App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-        },
-        theme(),
-        default_keymap(),
-        80,
-    );
+    let mut app = test_app();
     let assistant = |text: &str| {
         yi_runtime::faux::faux_assistant_message(
             vec![yi_runtime::faux::faux_text(text)],
@@ -1220,24 +1223,7 @@ fn table_cells_keep_inline_code_and_leak_nothing() -> TestResult {
 
 #[test]
 fn streaming_commits_each_list_item_exactly_once() -> TestResult {
-    use yi_tui::app::{App, TuiOptions};
-    use yi_tui::keymap::default_keymap;
-    let mut app = App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-        },
-        theme(),
-        default_keymap(),
-        80,
-    );
+    let mut app = test_app();
     let full =
         "Tools:\n\n1. read — reads files\n\n2. edit — patches files\n\n3. bash — runs commands\n";
     let assistant = |text: &str| yi_types::message::AgentMessage::Assistant {
@@ -1707,24 +1693,7 @@ fn streamed_thought_in(
     prose: &str,
     finish: bool,
 ) -> yi_tui::app::App {
-    use yi_tui::app::{App, TuiOptions};
-    use yi_tui::keymap::default_keymap;
-    let mut app = App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-        },
-        theme(),
-        default_keymap(),
-        80,
-    );
+    let mut app = test_app();
     while app.mode() != mode {
         app.cycle_mode();
     }

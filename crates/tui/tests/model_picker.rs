@@ -211,6 +211,7 @@ fn ctrl_c_closes_the_model_picker_and_other_ctrl_keys_are_not_typed() {
             keys: Vec::new(),
             initial_prompt: None,
             pace: 0,
+            follow: yi_types::config::FollowMode::default(),
         },
         Theme::new(ColorTier::TrueColor, true),
         default_keymap(),

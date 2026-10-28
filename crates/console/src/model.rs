@@ -397,6 +397,27 @@ impl Pane {
         }
     }
 
+    pub fn scroll_by(&mut self, delta: isize) -> bool {
+        let mut follows = false;
+        if delta < 0
+            && self.scroll_from_bottom == 0
+            && let PaneContent::Session {
+                chat: Some(chat), ..
+            } = &mut self.content
+            && chat.app.follow() == yi_types::config::FollowMode::Still
+        {
+            chat.app.advance_follow(delta.unsigned_abs());
+            follows = true;
+        }
+        let before = self.scroll_from_bottom;
+        self.scroll_from_bottom = if delta >= 0 {
+            self.scroll_from_bottom.saturating_add(delta.unsigned_abs())
+        } else {
+            self.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
+        };
+        follows || self.scroll_from_bottom != before
+    }
+
     pub fn session(&self) -> Option<&SessionId> {
         match &self.content {
             PaneContent::Session { session, .. } | PaneContent::Notebook { session, .. } => {

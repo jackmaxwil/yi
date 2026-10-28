@@ -467,7 +467,7 @@ impl ToolCell {
         }
         if mode == TranscriptMode::Thinking
             && (matches!(self.status, ToolStatus::Running | ToolStatus::Awaiting)
-                || self.preview.len() == PREVIEW_ROWS)
+                || (self.patch().is_none() && !body.is_empty()))
         {
             body.resize_with(
                 PREVIEW_ROWS.saturating_add(1).max(body.len()),

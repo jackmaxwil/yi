@@ -229,6 +229,7 @@ pub use options::TuiOptions;
 
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {
+        let follow = options.follow;
         let mut app = Self {
             theme,
             keymap,
@@ -335,7 +336,7 @@ impl App {
             rows: 24,
             pane_hold: None,
             pane_follow: None,
-            follow: yi_types::config::FollowMode::Slide,
+            follow,
             pane_rows: (0, Vec::new()),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
@@ -949,7 +950,6 @@ pub fn run_tui(
     host: Arc<SubagentHost>,
     ask_rx: Receiver<AskRequest>,
     options: TuiOptions,
-    follow: yi_types::config::FollowMode,
     mut control: Option<crate::drive::Control>,
 ) -> i32 {
     crate::highlight::prewarm();
@@ -1003,7 +1003,6 @@ pub fn run_tui(
     }
 
     let mut app = App::new(options, Theme::new(tier, dark), keymap, usize::from(cols));
-    app.set_follow(follow);
     app.set_rows(usize::from(rows));
     app.kitty = yi_orb::kitty::supported();
 

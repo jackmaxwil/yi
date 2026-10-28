@@ -500,28 +500,7 @@ pub fn run_headless(
     session: Arc<AgentSession>,
     host: Arc<SubagentHost>,
     ask_rx: Receiver<AskRequest>,
-    options: TuiOptions,
-    drive: DriveOptions,
-) -> i32 {
-    run_headless_follow(
-        runtime,
-        session,
-        host,
-        ask_rx,
-        options,
-        yi_types::config::FollowMode::Slide,
-        drive,
-    )
-}
-
-/// Runs a headless drive with an explicit terminal-text follow mode.
-pub fn run_headless_follow(
-    runtime: tokio::runtime::Runtime,
-    session: Arc<AgentSession>,
-    host: Arc<SubagentHost>,
-    ask_rx: Receiver<AskRequest>,
     mut options: TuiOptions,
-    follow: yi_types::config::FollowMode,
     drive: DriveOptions,
 ) -> i32 {
     let frozen = drive
@@ -576,7 +555,6 @@ pub fn run_headless_follow(
 
     let initial_prompt = options.initial_prompt.clone();
     let mut app = App::new(options, theme, keymap, usize::from(width));
-    app.set_follow(follow);
     app.set_rows(usize::from(height));
     if frozen {
         app.set_clock(crate::motion::Clock::Fixed(Instant::now()));

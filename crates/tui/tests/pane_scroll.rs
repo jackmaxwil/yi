@@ -3,6 +3,7 @@
 use std::error::Error;
 
 use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::Event as CtEvent;
 use ratatui::layout::Rect;
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::cell::{Cell, ToolCell, ToolStatus};
@@ -29,6 +30,7 @@ fn app() -> App {
             keys: Vec::new(),
             initial_prompt: None,
             pace: 0,
+            follow: yi_types::config::FollowMode::default(),
         },
         Theme::new(ColorTier::TrueColor, true),
         yi_tui::keymap::default_keymap(),
@@ -157,13 +159,17 @@ fn moves_while_streaming_mode(
 }
 
 #[test]
-fn every_follow_mode_preserves_a_held_view() {
-    for mode in [FollowMode::Slide, FollowMode::Page, FollowMode::Still] {
-        let text = (0..20)
-            .map(|i| format!("paragraph {i}\n\n"))
-            .collect::<String>();
-        let moves = moves_while_streaming_mode("", &text, 12, mode);
-        assert!(moves.is_empty(), "{mode:?}: {moves:#?}");
+fn follow_modes_change_only_the_following_view() {
+    let text = (0..20)
+        .map(|i| format!("paragraph {i}\n\n"))
+        .collect::<String>();
+    for (mode, moves) in [
+        (FollowMode::Slide, true),
+        (FollowMode::Page, true),
+        (FollowMode::Still, false),
+    ] {
+        let moved = !moves_while_streaming_mode("", &text, 0, mode).is_empty();
+        assert_eq!(moved, moves, "{mode:?}");
     }
 }
 
@@ -352,15 +358,46 @@ fn slide_keeps_the_pre_change_frame_sequence() -> TestResult {
 #[test]
 fn page_moves_only_in_half_page_jumps() -> TestResult {
     let (moves, _) = roll_in_mode(20, 30, FollowMode::Page)?;
-    assert_eq!(moves, vec![15, 15]);
+    assert_eq!(moves, vec![15, 5]);
     Ok(())
 }
 
 #[test]
 fn page_moves_a_ten_row_pane_five_rows_at_a_time() -> TestResult {
     let (moves, _) = roll_in_mode(20, 10, FollowMode::Page)?;
-    assert!(moves.iter().all(|rows| matches!(rows, 0 | 5)), "{moves:?}");
-    assert!(moves.contains(&5), "no page jump: {moves:?}");
+    assert_eq!(moves, vec![5, 5, 5, 5, 2]);
+    Ok(())
+}
+
+#[test]
+fn page_clamps_its_jump_when_the_floor_is_over_half_the_pane() -> TestResult {
+    let area = Rect::new(0, 0, AREA.width, 14);
+    let mut app = app();
+    app.set_follow(FollowMode::Page);
+    let (commands, _) = yi_tui::app::command_channel();
+    yi_tui::input::handle_terminal_event(
+        &mut app,
+        &commands,
+        CtEvent::Paste("draft\nline".to_owned()),
+    );
+    app.set_kitty(true);
+    let floor = yi_tui::render::layout_chat(&mut app, None, None, area.height).floor;
+    assert!(
+        floor > area.height / 2 && floor < area.height,
+        "floor {floor}"
+    );
+    app.commit_cell(&Cell::User {
+        text: "go".to_owned(),
+    });
+    let mut scroll = 0;
+    let _ = paint_in(&mut app, area, &mut scroll);
+    let code: Vec<String> = (0..15).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    for _ in 0..10 {
+        let _ = paint_in(&mut app, area, &mut scroll);
+    }
     Ok(())
 }
 
@@ -486,6 +523,7 @@ fn a_long_block_catches_up_without_jumping() -> TestResult {
 #[test]
 fn a_first_prompt_rolls_into_an_empty_pane() -> TestResult {
     let mut app = app();
+    app.set_follow(FollowMode::Slide);
     let mut scroll = 0;
     app.reduce_agent(AgentEvent::AgentStart);
     let status = |rows: &[String]| rows.iter().position(|row| row.contains("faux-1"));

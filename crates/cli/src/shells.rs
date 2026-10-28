@@ -79,6 +79,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         keys: configured_keys(),
         initial_prompt,
         pace: reveal_pace(args),
+        follow: configured_follow(),
     };
     let control = match control(args) {
         Ok(control) => control,
@@ -100,13 +101,12 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             height: common.height,
         };
         let session = std::sync::Arc::new(session);
-        let code = yi_tui::run_headless_follow(
+        let code = yi_tui::run_headless(
             runtime,
             std::sync::Arc::clone(&session),
             host,
             ask_rx,
             options,
-            configured_follow(),
             drive,
         );
         leave_lane(&session);
@@ -120,7 +120,6 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         host,
         ask_rx,
         options,
-        configured_follow(),
         control,
     );
     leave_lane(&session);

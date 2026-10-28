@@ -11,6 +11,7 @@ pub struct TuiOptions {
     pub initial_prompt: Option<String>,
     /// The streamed reveal's speed as a percentage of the default; 0 paints text on arrival.
     pub pace: u16,
+    pub follow: yi_types::config::FollowMode,
 }
 
 impl App {

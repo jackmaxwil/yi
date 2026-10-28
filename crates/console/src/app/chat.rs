@@ -74,10 +74,10 @@ impl App {
             keys: Vec::new(),
             initial_prompt: None,
             pace: self.state.chat_pace,
+            follow: self.state.chat_follow,
         };
         let mut app =
             yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
-        app.set_follow(self.state.chat_follow);
         let _ = app.take_title();
         app.set_clock(self.clock);
         app.set_status_name_shown(false);
@@ -136,20 +136,7 @@ impl App {
 
     pub(super) fn scroll_focused(&mut self, delta: isize) {
         if let Some(pane) = self.state.focused_pane_mut() {
-            if delta < 0
-                && pane.scroll_from_bottom == 0
-                && let PaneContent::Session {
-                    chat: Some(chat), ..
-                } = &mut pane.content
-                && chat.app.follow() == yi_types::config::FollowMode::Still
-            {
-                chat.app.advance_follow(delta.unsigned_abs());
-            }
-            pane.scroll_from_bottom = if delta >= 0 {
-                pane.scroll_from_bottom.saturating_add(delta.unsigned_abs())
-            } else {
-                pane.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
-            };
+            pane.scroll_by(delta);
             self.dirty = true;
         }
     }
@@ -831,9 +818,6 @@ impl App {
             let drafted = enter && !chat.app.composer_text().is_empty();
             handle_terminal_event(&mut chat.app, &chat.commands.0, event);
             let sent = drafted && chat.app.composer_text().is_empty();
-            if sent && chat.app.follow() != yi_types::config::FollowMode::Slide {
-                chat.app.follow_bottom();
-            }
             if let Some(pane) = self.state.focused_pane_mut()
                 && sent
             {

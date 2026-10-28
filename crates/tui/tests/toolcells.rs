@@ -30,6 +30,7 @@ fn app() -> App {
             keys: Vec::new(),
             initial_prompt: None,
             pace: 0,
+            follow: yi_types::config::FollowMode::default(),
         },
         theme(),
         default_keymap(),
@@ -93,6 +94,9 @@ fn a_running_tool_reserves_its_three_row_result_and_elision_space() -> TestResul
     cell.digest = Some("one".to_owned());
     let done = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
     assert_eq!(running, done, "the card moved when its result landed");
+    cell.preview = vec!["one".to_owned()];
+    let short = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
+    assert_eq!(running, short, "a one-row result collapsed the card");
     Ok(())
 }
 

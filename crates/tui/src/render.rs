@@ -119,7 +119,12 @@ fn draw_frame<B>(
         .and_then(|feed| feed.hud());
     app.sync_port(port);
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
-    let layout = layout_chat(app, goal, memory, total);
+    let mut layout = layout_chat(app, goal, memory, u16::MAX);
+    let above = usize::from(total.saturating_sub(layout.floor.min(total)));
+    let live = std::mem::take(&mut layout.live);
+    let followed = follow_column(app, live, above, usize::from(total));
+    layout.live = followed.live;
+    layout.follow_more = followed.more;
     let resized = terminal
         .resize_viewport(layout.rows(), layout.floor)
         .unwrap_or(false);
@@ -207,6 +212,7 @@ fn join_live(out: &mut Vec<Line<'static>>, blank_above: bool, rows: Vec<Line<'st
 
 pub struct ChatLayout {
     live: Vec<Line<'static>>,
+    follow_more: usize,
     working: Vec<Line<'static>>,
     hud: Vec<Line<'static>>,
     bottom: Option<Vec<Line<'static>>>,
@@ -222,6 +228,7 @@ impl ChatLayout {
     pub fn rows(&self) -> u16 {
         u16::try_from(self.live.len())
             .unwrap_or(u16::MAX)
+            .saturating_add(u16::try_from(self.follow_more).unwrap_or(u16::MAX))
             .saturating_add(self.floor)
     }
 }
@@ -397,6 +404,7 @@ pub fn layout_chat(
     }
     ChatLayout {
         live: live_lines,
+        follow_more: 0,
         working,
         hud: hud_lines,
         bottom: bottom_lines,
@@ -438,6 +446,16 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
         *y = y.saturating_add(height);
     };
     put(buffer, &layout.live, &mut y);
+    if layout.follow_more > 0 {
+        let marker = Line::styled(
+            format!(
+                "↓ {} more rows · PgDn",
+                layout.follow_more.saturating_add(1)
+            ),
+            app.theme.dim_style(),
+        );
+        put(buffer, &[marker], &mut y);
+    }
     // Incident (D46): the mark trails the live tail. §17.3 makes the viewport's top row the
     // commit boundary, so a leading mark walked down a paragraph at a time.
     if layout.show_working || layout.kitty {
@@ -480,6 +498,85 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
 /// past this many rows behind the step grows, so 200 rows land in under 70 frames, not 200.
 const ROLL_ROWS: usize = 24;
 
+struct Followed {
+    rows: Vec<Line<'static>>,
+    owners: Vec<usize>,
+    live: Vec<Line<'static>>,
+    more: usize,
+}
+
+fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: usize) -> Followed {
+    let history = yi_types::trace::span("tui.history_rows");
+    let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
+    let held = app.pane_hold.take().is_some();
+    let fresh = app.running && app.history.len() == 1 && !held;
+    let follow = match app.pane_follow {
+        Some((w, m, _, _)) if (w, m) != (width, mode) => None,
+        None if fresh => Some((width, mode, 0, 0)),
+        pin => pin,
+    };
+    let want = above.saturating_sub(live.len()).saturating_add(1);
+    let at_most = follow.map_or(usize::MAX, |(_, _, pinned, _)| pinned.saturating_sub(1));
+    let (_, mut column, owners) = app.history.tail(width, &theme, mode, want, at_most);
+    drop(history);
+    let history_rows = column.len();
+    join_live(&mut column, false, live);
+    let follow_mode = app.follow();
+    let end = follow
+        .and_then(|(_, _, pinned, below)| {
+            let at = owners.iter().position(|&cell| cell == pinned)?;
+            let behind = column.len().saturating_sub(at).saturating_sub(below);
+            let base = at.saturating_add(below);
+            match follow_mode {
+                yi_types::config::FollowMode::Slide => {
+                    Some(base.saturating_add(behind.div_ceil(ROLL_ROWS)))
+                }
+                yi_types::config::FollowMode::Page if base < above => Some(column.len().min(above)),
+                yi_types::config::FollowMode::Page if column.len() > base => {
+                    Some(base.saturating_add((height / 2).max(1)))
+                }
+                yi_types::config::FollowMode::Page => Some(base),
+                yi_types::config::FollowMode::Still if base < above => {
+                    Some(column.len().min(above))
+                }
+                yi_types::config::FollowMode::Still => Some(base),
+            }
+        })
+        .map_or(column.len(), |end| end.min(column.len()));
+    if end < column.len() && follow_mode != yi_types::config::FollowMode::Still {
+        app.scheduler.request();
+    }
+    let start = end.saturating_sub(above);
+    let pin = owners.get(start).or(owners.last()).copied();
+    app.pane_follow = pin.and_then(|cell| {
+        let at = owners.iter().position(|&owner| owner == cell)?;
+        Some((width, mode, cell, end.saturating_sub(at)))
+    });
+    let more = if follow_mode == yi_types::config::FollowMode::Still {
+        column.len().saturating_sub(end)
+    } else {
+        0
+    };
+    column.truncate(end);
+    let mut rows = column.split_off(start);
+    let mut owners = owners
+        .get(start..end.min(owners.len()))
+        .unwrap_or_default()
+        .to_vec();
+    if more > 0 {
+        rows.truncate(above.saturating_sub(1));
+        owners.truncate(above.saturating_sub(1));
+    }
+    let live_start = history_rows.saturating_sub(start).min(rows.len());
+    let live = rows.get(live_start..).unwrap_or_default().to_vec();
+    Followed {
+        rows,
+        owners,
+        live,
+        more,
+    }
+}
+
 /// Transcript and live frame scroll as one column; `scroll` zero follows the turn, above holds.
 pub fn paint_pane(
     app: &mut App,
@@ -512,74 +609,9 @@ pub fn paint_pane(
     let above = usize::from(area.height.saturating_sub(floor));
     let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
     let result = if *scroll == 0 {
-        let history = yi_types::trace::span("tui.history_rows");
-        // A turn's first cell has nothing above it to pin to yet; it rolls in from its own top,
-        // unless the pane was just scrolled or resized away from it, which settles in place.
-        let held = app.pane_hold.take().is_some();
-        let fresh = app.running && app.history.len() == 1 && !held;
-        let follow = match app.pane_follow {
-            Some((w, m, _, _)) if (w, m) != (width, mode) => None,
-            None if fresh => Some((width, mode, 0, 0)),
-            pin => pin,
-        };
-        // One spare row: the seam may collapse a blank, and the trim below keeps `above`.
-        let want = above.saturating_sub(live.len()).saturating_add(1);
-        // The cell above the pin is read too: a cell's separator row exists only below another.
-        let at_most = follow.map_or(usize::MAX, |(_, _, pinned, _)| pinned.saturating_sub(1));
-        let (_, mut column, owners) = app.history.tail(width, &theme, mode, want, at_most);
-        drop(history);
-        join_live(&mut column, false, live);
-        let end = follow
-            .and_then(|(_, _, pinned, below)| {
-                let at = owners.iter().position(|&cell| cell == pinned)?;
-                let behind = column.len().saturating_sub(at).saturating_sub(below);
-                let base = at.saturating_add(below);
-                match app.follow() {
-                    yi_types::config::FollowMode::Slide => {
-                        Some(base.saturating_add(behind.div_ceil(ROLL_ROWS)))
-                    }
-                    yi_types::config::FollowMode::Page if base < above => {
-                        Some(column.len().min(above))
-                    }
-                    yi_types::config::FollowMode::Page if column.len() > base => {
-                        let page = (usize::from(area.height) / 2).max(1);
-                        Some(base.saturating_add(page))
-                    }
-                    yi_types::config::FollowMode::Page => Some(base),
-                    yi_types::config::FollowMode::Still if base < above => {
-                        Some(column.len().min(above))
-                    }
-                    yi_types::config::FollowMode::Still => Some(base.min(column.len())),
-                }
-            })
-            .map_or(column.len(), |end| match app.follow() {
-                yi_types::config::FollowMode::Slide => end.min(column.len()),
-                yi_types::config::FollowMode::Page | yi_types::config::FollowMode::Still => end,
-            });
-        if end < column.len() && app.follow() != yi_types::config::FollowMode::Still {
-            app.scheduler.request();
-        }
-        let start = end.saturating_sub(above);
-        let pin = owners.get(start).or(owners.last()).copied();
-        app.pane_follow = pin.and_then(|cell| {
-            let at = owners.iter().position(|&owner| owner == cell)?;
-            Some((width, mode, cell, end.saturating_sub(at)))
-        });
-        let more = if app.follow() == yi_types::config::FollowMode::Still {
-            column.len().saturating_sub(end)
-        } else {
-            0
-        };
-        column.truncate(end);
-        (
-            column.split_off(start),
-            owners
-                .get(start..end.min(owners.len()))
-                .unwrap_or_default()
-                .to_vec(),
-            None,
-            more,
-        )
+        let followed = follow_column(app, live, above, usize::from(area.height));
+        layout.follow_more = followed.more;
+        (followed.rows, followed.owners, None)
     } else {
         app.pane_follow = None;
         // Incident: counting committed rows drifted a held view; now rows below a pinned cell.
@@ -614,13 +646,9 @@ pub fn paint_pane(
             .saturating_add(usize::from(floor));
         let thumb =
             (total > usize::from(area.height)).then_some((total, before.saturating_add(start)));
-        (shown, owners, thumb, 0)
+        (shown, owners, thumb)
     };
-    let (mut shown, mut owners, thumb, more) = result;
-    if more > 0 {
-        shown.truncate(above.saturating_sub(1));
-        owners.truncate(above.saturating_sub(1));
-    }
+    let (shown, owners, thumb) = result;
     let mut owned: Vec<Option<usize>> = owners.into_iter().map(Some).collect();
     owned.resize(shown.len(), None);
     app.pane_rows = (area.top(), owned);
@@ -635,19 +663,6 @@ pub fn paint_pane(
         area.width,
         floor,
     );
-    if more > 0
-        && let Some(y) = chat_area.top().checked_sub(1)
-    {
-        let marker = ratatui::text::Line::styled(
-            format!("↓ {} more rows · PgDn", more.saturating_add(1)),
-            app.theme.dim_style(),
-        );
-        Widget::render(
-            ratatui::widgets::Paragraph::new(marker),
-            Rect::new(area.left(), y, area.width, 1),
-            buffer,
-        );
-    }
     let placed = paint_chat(app, &layout, buffer, chat_area);
     app.orb_slot = top_orb.or(placed.orb);
     app.orb_placement = app.orb_slot.filter(|_| !app.title_cover);

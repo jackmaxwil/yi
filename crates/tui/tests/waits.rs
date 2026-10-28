@@ -25,6 +25,7 @@ fn running() -> App {
             keys: Vec::new(),
             initial_prompt: None,
             pace: 0,
+            follow: yi_types::config::FollowMode::default(),
         },
         Theme::new(ColorTier::TrueColor, true),
         yi_tui::keymap::default_keymap(),

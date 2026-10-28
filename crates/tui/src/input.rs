@@ -57,6 +57,12 @@ pub fn handle_terminal_event(
                 app.open_questions();
                 return;
             }
+            if key.code == KeyCodeValue::PageDown
+                && app.follow() != yi_types::config::FollowMode::Slide
+            {
+                app.advance_follow(20);
+                return;
+            }
             let ctx = EvalContext {
                 input_empty: app.composer.is_empty(),
             };
@@ -228,6 +234,9 @@ fn submit_line(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Comman
 }
 
 fn send_message(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
+    if app.follow() != yi_types::config::FollowMode::Slide {
+        app.follow_bottom();
+    }
     if app.running {
         app.steering.push(text.clone());
         let _ = cmd_tx.send(Command::Steer(text));

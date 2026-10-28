@@ -155,6 +155,7 @@ fn ctrl_c_closes_the_agents_popup_without_stopping_a_row() -> TestResult {
             keys: Vec::new(),
             initial_prompt: None,
             pace: 0,
+            follow: yi_types::config::FollowMode::default(),
         },
         theme(),
         default_keymap(),

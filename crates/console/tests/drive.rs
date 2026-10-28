@@ -619,19 +619,30 @@ fn run_opts(
     frames: Option<PathBuf>,
     size: (u16, u16),
 ) -> TestResult {
-    let console = (autostart, sidebar, Vec::new());
+    let console = (
+        autostart,
+        sidebar,
+        Vec::new(),
+        yi_types::config::FollowMode::Page,
+    );
     run_console(name, fixture, script, console, frames, size)
 }
 
-/// `console` is (autostart, sidebar, the Open in apps the config lists).
+/// `console` is (autostart, sidebar, Open in apps, terminal-text follow mode).
 fn run_console(
     name: &str,
     fixture: Option<Vec<Step>>,
     script: &str,
-    (autostart, sidebar, open_apps): (bool, SidebarMode, Vec<String>),
+    (autostart, sidebar, open_apps, follow): (
+        bool,
+        SidebarMode,
+        Vec<String>,
+        yi_types::config::FollowMode,
+    ),
     frames: Option<PathBuf>,
-    (width, height): (u16, u16),
+    size: (u16, u16),
 ) -> TestResult {
+    let (width, height) = size;
     let (dir, socket) = scratch_socket(name)?;
     let server = fixture.map(|fixture| spawn_fixture(socket.clone(), fixture));
     let steps = parse_script(script)?;
@@ -648,7 +659,7 @@ fn run_console(
             open_apps,
             sidebar,
             pace: 0,
-            follow: yi_types::config::FollowMode::Page,
+            follow,
             browser: None,
             chrome_pin: None,
             home: Some(drive_home().display().to_string()),
@@ -4019,6 +4030,50 @@ fn only_a_sent_prompt_returns_a_scrolled_pane_to_the_bottom() -> TestResult {
     )
 }
 
+fn long_follow_turn(frame: &Value) -> Vec<Value> {
+    let text: String = (0..60).map(|row| format!("new row {row}\n\n")).collect();
+    let mut frames = vec![ok(frame, json!({}))];
+    frames.extend(turn("s-alpha", 10, "more", &assistant(&text)));
+    frames
+}
+
+#[test]
+fn still_page_down_and_submit_work_through_the_console_key_path() -> TestResult {
+    run_console(
+        "still-scroll-send",
+        Some(vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_long),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("session/prompt", long_follow_turn),
+            Step::Expect("session/prompt", seen_ok),
+        ]),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 row 59\n\
+         type more\n\
+         key enter\n\
+         wait-frame 5000 more rows · PgDn\n\
+         wait-frame 2000 !new row 59\n\
+         key pagedown\n\
+         wait-frame 2000 new row 0\n\
+         type again\n\
+         key enter\n\
+         wait-frame 2000 new row 59\n\
+         quit\n",
+        (
+            false,
+            SidebarMode::Full,
+            Vec::new(),
+            yi_types::config::FollowMode::Still,
+        ),
+        None,
+        (100, 30),
+    )
+}
+
 /// Dies with the sidebar gone and `X` typed at the end: Ghostty sends Option+Left as alt+b,
 /// the console's sidebar chord, so word-left over a draft hid the sidebar instead.
 #[test]
@@ -4826,7 +4881,12 @@ fn open_in_sends_the_reply_to_the_app_picked() -> TestResult {
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
          mouse right 30 5\nwait-frame 3000 Open in\nkey up\nkey up\nkey right\n\
          wait-frame 3000 Second\nkey down\nkey enter\nwait-frame 3000 launched Second\nquit\n",
-        (false, SidebarMode::Full, apps),
+        (
+            false,
+            SidebarMode::Full,
+            apps,
+            yi_types::config::FollowMode::Page,
+        ),
         None,
         (100, 30),
     )

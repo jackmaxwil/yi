@@ -32,6 +32,7 @@ fn app_in(cwd: &str) -> App {
         keys: Vec::new(),
         initial_prompt: None,
         pace: 0,
+        follow: yi_types::config::FollowMode::default(),
     };
     App::new(
         options,

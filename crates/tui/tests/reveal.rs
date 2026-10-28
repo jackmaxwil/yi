@@ -131,6 +131,7 @@ fn app_with_pace(pace: u16) -> yi_tui::app::App {
             keys: Vec::new(),
             initial_prompt: None,
             pace,
+            follow: yi_types::config::FollowMode::default(),
         },
         yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true),
         yi_tui::keymap::default_keymap(),
