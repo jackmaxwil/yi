@@ -341,17 +341,22 @@ fn a_first_prompt_rolls_into_an_empty_pane() -> TestResult {
     app.reduce_agent(AgentEvent::AgentStart);
     let status = |rows: &[String]| rows.iter().position(|row| row.contains("faux-1"));
     let (empty, _) = paint(&mut app, &mut scroll);
-    let mut was = status(&empty).ok_or("no status row")?;
+    let composer = status(&empty).ok_or("no status row")?;
     let text: Vec<String> = (0..6).map(|i| format!("prompt line {i}")).collect();
     app.commit_cell(&Cell::User {
         text: text.join("\n"),
     });
     let mut moves = Vec::new();
+    let mut shown = 0;
     for _ in 0..20 {
         let (rows, _) = paint(&mut app, &mut scroll);
-        let now = status(&rows).ok_or("no status row")?;
-        moves.push(now.saturating_sub(was));
-        was = now;
+        assert_eq!(status(&rows), Some(composer), "the composer moved");
+        let now = rows
+            .iter()
+            .filter(|row| row.contains("prompt line"))
+            .count();
+        moves.push(now.saturating_sub(shown));
+        shown = now;
     }
     assert!(moves.iter().all(|&rows| rows <= 1), "{moves:?}");
     assert!(
