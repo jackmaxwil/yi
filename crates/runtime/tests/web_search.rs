@@ -8,7 +8,7 @@ use yi_ai::search::{
     SearchCitation, SearchEngine, SearchError, SearchMode, SearchProvider, SearchRequest,
     SearchResponse, SearchUrl,
 };
-use yi_runtime::web_search::{EXCERPT_CAP_CHARS, WebSearchTool};
+use yi_runtime::web_search::{BODY_CAP_CHARS, EXCERPT_CAP_CHARS, WebSearchTool};
 use yi_runtime::{PermissionBroker, PermissionMode, ProviderStream};
 use yi_tools::{Tool, ToolContext};
 use yi_types::message::{AgentMessage, StopReason, Usage};
@@ -184,6 +184,35 @@ fn the_whole_result_cap_is_exact_and_one_past_it_names_kept_total_and_continuati
 }
 
 #[test]
+fn the_citation_body_cap_names_kept_total_cap_and_narrowing_advice() -> TestResult {
+    let mut result = response("answer", "excerpt");
+    result.citations = (0..25)
+        .map(|index| SearchCitation {
+            title: format!("Source {index}"),
+            url: SearchUrl::new(format!("https://example.com/{index}")),
+            excerpt: "é".repeat(2_000),
+        })
+        .collect();
+    let (tool, _) = tool_with(Ok(result));
+    let output = tool.execute(
+        args(json!({"query": "rust", "count": 25})),
+        &ToolContext::new(std::env::temp_dir()),
+    );
+    let text = text(&output);
+    assert!(text.contains(" of 25 citations kept"), "{text}");
+    assert!(
+        text.contains(&format!("BODY_CAP_CHARS {BODY_CAP_CHARS}")),
+        "{text}"
+    );
+    assert!(
+        text.contains("use a narrower query or a smaller count"),
+        "{text}"
+    );
+    assert!(!text.contains("24. Source 24"), "{text}");
+    Ok(())
+}
+
+#[test]
 fn the_tool_description_discloses_egress_and_approximate_cost() -> TestResult {
     let (tool, _) = tool_with(Ok(response("answer", "excerpt")));
     let description = tool.description();
@@ -197,6 +226,8 @@ fn the_tool_description_discloses_egress_and_approximate_cost() -> TestResult {
 #[test]
 fn a_malformed_paid_response_is_an_error_that_still_books_its_usage() -> TestResult {
     let (tool, _) = tool_with(Err(SearchError::Billed {
+        provider: "openrouter".to_owned(),
+        model: "deepseek/deepseek-v4-flash".to_owned(),
         error: Box::new(SearchError::NoCitations),
         usage: Box::new(response("answer", "excerpt").usage),
     }));
@@ -205,6 +236,9 @@ fn a_malformed_paid_response_is_an_error_that_still_books_its_usage() -> TestRes
         &ToolContext::new(std::env::temp_dir()),
     );
     assert!(output.is_error);
+    assert_eq!(output.result.details["provider"], "openrouter");
+    assert_eq!(output.result.details["model"], "deepseek/deepseek-v4-flash");
+    assert!(output.result.details["durationMs"].is_number());
     let usage = output.result.usage.ok_or("paid error lost its usage")?;
     assert_eq!(usage.cost.total.as_f64(), Some(COST));
     Ok(())
@@ -227,10 +261,13 @@ fn provider_failures_are_typed_tool_errors_without_secret_text() -> TestResult {
     Ok(())
 }
 
-async fn turn(mode: PermissionMode) -> Result<(usize, usize, f64, f64), Box<dyn Error>> {
+async fn turn(
+    mode: PermissionMode,
+    result: Result<SearchResponse, SearchError>,
+) -> Result<(usize, Vec<LaneRecord>, f64, f64), Box<dyn Error>> {
     let root = crate::scratch::Scratch::new("yi-web-search-turn")?;
     let store = crate::support::memory_store("web-search");
-    let search = Arc::new(FauxSearch::new(Ok(response("answer", "excerpt"))));
+    let search = Arc::new(FauxSearch::new(result));
     let provider = Arc::new(ProviderStream::new(None));
     provider.set_web_search(Some(search));
     provider.queue_faux(vec![
@@ -271,15 +308,16 @@ async fn turn(mode: PermissionMode) -> Result<(usize, usize, f64, f64), Box<dyn 
     session.prompt("search")?;
     session.wait_idle().await;
     let records = yi_session::lock_session(&store).find_records(&Default::default())?;
-    let booked = records
-        .iter()
-        .filter(|record| matches!(record, LaneRecord::Usage { cause, .. } if cause == "tool:web_search"))
-        .count();
     let stats = yi_session::lock_session(&store).stats();
     let live = (session.cost_handle())()
         .map(|(cost, _)| cost)
         .ok_or("no live cost")?;
-    Ok((asked.load(Ordering::SeqCst), booked, live, stats.cost_total))
+    Ok((
+        asked.load(Ordering::SeqCst),
+        records,
+        live,
+        stats.cost_total,
+    ))
 }
 
 #[tokio::test]
@@ -289,12 +327,45 @@ async fn every_permission_mode_runs_unasked_and_books_search_cost_once() -> Test
         PermissionMode::Auto,
         PermissionMode::Yolo,
     ] {
-        let (asked, booked, live, stored) = turn(mode).await?;
+        let (asked, records, live, stored) = turn(mode, Ok(response("answer", "excerpt"))).await?;
+        let booked = records
+            .iter()
+            .filter(|record| matches!(record, LaneRecord::Usage { cause, .. } if cause == "tool:web_search"))
+            .count();
         assert_eq!(asked, 0, "{mode:?}");
         assert_eq!(booked, 1, "{mode:?}");
         assert!((live - COST).abs() < 1e-9, "{mode:?}: {live}");
         assert!((stored - COST).abs() < 1e-9, "{mode:?}: {stored}");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_billed_search_books_cost_and_route_once() -> TestResult {
+    let (_, records, live, stored) = turn(
+        PermissionMode::Yolo,
+        Err(SearchError::Billed {
+            provider: "openrouter".to_owned(),
+            model: "deepseek/deepseek-v4-flash".to_owned(),
+            error: Box::new(SearchError::NoCitations),
+            usage: Box::new(response("answer", "excerpt").usage),
+        }),
+    )
+    .await?;
+    let booked: Vec<_> = records
+        .iter()
+        .filter(|record| matches!(record, LaneRecord::Usage { cause, .. } if cause == "tool:web_search"))
+        .collect();
+    assert_eq!(booked.len(), 1);
+    let LaneRecord::Usage { details, .. } = booked.first().ok_or("missing billed search record")?
+    else {
+        return Err("billed search record changed kind".into());
+    };
+    let details = details.as_ref().ok_or("billed search lost its details")?;
+    assert_eq!(details["provider"], "openrouter");
+    assert_eq!(details["model"], "deepseek/deepseek-v4-flash");
+    assert!((live - COST).abs() < 1e-9, "{live}");
+    assert!((stored - COST).abs() < 1e-9, "{stored}");
     Ok(())
 }
 

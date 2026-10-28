@@ -213,6 +213,8 @@ pub enum SearchError {
     Protocol(String),
     NoCitations,
     Billed {
+        provider: String,
+        model: String,
         error: Box<SearchError>,
         usage: Box<Usage>,
     },
@@ -349,6 +351,8 @@ impl OpenRouterSearch {
             })
         })();
         parsed.map_err(|error| SearchError::Billed {
+            provider: "openrouter".to_owned(),
+            model: self.model.id.clone(),
             error: Box::new(error),
             usage: Box::new(parsed_usage),
         })

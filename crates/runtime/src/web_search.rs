@@ -158,9 +158,14 @@ impl Tool for WebSearchTool {
                     SearchError::InvalidInput(_) => ToolErrorKind::InvalidArgs,
                     _ => ToolErrorKind::ToolError,
                 };
-                let (billed, error) = match error {
-                    SearchError::Billed { usage, error } => (Some(*usage), *error),
-                    error => (None, error),
+                let (billed, route, error) = match error {
+                    SearchError::Billed {
+                        provider,
+                        model,
+                        usage,
+                        error,
+                    } => (Some(*usage), Some((provider, model)), *error),
+                    error => (None, None, error),
                 };
                 let text = match &error {
                     SearchError::Http { status, message } => format!(
@@ -171,6 +176,16 @@ impl Tool for WebSearchTool {
                 };
                 let mut output = error_output_kind(text, kind);
                 output.result.usage = billed;
+                if let Some((provider, model)) = route
+                    && let Some(details) = output.result.details.as_object_mut()
+                {
+                    details.insert("provider".to_owned(), json!(provider));
+                    details.insert("model".to_owned(), json!(model));
+                    details.insert(
+                        "durationMs".to_owned(),
+                        json!(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+                    );
+                }
                 return output;
             }
         };
@@ -178,7 +193,23 @@ impl Tool for WebSearchTool {
         body.push_str("\n\nCitations");
         let total = response.citations.len();
         for (index, citation) in response.citations.iter().enumerate() {
-            if body.chars().count() >= BODY_CAP_CHARS {
+            let (excerpt, cut) = Self::excerpt(&citation.excerpt);
+            let mut rendered = format!(
+                "\n\n{}. {}\n{}\n{}",
+                index.saturating_add(1),
+                citation.title,
+                citation.url.as_str(),
+                excerpt
+            );
+            if let Some(cut) = cut {
+                rendered.push('\n');
+                rendered.push_str(&cut);
+            }
+            let projected = body
+                .chars()
+                .count()
+                .saturating_add(rendered.chars().count());
+            if projected > BODY_CAP_CHARS {
                 body.push('\n');
                 body.push_str(&cut_row(
                     index,
@@ -190,18 +221,7 @@ impl Tool for WebSearchTool {
                 ));
                 break;
             }
-            let (excerpt, cut) = Self::excerpt(&citation.excerpt);
-            body.push_str(&format!(
-                "\n\n{}. {}\n{}\n{}",
-                index.saturating_add(1),
-                citation.title,
-                citation.url.as_str(),
-                excerpt
-            ));
-            if let Some(cut) = cut {
-                body.push('\n');
-                body.push_str(&cut);
-            }
+            body.push_str(&rendered);
         }
         let (mut body, cut) = Self::capped(
             &body,

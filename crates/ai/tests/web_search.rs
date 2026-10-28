@@ -285,7 +285,7 @@ fn zero_annotations_is_distinct_from_a_malformed_response_and_keeps_its_cost() -
         None,
         None,
     )?;
-    let Err(SearchError::Billed { error, usage }) = response else {
+    let Err(SearchError::Billed { error, usage, .. }) = response else {
         return Err("a paid response without citations did not retain its usage".into());
     };
     assert!(matches!(*error, SearchError::NoCitations));
