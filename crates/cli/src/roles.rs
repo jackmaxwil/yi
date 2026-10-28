@@ -48,30 +48,22 @@ pub(crate) fn web_search_provider(
         .as_deref()
         .filter(|spec| spec.split_once('/').map(|(provider, _)| provider) != Some("openrouter"))
     {
-        eprintln!(
-            "warning: models.webSearch names {spec}, which is not OpenRouter; web search stays off; choose an OpenRouter model or remove the setting"
-        );
-        return Ok(None);
+        return Err(format!(
+            "models.webSearch names {spec}, which is not OpenRouter; choose an OpenRouter model or remove the setting"
+        ));
     }
     let Some(model) = web_search_model() else {
         return Ok(None);
     };
-    let engine = match crate::config()
+    let engine = crate::config()
         .web_search
         .as_ref()
         .and_then(|search| search.engine.clone())
-    {
-        Some(engine) => match yi_runtime::search::SearchEngine::new(engine) {
-            Ok(engine) => engine,
-            Err(_) => {
-                eprintln!(
-                    "warning: webSearch.engine must not be empty; web search stays off; choose a non-empty engine or remove the setting"
-                );
-                return Ok(None);
-            }
-        },
-        None => yi_runtime::search::SearchEngine::default(),
-    };
+        .map_or_else(
+            || Ok(yi_runtime::search::SearchEngine::default()),
+            yi_runtime::search::SearchEngine::new,
+        )
+        .map_err(|error| format!("{error}; choose a non-empty engine or remove the setting"))?;
     let Some(credential) = yi_runtime::auth::resolve_with_proxy("openrouter", proxy.as_ref())
     else {
         return Ok(None);

@@ -1099,7 +1099,7 @@ fn web_search_offline_citations_and_cost() -> TestResult {
 
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
-fn invalid_web_search_config_disables_only_the_tool_with_one_actionable_warning() -> TestResult {
+fn invalid_web_search_config_is_refused_with_an_actionable_reason() -> TestResult {
     for (name, config, setting, fix) in [
         (
             "model",
@@ -1125,9 +1125,8 @@ fn invalid_web_search_config_disables_only_the_tool_with_one_actionable_warning(
             .stderr(Stdio::piped())
             .output()?;
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(output.status.success(), "{name}: {stderr}");
+        assert_eq!(output.status.code(), Some(2), "{name}: {stderr}");
         assert_eq!(stderr.matches(setting).count(), 1, "{name}: {stderr}");
-        assert!(stderr.contains("warning:"), "{name}: {stderr}");
         assert!(stderr.contains(fix), "{name}: {stderr}");
         journey.reclaim();
     }
