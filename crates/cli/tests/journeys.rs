@@ -999,17 +999,22 @@ fn search_case(primary: &str, explicit_role: bool) -> TestResult {
     let mut model = yi_runtime::resolve_model("openrouter", search_id)
         .ok_or("the bundled search model is missing")?;
     model.base_url = format!("http://127.0.0.1:{port}/api/v1");
+    let mut renamed = model.clone();
+    renamed.id = "deepseek/deepseek-v4-flash-search".to_owned();
     std::fs::create_dir_all(journey.root.join("home/.yi/catalog"))?;
     std::fs::write(
         journey.root.join("home/.yi/catalog/openrouter.json"),
         serde_json::to_string(&json!({
             "schema": 2,
-            "openai-completions": {model.id.clone(): serde_json::to_value(model)?}
+            "openai-completions": {
+                model.id.clone(): serde_json::to_value(model)?,
+                renamed.id.clone(): serde_json::to_value(renamed)?,
+            }
         }))?,
     )?;
     let mut config = json!({"kernel": {"prewarm": false}});
     if explicit_role {
-        config["models"] = json!({"webSearch": format!("openrouter/{search_id}")});
+        config["models"] = json!({"webSearch": "openrouter/deepseek/deepseek-v4-flash-search"});
         config["webSearch"] = json!({"engine": "non-default-engine"});
     }
     std::fs::write(
@@ -1067,18 +1072,16 @@ fn search_case(primary: &str, explicit_role: bool) -> TestResult {
 
     let request = served.join().map_err(|_| "search server panicked")??;
     let body = crate::loopback::json_body(&request)?;
-    assert_eq!(body["model"], search_id);
+    let (model_id, engine) = if explicit_role {
+        ("deepseek/deepseek-v4-flash-search", "non-default-engine")
+    } else {
+        ("deepseek/deepseek-v4-flash", "exa")
+    };
+    assert_eq!(body["model"], model_id);
     assert_eq!(body["stream"], false);
     assert_eq!(body["tools"][0]["type"], "openrouter:web_search");
     let parameters = &body["tools"][0]["parameters"];
-    assert_eq!(
-        parameters["engine"],
-        if explicit_role {
-            "non-default-engine"
-        } else {
-            "exa"
-        }
-    );
+    assert_eq!(parameters["engine"], engine);
     assert_eq!(parameters["mode"], "auto");
     assert_eq!(parameters["max_results"], 5);
     assert_eq!(parameters["max_total_results"], 5);

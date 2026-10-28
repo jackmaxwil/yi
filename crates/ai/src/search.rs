@@ -3,7 +3,7 @@ use yi_types::message::Usage;
 use yi_types::model::Model;
 
 use crate::auth::Secret;
-use crate::request::{PostJsonError, ProxyConfig, post_json_with_timeout};
+use crate::request::{PostJsonError, ProxyConfig};
 
 const RESPONSE_CAP: usize = 8 * 1024 * 1024;
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
@@ -399,7 +399,7 @@ impl SearchProvider for OpenRouterSearch {
             "authorization",
             format!("Bearer {}", self.credential.expose()),
         )];
-        let response = post_json_with_timeout(
+        let response = crate::request::post_json(
             &url,
             &headers,
             &encoded,

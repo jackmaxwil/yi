@@ -348,3 +348,27 @@ fn a_journal_the_engine_refuses_counts_no_op_and_a_torn_tail_is_one_bad_line() -
     }
     Ok(())
 }
+
+/// Dies when the scan drops a tool's booked usage record, by its line filter or its cause guard.
+#[test]
+fn a_tool_usage_record_is_one_request_inside_its_window() -> TestResult {
+    let dir = Scratch::new("rollup-tool-usage")?;
+    let header = ROOT.lines().next().ok_or("empty fixture")?;
+    let record = r#"{"kind":"record","type":"usage","id":"u1","lane":"main","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":15,"cost":{"input":0.001,"output":0.002,"cacheRead":0,"cacheWrite":0,"total":0.003}},"cause":"tool:read","details":{"provider":"openrouter","model":"deepseek/deepseek-v4-flash"},"seq":3,"timestamp":1790000000500}"#;
+    put(
+        &dir,
+        "--proj--/1787905015970_01a04771-80a2-727b-a35d-9a0bfe11023b.jsonl",
+        &format!("{header}\n{record}\n"),
+    )?;
+    let found = scan(&dir, 1_790_000_000_000);
+    assert_eq!(
+        (found.bad_lines, found.unreadable, found.requests.len()),
+        (0, 0, 1)
+    );
+    let request = found.requests.first().ok_or("no request")?;
+    assert_eq!(request.provider, "openrouter");
+    assert_eq!(request.model, "deepseek/deepseek-v4-flash");
+    assert!((request.usage.cost.total.as_f64().unwrap_or(0.0) - 0.003).abs() < 1e-12);
+    assert!(scan(&dir, 1_790_000_001_000).requests.is_empty());
+    Ok(())
+}

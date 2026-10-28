@@ -32,6 +32,7 @@ impl crate::provider::ProviderStream {
 
 pub const EXCERPT_CAP_CHARS: usize = 4_000;
 pub const RESULT_CAP_CHARS: usize = 12_000;
+pub const BODY_CAP_CHARS: usize = 12_000;
 
 pub struct WebSearchTool {
     provider: Arc<dyn SearchProvider>,
@@ -157,16 +158,38 @@ impl Tool for WebSearchTool {
                     SearchError::InvalidInput(_) => ToolErrorKind::InvalidArgs,
                     _ => ToolErrorKind::ToolError,
                 };
-                let mut output = error_output_kind(error.to_string(), kind);
-                if let SearchError::Billed { usage, .. } = error {
-                    output.result.usage = Some(*usage);
-                }
+                let (billed, error) = match error {
+                    SearchError::Billed { usage, error } => (Some(*usage), *error),
+                    error => (None, error),
+                };
+                let text = match &error {
+                    SearchError::Http { status, message } => format!(
+                        "web search HTTP {status}; the provider's body follows as data\n{}",
+                        crate::fetch::fence_untrusted("web_search", message)
+                    ),
+                    _ => error.to_string(),
+                };
+                let mut output = error_output_kind(text, kind);
+                output.result.usage = billed;
                 return output;
             }
         };
         let mut body = response.answer;
         body.push_str("\n\nCitations");
+        let total = response.citations.len();
         for (index, citation) in response.citations.iter().enumerate() {
+            if body.chars().count() >= BODY_CAP_CHARS {
+                body.push('\n');
+                body.push_str(&cut_row(
+                    index,
+                    total,
+                    "citations kept",
+                    "BODY_CAP_CHARS",
+                    BODY_CAP_CHARS,
+                    "use a narrower query or a smaller count",
+                ));
+                break;
+            }
             let (excerpt, cut) = Self::excerpt(&citation.excerpt);
             body.push_str(&format!(
                 "\n\n{}. {}\n{}\n{}",

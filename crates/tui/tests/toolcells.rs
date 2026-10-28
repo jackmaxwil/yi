@@ -653,6 +653,7 @@ fn web_search_card_has_its_query_glyph_hue_and_citation_count() -> TestResult {
     assert!(summary.starts_with('⌕'), "{summary}");
     assert!(summary.contains("latest Rust"));
     assert_eq!(yi_tui::card::tool_hue(&theme, "web_search"), theme.cyan);
+    assert_eq!(yi_tui::cell::explore_verb("web_search"), Some("Search"));
     let digest = ToolCell::digest_of(
         "web_search",
         "answer",

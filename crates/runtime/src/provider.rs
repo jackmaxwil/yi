@@ -1,13 +1,3 @@
-const HALF_MINUTE: std::time::Duration = std::time::Duration::from_secs(30);
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "deciding whether the streaming credential has expired is this fn's job"
-)]
-fn auth_now() -> std::time::SystemTime {
-    std::time::SystemTime::now()
-}
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -113,6 +103,16 @@ pub struct ProviderStream {
 
 type CursorStream =
     fn(&Arming, &Model, &LlmContext, &str, &InterruptSignal) -> Receiver<AssistantMessageEvent>;
+
+const HALF_MINUTE: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "deciding whether the streaming credential has expired is this fn's job"
+)]
+fn auth_now() -> std::time::SystemTime {
+    std::time::SystemTime::now()
+}
 
 impl ProviderStream {
     pub fn new(session_id: Option<String>) -> Self {

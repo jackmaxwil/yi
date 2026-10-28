@@ -39,18 +39,27 @@ fn call(
         body.len()
     );
     let (port, _, served) = crate::loopback_server::serve([reply])?;
+    let loopback = format!("http://127.0.0.1:{port}");
+    let (base_url, proxy) = if routing.is_some() {
+        (
+            "http://openrouter.ai.invalid/api/v1".to_owned(),
+            yi_ai::request::ProxyConfig::from_values(Some(&loopback), None, None)?,
+        )
+    } else {
+        (format!("{loopback}/api/v1"), None)
+    };
     let model = crate::common::model(
         model_id,
         "openai-completions",
         "openrouter",
-        &format!("http://127.0.0.1:{port}/api/v1"),
+        &base_url,
         None,
     );
     let provider = OpenRouterSearch::new(
         model,
         Some(Secret::new("sekrit".to_owned())),
         SearchEngine::new("exa")?,
-        None,
+        proxy,
         routing,
     )?;
     let response = provider.search(request);
@@ -60,6 +69,10 @@ fn call(
         .ok_or("no request reached the server")?
         .clone();
     Ok((response, captured))
+}
+
+fn request_body(request: &str) -> Result<Value, Box<dyn Error>> {
+    crate::loopback::json_body(request)
 }
 
 #[test]
@@ -164,6 +177,35 @@ fn the_recorded_gpt_response_and_input_output_usage_aliases_parse() -> TestResul
     let response = response?;
     assert_eq!(response.usage.input, 4026);
     assert_eq!(response.usage.output, 5192);
+    Ok(())
+}
+
+/// Dies when configured routing rides a search sent to a base URL the streaming request omits it for.
+#[test]
+fn routing_stays_off_a_search_whose_base_url_is_not_openrouter() -> TestResult {
+    let reply = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{DEEPSEEK_RESPONSE}",
+        DEEPSEEK_RESPONSE.len()
+    );
+    let (port, _, served) = crate::loopback_server::serve([reply])?;
+    let model = crate::common::model(
+        "deepseek/deepseek-v4-flash",
+        "openai-completions",
+        "openrouter",
+        &format!("http://127.0.0.1:{port}/api/v1"),
+        None,
+    );
+    let provider = OpenRouterSearch::new(
+        model,
+        Some(Secret::new("sekrit".to_owned())),
+        SearchEngine::new("exa")?,
+        None,
+        Some(json!({"order": ["Venice"]})),
+    )?;
+    let _ = provider.search(&request(5)?);
+    let requests = served.join().map_err(|_| "server thread panicked")?;
+    let body = request_body(requests.first().ok_or("no request reached the server")?)?;
+    assert_eq!(body["provider"], Value::Null);
     Ok(())
 }
 
