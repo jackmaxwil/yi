@@ -1,3 +1,6 @@
+mod auth;
+
+use auth::{HALF_MINUTE, auth_now};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -91,6 +94,7 @@ pub struct ProviderStream {
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
+    pub(crate) web_search: Arc<Mutex<Option<Arc<dyn yi_ai::search::SearchProvider>>>>,
     /// Set by `--faux` or a `faux/…` model: every model, whatever its provider, streams from
     /// the script (#943).
     force_faux: bool,
@@ -102,16 +106,6 @@ pub struct ProviderStream {
 
 type CursorStream =
     fn(&Arming, &Model, &LlmContext, &str, &InterruptSignal) -> Receiver<AssistantMessageEvent>;
-
-const HALF_MINUTE: std::time::Duration = std::time::Duration::from_secs(30);
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "deciding whether the streaming credential has expired is this fn's job"
-)]
-fn auth_now() -> std::time::SystemTime {
-    std::time::SystemTime::now()
-}
 
 impl ProviderStream {
     pub fn new(session_id: Option<String>) -> Self {
@@ -127,6 +121,7 @@ impl ProviderStream {
             proxy: None,
             routing: None,
             telemetry: None,
+            web_search: Arc::default(),
             force_faux: false,
             cursor: cursor_stream,
             settle: Mutex::new(None),
@@ -163,6 +158,7 @@ impl ProviderStream {
             proxy: self.proxy.clone(),
             routing: self.routing.clone(),
             telemetry: self.telemetry.clone(),
+            web_search: Arc::clone(&self.web_search),
             force_faux: self.force_faux,
             cursor: self.cursor,
             settle: Mutex::new(None),

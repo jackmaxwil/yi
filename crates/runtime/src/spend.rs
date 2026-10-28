@@ -169,6 +169,18 @@ impl SpendAlarm {
                     Measure::Usd => usage.cost.total.as_f64().unwrap_or(0.0),
                 }
             }
+            AgentEvent::MessageEnd {
+                message:
+                    AgentMessage::ToolResult {
+                        usage: Some(usage), ..
+                    },
+            } => {
+                self.unpriced |= usage.unknown;
+                match measure {
+                    Measure::Tokens => u64::try_from(usage.total_tokens).unwrap_or(0) as f64,
+                    Measure::Usd => usage.cost.total.as_f64().unwrap_or(0.0),
+                }
+            }
             AgentEvent::ChildUpdate { update } => {
                 let count = match measure {
                     Measure::Tokens => update.token_count as f64,

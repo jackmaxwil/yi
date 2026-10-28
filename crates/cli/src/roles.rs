@@ -32,3 +32,38 @@ pub(crate) fn selector_model() -> Option<Model> {
     let spec = crate::configured_roles().selector;
     role_model("selector", spec, "the reducer's cut stands alone")
 }
+
+pub(crate) fn web_search_model() -> Option<Model> {
+    let spec = crate::configured_roles()
+        .web_search
+        .unwrap_or_else(|| "openrouter/deepseek/deepseek-v4-flash".to_owned());
+    role_model("webSearch", Some(spec), "web search stays off")
+}
+
+pub(crate) fn web_search_provider(
+    proxy: Option<yi_runtime::ProxyConfig>,
+) -> Result<Option<std::sync::Arc<dyn yi_runtime::search::SearchProvider>>, String> {
+    let Some(model) = web_search_model() else {
+        return Ok(None);
+    };
+    let Some(credential) = yi_runtime::auth::resolve_with_proxy("openrouter", proxy.as_ref())
+    else {
+        return Ok(None);
+    };
+    let engine = crate::config()
+        .web_search
+        .as_ref()
+        .and_then(|search| search.engine.clone())
+        .unwrap_or_else(|| "exa".to_owned());
+    let engine =
+        yi_runtime::search::SearchEngine::new(engine).map_err(|error| error.to_string())?;
+    let provider = yi_runtime::search::OpenRouterSearch::new(
+        model,
+        Some(credential.secret),
+        engine,
+        proxy,
+        crate::config().routing.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(Some(std::sync::Arc::new(provider)))
+}

@@ -766,6 +766,15 @@ impl ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
+                    if let (Some(store), Some(usage)) = (&ledger, &output.result.usage) {
+                        crate::spend::append_main_usage(
+                            store,
+                            format!("tool:{name}"),
+                            usage.clone(),
+                            Some(output.result.details.clone()),
+                        )
+                        .ok();
+                    }
                     let failed =
                         yi_types::event::shown_failed(output.is_error, &output.result.details);
                     if let Some(hooks) = hooks.as_ref().filter(|_| failed || !cancel()) {

@@ -10,6 +10,7 @@ use yi_types::message::{AgentMessage, Usage};
 use yi_types::plan::canonical::sorted;
 use yi_types::plan::doc::OWNER_AGENT;
 use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
+use yi_types::record::LaneRecord;
 use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::cache_miss::diagnostic_detail;
@@ -188,7 +189,11 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                 part == "children" || part.starts_with("sub-")
             })
         });
-        for line in lines.filter(|line| line.contains("\"assistant\"") || line.contains(&plan_op)) {
+        for line in lines.filter(|line| {
+            line.contains("\"assistant\"")
+                || line.contains("tool:web_search")
+                || line.contains(&plan_op)
+        }) {
             if entry_stamp(line).is_some_and(|stamp| stamp > 0 && stamp < since_ms) {
                 continue;
             }
@@ -199,6 +204,47 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                     continue;
                 }
             };
+            if let Mutation::Record {
+                record:
+                    LaneRecord::Usage {
+                        id,
+                        cause,
+                        usage,
+                        details,
+                        timestamp,
+                        ..
+                    },
+            } = &parsed
+            {
+                if cause != "tool:web_search" {
+                    continue;
+                }
+                let at_ms = if *timestamp > 0 {
+                    *timestamp
+                } else {
+                    header.created_at
+                };
+                let key = format!("{}/{id}", header.id);
+                if at_ms >= since_ms && seen.insert(key) {
+                    let text = |field: &str| {
+                        details
+                            .as_ref()
+                            .and_then(|details: &serde_json::Value| details.get(field))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    };
+                    scan.requests.push(Request {
+                        session: header.id.clone(),
+                        child,
+                        at_ms,
+                        provider: text("provider").unwrap_or_default(),
+                        model: text("model").unwrap_or_default(),
+                        upstream: text("upstream"),
+                        usage: usage.clone(),
+                    });
+                }
+                continue;
+            }
             if let Mutation::Entry {
                 entry: Entry::Custom {
                     custom_type, data, ..
