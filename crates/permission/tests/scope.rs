@@ -299,6 +299,19 @@ fn a_redirect_after_cd_is_judged_from_the_directory_the_shell_uses() -> TestResu
             "crates/lock.rs",
         ),
         ("pushd evals && popd && echo hi > probe.py", "probe.py"),
+        (
+            "cmd & cd crates && echo hi > evals/probe.py",
+            "crates/evals/probe.py",
+        ),
+        (
+            "cat <<EOF \\\nbody\nEOF\ncd crates && echo hi > evals/probe.py",
+            "crates/evals/probe.py",
+        ),
+        ("cd evals extra; echo hi > crates/lock.rs", "crates/lock.rs"),
+        (
+            "cd /nonexistent || echo hi > crates/lock.rs",
+            "crates/lock.rs",
+        ),
     ] {
         let decision = scoped.bash(command);
         let reason = refusal(&decision).ok_or_else(|| format!("{command:?} was allowed"))?;
@@ -317,10 +330,16 @@ fn a_redirect_after_cd_is_judged_from_the_directory_the_shell_uses() -> TestResu
         "pushd evals && echo hi > probe.py",
         "echo hi | cat; echo hi > evals/probe.py",
         "cd /tmp && echo hi > probe.py",
+        "foo &\ncd evals; echo hi > probe.py",
     ] {
         let decision = scoped.bash(command);
         assert!(refusal(&decision).is_none(), "{command:?}: {decision:?}");
     }
+    let absolute = format!(
+        "cd - && cd {}/evals && echo hi > probe.py",
+        scoped.root.display()
+    );
+    assert!(refusal(&scoped.bash(&absolute)).is_none());
     let before = scoped.bash("echo hi > crates/before.rs && cd evals && echo hi > probe.py");
     let reason = refusal(&before).ok_or("the redirect before cd was missed")?;
     assert!(reason.contains("crates/before.rs"), "{reason}");

@@ -716,12 +716,10 @@ pub fn refused_scopes(command: &str) -> Vec<String> {
     scopes.dedup();
     scopes
 }
-
 pub(crate) struct RedirectTarget {
     pub(crate) path: String,
     pub(crate) directory_known: bool,
 }
-
 /// The files a command redirects into, read as the shell reads them: quotes, comments and heredoc
 /// bodies name nothing. A scope resolves static `cd` commands and fails closed on a dynamic one.
 pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectTarget> {
@@ -731,13 +729,13 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
     let (mut command_directory, mut continued) = (directory.clone(), false);
     let mut cd_applies = true;
     for line in command.split('\n') {
+        let continuing = std::mem::take(&mut continued);
         if let Some(end) = ends.first() {
             if line.trim() == end {
                 ends.remove(0);
             }
             continue;
         }
-        let continuing = std::mem::take(&mut continued);
         if quote.is_none() && depth == 0 && !continuing {
             command_start = true;
             cd_applies = !pipeline_tail;
@@ -798,8 +796,9 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                     command_start = false;
                 }
                 (None, ';' | '|' | '&') => {
-                    cd_applies = c == ';' || chars.next_if_eq(&c).is_some();
-                    if c != ';' && !cd_applies {
+                    let doubled = chars.next_if_eq(&c).is_some();
+                    cd_applies = c != '|' || doubled;
+                    if c == '|' || (c == '&' && !doubled) {
                         directory = command_directory.clone();
                     }
                     command_start = depth == 0;
@@ -820,15 +819,20 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                         let (mut after_cd, mut target) = (true, None);
                         let mut unknown = name == "popd";
                         while let Some(next) = word(&mut chars) {
-                            unknown |= name == "pushd" && next.starts_with(['-', '+']);
+                            unknown |= target.is_some()
+                                || (name == "pushd" && next.starts_with(['-', '+']));
                             if crate::catastrophic::cd_target(&next, &mut after_cd) {
                                 target = Some(next);
                             }
-                            if !after_cd {
-                                break;
-                            }
                         }
                         directory = match target {
+                            Some(target)
+                                if target != "-"
+                                    && !unknown
+                                    && std::path::Path::new(&target).is_absolute() =>
+                            {
+                                Some(target.into())
+                            }
                             Some(target) if target != "-" && !unknown => directory
                                 .as_deref()
                                 .map(|base| crate::catastrophic::resolve_target(&target, base)),
@@ -846,7 +850,6 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
     }
     files
 }
-
 /// What a command writes as an honest agent spells it: redirects (which the lenient splitter
 /// skips), in-place edits, file verbs. `2>&1` names no file.
 pub fn write_targets(command: &str) -> Vec<String> {
