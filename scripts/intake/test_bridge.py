@@ -132,6 +132,24 @@ def check_caps() -> None:
     for case in at_cap:
         assert bridge.evaluate(case) == bridge.ALLOW
 
+def check_rewrite_helper() -> None:
+    env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+    with tempfile.TemporaryDirectory(prefix="intake-rewrite-") as temp:
+        source = pathlib.Path(temp) / "source"
+        rewritten = pathlib.Path(temp) / "rewritten.git"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+        (source / "README").write_text("safe fixture\n")
+        subprocess.run(["git", "-C", str(source), "add", "README"], check=True)
+        subprocess.run(["git", "-C", str(source), "-c", "core.hooksPath=/dev/null", "commit", "-m", "Base"], env=env, check=True, capture_output=True)
+        original = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+        out = subprocess.run(["bash", str(ROOT / "scripts/mirror/rewrite.sh"), str(source), str(rewritten)], capture_output=True, text=True, check=True)
+        assert out.stdout.strip() == original, out.stdout
+        mirror = subprocess.check_output(["git", "-C", str(rewritten), "rev-parse", "main"], text=True).strip()
+        mapping = bridge.parse_commit_map(rewritten / "filter-repo/commit-map")
+        assert mapping[original] == mirror
+        assert {new: old for old, new in mapping.items()}[mirror] == original
+
+
 def check_real_patch_edges() -> None:
     env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
     with tempfile.TemporaryDirectory(prefix="intake-mode-patch-") as temp:
@@ -277,6 +295,7 @@ EXPECTED = {
 def selfcheck() -> int:
     assert len(bridge.CHECKS) == 25
     check_real_fixture()
+    check_rewrite_helper()
     check_real_patch_edges()
     check_signed_object()
     valid = valid_case()
