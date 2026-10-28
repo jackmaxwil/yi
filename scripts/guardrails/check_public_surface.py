@@ -92,6 +92,14 @@ def selfcheck():
     assert history(log, deny, []) == ["p/planted: +estate.lan", "(message): estate.lan"]
     # The planted fakes are skipped by the list GitGuardian already reads.
     assert "**/fixtures/planted*" in unscanned()
+    for path in (
+        "crates/oauth/tests/device_login.rs",
+        "crates/oauth/tests/flow.rs",
+        "crates/runtime/tests/kept_rules.rs",
+        "docs/archive/plans/2026-09-06-prompt-surface/prior-art-codex-jcode.md",
+        "docs/archive/plans/2026-09-06-prompt-surface/openai.md",
+    ):
+        assert path not in unscanned(), f"public-surface scanning skips real source: {path}"
     print("ok   public_surface --selfcheck")
 
 def main():

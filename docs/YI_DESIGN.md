@@ -1398,4 +1398,5 @@ They are development tools, not Rust crate dependencies, so §18.3 gains no depe
 Also run: `codespell`, the `python/yi_runtime` unittests, `evals/selftest.py`, each script's
 `--selfcheck`, `cargo doc` (§19), `cargo machete` and `cargo deny` (§18.1); a missing tool fails
 its gate except the announced local offline `check_scan` skip, which CI refuses.
+Settled by: D68, D70, D76, D91, D106, D109, D172, D188.
 

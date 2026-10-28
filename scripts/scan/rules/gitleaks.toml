@@ -38,3 +38,15 @@ id = "yi-aws-access-key"
 description = "AWS access key pair"
 regex = '''\bAKIA[0-9A-Z]{16}\b'''
 keywords = ["akia"]
+
+[[allowlists]]
+description = "RFC examples and test-only sentinel values, not credentials"
+regexTarget = "secret"
+regexes = [
+  '''2YotnFZFEjr1zCsicMWpAA''',
+  '''tGzv3JOkF0XG5Qx2TlKWIA''',
+  '''e30\.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC03In19\.sig''',
+  '''SECRET=hunter2''',
+  '''consecutive-401''',
+  '''gpt-5\.6-sol\.md''',
+]

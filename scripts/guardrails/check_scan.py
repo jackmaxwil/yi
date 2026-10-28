@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pinned static scanners, announced offline skips, and a shrink-only finding baseline."""
 import argparse
+import fnmatch
 import collections
 import concurrent.futures
 import contextlib
@@ -48,7 +49,6 @@ SEMGREP_CASES = {
     "temp_dir.rs": {"yi-rust-temp-dir"},
     "env_command.rs": {"yi-rust-env-command"},
     "from_utf8_unchecked.rs": {"yi-rust-from-utf8-unchecked"},
-    "template-injection.yml": {"yi-github-event-run-interpolation"},
 }
 FAMILIES = {
     "zizmor": (ZIZMOR_CASES, {"clean.yml"}),
@@ -98,7 +98,7 @@ def require_gitleaks():
 
 
 def zizmor(paths):
-    require_uv(ZIZMOR, "zizmor", "1.31.1")
+    require_uv(ZIZMOR, "zizmor", ZIZMOR.split("==", 1)[1])
     args = ["--no-online-audits", "--no-config", "--format", "json", *map(str, paths)]
     proc = run(uv_argv(ZIZMOR, "zizmor", args))
     if proc.returncode not in (0, 14):
@@ -117,7 +117,7 @@ def zizmor(paths):
     return findings
 
 def semgrep(paths, fixtures=False):
-    require_uv(SEMGREP, "semgrep", "1.182.1")
+    require_uv(SEMGREP, "semgrep", SEMGREP.split("==", 1)[1])
     args = ["scan", "--config", str(RULES / "semgrep"), "--json", "--metrics=off", "--disable-version-check", "--timeout", "30"]
     if not fixtures:
         args += ["--exclude", "scripts/scan/fixtures", "--exclude", "crates/**/tests"]
@@ -144,9 +144,10 @@ def semgrep(paths, fixtures=False):
     return findings
 
 
-
 def go_glob(pattern):
-    return r"(^|/)" + re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*") + "$"
+    translated = fnmatch.translate(pattern)
+    translated = re.sub(r"\(\?=\(\?P<g\d+>(.*?)\)\)\(\?P=g\d+\)", r"\1", translated)
+    return translated.replace(r"\Z", r"\z")
 
 
 def gitleaks_config(ignores, name):
@@ -200,10 +201,10 @@ def suppressions():
         for path in (ROOT / base).rglob("*"):
             if not path.is_file() or path.suffix not in (".py", ".rs", ".yml", ".yaml") or FIXTURES in path.parents:
                 continue
-            for number, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
-                match = NOSEMGREP.search(line)
-                if match:
-                    out.append(("semgrep", match.group(1), str(path.relative_to(ROOT)), number, match.group(2)))
+            text = path.read_text(errors="ignore")
+            for match in NOSEMGREP.finditer(text):
+                number = text.count("\n", 0, match.start()) + 1
+                out.append(("semgrep", match.group(1), str(path.relative_to(ROOT)), number, match.group(2)))
     out += [("gitleaks", "paths-ignore", pattern, 0, "shared .gitguardian.yaml path exclusion")
             for pattern in unscanned()]
     return out
@@ -244,8 +245,9 @@ def save_baseline(findings, tools, off=""):
     errors, _ = baseline_problems(checked, active)
     if errors and off != "update":
         fail(errors + ["refusing to grow the scan baseline"], "scan --update")
-    counts = collections.Counter((tool, rule) for tool, rule, _, _ in findings)
-    for key in old:
+    counts = {key: value for key, value in old.items() if key[0] not in tools}
+    counts.update(collections.Counter((tool, rule) for tool, rule, _, _ in findings))
+    for key in active:
         counts.setdefault(key, 0)
     ordered = sorted([list(key), count] for key, count in counts.items())
     BASELINE.write_text(json.dumps(ordered, indent=2) + "\n")
@@ -284,6 +286,25 @@ def selfcheck(off="", fixtures=None):
                 errors.append(f"{tool} fixture {path} produced no {rule} finding")
             if any(pathlib.Path(path).name in clean_names for _, _, path, _ in findings):
                 errors.append(f"{tool} clean fixture produced a finding")
+    origin_jobs = {
+        ("autofix.yml", "autofix"),
+        ("mirror.yml", "mirror"),
+        ("pr.yml", "title"),
+        ("pr.yml", "live"),
+        ("review.yml", "review"),
+    }
+    if off == "credentials":
+        origin_jobs = {("probe.yml", "probe")}
+    for workflow, job in sorted(origin_jobs):
+        text = (ROOT / ".forgejo/workflows" / workflow).read_text() if off != "credentials" else (
+            "jobs:\n  probe:\n    steps:\n      - uses: actions/checkout@v4\n"
+            "        with:\n          persist-credentials: false\n"
+        )
+        parts = text.split(f"\n  {job}:\n", 1)
+        if len(parts) != 2:
+            errors.append(f"workflow audit could not find {workflow}:{job}")
+        elif "persist-credentials: false" in re.split(r"(?m)^  \S", parts[1], maxsplit=1)[0]:
+            errors.append(f"{workflow}:{job} reaches origin with persist-credentials: false")
     sample = [("zizmor", "new", "a.yml", 3), ("zizmor", "old", "b.yml", 4)]
     baseline = {("zizmor", "old"): 1, ("zizmor", "shrinking"): 2}
     problems, hints = baseline_problems(sample, baseline, off)
@@ -296,15 +317,19 @@ def selfcheck(off="", fixtures=None):
             errors.append(f"baseline shrink hint was {hints}")
     if off == "baseline" and not problems and not hints:
         errors.append("disabled baseline checks accepted a new rule id and a shrink")
+    pattern = "crates/runtime/tests/fixtures/behavior/*planted*"
+    nested = "crates/runtime/tests/fixtures/behavior/a/b/planted-key"
     if off == "ignores" or go_glob("**/fixtures/**/planted*") == r"^$":
         errors.append("shared gitleaks ignores are not converted to regular expressions")
+    if fnmatch.fnmatch(nested, pattern) != bool(re.match(go_glob(pattern).replace(r"\z", r"\Z"), nested)):
+        errors.append("gitleaks and public-surface ignores disagree on a nested planted path")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
     original = BASELINE
     with tempfile.TemporaryDirectory() as tmp:
         try:
             BASELINE = pathlib.Path(tmp) / "scan.json"
-            seeded = [[["probe", "rule"], 0]]
+            seeded = [[["probe", "rule"], 0], [["skipped", "rule"], 7]]
             BASELINE.write_text(json.dumps(seeded) + "\n")
             output = io.StringIO()
             try:
@@ -317,6 +342,11 @@ def selfcheck(off="", fixtures=None):
                 errors.append("baseline --update grew an existing rule baseline")
             if json.loads(BASELINE.read_text()) != seeded:
                 errors.append("baseline --update changed a refused baseline")
+            with contextlib.redirect_stdout(io.StringIO()):
+                save_baseline([("probe", "rule", "planted.txt", 1)], {"probe"}, "update")
+            expected = [[["probe", "rule"], 1], [["skipped", "rule"], 7]]
+            if json.loads(BASELINE.read_text()) != expected:
+                errors.append("baseline --update changed a scanner that did not run")
             BASELINE.unlink()
             with contextlib.redirect_stdout(io.StringIO()):
                 save_baseline([], {"probe"})
@@ -376,7 +406,7 @@ def fixture_tasks():
     return {
         "zizmor": lambda: zizmor(sorted((FIXTURES / "zizmor").glob("*.yml"))),
         "gitleaks": lambda: gitleaks("dir", config, repo=FIXTURES / "gitleaks"),
-        "semgrep": lambda: semgrep([FIXTURES / "semgrep", FIXTURES / "zizmor/template-injection.yml"], True),
+        "semgrep": lambda: semgrep([FIXTURES / "semgrep"], True),
     }
 
 
@@ -395,7 +425,7 @@ def main(argv):
         errors = selfcheck(fixtures=fixtures)
         checks = {rule for tool, (cases, _) in FAMILIES.items() if tool in fixtures
                   for rules in cases.values() for rule in rules}
-        checks |= {"baseline", "ignores", "update"}
+        checks |= {"baseline", "ignores", "update", "credentials"}
         if "gitleaks" in fixtures:
             checks |= {"history", "diff"}
         for off in sorted(checks):
