@@ -151,6 +151,7 @@ pub fn host_of(url: &str) -> &str {
     rest.split_once(':').map_or(rest, |(host, _)| host)
 }
 
+pub const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const ERROR_BODY_CAP: u64 = 2048;
 
 fn agent(url: &str, proxy: Option<&ProxyConfig>, read_timeout: std::time::Duration) -> ureq::Agent {
@@ -183,7 +184,7 @@ pub fn get_json(
     proxy: Option<&ProxyConfig>,
     cap: usize,
 ) -> Result<Value, String> {
-    let mut request = agent(url, proxy, std::time::Duration::from_secs(20))
+    let mut request = agent(url, proxy, DEFAULT_READ_TIMEOUT)
         .get(url)
         .set("accept", "application/json");
     for (name, value) in headers {

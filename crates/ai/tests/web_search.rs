@@ -33,6 +33,7 @@ fn call(
     body: &str,
     model_id: &str,
     routing: Option<Value>,
+    base_url: Option<&str>,
 ) -> Result<(Result<SearchResponse, SearchError>, String), Box<dyn Error>> {
     let reply = format!(
         "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -40,13 +41,12 @@ fn call(
     );
     let (port, _, served) = crate::loopback_server::serve([reply])?;
     let loopback = format!("http://127.0.0.1:{port}");
-    let (base_url, proxy) = if routing.is_some() {
-        (
-            "http://openrouter.ai.invalid/api/v1".to_owned(),
+    let (base_url, proxy) = match base_url {
+        Some(base_url) => (
+            base_url.to_owned(),
             yi_ai::request::ProxyConfig::from_values(Some(&loopback), None, None)?,
-        )
-    } else {
-        (format!("{loopback}/api/v1"), None)
+        ),
+        None => (format!("{loopback}/api/v1"), None),
     };
     let model = crate::common::model(
         model_id,
@@ -82,6 +82,7 @@ fn the_recorded_deepseek_exchange_preserves_request_citations_usage_and_cost() -
         "200 OK",
         DEEPSEEK_RESPONSE,
         "deepseek/deepseek-v4-flash",
+        None,
         None,
     )?;
     assert_eq!(
@@ -145,6 +146,7 @@ fn the_recorded_gpt_response_and_input_output_usage_aliases_parse() -> TestResul
         GPT_RESPONSE,
         "openai/gpt-5-nano",
         None,
+        None,
     )?;
     assert_eq!(
         crate::loopback::json_body(&captured)?,
@@ -173,6 +175,7 @@ fn the_recorded_gpt_response_and_input_output_usage_aliases_parse() -> TestResul
         &aliased.to_string(),
         "openai/gpt-5-nano",
         None,
+        None,
     )?;
     let response = response?;
     assert_eq!(response.usage.input, 4026);
@@ -183,28 +186,15 @@ fn the_recorded_gpt_response_and_input_output_usage_aliases_parse() -> TestResul
 /// Dies when configured routing rides a search sent to a base URL the streaming request omits it for.
 #[test]
 fn routing_stays_off_a_search_whose_base_url_is_not_openrouter() -> TestResult {
-    let reply = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{DEEPSEEK_RESPONSE}",
-        DEEPSEEK_RESPONSE.len()
-    );
-    let (port, _, served) = crate::loopback_server::serve([reply])?;
-    let model = crate::common::model(
+    let (_, captured) = call(
+        &request(5)?,
+        "200 OK",
+        DEEPSEEK_RESPONSE,
         "deepseek/deepseek-v4-flash",
-        "openai-completions",
-        "openrouter",
-        &format!("http://127.0.0.1:{port}/api/v1"),
-        None,
-    );
-    let provider = OpenRouterSearch::new(
-        model,
-        Some(Secret::new("sekrit".to_owned())),
-        SearchEngine::new("exa")?,
-        None,
         Some(json!({"order": ["Venice"]})),
+        None,
     )?;
-    let _ = provider.search(&request(5)?);
-    let requests = served.join().map_err(|_| "server thread panicked")?;
-    let body = request_body(requests.first().ok_or("no request reached the server")?)?;
+    let body = request_body(&captured)?;
     assert_eq!(body["provider"], Value::Null);
     Ok(())
 }
@@ -221,6 +211,7 @@ fn count_limits_domains_mode_and_routing_reach_the_exact_wire_fields() -> TestRe
             DEEPSEEK_RESPONSE,
             "deepseek/deepseek-v4-flash",
             Some(json!({"order": ["Venice"]})),
+            Some("http://openrouter.ai.invalid/api/v1"),
         )?;
         let body = crate::loopback::json_body(&captured)?;
         let parameters = &body["tools"][0]["parameters"];
@@ -229,7 +220,7 @@ fn count_limits_domains_mode_and_routing_reach_the_exact_wire_fields() -> TestRe
         assert_eq!(parameters["max_uses"], 1);
         assert_eq!(parameters["allowed_domains"], json!(["doc.rust-lang.org"]));
         assert_eq!(parameters["mode"], "deep-reasoning");
-        assert!(body.get("provider").is_none());
+        assert_eq!(body["provider"], json!({"order": ["Venice"]}));
         assert_eq!(body["messages"][0]["content"], INSTRUCTION);
         assert_eq!(body["stream"], false);
     }
@@ -253,6 +244,7 @@ fn malformed_json_is_a_protocol_error() -> TestResult {
         "not json",
         "deepseek/deepseek-v4-flash",
         None,
+        None,
     )?;
     assert!(matches!(response, Err(SearchError::Protocol(_))));
     Ok(())
@@ -267,11 +259,12 @@ fn http_failures_keep_their_status_and_hide_the_credential() -> TestResult {
             r#"{"error":{"message":"bad engine; do not echo sekrit"}}"#,
             "deepseek/deepseek-v4-flash",
             None,
+            None,
         )?;
         match response {
             Err(SearchError::Http { status, message }) => {
                 assert_eq!(status, code);
-                assert!(!message.contains("bad engine"));
+                assert!(message.contains("bad engine"));
                 assert!(!message.contains("sekrit"));
             }
             other => return Err(format!("expected HTTP {code}, got {other:?}").into()),
@@ -289,6 +282,7 @@ fn zero_annotations_is_distinct_from_a_malformed_response_and_keeps_its_cost() -
         "200 OK",
         &body.to_string(),
         "deepseek/deepseek-v4-flash",
+        None,
         None,
     )?;
     let Err(SearchError::Billed { error, usage }) = response else {
