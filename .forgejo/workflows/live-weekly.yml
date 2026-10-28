@@ -17,12 +17,13 @@ jobs:
   # Every leg skips with its reason when its secret is absent.
   live-weekly:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           fetch-depth: 0
-          persist-credentials: false
       - run: rustup show
       # `test` is the key postmerge saves on main; a key of its own stays cold (see pr.yml).
       - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.

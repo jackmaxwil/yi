@@ -19,12 +19,13 @@ jobs:
   # row it existed for.
   postmerge:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           fetch-depth: 0
-          persist-credentials: false
       - run: rustup show
       # `test` is the PR gate's heaviest lane and the journeys build the same
       # dev profile, so a cache saved here — on refs/heads/main, the one scope
