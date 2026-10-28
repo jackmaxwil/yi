@@ -374,18 +374,14 @@ fn spawn_reader(family: &crate::reader_e2e::Family) -> Result<String, Box<dyn Er
 }
 
 async fn all_readers_finished(family: &crate::reader_e2e::Family, count: usize) -> bool {
-    for _ in 0..400 {
+    crate::support::wait_until(12_000, || {
         let states = family.host.states();
-        if states.len() == count
+        states.len() == count
             && states
                 .iter()
                 .all(|view| view.state == MemberState::Finished)
-        {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    }
-    false
+    })
+    .await
 }
 
 #[tokio::test]
@@ -425,6 +421,7 @@ async fn a_wide_wait_reply_counts_states_and_names_only_the_mover() -> TestResul
     let reply = family.host.wait(1_000, Some(cursor)).await?;
     let bytes = serde_json::to_vec(&reply)?.len();
     println!("WAIT_REPLY_BYTES={bytes}");
+    assert!(bytes <= 4_096, "wait reply is {bytes} B, over 4,096 B");
     assert_eq!(reply["states"].as_object().map(Map::len), Some(1));
     assert_eq!(reply["states"][&last], json!("finished"));
     let counts = reply["counts"].as_object().ok_or("counts")?;
@@ -434,19 +431,19 @@ async fn a_wide_wait_reply_counts_states_and_names_only_the_mover() -> TestResul
 }
 
 #[tokio::test]
-async fn a_settled_wait_lists_every_finished_reader() -> TestResult {
+async fn a_settled_wait_lists_only_the_finished_mover() -> TestResult {
     let family = faux_reader_family(3)?;
-    let mut names = vec![spawn_reader(&family)?, spawn_reader(&family)?];
+    spawn_reader(&family)?;
+    spawn_reader(&family)?;
     assert!(all_readers_finished(&family, 2).await);
     let cursor = family.host.wait(1_000, Some(0)).await?["cursor"]
         .as_u64()
         .ok_or("cursor")?;
-    names.push(spawn_reader(&family)?);
+    let last = spawn_reader(&family)?;
     assert!(all_readers_finished(&family, 3).await);
     let reply = family.host.wait(1_000, Some(cursor)).await?;
-    names.sort();
     assert_eq!(reply["state"], json!("settled"));
     assert_eq!(reply["states"].as_object().map(Map::len), Some(1));
-    assert_eq!(reply["finished"], json!(names));
+    assert_eq!(reply["finished"], json!([last]));
     Ok(())
 }

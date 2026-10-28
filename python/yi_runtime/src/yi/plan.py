@@ -312,14 +312,10 @@ class Todo:
             if reply is None:
                 continue
             cursor = reply.get("cursor", cursor)
-            states = reply.get("states") or {}
-            causes = reply.get("causes")
-            if child in states:
-                state = states[child]
-            elif not isinstance(causes, dict) or causes.get(child) == "reaped":
-                raise PlanError(f"child {child} is not registered with this session")
-            if child in states or (isinstance(causes, dict) and child in causes):
-                note = (reply.get("notes") or {}).get(child)
+            try:
+                state, note = await rlm._digest_child(reply, child)
+            except rlm.NoSuchChild as error:
+                raise PlanError(f"child {child} is not registered with this session") from error
             if state in ("finished", "failed", "needs_you"):
                 try:
                     return await rlm.result(child, schema=schema)
@@ -704,16 +700,7 @@ class Run:
             if reply is None:
                 return settled
             self._cursor = reply.get("cursor", self._cursor)
-            if "counts" in reply:
-                for child, cause in (reply.get("causes") or {}).items():
-                    self._notes.pop(child, None)
-                    if cause == "reaped":
-                        self._states.pop(child, None)
-                self._states.update(reply.get("states") or {})
-                self._notes.update(reply.get("notes") or {})
-            else:
-                self._states = reply.get("states") or {}
-                self._notes = reply.get("notes") or {}
+            self._states, self._notes = rlm._merge_digest(reply, self._states, self._notes)
         elif not self._reaped:
             return settled
         self._reaped = False

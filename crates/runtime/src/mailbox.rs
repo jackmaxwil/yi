@@ -602,12 +602,9 @@ impl SubagentHost {
                 causes.insert(name, Value::from("asks"));
             }
         }
-        let mut counts = std::collections::BTreeMap::<&str, u64>::new();
+        let (counts, views) = self.wait_states(&causes);
         let (mut states, mut notes) = (Map::new(), Map::new());
-        let views = self.states();
         for v in &views {
-            let c = counts.entry(v.state.as_str()).or_default();
-            *c = c.saturating_add(1);
             if causes.contains_key(&v.name) {
                 states.insert(v.name.clone(), json!(v.state.as_str()));
                 notes.extend(v.note.as_ref().map(|n| (v.name.clone(), json!(n))));
@@ -616,7 +613,11 @@ impl SubagentHost {
         let mut reply = Map::new();
         reply.insert("state".to_owned(), Value::from(state));
         if state == "settled" {
-            let finished: Vec<&str> = views.iter().map(|view| view.name.as_str()).collect();
+            let finished: Vec<&str> = views
+                .iter()
+                .filter(|view| causes.contains_key(&view.name))
+                .map(|view| view.name.as_str())
+                .collect();
             reply.insert("finished".to_owned(), json!(finished));
         }
         reply.insert("cursor".to_owned(), Value::from(epoch));

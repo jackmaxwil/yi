@@ -94,6 +94,11 @@ class FakeHost:
             changed = sorted({name for name, _ in self.changes[payload.get("cursor") or 0 :]})
             self.waits.append((payload.get("cursor"), changed))
             return self.digest(len(self.changes), changed)
+        if kind == "rlm.status":
+            name = payload.get("name")
+            members = [{"name": child, "state": state, "note": self.notes.get(child)}
+                       for child, state in self.children.items() if name is None or child == name]
+            return {"members": members}
         if kind == "rlm.result":
             answer = self.results[payload["target"]]
             if isinstance(answer, Exception):
