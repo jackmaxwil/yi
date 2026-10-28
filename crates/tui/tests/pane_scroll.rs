@@ -398,6 +398,35 @@ fn still_holds_the_view_and_marks_hidden_rows_at_a_nonzero_offset() -> TestResul
 }
 
 #[test]
+fn still_marker_lands_on_vt100_at_a_nonzero_offset() -> TestResult {
+    let backend = common::VT100Backend::with_scrollback(80, 40, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    terminal.set_viewport_area(Rect::new(0, 0, 80, 40));
+    let mut app = seeded();
+    app.set_follow(FollowMode::Still);
+    let area = Rect::new(7, 5, AREA.width, 30);
+    let mut scroll = 0;
+    terminal.draw(|frame| {
+        let _ = yi_tui::render::paint_pane(&mut app, None, frame.buffer_mut(), area, &mut scroll);
+    })?;
+    let code: Vec<String> = (0..20).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    terminal.draw(|frame| {
+        let _ = yi_tui::render::paint_pane(&mut app, None, frame.buffer_mut(), area, &mut scroll);
+    })?;
+    let rows: Vec<String> = (0..40)
+        .map(|row| terminal.backend().row_text(row))
+        .collect();
+    assert!(
+        rows.iter().any(|row| row.contains("more rows · PgDn")),
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn still_page_down_reveals_rows_and_a_prompt_returns_to_bottom() -> TestResult {
     let mut app = seeded();
     app.set_follow(FollowMode::Still);

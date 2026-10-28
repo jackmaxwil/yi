@@ -1,6 +1,6 @@
 ---
 issue: Closes #1711
-raise: tests +258, comments +1, crate cli +62, crate console +132, crate tui +102, crate types +12
+raise: tests +287, comments +1, crate cli +62, crate console +132, crate tui +102, crate types +12
 growth: +308 shared paint_pane and card seams carry the modes and bounded reservation; TuiOptions and AnswerRows moved to satisfy file caps instead of adding a scheduler or parallel follow state
 decision: "Hybrid page jumps + streaming text" | "reduce visual movement giving user motion sickness" | reversible via tui.follow: slide
 decision: "Yes, use Still" | "No I am only talking about the terminal text stream" | reversible via an explicit tui.follow setting
