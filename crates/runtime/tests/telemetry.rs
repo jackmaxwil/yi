@@ -300,6 +300,15 @@ fn error_classes_render_a_closed_vocabulary() {
         ErrorClass::from_provider_text("invalid proxy x").to_string(),
         "transport:proxy"
     );
+    // Only the ai layer's stamp is final; a throttle body that says it too still retries.
+    assert_eq!(
+        ErrorClass::from_provider_text("HTTP 429 quota exhausted: {}").to_string(),
+        "provider:quota"
+    );
+    assert_eq!(
+        ErrorClass::from_provider_text("HTTP 429: per-minute token quota exhausted").to_string(),
+        "transport:http_429"
+    );
     assert_eq!(
         ErrorClass::from_provider_text("model went away").to_string(),
         "provider:error"
