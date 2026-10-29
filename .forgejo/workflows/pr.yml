@@ -65,6 +65,12 @@ jobs:
           # main saves (postmerge `warm`); a PR's own multi-GB save is readable
           # only by later runs of that PR and costs the shared disk every push.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # scripts/intake's selfcheck rewrites a scratch repo with the mirror's own filter, which
+      # the gate image does not ship; the pin is scripts/mirror/filter-repo.version.
+      - if: matrix.lane == 'guardrails'
+        run: |
+          uv tool install "git-filter-repo==$(cat scripts/mirror/filter-repo.version)"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: just lane ${{ matrix.lane }}
       # A failing test keeps a copy of its scratch dir under target/tmp/failed, and every console
       # drive run its frames under target/tmp/drive.

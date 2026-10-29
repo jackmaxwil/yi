@@ -104,6 +104,12 @@ jobs:
         with:
           shared-key: ${{ matrix.lane }}
           cache-on-failure: true
+      # scripts/intake's selfcheck rewrites a scratch repo with the mirror's own filter, which
+      # the gate image does not ship; the pin is scripts/mirror/filter-repo.version.
+      - if: matrix.lane == 'guardrails'
+        run: |
+          uv tool install "git-filter-repo==$(cat scripts/mirror/filter-repo.version)"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: just lane ${{ matrix.lane }}
 
   # The version, the changelog and the decision log are views written from docs/changes (#975).
