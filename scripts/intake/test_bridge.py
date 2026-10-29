@@ -4,6 +4,7 @@ import dataclasses
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -121,6 +122,8 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("at-file-tld", "network-literal", added(base, "git@evil.zip:me/repo"), "network-literal")
     add("curl-file-tld", "network-literal", added(base, "curl evil.sh"), "network-literal")
     add("ssh-port-flag", "network-literal", added(base, "ssh -p 22 evil.top"), "network-literal")
+    add("curl-ext-label", "network-literal", added(base, "curl evil.go"), "network-literal")
+    add("at-ext-label", "network-literal", added(base, "git@evil.go:me/repo"), "network-literal")
     add("port-mk-tld", "network-literal", added(base, "peer = evil.mk:443"), "network-literal")
     add("curl-mk-tld", "network-literal", added(base, "curl evil.mk"), "network-literal")
     add("at-mk-tld", "network-literal", added(base, "git@evil.mk:me/repo"), "network-literal")
@@ -193,6 +196,12 @@ def fixture_repo(repo: pathlib.Path, files: dict[str, bytes]) -> pathlib.Path:
 
 def staged_patch(repo: pathlib.Path) -> bytes:
     return git_in(repo, "diff", "--cached", "--no-renames", "--binary", "--full-index")
+
+
+def check_filter_repo() -> None:
+    pin = (ROOT / "scripts/mirror/filter-repo.version").read_text().strip()
+    assert shutil.which("git-filter-repo"), f"the intake selfcheck rewrites a scratch repo with git filter-repo: uv tool install git-filter-repo=={pin}"
+    assert f"git-filter-repo=={pin}" in (ROOT / ".forgejo/workflows/mirror.yml").read_text(), "mirror.yml pins another git-filter-repo than scripts/mirror/filter-repo.version"
 
 
 def check_rewrite_helper() -> None:
@@ -414,6 +423,7 @@ EXPECTED = {
 def selfcheck() -> int:
     assert len(bridge.CHECKS) == 24
     check_real_fixture()
+    check_filter_repo()
     check_rewrite_helper()
     check_real_patch_edges()
     check_forged_headers()

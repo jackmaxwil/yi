@@ -338,14 +338,15 @@ COMMON = "com|net|org|edu|gov|mil|io|dev|app|cloud|lan|local|internal|invalid|on
 FILE_EXT = "toml|jsonl?|ya?ml|txt|lock|js|ts|tsx|jsx|mjs|cjs|cfg|ini|conf|log|html?|css|csv|xml|svg|sql|go|zig|cpp|hpp|cxx|hxx|rb|java|kt|cs|php|swift|proto|lua|exs?|rst|tex|png|jpe?g|gif|pdf|webp|ico|wasm"
 FILE_TLD = "rs|md|py|sh"
 WELL_KNOWN = "22|25|53|80|110|143|443|465|587|993|995|1080|3128|8000|8080|8443|8888|9000"
-NET_HOST = rf"{LABELS}(?!(?:{FILE_EXT})\b)[a-z]{{2,}}\b"
+ANY_HOST = rf"{LABELS}[a-z]{{2,}}\b"
+FILE_FREE_HOST = rf"{LABELS}(?!(?:{FILE_EXT})\b)[a-z]{{2,}}\b"
 HOSTNAME = re.compile(
     rf"(?i)\b{LABELS}(?:{COMMON})\b(?!\(|\.\w+\()"
     rf"|(?<![\w.]){LABELS}(?!(?:{FILE_EXT}|{FILE_TLD})\b)[a-z]{{2,}}:\d{{1,5}}\b"
     rf"|(?<![\w.])(?<![^/]/){LABELS}(?:{FILE_TLD}):(?:{WELL_KNOWN})\b"
-    rf"|(?<=\w)@{NET_HOST}"
-    rf"|\b(?:scp|rsync)\b[^\n]*?\s{NET_HOST}::?"
-    rf"|\b(?:curl|wget|ssh|sftp|nc|ncat|telnet|ping|dig|nslookup)\b(?:\s+-\S+(?:\s+(?:\d+|\"[^\"]*\"|'[^']*'))?)*\s+{NET_HOST}"
+    rf"|(?<=\w)@{ANY_HOST}"
+    rf"|\b(?:scp|rsync)\b[^\n]*?\s{FILE_FREE_HOST}::?"
+    rf"|\b(?:curl|wget|ssh|sftp|nc|ncat|telnet|ping|dig|nslookup)\b(?:\s+-\S+(?:\s+(?:\d+|\"[^\"]*\"|'[^']*'))?)*\s+{ANY_HOST}"
 )
 # The keyword may sit alone before its brace on the next line, so a prose line ending in it is refused too.
 UNSAFE = re.compile(r"\bunsafe\s*(?:\{|//|/\*|$)|\bunsafe\s+(?:fn|impl|trait|extern)\b|(?:#!?\[|cfg_attr\().*\bunsafe\s*\(|^\s*unsafe\s*\(")
