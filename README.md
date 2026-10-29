@@ -16,11 +16,13 @@ The installer takes this machine's archive from the latest [release](https://git
 installs it only if its sha256 matches the release's `SHA256SUMS`, and puts `yi` in `~/.local/bin`
 and its Python runtime and skills in `~/.yi`. Releases are built for macOS on Apple Silicon
 (`aarch64-apple-darwin`) and signed with the owner's release key, which the installer checks when
-`ssh-keygen` is on PATH; `| bash -s -- --help` prints that key and changes nothing. By hand:
+`ssh-keygen` is on PATH; `| bash -s -- --help` prints that key and changes nothing. By hand, with
+the same key written from this page rather than fetched beside the archive:
 
 ```bash
 v=X.Y.Z t=aarch64-apple-darwin; base=https://github.com/jackmaxwil/yi/releases/download/v$v; a=yi-$v-$t.tar.gz
-curl -fLO "$base/$a" -O "$base/$a.sig" -O "$base/SHA256SUMS" -O https://raw.githubusercontent.com/jackmaxwil/yi/main/allowed_signers
+curl -fLO "$base/$a" -O "$base/$a.sig" -O "$base/SHA256SUMS"
+echo 'jackmaxwil-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICRKvW82jaXOFg8jkpg7ZHj8YkZ5TKQr9U1bU1ygJiAj' > allowed_signers
 shasum -a 256 -c SHA256SUMS --ignore-missing && ssh-keygen -Y verify -f allowed_signers -I jackmaxwil-release -n yi-release -s "$a.sig" < "$a"
 tar -xzf "$a" && "./yi-$v-$t/install.sh"
 ```
