@@ -1,4 +1,5 @@
 ---
+version: 0.701.0
 issue: Closes #1431
 growth: +249 the per-session cell store in `ConsoleState::notebooks` with `apply_notebook`'s caps (stdout and stderr 8 KiB, result 2 KiB, at most 4 images of at most 512 KiB each, each cut speaking a `[…]` row that names its own cap), the one `notebook_cells` lookup shared by render, the idle close and the image follow, and four tests (the cap rows, the close-and-reopen incident, the re-pointed pane); weighed dropping a session's cells when its pane closes (the incident is that they must survive), truncating a base64 image in place (a cut payload is a corrupt PNG) and deleting the rendered-rows cache (a 50-cell notebook at the caps wraps in about 240 ms in a debug build, so the cache stays and `bind_pane` clears it)
 raise: crate console +249

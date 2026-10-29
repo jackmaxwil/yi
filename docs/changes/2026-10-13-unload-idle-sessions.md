@@ -1,4 +1,6 @@
 ---
+version: 0.785.0
+decisions: D496
 issue: Closes #1410
 growth: +438 the residency cap needs its pins (turn, queued prompts or steer, running children, a kernel whose snapshot is behind or left a name out), the reload on request and on a due job, and a timer kept for an unloaded session so its mail still reaches it, one wake for a load however many jobs come due, and an idle clock a turn's end moves; weighed for deletion: a schedule pin (dropped, since a due job now reloads the session), a byte-size eviction policy (dropped, since a session's size is not known without measuring it), and a timer-based idle expiry (dropped, since it adds a wakeup per worker where the count-based cap adds none)
 decision: an ACP worker keeps at most eight idle sessions loaded and unloads the idlest past that when another loads; a session with a running turn, queued prompts or steer, a running child, a running user cell or a kernel whose snapshot is behind or skipped a name is pinned; an unloaded session's schedule keeps its timer, and a request naming it or a job coming due for it loads it again, its channel subscriptions due at once | the daemon kept every session it ever opened for its life, since no client sends `session/close`; the owner, 2026-10-13: "Reload it on mail" | remove `evict_idle`'s call from `adopt`, which restores the keep-everything worker
