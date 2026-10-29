@@ -108,7 +108,11 @@ struct Job {
     capture: Option<CommandCapture>,
     live: Arc<LiveOutput>,
     kill: Arc<AtomicBool>,
+    process_group: Option<ProcessGroupId>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessGroupId(u32);
 
 #[derive(Debug, Default)]
 struct LiveBuffer {
@@ -185,13 +189,26 @@ impl Jobs {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    #[cfg(test)]
     fn insert(
+        &self,
+        command: &str,
+        cwd: (&Path, Option<&Path>),
+        reaper: Reaper,
+        live: Arc<LiveOutput>,
+        kill: Arc<AtomicBool>,
+    ) -> JobId {
+        self.insert_with_process_group(command, cwd, reaper, live, kill, None)
+    }
+
+    fn insert_with_process_group(
         &self,
         command: &str,
         (cwd, recovery_dir): (&Path, Option<&Path>),
         reaper: Reaper,
         live: Arc<LiveOutput>,
         kill: Arc<AtomicBool>,
+        process_group: Option<ProcessGroupId>,
     ) -> JobId {
         let id = self.next.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         let mut jobs = self.lock();
@@ -208,6 +225,7 @@ impl Jobs {
                 capture: None,
                 live,
                 kill,
+                process_group,
             },
         );
         let owner = match jobs.get(&id).map(|job| &job.reaper) {
@@ -326,6 +344,33 @@ impl Jobs {
                 Ok(KillOutcome::Signalled)
             }
         }
+    }
+
+    /// Stops running poller jobs before the process that owns their watchdog exits.
+    pub fn kill_running(&self) {
+        let groups = {
+            let jobs = self.lock();
+            jobs.values()
+                .filter(|job| matches!(&job.reaper, Reaper::Poller { .. }))
+                .filter(|job| state(job) == JobState::Running)
+                .filter_map(|job| {
+                    job.kill.store(true, Ordering::SeqCst);
+                    job.process_group
+                })
+                .collect::<Vec<_>>()
+        };
+        for group in groups {
+            let _already_stopped = crate::process::kill_process_group(group.0);
+        }
+        let running = |jobs: &mut HashMap<u64, Job>| {
+            jobs.values().any(|job| {
+                matches!(&job.reaper, Reaper::Poller { .. }) && state(job) == JobState::Running
+            })
+        };
+        drop(
+            self.settled
+                .wait_timeout_while(self.lock(), KILL_GRACE, running),
+        );
     }
 
     pub fn retire(&self, owner: JobOwner) {
@@ -556,12 +601,13 @@ fn start(
     };
     process.current_dir(cwd);
     let (child, program) = spawn_captured(process, false)?;
-    let id = registry().insert(
+    let id = registry().insert_with_process_group(
         shell_command,
         (cwd, spill_dir),
         reaper,
         Arc::clone(&live),
         Arc::clone(&kill),
+        Some(ProcessGroupId(child.id())),
     );
     let spill_dir = spill_dir.map(Path::to_path_buf);
     std::thread::spawn(move || {

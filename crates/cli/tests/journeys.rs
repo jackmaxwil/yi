@@ -967,3 +967,61 @@ fn a_session_start_sweeps_an_aged_orphan_without_yi_gc() -> TestResult {
     journey.reclaim();
     Ok(())
 }
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn an_exiting_ask_kills_its_background_bash_process_group() -> TestResult {
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+
+    let journey = Journey::new("exit-bash-job")?;
+    let group = journey.project().join("job-pgid");
+    let call = faux_tool_call(
+        "c1",
+        "bash",
+        json!({"command": "echo $$ > job-pgid; exec sleep 300", "wait": 5})
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let script = journey.project().join("script.jsonl");
+    let lines = [
+        serde_json::to_string(&faux_assistant_message(vec![call], StopReason::ToolUse))?,
+        serde_json::to_string(&faux_assistant_message(
+            vec![faux_text("done")],
+            StopReason::Stop,
+        ))?,
+    ];
+    std::fs::write(&script, lines.join("\n"))?;
+    succeeded(
+        &journey.yi(&[
+            "ask",
+            "--yolo",
+            "--faux",
+            &script.display().to_string(),
+            "start the command",
+        ])?,
+        "headless ask",
+    )?;
+    let group = std::fs::read_to_string(group)?.trim().to_owned();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the probe asks the OS whether the job's process group outlived yi"
+    )]
+    let alive = Command::new("/bin/sh")
+        .args(["-c", "kill -0 \"-$1\" 2>/dev/null", "sh", &group])
+        .status()?
+        .success();
+    if alive {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a red probe leaves the machine as it found it"
+        )]
+        let _stopped = Command::new("/bin/sh")
+            .args(["-c", "kill -KILL \"-$1\" 2>/dev/null", "sh", &group])
+            .status();
+        return Err(format!("background bash process group {group} remained alive").into());
+    }
+    journey.reclaim();
+    Ok(())
+}

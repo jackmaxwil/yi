@@ -106,7 +106,7 @@ fn kill_tree(child: &mut Child) -> Result<(), String> {
     #[cfg(unix)]
     let tree = descendants(child.id());
     #[cfg(unix)]
-    let group = group_kill(child.id());
+    let group = kill_process_group(child.id());
     let shell = child
         .kill()
         .map_err(|error| format!("kill {}: {error}", child.id()));
@@ -199,7 +199,7 @@ fn pid_kill(pids: &[u32]) -> Result<(), String> {
 /// Incident: slim images ship no `kill(1)`, and its dropped ENOENT left timed-out `python3`
 /// jobs running. No `libc` (§18.3): the shell's builtin, in the one form dash and bash parse.
 #[cfg(unix)]
-fn group_kill(pgid: u32) -> Result<(), String> {
+pub(crate) fn kill_process_group(pgid: u32) -> Result<(), String> {
     let status = command("/bin/sh")
         .args(["-c", r#"kill -KILL "-$1""#, "kill", &pgid.to_string()])
         .stdin(Stdio::null())

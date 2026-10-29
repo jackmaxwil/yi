@@ -827,7 +827,9 @@ fn main() {
             std::process::exit(2);
         }
     };
-    std::process::exit(dispatch(args));
+    let code = dispatch(args);
+    yi_runtime::kill_running_jobs();
+    std::process::exit(code);
 }
 
 fn dispatch(args: Args) -> i32 {

@@ -1288,16 +1288,29 @@ fn a_job_wait_returns_as_the_job_settles() -> TestResult {
     let mut context = ToolContext::new(dir.to_path_buf());
     context.auto_background = Some(std::time::Duration::from_millis(80));
     let mut waited = std::time::Duration::ZERO;
-    for _ in 0..5 {
+    let mut backgrounded = 0;
+    // Incident: under a full-suite load the 80 ms timer lost the race with `sleep 0.1` often
+    // enough that six attempts did not make five; an inline finish is allowed and retried, and
+    // the budget below still measures only the waits that ran.
+    for _ in 0..20 {
         let started = tool.execute(args(&[("command", json!("sleep 0.1"))]), &context);
-        let job = started.result.details.get("job").and_then(Value::as_u64);
-        let job = job.ok_or("no job id")?;
+        let Some(job) = started.result.details.get("job").and_then(Value::as_u64) else {
+            continue;
+        };
         let polling = std::time::Instant::now();
         let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(5))]), &context);
         waited += polling.elapsed();
         let finished = text_of(&polled.result.content);
         assert!(finished.contains("finished (exit 0)"), "{finished}");
+        backgrounded += 1;
+        if backgrounded == 5 {
+            break;
+        }
     }
+    assert_eq!(
+        backgrounded, 5,
+        "twenty attempts never backgrounded a 100 ms sleep"
+    );
     assert!(
         waited < std::time::Duration::from_millis(500),
         "five waits took {waited:?}"
