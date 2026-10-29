@@ -11,6 +11,32 @@ const SIGNERS: &str = include_str!("../../../allowed_signers");
 
 static TICK: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+pub(crate) mod tmp {
+    use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
+
+    pub(crate) struct Tmp(pub(crate) PathBuf);
+
+    impl Tmp {
+        pub(crate) fn new() -> Result<Self, Box<dyn std::error::Error>> {
+            let path = std::env::temp_dir().join(format!(
+                "yi-test-{}-{}",
+                std::process::id(),
+                super::TICK.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&path)?;
+            Ok(Self(path))
+        }
+    }
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
 pub(crate) fn early() {
     if std::env::args().nth(1).as_deref() != Some("update") {
         return;
@@ -685,25 +711,7 @@ mod tests {
         Ok(())
     }
 
-    struct Tmp(PathBuf);
-
-    impl Tmp {
-        fn new() -> Result<Self, Box<dyn std::error::Error>> {
-            let path = std::env::temp_dir().join(format!(
-                "yi-update-test-{}-{}",
-                std::process::id(),
-                TICK.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&path)?;
-            Ok(Self(path))
-        }
-    }
-
-    impl Drop for Tmp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use super::tmp::Tmp;
 
     fn layout(tmp: &Path) -> Result<(PathBuf, PathBuf, PathBuf), Box<dyn std::error::Error>> {
         let home = tmp.join("home");

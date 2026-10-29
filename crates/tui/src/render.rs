@@ -92,6 +92,7 @@ fn draw_frame<B>(
         clear_screen(terminal);
     }
     let mut commits = std::mem::take(&mut app.pending_commit);
+    let arrived = commits.len();
     // OSC 133 semantic prompt zones: Ghostty and iTerm2 use these to jump
     // between prompts, so a user turn is navigable in the terminal's own UI.
     let mark = std::mem::take(&mut app.pending_prompt_mark);
@@ -121,7 +122,7 @@ fn draw_frame<B>(
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
     let mut layout = layout_chat(app, goal, memory);
     let budget = usize::from(total.saturating_sub(layout.floor.min(total)));
-    let more = solo_follow(app, &mut layout.live, budget);
+    let more = solo_follow(app, &mut layout.live, budget, arrived);
     let rows = layout.rows().saturating_add(u16::from(more > 0));
     let resized = terminal
         .resize_viewport(rows, layout.floor)
@@ -483,10 +484,7 @@ pub fn paint_chat(
 }
 
 fn follow_marker(app: &App, more: usize) -> Line<'static> {
-    Line::styled(
-        format!("↓ {} more rows · PgDn", more.saturating_add(1)),
-        app.theme.dim_style(),
-    )
+    Line::styled(format!("↓ {more} more rows · PgDn"), app.theme.dim_style())
 }
 
 /// Rows that land at once roll in one a frame, as the owner chose, faster only when far behind:
@@ -498,30 +496,49 @@ struct Followed {
     more: usize,
 }
 
-fn solo_follow(app: &mut App, live: &mut Vec<Line<'static>>, budget: usize) -> usize {
-    let key = (app.content_width(), app.mode);
-    if app.follow() != yi_types::config::FollowMode::Still || live.is_empty() {
-        app.pane_follow = None;
-        if live.len() > budget {
-            *live = keep_last(std::mem::take(live), budget);
-        }
+pub(crate) struct Still {
+    key: (usize, TranscriptMode, usize),
+    shown: Vec<Line<'static>>,
+    hidden: usize,
+}
+
+/// The inline view's held window, and the rows that landed under it since it was seeded.
+fn solo_follow(
+    app: &mut App,
+    live: &mut Vec<Line<'static>>,
+    budget: usize,
+    arrived: usize,
+) -> usize {
+    let released = app.pane_follow.is_some_and(|(_, _, _, below)| below > 0);
+    let key = (app.content_width(), app.mode, app.rows);
+    let held = app.follow() == yi_types::config::FollowMode::Still
+        && !live.is_empty()
+        && !released
+        && (arrived > 0 || app.still.as_ref().is_some_and(|still| still.key == key));
+    if !held {
+        app.still = None;
+        let keep = live.len().min(budget);
+        *live = keep_last(std::mem::take(live), keep);
         return 0;
     }
-    let end = match app.pane_follow {
-        Some((w, m, _, end)) if (w, m) == key => end,
-        _ => budget.saturating_sub(1),
-    };
-    app.pane_follow = Some((key.0, key.1, 0, end));
-    if end >= live.len() {
-        if live.len() > budget {
-            *live = keep_last(std::mem::take(live), budget);
+    match app.still.as_mut().filter(|still| still.key == key) {
+        Some(still) => {
+            still.hidden = still.hidden.saturating_add(arrived);
+            let hidden = still.hidden;
+            *live = still.shown.clone();
+            hidden
         }
-        return 0;
+        None => {
+            let shown = keep_last(std::mem::take(live), budget.saturating_sub(1));
+            app.still = Some(Still {
+                key,
+                hidden: 0,
+                shown: shown.clone(),
+            });
+            *live = shown;
+            0
+        }
     }
-    let more = live.len().saturating_sub(end);
-    live.truncate(end);
-    *live = keep_last(std::mem::take(live), budget.saturating_sub(1));
-    more.saturating_sub(1)
 }
 
 fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: usize) -> Followed {
@@ -569,7 +586,7 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
         let at = owners.iter().position(|&owner| owner == cell)?;
         Some((width, mode, cell, end.saturating_sub(at)))
     });
-    let more = if follow_mode == yi_types::config::FollowMode::Still {
+    let mut more = if follow_mode == yi_types::config::FollowMode::Still {
         column.len().saturating_sub(end)
     } else {
         0
@@ -581,6 +598,7 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
         .unwrap_or_default()
         .to_vec();
     if more > 0 {
+        more = more.saturating_add(usize::from(rows.len() > above.saturating_sub(1)));
         rows.truncate(above.saturating_sub(1));
         owners.truncate(above.saturating_sub(1));
     }

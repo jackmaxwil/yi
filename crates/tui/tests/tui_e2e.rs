@@ -678,24 +678,55 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
     backend.write_all(&b"\n".repeat(23))?;
     let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
-    app.set_rows(12);
+    app.set_rows(24);
+    app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
     app.set_follow(yi_types::config::FollowMode::Still);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
-    let body = (0..30)
-        .map(|row| format!("- row {row} of the answer"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let window = |terminal: &yi_tui::terminal::Terminal<VT100Backend>| {
+        let viewport = terminal.viewport_area();
+        (viewport.top()..viewport.bottom())
+            .map(|row| terminal.backend().row_text(row))
+            .collect::<Vec<_>>()
+    };
+    let answer = |rows: &[String]| -> Vec<String> {
+        rows.iter()
+            .filter(|row| row.contains("of the answer"))
+            .cloned()
+            .collect()
+    };
+    let body: String = (0..12)
+        .map(|row| format!("- row {row} of the answer\n"))
+        .collect();
     app.reduce_agent(streamed(&body));
     yi_tui::render::draw(&mut app, &mut terminal, None);
-    let contents = terminal.backend().contents();
-    assert!(terminal.viewport_area().height > 5, "{contents}");
-    let viewport = terminal.viewport_area();
-    let shown = (viewport.top()..viewport.bottom())
-        .map(|row| terminal.backend().row_text(row))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(shown.contains("of the answer"), "{shown}");
-    assert!(shown.contains("row 29 of the answer"), "{shown}");
+    let fits = window(&terminal);
+    assert!(!fits.join("\n").contains("more rows"), "{fits:#?}");
+    let body: String = (0..30)
+        .map(|row| format!("- row {row} of the answer\n"))
+        .collect();
+    app.reduce_agent(streamed(&body));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let held = window(&terminal);
+    let shown = held.join("\n");
+    assert!(terminal.viewport_area().height > 5, "{shown}");
+    assert!(
+        answer(&held).len() >= 10,
+        "the window holds a screen: {shown}"
+    );
+    assert!(
+        !shown.contains("more rows"),
+        "nothing has landed under it yet: {shown}"
+    );
+    let body: String = (0..44)
+        .map(|row| format!("- row {row} of the answer\n"))
+        .collect();
+    app.reduce_agent(streamed(&body));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let later = window(&terminal);
+    let after = later.join("\n");
+    assert_eq!(answer(&held), answer(&later), "the still window moved");
+    assert!(after.contains("more rows · PgDn"), "{later:#?}");
+    assert!(!after.contains("row 43 of the answer"), "{later:#?}");
     Ok(())
 }
 

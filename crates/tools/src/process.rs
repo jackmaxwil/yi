@@ -17,12 +17,10 @@ pub(crate) fn quoted(text: &str) -> String {
 
 /// The repository's top; a worktree never borrows the main checkout's.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    (cwd.ancestors())
+    cwd.ancestors()
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }
-
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[expect(
         clippy::disallowed_methods,
@@ -549,6 +547,33 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(6),
             "the re-grouped grandchild outlived the kill and held stdout for {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// Invariant: the root comes back in the spelling the caller typed, so a walker comparing it
+    /// against that path's own ancestors still finds it.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_cwd_keeps_the_root_in_the_spelling_the_caller_typed() -> Fallible {
+        let dir = std::env::temp_dir().join(format!("yi-git-root-{}", std::process::id()));
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _scratch = Scratch(dir.clone());
+        std::fs::create_dir_all(dir.join("real").join("src"))?;
+        std::fs::create_dir_all(dir.join("real").join(".git"))?;
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link"))?;
+        let link = dir.join("link");
+        let root = super::git_root(&link.join("src"));
+        assert_eq!(root.as_deref(), Some(link.as_path()));
+        let above: Vec<&std::path::Path> = link.ancestors().collect();
+        assert_eq!(
+            above.iter().position(|dir| root.as_deref() == Some(*dir)),
+            Some(0)
         );
         Ok(())
     }

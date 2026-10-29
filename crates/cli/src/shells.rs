@@ -625,17 +625,16 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn reduce_motion_reads_the_plist_under_home() -> Result<(), Box<dyn std::error::Error>> {
-        let home = std::env::temp_dir().join(format!("yi-reduce-motion-{}", std::process::id()));
+        let tmp = crate::update::tmp::Tmp::new()?;
+        let home = &tmp.0;
         let prefs = home.join("Library/Preferences");
         std::fs::create_dir_all(&prefs)?;
-        assert_eq!(super::reduce_motion_in(&home), None);
+        assert_eq!(super::reduce_motion_in(home), None);
         std::fs::write(
             prefs.join("com.apple.universalaccess.plist"),
             "<plist><dict><key>reduceMotion</key><true/></dict></plist>",
         )?;
-        let found = super::reduce_motion_in(&home);
-        std::fs::remove_dir_all(&home)?;
-        assert_eq!(found, Some(true));
+        assert_eq!(super::reduce_motion_in(home), Some(true));
         Ok(())
     }
 }

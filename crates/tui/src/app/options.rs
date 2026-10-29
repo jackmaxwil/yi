@@ -24,9 +24,14 @@ impl App {
     }
 
     pub fn advance_follow(&mut self, rows: usize) {
-        if let Some((width, mode, pinned, below)) = self.pane_follow {
-            self.pane_follow = Some((width, mode, pinned, below.saturating_add(rows)));
-        }
+        let Some((width, mode, pinned, below)) = self.pane_follow else {
+            // The inline view holds its own window, so the first PgDn opens the hold there.
+            if !self.pane {
+                self.pane_follow = Some((self.content_width(), self.mode, 0, rows));
+            }
+            return;
+        };
+        self.pane_follow = Some((width, mode, pinned, below.saturating_add(rows)));
     }
 
     pub fn follow_bottom(&mut self) {
