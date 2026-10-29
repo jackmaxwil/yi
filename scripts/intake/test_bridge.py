@@ -88,6 +88,8 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("merge-commit", "base-history", dataclasses.replace(base, commits=[dataclasses.replace(base.commits[0], parents=2)]), "history")
     add("deny-path", "path", with_change(base, path="scripts/intake/allowed.json", old_path="scripts/intake/allowed.json"), "path")
     add("build-rs-path", "path", with_change(base, path="crates/probe/build.rs", old_path="/dev/null", old_mode=None), "path")
+    add("cargo-config", "path", with_change(base, path=".cargo/config.toml", old_path="/dev/null", old_mode=None), "path")
+    add("nested-cargo-config", "path", with_change(base, path="crates/probe/.cargo/config", old_path="/dev/null", old_mode=None), "path")
     add("symlink", "symlink", with_change(base, new_mode="120000"), "mode")
     add("submodule", "submodule", with_change(base, new_mode="160000"), "mode")
     add("executable", "executable", with_change(base, new_mode="100755"), "mode")
@@ -319,6 +321,7 @@ EXPECTED = {
     "unmappable-base": f"intake: base: mirror merge-base {M} has no unique Forgejo mapping",
     "merge-commit": f"intake: history: merge commit {H} is not importable; rebase into linear signed commits",
     "deny-path": "intake: path: 'scripts/intake/allowed.json' is denied by scripts/intake/",
+    "cargo-config": "intake: path: '.cargo/config.toml' is denied by .cargo",
     "symlink": "intake: mode: 'README' is a symlink",
     "submodule": "intake: mode: 'README' is a submodule",
     "executable": "intake: mode: 'README' changes the executable bit",

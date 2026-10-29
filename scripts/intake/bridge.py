@@ -199,6 +199,10 @@ def excluded_paths() -> list[str]:
 def deny_rule(path: str, rename: bool = False) -> Optional[str]:
     if path == "build.rs" or path.endswith("/build.rs"):
         return "build.rs"
+    # Cargo reads .cargo/config* from the working directory and every parent; a rustc-wrapper,
+    # linker or source there runs in every later build.
+    if ".cargo" in path.split("/"):
+        return ".cargo"
     if pr_review.walled([path]):
         return next(rule for rule in pr_review.WALL if path.startswith(rule))
     extra = ("scripts/mirror/", "scripts/intake/", "deny.toml", "rust-toolchain.toml", "allowed_signers", ".gitguardian.yaml")
