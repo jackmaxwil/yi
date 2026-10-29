@@ -12,6 +12,9 @@ use crate::{
 pub const DEFAULT_SNAPSHOT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES: u64 = 16 * 1024 * 1024;
 
+// Incident: a listing that spent its whole budget queued behind the snapshot the previous cell
+// scheduled reported "no names", and the gate reddened on a tree the change never touched.
+const LISTING_ATTEMPTS: u32 = 2;
 const KERNEL_STATE_BASENAME: &str = "kernel-state";
 // Lowercase deliberately: the env-surface guardrail scans for YI_[A-Z_]+ and
 // this marker is a stdout sentinel, not an env var.
@@ -506,30 +509,38 @@ impl KernelManager {
     /// Live user-defined top-level names, or None if the kernel isn't
     /// running. Never fails a caller; bounded like a snapshot cell.
     pub async fn list_namespace_names(&self) -> Option<Vec<String>> {
-        if !self.is_running() {
-            return None;
+        let mut reason = String::new();
+        for attempt in 1..=LISTING_ATTEMPTS {
+            if !self.is_running() {
+                return None;
+            }
+            match self.list_namespace_names_once().await {
+                Ok(names) => return Some(names),
+                Err(detail) => {
+                    reason = format!("{detail} (attempt {attempt} of {LISTING_ATTEMPTS})");
+                }
+            }
         }
+        self.inner
+            .diagnostic(&format!("namespace listing failed: {reason}"));
+        None
+    }
+
+    async fn list_namespace_names_once(&self) -> Result<Vec<String>, String> {
         let _span = yi_types::trace::span("kernel.list_names");
         let code = build_list_names_code();
         match self
             .execute_internal(&code, Some(crate::KERNEL_STATE_LISTING_TIMEOUT_MS))
             .await
         {
-            Ok(result) if result.status == ExecuteStatus::Ok => parse_list_names(&result.stdout),
-            Ok(result) => {
-                let detail = result
-                    .error
-                    .map(|error| error.evalue)
-                    .unwrap_or(result.stderr);
-                self.inner
-                    .diagnostic(&format!("namespace listing failed: {detail}"));
-                None
+            Ok(result) if result.status == ExecuteStatus::Ok => {
+                parse_list_names(&result.stdout).ok_or_else(|| "unreadable marker".to_owned())
             }
-            Err(error) => {
-                self.inner
-                    .diagnostic(&format!("namespace listing error: {error}"));
-                None
-            }
+            Ok(result) => Err(result
+                .error
+                .map(|error| error.evalue)
+                .unwrap_or(result.stderr)),
+            Err(error) => Err(error.to_string()),
         }
     }
 
