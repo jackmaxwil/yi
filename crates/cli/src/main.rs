@@ -878,6 +878,15 @@ fn run_version(_: &Args) -> i32 {
 }
 
 fn run_ask(args: &Args) -> i32 {
+    if let Some(check) = args.check.as_deref() {
+        return match yi_runtime::goal::probe(check) {
+            None => 0,
+            Some(refusal) => {
+                eprintln!("{refusal}");
+                2
+            }
+        };
+    }
     if args.prompt.is_empty() {
         eprintln!("usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt | ->");
         return 2;

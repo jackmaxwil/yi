@@ -114,6 +114,68 @@ pub(crate) fn run_check(
     }
 }
 
+/// Invariant: a check is refused before it runs when the shell cannot parse it or a segment's
+/// first word is not a program here, so an exit 127 is never read as the check's verdict.
+pub fn probe(command: &str) -> Option<String> {
+    let mut syntax = yi_tools::keyless_command("sh");
+    syntax.arg("-n").arg("-c").arg(command);
+    let parsed = probe_capture(syntax)?;
+    if parsed.exit_code != Some(0) {
+        let first = parsed.stderr.lines().next().unwrap_or("no diagnostic");
+        let exit = parsed
+            .exit_code
+            .map_or_else(|| "signal".to_owned(), |code| code.to_string());
+        return Some(format!(
+            "the check `{command}` cannot run: the shell cannot parse it (exit {exit}): {first}
+The ways out: fix the syntax, or declare no check."
+        ));
+    }
+    let words = probe_words(command);
+    if words.is_empty() {
+        return None;
+    }
+    let mut scan = yi_tools::keyless_command("sh");
+    scan.arg("-c").arg(PROBE_WORDS).arg("_").args(&words);
+    let found = probe_capture(scan)?;
+    let (word, code) = found.stdout.lines().next()?.split_once('\t')?;
+    let code: i32 = code.parse().ok()?;
+    let reason = match code {
+        126 => "a path that is not an executable file",
+        _ => "not on the PATH",
+    };
+    Some(format!(
+        "the check `{command}` cannot run: `{word}` is not runnable (exit {code}: {reason}).
+Only the first word of each segment is probed, so a compound command is checked to that depth.
+The ways out: fix the syntax, install the program, or declare no check."
+    ))
+}
+
+const PROBE_WORDS: &str = "for w; do case $w in */*) if [ ! -e \"$w\" ]; then printf '%s\\t127\\n' \"$w\"; elif [ ! -f \"$w\" ] || [ ! -x \"$w\" ]; then printf '%s\\t126\\n' \"$w\"; fi;; *) command -v -- \"$w\" >/dev/null 2>&1 || printf '%s\\t127\\n' \"$w\";; esac; done";
+
+fn probe_capture(command: std::process::Command) -> Option<yi_tools::CommandCapture> {
+    let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
+    yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP).ok()
+}
+
+/// The first word of each segment an assignment prefix does not name: `FOO=1 true` starts `true`.
+fn probe_words(command: &str) -> Vec<String> {
+    yi_permission::command_segments(command)
+        .into_iter()
+        .filter_map(|argv| {
+            argv.into_iter()
+                .find(|token| !probe_assignment(token) && !token.contains(['$', '`', '*']))
+        })
+        .collect()
+}
+
+fn probe_assignment(token: &str) -> bool {
+    token.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
 /// The environment a checker may see beyond what its manifest declares (plan section 6.3).
 pub const CHECKER_ENV_BASE: [&str; 4] = ["PATH", "HOME", "LANG", "TMPDIR"];
 
