@@ -57,12 +57,6 @@ pub fn handle_terminal_event(
                 app.open_questions();
                 return;
             }
-            if key.code == KeyCodeValue::PageDown
-                && app.follow() != yi_types::config::FollowMode::Slide
-            {
-                app.advance_follow(20);
-                return;
-            }
             let ctx = EvalContext {
                 input_empty: app.composer.is_empty(),
             };
@@ -83,7 +77,11 @@ pub fn handle_terminal_event(
             match app.keymap.resolve(&KeyInput::Single(key), &ctx) {
                 Some(action) => handle_action(app, cmd_tx, action),
                 None => {
-                    if key.code == KeyCodeValue::Char('/')
+                    if key.code == KeyCodeValue::PageDown
+                        && app.follow() != yi_types::config::FollowMode::Slide
+                    {
+                        app.advance_follow(20);
+                    } else if key.code == KeyCodeValue::Char('/')
                         && !key.ctrl
                         && !key.alt
                         && app.composer.is_empty()

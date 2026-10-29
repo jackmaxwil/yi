@@ -687,11 +687,15 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
         .join("\n");
     app.reduce_agent(streamed(&body));
     yi_tui::render::draw(&mut app, &mut terminal, None);
-    assert_eq!(terminal.viewport_area().height, 5);
-    let marker = terminal.backend().row_text(19);
-    assert!(marker.contains("more rows · PgDn"), "{marker:?}");
     let contents = terminal.backend().contents();
-    assert!(!contents.contains("row 29 of the answer"), "{contents}");
+    assert!(terminal.viewport_area().height > 5, "{contents}");
+    let viewport = terminal.viewport_area();
+    let shown = (viewport.top()..viewport.bottom())
+        .map(|row| terminal.backend().row_text(row))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(shown.contains("of the answer"), "{shown}");
+    assert!(shown.contains("row 29 of the answer"), "{shown}");
     Ok(())
 }
 

@@ -331,9 +331,12 @@ fn reduce_motion_plist(bytes: &[u8]) -> Option<bool> {
     let text = std::str::from_utf8(bytes).ok()?;
     let (_, tail) = text.split_once("<key>reduceMotion</key>")?;
     let tail = tail.split("<key>").next()?;
-    if ["<true/>", "<true />"].iter().any(|tag| tail.contains(tag)) {
+    if ["<true/>", "<true />", "<integer>1</integer>"]
+        .iter()
+        .any(|tag| tail.contains(tag))
+    {
         Some(true)
-    } else if ["<false/>", "<false />"]
+    } else if ["<false/>", "<false />", "<integer>0</integer>"]
         .iter()
         .any(|tag| tail.contains(tag))
     {
@@ -370,6 +373,7 @@ fn binary_reduce_motion(bytes: &[u8]) -> Option<bool> {
         return match bytes.get(value) {
             Some(0x09) => Some(true),
             Some(0x08) => Some(false),
+            Some(0x10) => bytes.get(value.checked_add(1)?).map(|int| *int != 0),
             _ => None,
         };
     }
@@ -415,9 +419,12 @@ fn be_uint(bytes: &[u8], at: usize, size: usize) -> Option<usize> {
 
 #[cfg(all(feature = "tui", target_os = "macos"))]
 fn reduce_motion() -> Option<bool> {
-    let home = std::env::var_os("HOME")?;
-    let path =
-        std::path::PathBuf::from(home).join("Library/Preferences/com.apple.universalaccess.plist");
+    reduce_motion_in(&crate::update::absolute_home().ok()?)
+}
+
+#[cfg(all(feature = "tui", target_os = "macos"))]
+fn reduce_motion_in(home: &std::path::Path) -> Option<bool> {
+    let path = home.join("Library/Preferences/com.apple.universalaccess.plist");
     reduce_motion_plist(&std::fs::read(path).ok()?)
 }
 
@@ -609,5 +616,26 @@ mod tests {
         disabled[24] = 0x08;
         assert_eq!(super::reduce_motion_plist(&disabled), Some(false));
         assert_eq!(super::reduce_motion_plist(b"bplist00"), None);
+        assert_eq!(
+            super::reduce_motion_plist(xml("<integer>1</integer>").as_bytes()),
+            Some(true)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reduce_motion_reads_the_plist_under_home() -> Result<(), Box<dyn std::error::Error>> {
+        let home = std::env::temp_dir().join(format!("yi-reduce-motion-{}", std::process::id()));
+        let prefs = home.join("Library/Preferences");
+        std::fs::create_dir_all(&prefs)?;
+        assert_eq!(super::reduce_motion_in(&home), None);
+        std::fs::write(
+            prefs.join("com.apple.universalaccess.plist"),
+            "<plist><dict><key>reduceMotion</key><true/></dict></plist>",
+        )?;
+        let found = super::reduce_motion_in(&home);
+        std::fs::remove_dir_all(&home)?;
+        assert_eq!(found, Some(true));
+        Ok(())
     }
 }

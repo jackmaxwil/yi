@@ -120,11 +120,9 @@ fn draw_frame<B>(
     app.sync_port(port);
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
     let mut layout = layout_chat(app, goal, memory);
-    let above = usize::from(total.saturating_sub(layout.floor.min(total)));
-    let live = std::mem::take(&mut layout.live);
-    let followed = follow_column(app, live, above, usize::from(total));
-    layout.live = followed.live;
-    let rows = layout.rows().saturating_add(u16::from(followed.more > 0));
+    let budget = usize::from(total.saturating_sub(layout.floor.min(total)));
+    let more = solo_follow(app, &mut layout.live, budget);
+    let rows = layout.rows().saturating_add(u16::from(more > 0));
     let resized = terminal
         .resize_viewport(rows, layout.floor)
         .unwrap_or(false);
@@ -134,7 +132,7 @@ fn draw_frame<B>(
     let mut placed = Placed::default();
     let _ = terminal.draw(|frame| {
         let area = frame.area();
-        placed = paint_chat(app, &layout, frame.buffer_mut(), area, followed.more);
+        placed = paint_chat(app, &layout, frame.buffer_mut(), area, more);
     });
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
@@ -494,12 +492,36 @@ fn follow_marker(app: &App, more: usize) -> Line<'static> {
 /// Rows that land at once roll in one a frame, as the owner chose, faster only when far behind:
 /// past this many rows behind the step grows, so 200 rows land in under 70 frames, not 200.
 const ROLL_ROWS: usize = 24;
-
 struct Followed {
     rows: Vec<Line<'static>>,
     owners: Vec<usize>,
-    live: Vec<Line<'static>>,
     more: usize,
+}
+
+fn solo_follow(app: &mut App, live: &mut Vec<Line<'static>>, budget: usize) -> usize {
+    let key = (app.content_width(), app.mode);
+    if app.follow() != yi_types::config::FollowMode::Still || live.is_empty() {
+        app.pane_follow = None;
+        if live.len() > budget {
+            *live = keep_last(std::mem::take(live), budget);
+        }
+        return 0;
+    }
+    let end = match app.pane_follow {
+        Some((w, m, _, end)) if (w, m) == key => end,
+        _ => budget.saturating_sub(1),
+    };
+    app.pane_follow = Some((key.0, key.1, 0, end));
+    if end >= live.len() {
+        if live.len() > budget {
+            *live = keep_last(std::mem::take(live), budget);
+        }
+        return 0;
+    }
+    let more = live.len().saturating_sub(end);
+    live.truncate(end);
+    *live = keep_last(std::mem::take(live), budget.saturating_sub(1));
+    more.saturating_sub(1)
 }
 
 fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: usize) -> Followed {
@@ -516,7 +538,6 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
     let at_most = follow.map_or(usize::MAX, |(_, _, pinned, _)| pinned.saturating_sub(1));
     let (_, mut column, owners) = app.history.tail(width, &theme, mode, want, at_most);
     drop(history);
-    let history_rows = column.len();
     join_live(&mut column, false, live);
     let follow_mode = app.follow();
     let end = follow
@@ -563,14 +584,7 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
         rows.truncate(above.saturating_sub(1));
         owners.truncate(above.saturating_sub(1));
     }
-    let live_start = history_rows.saturating_sub(start).min(rows.len());
-    let live = rows.get(live_start..).unwrap_or_default().to_vec();
-    Followed {
-        rows,
-        owners,
-        live,
-        more,
-    }
+    Followed { rows, owners, more }
 }
 
 /// Transcript and live frame scroll as one column; `scroll` zero follows the turn, above holds.
