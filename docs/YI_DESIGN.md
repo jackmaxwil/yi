@@ -1462,7 +1462,10 @@ recorded with reason and original refusal.
 real SSH-signed object and real mirror-history fixtures. Each hostile case
 changes one part and is seen red by disabling its check. The T2
 `scripts/intake/journey.py` uses real git and fake HTTP for dry-run refusal,
-strict import, deterministic draft/audit and the server-write hold. Stage 3
-owns disposable runner hardening and CI conditions; stage 4 owns landing
-comments, close and schedule. Token provisioning and all live permission
-experiments remain outside these stages.
+strict import, deterministic draft/audit, the `run-ci` hold and landing
+feedback. Stage 3 makes `pr.yml`, `title` and `plugins-live` wait for the owner's
+`run-ci` on an `external` PR, which asks for a disposable `external` runner;
+until ops registers that label the job queues and contributor code never runs.
+Stage 4 comments `landed as <mirror-sha> on Forgejo`, closes the GitHub PR and
+ships the poll workflow inert (its cron line commented). Token provisioning and
+all live permission experiments remain outside these stages.
