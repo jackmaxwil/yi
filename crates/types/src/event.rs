@@ -251,12 +251,50 @@ pub struct EventGap {
     pub dropped: u64,
 }
 
+/// Why a run ended, carried on its `agent_end` event. A reason a newer Yi writes decodes to
+/// `Other` and re-emits verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunEnd {
+    /// The model stopped with nothing left to run.
+    Stop,
+    /// The provider failed the request and the loop did not retry past it.
+    Error,
+    /// An interrupt, or the deadline cutting a reply mid-stream.
+    Aborted,
+    /// The length or cut strikes reached their cap.
+    Length,
+    /// The repeat guard stopped a run that kept sending one tool batch.
+    Guard,
+    /// The host asked the loop to stop after a turn: a wind-down, a last word or a turn cap.
+    Drained,
+    #[serde(untagged)]
+    Other(String),
+}
+
+impl RunEnd {
+    /// The end a run reaches when it stops on this reply's own stop reason.
+    pub fn of(stop: StopReason) -> Self {
+        match stop {
+            StopReason::Length => Self::Length,
+            StopReason::Error => Self::Error,
+            StopReason::Aborted => Self::Aborted,
+            StopReason::Stop | StopReason::ToolUse | StopReason::Pending | StopReason::Deferred => {
+                Self::Stop
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     AgentStart,
     AgentEnd {
         messages: Vec<AgentMessage>,
+        /// Why the run ended; absent from producers that predate it and from synthetic ends.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<RunEnd>,
     },
     TurnStart,
     TurnEnd {
@@ -321,6 +359,16 @@ pub enum AgentEvent {
     Wait {
         wait: Option<Wait>,
     },
+}
+
+impl AgentEvent {
+    /// The one end a run emits: what it collected and why it stopped.
+    pub fn agent_end(messages: Vec<AgentMessage>, reason: RunEnd) -> Self {
+        Self::AgentEnd {
+            messages,
+            reason: Some(reason),
+        }
+    }
 }
 
 /// A stretch the agent spends on neither the model's reply nor a tool's work.

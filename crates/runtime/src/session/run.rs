@@ -589,6 +589,7 @@ fn failed_turn(
     }
     emit(AgentEvent::AgentEnd {
         messages: vec![prompt.clone(), errored.clone()],
+        reason: Some(yi_types::event::RunEnd::Error),
     });
     if let Ok(mut messages) = shared.messages.lock() {
         messages.extend([prompt, errored]);

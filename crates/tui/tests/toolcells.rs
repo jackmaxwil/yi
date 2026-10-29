@@ -92,6 +92,7 @@ fn a_run_of_read_only_calls_commits_as_one_cell() -> TestResult {
 
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let committed = flat(&app.take_commits());
     let joined = committed.join("\n");
@@ -111,6 +112,7 @@ fn a_lone_read_still_renders_as_itself() -> TestResult {
     ended(&mut app, "t0", "read", "1:one");
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let joined = flat(&app.take_commits()).join("\n");
     assert!(!joined.contains("Explored"), "{joined}");

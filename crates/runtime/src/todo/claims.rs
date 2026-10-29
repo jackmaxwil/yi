@@ -9,6 +9,7 @@ use crate::AgentSession;
 pub struct History {
     scanned_seq: u64,
     seen: String,
+    asked: String,
     written: Vec<(String, String)>,
     touched: Option<u64>,
     claims: Vec<Claim>,
@@ -54,9 +55,12 @@ impl History {
                     if attribution == Attribution::User {
                         self.seen.clear();
                         self.written.clear();
+                        self.asked.clear();
                     }
                     self.seen.push_str(&text);
                     self.seen.push('\n');
+                    self.asked.push_str(&text);
+                    self.asked.push('\n');
                 }
                 AgentMessage::ToolResult { content, .. } => {
                     for block in content {
@@ -102,6 +106,7 @@ impl History {
             self.scanned_seq = 0;
             self.seen.clear();
             self.written.clear();
+            self.asked.clear();
             self.claims.clear();
         }
         let previous = std::mem::take(&mut self.claims);
@@ -136,6 +141,15 @@ impl History {
 
     pub(crate) fn written(&self) -> &[(String, String)] {
         &self.written
+    }
+
+    /// The prompt named this path: whole, or by the file name it was written under.
+    pub(crate) fn names(&self, path: &str) -> bool {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(path);
+        self.asked.contains(path) || self.asked.contains(name)
     }
 }
 

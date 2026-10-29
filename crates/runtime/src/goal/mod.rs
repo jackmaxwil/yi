@@ -22,6 +22,9 @@ pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one wit
 /// covers a cold cargo build without letting a hang eat the session.
 pub const DEFAULT_CHECK_TIMEOUT_MS: u64 = 600_000;
 
+/// Continuations that changed nothing, in a row, before the goal is blocked.
+pub const QUIET_RUNS_CAP: u32 = 3;
+
 /// A failed check's output through [`yi_tools::view`]: a cut row's recovery is the rerun from
 /// `dir`, or a file under `spill`; the capture's own cut row follows the view's.
 pub(crate) fn check_view(
@@ -267,6 +270,12 @@ pub fn budget_limit_text(goal: &Goal) -> String {
     fill(BUDGET_LIMIT_TEMPLATE, goal, Vec::new())
 }
 
+fn released_text(runs: u32) -> String {
+    format!(
+        "[\u{2026} goal continuation stopped after {runs} runs that changed nothing (cap {QUIET_RUNS_CAP}); the goal is blocked, so no continuation follows]. Finish it with goal.update(status=\"complete\") once the objective holds, or restate it with goal.objective and a user:// citation to continue."
+    )
+}
+
 pub fn objective_updated_text(goal: &Goal) -> String {
     fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
 }
@@ -297,6 +306,10 @@ pub struct GoalService {
     deferred: Mutex<bool>,
     /// Cleared at AgentStart so idle cannot double-fire.
     pending: Mutex<bool>,
+    continuing: Mutex<bool>,
+    called: Mutex<bool>,
+    /// Continuation runs in a row that ended on an error or called no tool.
+    quiet: Mutex<u32>,
     wall_mark: Mutex<Option<Instant>>,
     hooks: Option<Arc<crate::claude_hooks::Hooks>>,
 }
@@ -310,7 +323,10 @@ impl GoalService {
             deliver,
             deferred: Mutex::new(false),
             hooks: None,
+            continuing: Mutex::new(false),
             pending: Mutex::new(false),
+            called: Mutex::new(false),
+            quiet: Mutex::new(0),
             wall_mark: Mutex::new(None),
         }
     }
@@ -621,7 +637,36 @@ impl GoalService {
         }
     }
 
-    fn block_after_error(&self) {
+    /// Invariant: continuations that change nothing are counted, and three in a row release the goal.
+    fn settle(&self, reason: Option<&yi_types::event::RunEnd>) {
+        let continuing = self
+            .continuing
+            .lock()
+            .map(|mut slot| std::mem::take(&mut *slot))
+            .unwrap_or(false);
+        if continuing {
+            let quiet =
+                reason == Some(&yi_types::event::RunEnd::Error) || !Self::flag(&self.called);
+            let runs = self.quiet_run(quiet);
+            if runs >= QUIET_RUNS_CAP {
+                self.release(runs);
+                return;
+            }
+        }
+        self.continue_if_idle();
+    }
+
+    fn quiet_run(&self, quiet: bool) -> u32 {
+        self.quiet
+            .lock()
+            .map(|mut runs| {
+                *runs = if quiet { runs.saturating_add(1) } else { 0 };
+                *runs
+            })
+            .unwrap_or(0)
+    }
+
+    fn release(&self, runs: u32) {
         let Some(mut goal) = self.read_goal() else {
             return;
         };
@@ -630,7 +675,14 @@ impl GoalService {
         }
         goal.status = GoalStatus::Blocked;
         goal.updated = yi_session::now_ms();
-        let _best_effort = self.write_goal(goal);
+        if self.write_goal(goal).is_err() {
+            return;
+        }
+        let _ = self.quiet.lock().map(|mut slot| *slot = 0);
+        (self.deliver)(
+            goal_prompt_message(released_text(runs)),
+            DeliveryMode::Steer,
+        );
     }
 
     /// Idle with an Active goal and no deferral queues the continuation prompt,
@@ -647,15 +699,23 @@ impl GoalService {
         }
         let text = continuation_text(&goal, self.read_plan().ok().as_ref());
         Self::set_flag(&self.pending, true);
+        Self::set_flag(&self.continuing, true);
         (self.deliver)(goal_prompt_message(text), DeliveryMode::FollowUp);
     }
 
     pub fn observe(&self, event: &AgentEvent) {
         match event {
-            AgentEvent::AgentStart => Self::set_flag(&self.pending, false),
+            AgentEvent::AgentStart => {
+                Self::set_flag(&self.pending, false);
+                Self::set_flag(&self.called, false);
+            }
             AgentEvent::MessageStart {
                 message: AgentMessage::User { .. },
-            } => Self::set_flag(&self.deferred, false),
+            } => {
+                Self::set_flag(&self.deferred, false);
+                Self::set_flag(&self.continuing, false);
+            }
+            AgentEvent::ToolExecutionStart { .. } => Self::set_flag(&self.called, true),
             AgentEvent::MessageEnd {
                 message:
                     AgentMessage::Assistant {
@@ -663,12 +723,10 @@ impl GoalService {
                     },
             } => match stop_reason {
                 StopReason::Aborted => Self::set_flag(&self.deferred, true),
-                // Block the goal so automatic continuation cannot loop
-                // against a failing turn.
-                StopReason::Error => self.block_after_error(),
+                StopReason::Error => {}
                 _ => self.account(usage),
             },
-            AgentEvent::AgentEnd { .. } => self.continue_if_idle(),
+            AgentEvent::AgentEnd { reason, .. } => self.settle(reason.as_ref()),
             _ => {}
         }
     }

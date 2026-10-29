@@ -1976,6 +1976,7 @@ fn cycling_the_transcript_mode_rewrites_what_is_already_on_screen() -> TestResul
     // before the cell is in the committed history this test reads.
     app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let shown = app.reflowed(200).iter().map(flat).collect::<Vec<_>>();
     assert!(

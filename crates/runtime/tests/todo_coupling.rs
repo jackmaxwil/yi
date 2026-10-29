@@ -6,7 +6,8 @@ use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::{ExecutionMode, TurnSnapshot};
 use yi_runtime::todo::coupling::{
     CLOSED_LIST_TEXT, Cycle, EMPTY_STOP_TEXT, Eager, IMPOSSIBLE_TEXT, INTERCEPT_CUSTOM_TYPE,
-    Options, StopPosture, coupling, figures_of, gate, landed, numbers_of, stop_posture,
+    Options, StopPosture, claims_impossible, coupling, figures_of, gate, landed, numbers_of,
+    stop_posture,
 };
 use yi_runtime::todo::{Op, Target, TodoStore, latest_record};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
@@ -238,6 +239,20 @@ fn posture_reads_states_never_sentences() -> TestResult {
         },
         None,
     )?;
+    assert_eq!(
+        stop_posture(&r.todos.list(), false),
+        StopPosture::Ask,
+        "a bare done leaves a row waiting on the user, so the stop still asks"
+    );
+    for label in ["first", "second"] {
+        r.todos.apply(
+            Op::Done {
+                target: Target::Label(TodoLabel::new(label)?),
+                evidence: Some("`ls` both are answered and closed".to_owned()),
+            },
+            None,
+        )?;
+    }
     assert_eq!(stop_posture(&r.todos.list(), false), StopPosture::Quiet);
     Ok(())
 }
@@ -937,7 +952,8 @@ fn a_number_written_to_an_answer_file_with_no_source_is_re_driven() -> TestResul
 }
 
 fn wrote_report(r: &Rig, body: &str) -> TestResult {
-    yi_session::lock_session(&r.store).append_message("main", user("Write the report"))?;
+    yi_session::lock_session(&r.store)
+        .append_message("main", user("Write the report to report.md"))?;
     let mut args: Map<String, Value> = Map::new();
     args.insert("path".to_owned(), json!("report.md"));
     args.insert("content".to_owned(), json!(body));
@@ -1031,6 +1047,77 @@ fn a_new_session_starts_with_no_todos_and_a_resume_brings_them_back() -> TestRes
         r.todos.list().progress().total,
         2,
         "the resume lost the list"
+    );
+    Ok(())
+}
+
+/// Dies with a substring test reading a passing check as a verdict on the task: "no validation
+/// errors" fired the impossibility re-drive, and the model was told to relax a constraint it never
+/// made and had already shown holds.
+#[test]
+fn an_impossibility_is_a_phrase_of_its_own_not_a_stretch_of_another_word() -> TestResult {
+    assert!(!claims_impossible(
+        "The suite reports no validation errors."
+    ));
+    assert!(!claims_impossible("Nothing about validation changed."));
+    assert!(
+        claims_impossible("No valid route exists under the weight limits."),
+        "the phrase on its own is still a claim"
+    );
+    assert!(claims_impossible("That route is impossible."));
+    assert!(claims_impossible("Routing it is not feasible."));
+    let recorded = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tui/tests/fixtures/sessions/01a0648f.jsonl"),
+    )?;
+    let line = recorded
+        .lines()
+        .find(|line| line.contains("Trust boundary validation"))
+        .ok_or("the fixture holds a line that mentions validation")?;
+    assert!(
+        !claims_impossible(line),
+        "a recorded session that says validation claims nothing is impossible"
+    );
+    Ok(())
+}
+
+/// Dies with the answer-file re-drive fired at any data file the turn wrote: a config file's port
+/// earned a re-drive the prompt never asked about, and the model re-argued an edit nobody disputed.
+#[test]
+fn only_a_data_file_the_prompt_named_earns_the_artifact_re_drive() -> TestResult {
+    let r = rig("artifact-named")?;
+    let hooks = prelude_hooks(&r);
+    let prompt = user("Write the detection limit to /app/answer.txt");
+    assert!((hooks.on_prompt)(&prompt).is_none());
+    yi_session::lock_session(&r.store).append_message("main", prompt)?;
+    let write = |id: &str, path: &str, body: &str| {
+        let mut args: Map<String, Value> = Map::new();
+        args.insert("path".to_owned(), json!(path));
+        args.insert("content".to_owned(), json!(body));
+        faux_assistant_message(vec![faux_tool_call(id, "write", args)], StopReason::ToolUse)
+    };
+    yi_session::lock_session(&r.store)
+        .append_message("main", write("c1", "/app/config.yaml", "port: 8080\n"))?;
+    let done = stop("Written.");
+    assert_eq!(
+        (hooks.intercept_stop)(&snap(&done, &[])).map(|message| custom_type(&message).2),
+        None,
+        "a data file the prompt never named is not the answer file"
+    );
+    yi_session::lock_session(&r.store)
+        .append_message("main", write("c2", "/app/answer.txt", "limit 4242\n"))?;
+    let first =
+        (hooks.intercept_stop)(&snap(&done, &[])).ok_or("the named answer file re-drives")?;
+    let text = custom_type(&first).2;
+    assert!(
+        text.contains("/app/answer.txt") && text.contains("4242"),
+        "{text}"
+    );
+    assert_eq!(
+        intercept_records(&r.store)
+            .last()
+            .map(|record| record.reason.clone()),
+        Some("artifact".to_owned())
     );
     Ok(())
 }

@@ -194,6 +194,7 @@ fn turn(session: &str, seq: u64, prompt: &str, reply: &AgentMessage) -> Vec<Valu
         seq + 5,
         &AgentEvent::AgentEnd {
             messages: Vec::new(),
+            reason: None,
         },
     ));
     frames.push(update(

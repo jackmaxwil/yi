@@ -48,6 +48,7 @@ fn asked(app: &mut App, calls: &[Value]) {
     }
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
 }
 
@@ -535,6 +536,7 @@ fn a_popup_up_at_the_turns_end_holds_the_card_until_it_closes() -> TestResult {
     });
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let rows = common::live_rows(&mut app)?;
     assert!(row_with(&rows, "Recommended").is_none(), "{rows:#?}");

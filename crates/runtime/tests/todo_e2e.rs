@@ -49,6 +49,65 @@ fn call(tool: &TodoTool, args: Value) -> (bool, String) {
     (output.is_error, text)
 }
 
+/// Dies with a bare `done` closing rows that wait on someone else: a list whose every row is
+/// blocked has nothing running to aim at, so the call reached them all and took their asks with
+/// it, and the next turn read a list that said the work was finished.
+#[test]
+fn a_done_with_no_target_keeps_blocked_rows_and_names_them() -> TestResult {
+    let (_root, session) = session("done-all")?;
+    let todos = store_for(&session);
+    todos.apply(
+        Op::Init {
+            phases: vec![(
+                PhaseName::new("Tasks")?,
+                vec![item("ask the user")?, item("wait on the gate")?],
+            )],
+        },
+        None,
+    )?;
+    let tool = TodoTool::new(Arc::clone(&todos));
+    let option = |id: &str| json!({"id": id, "label": format!("name {id}")});
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "block", "id": "t1", "on": "user", "note": "which branch?",
+            "options": [option("a"), option("b"), option("c")]}),
+    );
+    assert!(!is_error, "{text}");
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "block", "id": "t2", "on": "external", "note": "the gate is red"}),
+    );
+    assert!(!is_error, "{text}");
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "done", "evidence": "`cargo test` 3 passed"}),
+    );
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("t1") && text.contains("t2") && text.contains("kept blocked"),
+        "the result note names every row it kept: {text}"
+    );
+    let list = latest_record(&session).ok_or("no record")?.list;
+    let row = |label: &str| list.items().find(|item| item.label.as_str() == label);
+    let asked = row("ask the user").ok_or("the row the user owes an answer is still listed")?;
+    assert_eq!(
+        asked.state,
+        TodoState::Blocked {
+            on: BlockedOn::User,
+            note: "which branch?".to_owned()
+        }
+    );
+    let ask = asked.ask.as_ref().ok_or("the ask survives")?;
+    assert_eq!(ask.options.len(), 3);
+    assert!(ask.answer.is_none());
+    assert_eq!(
+        row("wait on the gate").map(|item| TodoStateName::of(&item.state)),
+        Some(TodoStateName::Blocked),
+        "the row waiting on the gate stays blocked too"
+    );
+    Ok(())
+}
+
 fn ids(list: &TodoList) -> Vec<(String, String)> {
     list.items()
         .map(|item| {

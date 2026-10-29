@@ -814,6 +814,7 @@ mod tests {
         sender
             .send(UiEvent::Agent(AgentEvent::AgentEnd {
                 messages: Vec::new(),
+                reason: None,
             }))
             .map_err(|error| error.to_string())?;
         let mut pacing = Pacing::new(0);
@@ -836,6 +837,7 @@ mod tests {
         sender
             .send(UiEvent::Agent(AgentEvent::AgentEnd {
                 messages: Vec::new(),
+                reason: None,
             }))
             .map_err(|error| error.to_string())?;
         let mut pacing = Pacing::new(0);

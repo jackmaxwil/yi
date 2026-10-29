@@ -103,6 +103,7 @@ fn agent_lifecycle_maps_to_state_updates_with_stop_reason() -> TestResult {
     let end = to_updates(
         &AgentEvent::AgentEnd {
             messages: Vec::new(),
+            reason: None,
         },
         &mut ids,
     );
@@ -654,6 +655,7 @@ fn every_event() -> Vec<AgentEvent> {
         AgentEvent::AgentStart,
         AgentEvent::AgentEnd {
             messages: vec![assistant_partial()],
+            reason: None,
         },
         AgentEvent::TurnStart,
         AgentEvent::TurnEnd {

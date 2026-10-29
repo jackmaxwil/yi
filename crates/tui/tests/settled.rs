@@ -252,6 +252,7 @@ fn stream(text: &str, chunk: usize) -> App {
     });
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     app
 }

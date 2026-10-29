@@ -701,7 +701,10 @@ fn a_long_streamed_reply_reaches_scrollback_whole() -> TestResult {
         app.reduce_agent(streamed(&body));
         yi_tui::render::draw(&mut app, &mut terminal, None);
     }
-    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
+        messages: vec![],
+        reason: None,
+    });
     yi_tui::render::draw(&mut app, &mut terminal, None);
 
     let transcript = terminal.backend().transcript();
@@ -874,7 +877,10 @@ fn each_kind_of_work_puts_its_own_state_on_the_orb() -> TestResult {
         Some(OrbState::Reading),
         "a finished read holds the orb until the model streams again"
     );
-    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
+        messages: vec![],
+        reason: None,
+    });
     assert_eq!(
         app.orb_state(),
         None,
@@ -1434,6 +1440,7 @@ fn one_amount_one_spelling() -> TestResult {
     app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message: lost });
     app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let contents = terminal.backend().contents();
@@ -1551,12 +1558,14 @@ fn the_session_cache_rate_counts_children_and_resets_with_the_session() -> TestR
     app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message });
     app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
     let message = with_tokens(priced("two", 0.01), 1000, 3000);
     app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message });
     app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let message = with_tokens(priced("child", 0.01), 1000, 4000);
     app.reduce_child(
@@ -1609,6 +1618,7 @@ fn a_negative_input_part_does_not_push_the_cache_rate_past_the_whole() -> TestRe
     app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message });
     app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let contents = terminal.backend().contents();

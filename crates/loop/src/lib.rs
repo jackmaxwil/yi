@@ -3,6 +3,7 @@
 
 mod answer;
 pub mod config;
+mod end;
 pub mod interrupt;
 pub mod reasoning;
 pub mod repair;

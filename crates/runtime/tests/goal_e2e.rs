@@ -967,3 +967,129 @@ fn a_citation_ordinal_names_the_same_message_at_the_goal_and_the_fetch_seam() ->
     service.set_objective("new objective", Some("user://2"))?;
     Ok(())
 }
+
+/// Dies with a goal continuing forever against a model that never touches the work: each
+/// continuation answered text and called no tool, and the goal bought the same run again.
+#[tokio::test]
+async fn a_goal_releases_its_continuation_after_three_runs_that_changed_nothing() -> TestResult {
+    use yi_runtime::goal::QUIET_RUNS_CAP;
+    use yi_types::event::{AgentEvent, RunEnd};
+    let (_root, (service, store, delivered)) = service_with_plans()?;
+    service.create("keep going until proven done", None, None, None)?;
+    let answer = faux_assistant_message(vec![faux_text("nothing to do")], StopReason::Stop);
+    service.observe(&AgentEvent::AgentStart);
+    service.observe(&AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("start".to_owned()), 0),
+    });
+    let turn = |message: AgentMessage, reason: RunEnd| {
+        service.observe(&AgentEvent::MessageEnd { message });
+        service.observe(&AgentEvent::AgentEnd {
+            messages: Vec::new(),
+            reason: Some(reason),
+        });
+    };
+    turn(answer.clone(), RunEnd::Stop);
+    for run in 1..=QUIET_RUNS_CAP {
+        service.observe(&AgentEvent::AgentStart);
+        turn(answer.clone(), RunEnd::Stop);
+        let status = yi_session::lock_session(&store)
+            .goal()
+            .map(|goal| goal.status);
+        if run < QUIET_RUNS_CAP {
+            assert!(
+                status.is_some_and(|status| status.is_active()),
+                "quiet run {run} of {QUIET_RUNS_CAP} leaves the goal active"
+            );
+        } else {
+            assert_eq!(
+                status,
+                Some(GoalStatus::Blocked),
+                "the third run that changed nothing releases the goal"
+            );
+        }
+    }
+    let sent = delivered
+        .lock()
+        .map(|queue| queue.clone())
+        .unwrap_or_default();
+    let text = |message: &AgentMessage| match message {
+        AgentMessage::Custom {
+            content: UserContent::Text(text),
+            ..
+        } => Some(text.clone()),
+        _ => None,
+    };
+    let continuations = sent
+        .iter()
+        .filter(|message| {
+            text(message)
+                .is_some_and(|text| text.contains("Continue working toward the active thread goal"))
+        })
+        .count();
+    assert_eq!(
+        continuations, 3,
+        "the cap is the continuations delivered, and no fourth follows"
+    );
+    let notice = sent
+        .iter()
+        .filter_map(text)
+        .find(|text| text.contains("goal continuation stopped after"))
+        .ok_or("the release says why it stopped")?;
+    assert!(
+        notice.contains("3 runs that changed nothing (cap 3)") && notice.contains("goal.update"),
+        "{notice}"
+    );
+    Ok(())
+}
+
+/// Dies with the first failed turn blocking the goal: one provider error ended auto-continuation
+/// for good, and a run that went on to work never got its chance.
+#[tokio::test]
+async fn an_error_turn_does_not_block_the_goal_on_its_own() -> TestResult {
+    use yi_types::event::{AgentEvent, RunEnd};
+    let (_root, (service, store, delivered)) = service_with_plans()?;
+    let status = || {
+        yi_session::lock_session(&store)
+            .goal()
+            .map(|goal| goal.status)
+    };
+    service.create("keep going", None, None, None)?;
+    service.observe(&AgentEvent::AgentStart);
+    service.observe(&AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("start".to_owned()), 0),
+    });
+    service.observe(&AgentEvent::MessageEnd {
+        message: faux_assistant_message(Vec::new(), StopReason::Error),
+    });
+    service.observe(&AgentEvent::AgentEnd {
+        messages: Vec::new(),
+        reason: Some(RunEnd::Error),
+    });
+    assert!(
+        status().is_some_and(|status| status.is_active()),
+        "one failed turn is one quiet run, not a blocked goal"
+    );
+    let continued = delivered.lock().map(|queue| queue.len()).unwrap_or(0);
+    assert_eq!(
+        continued, 1,
+        "the continuation after the error still goes out"
+    );
+    service.observe(&AgentEvent::AgentStart);
+    service.observe(&AgentEvent::ToolExecutionStart {
+        tool_call_id: "c1".to_owned(),
+        tool_name: "bash".to_owned(),
+        args: json!({"command": "cargo test"}),
+    });
+    service.observe(&AgentEvent::MessageEnd {
+        message: faux_assistant_message(vec![faux_text("ran the tests")], StopReason::Stop),
+    });
+    service.observe(&AgentEvent::AgentEnd {
+        messages: Vec::new(),
+        reason: Some(RunEnd::Stop),
+    });
+    assert!(
+        status().is_some_and(|status| status.is_active()),
+        "a run that called a tool resets the count and the goal stays active"
+    );
+    Ok(())
+}

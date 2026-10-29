@@ -229,9 +229,24 @@ pub const IMPOSSIBLE_WORDS: [&str; 7] = [
 
 pub const IMPOSSIBLE_TEXT: &str = "Name each constraint you assumed that the task did not state, and relax each one once before reporting that it cannot be done.";
 
+/// Incident: a bare substring test read "no validation errors" as "no valid", so an answer that
+/// named a passing check earned the impossibility re-drive.
 pub fn claims_impossible(text: &str) -> bool {
     let lower = text.to_lowercase();
-    IMPOSSIBLE_WORDS.iter().any(|word| lower.contains(word))
+    IMPOSSIBLE_WORDS.iter().any(|word| {
+        lower
+            .match_indices(word)
+            .any(|(at, _)| bounded(&lower, at, word))
+    })
+}
+
+/// The phrase stands alone: no letter or digit of another word touches either end of it.
+fn bounded(lower: &str, at: usize, word: &str) -> bool {
+    let before = lower.get(..at).and_then(|head| head.chars().next_back());
+    let after = lower
+        .get(at.saturating_add(word.len())..)
+        .and_then(|tail| tail.chars().next());
+    !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
 }
 
 const QUIET_TOOLS: [&str; 5] = ["read", "grep", "glob", "todo", "get_context"];
@@ -325,6 +340,7 @@ fn artifact_figures(
     history
         .written()
         .iter()
+        .filter(|(path, _)| history.names(path))
         .filter_map(|(path, body)| {
             let figures: Vec<String> = figures_of(body)
                 .into_iter()
