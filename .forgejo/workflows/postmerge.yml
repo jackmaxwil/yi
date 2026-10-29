@@ -83,6 +83,11 @@ jobs:
           FORGEJO_REPOSITORY: ${{ github.repository }}
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/forge_tracking.py --comment-closed
+      # A record job that stopped running left 271 change files unrecorded and nothing red on main;
+      # this goes red past 10 unrecorded files or one older than 3 days, whatever the record job did.
+      - name: unrecorded change files
+        if: always()
+        run: python3 scripts/record_changes.py --drift
 
   # Incident: pr.yml promised "one key per lane, shared with postmerge", but postmerge saved
   # only `test`, so `lint` and `guardrails` built cold on every pull request and a cold
