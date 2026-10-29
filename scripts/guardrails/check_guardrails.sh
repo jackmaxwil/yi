@@ -3,7 +3,7 @@
 # nothing). Ordered most-legible-failure-first. Prints one debt total at the end.
 # `--fast` drops the gates that need a build (dist binary, startup, rustdoc, the two
 # cargo tools) so pre-commit stays quick; pre-push runs the whole thing. `--quiet` prints only
-# the failing gates' output and the summary line, so an agent reads one line, not sixty.
+# the failing gates' output, the `skip` rows (a skip is announced, never silent) and the summary line.
 set -u
 cd "$(dirname "$0")/../.."
 FAST=0 QUIET=0
@@ -23,7 +23,7 @@ drain() {
   wait
   for i in $(seq 1 "$N"); do
     if [ "$(cat "$OUT/$i.rc")" = 0 ]; then
-      [ "$QUIET" = 1 ] || cat "$OUT/$i.out"
+      if [ "$QUIET" = 1 ]; then grep '^skip ' "$OUT/$i.out"; else cat "$OUT/$i.out"; fi
     else
       cat "$OUT/$i.out"
       FAILED=$((FAILED + 1))
