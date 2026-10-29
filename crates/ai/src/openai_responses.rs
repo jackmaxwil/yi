@@ -337,7 +337,7 @@ fn apply_reasoning(model: &Model, options: &OpenAiOptions, params: &mut Value) {
     match options.reasoning_effort {
         Some(effort) => {
             if let Some(mapped) = mapped_effort(model, effort) {
-                params["reasoning"] = json!({"effort": mapped});
+                params["reasoning"] = json!({"effort": mapped, "summary": "auto"});
                 params["include"] = json!(["reasoning.encrypted_content"]);
             }
         }

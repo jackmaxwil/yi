@@ -3,6 +3,9 @@ pure loop + event enum | `loop_events::a_bare_length_stop_is_re_driven_twice_the
 pure loop + event enum | `interrupt::an_abort_during_the_cut_drain_returns_at_once`
 pure loop + event enum | `pump_stop::an_abort_stops_the_provider_pump_at_the_next_event`
 pure loop + event enum | `openrouter::an_aborted_turn_is_settled_from_the_record`
+pure loop + event enum | `openrouter::the_second_request_carries_the_reply_reasoning_details_byte_for_byte`
+pure loop + event enum | `openrouter::the_tool_call_keeps_geminis_thought_signature_on_the_next_request`
+pure loop + event enum | `openai_responses::responses_params_are_not_chat_completions`
 entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
