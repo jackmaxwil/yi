@@ -23,7 +23,7 @@ def judge(rc, out, strict):
 def selfcheck():
     lock = "[ERROR] failed to acquire advisory database lock: read-only path\n"
     fetch = "[ERROR] failed to fetch advisory database: network unreachable\n"
-    finding = "error[vulnerability]: advisory database says boom\n"
+    finding = lock + "error[rejected]: license not allowed\n"
     assert judge(1, lock, False)[0] == 0 and "skip deny" in judge(1, lock, False)[1]
     assert judge(1, fetch, False)[0] == 0 and "skip deny" in judge(1, fetch, False)[1]
     assert judge(1, lock, True)[0] == 1
