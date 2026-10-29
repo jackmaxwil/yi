@@ -115,6 +115,13 @@ pub struct Group {
     pub folded: bool,
 }
 
+/// Where the sidebar's cursor rests: a group's fold header, or a session's row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Slot {
+    Group(String),
+    Row(usize),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarMode {
     Rail,
@@ -440,6 +447,9 @@ pub struct ConsoleState {
     pub sessions: BTreeMap<SessionId, SessionRow>,
     pub order: Vec<SessionId>,
     pub selected: usize,
+    /// Invariant: the cursor rests on a header or a session, never both, so landing on a
+    /// folded group's header leaves the session it came from in `selected`.
+    pub header: Option<String>,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
     pub panes: BTreeMap<PaneId, Pane>,
@@ -486,6 +496,7 @@ impl ConsoleState {
             sessions: BTreeMap::new(),
             order: Vec::new(),
             selected: 0,
+            header: None,
             tabs: vec![Tab {
                 layout,
                 zoomed: false,
@@ -637,6 +648,63 @@ impl ConsoleState {
         } else if self.selected >= self.order.len() {
             self.selected = self.order.len().saturating_sub(1);
         }
+    }
+
+    pub fn cursor(&self) -> Slot {
+        match &self.header {
+            Some(root) => Slot::Group(root.clone()),
+            None => Slot::Row(self.selected),
+        }
+    }
+
+    /// The slots in the order the sidebar paints them: a full sidebar heads a group with its
+    /// fold header, a folded group paints no row under it, and the rail paints no header.
+    pub fn slots(&self) -> Vec<Slot> {
+        let mut slots = Vec::new();
+        for group in self.groups() {
+            let Some(root) = group.root else {
+                slots.extend(group.rows.iter().copied().map(Slot::Row));
+                continue;
+            };
+            if self.sidebar == SidebarMode::Full {
+                slots.push(Slot::Group(root));
+            }
+            if !group.folded {
+                slots.extend(group.rows.iter().copied().map(Slot::Row));
+            }
+        }
+        slots
+    }
+
+    /// Invariant: the cursor steps over the painted order, header or session, so a folded
+    /// group's header is reachable without a mouse, and `enter` there folds or unfolds it.
+    pub fn move_cursor(&mut self, down: bool) {
+        let slots = self.slots();
+        let at = slots
+            .iter()
+            .position(|slot| *slot == self.cursor())
+            .unwrap_or(0);
+        let next = if down {
+            at.saturating_add(1)
+        } else {
+            at.saturating_sub(1)
+        };
+        if let Some(slot) = slots.get(next) {
+            match slot {
+                Slot::Group(root) => self.header = Some(root.clone()),
+                Slot::Row(index) => {
+                    self.header = None;
+                    self.selected = *index;
+                }
+            }
+        }
+        self.cursor_moved = true;
+    }
+
+    /// A folded group keeps its header, so the cursor stays on the one it folded.
+    pub fn fold_from_header(&mut self, root: &str) {
+        self.toggle_fold(root);
+        self.header = Some(root.to_owned());
     }
 
     pub fn set_session_status(&mut self, id: &SessionId, status: SessionStatus) {

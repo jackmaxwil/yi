@@ -204,8 +204,8 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
                     let id = app.state.order.get(index)?;
                     app.state.sessions.get(id)?.name.clone()
                 }
-                (None, None) if row.line.to_string().trim() == "PINNED" => {
-                    Some("PINNED".to_owned())
+                (None, None) if row.line.to_string().trim().starts_with("PINNED") => {
+                    Some(row.line.to_string().trim().to_owned())
                 }
                 (Some(other), _) => Some(format!("{other:?}")),
                 (None, _) => None,
@@ -215,19 +215,19 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
     let want = [
         "new",
         "search",
-        "PINNED",
+        "PINNED 3",
         "pin-early",
         "pin-late",
         "solo-pin",
-        "yi ▾ +",
+        "yi 3 ▾ +",
         "asks",
         "new-idle",
         "old-idle",
-        "legios ▾ +",
+        "legios 1 ▾ +",
         "legios-asks",
-        "buildhost ▾ +",
+        "buildhost 1 ▾ +",
         "buildhost-idle",
-        "solo ▾ +",
+        "solo 0 ▾ +",
     ];
     assert_eq!(drawn(&app), want);
     let asks = app
@@ -250,8 +250,8 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
         .filter(|row| **row != "legios-asks")
         .map(|row| {
             row.replace(
-                "legios ▾ +",
-                &format!("legios ▸ {} +", SessionStatus::Blocked.glyph()),
+                "legios 1 ▾ +",
+                &format!("legios 1 ▸ {} +", SessionStatus::Blocked.glyph()),
             )
         })
         .collect();

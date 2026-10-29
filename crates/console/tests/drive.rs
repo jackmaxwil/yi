@@ -2075,14 +2075,38 @@ fn a_click_on_a_workspace_header_folds_it() -> TestResult {
             Step::Expect("session/list", other_root_ledger),
         ],
         "wait-frame 5000 s-beta\n\
-         wait-frame 3000 demo-root ▾\n\
+         wait-frame 3000 demo-root 2 ▾\n\
          mouse down 3 2\n\
-         wait-frame 3000 demo-root ▸\n\
+         wait-frame 3000 demo-root 2 ▸\n\
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 s-gamma\n\
          mouse down 3 2\n\
          wait-frame 3000 s-alpha\n\
-         wait-frame 3000 demo-root ▾\n\
+         wait-frame 3000 demo-root 2 ▾\n\
+         quit\n",
+    )
+}
+
+/// An arrow reaches a workspace's header and `enter` folds it, so a folded group is not
+/// mouse-only; the rows come back the same way.
+#[test]
+fn an_arrow_and_enter_reach_a_workspace_header_and_fold_it() -> TestResult {
+    run(
+        "keyboard-fold",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", other_root_ledger),
+        ],
+        "wait-frame 5000 s-beta\n\
+         wait-frame 3000 demo-root 2 ▾\n\
+         key up\n\
+         key enter\n\
+         wait-frame 3000 demo-root 2 ▸\n\
+         wait-frame 3000 !s-alpha\n\
+         key enter\n\
+         wait-frame 3000 s-alpha\n\
+         wait-frame 3000 demo-root 2 ▾\n\
          quit\n",
     )
 }
@@ -2111,7 +2135,7 @@ fn a_workspace_headers_plus_starts_a_session_there() -> TestResult {
          wait-frame 3000 SN  untitled\n\
          quit\n",
     )?;
-    let at = sidebar_order(&frame, &["demo-root ▾", "other-root ▾", "SN  untitled"])?;
+    let at = sidebar_order(&frame, &["demo-root 2 ▾", "other-root 2 ▾", "SN  untitled"])?;
     assert!(at.is_sorted(), "{at:?}\n{frame}");
     Ok(())
 }
@@ -2177,7 +2201,7 @@ fn pin_from_the_menu_moves_a_session_under_pinned() -> TestResult {
          wait-frame 3000 !Unpin\n\
          quit\n",
     )?;
-    let at = sidebar_order(&frame, &["PINNED", "s-beta", "demo-root ▾", "s-alpha"])?;
+    let at = sidebar_order(&frame, &["PINNED", "s-beta", "demo-root 1 ▾", "s-alpha"])?;
     assert!(at.is_sorted(), "{at:?}\n{frame}");
     assert_eq!(
         frame.matches("s-beta").count(),
@@ -2782,10 +2806,10 @@ fn rows_group_by_workspace_and_rank_by_need_inside_it() -> TestResult {
          quit\n",
     )?;
     let needles = [
-        "demo-root ▾",
+        "demo-root 2 ▾",
         "1 RE  release notes",
         "2 FI  fix login bug",
-        "other-root ▾",
+        "other-root 1 ▾",
         "3 SG  s-gamma",
     ];
     let at = sidebar_order(&frame, &needles)?;
@@ -3280,7 +3304,7 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
          wait-frame 3000 !demo-root\n\
          cmd-b\n\
          wait-frame 3000 2 SA  s-alpha\n\
-         wait-frame 3000 demo-root ▾\n\
+         wait-frame 3000 demo-root 2 ▾\n\
          cmd-b\n\
          wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 !s-alpha\n\
@@ -4064,8 +4088,8 @@ fn a_fitted_sidebar_still_tells_sibling_workspaces_apart() -> TestResult {
             Step::Expect("session/list", empty_list),
             Step::Expect("session/list", sibling_roots_ledger),
         ],
-        "wait-frame 5000 yi-feature-auth-fix ▾\n\
-         wait-frame 3000 yi-feature-auth-ui ▾\n\
+        "wait-frame 5000 yi-feature-auth-fix 1 ▾\n\
+         wait-frame 3000 yi-feature-auth-ui 1 ▾\n\
          quit\n",
     )
 }

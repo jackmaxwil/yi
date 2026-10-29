@@ -10,7 +10,7 @@ use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 use crate::app::App;
 use crate::avatar::Placement;
 use crate::keys::{self, Action};
-use crate::model::{Mode, SessionId, SessionRow, SessionStatus, SidebarMode, Zone, now_ms};
+use crate::model::{Mode, SessionId, SessionRow, SessionStatus, SidebarMode, Slot, Zone, now_ms};
 use crate::render::Hit;
 use crate::render::{NAME_WIDTH, status_style};
 use yi_tui::orb::OrbState;
@@ -191,14 +191,18 @@ fn group_header(
     root: &str,
     rows: &[usize],
     folded: bool,
+    is_cursor: bool,
     width: usize,
     theme: &Theme,
 ) -> SidebarRow {
     let label = root.rsplit('/').next().unwrap_or(root);
-    let mut tail = vec![Span::styled(
-        if folded { " ▸" } else { " ▾" }.to_owned(),
-        theme.dim_style(),
-    )];
+    let mut tail = vec![
+        Span::styled(format!(" {}", rows.len()), theme.dim_style()),
+        Span::styled(
+            if folded { " ▸" } else { " ▾" }.to_owned(),
+            theme.dim_style(),
+        ),
+    ];
     // Invariant: a fold must not hide a session that needs you; a red gate ranks need 2, so
     // the mark reads need_of, the same rank the group's sort uses.
     let worst = rows
@@ -225,6 +229,11 @@ fn group_header(
     spans.extend(tail);
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled("  +".to_owned(), theme.dim_style()));
+    if is_cursor {
+        for span in &mut spans {
+            span.style = span.style.bg(theme.selection_bg());
+        }
+    }
     SidebarRow {
         control: Some(Hit::Fold(root.to_owned())),
         ..SidebarRow::plain(None, Line::from(spans))
@@ -255,6 +264,8 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     let mut slot = 0_usize;
     let cols = name_cols(app);
     let width = cols.saturating_add(8);
+    let cursor = app.state.cursor();
+    let on_sidebar = app.state.zone == Zone::Sidebar;
     if !rail {
         let chord = |action| keys::chord_for(action, app.cmd_hints);
         let text = Style::default().fg(theme.text);
@@ -277,16 +288,23 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
                 None if group.rows.is_empty() => continue,
                 None => rows.push(SidebarRow::plain(
                     None,
-                    Line::styled(" PINNED", theme.dim_style().add_modifier(Modifier::BOLD)),
+                    Line::styled(
+                        format!(" PINNED {}", group.rows.len()),
+                        theme.dim_style().add_modifier(Modifier::BOLD),
+                    ),
                 )),
-                Some(root) => rows.push(group_header(
-                    app,
-                    root,
-                    &group.rows,
-                    group.folded,
-                    width,
-                    theme,
-                )),
+                Some(root) => {
+                    let is_cursor = on_sidebar && cursor == Slot::Group(root.clone());
+                    rows.push(group_header(
+                        app,
+                        root,
+                        &group.rows,
+                        group.folded,
+                        is_cursor,
+                        width,
+                        theme,
+                    ));
+                }
             }
         }
         if group.folded {
@@ -300,7 +318,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
                 continue;
             };
             let is_focused = focused.as_ref() == Some(id);
-            let is_cursor = index == app.state.selected && app.state.zone == Zone::Sidebar;
+            let is_cursor = on_sidebar && cursor == Slot::Row(index);
             slot = slot.saturating_add(1);
             if rail && slot > RAIL_CAP {
                 beyond = beyond.saturating_add(1);
@@ -321,7 +339,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
             Line::styled(format!("  +{beyond}"), theme.dim_style()),
         ));
     }
-    window_rows(rows, height, app.state.selected, theme)
+    window_rows(rows, height, &cursor, theme)
 }
 
 fn session_rows(
@@ -555,18 +573,21 @@ fn child_rows(
 fn window_rows(
     rows: Vec<SidebarRow>,
     height: u16,
-    selected: usize,
+    cursor: &Slot,
     theme: &Theme,
 ) -> Vec<SidebarRow> {
     let visible = usize::from(height);
     if visible == 0 || rows.len() <= visible {
         return rows;
     }
-    let cursor = rows
+    let at = rows
         .iter()
-        .position(|row| row.index == Some(selected))
+        .position(|row| match cursor {
+            Slot::Row(index) => row.index == Some(*index),
+            Slot::Group(root) => matches!(&row.control, Some(Hit::Fold(drawn)) if drawn == root),
+        })
         .unwrap_or(0);
-    let start = cursor.saturating_add(1).saturating_sub(visible);
+    let start = at.saturating_add(1).saturating_sub(visible);
     let end = start.saturating_add(visible).min(rows.len());
     let below = end < rows.len();
     let mut rows = rows;
