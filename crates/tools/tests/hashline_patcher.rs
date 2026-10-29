@@ -91,6 +91,21 @@ impl Fixture {
         }
         .preview(&args(&[("patch", json!(patch))]), &self.context.cwd)
     }
+
+    fn shown_first_ten(&self, path: &str) -> Result<(String, String), Box<dyn Error>> {
+        let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
+        self.write(path, &body)?;
+        let read = HashlineReadTool::new(std::sync::Arc::clone(&self.state)).execute(
+            args(&[
+                ("path", json!(path)),
+                ("offset", json!(1)),
+                ("limit", json!(10)),
+            ]),
+            &self.context,
+        );
+        let tag = minted_tag(&output_text(&read), path)?;
+        Ok((body, tag))
+    }
 }
 
 #[test]
@@ -294,23 +309,7 @@ fn a_rejected_edit_classifies_as_stale_tag() -> TestResult {
 #[test]
 fn seen_lines_guard_reveals_unseen_lines_then_allows_retry() -> TestResult {
     let fixture = Fixture::new("seen")?;
-    let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
-    fixture.write("big.txt", &body)?;
-    let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
-        args(&[
-            ("path", json!("big.txt")),
-            ("offset", json!(1)),
-            ("limit", json!(10)),
-        ]),
-        &fixture.context,
-    );
-    let text = output_text(&read);
-    let tag = text
-        .lines()
-        .next()
-        .and_then(|line| line.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-        .ok_or("no tag")?;
+    let (_, tag) = fixture.shown_first_ten("big.txt")?;
 
     let blind = fixture.edit(&format!("[big.txt#{tag}]\nPUT 30.=30:\n+changed line 30\n"));
     assert!(blind.is_error);
@@ -330,17 +329,7 @@ fn unseen_gap_anchors_are_refused_without_changing_the_file() -> TestResult {
         ("insert", "PUT >30:\n+inserted\n"),
     ] {
         let fixture = Fixture::new(name)?;
-        let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
-        fixture.write("big.txt", &body)?;
-        let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
-            args(&[
-                ("path", json!("big.txt")),
-                ("offset", json!(1)),
-                ("limit", json!(10)),
-            ]),
-            &fixture.context,
-        );
-        let tag = minted_tag(&output_text(&read), "big.txt")?;
+        let (body, tag) = fixture.shown_first_ten("big.txt")?;
         let edit = fixture.edit(&format!("[big.txt#{tag}]\n{operation}"));
         let text = output_text(&edit);
         assert!(edit.is_error, "{name}: {text}");
@@ -1039,17 +1028,7 @@ fn a_preview_under_a_prior_sessions_tag_unlocks_nothing_for_the_execute() -> Tes
 #[test]
 fn a_preview_of_an_unseen_line_unlocks_nothing_for_the_execute() -> TestResult {
     let fixture = Fixture::new("preview-unseen")?;
-    let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
-    fixture.write("big.txt", &body)?;
-    let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
-        args(&[
-            ("path", json!("big.txt")),
-            ("offset", json!(1)),
-            ("limit", json!(10)),
-        ]),
-        &fixture.context,
-    );
-    let tag = minted_tag(&output_text(&read), "big.txt")?;
+    let (body, tag) = fixture.shown_first_ten("big.txt")?;
     let patch = format!("[big.txt#{tag}]\nPUT 30.=30:\n+changed\n");
     assert!(fixture.preview(&patch).is_none());
     let edit = fixture.edit(&patch);

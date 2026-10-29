@@ -31,7 +31,7 @@ fn a_multiline_python_signature_resolves_through_the_function_body() -> TestResu
     )?;
     let output = find(&dir, "input.py", "async def result(");
     assert!(
-        output.contains("[find: block at lines 287-354 of"),
+        output.contains("[find: block at lines 319-380 of"),
         "{output}"
     );
 
@@ -186,14 +186,20 @@ fn division_operators_and_continuations_do_not_hide_delimiters() -> TestResult {
 #[test]
 fn shell_globs_do_not_start_block_comments() -> TestResult {
     let dir = temp_dir("hashline-shell-glob-not-comment")?;
-    for name in ["run.sh", "deploy", ".bashrc", "Makefile", "rules.mk"] {
+    for (name, shebang, span) in [
+        ("run.sh", "", "1-4"),
+        ("deploy", "#!/bin/sh\n", "2-5"),
+        (".bashrc", "", "1-4"),
+        ("Makefile", "", "1-4"),
+        ("rules.mk", "", "1-4"),
+    ] {
         fs::write(
             dir.join(name),
-            "run() {\n    cp *.log /var/backups/*\n    echo done\n}\n",
+            format!("{shebang}run() {{\n    cp *.log /var/backups/*\n    echo done\n}}\n"),
         )?;
         let output = find(&dir, name, "run()");
         assert!(
-            output.contains("[find: block at lines 1-4 of"),
+            output.contains(&format!("[find: block at lines {span} of")),
             "{name}: {output}"
         );
     }
@@ -227,6 +233,7 @@ fn block_comments_stay_out_of_depth_for_brace_languages_beyond_the_named_ones() 
         "schema.proto",
         "app.dart",
         "match.mts",
+        "Jenkinsfile",
     ] {
         fs::write(dir.join(name), "resource {\n  /* } */\n  name = 1\n}\n")?;
         let output = find(&dir, name, "resource {");

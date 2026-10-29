@@ -84,7 +84,8 @@ pub struct Patcher<'a> {
 
 /// Chosen by extension: indentation-scoped languages have no closer to scan for.
 pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
-    let extension = Path::new(request.path)
+    let path = Path::new(request.path);
+    let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
         .unwrap_or_default();
@@ -95,11 +96,24 @@ pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
         "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts" => {
             brace_block_resolver(request.text, request.line, BraceSyntax::JavaScript)
         }
-        "sh" | "bash" | "zsh" | "ksh" | "fish" | "mk" | "" => {
+        "sh" | "bash" | "zsh" | "ksh" | "fish" | "mk" => {
+            brace_block_resolver(request.text, request.line, BraceSyntax::Plain)
+        }
+        "" if extensionless_script(path, request.text) => {
             brace_block_resolver(request.text, request.line, BraceSyntax::Plain)
         }
         _ => brace_block_resolver(request.text, request.line, BraceSyntax::CStyle),
     }
+}
+
+fn extensionless_script(path: &Path, text: &str) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    text.starts_with("#!")
+        || name.starts_with('.')
+        || matches!(name, "Makefile" | "makefile" | "GNUmakefile" | "Dockerfile")
 }
 
 impl<'a> Patcher<'a> {
