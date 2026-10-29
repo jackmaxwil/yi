@@ -173,12 +173,9 @@ def _yi_surface():
     rows = []
     for name in getattr(rlm, "__all__", []):
         obj = getattr(rlm, name, None)
-        if inspect.isclass(obj) or not callable(obj):
+        if not inspect.isfunction(obj) and not inspect.iscoroutinefunction(obj):
             continue
-        try:
-            sig = inspect.signature(obj)
-        except (TypeError, ValueError):
-            continue
+        sig = inspect.signature(obj)
         empty = inspect.Parameter.empty
         params = [p.replace(annotation=empty) for p in sig.parameters.values()]
         sig = sig.replace(parameters=params, return_annotation=empty)
@@ -195,14 +192,14 @@ const OFFERED_BY_YI: &[&str] = &["Plan", "Todo", "Run", "fork_join"];
 
 pub fn surface_line() -> String {
     format!(
-        "rlm: {} · yi: {} · help(rlm) and help(yi) are exact",
+        "rlm: {} · yi: {} · help(rlm.<name>) and help(yi) are exact",
         OFFERED_BY_RLM.join(", "),
         OFFERED_BY_YI.join(", ")
     )
 }
 
 pub fn surface_note(table: &str) -> String {
-    format!("[rlm, shown once per session; help(rlm) and help(yi) are exact]\n{table}")
+    format!("[rlm, shown once per session; help(rlm.<name>) is exact]\n{table}")
 }
 
 pub fn restart_note(lost: Option<&[String]>) -> String {

@@ -281,6 +281,38 @@ async fn a_dead_sidecar_trips_the_breaker_and_says_so_once() -> TestResult {
     Ok(())
 }
 
+/// The trip reached the journal only, so a model whose question went unanswered read nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn three_approval_failures_deliver_one_breaker_notice() -> TestResult {
+    let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
+    let named = format!("127.0.0.1:{port}");
+    for turn in 0..3 {
+        let outcome = run(&gate, &format!("make build run{turn}"));
+        assert!(!outcome.allowed, "turn {turn}: {}", outcome.reason);
+        let record = gate.records.recv_timeout(Duration::from_secs(5))?;
+        assert!(
+            record
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains(&named)),
+            "turn {turn}: the journal names the sidecar: {record:?}"
+        );
+    }
+    let notices = gate
+        .notices
+        .lock()
+        .map(|held| held.clone())
+        .unwrap_or_default();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].contains("failed 3 times")
+            && notices[0].contains("approval asks go to the user"),
+        "{notices:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_the_user_did_not_type_is_never_classified() -> TestResult {
     let (port, _served) = sidecar(vec![LAND])?;
@@ -395,6 +427,7 @@ struct Gate {
     records: Receiver<ClassifyRecord>,
     asked: Arc<Mutex<u32>>,
     script: Arc<Mutex<Vec<yi_runtime::AskOutcome>>>,
+    notices: Arc<Mutex<Vec<String>>>,
 }
 
 /// A broker in auto mode with no sandbox, so an unknown command is a reviewable ask.
@@ -461,12 +494,27 @@ fn gate_in(
     if !thinking.is_zero() {
         broker.prompts_close_on_settle();
     }
-    broker.set_approver(Arc::new(Approver::new(sidecar, thresholds, timing, record)));
+    let notices = Arc::new(Mutex::new(Vec::new()));
+    let delivered = Arc::clone(&notices);
+    let deliver: yi_runtime::Deliver = Arc::new(move |message| {
+        if let AgentMessage::Custom {
+            content: UserContent::Text(text),
+            ..
+        } = message
+            && let Ok(mut held) = delivered.lock()
+        {
+            held.push(text);
+        }
+    });
+    broker.set_approver(Arc::new(Approver::new(
+        sidecar, thresholds, timing, record, deliver,
+    )));
     Gate {
         broker,
         records,
         asked,
         script,
+        notices,
     }
 }
 
@@ -759,6 +807,7 @@ fn an_instant_ask_the_classifier_was_unsure_about_waits_for_the_person() -> Test
         thresholds,
         Timing::Instant,
         Arc::new(|_| {}),
+        Arc::new(|_| {}),
     )));
     let mut args = serde_json::Map::new();
     args.insert("command".to_owned(), serde_json::json!("make build"));
@@ -828,6 +877,7 @@ fn a_prompt_that_cannot_close_is_never_timed_out() -> TestResult {
         sidecar,
         thresholds,
         Timing::AfterDelay(Duration::from_millis(100)),
+        Arc::new(|_| {}),
         Arc::new(|_| {}),
     )));
     let mut args = serde_json::Map::new();

@@ -21,7 +21,7 @@ pub mod goal;
 pub mod history;
 pub mod host;
 pub mod kernel;
-mod kernel_bootstrap;
+pub mod kernel_bootstrap;
 mod kernel_doctor;
 mod kernel_state;
 pub mod kernel_tools;

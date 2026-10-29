@@ -1007,10 +1007,7 @@ impl PermissionBroker {
         // The asker blocks on a human; the ledger lock is released first so a
         // concurrent decision is not held behind the answer.
         let Some(asker) = &self.asker else {
-            return format!(
-                "Request {request} cannot be put to anyone: no interactive surface is available. {} Run with --yolo, or add an allow rule for this call.",
-                stored.description
-            );
+            return crate::gate::unaskable(request, &stored.description);
         };
         let ask = crate::auto_review::ask_text(&stored);
         let _ = self.events.send(AgentEvent::PermissionRequested {

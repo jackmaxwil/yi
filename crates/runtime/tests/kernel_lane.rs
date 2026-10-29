@@ -202,7 +202,7 @@ async fn the_first_cell_shows_the_rlm_table_once_and_the_state_names_the_surface
     let service = service();
     let before = service.state();
     assert!(
-        before.contains("help(rlm) and help(yi) are exact"),
+        before.contains("help(rlm.<name>) and help(yi) are exact"),
         "{before}"
     );
     let offered = |module: &str| -> Vec<String> {
@@ -229,6 +229,10 @@ async fn the_first_cell_shows_the_rlm_table_once_and_the_state_names_the_surface
     assert!(table.contains("[rlm, shown once per session;"), "{table}");
     assert!(table.contains("await rlm.send(target, message,"), "{table}");
     assert!(table.contains("\nrlm.bash(command)"), "{table}");
+    assert!(
+        !table.contains("HarnessScope"),
+        "the table lists functions only, and HarnessScope is a typing alias: {table}"
+    );
     assert!(
         !text_of(&second).contains("shown once per session"),
         "{}",

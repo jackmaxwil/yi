@@ -677,9 +677,10 @@ async fn a_refused_allowed_call_asks_the_next_time() -> TestResult {
         results[1]
     );
     assert!(
-        results[1].contains("Rerun with --yolo")
+        results[1].contains("working tree")
             && results[1].contains("CARGO_TARGET_DIR")
-            && !results[1].contains("allow rule"),
+            && !results[1].contains("allow rule")
+            && !results[1].contains("--yolo"),
         "the headless denial names what works, and a rule the call already had is not it: {}",
         results[1]
     );
@@ -866,7 +867,9 @@ async fn a_pathless_refusal_of_a_configured_allow_asks_the_next_time() -> TestRe
         results[1]
     );
     assert!(
-        results[1].contains("Rerun with --yolo") && !results[1].contains("allow rule"),
+        results[1].contains("working tree")
+            && !results[1].contains("allow rule")
+            && !results[1].contains("--yolo"),
         "the headless denial names what works: {}",
         results[1]
     );

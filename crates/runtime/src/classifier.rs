@@ -286,16 +286,24 @@ pub struct Approver {
     timing: Timing,
     breaker: Mutex<Breaker>,
     record: Record,
+    deliver: Deliver,
 }
 
 impl Approver {
-    pub fn new(sidecar: Sidecar, thresholds: Thresholds, timing: Timing, record: Record) -> Self {
+    pub fn new(
+        sidecar: Sidecar,
+        thresholds: Thresholds,
+        timing: Timing,
+        record: Record,
+        deliver: Deliver,
+    ) -> Self {
         Self {
             sidecar,
             thresholds,
             timing,
             breaker: Mutex::new(Breaker::default()),
             record,
+            deliver,
         }
     }
 
@@ -359,7 +367,9 @@ impl Approver {
                 response.answers.get(SAFE).and_then(|answer| answer.noul)
             }
             Err(error) => {
-                fail(&self.breaker);
+                if fail(&self.breaker) {
+                    (self.deliver)(self.notice(&error));
+                }
                 record.error = Some(self.sidecar.named(&error));
                 None
             }
@@ -386,6 +396,20 @@ impl Approver {
         record.fired = matches!(judgement, Judgement::Allow(_));
         (self.record)(record);
         judgement
+    }
+
+    fn notice(&self, error: &str) -> AgentMessage {
+        AgentMessage::Custom {
+            custom_type: NOTICE_TYPE.to_owned(),
+            content: UserContent::Text(format!(
+                "The classifier at {} failed {TRIP_AFTER} times in a row (last: {error}); approval asks go to the user for the next {} s.",
+                self.sidecar.url,
+                PAUSE.as_secs()
+            )),
+            display: true,
+            details: None,
+            timestamp: yi_session::now_ms(),
+        }
     }
 }
 
@@ -530,12 +554,15 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         timeout: Duration::from_millis(block.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         threshold: threshold(&block),
     };
+    let queue = session.deliver_hook();
+    let deliver: Deliver = Arc::new(move |message| queue(message, false));
     if let (Some(timing), Some(_), Some(broker)) = (timing, &sidecar.key, broker) {
         broker.set_approver(Arc::new(Approver::new(
             sidecar.clone(),
             thresholds,
             timing,
             journal(session),
+            Arc::clone(&deliver),
         )));
     }
     let Some(rules) = session.rules_engine() else {
@@ -546,8 +573,6 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         .filter(|skill| skill.frontmatter.contains_key("trigger"))
         .map(|skill| (skill.name, skill.description))
         .collect();
-    let queue = session.deliver_hook();
-    let deliver: Deliver = Arc::new(move |message| queue(message, false));
     match SkillClassifier::new(sidecar, skills, journal(session), deliver) {
         Ok(classifier) => rules.set_classifier(Arc::new(classifier)),
         Err(why) => warnings.push(why),

@@ -71,13 +71,23 @@ impl Report {
     }
 }
 
+/// What a model can do with no one to approve a call; `--yolo` and allow rules are a person's.
+pub(crate) const MODEL_REMEDIES: &str = "Split the command, keep the writes inside the working tree, or ask the user to approve this call.";
+
+/// Nobody can answer a request in a headless session, so the text names what the model has.
+pub(crate) fn unaskable(request: impl std::fmt::Display, description: &str) -> String {
+    format!(
+        "Request {request} cannot be put to anyone: no interactive surface is available. {description} {MODEL_REMEDIES}"
+    )
+}
+
 /// Holds compile down (plan section 7.6): a child with no interactive surface cannot ask, so
 /// its `Ask` is a deny naming the hazard; an attached one's stands on its family's broker.
 pub fn compile_ask(decision: Decision, attached: bool) -> Decision {
     match decision {
         Decision::Ask { description, .. } if !attached => Decision::Deny {
             reason: format!(
-                "Permission required but no interactive surface is available. {description} Run with --yolo, or add an allow rule for this call."
+                "Permission required but no interactive surface is available. {description} {MODEL_REMEDIES}"
             ),
         },
         other => other,
@@ -98,12 +108,12 @@ pub(crate) fn headless_refusal(
                 false => format!("an interactive run asks to widen it by `{}`", dir.display()),
             };
             format!(
-                "{HEAD} writing `{}`, and {widen}. Rerun with --yolo, or keep the writes inside the working tree (for a build, set CARGO_TARGET_DIR under it).",
+                "{HEAD} writing `{}`, and {widen}. Keep the writes inside the working tree (for a build, set CARGO_TARGET_DIR under it), split the command, or ask the user to approve this run.",
                 path.display()
             )
         }
         yi_tools::SandboxRefusal::Scopes(_) => format!(
-            "{HEAD}, naming no path (a nested sandbox, or the network past loopback), and only an interactive approval runs it outside. Rerun with --yolo."
+            "{HEAD}, naming no path (a nested sandbox, or the network past loopback), and only an interactive approval runs it outside the sandbox. Split the command, keep the writes inside the working tree, or ask the user to approve it."
         ),
     }
 }
@@ -145,7 +155,7 @@ pub(crate) const WALLED_KERNEL_UNCONFINED: &str = "ipython is unavailable to a w
 /// An allowed compound, part of which must leave the sandbox, with no one to ask.
 pub(crate) fn headless_split(why: &str) -> String {
     format!(
-        "Permission required but no interactive surface is available: part of this command must run outside the sandbox ({why}) and would take the rest with it. Split it into separate calls, or rerun with --yolo."
+        "Permission required but no interactive surface is available: part of this command must run outside the sandbox ({why}) and would take the rest with it. Split it into separate calls, keep the writes inside the working tree, or ask the user to approve it."
     )
 }
 
@@ -276,8 +286,9 @@ pub fn render(report: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::named_rule;
+    use super::{Report, compile_ask, headless_refusal, headless_split, named_rule};
     use crate::permission::{CallOutcome, Containment};
+    use yi_permission::Decision;
 
     /// Dies with pathless advice allowing every later call of that tool, not only the denied one.
     #[test]
@@ -293,5 +304,37 @@ mod tests {
         assert!(bash.reason.contains("permissions.allow entry"));
         let pathed = named_rule(outcome(), true, ("read", "read note.rs"));
         assert!(pathed.reason.contains("permissions.allow entry"));
+    }
+
+    /// A model told to "run with --yolo, or add an allow rule" reaches for a person's remedy. Each
+    /// refusal names the three it has: split the command, keep writes in the tree, ask the user.
+    #[test]
+    fn a_headless_refusal_names_the_model_remedies_and_never_a_persons_flag() {
+        let refused = [
+            Report::reason_of(&compile_ask(
+                Decision::Ask {
+                    title: "bash requires permission".to_owned(),
+                    description: "writes outside the workspace".to_owned(),
+                    reviewable: true,
+                },
+                false,
+            )),
+            headless_split("it writes /etc/hosts"),
+            headless_refusal(
+                None,
+                &yi_tools::SandboxRefusal::Scopes(vec!["curl".to_owned()]),
+            ),
+            headless_refusal(
+                None,
+                &yi_tools::SandboxRefusal::Path(std::path::PathBuf::from("/etc/hosts")),
+            ),
+        ];
+        for text in refused {
+            let lowered = text.to_lowercase();
+            for remedy in ["split", "working tree", "ask the user"] {
+                assert!(lowered.contains(remedy), "no `{remedy}` in: {text}");
+            }
+            assert!(!lowered.contains("--yolo"), "{text}");
+        }
     }
 }
