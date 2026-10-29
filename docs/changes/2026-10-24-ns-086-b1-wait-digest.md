@@ -1,4 +1,6 @@
 ---
+version: 0.795.0
+decisions: D500
 issue: Closes #1519, Refs #1442
 growth: +53 the digest adds a settled-family count path and builds full views only for movers; no full roster is retained in a settled reply
 raise: crate runtime +53, tests +85

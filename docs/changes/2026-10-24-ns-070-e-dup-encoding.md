@@ -1,4 +1,6 @@
 ---
+version: 0.758.0
+decisions: D477
 issue: Closes #1505, Refs #1442
 raise: tests +41, crate types +39
 decision: yi-orb depends on yi-types, for the one shared encoder | haul DUPHELP: three standard base64 encoders and a URL-safe one sat in four crates, and the orb was the one crate that could not share | reversible via a private encoder in yi-orb

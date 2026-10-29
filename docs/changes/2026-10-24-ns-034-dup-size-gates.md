@@ -1,4 +1,6 @@
 ---
+version: 0.731.0
+decisions: D457
 issue: Closes #1472, Refs #552, Refs #1442
 decision: Measure the dist binary on the forge against a Linux baseline and ignore growth within a fixed 16 KiB jitter allowance, with a 14 MiB Linux hard cap beside the 9 MiB one | the cap went 7, 8, 9 MiB each time the baseline reached it, 71 of 150 ratchet commits moved it by 256 bytes or less, CI skipped the check entirely, and the first Linux build measured 13,220,280 bytes, past a cap set for a Mach-O count (revises D70 and D91) | revert the PR; the macOS ratchet is untouched
 ---

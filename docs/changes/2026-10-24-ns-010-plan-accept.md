@@ -1,4 +1,6 @@
 ---
+version: 0.721.0
+decisions: D447, D448
 issue: Closes #1452, Refs #1442
 raise: tests +588
 decision: Verification runs up to max(1, min(4, slots/4)) acceptances at once and a waiter waits until the verifier's deadline | owner: "Fix bugs, keep design"; one permit with a 30 s wait bounced every concurrent worktree acceptance whose check outlasted it | restore VERIFICATION_RESERVE 1 and RESERVE_WAIT 30 s
