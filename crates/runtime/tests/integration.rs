@@ -60,6 +60,7 @@ mod kernel_tools;
 mod lanes;
 mod levers;
 mod node;
+mod permission_auto;
 mod permission_scope;
 mod plan_arms;
 mod plan_authority;

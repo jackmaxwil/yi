@@ -1773,7 +1773,7 @@ fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
     for command in [
         "ls -la && git log --oneline -5 2>/dev/null",
         "cat Cargo.toml | grep name",
-        "RUST_LOG=debug rg needle src; wc -l src/lib.rs",
+        "rg needle src; wc -l src/lib.rs",
     ] {
         assert!(
             !tool.irreversible(&args(&[("command", json!(command))])),
@@ -1786,6 +1786,7 @@ fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
         "git status && git commit -m x",
         "echo hi > notes.txt",
         "cat $(rm -rf /tmp/x)",
+        "LD_PRELOAD=x.so rg needle src",
     ] {
         assert!(
             tool.irreversible(&args(&[("command", json!(command))])),
@@ -1989,6 +1990,7 @@ fn a_cell_that_fails_to_finish_keeps_the_calls_it_made() -> TestResult {
     let tool = yi_tools::IpythonTool {
         bridge: Arc::new(DeadKernel),
         calls: Some(Arc::clone(&calls) as Arc<dyn yi_tools::CellCalls>),
+        contained: true,
     };
     let output = tool.execute(
         args(&[("code", json!("1"))]),
@@ -2868,7 +2870,7 @@ fn grep_replace_previews_then_applies_and_tags() -> TestResult {
 #[test]
 fn a_grep_apply_carries_the_syntax_verdict_and_its_patch() -> TestResult {
     if !on_path("python3") {
-        return Ok(());
+        return Err("python3 is missing; the syntax check needs it".into());
     }
     let dir = temp_dir("grep-apply-land")?;
     fs::write(dir.join("a.py"), "x = 1\n")?;
@@ -3150,7 +3152,7 @@ fn on_path(program: &str) -> bool {
 #[test]
 fn an_edit_that_breaks_python_says_so_in_its_result() -> TestResult {
     if !on_path("python3") {
-        return Ok(());
+        return Err("python3 is missing; the syntax check needs it".into());
     }
     let dir = temp_dir("syntax-py")?;
     let context = ToolContext::new(dir.to_path_buf());

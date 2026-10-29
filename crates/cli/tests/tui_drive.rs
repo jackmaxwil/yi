@@ -1308,7 +1308,7 @@ fn a_lane_session_commits_contained() -> TestResult {
     // Outside tmp: every tmp root is writable, which would hide the trunk's git dir.
     let trunk = TargetScratch::new("yi-tui-lane-commit")?;
     if !trunk.outside_tmp() {
-        return Ok(());
+        return Err("the target dir sits under a tmp root, which hides the trunk's git dir".into());
     }
     let project = trunk.0.join("project");
     std::fs::create_dir_all(&project)?;
@@ -1387,7 +1387,7 @@ fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResu
     let home = dir.home()?;
     let outside = TargetScratch::new("yi-tui-refused-retry")?;
     if !outside.outside_tmp() {
-        return Ok(());
+        return Err("the target dir sits under a tmp root, where every write is allowed".into());
     }
     let first = format!("mkdir {}", outside.0.join("a").display());
     let second = format!("mkdir {} && ls", outside.0.join("b").display());

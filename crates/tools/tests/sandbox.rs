@@ -11,6 +11,14 @@ use yi_tools::{
 use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+/// Seatbelt ships with every supported macOS, so a missing one fails the suite instead of passing it.
+fn seatbelt() -> TestResult {
+    match Sandbox::available() {
+        true => Ok(()),
+        false => Err("Seatbelt is missing on macOS: no command can be contained".into()),
+    }
+}
 fn d_bindings(args: &[String]) -> Vec<(&str, &str)> {
     args.iter()
         .filter_map(|arg| arg.strip_prefix("-D")?.split_once('='))
@@ -410,12 +418,9 @@ fn rust_and_node_errno_lines_name_the_refused_path() -> TestResult {
 }
 
 /// The live half. Everything above describes the policy; this runs it.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, home) = workspace("write")?;
     let outside = root.join("outside");
     std::fs::create_dir_all(&outside)?;
@@ -449,15 +454,12 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 /// MCP OAuth tokens sit under `~/.yi/mcp/tokens` and provider logins under
 /// `~/.yi/providers/tokens` (#887). The base profile hides both from every contained command,
 /// the bash tool's and the document converter's included, not only the kernel's.
 #[test]
 fn a_contained_command_cannot_read_yi_tokens() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("tokens")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
 
@@ -504,9 +506,7 @@ fn leaks(
 /// sits under a writable temp root, so renaming a store's parent is a live way around too.
 #[test]
 fn a_contained_command_reads_no_key_by_any_spelling() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("keys")?;
     let keys = [
         ".netrc",
@@ -554,9 +554,7 @@ fn a_contained_command_reads_no_key_by_any_spelling() -> TestResult {
 /// a walled file inside the writable tree left by a renamed parent or a hard link.
 #[test]
 fn a_walled_path_is_unreadable_however_either_side_spells_it() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("wall")?;
     std::fs::create_dir_all(project.join("a/secrets"))?;
     std::fs::write(project.join("a/secrets/key.txt"), "WALLED-598")?;
@@ -593,9 +591,7 @@ fn a_walled_path_is_unreadable_however_either_side_spells_it() -> TestResult {
 /// #906: `*_API_KEY` and the like reached every contained command's environment.
 #[test]
 fn a_contained_command_inherits_no_secret_variable() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let secrets = [
         "YI_598_API_KEY",
         "YI_598_TOKEN",
@@ -630,9 +626,7 @@ fn a_contained_command_inherits_no_secret_variable() -> TestResult {
 
 #[test]
 fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("read")?;
     let sandbox = Sandbox {
         writable: vec![project.clone()],
@@ -660,9 +654,7 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
 /// denial inside a spare, read or write, holds (#1000 review F1, F2), and an aliased spare matches.
 #[test]
 fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, _home) = workspace("spared")?;
     let store = project.join("store");
     let (state, spill) = (store.join("state"), store.join("spill"));
@@ -738,12 +730,9 @@ except socket.gaierror:
 /// #599: every contained spawn gets loopback, so a test suite that binds 127.0.0.1 runs; the
 /// rest of the network stays off, and so do unix sockets (the daemon's, docker's, ssh-agent's),
 /// even one inside a writable root.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_command_has_loopback_and_no_other_network() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("network")?;
     std::fs::write(project.join("probe.py"), NETWORK_PROBE)?;
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -785,12 +774,9 @@ fn a_contained_command_has_loopback_and_no_other_network() -> TestResult {
 /// #599: past loopback a contained run fails at the resolver, since the base policy grants no
 /// DNS lookup; curl says `Could not resolve host`, Python `nodename nor servname`. Either reads
 /// as the sandbox's refusal, not as the network being down.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_resolver_failure_reads_as_the_sandbox() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("resolver")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
     for command in [
@@ -810,18 +796,16 @@ fn a_contained_resolver_failure_reads_as_the_sandbox() -> TestResult {
 }
 
 /// Review of #925 (F3): a JVM opens dual-stack sockets and dials 127.0.0.1 as `::ffff:127.0.0.1`,
-/// which Seatbelt refuses, so Gradle, Maven and sbt lost loopback. Skipped with no JDK here.
-#[cfg(target_os = "macos")]
+/// which Seatbelt refuses, so Gradle, Maven and sbt lost loopback. A JDK is optional, so this
+/// rides the ignored lane, where a missing one fails.
 #[test]
+#[ignore = "tier-2 journey: `just journeys`"]
 fn a_contained_jvm_reaches_loopback() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("jvm")?;
     let (code, java_home) = run("/usr/libexec/java_home", &project, None)?;
     if code != 0 {
-        eprintln!("skipped: no JDK");
-        return Ok(());
+        return Err("no JDK: /usr/libexec/java_home found none".into());
     }
     std::fs::write(
         project.join("Probe.java"),
@@ -838,12 +822,9 @@ fn a_contained_jvm_reaches_loopback() -> TestResult {
 }
 
 /// Plan row F's demo: a contained `cargo test` whose test binds 127.0.0.1 passes.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_cargo_test_binds_loopback() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("cargo")?;
     std::fs::create_dir_all(project.join("src"))?;
     std::fs::write(
@@ -924,12 +905,9 @@ fn a_linked_worktree_sandbox_writes_its_gitdir_and_common_dir() -> TestResult {
 }
 
 /// The incident: `git add` in a lane failed on `.git/worktrees/<lane>/index.lock`.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_git_commit_succeeds_in_a_linked_worktree() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, _project, home) = workspace("commit")?;
     let (_trunk, lane) = linked_worktree(&root)?;
     std::fs::write(lane.join("change.txt"), "from the lane\n")?;
@@ -955,12 +933,9 @@ fn a_contained_git_commit_succeeds_in_a_linked_worktree() -> TestResult {
 
 /// A hook and a config are code git runs on the host, outside any sandbox: making the git dirs
 /// writable must not hand a contained command a way out of the sandbox (D205).
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_command_cannot_write_a_hook_or_the_config() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, _project, home) = workspace("hooks")?;
     let (trunk, lane) = linked_worktree(&root)?;
     let mut sandbox = Sandbox::for_workspace(&lane, &home, None);
