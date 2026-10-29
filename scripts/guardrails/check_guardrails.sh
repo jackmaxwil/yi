@@ -76,11 +76,10 @@ run "$PY" skills/yi/session-mining/extract.py --selfcheck
 # The PR narrative's net-src number is what the growth budget is argued against, and
 # a path in the wrong bucket misprices it silently; only this flag exercises the split.
 run "$PY" scripts/pr_body.py --selfcheck
-if [ "$FAST" -eq 1 ]; then
-  run echo "skip slow_tests selfcheck (--fast: it lists the workspace with nextest)"
-else
-  run "$PY" scripts/slow_tests.py --selfcheck
-fi
+run "$PY" scripts/test_sign.py
+# A checked-in filter over test names rots silently, so only this flag proves a stale row is
+# refused; it lists no workspace, so the fast lane runs it too.
+run "$PY" scripts/slow_tests.py --selfcheck
 # The snap diff an agent reads is parsed from casts, checked against Yi's own screen dumps.
 run "$PY" scripts/tui_see.py --selfcheck
 # The monkey's seed must replay byte for byte or a failure it reports cannot be reproduced.
@@ -150,6 +149,8 @@ run "$PY" scripts/guardrails/check_orphans.py --selfcheck
 # The public surface is what the mirror publishes, modelled on filter-repo's own
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
+# The GitHub release's scan (scripts/mirror/publish.sh), refuted with each check off.
+run "$PY" -I scripts/mirror/scan.py --selfcheck
 # Prose is not exempt: check_comments.py ratchets the comment volume and prints the count, and
 # the design docs set the spelling. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi

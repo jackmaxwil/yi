@@ -120,7 +120,7 @@ not (
   (binary_id(=yi-runtime::integration) & test(=snapshot_e2e::a_second_process_on_one_session_leaves_its_snapshot_alone)) |
   (binary_id(=yi-runtime::integration) & test(=snapshot_e2e::a_single_file_snapshot_from_before_blobs_restores)) |
   (binary_id(=yi-runtime::integration) & test(=subagent::a_bare_wait_wakes_once_on_the_reap_of_a_child_it_saw_finish)) |
-  (binary_id(=yi-runtime::integration) & test(=todo_mirror::a_wait_under_constant_plan_churn_refuses_at_the_budget)) |
+  (binary_id(=yi-runtime::integration) & test(=todo_mirror::a_wait_under_constant_plan_churn_never_unblocks_after_the_budget)) |
   (binary_id(=yi-tools) & test(=jobs::poll::tests::kill_and_poll_share_one_deadline)) |
   (binary_id(=yi-tools::integration) & test(=orient::the_skeleton_scan_names_where_it_stopped)) |
   (binary_id(=yi-tools::integration) & test(=program_values::a_backgrounded_command_hands_a_program_its_job_then_its_output)) |
@@ -204,7 +204,7 @@ not (
   (binary_id(=yi-runtime::integration) & test(=snapshot_e2e::a_second_process_on_one_session_leaves_its_snapshot_alone)) |
   (binary_id(=yi-runtime::integration) & test(=snapshot_e2e::a_single_file_snapshot_from_before_blobs_restores)) |
   (binary_id(=yi-runtime::integration) & test(=subagent::a_bare_wait_wakes_once_on_the_reap_of_a_child_it_saw_finish)) |
-  (binary_id(=yi-runtime::integration) & test(=todo_mirror::a_wait_under_constant_plan_churn_refuses_at_the_budget)) |
+  (binary_id(=yi-runtime::integration) & test(=todo_mirror::a_wait_under_constant_plan_churn_never_unblocks_after_the_budget)) |
   (binary_id(=yi-tools) & test(=jobs::poll::tests::kill_and_poll_share_one_deadline)) |
   (binary_id(=yi-tools::integration) & test(=orient::the_skeleton_scan_names_where_it_stopped)) |
   (binary_id(=yi-tools::integration) & test(=program_values::a_backgrounded_command_hands_a_program_its_job_then_its_output)) |

@@ -1,4 +1,5 @@
 ---
+version: 0.663.0
 issue: Closes #1283
 raise: comments +2, crate console +1, crate tui +9, tests +112
 ---
