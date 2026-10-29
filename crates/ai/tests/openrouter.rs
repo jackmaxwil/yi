@@ -25,6 +25,7 @@ fn target_model() -> Result<Model, Box<dyn Error>> {
 pub(crate) fn history_context() -> LlmContext {
     LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "be terse".to_owned(),
         messages: vec![
             AgentMessage::user_input(UserContent::Text("hi".to_owned()), 0),
@@ -343,6 +344,54 @@ fn chunk_mapper_captures_openrouter_reasoning_deltas_and_cached_usage() -> TestR
         usage.cost.total.as_f64(),
         Some(0.000123),
         "the account charge outranks the catalog estimate"
+    );
+    Ok(())
+}
+
+/// Dies without the order: a pinned upstream rides `provider.order` on a routed base only.
+#[test]
+fn a_pinned_upstream_rides_the_provider_order() -> TestResult {
+    let model = target_model()?;
+    let options = OpenAiOptions {
+        pin: Some("Amazon Bedrock".to_owned()),
+        ..OpenAiOptions::default()
+    };
+    assert_eq!(
+        build_params(&model, &history_context(), &options)["provider"],
+        json!({"order": ["amazon-bedrock"]})
+    );
+    let mut elsewhere = model.clone();
+    elsewhere.base_url = "https://api.openai.com/v1".to_owned();
+    assert!(
+        build_params(&elsewhere, &history_context(), &options)
+            .get("provider")
+            .is_none(),
+        "a base that routes nothing cannot carry the pin"
+    );
+    Ok(())
+}
+
+/// Dies with the tail marked: a suspended tail leaves the marks before it alone.
+#[test]
+fn a_suspended_tail_mark_keeps_the_marks_before_it_only() -> TestResult {
+    let model = target_model()?;
+    let mut suspended_context = history_context();
+    suspended_context.cache_tail = false;
+    let marked = build_params(&model, &history_context(), &OpenAiOptions::default());
+    let suspended = build_params(&model, &suspended_context, &OpenAiOptions::default());
+    let tail_marked = |params: &serde_json::Value| {
+        params["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .is_some_and(|message| message.to_string().contains("cache_control"))
+    };
+    assert!(tail_marked(&marked), "{marked}");
+    assert!(!tail_marked(&suspended), "{suspended}");
+    assert!(
+        suspended["messages"][0]
+            .to_string()
+            .contains("cache_control"),
+        "the system end still marks: {suspended}"
     );
     Ok(())
 }

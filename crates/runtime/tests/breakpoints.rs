@@ -180,6 +180,7 @@ fn context(case: &Case) -> LlmContext {
         tools: case.tools.then(|| vec![tool()]),
         tool_choice: (case.reuse == Reuse::LastTurn).then_some(ToolChoice::None),
         cache_ttl: case.ttl,
+        cache_tail: true,
     }
 }
 
@@ -379,6 +380,7 @@ fn random_requests_hold_every_breakpoint_invariant_on_both_dialects() -> Result<
 fn a_tool_less_loop_still_marks_its_previous_tail_and_tail() -> Result<(), Box<dyn Error>> {
     let ctx = LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "be terse".to_owned(),
         messages: vec![
             user("first"),
@@ -445,6 +447,7 @@ fn a_shared_partition_is_marked_on_both_wires() -> Result<(), Box<dyn Error>> {
     let partition = "<untrusted>\n1:red sun\n2:blue sky\n</untrusted>";
     let mut ctx = LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: ["reader", "rules"].join(yi_types::model::SYSTEM_BLOCK_SEPARATOR),
         messages: vec![user(partition), user("Which line names the sky?")],
         transient: Vec::new(),

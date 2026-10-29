@@ -3,7 +3,7 @@ use std::error::Error;
 use yi_ai::openai::OpenAiOptions;
 use yi_ai::openai_responses::{EventMapper, build_params};
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, Content, StopReason};
 use yi_types::model::{Effort, LlmContext, Model, ModelCost, ToolDef};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -35,25 +35,7 @@ fn model(reasoning: bool) -> Model {
 }
 
 fn context() -> LlmContext {
-    LlmContext {
-        cache_ttl: yi_types::model::Ttl::Min5,
-        system_prompt: "be terse".to_owned(),
-        messages: vec![AgentMessage::user_input(
-            UserContent::Text("hi".to_owned()),
-            0,
-        )],
-        transient: Vec::new(),
-        schema: None,
-        shared_through: None,
-        reuse: yi_types::model::Reuse::Loop,
-        tools: Some(vec![ToolDef {
-            name: "bash".to_owned(),
-            description: "run".to_owned(),
-            parameters: json!({"type":"object","properties":{"cmd":{"type":"string"}}}),
-            freeform: None,
-        }]),
-        tool_choice: None,
-    }
+    crate::harness::loop_context(json!({"type":"object","properties":{"cmd":{"type":"string"}}}))
 }
 
 fn canned() -> Vec<Value> {

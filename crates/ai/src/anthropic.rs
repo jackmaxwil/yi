@@ -287,7 +287,8 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
                 context.cache_ttl
             },
             context.cache_ttl,
-        ),
+        )
+        .with_tail(context.cache_tail),
         &history,
         context.reuse,
         context.shared_through,
@@ -821,9 +822,10 @@ fn run_request(
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
-    let resent = crate::request::pump_sse_with_resend(
+    let stripped = crate::request::Stripped::default();
+    let pumped = crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::send_with_retry(&url, &headers, body, proxy, &retried),
+        || crate::request::send_stripping_cache(&url, &headers, body, proxy, &retried, &stripped),
         |sse| {
             let kind = sse.event.as_deref().unwrap_or("");
             if kind == "error" {
@@ -839,11 +841,10 @@ fn run_request(
             }
             Ok(true)
         },
-    )
-    .map_err(|message| crate::request::auth_hint(&message, oauth, &model.provider))?;
-    if let Some(first_error) = resent {
-        crate::request::note_resend(&mut mapper.output, &first_error);
-    }
+    );
+    let resent =
+        pumped.map_err(|message| crate::request::auth_hint(&message, oauth, &model.provider))?;
+    crate::request::note_reply(&mut mapper.output, resent, &stripped);
     let _ = sender.blocking_send(mapper.finish());
     Ok(())
 }

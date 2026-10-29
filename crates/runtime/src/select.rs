@@ -114,6 +114,7 @@ async fn ask(
 ) -> (Result<String, String>, Usage) {
     let context = LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "You pick the lines of a command's output that matter. You answer with line ranges only.".to_owned(),
         messages: vec![AgentMessage::task(prompt, 0)],
         transient: Vec::new(),

@@ -249,6 +249,53 @@ fn pooled_idle_from_now() {
     }
 }
 
+/// The cache fields a 400 may name, the specific ones before the generic `cache`.
+const CACHE_FIELDS: [&str; 6] = [
+    "prompt_cache_retention",
+    "prompt_cache_key",
+    "cache_control",
+    "cache_ttl",
+    "session_id",
+    "cache",
+];
+
+fn cache_field(text: &str) -> Option<&'static str> {
+    CACHE_FIELDS.into_iter().find(|field| text.contains(field))
+}
+
+/// A router's provider order for the pinned upstream, by the slug its display name spells.
+pub fn pin_routing(routing: Option<Value>, pin: Option<&str>) -> Option<Value> {
+    let Some(pin) = pin else {
+        return routing;
+    };
+    let mut routing = routing;
+    let object = routing.get_or_insert_with(|| serde_json::json!({}));
+    if !object.is_object() {
+        *object = serde_json::json!({});
+    }
+    if let Some(object) = object.as_object_mut() {
+        object.insert(
+            "order".to_owned(),
+            serde_json::json!([pin.to_lowercase().replace(' ', "-")]),
+        );
+    }
+    routing
+}
+
+/// What a request dropped when a 400 named a cache field, for its reply's record.
+#[derive(Default)]
+pub struct Stripped(std::cell::Cell<Option<&'static str>>);
+
+impl Stripped {
+    fn set(&self, field: &'static str) {
+        self.0.set(Some(field));
+    }
+
+    pub fn take(&self) -> Option<&'static str> {
+        self.0.take()
+    }
+}
+
 pub fn send_with_retry(
     url: &str,
     headers: &[(String, String)],
@@ -256,13 +303,22 @@ pub fn send_with_retry(
     proxy: Option<&ProxyConfig>,
     on_retry: &dyn Fn(Wait),
 ) -> Result<ureq::Response, String> {
+    send_stripping_cache(url, headers, body, proxy, on_retry, &Stripped::default())
+}
+
+/// One POST, retried by the policy; a cache-field 400 is asked again without the fields.
+pub fn send_stripping_cache(
+    url: &str,
+    headers: &[(String, String)],
+    body: &crate::breakpoints::Encoded,
+    proxy: Option<&ProxyConfig>,
+    on_retry: &dyn Fn(Wait),
+    stripped: &Stripped,
+) -> Result<ureq::Response, String> {
     let policy = RetryPolicy::default();
     let started = std::time::Instant::now();
     let agent = stream_agent(proxy.and_then(|config| config.proxy_for(host_of(url))));
-    let body = {
-        let _span = yi_types::trace::span("ai.serialize");
-        body.to_string()
-    };
+    let mut bare: Option<crate::breakpoints::Encoded> = None;
     let mut attempt: u32 = 0;
     loop {
         let mut request = agent
@@ -272,10 +328,14 @@ pub fn send_with_retry(
         for (name, value) in headers {
             request = request.set(name, value);
         }
+        let serialized = {
+            let _span = yi_types::trace::span("ai.serialize");
+            bare.as_ref().unwrap_or(body).to_string()
+        };
         let sending = yi_types::trace::span("ai.http_send")
             .arg("attempt", attempt)
-            .arg("bytes", body.len());
-        let sent = request.send_string(&body);
+            .arg("bytes", serialized.len());
+        let sent = request.send_string(&serialized);
         drop(sending);
         match sent {
             Ok(response) => return Ok(response),
@@ -287,6 +347,21 @@ pub fn send_with_retry(
                     .header("retry-after")
                     .and_then(|value| value.parse::<f64>().ok());
                 let text = response.into_string().unwrap_or_default();
+                if status == 400
+                    && bare.is_none()
+                    && let Some(field) = cache_field(&text)
+                {
+                    stripped.set(field);
+                    bare = Some(body.without(&CACHE_FIELDS));
+                    announce(
+                        on_retry,
+                        attempt.saturating_add(1),
+                        &policy,
+                        None,
+                        format!("HTTP 400 named {field}"),
+                    );
+                    continue;
+                }
                 if quota_exhausted(status, &text, url) {
                     return Err(format!("HTTP {status} {QUOTA_STAMP} {text}"));
                 }
@@ -429,6 +504,42 @@ pub fn resend_dead_stream(delivered: bool, resent: bool) -> bool {
     !delivered && !resent
 }
 
+/// The reply's record of its own request: a dead stream's resend, and the fields a 400 dropped.
+pub fn note_reply(output: &mut AgentMessage, resent: Option<String>, stripped: &Stripped) {
+    if let Some(first_error) = resent {
+        note_resend(output, &first_error);
+    }
+    record_stripped(output, stripped);
+}
+
+/// The cache field a 400 refused, recorded once on the reply that came back without it.
+pub fn record_stripped(output: &mut AgentMessage, stripped: &Stripped) {
+    if let Some(field) = stripped.take() {
+        note_stripped(output, field);
+    }
+}
+
+/// The cache field a 400 refused, kept once on the reply that came back without it.
+pub fn note_stripped(output: &mut AgentMessage, field: &str) {
+    if let AgentMessage::Assistant {
+        diagnostics,
+        timestamp,
+        ..
+    } = output
+    {
+        let mut details = serde_json::Map::new();
+        details.insert("field".to_owned(), Value::from(field));
+        diagnostics.get_or_insert_with(Vec::new).push(
+            yi_types::message::AssistantMessageDiagnostic {
+                diagnostic_type: "cache_stripped".to_owned(),
+                timestamp: *timestamp,
+                error: None,
+                details: Some(details),
+            },
+        );
+    }
+}
+
 pub fn note_resend(output: &mut AgentMessage, first_error: &str) {
     if let AgentMessage::Assistant {
         diagnostics,
@@ -557,23 +668,14 @@ pub fn merge_headers(
     merged
 }
 
-pub fn openai_bearer_post(
-    url: &str,
+/// The bearer header a chat-completions route is sent with, live headers merged over it.
+pub fn bearer_headers(
     model: &Model,
     api_key: &str,
-    body: &crate::breakpoints::Encoded,
-    proxy: Option<&ProxyConfig>,
     extra: &[(String, String)],
-    on_retry: &dyn Fn(Wait),
-) -> Result<ureq::Response, String> {
+) -> Vec<(String, String)> {
     let headers = headers_for(model, vec![("authorization", format!("Bearer {api_key}"))]);
-    send_with_retry(
-        url,
-        &merge_headers(headers, extra.to_vec()),
-        body,
-        proxy,
-        on_retry,
-    )
+    merge_headers(headers, extra.to_vec())
 }
 
 /// What one request needs beside its body: the key, the proxy, and the loop's cut flag.

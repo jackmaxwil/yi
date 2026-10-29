@@ -109,6 +109,8 @@ pub struct CachePolicy {
     pub stable_ttl: Ttl,
     /// The history breakpoints; never above `stable_ttl`, so the order along the prompt holds.
     pub history_ttl: Ttl,
+    /// Whether the moving tail is marked (`LlmContext::cache_tail`).
+    pub tail: bool,
 }
 
 impl CachePolicy {
@@ -127,7 +129,14 @@ impl CachePolicy {
             engine,
             stable_ttl: stable_ttl.max(history_ttl).min(cap),
             history_ttl: history_ttl.min(cap),
+            tail: true,
         }
+    }
+
+    #[must_use]
+    pub fn with_tail(mut self, tail: bool) -> Self {
+        self.tail = tail;
+        self
     }
 }
 
@@ -177,7 +186,7 @@ impl Breakpoints {
                 })
                 .and_then(|reply| messages.get(..reply)?.iter().rposition(is_tail_kind));
             // A read-only request writes no tail of its own; its previous tail is the read.
-            tail = last.filter(|_| reuse == Reuse::Loop);
+            tail = last.filter(|_| reuse == Reuse::Loop && policy.tail);
         }
         let history = [
             tail.map(Position::Tail),
@@ -243,6 +252,29 @@ impl Encoded {
     pub fn provider_prefix(mut params: Value, list: &str, transient: Vec<Value>) -> Self {
         append(&mut params, list, transient);
         Self(params)
+    }
+
+    /// The same body with every object field named in `fields` removed (#748).
+    pub fn without(&self, fields: &[&str]) -> Self {
+        fn strip(value: &mut Value, fields: &[&str]) {
+            match value {
+                Value::Object(object) => {
+                    object.retain(|key, _| !fields.contains(&key.as_str()));
+                    for value in object.values_mut() {
+                        strip(value, fields);
+                    }
+                }
+                Value::Array(items) => {
+                    for value in items {
+                        strip(value, fields);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut value = self.0.clone();
+        strip(&mut value, fields);
+        Self(value)
     }
 
     /// For inspection; the request paths never take a bare body back.

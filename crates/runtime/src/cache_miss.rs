@@ -32,6 +32,10 @@ const HOUR_MS: u64 = 60 * 60 * 1000;
 /// Pseudo-gaps added to the short band: one pause early in a short session counts for a third
 /// of its gaps rather than a half.
 const SHORT_PSEUDO_GAPS: f64 = 2.0;
+const SWITCH_WINDOW_MS: u64 = 30 * 60 * 1000;
+const DRILL_HOLD_MS: u64 = HOUR_MS;
+/// Consecutive unexplained requests that wrote the prompt and read nothing back, on one route.
+const ZERO_READ_WRITES: u32 = 4;
 
 /// Why a request read less than the prompt before it, in the order the causes are tested.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +76,12 @@ impl MissCause {
     }
 }
 
+/// The upstream the fold pinned and how long for: the host its cache reads came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pin {
+    pub upstream: String,
+    pub until: u64,
+}
 struct Request {
     route: String,
     prompt: u64,
@@ -110,6 +120,12 @@ pub struct MissTracker {
     reuse: std::collections::VecDeque<(u64, u64)>,
     reuse_announced: bool,
     notice: Option<String>,
+    switch_misses: Vec<u64>,
+    reading: Option<String>,
+    pin: Option<Pin>,
+    zero_read_writes: u32,
+    /// When the tail mark is written again, and the route it was suspended on.
+    tail_suspended: Option<(u64, String)>,
 }
 
 fn tokens(count: i64) -> u64 {
@@ -261,9 +277,48 @@ impl MissTracker {
             }
             self.reuse.push_back((read, write));
         }
+        self.escalate(&request, cause, read);
         self.reuse_alarm(&request.route);
         self.last = Some(request);
         cause
+    }
+
+    /// Invariant: a switch or a gap explains its own miss, so only an unexplained run moves the
+    /// marks: two switches pin the reading host an hour, four zero-read writes rest the tail.
+    fn escalate(&mut self, request: &Request, cause: Option<MissCause>, read: u64) {
+        let at = request.at;
+        self.switch_misses
+            .retain(|miss| at.saturating_sub(*miss) <= SWITCH_WINDOW_MS);
+        if cause == Some(MissCause::UpstreamSwitch) {
+            self.switch_misses.push(at);
+        }
+        if read > 0
+            && let Some(upstream) = request.upstream.clone()
+        {
+            self.reading = Some(upstream);
+        }
+        let pinned = self.pin.as_ref().is_some_and(|pin| at < pin.until);
+        if !pinned
+            && self.switch_misses.len() >= 2
+            && let Some(upstream) = self.reading.clone()
+        {
+            self.pin = Some(Pin {
+                upstream,
+                until: at.saturating_add(DRILL_HOLD_MS),
+            });
+            self.switch_misses.clear();
+        }
+        let zero_read =
+            read == 0 && request.write > 0 && cause.is_some_and(MissCause::is_unexplained);
+        self.zero_read_writes = if zero_read {
+            self.zero_read_writes.saturating_add(1)
+        } else {
+            0
+        };
+        if self.zero_read_writes >= ZERO_READ_WRITES {
+            self.zero_read_writes = 0;
+            self.tail_suspended = Some((at.saturating_add(DRILL_HOLD_MS), request.route.clone()));
+        }
     }
 
     /// Invariant: a write is billed above plain input, so a route that read back less than it
@@ -293,18 +348,20 @@ impl MissTracker {
     fn reset(&mut self) {
         self.last = None;
         self.reuse.clear();
+        self.zero_read_writes = 0;
     }
 
-    /// What the fold knows for the next request's TTL; `None` before a first request and after
-    /// a compaction, whose next request writes a prompt of unknown size.
-    pub fn estimate(&self) -> Option<TtlEstimate> {
+    /// What the fold advises; `None` before a first request and after a compaction.
+    pub fn advice(&self) -> Option<CacheAdvice> {
         let last = self.last.as_ref()?;
-        Some(TtlEstimate {
+        Some(CacheAdvice {
             last_start: last.at,
             last_ttl: last.ttl,
             last_prompt: last.prompt,
             growth: self.growth,
             gaps: self.gaps,
+            pin: self.pin.clone(),
+            tail_suspended: self.tail_suspended.clone(),
         })
     }
 
@@ -314,15 +371,16 @@ impl MissTracker {
     }
 }
 
-/// The fold's view of the next request: when the last one started and its history's TTL, its
-/// prompt, the smoothed prompt growth (`None` until two requests are seen), and the gap bands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TtlEstimate {
+/// The fold's advice for the next request: the TTL, the upstream to prefer, the tail mark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CacheAdvice {
     pub last_start: u64,
     pub last_ttl: Ttl,
     pub last_prompt: u64,
     pub growth: Option<u64>,
     pub gaps: [u32; 3],
+    pub pin: Option<Pin>,
+    pub tail_suspended: Option<(u64, String)>,
 }
 
 fn lifetime_ms(ttl: Ttl) -> u64 {
@@ -336,7 +394,22 @@ fn tokens_f64(count: u64) -> f64 {
     f64::from(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
-impl TtlEstimate {
+impl CacheAdvice {
+    /// The upstream to prefer at `now`, once two switches inside the window pinned one.
+    pub fn pin(&self, now: u64) -> Option<&str> {
+        self.pin
+            .as_ref()
+            .filter(|pin| now < pin.until)
+            .map(|pin| pin.upstream.as_str())
+    }
+
+    /// Whether the request at `now` writes a moving tail mark.
+    pub fn tail(&self, now: u64) -> bool {
+        self.tail_suspended
+            .as_ref()
+            .is_none_or(|(until, _)| now >= *until)
+    }
+
     /// The TTL whose expected cost over this request and the next is lower, at `model`'s own
     /// prices, for a request sent at `now` ms. An hour costs `(w1 − w5)` on the tokens this
     /// request writes: its growth while the last entry lives, the whole prompt once it is gone.
@@ -393,7 +466,7 @@ pub fn attach(session: &AgentSession) {
         // The process that wrote the ledger showed its notice; this one alerts on its own misses.
         (folded.notice, folded.announced, folded.total_misses) = (None, false, 0);
         (folded.reuse_announced, folded.reuse) = (false, Default::default());
-        seeded.set_ttl_estimate(folded.estimate());
+        seeded.set_cache_advice(folded.advice());
         *resumed.lock().unwrap_or_else(PoisonError::into_inner) = folded;
     });
     session.show_notices(CACHE_ALERT_TYPE, move |event| {
@@ -407,7 +480,7 @@ pub fn attach(session: &AgentSession) {
             } => tracker.reset(),
             _ => return tracker.take_notice(),
         }
-        provider.set_ttl_estimate(tracker.estimate());
+        provider.set_cache_advice(tracker.advice());
         tracker.take_notice()
     });
 }

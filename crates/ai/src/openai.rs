@@ -24,6 +24,8 @@ pub struct OpenAiOptions {
     pub session_id: Option<String>,
     pub proxy: Option<crate::request::ProxyConfig>,
     pub routing: Option<Value>,
+    /// The upstream the session ledger pinned: a router is asked for that host first (#748).
+    pub pin: Option<String>,
     pub extra_headers: Vec<(String, String)>,
     /// A stored OAuth credential is on the wire (D191): a 401 names `yi login`.
     pub oauth: bool,
@@ -40,7 +42,7 @@ pub fn routing_params(model: &Model, options: &OpenAiOptions, schema: bool) -> O
     if !model.base_url.contains("openrouter.ai") {
         return None;
     }
-    let mut routing = options.routing.clone();
+    let mut routing = crate::request::pin_routing(options.routing.clone(), options.pin.as_deref());
     if schema {
         // Invariant: a schema only reaches a host that takes `response_format`; the rest ignore it.
         let object = routing.get_or_insert_with(|| json!({}));
@@ -380,7 +382,8 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     // its own prefix and no explicit breakpoint is known to be accepted (design §11).
     if model.base_url.contains("openrouter.ai") {
         let breakpoints = Breakpoints::build(
-            &CachePolicy::of(model, context.cache_ttl, context.cache_ttl),
+            &CachePolicy::of(model, context.cache_ttl, context.cache_ttl)
+                .with_tail(context.cache_tail),
             &history,
             context.reuse,
             context.shared_through,
@@ -885,9 +888,19 @@ fn run_request(
     let mut mapper = ChunkMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
+    let stripped = crate::request::Stripped::default();
     let pumped = crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra, &retried),
+        || {
+            crate::request::send_stripping_cache(
+                &url,
+                &crate::request::bearer_headers(model, api_key, extra),
+                body,
+                proxy,
+                &retried,
+                &stripped,
+            )
+        },
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
@@ -900,6 +913,7 @@ fn run_request(
             Ok(true)
         },
     );
+    crate::request::record_stripped(&mut mapper.output, &stripped);
     let resent = match pumped {
         Ok(resent) => resent,
         // a stream that died after its first chunk was billed for what it generated: the
@@ -915,9 +929,7 @@ fn run_request(
             return Ok(());
         }
     };
-    if let Some(first_error) = resent {
-        crate::request::note_resend(&mut mapper.output, &first_error);
-    }
+    crate::request::note_reply(&mut mapper.output, resent, &stripped);
     // a cut dropped the stream before its finish and usage chunks: the turn ends as a length
     // stop and is settled from the generation record (D163)
     let cut = stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));

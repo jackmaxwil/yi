@@ -33,6 +33,7 @@ fn model() -> Model {
 fn asking(schema: Value) -> LlmContext {
     LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "s".to_owned(),
         messages: vec![AgentMessage::user_input(
             UserContent::Text("q".to_owned()),

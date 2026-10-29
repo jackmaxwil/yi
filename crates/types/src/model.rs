@@ -352,10 +352,22 @@ pub struct LlmContext {
     /// for a loop request (D315), five minutes for anything else.
     #[serde(default, skip_serializing_if = "Ttl::is_min5")]
     pub cache_ttl: Ttl,
+    /// Whether the history's moving tail carries a mark: a route that wrote and read nothing
+    /// back stops writing it until the fold re-probes it (D315).
+    #[serde(default = "marked", skip_serializing_if = "is_marked")]
+    pub cache_tail: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+}
+
+fn marked() -> bool {
+    true
+}
+
+fn is_marked(value: &bool) -> bool {
+    *value
 }
 
 /// The assistant diagnostic that records [`LlmContext::stable_key`] per request (C5).
@@ -415,6 +427,7 @@ mod tests {
     fn transient_and_schema_ride_only_when_set() -> Result<(), Box<dyn std::error::Error>> {
         let context = LlmContext {
             cache_ttl: super::Ttl::Min5,
+            cache_tail: true,
             system_prompt: "s".to_owned(),
             messages: Vec::new(),
             transient: vec![crate::message::AgentMessage::user_input(
@@ -457,6 +470,7 @@ mod tests {
     fn the_stable_key_moves_with_schema_tools_and_system_only() {
         let base = LlmContext {
             cache_ttl: super::Ttl::Min5,
+            cache_tail: true,
             system_prompt: "s".to_owned(),
             messages: Vec::new(),
             transient: Vec::new(),

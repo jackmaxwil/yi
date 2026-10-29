@@ -948,17 +948,17 @@ fn run_request(
     let mut mapper = EventMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
-    let resent = crate::request::pump_sse_with_resend(
+    let stripped = crate::request::Stripped::default();
+    let pumped = crate::request::pump_sse_with_resend(
         wire.stop,
         || {
-            crate::request::openai_bearer_post(
+            crate::request::send_stripping_cache(
                 &url,
-                model,
-                wire.api_key,
+                &crate::request::bearer_headers(model, wire.api_key, wire.extra),
                 body,
                 wire.proxy,
-                wire.extra,
                 &retried,
+                &stripped,
             )
         },
         |sse| {
@@ -984,11 +984,10 @@ fn run_request(
             }
             Ok(true)
         },
-    )
-    .map_err(|message| crate::request::auth_hint(&message, wire.oauth, &model.provider))?;
-    if let Some(first_error) = resent {
-        crate::request::note_resend(&mut mapper.output, &first_error);
-    }
+    );
+    let resent = pumped
+        .map_err(|message| crate::request::auth_hint(&message, wire.oauth, &model.provider))?;
+    crate::request::note_reply(&mut mapper.output, resent, &stripped);
     for item in mapper.finish() {
         let _ = sender.blocking_send(item);
     }
