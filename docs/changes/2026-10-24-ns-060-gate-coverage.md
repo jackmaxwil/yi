@@ -1,4 +1,6 @@
 ---
+version: 0.784.0
+decisions: D494, D495
 issue: Closes #1496, Refs #1442
 raise: crate ai +7, crate cli +11
 decision: The 1,200-line ceiling counts production lines and a file past 1,000 may not grow until it is split at a seam | the ceiling counted inline tests, so modules packed to the cap (36 files within 100 lines of it) instead of splitting | revert the PR; the whole-file count returns

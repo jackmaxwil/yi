@@ -1,4 +1,5 @@
 ---
+version: 0.581.0
 issue: Closes #1028, Closes #1029
 raise: crate acp +11, crate console +7, crate runtime +82, crate tui +35, crate types +4, tests +509, comments +7
 ---

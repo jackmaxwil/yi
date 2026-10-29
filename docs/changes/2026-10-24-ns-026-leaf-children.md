@@ -1,4 +1,6 @@
 ---
+version: 0.745.0
+decisions: D467, D468
 issue: Closes #1465, Refs #1442
 raise: tests +159, comments +2, crate cli +1, crate runtime +18
 decision: a root child spawned where it cannot spawn (can_delegate = depth + 1 < max_depth is false) is never registered for the orchestrate protocol, and a fork=all child gets no exemption | it cannot delegate (the depth refusal in SubagentHost::spawn stops it), so 11,491 request bytes on a triggered prompt are dead weight, and a fork's request prefix is not its parent's anyway: measured, the fork's tool table is 15,181 B against the parent's 17,673 B | pass can_delegate: true for every child in child_factory

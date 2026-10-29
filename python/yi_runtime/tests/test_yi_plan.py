@@ -239,6 +239,22 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         host.results[child] = RuntimeError(f"{child} is still running")
         asyncio.get_running_loop().call_later(0.05, host.results.__setitem__, child, {"text": "done"})
         self.assertEqual(await todo.result(timeout=5), {"text": "done"})
+    async def test_a_todo_waits_when_only_its_sibling_moved(self) -> None:
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        todo = await plan.todo(key="t", delegate=Writer(accept=contract(cmd("true", critical=True))))
+        other = f"{plan.id}/other"
+        await plan.todo(key="other", delegate=Writer(accept=contract(cmd("true", critical=True))))
+        child = f"{plan.id}/t"
+        host.children[child] = "running"
+        host.children[other] = "running"
+        host.results[child] = {"text": "done"}
+        pending = asyncio.ensure_future(todo.result(timeout=5))
+        await asyncio.sleep(0.02)
+        host.children[other] = "finished"
+        await asyncio.sleep(0.02)
+        host.children[child] = "finished"
+        self.assertEqual(await asyncio.wait_for(pending, timeout=5), {"text": "done"})
 
     async def test_an_engine_refusal_is_not_read_as_a_wait_for_a_slot(self) -> None:
         """Dies with the control: read every idle delegated todo as `admission` and the shape stops

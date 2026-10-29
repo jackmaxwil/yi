@@ -1,4 +1,5 @@
 ---
+version: 0.608.0
 issue: Closes #1179
 growth: +183 the in-order match and its tests in select.rs (about 125), the reducer's row grammar and line form exported for it (44: `omitted_span` and `shown_form` beside `row_span` moved out of the tools test file, `frame` shared with `compress`); weighed for deletion: carrying the reducer's kept source lines in the bash result's details instead (more wire and every reducer path changed), and the old text filter (it dropped repeated lines and still sent every line)
 raise: crate cli +1, crate runtime +138, crate tools +44, comments +14
