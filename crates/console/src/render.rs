@@ -344,7 +344,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
         splits: split_borders.clone(),
         tabs: tab_hits,
-        settings_tabs: settings_hits(app, &panes, framed),
+        settings_tabs: settings_hits(app, &panes),
         gear: (gear.height > 0).then_some(gear),
         header_buttons: header_buttons(header, taken),
         ..Hits::default()
@@ -388,7 +388,7 @@ fn frames_panes(app: &App) -> bool {
     })
 }
 
-fn settings_hits(app: &App, panes: &[PaneView], framed: bool) -> Vec<(Rect, PaneId, usize)> {
+fn settings_hits(app: &App, panes: &[PaneView]) -> Vec<(Rect, PaneId, usize)> {
     let mut hits = Vec::new();
     for view in panes {
         let Some(PaneContent::Settings(settings)) =
@@ -396,7 +396,7 @@ fn settings_hits(app: &App, panes: &[PaneView], framed: bool) -> Vec<(Rect, Pane
         else {
             continue;
         };
-        let inner = view.rect.inner(pane_margin(framed, false));
+        let inner = view.rect.inner(view.margin);
         for (x, width, tab) in crate::settings::tab_targets(settings, usize::from(inner.width)) {
             let rect = Rect::new(inner.x.saturating_add(x), inner.y, width, 1);
             hits.push((rect.intersection(inner), view.id, tab));

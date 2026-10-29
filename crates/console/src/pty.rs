@@ -129,17 +129,7 @@ impl Pty {
         if let Some(error) = lock(&self.faults).take() {
             return Err(error);
         }
-        match self.writes.try_send(bytes.to_vec()) {
-            Ok(()) => Ok(()),
-            Err(mpsc::TrySendError::Full(_)) => Err(std::io::Error::new(
-                ErrorKind::WouldBlock,
-                "input queue full; the child is not reading",
-            )),
-            Err(mpsc::TrySendError::Disconnected(_)) => Err(std::io::Error::new(
-                ErrorKind::BrokenPipe,
-                "terminal writer stopped",
-            )),
-        }
+        enqueue(&self.writes, bytes)
     }
 
     pub fn paste(&mut self, text: &str) -> std::io::Result<()> {
@@ -227,6 +217,20 @@ impl Drop for Pty {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn enqueue(writes: &SyncSender<Vec<u8>>, bytes: &[u8]) -> std::io::Result<()> {
+    match writes.try_send(bytes.to_vec()) {
+        Ok(()) => Ok(()),
+        Err(mpsc::TrySendError::Full(_)) => Err(std::io::Error::new(
+            ErrorKind::WouldBlock,
+            "input queue full; the child is not reading",
+        )),
+        Err(mpsc::TrySendError::Disconnected(_)) => Err(std::io::Error::new(
+            ErrorKind::BrokenPipe,
+            "terminal writer stopped",
+        )),
+    }
 }
 
 fn row_line(screen: &vt100::Screen, row: u16, cols: u16) -> Line<'static> {
@@ -383,8 +387,11 @@ fn paste_text(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode, paste_text};
+    use super::{WRITE_QUEUE, encode, enqueue, paste_text};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::error::Error;
+    use std::io::ErrorKind;
+    use std::sync::mpsc;
 
     #[test]
     fn a_paste_cannot_close_its_own_bracket() {
@@ -416,5 +423,25 @@ mod tests {
             let got = encode(&KeyEvent::new(code, modifiers), app_cursor);
             assert_eq!(got, want, "{code:?} {modifiers:?} app_cursor={app_cursor}");
         }
+    }
+
+    /// Dies with a stopped child growing console memory silently: the queue takes keystrokes
+    /// past its cap and no key ever tells the user the shell stopped reading.
+    #[test]
+    fn a_full_write_queue_refuses_the_next_key_visibly() -> Result<(), Box<dyn Error>> {
+        let (writes, pending) = mpsc::sync_channel(WRITE_QUEUE);
+        for _ in 0..WRITE_QUEUE {
+            enqueue(&writes, b"x")?;
+        }
+        let refused = enqueue(&writes, b"x")
+            .err()
+            .ok_or("the queue took a write past its cap")?;
+        drop(pending);
+        assert_eq!(refused.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            refused.to_string(),
+            "input queue full; the child is not reading"
+        );
+        Ok(())
     }
 }
