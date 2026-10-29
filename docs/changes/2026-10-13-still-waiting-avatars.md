@@ -1,4 +1,6 @@
 ---
+version: 0.695.0
+decisions: D434
 issue: Closes #1406
 decision: a blocked session's rail avatar shows one still frame of its Listening loop instead of playing it, and leaves the console's wake schedule; a working session's avatar still plays its state loop at 15 fps (amends D276) | the owner, 2026-10-12: "Invisible + freeze waiting"; every avatar waiting on the person woke the console fifteen times a second to repaint a row whose words already say "needs your answer" | drop `Motion::still`, which restores the loop
 raise: crate console +75, crate orb +5, comments +3

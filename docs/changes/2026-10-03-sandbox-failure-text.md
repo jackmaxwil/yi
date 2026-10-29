@@ -1,4 +1,5 @@
 ---
+version: 0.562.0
 issue: Closes #929, refs #939
 raise: tests +276, comments +18, crate cli +7, crate runtime +58, crate tools +119
 growth: +184 the doctor row, the kernel cell note and the exit-0 note are each a surface #929 names; weighed for deletion: a new SandboxRefusal variant (six broker matches), a per-job kernel note (the cell text already carries it) and recording exit-0 refusals (fetched text could then trigger an ask), all dropped

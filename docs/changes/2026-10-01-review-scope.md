@@ -1,4 +1,6 @@
 ---
+version: 0.529.0
+decisions: D343
 issue: Closes #996
 decision: a review round reports only findings on lines the PR's own patch (its fork to the head) adds, and after a merge from the base it reads the whole PR rather than a range carrying the base's commits; the review job runs main's checkout and reads the PR as data (amends D319 and D322) | the owner: "Reviews are currently commenting on PRs with findings for code outside of PR scope"; and the job ran the PR's own justfile and scripts with yi-bot's token, whose comments count as rounds | restore `judged` and the delta from any clean head, and drop `ref: main` from review.yml
 ---
