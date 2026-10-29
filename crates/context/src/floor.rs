@@ -1,17 +1,21 @@
-use yi_types::message::{AgentMessage, UserContent};
+use yi_types::message::{AgentMessage, Attribution, HostSource, UserContent};
 
 use crate::account::{Tokens, estimate_message};
 
 pub const RETENTION_FLOOR_BUDGET: Tokens = Tokens(64_000);
 
-fn user_text(message: &AgentMessage) -> Option<&str> {
-    match message {
-        AgentMessage::User {
-            content: UserContent::Text(text),
-            ..
-        } => Some(text),
-        _ => None,
-    }
+/// Invariant: the floor holds the requester's words and the letter that wakes it, never a host notice.
+fn floor_text(message: &AgentMessage) -> Option<&str> {
+    let AgentMessage::User {
+        content: UserContent::Text(text),
+        timestamp,
+        attribution,
+    } = message
+    else {
+        return None;
+    };
+    let wakes = matches!(attribution, Attribution::Host(HostSource::Mail));
+    (attribution.reads_as_typed(*timestamp) || wakes).then_some(text.as_str())
 }
 
 fn middle_truncate(text: &str, budget: Tokens) -> String {
@@ -30,8 +34,8 @@ fn middle_truncate(text: &str, budget: Tokens) -> String {
     )
 }
 
-/// Every real user message survives compaction verbatim, newest first within the budget; the
-/// oldest that partially fits is middle-truncated. Survivors come back in original order.
+/// Every message that reads as its requester's own words, and every waking letter, survives
+/// verbatim, newest first within the budget; the oldest that partially fits is middle-truncated.
 pub fn retain_floor(summarized: &[AgentMessage], budget: Tokens) -> Vec<AgentMessage> {
     let mut remaining = budget;
     let mut survivors_reversed: Vec<AgentMessage> = Vec::new();
@@ -39,7 +43,7 @@ pub fn retain_floor(summarized: &[AgentMessage], budget: Tokens) -> Vec<AgentMes
         if remaining.0 == 0 {
             break;
         }
-        let Some(text) = user_text(message) else {
+        let Some(text) = floor_text(message) else {
             continue;
         };
         if text.is_empty() {

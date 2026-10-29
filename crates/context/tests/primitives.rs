@@ -456,6 +456,78 @@ fn a_floor_cut_inside_a_multibyte_char_moves_to_the_char_boundary() -> TestResul
     Ok(())
 }
 
+const CHILD_SESSION: &str = include_str!("../../runtime/tests/fixtures/rollup/child_bedrock.jsonl");
+
+/// Dies past D337: the brief is a child's only user message, so a compaction that drops it
+/// leaves the child without the task it runs on.
+#[test]
+fn a_childs_brief_survives_the_floor_as_its_only_user_message() -> TestResult {
+    let brief = CHILD_SESSION
+        .lines()
+        .find_map(|line| serde_json::from_str::<Entry>(line).ok())
+        .and_then(|entry| match entry {
+            Entry::Message { message, .. } => Some(message),
+            _ => None,
+        })
+        .ok_or("the child fixture's brief")?;
+    assert!(matches!(
+        &brief,
+        AgentMessage::User {
+            attribution: yi_types::message::Attribution::Task,
+            ..
+        }
+    ));
+    assert_eq!(
+        retain_floor(std::slice::from_ref(&brief), Tokens(64_000)),
+        [brief]
+    );
+    Ok(())
+}
+
+/// Dies when a host notice written for one turn outlives the summary, or the letter that wakes
+/// an idle session dies with it.
+#[test]
+fn a_host_notice_leaves_the_floor_and_a_waking_letter_stays() -> TestResult {
+    use yi_types::message::HostSource;
+    let notice = AgentMessage::host_text(HostSource::Notice, "the turn ends at 15:00", 1);
+    let mail = AgentMessage::host_text(HostSource::Mail, "the parent asks for the count", 1);
+    let typed = user("count the rows");
+    let survivors = retain_floor(&[notice, mail.clone(), typed.clone()], Tokens(64_000));
+    assert_eq!(survivors, vec![mail, typed]);
+    Ok(())
+}
+
+/// Dies when a kind nobody registered is dropped at compaction, or a raise-once notice dies
+/// before the reply that reads it.
+#[test]
+fn each_host_notice_row_dies_once_read_and_an_unregistered_kind_survives() -> TestResult {
+    let reply = assistant("read", usage(0, 0, 0), StopReason::Stop);
+    for kind in [
+        "stream_retry",
+        "cache_alert",
+        "plan_relevance",
+        "todo_prelude",
+    ] {
+        let note = AgentMessage::host_note(kind, "text".to_owned(), 1);
+        let kept = drop_internal(&[note.clone(), reply.clone()]);
+        assert_eq!(
+            kept,
+            vec![reply.clone()],
+            "{kind} survives the compaction that read it"
+        );
+        let unread = drop_internal(std::slice::from_ref(&note));
+        let kept_unread = usize::from(matches!(kind, "cache_alert" | "plan_relevance"));
+        assert_eq!(unread.len(), kept_unread, "{kind} before any reply");
+    }
+    let unknown = AgentMessage::host_note("a_kind_nobody_registered", "text".to_owned(), 1);
+    assert_eq!(
+        drop_internal(&[unknown.clone(), reply.clone()]),
+        vec![unknown, reply],
+        "an unregistered kind is durable"
+    );
+    Ok(())
+}
+
 #[test]
 fn prepare_returns_none_when_there_is_nothing_to_summarize() -> TestResult {
     let branch = vec![message_entry("m1", 1, user("hi"))];
