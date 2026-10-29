@@ -106,6 +106,25 @@ fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> String {
     parts.join(" · ")
 }
 
+/// Invariant: the second line is drawn only for a row with news, so an idle session's weight
+/// is one row and its state stays one keystroke away on the row the pane behind shows.
+fn state_line(app: &App, id: &SessionId, row: &SessionRow) -> bool {
+    if !matches!(row.status, SessionStatus::Idle | SessionStatus::Unknown) {
+        return true;
+    }
+    app.state.chat(id).is_some_and(|chat| {
+        chat.app.gate_red()
+            || chat
+                .port
+                .todo_list()
+                .is_some_and(|todos| todos.progress().total > 0)
+            || chat
+                .port
+                .claims(false)
+                .is_some_and(|claims| claims.iter().any(|claim| claim.observed.is_none()))
+    })
+}
+
 fn tile_span(app: &App, text: String, hue: usize) -> Span<'static> {
     if app.kitty {
         Span::raw(" ".repeat(text.chars().count()))
@@ -218,10 +237,7 @@ fn group_header(
     let room = width.saturating_sub(tail_cols.saturating_add(4));
     let name = pad_cells(label, drawn_width(label).min(room));
     let pad = room.saturating_sub(drawn_width(&name));
-    let mut spans = vec![Span::styled(
-        format!(" {name}"),
-        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-    )];
+    let mut spans = vec![Span::styled(format!(" {name}"), theme.muted_style())];
     spans.extend(tail);
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled("  +".to_owned(), theme.dim_style()));
@@ -257,7 +273,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     let width = cols.saturating_add(8);
     if !rail {
         let chord = |action| keys::chord_for(action, app.cmd_hints);
-        let text = Style::default().fg(theme.text);
+        let text = theme.muted_style();
         let new = flush_right(" + New session", chord(Action::NewSession), width);
         rows.push(control_row(new, text, Hit::New(None)));
         let search = flush_right(" ⌕ Search", chord(Action::Navigator), width);
@@ -277,7 +293,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
                 None if group.rows.is_empty() => continue,
                 None => rows.push(SidebarRow::plain(
                     None,
-                    Line::styled(" PINNED", theme.dim_style().add_modifier(Modifier::BOLD)),
+                    Line::styled(" PINNED", theme.dim_style()),
                 )),
                 Some(root) => rows.push(group_header(
                     app,
@@ -387,7 +403,7 @@ fn session_rows(
         ),
     ];
     let name_style = if is_focused {
-        theme.accent_style().add_modifier(Modifier::BOLD)
+        theme.accent_style()
     } else {
         Style::default().fg(theme.text)
     };
@@ -405,17 +421,19 @@ fn session_rows(
         avatar: avatar_at(2, (4, 2), &id.0, hue, motion_of(app, id, row)),
         control: None,
     });
-    let text: String = detail(app, id, row, now)
-        .chars()
-        .take(cols.saturating_add(2))
-        .collect();
-    rows.push(SidebarRow::plain(
-        Some(index),
-        Line::from(vec![
-            Span::styled(" ".repeat(6), on_row(Style::default())),
-            Span::styled(text, on_row(theme.dim_style())),
-        ]),
-    ));
+    if is_focused || state_line(app, id, row) {
+        let text: String = detail(app, id, row, now)
+            .chars()
+            .take(cols.saturating_add(2))
+            .collect();
+        rows.push(SidebarRow::plain(
+            Some(index),
+            Line::from(vec![
+                Span::styled(" ".repeat(6), on_row(Style::default())),
+                Span::styled(text, on_row(theme.dim_style())),
+            ]),
+        ));
+    }
     rows.extend(child_rows(app, id, theme, false, cols));
     rows
 }

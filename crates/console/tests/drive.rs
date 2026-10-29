@@ -2107,7 +2107,7 @@ fn a_workspace_headers_plus_starts_a_session_there() -> TestResult {
             Step::Expect("session/new", new_in_other_root),
         ],
         "wait-frame 5000 s-beta\n\
-         mouse down 16 7\n\
+         mouse down 16 5\n\
          wait-frame 3000 SN  untitled\n\
          quit\n",
     )?;
@@ -2167,7 +2167,7 @@ fn pin_from_the_menu_moves_a_session_under_pinned() -> TestResult {
             Step::Expect("_yi/pin", pinned_at),
         ],
         "wait-frame 5000 s-beta\n\
-         mouse right 3 5\n\
+         mouse right 3 4\n\
          wait-frame 3000 Pin\n\
          key down\nkey down\nkey enter\n\
          wait-frame 3000 PINNED\n\
@@ -2868,8 +2868,8 @@ fn the_rail_stops_at_its_numbered_slots() -> TestResult {
     Ok(())
 }
 
-/// Rows carry the session's name and age, newest first, and the row behind the
-/// focused pane wears the focus bar once it opens.
+/// Rows carry the session's name, newest first; an idle row with nothing to report is
+/// one line, and the row behind the focused pane carries its age once it opens.
 #[test]
 fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
     run(
@@ -2883,12 +2883,13 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
         ],
         "wait-frame 5000 1 RE  release notes\n\
          wait-frame 3000 2 FI  fix login bug\n\
-         wait-frame 3000 idle · 5m\n\
-         wait-frame 3000 idle · 3h\n\
+         wait-frame 3000 !idle · 5m\n\
+         wait-frame 3000 !idle · 3h\n\
          key down\n\
          key up\n\
          key enter\n\
          wait-frame 5000 resumed s-beta\n\
+         wait-frame 3000 idle · 5m\n\
          wait-frame 3000 RE · release\n\
          quit\n",
     )

@@ -304,3 +304,108 @@ fn the_rail_lists_the_pin_first_and_parts_workspaces_with_a_blank_row() -> Resul
     assert_eq!(drawn, want);
     Ok(())
 }
+
+/// Owner, 2026-10-28: "Reduce visual weight of the sidebar". A session with nothing to
+/// report is one row; the state line stays for a session that needs you or is working.
+#[test]
+fn a_quiet_session_draws_one_row() -> Result<(), String> {
+    use yi_console::app::App;
+    use yi_console::model::SidebarMode;
+    use yi_console::sidebar::sidebar_lines;
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::Ansi16, true);
+    let mut app = App::new("/w/yi".to_owned(), theme);
+    app.state.sidebar = SidebarMode::Full;
+    let rows = [
+        ("quiet", SessionStatus::Idle),
+        ("silent", SessionStatus::Unknown),
+        ("asks", SessionStatus::Blocked),
+        ("works", SessionStatus::Working),
+    ];
+    for (id, status) in rows {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: "/w/yi".to_owned(),
+            status,
+            attached: false,
+            name: Some(id.to_owned()),
+            created_ms: 0,
+            last_ms: 1_000,
+            pinned: None,
+        });
+    }
+    let lines = sidebar_lines(&app, &theme, 60);
+    let drawn = |id: &str| -> Option<usize> {
+        let index = app.state.order.iter().position(|row| row.0 == id)?;
+        Some(lines.iter().filter(|row| row.index == Some(index)).count())
+    };
+    for id in ["quiet", "silent"] {
+        assert_eq!(drawn(id), Some(1), "{id} takes one row");
+    }
+    for id in ["asks", "works"] {
+        assert_eq!(drawn(id), Some(2), "{id} keeps its state line");
+    }
+    Ok(())
+}
+
+/// The sidebar's chrome reads quieter than its sessions: the New and Search rows and a
+/// workspace's header are dimmed, and a session's name is not.
+#[test]
+fn the_sidebars_chrome_is_dimmer_than_a_session_name() -> Result<(), String> {
+    use ratatui::style::Modifier;
+    use yi_console::app::App;
+    use yi_console::model::SidebarMode;
+    use yi_console::render::Hit;
+    use yi_console::sidebar::sidebar_lines;
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::Ansi16, true);
+    let mut app = App::new("/w/yi".to_owned(), theme);
+    app.state.sidebar = SidebarMode::Full;
+    app.state.upsert_row(SessionRow {
+        id: SessionId("quiet".to_owned()),
+        root: "/w/yi".to_owned(),
+        status: SessionStatus::Idle,
+        attached: false,
+        name: Some("quiet".to_owned()),
+        created_ms: 0,
+        last_ms: 1_000,
+        pinned: None,
+    });
+    let lines = sidebar_lines(&app, &theme, 60);
+    let dim = Modifier::DIM;
+    let chrome = |kind: &dyn Fn(&Hit) -> bool| -> Result<bool, String> {
+        let row = lines
+            .iter()
+            .find(|row| row.control.as_ref().is_some_and(kind))
+            .ok_or("no control row")?;
+        Ok(row
+            .line
+            .spans
+            .iter()
+            .filter(|span| !span.content.trim().is_empty())
+            .all(|span| row.line.style.patch(span.style).add_modifier.contains(dim)))
+    };
+    assert!(
+        chrome(&|hit| matches!(hit, Hit::New(_)))?,
+        "the New row dims"
+    );
+    assert!(
+        chrome(&|hit| matches!(hit, Hit::Search))?,
+        "the Search row dims"
+    );
+    assert!(
+        chrome(&|hit| matches!(hit, Hit::Fold(_)))?,
+        "the workspace header dims"
+    );
+    let name = lines
+        .iter()
+        .flat_map(|row| row.line.spans.iter())
+        .find(|span| span.content.contains("quiet"))
+        .ok_or("no session name")?;
+    assert!(
+        !name.style.add_modifier.contains(dim),
+        "the session's name reads at full strength: {:?}",
+        name.style
+    );
+    Ok(())
+}
