@@ -771,6 +771,7 @@ fn a_unique_prefix_matches_and_an_ambiguous_one_lists_both() -> TestResult {
     )?;
     let applied = store.apply(
         Op::Start {
+            check: None,
             label: label("`write the CHANGELOG`")?,
         },
         None,
@@ -783,6 +784,7 @@ fn a_unique_prefix_matches_and_an_ambiguous_one_lists_both() -> TestResult {
     let error = store
         .apply(
             Op::Start {
+                check: None,
                 label: label("Verify against")?,
             },
             None,
@@ -797,6 +799,7 @@ fn a_unique_prefix_matches_and_an_ambiguous_one_lists_both() -> TestResult {
     let error = store
         .apply(
             Op::Start {
+                check: None,
                 label: label("Write t")?,
             },
             None,

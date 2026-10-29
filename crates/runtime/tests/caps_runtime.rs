@@ -200,6 +200,7 @@ fn todo_error_lists_stop_at_the_cap_and_name_the_view_call() -> TestResult {
     let nobody = || {
         Ok::<_, Box<dyn Error>>(Op::Start {
             label: TodoLabel::new("zzzzzzzzzz")?,
+            check: None,
         })
     };
     for (count, cut) in [(12, false), (13, true)] {
@@ -211,6 +212,7 @@ fn todo_error_lists_stop_at_the_cap_and_name_the_view_call() -> TestResult {
 
         let prefix = Op::Start {
             label: TodoLabel::new("rename the module")?,
+            check: None,
         };
         let text = refusal(&store, prefix)?;
         assert!(text.contains("is a prefix of more than one todo"), "{text}");

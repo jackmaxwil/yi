@@ -107,6 +107,7 @@ mod subagent;
 mod subagent_fuzz;
 mod telemetry;
 mod title;
+mod todo_check;
 mod todo_coupling;
 mod todo_e2e;
 mod todo_mirror;

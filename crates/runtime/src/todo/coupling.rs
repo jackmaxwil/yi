@@ -2,10 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::model::{ForcedTool, ToolChoice};
-use yi_types::plan::doc::{BlockedOn, TodoState, TodoStateName};
-use yi_types::todo::{TodoInterceptRecord, TodoList};
+use yi_types::plan::doc::{BlockedOn, Todo, TodoState, TodoStateName};
+use yi_types::todo::{RowCheck, TodoInterceptRecord, TodoList};
 
-use super::{TodoStore, text, tool};
+use super::{Op, Target, TodoStore, text, tool};
 use crate::goal::StoreHandle;
 use crate::plan::loop_coupling::gate::eager_init;
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
@@ -354,7 +354,18 @@ const ASK_USER: &str =
 
 pub fn intercept_text(rung: u8, list: &TodoList) -> String {
     let moves = open_moves(list);
-    match rung {
+    let reds: Vec<String> = (list.items())
+        .filter_map(|item| {
+            let check = RowCheck::of(item)?;
+            (!check.last.is_green()).then(|| format!("still red: {}", check.command))
+        })
+        .collect();
+    let still = if reds.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", reds.join("\n"))
+    };
+    let base = match rung {
         1 => format!(
             "Open todos remain. Continue the running item, or move each open item to the state that is true: done with its evidence, blocked with what would unblock it, dropped with a reason. {ASK_USER}\n{moves}"
         ),
@@ -364,7 +375,8 @@ pub fn intercept_text(rung: u8, list: &TodoList) -> String {
         _ => format!(
             "The turn ends now. Call `answer`, naming each open item and why it is not done; call no other tools.\n{moves}"
         ),
-    }
+    };
+    format!("{base}{still}")
 }
 
 /// Digit runs of three or more outside closed code spans with no word character, dot or slash on
@@ -530,6 +542,47 @@ pub struct Options {
 
 /// The ladder's last rung: the family reads its typed signal as `stuck`.
 const LET_GO: &str = "let go";
+
+/// Interactive sessions check at `answer`: a green row closes with its evidence, a red stays open
+/// and names itself in the answer's run end.
+fn sweep_checks(todos: &TodoStore) {
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    let cancel: yi_tools::CancelFlag = Arc::new(|| false);
+    let open: Vec<Todo> = todos
+        .list()
+        .items()
+        .filter(|item| !item.state.is_terminal())
+        .cloned()
+        .collect();
+    for item in open {
+        let Some(check) = RowCheck::of(&item) else {
+            continue;
+        };
+        let Ok(ran) = super::check::run(&check.command, &cwd, &cancel) else {
+            continue;
+        };
+        let label = item.label.clone();
+        let green = ran.green;
+        let _recorded = todos.apply(
+            Op::MarkCheck {
+                label: label.clone(),
+                last: ran.last,
+            },
+            None,
+        );
+        if green {
+            let _closed = todos.apply(
+                Op::Done {
+                    target: Target::Label(label),
+                    evidence: Some(format!("check `{}` passed", check.command)),
+                },
+                None,
+            );
+        }
+    }
+}
 
 fn record_intercept(store: &StoreHandle, rung: u8, reason: &str, fingerprint: &str, total: u32) {
     let Some(session) = store() else {
@@ -743,6 +796,9 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             }
             if called(snapshot.tool_results, "ask_user") {
                 return inner.as_ref().and_then(|inner| inner(snapshot));
+            }
+            if called(snapshot.tool_results, "answer") {
+                sweep_checks(&todos);
             }
             let Ok(mut cycle) = cycle.lock() else {
                 return None;
