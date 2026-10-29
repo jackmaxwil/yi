@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 
 use crate::loopback::read_request;
+use crate::plan_ops::streams as text;
 use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -129,14 +130,6 @@ impl Account {
             .current_dir(self.dir.join("project"))
             .output()
     }
-}
-
-fn text(output: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 /// The recorded turn's reasoning, joined from its own deltas: the text Moonshot needs echoed.
