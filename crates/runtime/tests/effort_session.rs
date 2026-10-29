@@ -184,11 +184,13 @@ fn resume_comes_back_on_the_model_and_effort_it_left_on() -> TestResult {
     Ok(())
 }
 
-/// Dies with a resumed session dropping the lines it cannot read without a word: the model is
-/// told on its first turn how many lines were kept unread and where the first one is.
-#[tokio::test]
-async fn a_session_with_unknown_lines_says_so_where_the_user_looks() -> TestResult {
-    let dir = Scratch::new("yi-resume-unread")?;
+/// Copies the fixture a build cannot read and resumes it over the faux provider, attaching the
+/// store `attaches` times; the Scratch dir lives until the turn has landed.
+async fn resumed_over_unread_lines(
+    name: &str,
+    attaches: usize,
+) -> Result<AgentSession, Box<dyn Error>> {
+    let dir = Scratch::new(name)?;
     let file = dir.join("pi-unknown.jsonl");
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../types/tests/fixtures/v4-pi-unknown.jsonl");
@@ -200,10 +202,16 @@ async fn a_session_with_unknown_lines_says_so_where_the_user_looks() -> TestResu
         yi_types::message::StopReason::Stop,
     )]);
     let resumed = session(model("m", false, None), None, provider);
-    resumed.attach_store(store)?;
+    for _ in 0..attaches {
+        resumed.attach_store(Arc::clone(&store))?;
+    }
     resumed.prompt("carry on")?;
     resumed.wait_idle().await;
-    let notes: Vec<String> = (resumed.messages().iter())
+    Ok(resumed)
+}
+
+fn restore_notes(resumed: &AgentSession) -> Vec<String> {
+    (resumed.messages().iter())
         .filter_map(|message| match message {
             yi_types::message::AgentMessage::User {
                 content: yi_types::message::UserContent::Text(text),
@@ -213,7 +221,15 @@ async fn a_session_with_unknown_lines_says_so_where_the_user_looks() -> TestResu
             } => Some(text.clone()),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+/// Dies with a resumed session dropping the lines it cannot read without a word: the model is
+/// told on its first turn how many lines were kept unread and where the first one is.
+#[tokio::test]
+async fn a_session_with_unknown_lines_says_so_where_the_user_looks() -> TestResult {
+    let resumed = resumed_over_unread_lines("yi-resume-unread", 1).await?;
+    let notes = restore_notes(&resumed);
     assert_eq!(notes.len(), 1, "{notes:?}");
     let note = notes.first().ok_or("no restore note")?;
     assert!(
@@ -227,35 +243,12 @@ async fn a_session_with_unknown_lines_says_so_where_the_user_looks() -> TestResu
 /// attaches it again, so a store's unread note must reach the model once however often it attaches.
 #[tokio::test]
 async fn a_store_attached_twice_queues_the_unread_note_once() -> TestResult {
-    let dir = Scratch::new("yi-resume-unread-twice")?;
-    let file = dir.join("pi-unknown.jsonl");
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../types/tests/fixtures/v4-pi-unknown.jsonl");
-    std::fs::copy(fixture, &file)?;
-    let store = Arc::new(std::sync::Mutex::new(yi_session::load_session(&file)?));
-    let provider = Arc::new(ProviderStream::new(None));
-    provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
-        vec![yi_ai::faux::faux_text("noted")],
-        yi_types::message::StopReason::Stop,
-    )]);
-    let resumed = session(model("m", false, None), None, provider);
-    resumed.attach_store(Arc::clone(&store))?;
-    resumed.attach_store(store)?;
-    resumed.prompt("carry on")?;
-    resumed.wait_idle().await;
-    let notes = (resumed.messages().iter())
-        .filter(|message| {
-            matches!(
-                message,
-                yi_types::message::AgentMessage::User {
-                    attribution: yi_types::message::Attribution::Host(
-                        yi_types::message::HostSource::Restore
-                    ),
-                    ..
-                }
-            )
-        })
-        .count();
-    assert_eq!(notes, 1, "the note was queued once per attach");
+    let resumed = resumed_over_unread_lines("yi-resume-unread-twice", 2).await?;
+    let notes = restore_notes(&resumed);
+    assert_eq!(
+        notes.len(),
+        1,
+        "the note was queued once per attach: {notes:?}"
+    );
     Ok(())
 }
