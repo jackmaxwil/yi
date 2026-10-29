@@ -14,6 +14,10 @@ pub(crate) fn next_notebook_id(old: Option<u32>) -> u32 {
     if old == Some(even) { odd } else { even }
 }
 
+pub fn graphics(var: impl Fn(&str) -> Option<String>) -> bool {
+    yi_tui::orb::kitty::supported_with(var)
+}
+
 /// Transmit the PNG and place `id` over `rect`. The payload is already base64, the wire
 /// form the kernel attachment carries, so nothing decodes here.
 pub fn place_png(

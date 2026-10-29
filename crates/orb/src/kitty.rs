@@ -28,11 +28,15 @@ pub fn kitty_named_terminal(term: Option<&str>, term_program: Option<&str>) -> b
 /// Invariant: kitty's FAQ has tmux users set `default-terminal "xterm-kitty"`, so TERM can
 /// name no multiplexer; TMUX and STY are the variables tmux and screen set themselves.
 pub fn supported() -> bool {
+    supported_with(|name| std::env::var(name).ok())
+}
+
+pub fn supported_with(var: impl Fn(&str) -> Option<String>) -> bool {
     supported_in(
-        std::env::var("TERM").ok().as_deref(),
-        std::env::var("TERM_PROGRAM").ok().as_deref(),
-        std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
-        std::env::var_os("TMUX").is_some() || std::env::var_os("STY").is_some(),
+        var("TERM").as_deref(),
+        var("TERM_PROGRAM").as_deref(),
+        var("KITTY_WINDOW_ID").as_deref(),
+        var("TMUX").is_some() || var("STY").is_some(),
     )
 }
 

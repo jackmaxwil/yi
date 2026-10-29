@@ -79,7 +79,7 @@ fn terminal_environments_share_graphics_support_but_not_chord_support() {
             "xterm-ghostty",
             None,
             None,
-            false,
+            None,
             true,
             true,
         ),
@@ -88,17 +88,17 @@ fn terminal_environments_share_graphics_support_but_not_chord_support() {
             "xterm-256color",
             Some("ghostty"),
             None,
-            false,
+            None,
             true,
             true,
         ),
-        ("kitty", "xterm-kitty", None, Some("1"), false, true, true),
+        ("kitty", "xterm-kitty", None, Some("1"), None, true, true),
         (
             "kitty by window id",
             "xterm-256color",
             None,
             Some("1"),
-            false,
+            None,
             true,
             false,
         ),
@@ -107,7 +107,7 @@ fn terminal_environments_share_graphics_support_but_not_chord_support() {
             "tmux-256color",
             Some("tmux"),
             Some("1"),
-            true,
+            Some("TMUX"),
             false,
             false,
         ),
@@ -116,15 +116,30 @@ fn terminal_environments_share_graphics_support_but_not_chord_support() {
             "xterm-kitty",
             None,
             Some("1"),
-            true,
+            Some("TMUX"),
             false,
             true,
         ),
-        ("xterm", "xterm-256color", None, None, false, false, false),
+        (
+            "xterm-kitty in screen",
+            "xterm-kitty",
+            None,
+            Some("1"),
+            Some("STY"),
+            false,
+            true,
+        ),
+        ("xterm", "xterm-256color", None, None, None, false, false),
     ];
-    for (name, term, program, window_id, multiplexed, graphics, chords) in environments {
+    for (name, term, program, window_id, multiplexer, graphics, chords) in environments {
+        let var = |key: &str| match key {
+            "TERM" => Some(term.to_owned()),
+            "TERM_PROGRAM" => program.map(str::to_owned),
+            "KITTY_WINDOW_ID" => window_id.map(str::to_owned),
+            _ => (multiplexer == Some(key)).then(|| "1".to_owned()),
+        };
         assert_eq!(
-            yi_tui::orb::kitty::supported_in(Some(term), program, window_id, multiplexed),
+            yi_console::kitty::graphics(var),
             graphics,
             "{name} graphics"
         );

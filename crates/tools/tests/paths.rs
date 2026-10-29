@@ -509,5 +509,10 @@ fn a_parent_segment_does_not_adopt_a_neighbouring_repository() -> TestResult {
         None,
         "a `..` segment adopts a repository the dir is not inside"
     );
+    assert_eq!(
+        yi_tools::git_root(&repo.join("..").join("gone")),
+        None,
+        "a `..` before a missing leaf adopts a repository the dir is not inside"
+    );
     Ok(())
 }
