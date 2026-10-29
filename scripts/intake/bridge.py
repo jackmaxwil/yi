@@ -853,16 +853,7 @@ def change_signature(changes: list[Change]) -> list[Any]:
 
 
 def default_lens(prompt: str) -> Any:
-    schema = json.dumps(LENS_SCHEMA)
-    command = [pr_review.yi_bin(), "ask", "--no-tools", "--here", "--cwd", str(ROOT), "--schema", schema, "--deadline", "900", "-"]
-    env = {key: value for key, value in os.environ.items() if key not in ("FGJ_TOKEN", "GITEA_TOKEN")}
-    model = os.environ.get("YI_REVIEW_MODEL")
-    if model:
-        command[1:1] = ["--model", model]
-    out = subprocess.run(command, input=prompt, capture_output=True, text=True, timeout=1020, check=False, env=env)
-    if out.returncode:
-        raise RuntimeError(f"yi ask exited {out.returncode}: {bounded(out.stderr, 600)}")
-    return json.loads(out.stdout)
+    return pr_review.ask(prompt, LENS_SCHEMA, ROOT, flags=["--no-tools"])
 
 
 class DryRunTransport:

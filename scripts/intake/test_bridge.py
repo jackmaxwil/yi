@@ -7,6 +7,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import unittest.mock
 
 import bridge
 
@@ -272,6 +273,20 @@ def check_ordinary_text_is_allowed() -> None:
         assert bridge.evaluate(added(base, text)) == bridge.ALLOW, text
 
 
+def check_lens_runs_without_tools_and_repairs_prose() -> None:
+    calls = []
+    answers = ["I found nothing wrong.", '{"refusals": []}']
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs["env"]))
+        return subprocess.CompletedProcess(command, 0, answers[len(calls) - 1], "")
+
+    with unittest.mock.patch.dict(os.environ, {"YI_BIN": "yi-stub", "FGJ_TOKEN": "forge-token"}), unittest.mock.patch("subprocess.run", fake_run):
+        assert bridge.default_lens("diff") == {"refusals": []}
+    assert len(calls) == 2 and "--continue" in calls[1][0]
+    assert all("--no-tools" in command and "FGJ_TOKEN" not in env for command, env in calls)
+
+
 def check_dry_run_write_detection() -> None:
     class Fake:
         def __init__(self):
@@ -369,6 +384,7 @@ def selfcheck() -> int:
     check_dry_run_write_detection()
     check_overrides()
     check_ordinary_text_is_allowed()
+    check_lens_runs_without_tools_and_repairs_prose()
     assert bridge.server_import_refusal().text == "intake: import: server writes stay disabled until stage 3 installs the run-ci hold"
     payload = bridge.draft_payload(valid)
     labels = {"external", "autofix:hold"}
