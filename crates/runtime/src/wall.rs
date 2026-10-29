@@ -14,6 +14,9 @@ pub struct Wall {
     /// Invariant: set, every bash call runs in this container, never on the host (D286);
     /// the child's own, so [`Wall::under`] never hands it down.
     pub container: Option<String>,
+    /// Invariant: set, this child holds a checkout or a wall of its own, so its kernel writes
+    /// no family board: what it puts there, the root's kernel would unpickle.
+    pub isolated: bool,
 }
 fn parse_paths(value: Option<&Value>, cwd: &Path, key: &str) -> Result<Vec<PathBuf>, String> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
@@ -60,13 +63,11 @@ impl Wall {
             .iter()
             .any(|url| url.starts_with("history://"))
     }
-    pub fn from_kwargs(kwargs: &Map<String, Value>, cwd: &Path) -> Result<Self, String> {
-        Ok(Self {
-            deny_write: parse_paths(kwargs.get("deny_write"), cwd, "deny_write")?,
-            deny_read: parse_paths(kwargs.get("deny_read"), cwd, "deny_read")?,
-            deny_url: parse_prefixes(kwargs.get("deny_url"))?,
-            container: None,
-        })
+
+    /// Invariant: a child that holds any wall, a container or a checkout of its own shares no
+    /// filesystem view with the parent, so the board is a path only the parent unpickles from.
+    pub fn contained(&self) -> bool {
+        !self.is_empty() || self.isolated || self.container.is_some()
     }
 
     /// Hereditary shrink (plan section 7.6): the child is denied all its parent is denied.
@@ -75,7 +76,18 @@ impl Wall {
         self.deny_write.extend(parent.deny_write.iter().cloned());
         self.deny_read.extend(parent.deny_read.iter().cloned());
         self.deny_url.extend(parent.deny_url.iter().cloned());
+        self.isolated |= parent.isolated;
         self
+    }
+
+    pub fn from_kwargs(kwargs: &Map<String, Value>, cwd: &Path) -> Result<Self, String> {
+        Ok(Self {
+            deny_write: parse_paths(kwargs.get("deny_write"), cwd, "deny_write")?,
+            deny_read: parse_paths(kwargs.get("deny_read"), cwd, "deny_read")?,
+            deny_url: parse_prefixes(kwargs.get("deny_url"))?,
+            container: None,
+            isolated: false,
+        })
     }
 
     pub fn is_empty(&self) -> bool {

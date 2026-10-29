@@ -3797,6 +3797,7 @@ async fn a_walled_check_is_refused_at_every_spawn() -> TestResult {
         deny_read: vec![secret.clone()],
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     };
     let (_session, _provider, host) = wired_root(&root, wall, None);
     let check = json!(format!("cat {}/key.txt", secret.display()));

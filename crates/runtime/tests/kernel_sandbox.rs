@@ -257,6 +257,38 @@ async fn a_link_planted_at_the_kernels_own_directory_grants_nothing() -> TestRes
     Ok(())
 }
 
+/// A session wired the way `yi` wires one: the corpus it reads, the wall it runs under, and,
+/// for a child, the board its spawn was beside.
+struct Wired<'a> {
+    project: &'a std::path::Path,
+    home: &'a std::path::Path,
+    rlm: &'a std::path::Path,
+    corpus: Option<PathBuf>,
+    broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
+    mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
+    wall: yi_runtime::Wall,
+    board: Option<PathBuf>,
+    link: Option<yi_runtime::ParentLink>,
+    kernels: Option<Arc<yi_runtime::fetch::KernelServiceMap>>,
+}
+
+impl Default for Wired<'_> {
+    fn default() -> Self {
+        Self {
+            project: std::path::Path::new(""),
+            home: std::path::Path::new(""),
+            rlm: std::path::Path::new(""),
+            corpus: None,
+            broker: None,
+            mcp_read: None,
+            wall: yi_runtime::Wall::default(),
+            board: None,
+            link: None,
+            kernels: None,
+        }
+    }
+}
+
 /// A root session wired the way `yi` wires one, with `sessions_dir` as its session corpus.
 fn root_session(
     project: &std::path::Path,
@@ -266,19 +298,19 @@ fn root_session(
     broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
     mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
 ) -> yi_runtime::AgentSession {
-    let wall = yi_runtime::Wall::default();
-    walled_session(project, home, rlm_dir, sessions_dir, broker, mcp_read, wall)
+    walled_session(Wired {
+        project,
+        home,
+        rlm: rlm_dir,
+        corpus: sessions_dir,
+        broker,
+        mcp_read,
+        ..Wired::default()
+    })
 }
 
-fn walled_session(
-    project: &std::path::Path,
-    home: &std::path::Path,
-    rlm_dir: &std::path::Path,
-    sessions_dir: Option<PathBuf>,
-    broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
-    mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
-    wall: yi_runtime::Wall,
-) -> yi_runtime::AgentSession {
+fn walled_session(w: Wired<'_>) -> yi_runtime::AgentSession {
+    let depth = if w.link.is_some() { 1 } else { 0 };
     let provider = Arc::new(yi_runtime::ProviderStream::new(None));
     let mut session = yi_runtime::AgentSession::new(
         yi_runtime::SessionConfig {
@@ -295,28 +327,28 @@ fn walled_session(
             provider,
             system_prompt: String::new(),
             tool_execution: yi_loop::ExecutionMode::Sequential,
-            cwd: project.to_path_buf(),
-            home: home.to_path_buf(),
+            cwd: w.project.to_path_buf(),
+            home: w.home.to_path_buf(),
             lane_slots: 1,
-            broker,
+            broker: w.broker,
             tools: Arc::new(yi_tools::builtin_tools),
-            depth: 0,
-            max_depth: 1,
-            rlm_dir: rlm_dir.to_path_buf(),
-            family_dir: None,
+            depth,
+            max_depth: 2,
+            rlm_dir: w.rlm.to_path_buf(),
+            family_dir: w.board,
             summarizer: None,
             advisor: None,
             auto_review: None,
             plan_stale_turns: None,
-            plans_dir: Some(rlm_dir.join("plans")),
-            parent_link: None,
-            wall,
+            plans_dir: Some(w.rlm.join("plans")),
+            parent_link: w.link,
+            wall: w.wall,
             auto_background: None,
             deadline: None,
             kernel_prewarm: false,
-            mcp_read,
-            sessions_dir,
-            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+            mcp_read: w.mcp_read,
+            sessions_dir: w.corpus,
+            kernels: w.kernels.unwrap_or_default(),
         },
     );
     session
@@ -341,7 +373,13 @@ async fn a_walled_kernel_and_its_bash_keep_to_the_wall_and_inherit_no_key() -> T
         ..yi_runtime::Wall::default()
     };
     let rlm = root.join("rlm");
-    let session = walled_session(&project, &home, &rlm, None, None, None, wall);
+    let session = walled_session(Wired {
+        project: &project,
+        home: &home,
+        rlm: &rlm,
+        wall,
+        ..Wired::default()
+    });
     let kernel = session
         .kernel_service()
         .ok_or("the wiring installs a kernel")?;
@@ -363,6 +401,133 @@ async fn a_walled_kernel_and_its_bash_keep_to_the_wall_and_inherit_no_key() -> T
     assert!(
         wrote == [false, false] && read == [false, false] && ran == (4, true),
         "wrote (cell, job) {wrote:?}, read (walled, env) {read:?}, (denials, job ran) {ran:?}"
+    );
+    Ok(())
+}
+
+/// A family board where D240's grant alone makes it writable: under the session corpus.
+fn board_for(tag: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let board = home
+        .join(".yi/sessions/family")
+        .join(format!("yi-1538-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&board);
+    Ok(board)
+}
+
+fn walled_child(
+    (root, project, home): (&std::path::Path, &std::path::Path, &std::path::Path),
+    board: &std::path::Path,
+    kernels: &Arc<yi_runtime::fetch::KernelServiceMap>,
+    name: &str,
+) -> yi_runtime::AgentSession {
+    let wall = yi_runtime::Wall {
+        deny_read: vec![project.join("walled.txt")],
+        ..yi_runtime::Wall::default()
+    };
+    let link = yi_runtime::ParentLink {
+        child_name: name.to_owned(),
+        host: std::sync::Weak::new(),
+    };
+    walled_session(Wired {
+        project,
+        home,
+        rlm: &root.join("rlm"),
+        wall,
+        board: Some(board.to_path_buf()),
+        link: Some(link),
+        kernels: Some(Arc::clone(kernels)),
+        ..Wired::default()
+    })
+}
+
+/// D240's recorded alternative: the board is granted for D164's upward channel, and a member
+/// with a wall, a container or a checkout of its own is exactly the writer whose pickle the
+/// root's kernel would load. Its kernel now meets the board as a denied path.
+#[tokio::test]
+async fn a_contained_childs_kernel_creates_no_board_file() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, home, _session) = workspace("board-put")?;
+    let board = board_for("put")?;
+    let kernels = yi_runtime::fetch::KernelServiceMap::new();
+    let child = walled_child((&root, &project, &home), &board, &kernels, "walled");
+    let kernel = child
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let denied = !kernel.writes_board();
+    let ran = cell(
+        &kernel,
+        "import rlm\ntry:\n    rlm.put('x', {'a': 1})\n    print('put ok')\nexcept OSError as e:\n    print('denied', e.errno)".to_owned(),
+    )
+    .await;
+    kernel.dispose().await;
+    let put = board.join("x.dill").exists();
+    let _ = std::fs::remove_dir_all(&board);
+    let ran = ran?;
+    assert!(
+        denied && !put && ran.result.stdout.contains("denied 1"),
+        "the board was writable ({denied}) or carried the put ({put}): {}",
+        ran.result.stdout
+    );
+    Ok(())
+}
+
+/// The exec path the grant opened: a `__reduce__` a contained child authored ran in the root's
+/// unconfined kernel when the parent unpickled the dump. The object now answers as text.
+#[tokio::test]
+async fn a_parent_kernel_loads_no_pickle_a_contained_child_wrote() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, home, _session) = workspace("board-unpickle")?;
+    let board = board_for("unpickle")?;
+    let kernels = yi_runtime::fetch::KernelServiceMap::new();
+    let marker = project.join("unpickled.txt");
+    let child = walled_child((&root, &project, &home), &board, &kernels, "walled");
+    let child_kernel = child
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let planted = format!(
+        "class Bomb:\n    def __reduce__(self):\n        return (open, (r'{}', 'w'))\nv = Bomb()\nprint('bound')",
+        marker.display()
+    );
+    let bound = cell(&child_kernel, planted).await;
+    let parent = walled_session(Wired {
+        project: &project,
+        home: &home,
+        rlm: &root.join("rlm"),
+        board: Some(board.clone()),
+        kernels: Some(Arc::clone(&kernels)),
+        ..Wired::default()
+    });
+    let parent_kernel = parent
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let ran = cell(
+        &parent_kernel,
+        "import rlm\ntext = await rlm.fetch('kernel://walled/v')\nprint(type(text).__name__)"
+            .to_owned(),
+    )
+    .await;
+    parent_kernel.dispose().await;
+    child_kernel.dispose().await;
+    let loaded = marker.exists();
+    let _ = std::fs::remove_dir_all(&board);
+    let (bound, ran) = (bound?, ran?);
+    assert!(
+        bound.result.stdout.contains("bound"),
+        "the child bound no object: {}",
+        bound.result.stdout
+    );
+    assert!(
+        !loaded && ran.result.stdout.contains("str"),
+        "the parent loaded the child's pickle ({loaded}): {} {}",
+        ran.result.stdout,
+        ran.result.stderr
     );
     Ok(())
 }
@@ -812,7 +977,8 @@ async fn a_kernel_connect_runs_on_the_host_from_the_home_config() -> TestResult 
 
 /// #889: a walled session's kernel read every other session's spills and transcripts, since
 /// its profile carried the wall but not the walled roots the tool seam adds (#971). Its family's
-/// spill, its transcript, state and the family board still read; an unwalled kernel reads all.
+/// spill, its transcript and state still read, and the family board is read but no longer
+/// written (D240); an unwalled kernel reads all.
 #[tokio::test]
 async fn a_walled_kernel_reads_its_familys_spill_and_transcript_and_no_other() -> TestResult {
     if !Sandbox::available() {
@@ -865,7 +1031,7 @@ async fn a_walled_kernel_reads_its_familys_spill_and_transcript_and_no_other() -
     let own = (
         walled.matches("OWN SPILL").count() + walled.matches("STATE NOTE").count(),
         walled.contains(&format!("\"id\":\"{id}\"")),
-        walled.contains("board [1]"),
+        walled.contains("board denied"),
     );
     assert_eq!(
         own,
@@ -928,7 +1094,7 @@ async fn walled_roots_probe(
         transcript.display().to_string(),
     ];
     let code = format!(
-        "import glob, os\nfor path in {reads:?}:\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\nfor root in ({sessions:?}, {spills:?}):\n    for path in glob.glob(root + '/**/*', recursive=True):\n        try:\n            print(open(path).read())\n        except OSError as e:\n            pass\nstate = os.environ['RLM_SESSION_DIR'] + '/note.txt'\nopen(state, 'w').write('STATE NOTE')\nprint(open(state).read())\nrlm.put('shard', [1])\nprint('board', rlm.get('shard'))\nprint('job', await bash(\"cat '{author}' '{own}' '{state}'\"))",
+        "import glob, os\nfor path in {reads:?}:\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\nfor root in ({sessions:?}, {spills:?}):\n    for path in glob.glob(root + '/**/*', recursive=True):\n        try:\n            print(open(path).read())\n        except OSError as e:\n            pass\nstate = os.environ['RLM_SESSION_DIR'] + '/note.txt'\nopen(state, 'w').write('STATE NOTE')\nprint(open(state).read())\ntry:\n    rlm.put('shard', [1])\n    print('board', rlm.get('shard'))\nexcept OSError:\n    print('board denied')\nprint('job', await bash(\"cat '{author}' '{own}' '{state}'\"))",
         sessions = sessions.display().to_string(),
         spills = spills.display().to_string(),
         own = own_spill.display(),
@@ -1002,7 +1168,15 @@ async fn walled_roots_probe(
         ),
     ];
     for (wall, broker, code, (rlm, corpus, store)) in runs {
-        let session = walled_session(project, home, &rlm, corpus, broker, None, wall);
+        let session = walled_session(Wired {
+            project,
+            home,
+            rlm: &rlm,
+            corpus,
+            broker,
+            wall,
+            ..Wired::default()
+        });
         if let Some(store) = store {
             session.attach_store(store)?;
         }

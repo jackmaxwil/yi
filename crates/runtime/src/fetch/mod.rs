@@ -8,7 +8,9 @@ mod transcripts;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
+
+use crate::args::Args;
 use sha2::{Digest, Sha256};
 use yi_session::{EntryOrder, EntryQuery};
 use yi_tools::{CheckpointError, Checkpoints, TreeId};
@@ -112,6 +114,12 @@ pub trait KernelVariables: Send + Sync {
         variable: &VariableName,
         path: &std::path::Path,
     ) -> Result<Option<u64>, VariableReadError>;
+
+    /// Whether that member's own kernel may write the family board (D240): only a member that
+    /// may is a pickle the parent can load, so the rest answer a `kernel://` object as text.
+    fn writes_board(&self, _agent: &str) -> bool {
+        true
+    }
 }
 
 /// where a family member's files live, for `tree://<agent>/<path>` (D164).
@@ -224,6 +232,11 @@ impl KernelVariables for KernelServiceMap {
                 detail: format!("kernel:// needs a tokio runtime: {error}"),
             })?;
         handle.block_on(service.dump_variable(variable, path))
+    }
+
+    fn writes_board(&self, agent: &str) -> bool {
+        self.service(agent)
+            .is_none_or(|service| service.writes_board())
     }
 }
 
@@ -370,6 +383,13 @@ fn unsupported(url: &Url, missing: &'static str) -> FetchError {
         url: url.to_string(),
         missing,
     }
+}
+
+/// What a `kernel://<agent>/<var>` object request answers: the dill path its kernel wrote, or
+/// text read in its place for a member whose kernel may not write the board.
+pub enum Object {
+    Dumped { path: PathBuf, bytes: u64 },
+    Text,
 }
 
 /// Invariant: read-only, always — there is no write path through a URL; every
@@ -803,6 +823,53 @@ fn read_text(
     }
 }
 
+/// The `fetch` host handler: one addressable read, object branch first, since a family member
+/// asking for a `kernel://` variable gets a pickle only from a member that may write the board.
+pub async fn serve(
+    resolver: &Arc<Resolver>,
+    payload: &Map<String, Value>,
+) -> Result<Map<String, Value>, String> {
+    let raw = payload
+        .str_of("url")
+        .ok_or_else(|| "fetch requires a \"url\" argument".to_owned())?
+        .to_owned();
+    let url: yi_types::url::Url = raw
+        .parse()
+        .map_err(|error: yi_types::url::UrlError| format!("{raw}: {error}"))?;
+    let page = Page::from_payload(payload, "fetch")?;
+    if payload.bool_of("object") == Some(true) {
+        if page.is_some() {
+            return Err("fetch pages text; drop \"object\" to page a kernel:// read".to_owned());
+        }
+        let dump = Arc::clone(resolver);
+        let asked = url.clone();
+        let dumped = match tokio::task::spawn_blocking(move || dump.dump_kernel(&asked))
+            .await
+            .map_err(|error| format!("fetch task failed: {error}"))?
+            .map_err(|error| error.to_string())?
+        {
+            Object::Dumped { path, bytes } => Some((path, bytes)),
+            Object::Text => None,
+        };
+        if let Some((path, bytes)) = dumped {
+            let mut reply = Map::new();
+            reply.insert("url".to_owned(), Value::String(raw));
+            reply.insert(
+                "path".to_owned(),
+                Value::String(path.to_string_lossy().into_owned()),
+            );
+            reply.insert("bytes".to_owned(), Value::from(bytes));
+            return Ok(reply);
+        }
+    }
+    let reader = Arc::clone(resolver);
+    let fetched = tokio::task::spawn_blocking(move || reader.fetch_page(&url, page))
+        .await
+        .map_err(|error| format!("fetch task failed: {error}"))?
+        .map_err(|error| error.to_string())?;
+    Ok(fetched.into_reply(page.is_some()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,6 +887,7 @@ mod tests {
             deny_read: vec![workspace.join("secret")],
             deny_url: vec!["plan://forbidden".to_owned()],
             container: None,
+            isolated: false,
         };
         let resolver = Resolver::new(workspace.to_path_buf(), wall);
         let path_walled: Url = "local://secret/key.txt".parse()?;
@@ -899,6 +967,7 @@ mod tests {
             deny_read: vec![workspace.join("secret")],
             deny_url: Vec::new(),
             container: None,
+            isolated: false,
         };
         let resolver = Resolver::new(workspace.to_path_buf(), wall);
         let escape: Url = "local://escape.txt".parse()?;

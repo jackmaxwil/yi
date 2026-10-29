@@ -101,6 +101,7 @@ async fn the_wall_denies_a_write_to_the_instrument_before_it_runs() -> TestResul
         deny_read: Vec::new(),
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     };
 
     let (denial, is_error) =
@@ -140,6 +141,7 @@ async fn a_read_deny_keeps_the_orientation_packet_out_of_the_denied_tree() -> Te
         deny_read: vec![root.join("secret")],
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     };
 
     let (packet, is_error) =
@@ -165,6 +167,7 @@ fn read_walled(root: &std::path::Path) -> Wall {
         deny_read: vec![root.join("secret"), root.join("vault.rs")],
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     }
 }
 
@@ -223,6 +226,7 @@ async fn a_grep_apply_never_rewrites_a_write_denied_file() -> TestResult {
         deny_read: Vec::new(),
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     };
     let mut call = args(&[
         ("pattern", "old_name"),
@@ -260,6 +264,7 @@ fn a_wrapped_write_to_a_write_denied_path_is_refused() -> TestResult {
         deny_read: Vec::new(),
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     };
     for write in [
         format!("timeout 5 rm {check}"),
@@ -291,6 +296,7 @@ fn a_bash_read_of_a_write_denied_path_runs_and_a_write_to_it_is_refused() -> Tes
         deny_read: Vec::new(),
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     };
     let bash = |command: String| {
         let mut args = serde_json::Map::new();
@@ -333,6 +339,7 @@ fn a_read_deny_binds_reads_and_a_write_deny_does_not() -> TestResult {
         deny_read: Vec::new(),
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     };
     assert!(
         write_only
@@ -350,6 +357,7 @@ fn a_read_deny_binds_reads_and_a_write_deny_does_not() -> TestResult {
         deny_read: vec![root.clone()],
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     };
     assert!(
         read_too
@@ -420,6 +428,7 @@ async fn a_grep_rewrite_is_a_write_the_wall_refuses() -> TestResult {
         deny_read: Vec::new(),
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     };
     for path in [None, Some("lib.rs")] {
         let mut args = serde_json::Map::new();
@@ -450,6 +459,7 @@ async fn a_walled_subtree_holds_against_a_rewrite_and_an_env_prefix() -> TestRes
         deny_read: Vec::new(),
         deny_url: Vec::new(),
         container: None,
+        isolated: false,
     };
     let mut args = serde_json::Map::new();
     args.insert("pattern".to_owned(), serde_json::json!("unsafe_thing"));
@@ -674,6 +684,7 @@ pub(crate) fn juror_wall(project: &std::path::Path) -> Wall {
         deny_read: Vec::new(),
         deny_url: vec!["history://".to_owned()],
         container: None,
+        isolated: false,
     }
 }
 

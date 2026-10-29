@@ -647,7 +647,7 @@ impl SubagentHost {
                 "the check is refused before it runs on the host: {refused}"
             ));
         }
-        let mut cast = self.cast(&kwargs)?;
+        let mut cast = self.cast(&kwargs, &isolation)?;
         let (seed, prompt) = reader::brief(self, &kwargs, prompt, &mut cast)?;
         let model = cast.0.clone();
         let (session_dir, child_id) = self.create_child_dir(&self.children_dir())?;

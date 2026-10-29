@@ -9,8 +9,8 @@ use yi_types::plan::ids::TodoAddr;
 use yi_types::url::Url;
 
 use super::{
-    CHECKPOINT_MISSING, FetchError, KERNEL_MISSING, MCP_MISSING, Page, Resolver, SESSION_MISSING,
-    Transcript, unsupported,
+    CHECKPOINT_MISSING, FetchError, KERNEL_MISSING, MCP_MISSING, Object, Page, Resolver,
+    SESSION_MISSING, Transcript, unsupported,
 };
 use crate::kernel::{VariableName, VariableReadError};
 use crate::plan::import::{parse_document, section_of};
@@ -400,9 +400,9 @@ impl Resolver {
         }
     }
 
-    /// The object behind `kernel://<agent>/<var>`, dilled by its own kernel into the family
-    /// dir (D164): the path and its size.
-    pub fn dump_kernel(&self, url: &Url) -> Result<(PathBuf, u64), FetchError> {
+    /// Invariant: a member whose own kernel may not write the board (D240) is served as text,
+    /// so the parent's kernel loads no pickle a contained child authored.
+    pub fn dump_kernel(&self, url: &Url) -> Result<Object, FetchError> {
         let bad = |detail: String| FetchError::BadAddress {
             url: url.to_string(),
             detail,
@@ -414,6 +414,9 @@ impl Resolver {
         let Some(kernels) = self.kernel_variables() else {
             return Err(unsupported(url, KERNEL_MISSING));
         };
+        if !kernels.writes_board(agent) {
+            return Ok(Object::Text);
+        }
         let Some(dir) = self.family_dir() else {
             return Err(unsupported(url, "this session has no family directory"));
         };
@@ -423,7 +426,7 @@ impl Resolver {
                 url: url.to_string(),
                 refusal: format!("{} is not a regular file on the board", path.display()),
             }),
-            Ok(Some(bytes)) => Ok((path, bytes)),
+            Ok(Some(bytes)) => Ok(Object::Dumped { path, bytes }),
             Ok(None) => Err(FetchError::NotFound {
                 url: url.to_string(),
                 what: format!("variable {variable} in the {agent} namespace"),
@@ -706,7 +709,9 @@ mod tests {
             Err(FetchError::OutsideWorkspace { .. })
         ));
         let object: Url = "kernel://main/answer".parse()?;
-        let (path, bytes) = resolver.dump_kernel(&object)?;
+        let Object::Dumped { path, bytes } = resolver.dump_kernel(&object)? else {
+            return Err("a member that writes the board is served as a pickle".into());
+        };
         assert_eq!((path, bytes), (family.join("main.answer.dill"), 7));
         Ok(())
     }
