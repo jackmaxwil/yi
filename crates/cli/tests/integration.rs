@@ -27,6 +27,7 @@ mod acp_protocol;
 mod browser;
 mod cli_surfaces;
 mod console_drive;
+mod install_script;
 mod journeys;
 mod kimi_login;
 mod mcp_cli;
