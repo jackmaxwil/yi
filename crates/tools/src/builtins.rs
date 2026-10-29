@@ -162,7 +162,7 @@ pub(crate) fn land(
         Ok(_) => Some(std::io::read_to_string(&mut file).unwrap_or_default()),
         Err(_) => Some(String::new()),
     };
-    crate::tool::overwrite(&mut file, content.as_bytes()).map_err(failed)?;
+    crate::tool::overwrite(&file, path, content.as_bytes()).map_err(failed)?;
     Ok((before, crate::syntax::verdict(path)))
 }
 

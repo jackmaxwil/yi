@@ -850,18 +850,15 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         // Invariant: an unchanged line the model saw is still a line it saw, so the prior
         // seen set rebases onto the new tag rather than shrinking to the hunk windows (#473).
-        let carried: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before) {
-            Some(prior) => {
-                let map = super::rebase::LineMap::between(&result.before, &result.after);
-                prior
-                    .seen_lines
-                    .iter()
-                    .flatten()
-                    .filter_map(|line| map.line(*line))
-                    .collect()
-            }
-            None => Vec::new(),
+        let map = super::rebase::LineMap::between(&result.before, &result.after);
+        let prior = snapshots.by_lines(&result.canonical_path, &result.before);
+        let rebased = |lines: &mut dyn Iterator<Item = &u64>| -> Vec<u64> {
+            lines.filter_map(|line| map.line(*line)).collect()
         };
+        let carried = prior.map_or_else(Vec::new, |prior| {
+            rebased(&mut prior.seen_lines.iter().flatten())
+        });
+        let program = prior.map_or_else(Vec::new, |prior| rebased(&mut prior.program_lines.iter()));
         let mut seen: Vec<u64> = Vec::new();
         // Every hunk gets a window, not just the first: a window the model cannot see is a
         // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
@@ -881,6 +878,7 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         }
         seen.extend(carried);
         snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
+        snapshots.record_program_lines(&result.canonical_path, result.file_hash, &program);
     }
     for warning in &result.warnings {
         out.push(format!("warning: {warning}"));

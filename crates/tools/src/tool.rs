@@ -68,9 +68,10 @@ impl ToolContext {
         yi_permission::ReadGate::new(&context).except(own.collect())
     }
 
-    /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`.
+    /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`, at
+    /// most [`READ_FILE_CAP`] of them.
     pub(crate) fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-        read_all(self.read_gate().open(path, &self.deny_read)?)
+        read_capped(self.read_gate().open(path, &self.deny_read)?, path)
     }
 
     /// What a write may not land on: both lists of the wall.
@@ -271,12 +272,116 @@ pub(crate) fn read_all(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Replaces a file's content through the handle the gate judged, never the name again.
-pub(crate) fn overwrite(file: &mut std::fs::File, content: &[u8]) -> std::io::Result<()> {
+/// The most of one file `read` shows or `edit` takes whole; past it grep searches the file.
+pub const READ_FILE_CAP: usize = 16 * 1024 * 1024;
+
+/// [`read_all`] up to [`READ_FILE_CAP`]; past it a `FileTooLarge` error whose text is the cut row.
+pub(crate) fn read_capped(file: std::fs::File, path: &Path) -> std::io::Result<Vec<u8>> {
+    let cap = u64::try_from(READ_FILE_CAP).unwrap_or(u64::MAX);
+    let size = file.metadata().map_or(0, |meta| meta.len());
+    let mut bytes = Vec::new();
+    if size <= cap {
+        let mut limited = std::io::Read::take(&file, cap.saturating_add(1));
+        std::io::Read::read_to_end(&mut limited, &mut bytes)?;
+    }
+    if size <= cap && bytes.len() <= READ_FILE_CAP {
+        return Ok(bytes);
+    }
+    let size = size.max(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+    let shown = path.display();
+    let next = format!("grep path={shown} with a pattern, or bash `sed -n '1,2000p' {shown}`");
+    let total = usize::try_from(size).unwrap_or(usize::MAX);
+    let row = cut_row(
+        0,
+        total,
+        "bytes read",
+        "READ_FILE_CAP",
+        READ_FILE_CAP,
+        &next,
+    );
+    Err(std::io::Error::new(std::io::ErrorKind::FileTooLarge, row))
+}
+
+/// Replaces the file the gate judged: a sibling temp renamed over its name once that name still
+/// names `file`, so no reader or crash ever sees it short; a hard-linked file is written in place.
+pub(crate) fn overwrite(file: &std::fs::File, path: &Path, content: &[u8]) -> std::io::Result<()> {
+    replace_after(file, path, content, &mut || ())
+}
+
+/// A test seam: [`overwrite`] with `held` run after the temp is written and before the name is
+/// checked, the one window a racing process has. Production calls [`overwrite`].
+pub fn replace_after(
+    file: &std::fs::File,
+    path: &Path,
+    content: &[u8],
+    held: &mut dyn FnMut(),
+) -> std::io::Result<()> {
     use std::io::{Seek, Write};
-    file.set_len(0)?;
-    file.rewind()?;
-    file.write_all(content)
+    let meta = file.metadata()?;
+    let in_place = |mut file: &std::fs::File| {
+        file.set_len(0)?;
+        file.rewind()?;
+        file.write_all(content)
+    };
+    if links(&meta) > 1 {
+        return in_place(file);
+    }
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return in_place(file);
+    };
+    static TEMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = TEMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = parent.join(format!(
+        ".{}.yi-{}-{serial}.tmp",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    let Ok(mut staged) = options.write(true).create_new(true).open(&temp) else {
+        return in_place(file);
+    };
+    let landed = (|| {
+        staged.set_permissions(meta.permissions())?;
+        staged.write_all(content)?;
+        staged.sync_all()?;
+        held();
+        let named = std::fs::symlink_metadata(path)?;
+        if named.file_type().is_symlink() || identity(&named) != identity(&meta) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} no longer names the file that was opened (a link or another file was put there); nothing was written",
+                    path.display()
+                ),
+            ));
+        }
+        std::fs::rename(&temp, path)
+    })();
+    if landed.is_err() {
+        let _already_gone = std::fs::remove_file(&temp);
+    }
+    landed
+}
+
+#[cfg(unix)]
+fn links(meta: &std::fs::Metadata) -> u64 {
+    std::os::unix::fs::MetadataExt::nlink(meta)
+}
+
+#[cfg(not(unix))]
+fn links(_meta: &std::fs::Metadata) -> u64 {
+    1
+}
+
+#[cfg(unix)]
+fn identity(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn identity(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
 }
 
 pub fn resolve_path(context: &ToolContext, path: &str) -> PathBuf {

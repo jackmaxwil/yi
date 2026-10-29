@@ -292,11 +292,13 @@ pub(crate) fn could_be_document(bytes: &[u8]) -> bool {
         || is_pdf(bytes)
 }
 
-/// Only a PDF has pages the converter can pick; every other format converts whole.
+/// Only a PDF has pages the converter can pick; every other format converts whole. A marker
+/// past the first byte counts only in bytes that are not UTF-8: a text file may quote it.
 pub(crate) fn is_pdf(bytes: &[u8]) -> bool {
-    bytes
-        .get(..1024.min(bytes.len()))
-        .is_some_and(|window| window.windows(5).any(|w| w == b"%PDF-"))
+    let window = bytes.get(..1024.min(bytes.len())).unwrap_or_default();
+    let text =
+        std::str::from_utf8(window).map_or_else(|error| error.error_len().is_none(), |_| true);
+    after_bom(bytes).starts_with(b"%PDF-") || (!text && window.windows(5).any(|w| w == b"%PDF-"))
 }
 
 fn is_rtf(bytes: &[u8]) -> bool {
