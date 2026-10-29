@@ -485,6 +485,10 @@ def signer_lines(contributor: dict[str, Any], registry: str) -> list[str]:
     return [raw for raw in registry.splitlines() if raw and not raw.startswith("#") and raw.split(maxsplit=1)[0] in contributor["emails"]]
 
 
+def commit_verified(repo: pathlib.Path, signers: pathlib.Path, sha: str) -> bool:
+    return git(["-C", str(repo), "-c", "gpg.format=ssh", "-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", sha], check=False).returncode == 0
+
+
 def validate_registry(allowed_path: Optional[pathlib.Path] = None, signers_path: Optional[pathlib.Path] = None) -> None:
     allowed = json.loads((allowed_path or ROOT / "scripts/intake/allowed.json").read_text())["contributors"]
     actual: dict[str, list[str]] = {login: [] for login in allowed}
@@ -756,8 +760,7 @@ class RealTransport:
             parts = row.split()
             sha = parts[0]
             identity = git_text(["-C", str(self.mirror_repo), "show", "-s", "--format=%ae%n%ce", sha]).splitlines()
-            verified = git(["-C", str(self.mirror_repo), "-c", "gpg.format=ssh", "-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", sha], check=False).returncode == 0
-            commits.append(Commit(sha, identity[0], identity[1], len(parts) - 1, verified))
+            commits.append(Commit(sha, identity[0], identity[1], len(parts) - 1, commit_verified(self.mirror_repo, signers, sha)))
         patch = git(["-C", str(self.mirror_repo), "diff", "--no-renames", "--binary", "--full-index", merge_base, fetched]).stdout
         case = Case(number, login, pr.get("state", ""), pr.get("base", {}).get("repo", {}).get("full_name", ""), pr.get("base", {}).get("ref", ""), head, fetched, head, merge_base, forge_base, self.current_main, commits, parse_diff(patch), patch, contributor, mapped, ancestor)
         case.title = pr.get("title") or ""

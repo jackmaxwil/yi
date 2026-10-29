@@ -74,7 +74,6 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("stranger", "allowlist", dataclasses.replace(base, login="stranger"), "allowlist")
     add("base-shape", "allowlist", dataclasses.replace(base, base_repo="octocat/Hello-World", base_ref="master"), "base")
     add("unsigned", "signature", dataclasses.replace(base, commits=[dataclasses.replace(base.commits[0], signature=False)]), "signature")
-    add("wrong-signer", "signature", dataclasses.replace(base, commits=[dataclasses.replace(base.commits[0], signature=False)]), "signature")
     add("wrong-author", "identity", dataclasses.replace(base, commits=[dataclasses.replace(base.commits[0], author="other@example.invalid")]), "identity")
     add("wrong-committer", "identity", dataclasses.replace(base, commits=[dataclasses.replace(base.commits[0], committer="other@example.invalid")]), "identity")
     add("fetch-pin", "head", dataclasses.replace(base, fetched_head="0" * 40), "head")
@@ -258,14 +257,29 @@ def check_signed_object() -> None:
         allowed = repo / "allowed.json"
         allowed.write_text(json.dumps({"contributors": {"fixture": contributor}}))
         bridge.validate_registry(allowed, signers)
-        verified = subprocess.run(["git", "-C", str(repo), "-c", "gpg.format=ssh", "-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", sha], capture_output=True, check=False)
-        assert verified.returncode == 0, verified.stderr.decode()
+        assert bridge.commit_verified(repo, signers, sha)
+        other = repo / "other_signers"
+        other.write_text("\n".join(bridge.signer_lines(contributor, "other@example.invalid " + public + "\n")) + "\n")
+        assert not bridge.commit_verified(repo, other, sha), "a key pinned to another login verified this login's commit"
         generated = repo / "throwaway"
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(generated)], check=True)
         wrong = repo / "wrong_signers"
         wrong.write_text("intake-fixture@example.invalid " + (generated.with_suffix(".pub")).read_text())
-        refused = subprocess.run(["git", "-C", str(repo), "-c", "gpg.format=ssh", "-c", f"gpg.ssh.allowedSignersFile={wrong}", "verify-commit", sha], capture_output=True, check=False)
-        assert refused.returncode != 0
+        assert not bridge.commit_verified(repo, wrong, sha)
+
+        def drifts(fingerprints: list[str], registry_text: str) -> bool:
+            allowed.write_text(json.dumps({"contributors": {"fixture": {**contributor, "fingerprints": fingerprints}}}))
+            signers.write_text(registry_text)
+            try:
+                bridge.validate_registry(allowed, signers)
+            except ValueError:
+                return True
+            return False
+
+        assert not drifts([fingerprint], registry)
+        assert drifts(["SHA256:" + "A" * 43], registry), "a fingerprint that is not the key's was accepted"
+        assert drifts([fingerprint], ""), "a pinned fingerprint with no key was accepted"
+        assert drifts([fingerprint], registry + "stranger@example.invalid " + public + "\n"), "a key for an unpinned principal was accepted"
 
 
 def check_ordinary_text_is_allowed() -> None:

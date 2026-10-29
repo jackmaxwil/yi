@@ -23,6 +23,7 @@ class FakeTransport:
         self.forge_calls = []
         self.pushes = []
         self.imported = None
+        self.login = "jack"
 
     def github(self, method: str, path: str, payload=None):
         if method == "GET":
@@ -37,7 +38,7 @@ class FakeTransport:
         return {}
 
     def actor(self) -> str:
-        return "jack"
+        return self.login
 
     def apply_and_commit(self, case: bridge.Case) -> str:
         checked = subprocess.run(["git", "-C", str(self.repo), "apply", "--check", "--whitespace=error", "-"], input=case.patch, capture_output=True, check=False)
@@ -129,6 +130,18 @@ def main() -> int:
     second_repo, _ = repository(overridden)
     second = FakeTransport(overridden, second_repo)
     override = {"check": "commits", "sha": overridden.head, "reason": "owner reviewed the extra commit"}
+    refused_overrides = {
+        "a non-owner actor": ("mallory", override),
+        "a sha that is not the head": ("jack", {**override, "sha": "0" * 40}),
+        "a blank reason": ("jack", {**override, "reason": ""}),
+        "a check no override may waive": ("jack", {**override, "check": "path"}),
+    }
+    for name, (login, attempt) in refused_overrides.items():
+        guarded = FakeTransport(overridden, second_repo)
+        guarded.login = login
+        result = bridge.import_case(overridden, guarded, attempt)
+        assert isinstance(result.decision, bridge.Refusal) and result.decision.code == "override", f"{name}: {result.decision}"
+        assert not guarded.pushes and not guarded.github_writes and not guarded.forge_calls, name
     accepted = bridge.import_case(overridden, second, override)
     assert accepted.decision == bridge.ALLOW
     assert accepted.audit["override"] == override
