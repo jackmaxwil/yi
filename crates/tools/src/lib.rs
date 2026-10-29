@@ -24,6 +24,7 @@ pub mod sandbox;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 mod spill;
+mod steer;
 mod syntax;
 mod tool;
 mod values;

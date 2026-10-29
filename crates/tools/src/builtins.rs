@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::jobs::MAX_TIMEOUT_SECS;
+use crate::steer::shell_read_hint;
 use crate::tool::{
     DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path,
     text_output,
@@ -874,6 +875,9 @@ impl Tool for BashTool {
             sections.push(format!(
                 "[{hits} of the last 4 bash calls hit their time limit; change the method, not the limit: bound the work (a smaller input, a sample, an early exit), vectorize it, or run it in the background (nohup CMD > out.log 2>&1 &) and read the log in a later call]"
             ));
+        }
+        if let Some(hint) = shell_read_hint(command) {
+            sections.insert(0, hint);
         }
         if let Some(hint) = document_hint(command) {
             sections.push(hint);
