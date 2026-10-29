@@ -6,6 +6,9 @@ use yi_types::plan::ids::INLINE_NOTE_MAX_BYTES;
 use yi_types::plan::doc::{Isolation, PlanId, PlanState, Todo, TodoLabel, TodoState};
 
 use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
+use super::state::{self, Decided, RootState, root_of};
+use super::store::Loaded;
+use super::table::check_actor;
 use super::tool::ArgError;
 
 pub(super) const NOTE_REF: &str = "note_ref";
@@ -293,5 +296,57 @@ impl PlanEngine {
             }
         }
         Ok(())
+    }
+}
+
+impl PlanEngine {
+    /// The op as the reducer would take it, written nowhere: `set`'s repair loop asks this for
+    /// each pass, so only the refusal the call ends on is journaled.
+    pub fn dry(&self, request: OpRequest) -> Result<(), PlanOpError> {
+        let OpRequest {
+            plan, actor, op, ..
+        } = request;
+        check_actor(&actor, &op)?;
+        let id = match plan {
+            Some(named) => self.resolve(Some(named))?,
+            None => match self.resolve(None) {
+                Ok(id) => id,
+                Err(error) => {
+                    return match self.opening(&op) {
+                        Some(opened) => opened,
+                        None => Err(error),
+                    };
+                }
+            },
+        };
+        let (op, _asked) = self.cite_default(op, Some(&id));
+        let op = self.ask_default(op, Some(&id))?;
+        let root = root_of(&id)?;
+        let Loaded { state, .. } = self.store.load(&root, false)?;
+        let mut dry = state;
+        state::apply_op(&mut dry, &id, &op, &Decided::default())?;
+        Ok(())
+    }
+
+    /// A `set` that opens a plan, judged on a probe state the way `apply_once` opens one, so a
+    /// repair pass writes no init record it has to refuse.
+    fn opening(&self, op: &Op) -> Option<Result<(), PlanOpError>> {
+        let Op::Set {
+            goal: Some(goal),
+            rows,
+        } = op
+        else {
+            return None;
+        };
+        let specs = rows.iter().map(|row| row.spec.clone()).collect();
+        let opened = self.store.allocate(goal).map_err(PlanOpError::from);
+        Some(opened.and_then(|id| {
+            let mut probe = RootState::default();
+            let init = Op::Init {
+                goal: goal.clone(),
+                todos: specs,
+            };
+            state::apply_op(&mut probe, &id, &init, &Decided::default()).map(drop)
+        }))
     }
 }
