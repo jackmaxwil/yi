@@ -1,4 +1,5 @@
 ---
+version: 0.582.0
 issue: Closes #1064
 raise: tests +54
 ---

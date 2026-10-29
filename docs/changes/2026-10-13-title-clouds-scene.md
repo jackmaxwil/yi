@@ -1,4 +1,5 @@
 ---
+version: 0.707.0
 issue: Refs #1385
 growth: +39 the Clouds scene: value noise, a three-octave fractal sum and the warp, in title.rs; weighed reusing the Kali fold's folds for texture, and kept the noise: the owner ranked domain-warped clouds third of the favourites and a fold cannot look like weather
 raise: comments +2, crate tui +39, tests +28

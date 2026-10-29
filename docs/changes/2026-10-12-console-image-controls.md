@@ -1,4 +1,5 @@
 ---
+version: 0.667.0
 issue: Closes #1352
 growth: +616 the gear, close button and keycap rasters, the keycap dock and hover, the settings tab strip and the shared rail line; weighed for deletion: the per-hint outline images (deleted for the keycaps), measuring cell pixels (kept, a stretched 64 px gear read soft in Ghostty), and a second image ledger (not added, every control rides the avatar ledger)
 raise: crate console +616, tests +64, comments +10

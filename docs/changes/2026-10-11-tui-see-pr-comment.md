@@ -1,4 +1,6 @@
 ---
+version: 0.614.0
+decisions: D400
 issue: Closes #1160
 decision: a pull request that touches crates/tui, crates/console or crates/orb (or the scenes and their runner) builds the base and head binaries and plays every scene under scripts/proof/tui_see on both in the yi-term image (`runs-on: yi-term`, the image the infra repository publishes), then upserts one comment carrying each changed snap's cell diff and region crops as the comment's own assets, at most 24 pictures with the cut named; the job never fails a pull request on looks | the owner chose "Yes, for TUI changes", "Prebuilt image, normal runners" and "Never fail, just show", and the review bot reads the comment's cell diff as text before the owner looks | delete .forgejo/workflows/tui.yml and the `ci`, `compose`, `post` and `upload` paths in scripts/tui_see.py
 ---
