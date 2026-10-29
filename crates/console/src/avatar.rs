@@ -1,4 +1,4 @@
-//! A session's avatar: a 5×5 mirrored identicon seeded by the session id, rastered for
+//! A session's avatar: a 7×7 mirrored identicon seeded by the session id, rastered for
 //! the kitty graphics protocol, with the initials tile every terminal draws under it.
 
 use std::collections::HashMap;
@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 
 use yi_tui::orb::kitty;
 
-/// Pixels per side; 8 px cells, so a two-column, one-row placement is one cell per glyph.
+/// Pixels per side; the grid's cells and margin divide it exactly.
 pub const PX: usize = 40;
-const CELL: usize = 6;
+const SIDE: usize = 7;
+const HALF: usize = 4;
 const MARGIN: usize = 6;
 const FIRST_ID: u32 = 8000;
 
@@ -43,19 +44,18 @@ impl ImageIds {
     }
 }
 
-/// Row-major 5×5, mirror-symmetric about the middle column.
+/// Row-major 7×7, mirror-symmetric about the middle column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Grid([bool; 25]);
+pub struct Grid([bool; 49]);
 
 impl Grid {
     pub fn on(&self, row: usize, col: usize) -> bool {
         self.0
-            .get(row.saturating_mul(5).saturating_add(col))
+            .get(row.saturating_mul(SIDE).saturating_add(col))
             .copied()
             .unwrap_or(false)
     }
 }
-
 fn fnv1a(seed: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in seed.bytes() {
@@ -65,25 +65,24 @@ fn fnv1a(seed: &str) -> u64 {
     hash
 }
 
-/// Fifteen bits pick the left three columns of each row; the right two mirror them, and
-/// the centre cell is always on so no grid is blank.
+/// Four bits per row pick the left four columns; the right three mirror them, and the
+/// centre cell is always on so no grid is blank.
 pub fn grid(seed: &str) -> Grid {
     let bits = fnv1a(seed);
-    let mut cells = [false; 25];
-    for row in 0..5_usize {
-        for col in 0..3_usize {
-            let bit = row.saturating_mul(3).saturating_add(col);
+    let mut cells = [false; 49];
+    for row in 0..SIDE {
+        for col in 0..HALF {
+            let bit = row.saturating_mul(HALF).saturating_add(col);
             let on = (bits >> u32::try_from(bit).unwrap_or(0)) & 1 == 1;
-            let mirror = 4_usize.saturating_sub(col);
-            if let Some(cell) = cells.get_mut(row.saturating_mul(5).saturating_add(col)) {
-                *cell = on;
-            }
-            if let Some(cell) = cells.get_mut(row.saturating_mul(5).saturating_add(mirror)) {
-                *cell = on;
+            let mirror = SIDE.saturating_sub(1).saturating_sub(col);
+            for edge in [col, mirror] {
+                if let Some(cell) = cells.get_mut(row.saturating_mul(SIDE).saturating_add(edge)) {
+                    *cell = on;
+                }
             }
         }
     }
-    if let Some(centre) = cells.get_mut(12) {
+    if let Some(centre) = cells.get_mut(SIDE.saturating_mul(SIDE) / 2) {
         *centre = true;
     }
     Grid(cells)
@@ -91,11 +90,12 @@ pub fn grid(seed: &str) -> Grid {
 
 /// 40×40 RGBA on an opaque dark ground: the image covers the tile text under it whole.
 pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
+    let cell = (PX - 2 * MARGIN) / SIDE;
     let mut out = Vec::with_capacity(PX.saturating_mul(PX).saturating_mul(4));
     for y in 0..PX {
         for x in 0..PX {
             let inside = (MARGIN..PX - MARGIN).contains(&x) && (MARGIN..PX - MARGIN).contains(&y);
-            let (row, col) = ((y - MARGIN.min(y)) / CELL, (x - MARGIN.min(x)) / CELL);
+            let (row, col) = ((y - MARGIN.min(y)) / cell, (x - MARGIN.min(x)) / cell);
             if inside && grid.on(row, col) {
                 out.extend_from_slice(&[fg.0, fg.1, fg.2, 255]);
             } else {
@@ -416,19 +416,34 @@ mod tests {
     }
 
     #[test]
-    fn grids_are_deterministic_symmetric_and_distinct() {
+    fn grids_are_deterministic_and_symmetric() {
         assert_eq!(grid("s-alpha"), grid("s-alpha"));
         let g = grid("s-alpha");
-        for row in 0..5 {
-            for col in 0..5 {
-                assert_eq!(g.on(row, col), g.on(row, 4 - col));
+        for row in 0..SIDE {
+            for col in 0..SIDE {
+                assert_eq!(g.on(row, col), g.on(row, SIDE - 1 - col));
             }
         }
-        assert!(g.on(2, 2));
-        let distinct: std::collections::HashSet<[bool; 25]> =
-            (0..100).map(|n| grid(&format!("s-{n:02}")).0).collect();
-        assert!(distinct.len() >= 95, "{}", distinct.len());
+        assert!(g.on(3, 3));
         assert_eq!(rgba(&g, (1, 2, 3)).len(), PX * PX * 4);
+    }
+
+    /// Incident: fifteen bits of a hash over a 5×5 mirror gave the real ledger's 2,572 sessions
+    /// 2,376 marks, 209 pairs of sessions wearing one avatar and 165 more pairs one cell apart.
+    #[test]
+    fn the_real_ledger_never_gives_two_sessions_one_mark() {
+        let ledger = include_str!("../tests/fixtures/ledger-session-ids.txt");
+        let seeds: Vec<&str> = ledger.lines().filter(|line| !line.is_empty()).collect();
+        assert!(seeds.len() > 2_500, "{} seeds", seeds.len());
+        let marks: std::collections::HashSet<[bool; 49]> =
+            seeds.iter().map(|seed| grid(seed).0).collect();
+        assert_eq!(
+            marks.len(),
+            seeds.len(),
+            "{} of {} sessions share a mark",
+            seeds.len() - marks.len(),
+            seeds.len()
+        );
     }
 
     #[test]
