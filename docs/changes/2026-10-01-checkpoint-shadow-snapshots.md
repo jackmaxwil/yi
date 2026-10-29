@@ -1,4 +1,5 @@
 ---
+version: 0.535.0
 issue: Closes #965
 raise: crate tools +12, tests +17, comments +1
 ---

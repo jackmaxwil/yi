@@ -1,4 +1,5 @@
 ---
+version: 0.734.0
 issue: Closes #1443, Refs #1442
 growth: +210 the plan-op tally in scan, a journal fold through the journal's own reader and the plan view; weighed for deletion: a typed row struct, a refused column, a role column and per-plan rows were left out, and scan's file walk, the journal record type and the stats row cap are reused
 raise: comments +9, crate cli +91, crate runtime +113, crate types +6, tests +439

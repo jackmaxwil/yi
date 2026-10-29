@@ -1,4 +1,6 @@
 ---
+version: 0.565.0
+decisions: D360
 issue: Refs #976
 decision: the autofix pass answers a round that blocked a PR's head, after conflicts and the same quiet wait, with a fresh `yi ask` that fixes each high and medium finding or declines it with the file:line that shows it wrong, pushes to the PR branch, and stops at two fixes in a row or any declined high (`autofix:failed`, the owner decides); `just pr fix`, `cmd_fix` and `YI_REVIEW_FIX` go, and every bot comment ends with a status line of models, calls, tokens, cost, time and the PR's and the day's bot spend (revises D320) | the owner: "Push straight to PR", "Stop and wait", "Leave those alone", and "I want each posted comment to have a bottom status line with those metrics"; on 2026-10-01 nine of sixteen open PRs sat on blocked rounds nobody answered | delete the findings kind from `pr_autofix.decide` and restore `cmd_fix`
 ---

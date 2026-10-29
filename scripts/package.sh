@@ -24,7 +24,7 @@ cp "$binary" "$stage/bin/yi"
 cp -R python "$stage/python"
 cp -R skills "$stage/skills"
 cp -R completions "$stage/completions"
-cp README.md "$stage/README.md"
+cp README.md LICENSE NOTICE "$stage/"
 cp scripts/install.sh "$stage/install.sh"
 chmod +x "$stage/install.sh"
 

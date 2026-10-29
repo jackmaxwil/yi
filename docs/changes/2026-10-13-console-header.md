@@ -1,4 +1,5 @@
 ---
+version: 0.699.0
 issue: Refs #1377
 growth: +99 the header row itself, its four worded buttons (glyph-only when they do not fit), the blank row that parts them from framed panes' close marks, and their hit table; folding the conditional tab bar into the row deleted `render_tab_bar` and its extra row, and the chord table gains one entry, the browser chord the button names
 ---

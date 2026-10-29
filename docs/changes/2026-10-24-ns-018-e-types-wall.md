@@ -1,4 +1,6 @@
 ---
+version: 0.737.0
+decisions: D461
 issue: Closes #1458, Refs #1442
 raise: tests +80, comments +2, crate cli +41, crate runtime +10
 decision: yi-types keeps the trace span API and a sink hook; the file sink and the YI_TRACE read live in yi-cli | haul DTOIO: the DTO wall did file IO and env reads against docs/YI_DESIGN.md section 2 (types-8) | reversible via moving trace_sink.rs back into trace.rs

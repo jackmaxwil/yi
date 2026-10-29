@@ -1,4 +1,6 @@
 ---
+version: 0.766.0
+decisions: D485
 issue: Closes #1501, Refs #1442
 decision: supportsTemperature leaves compat with the temperature option, amending D306 which kept it; D312's host rule is applied by host_need through the runtime's leaves_sandbox, so yi_permission::needs_host goes | no code read the option or the key, and the second copy of the rule was read only by its own test | restore the option, its three body sites and the key on the three Opus rows; restore needs_host beside host_need
 ---

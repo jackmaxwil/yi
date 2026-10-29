@@ -1,4 +1,6 @@
 ---
+version: 0.756.0
+decisions: D476
 issue: Refs #686, Refs #1442
 raise: tests +26
 decision: D219 edges drop pitfalls, the relations instead, before and after_refusal, and five predicates no host asserts | no renderer printed a pitfall, graph.json used neither them nor those relations, and no host asserted the predicates | restore the field, its caps, the variants and the predicates from git

@@ -1,4 +1,6 @@
 ---
+version: 0.605.0
+decisions: D395
 issue: Closes #1158
 decision: `tui-see run --host term` plays a scene in real Ghostty under Xvfb with software GL inside the yi-term image (scripts/yi-term/Dockerfile, Ghostty from the mkasberg Ubuntu packages, a pinned free font), driving the real binary through a pty proxy that sends the scene's steps as terminal key bytes and grabs the window at each `snap`; the image and the static musl binary follow the host's architecture | agg and the headless screen cannot show kitty images or true colour, and the owner chose "Run real Ghostty in CI" and "Same Ghostty container as CI" for agents; Ghostty under amd64 emulation on an arm64 Mac took 30 s to map a window while the native image maps it at once | drop `--host term`, the `term`, `term-inner`, `proxy` and `grab` paths, the `yi-term` recipe and scripts/yi-term/
 ---

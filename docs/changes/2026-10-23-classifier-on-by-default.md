@@ -1,4 +1,6 @@
 ---
+version: 0.787.0
+decisions: D497
 issue: Closes #1439
 decision: the skill classifier points at a skill on its own once `models.classifier` names a checkpoint: an unset `classifier.threshold` is 0.9, not shadow mode (revises D297's record-only default) | the owner: "once laya plugin is enabled, it should default be on. it should not default to watch only"; on the owner's Mac 14 answered decisions in two weeks reached confidence up to 0.9998 and none fired, because no threshold was set | read an unset threshold as no threshold again in `classifier::threshold` and make `Sidecar::threshold` an `Option<f64>`
 raise: crate runtime +14, tests +141

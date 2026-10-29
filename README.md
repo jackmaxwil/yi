@@ -171,5 +171,5 @@ A session is an append-only Pi v4 JSONL log you can branch, rewind and resume af
 
 `just dev` builds and starts `yi`; `just check` runs fmt, clippy, the guardrails and the tests;
 `just build-dist` makes the release build. [YI_DESIGN.md](docs/YI_DESIGN.md) is the law and
-[ARCHITECTURE.md](docs/ARCHITECTURE.md) the map. MIT, in `LICENSE`; `vendor/` keeps its upstream
-Apache-2.0 notices.
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) the map. Apache License 2.0, in `LICENSE`; the copyright
+notice (Jack Mazac and AiBridge LLC) is in `NOTICE`. `vendor/` keeps its upstream licenses.

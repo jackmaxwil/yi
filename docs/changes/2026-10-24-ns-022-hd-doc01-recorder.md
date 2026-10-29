@@ -1,4 +1,6 @@
 ---
+version: 0.740.0
+decisions: D465
 issue: Closes #975, Refs #1442
 decision: A recorder job on main numbers versions and decisions from docs/changes, off until the owner turns it on | ARCHITECTURE.md says the recorder bumps the version and none exists, so decisions claimed since 2026-10-01 were never numbered | revert the PR; change files stay as written and the docs stay frozen
 ---

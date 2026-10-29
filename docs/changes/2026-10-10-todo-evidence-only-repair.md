@@ -1,4 +1,5 @@
 ---
+version: 0.613.0
 issue: Closes #1195
 raise: tests +45, comments +4, crate runtime +40
 ---

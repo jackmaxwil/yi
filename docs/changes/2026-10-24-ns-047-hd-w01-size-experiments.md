@@ -1,4 +1,6 @@
 ---
+version: 0.733.0
+decisions: D458
 issue: Refs #552, Refs #1442
 decision: Adopt a build-flag or helper size lever only if it saves at least 65,536 bytes of the dist binary and moves `yi --version` and the first-request startup by no more than 0.3 ms | four 16 KiB pages is well above the size gate's one-page jitter allowance and the page-sized build-to-build noise, so a smaller saving cannot be told from a rebuild | a new decision row that changes the bar
 ---

@@ -1,4 +1,5 @@
 ---
+version: 0.791.0
 issue: Closes #1671
 growth: +229 measured from the fork, 47 of it the allow-write change this branch stacks on; weighed for deletion and kept: the headless flag in the follower, the shared errorKind reader, platform-independent write-root validation, and regression coverage; dropped: a separate denied-event type in yi-types, a second allow list for children, an --allow flag, and exact-entry advice for pathless tools whose rule subject cannot identify one call
 raise: tests +181, comments +2, crate cli +143, crate runtime +27, crate types +5

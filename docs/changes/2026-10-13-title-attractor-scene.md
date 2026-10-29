@@ -1,4 +1,5 @@
 ---
+version: 0.710.0
 issue: Refs #1385
 growth: +40 the Attractor scene, one function
 raise: comments +2, crate tui +40, tests +36

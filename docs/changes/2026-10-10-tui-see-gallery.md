@@ -1,4 +1,6 @@
 ---
+version: 0.611.0
+decisions: D399
 issue: Closes #1159
 decision: `tui-see gallery` renders every scene and label under a run root onto one self-contained HTML page (pictures inlined, each head run's cell diff beside its snaps) that the owner reviews and comments on as one living artifact; `tui-see watch` keeps a base run and reruns, rediffs and rewrites the gallery on every save under the TUI crates; `--video` on the term host keeps the run as an animated WebP cropped to the Ghostty window; the term host's proxy feeds its screen emulator with kitty graphics (APC) stripped and treats `wait-idle` as a screen held still for a second with digits ignored | the owner chose "One living gallery page" with comments routed back, and agents iterate by saving; pyte printed kitty image payloads as text, which buried the rows a wait looked for, and a once-a-second age label meant output never went quiet while idle | drop `gallery`, `watch`, `--video`, `encode_video` and `ApcFilter`
 ---

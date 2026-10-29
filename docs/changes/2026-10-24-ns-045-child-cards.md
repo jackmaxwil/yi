@@ -1,4 +1,5 @@
 ---
+version: 0.757.0
 issue: Closes #1482, Refs #1442
 growth: +154 the spawning cell's id from the kernel slot to the TUI card, the card lifecycle (reset, retired ids, the finished-card cap and its row) and the card's answer-row cache; deleting the timing guess was weighed and kept for the console's recordless updates
 raise: tests +477, comments +13, crate runtime +33, crate tools +3, crate tui +114, crate types +4

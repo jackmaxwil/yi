@@ -76,6 +76,7 @@ run "$PY" skills/yi/session-mining/extract.py --selfcheck
 # The PR narrative's net-src number is what the growth budget is argued against, and
 # a path in the wrong bucket misprices it silently; only this flag exercises the split.
 run "$PY" scripts/pr_body.py --selfcheck
+run "$PY" scripts/test_sign.py
 # The snap diff an agent reads is parsed from casts, checked against Yi's own screen dumps.
 run "$PY" scripts/tui_see.py --selfcheck
 # The monkey's seed must replay byte for byte or a failure it reports cannot be reproduced.

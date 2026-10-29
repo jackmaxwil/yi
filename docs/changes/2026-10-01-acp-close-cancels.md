@@ -1,4 +1,5 @@
 ---
+version: 0.551.0
 issue: Closes #1020
 raise: crate acp +3, crate runtime +4, tests +26, comments +2
 ---

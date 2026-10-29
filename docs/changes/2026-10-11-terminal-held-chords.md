@@ -1,4 +1,6 @@
 ---
+version: 0.623.0
+decisions: D403
 issue: Closes #1232
 raise: crate console +14, comments +2, tests +41
 decision: the console's ⌘ chords move off the keys Ghostty takes first: notebook ⌘J to ⌘I, Review ⌘G to ⌘R (amending D264's "keeping ⌘G"), open file ⌘E to ⌘O, all keys ⌘? to ⌘/; ⌘1..9 and ⌘⇧T stay held and their hints show the ⌥ chord | Ghostty 1.3.1 binds super+j, super+g, super+e, super+1..9 and super+shift+t by default and its menu puts Ghostty Help on ⌘?, so those keys never reached Yi while every hint surface named them | restore the four letters in keys::super_chord and the cmd column of CHORDS
