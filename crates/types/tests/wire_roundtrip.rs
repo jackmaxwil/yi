@@ -414,3 +414,22 @@ fn a_compaction_details_value_keeps_the_window_chain_it_was_written_with()
     assert_eq!(serde_json::to_string(&details)?, stored.trim_end());
     Ok(())
 }
+
+/// Dies with a context field the wire made mandatory: every host older than them writes no
+/// `contextTokens`, so an old line must decode to `None` and re-emit with no added key at all.
+#[test]
+fn an_older_child_update_without_the_context_fields_decodes_unchanged()
+-> Result<(), Box<dyn std::error::Error>> {
+    let old = r#"{"id":"sub-1","name":"scout","status":"running","activity":"writing","toolUseCount":2,"tokenCount":40}"#;
+    let update: yi_types::subagent::ChildUpdate = serde_json::from_str(old)?;
+    assert_eq!((update.context_tokens, update.context_window), (None, None));
+    assert_eq!(serde_json::to_string(&update)?, old);
+    let spent = r#"{"id":"sub-1","name":"scout","status":"failed","activity":"waiting","toolUseCount":2,"tokenCount":1200,"contextTokens":15000,"contextWindow":128000}"#;
+    let update: yi_types::subagent::ChildUpdate = serde_json::from_str(spent)?;
+    assert_eq!(
+        (update.context_tokens, update.context_window),
+        (Some(15_000), Some(128_000))
+    );
+    assert_eq!(serde_json::to_string(&update)?, spent);
+    Ok(())
+}

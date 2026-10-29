@@ -29,6 +29,7 @@ pub struct AgentRow {
     pub name: String,
     pub state: AgentState,
     pub tokens: u64,
+    pub context: Option<(u64, u64)>,
     pub toolcalls: u64,
     /// The kernel cell that spawned it, shown once above the children it made.
     pub spawn: Option<String>,
@@ -36,7 +37,6 @@ pub struct AgentRow {
 
 pub struct AgentsPopup {
     rows: Vec<AgentRow>,
-    context_window: u64,
     selected: usize,
     /// Which row is one keystroke from being stopped, and since when.
     armed: Option<(usize, Instant)>,
@@ -67,10 +67,9 @@ fn tokens_label(tokens: u64) -> String {
 }
 
 impl AgentsPopup {
-    pub fn new(rows: Vec<AgentRow>, context_window: u64) -> Self {
+    pub fn new(rows: Vec<AgentRow>) -> Self {
         Self {
             rows,
-            context_window,
             selected: 0,
             armed: None,
             stop: None,
@@ -95,17 +94,14 @@ impl AgentsPopup {
             .map(|(index, _)| index)
     }
 
-    /// The `/context` bar: the root's own share of its window, in ten cells,
-    /// warning once the window is most of the way gone.
-    fn bar(&self, tokens: u64, theme: &Theme) -> Vec<Span<'static>> {
-        if self.context_window == 0 {
+    /// The child's own last request over its own model's window; blank when it named neither.
+    fn bar(&self, context: Option<(u64, u64)>, theme: &Theme) -> Vec<Span<'static>> {
+        let Some((tokens, window)) = context.filter(|(_, window)| *window > 0) else {
             return Vec::new();
-        }
-        let share = tokens.saturating_mul(BAR_CELLS) / self.context_window.max(1);
+        };
+        let share = tokens.saturating_mul(BAR_CELLS) / window;
         let filled = usize::try_from(share.min(BAR_CELLS)).unwrap_or(0);
-        let percent = tokens.saturating_mul(100) / self.context_window.max(1);
-        // §17.3's rule for the context gauge: over the window is an error, not a
-        // warning, and the bar clamps while the number keeps telling the truth.
+        let percent = tokens.saturating_mul(100) / window;
         let style = match percent {
             0..=79 => Style::default().fg(theme.accent),
             80..=100 => Style::default().fg(theme.warning),
@@ -176,7 +172,7 @@ impl BottomView for AgentsPopup {
                 ),
                 Span::styled(format!("{:>6}   ", row.toolcalls), theme.muted_style()),
             ];
-            spans.extend(self.bar(row.tokens, theme));
+            spans.extend(self.bar(row.context, theme));
             out.push(Line::from(spans));
         }
         if self.dropped > 0 {
@@ -251,12 +247,12 @@ impl crate::app::App {
                     TaskStatus::Failed => AgentState::Failed,
                 },
                 tokens: state.cell.tokens,
+                context: state.cell.context,
                 toolcalls: u64::from(state.cell.toolcalls),
                 spawn: state.cell.spawn.clone(),
             })
             .collect::<Vec<_>>();
-        let popup =
-            AgentsPopup::new(rows, self.options.context_window).with_dropped(self.dropped_tasks);
+        let popup = AgentsPopup::new(rows).with_dropped(self.dropped_tasks);
         if popup.is_empty() {
             self.commit_cell(&Cell::Notice {
                 text: "no subagents in this session".to_owned(),

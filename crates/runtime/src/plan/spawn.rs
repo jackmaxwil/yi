@@ -101,7 +101,7 @@ pub(super) fn brief(at: &TodoAddr, delegation: &Delegation, reader: bool) -> Str
     }
     if let Some(budget) = &delegation.spec.budget {
         lines.push(format!(
-            "Token budget (reserved, not enforced): {}",
+            "Token budget: {} fresh tokens, the lease this child is stopped at",
             budget.0
         ));
     }

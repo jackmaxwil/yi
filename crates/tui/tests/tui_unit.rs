@@ -2410,6 +2410,7 @@ fn a_multibyte_error_never_panics_the_task_cell() -> TestResult {
         prev_tool: None,
         toolcalls: 0,
         tokens: 0,
+        context: None,
         elapsed_ms: 0,
         error: Some("€".repeat(100)),
         spawn: None,

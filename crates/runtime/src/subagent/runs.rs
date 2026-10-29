@@ -223,6 +223,7 @@ impl SubagentHost {
         exit: ChildExit,
         error: Option<String>,
     ) {
+        let (exit, error) = self.lease_ending(child_id, exit, error);
         let Some((exit, error)) = self.respawn(child_id, exit, error) else {
             return;
         };
@@ -315,6 +316,32 @@ impl SubagentHost {
         let (host, key) = (Arc::downgrade(self), child_id.to_owned());
         let news = Arc::new(move || host.upgrade().is_some_and(|host| host.unseen(&key, epoch)));
         (self.options.notice)(&notice, Some(news));
+    }
+
+    /// Invariant: a run stopped at its lease wears that class, whatever its aborted turn reads as.
+    fn lease_ending(
+        &self,
+        child_id: &str,
+        exit: ChildExit,
+        error: Option<String>,
+    ) -> (ChildExit, Option<String>) {
+        let spent = self.children.lock().ok().and_then(|children| {
+            children
+                .get(child_id)
+                .filter(|record| record.spent.crossed)
+                .map(|record| record.lease.tokens)
+        });
+        let Some(cap) =
+            spent.filter(|_| matches!(exit, ChildExit::Completed | ChildExit::Interrupted))
+        else {
+            return (exit, error);
+        };
+        let why = format!(
+            "it spent the {} token lease its parent drew, and was stopped at the reply that crossed it",
+            cap.map_or_else(|| "whole".to_owned(), |cap| cap.to_string())
+        );
+        let class = FailClass::LeaseSpent;
+        (ChildExit::Failed { class }, Some(why))
     }
 
     /// Another run on a concluded record reads running again, and one reader concludes it.

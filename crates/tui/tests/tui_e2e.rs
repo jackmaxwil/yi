@@ -1950,6 +1950,8 @@ fn reader(id: &str, status: yi_runtime::ChildStatus, calls: u64) -> yi_runtime::
         activity: yi_types::subagent::ChildActivity::Executing,
         tool_use_count: calls,
         token_count: 1500,
+        context_tokens: None,
+        context_window: None,
         cost: None,
         answer_preview: None,
         error: None,
@@ -3164,6 +3166,8 @@ fn a_card_adopted_after_the_first_tool_event_names_it() -> TestResult {
             activity: yi_types::subagent::ChildActivity::Executing,
             tool_use_count: 1,
             token_count: 40,
+            context_tokens: None,
+            context_window: None,
             cost: None,
             answer_preview: None,
             error: None,
@@ -3347,6 +3351,39 @@ fn agents_rows(app: &mut App) -> Result<(Vec<String>, Option<String>), Box<dyn E
         children,
         rows.into_iter().find(|row| row.starts_with("[…] agents")),
     ))
+}
+
+/// Dies with the child's context gauge read as its whole spend over the root's window: a child
+/// whose thirteen replies re-send one 15k cached prefix read 97% where its last request is 42%,
+/// and the spend (195k) is not a context at all.
+#[test]
+fn a_childs_gauge_is_its_last_request_over_its_own_window() -> TestResult {
+    let (name, id) = recorded_child()?;
+    let mut app = app();
+    common::replay_stream(&mut app, std::path::Path::new(CHILDREN_CORPUS))?;
+    let update: yi_runtime::ChildUpdate = serde_json::from_value(serde_json::json!({
+        "id": id,
+        "name": name,
+        "status": "running",
+        "activity": "writing",
+        "toolUseCount": 13,
+        "tokenCount": 195_000,
+        "contextTokens": 84_000,
+        "contextWindow": 200_000,
+    }))?;
+    app.sync_children(&[yi_runtime::ChildView {
+        update,
+        session: yi_runtime::ChildFeed::of(Arc::new(faux_session("scouted"))),
+        spawned_by: None,
+    }]);
+    let (rows, _) = agents_rows(&mut app)?;
+    let row = rows.first().ok_or("the roster drew no row for the child")?;
+    assert!(row.contains("195k"), "the column is its whole spend: {row}");
+    assert!(
+        row.contains("▓▓▓▓░░░░░░ 42%"),
+        "the gauge is its own last request over its own window: {row}"
+    );
+    Ok(())
 }
 
 /// Dies with the cards kept across `/new` and a rewind: `/agents`, the focus cycle and every

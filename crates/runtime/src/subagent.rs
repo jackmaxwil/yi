@@ -66,7 +66,7 @@ pub(crate) struct ChildRecord {
     /// a respawned service, whose predecessor's turns were billed to the lease that ended.
     pub(crate) billed_from: usize,
     tool_use_count: u64,
-    token_count: u64,
+    pub(crate) spent: record::Billing,
     cost: f64,
     answer_preview: Option<String>,
     pub(crate) error: Option<String>,
@@ -713,7 +713,7 @@ impl SubagentHost {
                     activity: ChildActivity::Waiting,
                     billed_from: 0,
                     tool_use_count: 0,
-                    token_count: 0,
+                    spent: record::Billing::default(),
                     cost: 0.0,
                     answer_preview: None,
                     error: None,
@@ -803,7 +803,7 @@ impl SubagentHost {
                             state,
                             note,
                             tools: record.tool_use_count,
-                            tokens: record.token_count,
+                            tokens: record.spent.tokens,
                             cost: record.cost,
                             idle_s,
                             worktree: record

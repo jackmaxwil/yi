@@ -32,28 +32,38 @@ fn row(id: &str, state: AgentState, tokens: u64, spawn: Option<&str>) -> AgentRo
         name: id.to_owned(),
         state,
         tokens,
+        context: None,
         toolcalls: 3,
         spawn: spawn.map(str::to_owned),
+    }
+}
+
+fn row_in_context(id: &str, state: AgentState, tokens: u64, context: (u64, u64)) -> AgentRow {
+    AgentRow {
+        context: Some(context),
+        ..row(id, state, tokens, None)
     }
 }
 
 /// Own-usage columns, so the total is the sum of what is on screen.
 #[test]
 fn the_popup_lists_each_agents_own_tokens_and_sums_them() -> TestResult {
-    let popup = AgentsPopup::new(
-        vec![
-            row("scout", AgentState::Running, 84_000, None),
-            row("builder", AgentState::Done, 230_000, None),
-        ],
-        200_000,
-    );
+    let popup = AgentsPopup::new(vec![
+        row_in_context("scout", AgentState::Running, 84_000, (84_000, 200_000)),
+        row("builder", AgentState::Done, 230_000, None),
+    ]);
     let rendered = flat(&popup.lines(100, &theme()));
     let joined = rendered.join("\n");
     assert!(joined.contains("84k"), "{joined}");
     assert!(joined.contains("230k"), "{joined}");
     assert!(joined.contains("total 314k over 2 agents"), "{joined}");
-    // The context bar is the root's share of its window, in ten cells.
+    // The bar is the child's own last request against its own model's window, in ten cells.
     assert!(joined.contains("▓▓▓▓░░░░░░ 42%"), "{joined}");
+    assert_eq!(
+        joined.matches('%').count(),
+        1,
+        "a row whose host named no window draws no gauge: {joined}"
+    );
     Ok(())
 }
 
@@ -61,14 +71,11 @@ fn the_popup_lists_each_agents_own_tokens_and_sums_them() -> TestResult {
 /// cell is the difference between a list of names and a story.
 #[test]
 fn children_of_one_kernel_cell_are_shown_under_it_once() -> TestResult {
-    let popup = AgentsPopup::new(
-        vec![
-            row("a", AgentState::Running, 1, Some("rlm.run(task=one)")),
-            row("b", AgentState::Running, 1, Some("rlm.run(task=one)")),
-            row("c", AgentState::Running, 1, Some("rlm.run(task=two)")),
-        ],
-        200_000,
-    );
+    let popup = AgentsPopup::new(vec![
+        row("a", AgentState::Running, 1, Some("rlm.run(task=one)")),
+        row("b", AgentState::Running, 1, Some("rlm.run(task=one)")),
+        row("c", AgentState::Running, 1, Some("rlm.run(task=two)")),
+    ]);
     let rendered = flat(&popup.lines(100, &theme()));
     assert_eq!(
         rendered
@@ -91,13 +98,10 @@ fn children_of_one_kernel_cell_are_shown_under_it_once() -> TestResult {
 /// lapses on its own, so an armed row left alone disarms.
 #[test]
 fn stopping_an_agent_needs_a_second_press() -> TestResult {
-    let mut popup = AgentsPopup::new(
-        vec![
-            row("scout", AgentState::Running, 1, None),
-            row("builder", AgentState::Running, 1, None),
-        ],
-        200_000,
-    );
+    let mut popup = AgentsPopup::new(vec![
+        row("scout", AgentState::Running, 1, None),
+        row("builder", AgentState::Running, 1, None),
+    ]);
     assert!(matches!(
         popup.handle_key(&key(KeyCodeValue::Char('x'))),
         PopupResult::Open
@@ -113,7 +117,7 @@ fn stopping_an_agent_needs_a_second_press() -> TestResult {
     assert_eq!(popup.stop.as_deref(), Some("scout"));
 
     // Moving the selection disarms: the confirm belongs to the row, not the key.
-    let mut popup = AgentsPopup::new(vec![row("scout", AgentState::Running, 1, None)], 200_000);
+    let mut popup = AgentsPopup::new(vec![row("scout", AgentState::Running, 1, None)]);
     popup.handle_key(&key(KeyCodeValue::Char('x')));
     popup.handle_key(&key(KeyCodeValue::Down));
     let disarmed = flat(&popup.lines(100, &theme())).join("\n");
@@ -125,14 +129,11 @@ fn stopping_an_agent_needs_a_second_press() -> TestResult {
 /// `✕` failed (D336).
 #[test]
 fn the_roster_marks_each_child_in_the_status_vocabulary() -> TestResult {
-    let popup = AgentsPopup::new(
-        vec![
-            row("scout", AgentState::Running, 1, None),
-            row("builder", AgentState::Done, 1, None),
-            row("broke", AgentState::Failed, 1, None),
-        ],
-        200_000,
-    );
+    let popup = AgentsPopup::new(vec![
+        row("scout", AgentState::Running, 1, None),
+        row("builder", AgentState::Done, 1, None),
+        row("broke", AgentState::Failed, 1, None),
+    ]);
     let rendered = flat(&popup.lines(100, &theme())).join("\n");
     for mark in ["◐ scout", "○ builder", "✕ broke"] {
         assert!(rendered.contains(mark), "{mark}: {rendered}");
@@ -181,6 +182,8 @@ fn child_update() -> ChildUpdate {
         activity: ChildActivity::Waiting,
         tool_use_count: 1,
         token_count: 40,
+        context_tokens: None,
+        context_window: None,
         cost: None,
         answer_preview: None,
         error: None,
