@@ -1,4 +1,5 @@
 ---
+version: 0.578.0
 issue: Closes #994
 raise: crate runtime +9, crate types +43
 ---

@@ -1,4 +1,5 @@
 ---
+version: 0.656.0
 issue: Closes #1230
 raise: tests +28, comments +2, crate tools +5
 ---

@@ -1,4 +1,5 @@
 ---
+version: 0.670.0
 issue: Closes #1350
 raise: crate console +3, tests +25
 ---

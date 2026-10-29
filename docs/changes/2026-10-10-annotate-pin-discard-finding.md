@@ -1,4 +1,6 @@
 ---
+version: 0.597.0
+decisions: D388, D389
 issue: Closes #1151
 growth: +646 the `annotate` tool, its target matching and refusals and the findings reader (about 270 lines) with its four tests in the module (about 250, since the tool is crate-private), pins and discards in the cut fold and its new test (about 75), the `AnnotationRecord` shape (21) and the `[Findings]` view section (12); weighed for deletion: the per-call `annotations` field on every tool (about 400 prompt tokens for no reader yet), the other three kinds and `rlm.annotate` (no reader yet), a session-message hook (the store already holds every result with its entry id), and a cap on findings (each is 280 chars and the model writes few, so none)
 raise: crate runtime +613, crate context +12, crate types +21, comments +19, tests +31

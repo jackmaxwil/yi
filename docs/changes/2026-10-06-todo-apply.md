@@ -1,4 +1,6 @@
 ---
+version: 0.588.0
+decisions: D373
 issue: Closes #1075
 raise: crate runtime +63, tests +88, comments +5
 decision: the todo tool's writes land on a stale view and on a `set` that moves a row to done, with a note for each, instead of refusing (amends the todo tool's touched check): a `touched` counter older than the list is applied to the list as it is now, and a `set` from such a view keeps every row it left out, in its own phase, naming them, so a row the user added since is never deleted; a `set` that marks an open row done keeps that row open and names it, since `done` needs its evidence, and the rest of the list lands; `Applied.notes` carries the lines and the tool prints each as `note:` | the owner chose "Same treatment" for the todo tool, and the touched refusal and the set-closed refusal are the stale-state and verdict refusals the todo tool had: baseline row 0073 counted 6 todo refusals in 37 calls, and a refusal there sent the model to view and rebuild the whole call | restore the `Stale` refusal in `TodoStore::apply_as` and the `SetClosed` refusal in `step`, and drop `Applied.notes`

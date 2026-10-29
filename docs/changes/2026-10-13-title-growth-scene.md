@@ -1,4 +1,5 @@
 ---
+version: 0.708.0
 issue: Refs #1385
 growth: +114 the Growth scene and the cache it needs: a simulation module of about 110 lines and the cover's cache argument; weighed re-running the coral from nothing each frame, which costs 1500 steps a frame, and kept a cache that advances to the second asked for
 raise: comments +7, crate console +3, crate tui +111, tests +52

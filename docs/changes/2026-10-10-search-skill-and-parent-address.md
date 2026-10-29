@@ -1,4 +1,5 @@
 ---
+version: 0.617.0
 issue: Refs #1184
 growth: +181 cut_user's char walk and the (String, bool) return on every cut in family.rs, the history://parent resolver in fetch/mod.rs, the unpaged-listing cap in fetch/read.rs, and the wall/reader/runs wiring; weighed deleting the parent alias for a literal parent id in the spawn brief (children are told their task, never the id in their own header, and #1184's run only passed with the address in-band) and reusing cut_note's line cut for user text (a byte-slice cut is what string_slice denies)
 raise: crate runtime +181, tests +359, comments +14

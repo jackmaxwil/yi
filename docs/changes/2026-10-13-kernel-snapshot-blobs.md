@@ -1,4 +1,6 @@
 ---
+version: 0.690.0
+decisions: D433
 issue: Closes #1392
 decision: the kernel snapshot stores each saved variable as a content-named blob in a `kernel-state.blobs` directory beside `kernel-state.dill`, which becomes an index of name to blob digest and stays the commit point; blobs and the index are fsynced before the index is replaced, unreferenced blobs are removed after it, and an index whose values are bytes (the single-file form) still restores | the owner, 2026-10-12: "One file per variable"; a cell that changed one small name rewrote every large value beside it, up to the 256 MiB aggregate cap per cell | write the payload dict back into `kernel-state.dill` and drop the blob directory; the restore path already reads that form
 raise: crate kernel +52, tests +103, comments +2

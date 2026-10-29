@@ -1,4 +1,5 @@
 ---
+version: 0.711.0
 issue: Refs #1385
 growth: +58 the Streamlines scene, one function
 raise: comments +2, crate tui +58, tests +20

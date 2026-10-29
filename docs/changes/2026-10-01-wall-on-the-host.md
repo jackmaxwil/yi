@@ -1,4 +1,6 @@
 ---
+version: 0.539.0
+decisions: D348, D349, D350
 issue: Closes #1001
 decision: a walled session's kernel boots only under a sandbox profile, so on Linux, which has no Seatbelt, a juror or any role-root walled child has no ipython and its cell is refused with the reason; readers and workers never had ipython | #1001: on Linux the kernel and its `bash()` jobs ran with no profile, so a cell met no wall at all; Landlock is not a small change, and only bash has a container path (D286) | give the kernel a Landlock or container profile, then drop the refusal in `KernelService::ensure_inner`
 decision: where Seatbelt exists, a walled session's call never runs outside the sandbox unless the user chose yolo: one that needs the host (network, an install, a credential store), a retry of a pathless refusal, and an `exec://` source are refused before anyone is asked, whatever a rule, an approval or the classifier would say | the review of #1002: outside the sandbox the command text is the only wall, and `cd ..`, a variable, `$(…)`, a script or `curl file://` read past it; inside, Seatbelt walls the roots in every spelling | `PermissionBroker::confines_walled` returning false

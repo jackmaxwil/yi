@@ -1,4 +1,6 @@
 ---
+version: 0.584.0
+decisions: D370
 issue: Closes #1072
 growth: +206 since the stack's fork, of which +54 here: the adapter's verdict rule (about 7 lines), `shown_failed` in yi-types (about 10), bash's `ran_output` helper in yi-tools (about 14), and the display, `yi sessions` and coupling readers moved onto it (about 15); stage 0 (#1078) carries the other +152; weighed for deletion: a separate "outcome" field on `ToolOutput` (rejected: every tool and the loop would carry a second flag for what `details` already says), and leaving the TUI and ACP on `is_error` (rejected: a failing test run would draw as done)
 raise: crate runtime +22, crate types +12, crate tools +9, crate tui +5, crate acp +3, crate cli +3, tests +163, comments +4

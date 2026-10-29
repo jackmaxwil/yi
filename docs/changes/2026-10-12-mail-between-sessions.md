@@ -1,4 +1,6 @@
 ---
+version: 0.677.0
+decisions: D423
 issue: Closes #1245
 growth: +555 for the post module (resolve the address, judge the sender and the target, walk back to what started the run for its hop and intent, seal and append the letter), the mailbox subscription each durable root makes at bind from the channel's start, one todo per letter, the quiet inform, the same-second label fix, removal with the session, and `yi.HopLimit`; the review's fixes (letters before the first bind, `/heartbeat clear`, the hop reset, forks as roots, local refs) are about 160 of it, and the owner pass's (another session's mailbox refused, the 256-letter mailbox cap, the hop count held across a clock wake) about 40, less the deleted `fromSession`/`toSession` twins and `Post` struct; weighed: a new delivery path beside channels (the D287 channel already buffers, acks and wakes, so it carries the letters), per-session hop state in the runtime (read from the ledger instead, so a resume keeps it), and a waiter for cross-session `request` (refused instead: the reply returns as a letter)
 raise: comments +33, crate cli +6, crate runtime +518, crate types +31, tests +450

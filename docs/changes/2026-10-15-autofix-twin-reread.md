@@ -1,4 +1,5 @@
 ---
+version: 0.693.0
 issue: Closes #1420
 ---
 A PR blocked at intake by a twin is read again once the twin is gone. A round that finds a twin runs no lens, and a later merge-only push still counted that round as having read the head. So #1415 and #1416 stayed blocked on round 1 after the twin PRs (#1411 and #1405) had closed, and neither had ever had a review. The review job now re-reads such a head and posts nothing while the twin still stands. The autofixer's stop now weighs a findings fix against the round that fix answered, read from its signature, rather than against whichever round came last. It stops early only when the fix left more held findings than it answered, and always at four fixes in a row. #1391 was stopped because a gate fix came between two findings fixes and its round was compared instead.

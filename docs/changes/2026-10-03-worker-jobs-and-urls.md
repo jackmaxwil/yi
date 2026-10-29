@@ -1,4 +1,5 @@
 ---
+version: 0.576.0
 issue: Closes #936
 raise: crate runtime +40, tests +84, over-cap +1, comments +3
 ---
