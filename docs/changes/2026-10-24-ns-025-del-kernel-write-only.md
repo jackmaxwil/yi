@@ -1,4 +1,6 @@
 ---
+version: 0.729.0
+decisions: D456
 issue: Closes #1464, Refs #1442
 raise: tests +9
 decision: the kernel's write-only paths are deleted: the cellSourceCode host-request key and last_cell_code, the kernel-state.json snapshot manifest, the YI_ORPHAN_JOURNAL pid journal and its env-var row, the stale-pid lock helpers and the unread RLM_DEPTH and RLM_MAX_DEPTH env | owner: "deleting the ~3,850 flagged lines" (2026-10-23); each is written and never read in production (no handler reads cellSourceCode; kernel-state.json is read only by snapshot_e2e.rs:308,363; nothing sets YI_ORPHAN_JOURNAL; the lock helpers' only users are two tests) | restore them from this change's parent commit and re-add the env_vars.json row

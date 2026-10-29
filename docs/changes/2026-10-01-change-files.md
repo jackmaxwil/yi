@@ -1,4 +1,6 @@
 ---
+version: 0.526.0
+decisions: D342
 issue: Closes #974
 decision: a structural change adds one file under `docs/changes/` and never writes the `version:` line, a changelog row, a decision row or an ADR, which are written on main in merge order; the src growth, crate, test and comment ceilings are measured at the fork point and raised by a `raise:` line in that file | the owner: "We need to change how version and changelog are handled."; on 2026-09-30 all 9 open PRs that conflicted with main collided on these lines and baselines, which the forge cannot merge | restore the four baselines, `--update` for them and the bump rule in `.ruler/090`
 ---

@@ -1,4 +1,6 @@
 ---
+version: 0.738.0
+decisions: D462, D463
 issue: Closes #1459, Closes #137, Refs #1442
 raise: tests +236, comments +8, crate runtime +140
 decision: A channel subscription with no adapter is peeked before it is claimed, and an idle one re-arms in memory with no claim record and no write (amends the section 15.2 'every mutation persists' contract) | an idle mailbox cost two fsynced ledger rewrites a minute per durable root; nothing is delivered on an idle tick, so claim-before-deliver still holds where it matters | route every tick through claim_due_in_state again

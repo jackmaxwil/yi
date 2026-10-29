@@ -1,4 +1,6 @@
 ---
+version: 0.755.0
+decisions: D475
 issue: Closes #1488, Refs #1442
 raise: tests +263, comments +5, crate runtime +92
 decision: merge_worktree takes an opt-in check, run on the lane before it settles, through the permission gate; a red verdict keeps the branch as a conflict does and records no disposition, and the check's unignored writes are committed with the child's work | the fix-swarm recipe had no documented way to get the lane path (dogfood-swarm-2026-09-30.md:110-111) | drop the check kwarg from the handler
