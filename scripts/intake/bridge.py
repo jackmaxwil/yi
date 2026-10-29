@@ -195,8 +195,14 @@ def excluded_paths() -> list[str]:
     return surface.rule_lines(surface.RULES / "exclude.txt")
 
 
+def is_build_rs(path: str) -> bool:
+    return path.lower().rsplit("/", 1)[-1] == "build.rs"
+
+
 def deny_rule(path: str) -> Optional[str]:
-    if path == "build.rs" or path.endswith("/build.rs"):
+    """Incident class: the owner builds on a case-insensitive disk, so .Cargo/ and BUILD.RS are the denied names."""
+    path = path.lower()
+    if is_build_rs(path):
         return "build.rs"
     # Cargo reads .cargo/config* from the working directory and every parent; a rustc-wrapper,
     # linker or source there runs in every later build.
@@ -208,7 +214,7 @@ def deny_rule(path: str) -> Optional[str]:
     rule = next((rule for rule in extra if path == rule.rstrip("/") or path.startswith(rule)), None)
     if rule:
         return rule
-    excluded = next((rule for rule in excluded_paths() if surface.excluded(path, [rule])), None)
+    excluded = next((rule for rule in excluded_paths() if surface.excluded(path, [rule.lower()])), None)
     if excluded:
         return f"mirror exclude.txt: {excluded}"
     return None
@@ -324,8 +330,12 @@ def check_18_markers(case: Case) -> Any:
 
 # A TLD that is also a field name (`self.app.run()`) is skipped when a call follows it.
 HOSTNAME = re.compile(r"(?i)\b(?:[a-z0-9-]+\.)+(?:com|net|org|edu|gov|mil|io|dev|app|cloud|lan|local|internal|invalid|onion|arpa)\b(?!\(|\.\w+\()")
+# Any TLD counts where the text is used as an endpoint (quoted, with a port, after @ or a network
+# command); row.id and Cargo.toml are not, so an unquoted bare name on a TLD outside HOSTNAME is not seen here.
+HOST = r"(?:[a-z0-9-]+\.)+(?!(?:rs|md|toml|py|jsonl?|ya?ml|txt|lock|sh|js|ts|cfg|ini|log|html|css|csv|xml|svg|png|jpg|gif|sql|zip|gz|tar)\b)[a-z]{2,}\b(?!\.\w)"
+ENDPOINT = re.compile(rf"(?i)[\"'`]{HOST}(?::\d+)?(?:/[^\"'`\s]*)?[\"'`]|(?<![\w.]){HOST}:\d{{1,5}}\b|(?<=\w)@{HOST}|\b(?:curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ping|dig|nslookup)\b[^\n]*?(?<![\w.]){HOST}")
 # The keyword may sit alone before its brace on the next line, so a prose line ending in it is refused too.
-UNSAFE = re.compile(r"\bunsafe\s*(?:\{|//|/\*|$)|\bunsafe\s+(?:fn|impl|trait|extern)\b")
+UNSAFE = re.compile(r"\bunsafe\s*(?:\{|\(|//|/\*|$)|\bunsafe\s+(?:fn|impl|trait|extern)\b")
 
 
 def network_literal(text: str) -> Optional[str]:
@@ -333,7 +343,7 @@ def network_literal(text: str) -> Optional[str]:
         return "URL"
     if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text) or re.search(r"(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b", text):
         return "IP literal"
-    if re.search(r"(?i)\blocalhost\b", text) or HOSTNAME.search(text):
+    if re.search(r"(?i)\blocalhost\b", text) or HOSTNAME.search(text) or ENDPOINT.search(text):
         return "hostname"
     return None
 
@@ -354,12 +364,13 @@ def check_20_unsafe(case: Case) -> Any:
 
 
 def dependency_path(path: str) -> bool:
-    return path in ("Cargo.toml", "Cargo.lock") or (path.startswith("crates/") and path.endswith("/Cargo.toml"))
+    path = path.lower()
+    return path in ("cargo.toml", "cargo.lock") or (path.startswith("crates/") and path.endswith("/cargo.toml"))
 
 
 def check_21_build(case: Case) -> Any:
     for change in case.changes:
-        if change.path == "build.rs" or change.path.endswith("/build.rs"):
+        if is_build_rs(change.path):
             number = change.added[0].line if change.added else 1
             return refusal("build", f"'{change.path}:{number}' adds build-time execution build.rs")
     for line in added_lines(case):
