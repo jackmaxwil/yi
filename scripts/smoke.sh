@@ -18,6 +18,10 @@ mkdir -p "$HOME"
 tar -C "$work" -xzf "$tarball"
 tree="$(find "$work" -maxdepth 1 -mindepth 1 -type d -not -name home)"
 
+for f in LICENSE NOTICE; do
+  [ -f "$tree/$f" ] || { echo "$(basename "$tarball") carries no $f"; exit 1; }
+done
+
 # A tag built from a stale tree packs a binary that reports another release and passes every
 # check below: the artifact's own --version must be the version its name carries.
 reported="$("$tree/bin/yi" --version < /dev/null)"
