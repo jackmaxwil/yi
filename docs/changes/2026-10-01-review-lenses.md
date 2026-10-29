@@ -1,4 +1,5 @@
 ---
+version: 0.550.0
 issue: Closes #1008
 ---
 Review rounds report high and medium findings only, and weigh what a PR is for over test coverage

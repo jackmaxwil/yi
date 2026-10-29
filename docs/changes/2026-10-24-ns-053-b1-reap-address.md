@@ -1,4 +1,6 @@
 ---
+version: 0.769.0
+decisions: D487
 issue: Closes #1489, Refs #1442
 growth: +33 the address grep (+34: a row builder and a notice writer shared with the history grep, a line walk over the text read serves, and an agent:// grep sent through its reap pin to the history grep) and the product and last-product clauses on the finish lines, the refused and conflicted lines included (+17); weighed for deletion: the 2,000-char reap body, its clamp arm and the harvest slot's stored block are gone (-16), leaving grep unable to open plan:// and agent:// was rejected because the kill test forbids it, and a second notice writer for the address grep was folded into the history grep's
 raise: crate runtime +33, tests +295

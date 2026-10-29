@@ -1,4 +1,5 @@
 ---
+version: 0.599.0
 issue: Closes #1163
 raise: crate runtime +2
 ---

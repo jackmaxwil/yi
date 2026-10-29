@@ -1,4 +1,5 @@
 ---
+version: 0.768.0
 issue: Refs #1498
 growth: +2 the producer gate that limits cut-row preservation to shell cells; weighed for deletion: caller-side reassembly in the ipython tool, which spread one output contract across two modules
 raise: crate tools +2, tests +14

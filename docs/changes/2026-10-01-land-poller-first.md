@@ -1,4 +1,5 @@
 ---
+version: 0.540.0
 raise: tests +35, crate runtime +2
 ---
 A second `/land` while a push runs is refused at once: `land()` takes the poller before the

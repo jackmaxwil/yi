@@ -1,4 +1,5 @@
 ---
+version: 0.552.0
 issue: Closes #1022
 raise: crate ai +10, crate runtime +6, tests +48, comments +3
 ---

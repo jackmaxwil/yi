@@ -1,4 +1,6 @@
 ---
+version: 0.736.0
+decisions: D460
 issue: Closes #1455, Refs #1442
 raise: crate runtime +1, tests +244
 decision: the request budget also ratchets each role's first-request prefix in a bare workspace | the gate priced a root prompt no child sends, so a child prefix could grow unseen | delete role_prefix.json and the ROLE_PREFIX reader in check_request_budget.py

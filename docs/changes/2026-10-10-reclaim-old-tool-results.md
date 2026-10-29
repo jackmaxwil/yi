@@ -1,4 +1,6 @@
 ---
+version: 0.596.0
+decisions: D387
 issue: Closes #1149
 growth: +730 the reclaim module (the price rule, eligibility, call pairing, the placeholder and the ledger fold, about 395 lines) with its six unit tests in the module (about 270, since the decision and the renderer stay crate-private), the `ReclaimRecord` shape (34), and the session, run and cache-fold wiring (30); weighed for deletion: a config switch (the owner chose on by default, so none), the price-cliff and watermark triggers (deferred until a Grok orchestrator needs the cliff), observed prices (the fit lives in the CLI; catalog prices stand in), a live `MissCause` for the cut (the fold resets on resume, and one rewrite among ten requests does not trip the reuse alarm), and a separate `blob://` address (the stored entry already restores the result)
 raise: crate runtime +696, crate types +34, comments +21, tests +130

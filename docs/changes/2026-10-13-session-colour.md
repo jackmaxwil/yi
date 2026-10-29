@@ -1,4 +1,6 @@
 ---
+version: 0.700.0
+decisions: D436
 issue: Closes #1375
 growth: +238 measured over the fork with the console-chrome change under it; this change nets +7 src lines, one `pane_hue` helper and a padded margin paid for by deleting the framed-title avatar tile, the closer's reversed chip and the per-pane seed lookup
 decision: the console chrome takes its colour from the session, not from one accent: a pane's title chip, border, scroll thumb and solo-chat title wear that session's own hue (`App::accent_of`), a pane with no session wears `muted`, the command palette, menus and settings tabs go neutral with an amber prompt, and accent blue stays on links, the markdown H1 rule, the sidebar and the hint bar's palette key (amends D200) | the owner asked for the pane title, tab and palette to stop using blue, "blue is overused", and chose "Each session's own colour"; a colour now says which session a pane shows | restore `theme.accent_style()` at the chrome sites `render_borders`, `render_thumbs`, `tab_bar`, `palette::render_navigator` and `menu::render`

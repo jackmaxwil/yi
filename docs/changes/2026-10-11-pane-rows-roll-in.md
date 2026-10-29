@@ -1,4 +1,6 @@
 ---
+version: 0.634.0
+decisions: D413
 issue: Closes #1217
 raise: crate tui +34, comments +3, tests +62
 growth: +182 the pane's row pacer (36 in render.rs and app.rs: a follow state pinned to a transcript cell, the same anchor a held view already uses) on top of the frame and reveal fix (146); weighed for deletion: `History::lines`, whose one other caller in app.rs keeps it, the pacer's step function (inlined, since `div_ceil(0)` is already 0), and a separate row-count cache in `History`, which pinning a cell made unnecessary

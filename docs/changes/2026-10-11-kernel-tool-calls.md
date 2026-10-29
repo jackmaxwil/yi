@@ -1,4 +1,6 @@
 ---
+version: 0.660.0
+decisions: D418
 issue: Refs #1242
 growth: +382 kernel_tools.rs (the two verbs, the cell gate and the capped row buffer) and yi/tools.py (the Python surface) are most of it, plus the agent's execute request the kernel reports when it takes the cell and the summary's dropped-reads row carried across compactions; weighed: per-tool kernel wrappers instead (six of them, each larger than one generic verb), and a ToolAdapter refactor to return values (deferred to the typed values of #1243, which need it)
 decision: a kernel cell calls the session's own tools through one host verb, `tool.call`, which runs the same adapter a model call runs, so rules, wall and broker judge each nested call on its own arguments; `ipython` and a root's `ask_user` are excluded, write and exec calls are serialized by one lock, and every call that ran is a `NestedCall` row on its cell's `ipython` result | kernel Python could not call `grep`, `edit`, `write`, `get_context`, `todo` or `annotate`, and `rlm.fetch` returns text with no hashline tags, so a program could find lines but never edit them; host verbs bypassed the adapter's gates | drop the `tool.call` and `tool.list` registrations and `yi.tools`; the rows are optional and readers that find none behave as before

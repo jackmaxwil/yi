@@ -90,7 +90,7 @@ pub struct PermissionBroker {
     rule_journal: std::sync::OnceLock<Journal<SessionPermissionRule>>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
-    /// A walled holder's retry never leaves the sandbox for a protected dir (D345).
+    /// A walled holder's retry never leaves the sandbox for a protected dir.
     walled: bool,
     /// Nobody is attached to answer a question, so a root's `ask_user` cannot end the run.
     unattended: bool,

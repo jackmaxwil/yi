@@ -1,4 +1,6 @@
 ---
+version: 0.748.0
+decisions: D472
 issue: Closes #1469, Closes #138, Closes #139, Closes #140, Closes #141, Refs #1442
 decision: an interrupt's fire sets the current request's cut flag as well as `fired`, and each request opens with a fresh cut flag, so one abort stops the provider pump on the wire and a later request never clears an earlier one's cut (amends D163, which had only the loop set the cut) | after Esc the provider kept generating, and billing, up to `max_tokens` while the loop had stopped listening: on Kimi's recorded 91-event bash stream an abort at the third event read all 91, and with one shared flag the next prompt's request cleared the abort's cut before the old pump read it | `fire` stops setting the cut and `clear_cut` stores false into one shared flag again
 raise: crate ai +47, crate kernel +1, crate loop +2, crate oauth +3, comments +1, tests +388

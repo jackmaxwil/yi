@@ -1,4 +1,6 @@
 ---
+version: 0.683.0
+decisions: D425
 issue: Closes #1398
 raise: crate loop +67, crate runtime +431, tests +276, comments +21
 growth: +498 the `answer` tool with its held draft file, the per-turn answer state with the plain-text stop judgment and the last word's answer, the loop hook that replays the accepted answer as a streamed message, and the queue filter that drops host notes once a turn is answered; weighed for deletion: an `edits` field and its own patch grammar on `answer` (dropped, the draft is a file the existing `edit` patches), and a typed `answer` field on the wire `ToolResult` (dropped, forty literal sites and a schema change where a loop hook needs neither); the queue methods moved from session.rs to session/run.rs to keep session.rs under its line ceiling are net zero.

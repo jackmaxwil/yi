@@ -1,4 +1,5 @@
 ---
+version: 0.794.0
 issue: Refs #1673
 growth: +242 the closed `final` event (kinds, quota window and reset), exit 4, a `final` line from the early refusals, the schema-failure and denial kinds and the hold-expiry test; weighed: no new ErrorClass variant (a Provider("quota") value serves), no regex dependency for the reset instant, and one shared refuse/early_final/error_final trio instead of a print and a class spelling at each of six returns
 raise: crate ai +1, crate cli +233, crate types +8, tests +243, comments +6

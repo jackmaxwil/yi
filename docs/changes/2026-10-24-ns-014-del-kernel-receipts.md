@@ -1,4 +1,6 @@
 ---
+version: 0.724.0
+decisions: D450
 issue: Closes #1456, Refs #1442
 decision: the kernel's diff and agent-message display receipts are deleted: the vnd.yi.diff+json and vnd.yi.agent-message+json parses, ExecuteOptions::on_late_sent_agent_message, ExecuteResult.diffs and .sent_agent_messages, the ipython details keys diffs and sentAgentMessages, the TUI's kernel diff rows and yi_types::harness go; recorded sessions that carry empty diffs and sentAgentMessages arrays still decode | owner: "deleting the ~3,850 flagged lines" (2026-10-23); nothing in python/ emits either MIME, no caller sets on_late_sent_agent_message, and yi_types::harness has no user (finding types-4 names crates/types/src/harness.rs) | restore the parses, fields, keys and crates/types/src/harness.rs with its pub mod and lock rows from this change's parent commit
 ---

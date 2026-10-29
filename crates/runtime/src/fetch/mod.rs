@@ -379,7 +379,7 @@ pub struct Resolver {
     plans_dir: PathBuf,
     spill_dir: Option<PathBuf>,
     wall: Wall,
-    /// Every session store, which no file a walled reader fetches may lie under (D345).
+    /// Every session store, which no file a walled reader fetches may lie under.
     session_stores: Vec<PathBuf>,
     session: Option<(String, crate::goal::StoreHandle)>,
     checkpoint_show: Option<Arc<dyn CheckpointShow>>,
@@ -414,7 +414,7 @@ impl Resolver {
     }
 
     /// The one resolver a child session reads through: its transcript and, walled, the spill
-    /// roots and session stores its tool seam walls (D340, D345). The root's builder in
+    /// roots and session stores its tool seam walls (D340). The root's builder in
     /// `attach_runtime` keeps the full capability set; every new scheme lands there.
     pub(crate) fn for_child(
         workspace: PathBuf,
@@ -671,7 +671,7 @@ impl Resolver {
     }
 
     /// The reader's wall and, walled, every session store in its `deny_read`: every scheme that
-    /// serves a host file judges by this, so no spelling or link reaches a transcript (D345).
+    /// serves a host file judges by this, so no spelling or link reaches a transcript.
     pub(super) fn wall(&self) -> Wall {
         let stores = self.session_stores.iter().filter(|_| !self.wall.is_empty());
         let mut wall = self.wall.clone();

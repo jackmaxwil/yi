@@ -1,4 +1,6 @@
 ---
+version: 0.600.0
+decisions: D391
 issue: Closes #1155
 growth: +414 the selector module, its bounded read, pointer check, fenced prompt and unit tests (about 345), the CLI role helpers moved out of main.rs with `selector_model` and `yi debug select` (52), the adapter and session wiring (15) and the `models.selector` key (4); weighed for deletion: a price rule for the selector (the bench says it is off by default, so it decides nothing yet), and a session-message hook for an intent (the command and its exit code are the intent the selector gets)
 raise: crate cli +52, crate runtime +357, crate tools +1, crate types +4, comments +19, tests +93

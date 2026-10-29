@@ -1,4 +1,5 @@
 ---
+version: 0.789.0
 issue: Refs #1670
 raise: crate cli +20, crate runtime +22, crate types +2, tests +110, comments +2
 ---

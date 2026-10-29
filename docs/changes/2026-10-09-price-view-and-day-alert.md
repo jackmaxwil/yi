@@ -1,4 +1,6 @@
 ---
+version: 0.592.0
+decisions: D379, D380, D381
 issue: Closes #1137
 growth: +896 the cross-session scan (runtime rollup, +191), the table, top list and price fit with its drift view and typed query (cli stats/rollup.rs, +609) and the day alarm seeded at each alarm's first attach (spend.rs); weighed for deletion: the jury reading observed prices (left out), a fitted-tier model (left out), a stats cache or index (the files are the ledger), a second Gaussian solver crate (a 25-line recursive solve instead)
 decision: `yi stats --since <span> --by model, upstream or day` with `--top N` folds every session file under the sessions directory (children and legacy `rlm-*/sub-*` files included) once per response id, from each assistant reply's `usage.cost.total`; the parent's `child_usage_attributed` records are never read | a child's replies sit in its own file, so reading the parent's attribution beside them counts the child twice, and the reply's billed total is the provider's figure on OpenRouter where the catalog is not | drop `rollup::scan` and the `--since`, `--by` and `--top` flags, which only `stats` accepts and which refuse a session id; `yi stats [id]` is unchanged

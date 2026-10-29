@@ -1,4 +1,6 @@
 ---
+version: 0.714.0
+decisions: D443
 issue: Refs #1446, Refs #1442
 raise: crate oauth +172, crate types +7, tests +493, comments +4
 growth: +179 the RFC 8628 flow in device.rs (106 lines), the `OauthCode` split into a shared token half and `Login` (about 50), and the review fixes: a refusal naming any profile key the chosen kind does not read (27), the raw body kept when a reply is not JSON, the verification URI held to https or loopback, and a user code or verification URI with a control character refused; weighed for deletion: reusing `cursor::login_polled`'s loop (rejected: a GET with a growing backoff and no slow_down, expired_token or deadline), and honoring `client_secret` and `json_token` in the poll instead of refusing them (rejected: RFC 8628 polls with a form body and Kimi is a public client, so the keys would be code no profile needs)

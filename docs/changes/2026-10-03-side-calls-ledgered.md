@@ -1,4 +1,6 @@
 ---
+version: 0.569.0
+decisions: D363
 issue: Closes #1033
 decision: every spend is a ledger record and every displayed total is a fold of the ledger, set by the client and never summed; a side call (session title, branch summary, compaction summary) records `LaneRecord::Usage` on the main lane with a cause naming its job (`side:title`, `side:branch`, `side:compact`) | a title, a rewind's branch summary and a compaction summary billed the provider while the session's cost total never saw them, because `complete_text` returned the text and dropped the reply's usage | drop the three `book_side_call` calls and `complete_text` returns the text alone again
 raise: crate runtime +71, tests +209, comments +9

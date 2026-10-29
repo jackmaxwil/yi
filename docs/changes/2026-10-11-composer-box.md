@@ -1,4 +1,5 @@
 ---
+version: 0.619.0
 issue: Closes #1219
 growth: +266 the wrapped render, its visual Up and Down, and the shared editing table; tui-textarea 0.7 has no soft wrap and yi_tui::wrap::wrap_line returns styled lines without the char offsets a cursor needs, so neither replaces it; the console's chord routing moved to chat.rs to keep app.rs under its cap
 raise: crate tui +253, crate console +13, tests +274, comments +16
