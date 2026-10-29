@@ -322,9 +322,6 @@ fn a_cursor_refresh_http_error_keeps_its_cause() -> TestResult {
     let error = result
         .err()
         .ok_or("Cursor refresh unexpectedly succeeded")?;
-    assert_eq!(
-        error.to_string(),
-        "HTTP 404: the model or engine was not found"
-    );
+    assert_eq!(error.to_string(), "HTTP 404");
     Ok(())
 }

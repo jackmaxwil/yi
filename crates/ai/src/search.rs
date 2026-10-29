@@ -240,9 +240,7 @@ fn http_advice(status: u16) -> String {
     let advice = match status {
         400 | 401 | 403 | 404 => "check webSearch.engine, the model id, and the OpenRouter key",
         402 => "out of credits",
-        s if crate::retry::is_retryable_status(s) => {
-            "rate limited, timed out or failed upstream; retry later"
-        }
+        408 | 429 | 500..=599 => "rate limited, timed out or failed upstream; retry later",
         _ => return String::new(),
     };
     format!(": {advice}")
