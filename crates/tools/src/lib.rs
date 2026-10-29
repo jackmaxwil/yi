@@ -39,7 +39,7 @@ pub use grep::{GrepTool, line_matcher};
 pub use ipython::cell_output;
 pub use ipython::{CellCalls, CellSpill, IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, run_or_background};
-pub use orient::GetContextTool;
+pub use orient::{GUIDE as GET_CONTEXT_GUIDE, GetContextTool};
 pub use process::{
     CommandCapture, OUTPUT_CAP, command, edit_file, git_root, keyless_command, run_captured,
     spill_path,

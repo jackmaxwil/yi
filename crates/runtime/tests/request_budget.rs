@@ -1117,9 +1117,11 @@ fn every_deferred_guide_is_one_read_away() -> TestResult {
     assert_eq!(
         pointed,
         [
+            "yi://tools/annotate",
             "yi://tools/answer",
             "yi://tools/ask_user",
             "yi://tools/edit",
+            "yi://tools/get_context",
             "yi://tools/plan",
             "yi://tools/todo"
         ]
