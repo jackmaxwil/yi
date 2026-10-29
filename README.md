@@ -15,13 +15,14 @@ yi --version
 The installer takes this machine's archive from the latest [release](https://github.com/jackmaxwil/yi/releases),
 installs it only if its sha256 matches the release's `SHA256SUMS`, and puts `yi` in `~/.local/bin`
 and its Python runtime and skills in `~/.yi`. Releases are built for macOS on Apple Silicon
-(`aarch64-apple-darwin`) and are not signed yet, so the sha256 check catches a damaged download,
-not a tampered release. `| bash -s -- --dry-run` (or `--help`) changes nothing. By hand:
+(`aarch64-apple-darwin`) and signed with the owner's release key, which the installer checks when
+`ssh-keygen` is on PATH. `| bash -s -- --dry-run` (or `--help`, which prints the key) changes nothing. By hand:
 
 ```bash
-v=X.Y.Z t=aarch64-apple-darwin; base=https://github.com/jackmaxwil/yi/releases/download/v$v
-curl -fLO "$base/yi-$v-$t.tar.gz" -O "$base/SHA256SUMS"
-shasum -a 256 -c SHA256SUMS --ignore-missing && tar -xzf "yi-$v-$t.tar.gz" && "./yi-$v-$t/install.sh"
+v=X.Y.Z t=aarch64-apple-darwin; base=https://github.com/jackmaxwil/yi/releases/download/v$v; a=yi-$v-$t.tar.gz
+curl -fLO "$base/$a" -O "$base/$a.sig" -O "$base/SHA256SUMS" -O https://raw.githubusercontent.com/jackmaxwil/yi/main/allowed_signers
+shasum -a 256 -c SHA256SUMS --ignore-missing && ssh-keygen -Y verify -f allowed_signers -I jackmaxwil-release -n yi-release -s "$a.sig" < "$a"
+tar -xzf "$a" && "./yi-$v-$t/install.sh"
 ```
 
 ## Quick start

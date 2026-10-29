@@ -4,6 +4,8 @@
 set -euo pipefail
 
 releases=https://github.com/jackmaxwil/yi/releases
+# Invariant: the one line of allowed_signers, which yi update compiles in; a release is signed by it.
+signer='jackmaxwil-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICRKvW82jaXOFg8jkpg7ZHj8YkZ5TKQr9U1bU1ygJiAj'
 
 usage() {
   cat <<'EOF'
@@ -17,7 +19,10 @@ Run from an unpacked release, it installs that release; otherwise it downloads o
   --dry-run           print what would be downloaded and installed, and change nothing
   YI_VERSION=X.Y.Z    install that release, not the latest
   YI_RELEASE_BASE=URL read SHA256SUMS and the archive from URL (https:// or file://)
+
+With ssh-keygen on PATH it also checks the archive's .sig against the release key:
 EOF
+  printf '  %s\n' "$signer"
 }
 
 target() {
@@ -78,6 +83,29 @@ json_escape() {
   printf '%s' "$s"
 }
 
+# A bad signature refuses the install; with no .sig or no ssh-keygen the sha256 is the only check,
+# and that is said. YI_ALLOWED_SIGNERS names another signers file, as for scripts/sign.sh.
+verify() {
+  local base=$1 work=$2 name=$3 signers identity
+  if ! get "$base/$name.sig" "$work/$name.sig" 2>/dev/null; then
+    echo "install.sh: this release has no signature; integrity is the sha256 check only"
+    return 0
+  fi
+  if ! command -v ssh-keygen >/dev/null; then
+    echo "install.sh: no ssh-keygen here to check the signature; integrity is the sha256 check only"
+    return 0
+  fi
+  signers=${YI_ALLOWED_SIGNERS:-$work/allowed_signers}
+  [ -n "${YI_ALLOWED_SIGNERS:-}" ] || printf '%s\n' "$signer" > "$signers"
+  identity=$(awk 'NR == 1 { print $1 }' "$signers")
+  if ! ssh-keygen -Y verify -f "$signers" -I "$identity" -n yi-release -s "$work/$name.sig" \
+    < "$work/$name" >/dev/null 2>&1; then
+    echo "install.sh: $name.sig is not $identity's signature of $name; nothing installed" >&2
+    return 1
+  fi
+  echo "install.sh: $name is signed by $identity"
+}
+
 download() {
   local prefix=$1 dry=$2 triple base version pattern line want name got
   triple=$(target)
@@ -109,8 +137,7 @@ download() {
     echo "install.sh: $name has sha256 $got, but SHA256SUMS says $want; nothing installed" >&2
     return 1
   fi
-  get "$base/$name.sig" "$work/$name.sig" 2>/dev/null \
-    || echo "install.sh: this release is unsigned; integrity is the sha256 check only"
+  verify "$base" "$work" "$name" || return 1
   tar -xzf "$work/$name" -C "$work"
   [ -x "$work/${name%.tar.gz}/bin/yi" ] || {
     echo "install.sh: $name holds no ${name%.tar.gz}/bin/yi; nothing installed" >&2; return 1
