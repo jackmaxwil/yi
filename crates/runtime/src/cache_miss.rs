@@ -4,7 +4,7 @@
 //! less than it wrote over its last ten requests. No LLM, nothing stored.
 //! A cause names only what usage shows: which marks were sent is not in the record.
 //! The same fold estimates the next gap and write for the cost-minimising TTL choice (D315):
-//! [`TtlEstimate::cheapest`] writes a loop request's history for an hour when the hour's write
+//! [`CacheAdvice::cheapest`] writes a loop request's history for an hour when the hour's write
 //! premium on the tokens the request writes costs less than the expected rewrite a five-minute
 //! entry would pay, the chance of that rewrite being the session's own share of pauses between
 //! five minutes and an hour.
