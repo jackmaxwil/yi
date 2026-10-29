@@ -87,12 +87,17 @@ json_escape() {
 # and that is said. YI_ALLOWED_SIGNERS names another signers file, as for scripts/sign.sh.
 verify() {
   local base=$1 work=$2 name=$3 signers identity
-  if ! get "$base/$name.sig" "$work/$name.sig" 2>/dev/null; then
-    echo "install.sh: this release has no signature; integrity is the sha256 check only"
-    return 0
-  fi
+  local got=0
+  get "$base/$name.sig" "$work/$name.sig" 2>/dev/null || got=$?
+  # curl's 22 is an HTTP error status and 37 an unreadable file://: the .sig is absent. Any other
+  # failure is a fetch that went wrong, which is not evidence the release is unsigned.
+  case $got in
+    0) ;;
+    22 | 37) echo "install.sh: this release has no signature; integrity is the sha256 check only" >&2; return 0 ;;
+    *) echo "install.sh: fetching $name.sig failed (curl exit $got); nothing installed" >&2; return 1 ;;
+  esac
   if ! command -v ssh-keygen >/dev/null; then
-    echo "install.sh: no ssh-keygen here to check the signature; integrity is the sha256 check only"
+    echo "install.sh: no ssh-keygen here to check the signature; integrity is the sha256 check only" >&2
     return 0
   fi
   signers=${YI_ALLOWED_SIGNERS:-$work/allowed_signers}
