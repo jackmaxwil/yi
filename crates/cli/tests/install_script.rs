@@ -135,6 +135,18 @@ fn install(scratch: &Scratch, base: &Path, signers: &Path) -> Command {
     bash
 }
 
+/// A PATH whose `curl` runs `sig` for the `.sig` URL and the real curl for every other one.
+fn curl_shim(scratch: &Scratch, sig: &str) -> Result<String, Box<dyn Error>> {
+    let (shim, path) = (scratch.join("bin"), std::env::var("PATH")?);
+    std::fs::create_dir_all(&shim)?;
+    let curl = format!(
+        "#!/bin/sh\ncase \"$*\" in *.sig*) {sig} ;; esac\nPATH='{path}' exec curl \"$@\"\n"
+    );
+    std::fs::write(shim.join("curl"), curl)?;
+    std::fs::set_permissions(shim.join("curl"), std::fs::Permissions::from_mode(0o755))?;
+    Ok(format!("{}:{path}", shim.display()))
+}
+
 /// A signed release of `version` under `scratch/release`, packaged by package.sh with `key`.
 fn signed_release(
     scratch: &Scratch,
@@ -235,15 +247,23 @@ fn a_release_without_a_signature_says_the_sha256_is_its_only_check() -> TestResu
     };
     release(&scratch.join("release"), "9.9.7", &archive, &digest, None)?;
 
-    let out = install(&scratch, &scratch.join("release"), &release_key.1).output()?;
-    let said = text(&out);
-    let notice = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{said}");
-    assert!(
-        notice.contains("this release has no signature; integrity is the sha256 check only"),
-        "{said}"
-    );
-    assert!(said.contains("installed yi 9.9.7 at"), "{said}");
+    // A file:// path that is not there, then an https server's 404 as curl -w prints it.
+    for path in [
+        std::env::var("PATH")?,
+        curl_shim(&scratch, "printf 404; exit 0")?,
+    ] {
+        let out = install(&scratch, &scratch.join("release"), &release_key.1)
+            .env("PATH", path)
+            .output()?;
+        let said = text(&out);
+        let notice = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{said}");
+        assert!(
+            notice.contains("this release has no signature; integrity is the sha256 check only"),
+            "{said}"
+        );
+        assert!(said.contains("installed yi 9.9.7 at"), "{said}");
+    }
     Ok(())
 }
 
@@ -252,21 +272,14 @@ fn a_signature_fetch_that_fails_but_not_for_absence_installs_nothing() -> TestRe
     let scratch = Scratch::new("yi-install-sigfetch")?;
     let release_key = key(&scratch.join("keys"), "test-release")?;
     signed_release(&scratch, "9.9.3", &release_key)?;
-    // A host that did not resolve (curl 6) and a server that refused the file (403, which curl's
-    // -f folds into the 22 a 404 also gets) both leave a .sig that may well exist on the release.
-    let (shim, path) = (scratch.join("bin"), std::env::var("PATH")?);
-    std::fs::create_dir_all(&shim)?;
+    // A host that did not resolve (curl 6) and a server that refused the file (403) both leave a
+    // .sig that may well exist on the release.
     for (sig, said_why) in [
         ("exit 6", "curl exit 6,"),
         ("printf 403; exit 0", "status 403)"),
     ] {
-        let curl = format!(
-            "#!/bin/sh\ncase \"$*\" in *.sig*) {sig} ;; esac\nPATH='{path}' exec curl \"$@\"\n"
-        );
-        std::fs::write(shim.join("curl"), curl)?;
-        std::fs::set_permissions(shim.join("curl"), std::fs::Permissions::from_mode(0o755))?;
         let out = install(&scratch, &scratch.join("release"), &release_key.1)
-            .env("PATH", format!("{}:{path}", shim.display()))
+            .env("PATH", curl_shim(&scratch, sig)?)
             .output()?;
         let said = text(&out);
         assert_eq!(out.status.code(), Some(1), "{said}");
@@ -302,7 +315,7 @@ fn package_signs_and_leaves_no_archive_it_could_not_sign() -> TestResult {
 }
 
 #[test]
-fn the_installer_trusts_the_one_key_yi_update_compiles_in() -> TestResult {
+fn the_installer_and_the_readme_trust_the_key_yi_update_compiles_in() -> TestResult {
     let scratch = Scratch::new("yi-install-signer")?;
     let signers = std::fs::read_to_string(format!("{ROOT}/allowed_signers"))?;
     let out = install(&scratch, &scratch.join("release"), Path::new(""))
@@ -318,6 +331,12 @@ fn the_installer_trusts_the_one_key_yi_update_compiles_in() -> TestResult {
     assert!(
         trusted.contains(signers.trim()),
         "--help trusts:\n{trusted}\nallowed_signers:\n{signers}"
+    );
+    let readme = std::fs::read_to_string(format!("{ROOT}/README.md"))?;
+    let by_hand = format!("echo '{}' > allowed_signers", signers.trim());
+    assert!(
+        readme.contains(&by_hand),
+        "README.md's by-hand install lacks: {by_hand}"
     );
     Ok(())
 }

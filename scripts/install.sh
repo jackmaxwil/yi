@@ -43,8 +43,12 @@ sha256() {
   if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
 }
 
+fetch() {
+  curl -sSL --proto '=https,file' --proto-redir '=https' "$@"
+}
+
 get() {
-  curl -fsSL --proto '=https,file' --proto-redir '=https' -o "$2" "$1"
+  fetch -f -o "$2" "$1"
 }
 
 # The sources land in ~/.yi because python_root() falls back there, which is what lets the
@@ -94,8 +98,7 @@ verify() {
   local base=$1 work=$2 name=$3 signers identity code got=0
   # Invariant: only a 404, or a file:// path that is not there (curl 37), means the release has no
   # .sig; a 403, a 5xx or a failed connection is a fetch that went wrong and refuses the install.
-  code=$(curl -sSL --proto '=https,file' --proto-redir '=https' -o "$work/$name.sig" \
-    -w '%{http_code}' "$base/$name.sig" 2>/dev/null) || got=$?
+  code=$(fetch -o "$work/$name.sig" -w '%{http_code}' "$base/$name.sig" 2>/dev/null) || got=$?
   case $got:$code in
     0:200 | 0:000) ;;
     0:404 | 37:*) echo "install.sh: this release has no signature; integrity is the sha256 check only" >&2; return 0 ;;
