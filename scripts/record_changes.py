@@ -252,7 +252,8 @@ def selfcheck():
     try:
         shutil.copytree(ROOT / "scripts/guardrails", tmp / "scripts/guardrails", ignore=shutil.ignore_patterns("baselines", "__pycache__"))
         (tmp / ALLOW).parent.mkdir()
-        shutil.copy(ROOT / ALLOW, tmp / ALLOW)
+        # Empty, not main's: the cap cases below must hit the cap whatever main allowlists.
+        (tmp / ALLOW).write_text("")
         for script in ("record_changes.py", "adr.py"):
             shutil.copy(ROOT / "scripts" / script, tmp / "scripts" / script)
         for path in (ARCH, LOG, INDEX):
