@@ -98,7 +98,7 @@ fn unpackage(version: &str) -> Result<[Option<Vec<u8>>; 3], Box<dyn Error>> {
 }
 
 /// A release directory as `just publish` uploads it: `served` under the archive's name, the
-/// SHA256SUMS folded from package.sh's `.sha256`, and the `.sig` when there is one.
+/// SHA256SUMS folded from package.sh's `.sha256` under its build line, and any `.sig`.
 fn release(
     dir: &Path,
     version: &str,
@@ -109,7 +109,8 @@ fn release(
     let archive = packaged(version)?;
     let name = archive.file_name().ok_or("the archive path has no name")?;
     std::fs::create_dir_all(dir)?;
-    std::fs::write(dir.join("SHA256SUMS"), digest)?;
+    let head = format!("# yi {version} forge build of commit {}\n", "0".repeat(40));
+    std::fs::write(dir.join("SHA256SUMS"), [head.as_bytes(), digest].concat())?;
     std::fs::write(dir.join(name), served)?;
     if let Some(sig) = sig {
         std::fs::write(beside(&dir.join(name), ".sig"), sig)?;
@@ -121,22 +122,16 @@ fn release(
     clippy::disallowed_methods,
     reason = "the contract is the script as bash runs it"
 )]
-fn install(
-    scratch: &Scratch,
-    base: &Path,
-    signers: &Path,
-    args: &[&str],
-) -> Result<Output, Box<dyn Error>> {
-    Ok(Command::new("bash")
-        .arg(format!("{ROOT}/scripts/install.sh"))
-        .args(args)
+fn install(scratch: &Scratch, base: &Path, signers: &Path) -> Command {
+    let mut bash = Command::new("bash");
+    bash.arg(format!("{ROOT}/scripts/install.sh"))
         .env("HOME", scratch.join("home"))
         .env("YI_RELEASE_BASE", format!("file://{}", base.display()))
         .env("YI_ALLOWED_SIGNERS", signers)
         .env_remove("YI_PREFIX")
         .env_remove("YI_VERSION")
-        .current_dir(&**scratch)
-        .output()?)
+        .current_dir(&**scratch);
+    bash
 }
 
 fn text(out: &Output) -> String {
@@ -173,7 +168,7 @@ fn a_vouched_and_signed_archive_installs_the_binary_its_runtime_and_receipt() ->
     let release_key = key(&scratch.join("keys"), "test-release")?;
     signed_release(&scratch, "9.9.1", &release_key)?;
 
-    let out = install(&scratch, &scratch.join("release"), &release_key.1, &[])?;
+    let out = install(&scratch, &scratch.join("release"), &release_key.1).output()?;
     let said = text(&out);
     assert!(out.status.success(), "{said}");
     assert!(said.contains("is signed by test-release"), "{said}");
@@ -207,7 +202,7 @@ fn an_archive_whose_sha256_differs_from_sha256sums_installs_nothing() -> TestRes
         sig.as_deref(),
     )?;
 
-    let out = install(&scratch, &scratch.join("release"), &release_key.1, &[])?;
+    let out = install(&scratch, &scratch.join("release"), &release_key.1).output()?;
     let said = text(&out);
     assert_eq!(out.status.code(), Some(1), "{said}");
     assert!(
@@ -225,7 +220,7 @@ fn an_archive_signed_by_another_key_installs_nothing() -> TestResult {
     let release_key = key(&scratch.join("keys"), "test-release")?;
     signed_release(&scratch, "9.9.6", &forger)?;
 
-    let out = install(&scratch, &scratch.join("release"), &release_key.1, &[])?;
+    let out = install(&scratch, &scratch.join("release"), &release_key.1).output()?;
     let said = text(&out);
     assert_eq!(out.status.code(), Some(1), "{said}");
     assert!(
@@ -247,35 +242,43 @@ fn a_release_without_a_signature_says_the_sha256_is_its_only_check() -> TestResu
     };
     release(&scratch.join("release"), "9.9.7", &archive, &digest, None)?;
 
-    let out = install(&scratch, &scratch.join("release"), &release_key.1, &[])?;
+    let out = install(&scratch, &scratch.join("release"), &release_key.1).output()?;
     let said = text(&out);
+    let notice = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{said}");
     assert!(
-        said.contains("this release has no signature; integrity is the sha256 check only"),
+        notice.contains("this release has no signature; integrity is the sha256 check only"),
         "{said}"
     );
+    assert!(said.contains("installed yi 9.9.7 at"), "{said}");
     Ok(())
 }
 
 #[test]
-fn a_dry_run_names_the_archive_and_writes_nothing() -> TestResult {
-    let scratch = Scratch::new("yi-install-dry")?;
+fn a_signature_fetch_that_fails_but_not_for_absence_installs_nothing() -> TestResult {
+    let scratch = Scratch::new("yi-install-sigfetch")?;
     let release_key = key(&scratch.join("keys"), "test-release")?;
     signed_release(&scratch, "9.9.3", &release_key)?;
+    // curl's 6 is a host that did not resolve: the .sig may well exist on the release.
+    let (shim, path) = (scratch.join("bin"), std::env::var("PATH")?);
+    std::fs::create_dir_all(&shim)?;
+    let curl = format!(
+        "#!/bin/sh\ncase \"$*\" in *.sig*) exit 6 ;; esac\nPATH='{path}' exec curl \"$@\"\n"
+    );
+    std::fs::write(shim.join("curl"), curl)?;
+    std::fs::set_permissions(shim.join("curl"), std::fs::Permissions::from_mode(0o755))?;
 
-    let out = install(
-        &scratch,
-        &scratch.join("release"),
-        &release_key.1,
-        &["--dry-run"],
-    )?;
+    let out = install(&scratch, &scratch.join("release"), &release_key.1)
+        .env("PATH", format!("{}:{path}", shim.display()))
+        .output()?;
     let said = text(&out);
-    assert!(out.status.success(), "{said}");
+    assert_eq!(out.status.code(), Some(1), "{said}");
     assert!(
-        said.contains("would download file://") && said.contains("yi-9.9.3-"),
+        said.contains("fetching yi-9.9.3-") && said.contains("(curl exit 6); nothing installed"),
         "{said}"
     );
-    assert!(!scratch.join("home").exists());
+    assert!(!said.contains("has no signature"), "{said}");
+    assert!(!scratch.join("home/.local/bin/yi").exists());
     Ok(())
 }
 
@@ -301,12 +304,9 @@ fn package_signs_and_leaves_no_archive_it_could_not_sign() -> TestResult {
 fn the_installer_trusts_the_one_key_yi_update_compiles_in() -> TestResult {
     let scratch = Scratch::new("yi-install-signer")?;
     let signers = std::fs::read_to_string(format!("{ROOT}/allowed_signers"))?;
-    let out = install(
-        &scratch,
-        &scratch.join("release"),
-        Path::new(""),
-        &["--help"],
-    )?;
+    let out = install(&scratch, &scratch.join("release"), Path::new(""))
+        .arg("--help")
+        .output()?;
     assert!(out.status.success(), "{}", text(&out));
     let trusted = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
