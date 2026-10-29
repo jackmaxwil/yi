@@ -194,3 +194,36 @@ fn shell_globs_do_not_start_block_comments() -> TestResult {
     assert!(output.contains("[find: block at lines 1-4 of"), "{output}");
     Ok(())
 }
+
+#[test]
+fn a_regex_literal_opening_a_continuation_line_does_not_hide_delimiters() -> TestResult {
+    let dir = temp_dir("hashline-regex-continuation")?;
+    fs::write(
+        dir.join("split.js"),
+        "function f() {\n    const pattern =\n        /[/*]/;\n    return pattern;\n}\n",
+    )?;
+    let output = find(&dir, "split.js", "function f()");
+    assert!(output.contains("[find: block at lines 1-5 of"), "{output}");
+    Ok(())
+}
+
+#[test]
+fn block_comments_stay_out_of_depth_for_brace_languages_beyond_the_named_ones() -> TestResult {
+    let dir = temp_dir("hashline-unlisted-brace-languages")?;
+    for name in [
+        "main.tf",
+        "view.mm",
+        "kernel.cu",
+        "schema.proto",
+        "app.dart",
+        "match.mts",
+    ] {
+        fs::write(dir.join(name), "resource {\n  /* } */\n  name = 1\n}\n")?;
+        let output = find(&dir, name, "resource {");
+        assert!(
+            output.contains("[find: block at lines 1-4 of"),
+            "{name}: {output}"
+        );
+    }
+    Ok(())
+}

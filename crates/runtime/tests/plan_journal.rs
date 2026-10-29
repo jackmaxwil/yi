@@ -1032,12 +1032,27 @@ fn a_memory_journal_sets_its_torn_tail_aside() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+struct TraceFile(std::sync::Mutex<std::fs::File>);
+
+impl yi_types::trace::TraceSink for TraceFile {
+    fn write(&self, event: &str) {
+        if let Ok(mut file) = self.0.lock() {
+            let _ = std::io::Write::write_all(&mut *file, format!("{event}\n").as_bytes());
+        }
+    }
+}
+
 /// The trace sink is fixed at a process's first span, so a span count needs a fresh process:
 /// the parent reruns `test` under `YI_TRACE`, and the child gets its own trace file back.
 fn traced(test: &str) -> Result<Option<PathBuf>, Box<dyn Error>> {
     if let Some(dir) = std::env::var_os("YI_TRACE") {
         let trace = PathBuf::from(dir).join(format!("{}.jsonl", std::process::id()));
-        yi_runtime::trace_sink::install();
+        let file = std::fs::File::create(&trace)?;
+        yi_types::trace::install(
+            Box::new(TraceFile(std::sync::Mutex::new(file))),
+            std::process::id(),
+            0,
+        );
         return Ok(Some(trace));
     }
     let dir = Scratch::new("yi-plan-journal-trace")?;

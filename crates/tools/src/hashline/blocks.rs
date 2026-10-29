@@ -39,7 +39,8 @@ pub fn brace_block_resolver(text: &str, line: u64, syntax: BraceSyntax) -> Optio
     let mut depth: i64 = 0;
     let mut in_block_comment = false;
     let mut opened = false;
-    for byte in strip_line_noise(anchor, syntax, &mut in_block_comment) {
+    let mut carry = strip_line_noise(anchor, syntax, &mut in_block_comment, &[]);
+    for &byte in &carry {
         match byte {
             b'{' | b'[' | b'(' => {
                 depth += 1;
@@ -53,7 +54,8 @@ pub fn brace_block_resolver(text: &str, line: u64, syntax: BraceSyntax) -> Optio
         return None;
     }
     for (offset, candidate) in lines.iter().enumerate().skip(anchor_index + 1) {
-        for byte in strip_line_noise(candidate, syntax, &mut in_block_comment) {
+        let out = strip_line_noise(candidate, syntax, &mut in_block_comment, &carry);
+        for &byte in &out {
             match byte {
                 b'{' | b'[' | b'(' => depth += 1,
                 b'}' | b']' | b')' => {
@@ -67,6 +69,9 @@ pub fn brace_block_resolver(text: &str, line: u64, syntax: BraceSyntax) -> Optio
                 }
                 _ => {}
             }
+        }
+        if !blank(&out) {
+            carry = out;
         }
     }
     None
@@ -103,7 +108,7 @@ pub fn indent_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
 
 fn delimiter_delta(line: &str) -> i64 {
     let mut in_block_comment = false;
-    strip_line_noise(line, BraceSyntax::Plain, &mut in_block_comment)
+    strip_line_noise(line, BraceSyntax::Plain, &mut in_block_comment, &[])
         .into_iter()
         .fold(0_i64, |depth, byte| match byte {
             b'{' | b'[' | b'(' => depth.saturating_add(1),
@@ -119,9 +124,18 @@ fn indent_width(line: &str) -> usize {
         .sum()
 }
 
+fn blank(out: &[u8]) -> bool {
+    out.iter().all(u8::is_ascii_whitespace)
+}
+
 /// Delimiters inside string/char literals and line comments do not count. A lexical pass, not
 /// a parser: multi-line strings and block comments fail closed via unbalanced depth.
-fn strip_line_noise(line: &str, syntax: BraceSyntax, in_block_comment: &mut bool) -> Vec<u8> {
+fn strip_line_noise(
+    line: &str,
+    syntax: BraceSyntax,
+    in_block_comment: &mut bool,
+    carry: &[u8],
+) -> Vec<u8> {
     let bytes = line.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -157,7 +171,7 @@ fn strip_line_noise(line: &str, syntax: BraceSyntax, in_block_comment: &mut bool
                 out.push(byte)
             }
             b'/' if syntax.regex_literals()
-                && regex_can_start(&out)
+                && regex_can_start(if blank(&out) { carry } else { &out })
                 && bytes
                     .get(index + 1)
                     .is_some_and(|next| *next != b'/' && *next != b'*') =>

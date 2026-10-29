@@ -92,14 +92,13 @@ pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
         "py" | "pyi" | "yaml" | "yml" => indent_block_resolver(request.text, request.line),
         "md" | "markdown" => super::blocks::markdown_section_resolver(request.text, request.line),
         "rs" => brace_block_resolver(request.text, request.line, BraceSyntax::Rust),
-        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" => {
+        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts" => {
             brace_block_resolver(request.text, request.line, BraceSyntax::JavaScript)
         }
-        "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "java" | "go" | "css" | "scss" | "less"
-        | "swift" | "kt" | "kts" | "cs" | "php" | "json" | "jsonc" => {
-            brace_block_resolver(request.text, request.line, BraceSyntax::CStyle)
+        "sh" | "bash" | "zsh" | "ksh" | "fish" => {
+            brace_block_resolver(request.text, request.line, BraceSyntax::Plain)
         }
-        _ => brace_block_resolver(request.text, request.line, BraceSyntax::Plain),
+        _ => brace_block_resolver(request.text, request.line, BraceSyntax::CStyle),
     }
 }
 
