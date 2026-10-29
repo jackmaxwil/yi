@@ -48,10 +48,19 @@ impl TrustGate {
             .unwrap_or_default()
     }
 
+    /// Invariant: a grant is judged against the root's physical spelling, so a scratch path that
+    /// carries `..` matches the grant written for the directory it names.
+    fn root_key(root: &Path) -> String {
+        root.canonicalize()
+            .unwrap_or_else(|_| root.to_path_buf())
+            .display()
+            .to_string()
+    }
+
     pub fn trust_of(&self, root: &Path, source: &str, content: &str) -> Trust {
         let table = self.table();
         let granted = table
-            .get(&root.display().to_string())
+            .get(&Self::root_key(root))
             .and_then(Value::as_object)
             .and_then(|entries| entries.get(source))
             .and_then(Value::as_str);
@@ -67,13 +76,13 @@ impl TrustGate {
         for (source, content) in sources {
             entry.insert(source.clone(), Value::String(content_hash(content)));
         }
-        table.insert(root.display().to_string(), Value::Object(entry));
+        table.insert(Self::root_key(root), Value::Object(entry));
         write_table(&self.path, &table)
     }
 
     pub fn revoke(&self, root: &Path) -> Result<(), String> {
         let mut table = self.table();
-        table.remove(&root.display().to_string());
+        table.remove(&Self::root_key(root));
         write_table(&self.path, &table)
     }
 
@@ -293,8 +302,13 @@ pub fn pack_files(root: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Both sides are resolved: [`git_root`] answers a physical path, and the file was found under
+/// the lexical one a scratch dir spelled with `..`.
 fn display_source(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
+    let found = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    found
+        .strip_prefix(&base)
         .unwrap_or(path)
         .display()
         .to_string()

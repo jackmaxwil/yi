@@ -16,8 +16,12 @@ pub(crate) fn quoted(text: &str) -> String {
 }
 
 /// The repository's top; a worktree never borrows the main checkout's.
+///
+/// Incident: a scratch dir under `<repo>/../tmp` walked up lexically through the `..` and
+/// adopted the checkout's AGENTS.md into a bare workspace's request prefix.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    (cwd.ancestors())
+    let start = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    (start.ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }

@@ -103,27 +103,14 @@ fn doctrine_names_only_ops_the_todo_tool_accepts() -> TestResult {
     Ok(())
 }
 
+/// Tools Yi used to ship: prose naming one sends a model at a call nothing answers.
+const RETIRED: [&str; 1] = ["grid"];
+
 #[test]
 fn shipped_skills_name_only_ops_the_plan_and_todo_tools_accept() -> TestResult {
     let pattern = regex::Regex::new(r"\b(?:plan|todo)\.[a-z_][a-z0-9_]*")?;
-    let schemas = [
-        ("plan", yi_runtime::plan::tool::schema()),
-        ("todo", yi_runtime::todo::tool::schema()),
-    ];
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest.ancestors().nth(2).ok_or("the repository root")?;
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(manifest.join("src/prompts"))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
-        .collect();
-    for set in std::fs::read_dir(root.join("skills"))?.flatten() {
-        for skill in std::fs::read_dir(set.path())?.flatten() {
-            let manifest = skill.path().join("SKILL.md");
-            if manifest.is_file() {
-                files.push(manifest);
-            }
-        }
-    }
+    let retired = regex::Regex::new(&format!(r"\b(?:{})\b", RETIRED.join("|")))?;
+    let (_, files) = prompt_surfaces()?;
     let mut stale = Vec::new();
     for path in files {
         let text = std::fs::read_to_string(&path)?;
@@ -133,8 +120,7 @@ fn shipped_skills_name_only_ops_the_plan_and_todo_tools_accept() -> TestResult {
                 continue;
             }
             let (tool, op) = token.split_once('.').ok_or("no op")?;
-            let (_, schema) = schemas.iter().find(|(name, _)| *name == tool).ok_or(tool)?;
-            let accepted = schema["properties"]["op"]["enum"]
+            let accepted = tool_schema(tool)?["properties"]["op"]["enum"]
                 .as_array()
                 .ok_or("no op enum")?
                 .iter()
@@ -143,8 +129,13 @@ fn shipped_skills_name_only_ops_the_plan_and_todo_tools_accept() -> TestResult {
                 stale.push(format!("{}: {token}", path.display()));
             }
         }
+        stale.extend(
+            retired
+                .find_iter(&text)
+                .map(|hit| format!("{}: {} is retired", path.display(), hit.as_str())),
+        );
     }
-    assert!(stale.is_empty(), "stale tool ops in {stale:?}");
+    assert!(stale.is_empty(), "stale tool references in {stale:?}");
     Ok(())
 }
 
@@ -281,11 +272,7 @@ fn rendered(text: &str) -> Result<(String, Vec<String>), Box<dyn Error>> {
         let (tool, pointer) = header
             .split_once(' ')
             .ok_or("a header names a tool and a pointer")?;
-        let schema = match tool {
-            "plan" => yi_runtime::plan::tool::schema(),
-            "todo" => yi_runtime::todo::tool::schema(),
-            other => return Err(format!("no schema named {other}").into()),
-        };
+        let schema = tool_schema(tool)?;
         let at_pointer = schema
             .pointer(pointer)
             .ok_or(format!("{tool} has no {pointer}"))?;
@@ -302,18 +289,29 @@ fn rendered(text: &str) -> Result<(String, Vec<String>), Box<dyn Error>> {
     Ok((out, blocks))
 }
 
-/// Dies with a prompt or skill teaching fields its tool does not take: the plan skill still said
-/// title, acceptance, check and deps after the orchestrate protocol was fixed by hand.
-#[test]
-fn every_schema_block_is_the_schemas_own_rendering() -> TestResult {
+/// The schema a prompt block or a skill's op names, by the tool's own registry name.
+fn tool_schema(tool: &str) -> Result<serde_json::Value, Box<dyn Error>> {
+    match tool {
+        "plan" => Ok(yi_runtime::plan::tool::schema()),
+        "todo" => Ok(yi_runtime::todo::tool::schema()),
+        other => Err(format!("no schema named {other}").into()),
+    }
+}
+
+/// Every shipped prompt surface: `src/prompts/*.md` and each `skills/*/*/SKILL.md` the binary
+/// loads. One definition, so a new prompt root or skill set cannot be taught to one walk alone.
+fn prompt_surfaces() -> Result<(std::path::PathBuf, Vec<std::path::PathBuf>), Box<dyn Error>> {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest.ancestors().nth(2).ok_or("the repository root")?;
-    let skills = root.join("skills");
+    let root = manifest
+        .ancestors()
+        .nth(2)
+        .ok_or("the repository root")?
+        .to_path_buf();
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(manifest.join("src/prompts"))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
         .collect();
-    for set in std::fs::read_dir(&skills)?.flatten() {
+    for set in std::fs::read_dir(root.join("skills"))?.flatten() {
         for skill in std::fs::read_dir(set.path())?.flatten() {
             let manifest = skill.path().join("SKILL.md");
             if manifest.is_file() {
@@ -321,6 +319,14 @@ fn every_schema_block_is_the_schemas_own_rendering() -> TestResult {
             }
         }
     }
+    Ok((root, files))
+}
+
+/// Dies with a prompt or skill teaching fields its tool does not take: the plan skill still said
+/// title, acceptance, check and deps after the orchestrate protocol was fixed by hand.
+#[test]
+fn every_schema_block_is_the_schemas_own_rendering() -> TestResult {
+    let (root, files) = prompt_surfaces()?;
     let bless = std::env::var_os("YI_BLESS").is_some();
     let mut stale = Vec::new();
     let mut found = Vec::new();
@@ -328,7 +334,7 @@ fn every_schema_block_is_the_schemas_own_rendering() -> TestResult {
         let text = std::fs::read_to_string(&path)?;
         let (fresh, blocks) = rendered(&text)?;
         let name = path
-            .strip_prefix(root)
+            .strip_prefix(&root)
             .unwrap_or(&path)
             .display()
             .to_string();
