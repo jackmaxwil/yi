@@ -25,7 +25,7 @@ ZIZMOR = "zizmor==1.31.1"
 SEMGREP = "semgrep==1.182.1"
 FIXTURES = ROOT / "scripts/scan/fixtures"
 RULES = ROOT / "scripts/scan/rules"
-SCAN_ROOTS = ("evals", "scripts", "python", ".forgejo", "crates")
+SCAN_ROOTS = ("evals", "scripts", "python", "crates")
 ZIZMOR_CASES = {
     "unpinned.yml": {"unpinned-uses", "artipacked"},
     "template-injection.yml": {"template-injection"},
@@ -36,6 +36,7 @@ GITLEAKS_CASES = {
     "planted-openrouter.txt": {"yi-openrouter-api-key"},
     "planted-anthropic.txt": {"yi-anthropic-api-key"},
     "planted-openai.txt": {"yi-openai-api-key"},
+    "planted-openai-project.txt": {"yi-openai-project-key"},
     "planted-github.txt": {"yi-github-pat"},
     "planted-aws.txt": {"yi-aws-access-key"},
 }
@@ -144,14 +145,21 @@ def semgrep(paths, fixtures=False):
     return findings
 
 
-def go_glob(pattern):
+def go_glob(pattern, off=""):
+    if off == "ignores":
+        return r"^$"
     translated = fnmatch.translate(pattern).replace("(?>", "(?:")
     translated = re.sub(r"\(\?=\(\?P<g\d+>(.*?)\)\)\(\?P=g\d+\)", r"\1", translated)
     return translated.replace(r"\Z", r"\z")
 
 
+def gitleaks_ignores():
+    """The planted fakes only: a real source path on the shared list must still be scanned."""
+    return tuple(pattern for pattern in unscanned() if "fixtures" in pattern or "planted" in pattern)
+
+
 def gitleaks_config(ignores, name):
-    patterns = [go_glob(pattern) for pattern in unscanned()] + [r"(^|/)target/.*$"] if ignores else []
+    patterns = [go_glob(pattern) for pattern in gitleaks_ignores()] + [r"(^|/)target/.*$"] if ignores else []
     rows = ",\n".join(f"  '''{pattern}'''" for pattern in patterns)
     path = ROOT / "target" / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -247,9 +255,7 @@ def save_baseline(findings, tools, off=""):
         fail(errors + ["refusing to grow the scan baseline"], "scan --update")
     counts = {key: value for key, value in old.items() if key[0] not in tools}
     counts.update(collections.Counter((tool, rule) for tool, rule, _, _ in findings))
-    for key in active:
-        counts.setdefault(key, 0)
-    ordered = sorted([list(key), count] for key, count in counts.items())
+    ordered = sorted([list(key), count] for key, count in counts.items() if count)
     BASELINE.write_text(json.dumps(ordered, indent=2) + "\n")
 
 
@@ -317,18 +323,34 @@ def selfcheck(off="", fixtures=None):
             errors.append(f"baseline shrink hint was {hints}")
     if off == "baseline" and not problems and not hints:
         errors.append("disabled baseline checks accepted a new rule id and a shrink")
-    pattern = "crates/runtime/tests/fixtures/behavior/*planted*"
     nested = "crates/runtime/tests/fixtures/behavior/a/b/planted-key"
-    for pattern in unscanned():
-        translated = go_glob(pattern)
+    for pattern in (*unscanned(), "**/fixtures/**/planted*"):
+        translated = go_glob(pattern, off)
         if any(token in translated for token in ("(?=", "(?>", "(?P=")) or translated.endswith(r"\Z"):
             errors.append(f"gitleaks ignore is not RE2-compatible: {pattern}")
-    if off == "ignores" or go_glob("**/fixtures/**/planted*") == r"^$":
-        errors.append("shared gitleaks ignores are not converted to regular expressions")
-    if fnmatch.fnmatch(nested, pattern) != bool(re.match(go_glob(pattern).replace(r"\z", r"\Z"), nested)):
-        errors.append("gitleaks and public-surface ignores disagree on a nested planted path")
+        if fnmatch.fnmatch(nested, pattern) != bool(re.match(translated.replace(r"\z", r"\Z"), nested)):
+            errors.append(f"gitleaks and public-surface ignores disagree on {pattern}")
+    for real in ("crates/runtime/src/memory/doc.rs", "skills/yi/session-mining/extract.py"):
+        if any(fnmatch.fnmatch(real, pattern) for pattern in gitleaks_ignores()):
+            errors.append(f"gitleaks skips real source: {real}")
+    deny = {line for line in (ROOT / "scripts/mirror/deny.txt").read_text().splitlines()
+            if line and not line.startswith("#")}
+    for regex in re.findall(r"^regex = '''(.+)'''$", (RULES / "gitleaks.toml").read_text(), re.M):
+        if regex not in deny:
+            errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
+    for strict in (True, False):
+        printed, aborted = io.StringIO(), False
+        try:
+            with contextlib.redirect_stdout(printed):
+                unavailable("probe", strict)
+        except SystemExit:
+            aborted = True
+        if aborted != strict:
+            errors.append(f"a missing scanner with CI {'set did not abort' if strict else 'unset aborted the run'}")
+        if not strict and "skip scan (probe)" not in printed.getvalue():
+            errors.append("the announced skip row was not printed")
     original = BASELINE
     with tempfile.TemporaryDirectory() as tmp:
         try:
@@ -423,6 +445,10 @@ def main(argv):
     strict = bool(os.environ.get("CI"))
     if args.selfcheck:
         findings, tools = gather(fixture_tasks(), strict)
+        absent = sorted(set(FAMILIES) - tools)
+        if absent and not strict:
+            print(f"skip scan selfcheck ({', '.join(absent)} did not run, so no fixture family was proved)")
+            return
         fixtures = {tool: [row for row in findings if row[0] == tool] for tool in tools}
         if "gitleaks" in fixtures:
             fixtures.update(repository_fixtures())

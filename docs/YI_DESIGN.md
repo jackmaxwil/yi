@@ -1385,7 +1385,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines plus inline `#[cfg(test)]` lines in `src/` ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/`, tests, scripts, workflows and the justfile is declared, every declared name is read, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
-| `check_scan` | pinned zizmor over workflows, gitleaks over tree/PR diff/rewritten mirror history, and vendored-rule Semgrep over Python, workflows and production Rust; new rule ids and counts above baseline fail; local tool/cache misses announce a skip and CI refuses them | `scan.json` |
+| `check_scan` | pinned zizmor over workflows, gitleaks over tree/PR diff/rewritten mirror history, and vendored-rule Semgrep over Python and production Rust; new rule ids and counts above baseline fail; local tool/cache misses announce a skip and CI refuses them | `scan.json` |
 | `check_request_budget` | system-prompt and tool-table bytes; tool-surface texts and hashes (D188) | `request_budget.json`, `tool_surface.json` |
 | `check_behavior` | faux-cassette behavior cases: a locked pass never fails (D76) | `behavior_baseline.json` |
 | `check_prompt_examples` | Python in prompts and skills awaits every `yi` coroutine call | — |

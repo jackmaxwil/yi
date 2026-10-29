@@ -12,6 +12,8 @@ trusted checkout. Verbs: `just pr autofix` (one pass, oldest PR first), `just pr
 """
 import argparse
 import datetime
+import contextlib
+import io
 import itertools
 from collections import Counter
 import json
@@ -77,6 +79,9 @@ SIGNED = "The fixer's answer to review round"
 GATE_SIGNED = "The fixer's answer to the gate on"
 # A lane run in the clone: the test lane builds every test binary, and a hung test must not eat the pass.
 LANE_SECS = 900
+# Incident: the guardrails lane's CI job installs the pinned gitleaks first; the installer has no
+# short-circuit downstream of it, so a hung download would eat the pass instead of the lane.
+INSTALL_SECS = 180
 # Incident: #1025's retry died on an upstream 429 and was labelled failed and counted as a miss,
 # though a busy provider says nothing about the PR; such an attempt waits for the next pass.
 # Incident: #1111's pass met a runner with a full /tmp, and a disk that frees itself stopped the PR.
@@ -159,8 +164,9 @@ def scrubbed():
     return {**env, "CARGO_TARGET_DIR": env.get("CARGO_TARGET_DIR", str(ROOT / "target"))}
 
 
-def sh(cwd, *args, env=None, input=None, check=True):
-    out = subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=env, input=input)
+def sh(cwd, *args, env=None, input=None, check=True, timeout=None):
+    out = subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=env, input=input,
+                         timeout=timeout)
     if check and out.returncode:
         raise RuntimeError(f"{' '.join(args[:3])} failed: {(out.stdout + out.stderr).strip()[-800:]}")
     return out
@@ -628,6 +634,23 @@ def at_base(clone, base_ref, failed):
         shutil.rmtree(base, ignore_errors=True)
 
 
+def prepare_lane(clone, lane):
+    """Incident: the guardrails lane's CI job installs the pinned gitleaks first, and the clone this
+    runs in ran no workflow step, so the scan's CI-strict skip failed every pass (#1733). The exit is
+    said out loud: an install that fails leaves the lane red for a reason no PR can fix."""
+    install = clone / "scripts/scan/install_gitleaks.sh"
+    if lane != "guardrails" or not install.is_file():
+        return
+    try:
+        ran = sh(clone, str(install), env=scrubbed(), check=False, timeout=INSTALL_SECS)
+    except subprocess.TimeoutExpired:
+        print(f"gate: gitleaks install timed out after {INSTALL_SECS}s, the guardrails lane reads a skip")
+        return
+    if ran.returncode:
+        print(f"gate: gitleaks install failed ({ran.returncode}), the guardrails lane reads a skip: "
+              f"{(ran.stdout + ran.stderr).strip()[-800:]}")
+
+
 def lane_failures(clone, lanes, base_ref="main"):
     """Each lane run in the clone the way CI runs it, by the host, not inside the model's sandbox:
     the model's own test runs met the wall and read eight passing tests as failures (#1110). A
@@ -635,11 +658,7 @@ def lane_failures(clone, lanes, base_ref="main"):
     found = []
     for lane in lanes:
         command = TEST_LANE if lane == "test" else ["just", "lane", lane]
-        # Incident: the guardrails lane's CI job installs the pinned gitleaks first, and the clone
-        # this runs in ran no workflow step, so the scan's CI-strict skip failed every pass (#1733).
-        install = clone / "scripts/scan/install_gitleaks.sh"
-        if lane == "guardrails" and install.is_file():
-            sh(clone, str(install), env=scrubbed(), check=False)
+        prepare_lane(clone, lane)
         ran = subprocess.run(command, cwd=clone, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
         if not ran.returncode:
             continue
@@ -1159,6 +1178,27 @@ def gate_selfcheck():
 
 def selfcheck():
     errs = gate_selfcheck()
+    with tempfile.TemporaryDirectory() as scratch:
+        lane = pathlib.Path(scratch)
+        (lane / "scripts/scan").mkdir(parents=True)
+        marker = lane / "installed"
+        install = lane / "scripts/scan/install_gitleaks.sh"
+        install.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+        install.chmod(0o755)
+        prepare_lane(lane, "guardrails")
+        if not marker.exists():
+            errs.append("the guardrails lane ran without installing the pinned gitleaks")
+        marker.unlink(missing_ok=True)
+        prepare_lane(lane, "test")
+        if marker.exists():
+            errs.append("a lane other than guardrails ran the gitleaks install")
+        install.write_text("#!/bin/sh\necho 'gitleaks: SHA-256 mismatch'\nexit 1\n")
+        install.chmod(0o755)
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            prepare_lane(lane, "guardrails")
+        if "SHA-256 mismatch" not in printed.getvalue():
+            errs.append("a failed gitleaks install said nothing")
     states = {1072: "closed", 1076: "open", 1077: "open"}.get
     body = "Closes #1076. Refs #1072. Stacked on #1098.\nRefs #1077."
     if tidied(body, states) != "Closes #1076. Stacked on #1098.\nRefs #1077.":

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 version=$(cat "$(dirname "$0")/gitleaks.version")
+dest=/usr/local/bin
+if [ -x "$dest/gitleaks" ] && [ "$("$dest/gitleaks" version 2>/dev/null || true)" = "$version" ]; then
+  echo "gitleaks: $version already installed at $dest/gitleaks"
+  exit 0
+fi
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) asset=linux_x64; hash=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
   Darwin-arm64) asset=darwin_arm64; hash=b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5 ;;

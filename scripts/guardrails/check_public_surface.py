@@ -90,8 +90,10 @@ def selfcheck():
     log = ["\x1eme", "diff --git a/p/planted b/p/planted", "+estate.lan", "\x1eestate.lan"]
     assert history(log, deny, ["p/*"]) == ["(message): estate.lan"]
     assert history(log, deny, []) == ["p/planted: +estate.lan", "(message): estate.lan"]
-    # The planted fakes are skipped by the list GitGuardian already reads.
-    assert "**/fixtures/planted*" in unscanned()
+    # The planted fakes are skipped, at any depth, and no real source is: `tree()` and `history()`
+    # match this list with fnmatch, so the selfcheck does too.
+    nested = "crates/runtime/tests/fixtures/behavior/a/b/planted-key"
+    assert any(fnmatch.fnmatch(nested, g) for g in unscanned()), "a nested planted path is not skipped"
     for path in (
         "crates/oauth/tests/device_login.rs",
         "crates/oauth/tests/flow.rs",
@@ -99,7 +101,8 @@ def selfcheck():
         "docs/archive/plans/2026-09-06-prompt-surface/prior-art-codex-jcode.md",
         "docs/archive/plans/2026-09-06-prompt-surface/openai.md",
     ):
-        assert path not in unscanned(), f"public-surface scanning skips real source: {path}"
+        assert not any(fnmatch.fnmatch(path, g) for g in unscanned()), (
+            f"public-surface scanning skips real source: {path}")
     print("ok   public_surface --selfcheck")
 
 def main():

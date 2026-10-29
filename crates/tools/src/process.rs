@@ -552,4 +552,22 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn git_root_walks_the_real_path_not_a_lexical_one() -> Fallible {
+        let tmp = std::env::temp_dir().join(format!("yi-git-root-{}", std::process::id()));
+        let checkout = tmp.join("checkout");
+        std::fs::create_dir_all(checkout.join(".git"))?;
+        let real = std::fs::canonicalize(&checkout)?;
+        let scratch = checkout.join("..").join("scratch");
+        std::fs::create_dir_all(&scratch)?;
+        assert_eq!(git_root(&checkout), Some(real.clone()));
+        let borrowed = git_root(&scratch);
+        std::fs::remove_dir_all(&tmp)?;
+        assert_eq!(
+            borrowed, None,
+            "a lexical `..` borrowed {real:?}'s git root"
+        );
+        Ok(())
+    }
 }
