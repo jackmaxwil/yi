@@ -72,8 +72,8 @@ guardrails-fast:
 
 # Serial on purpose: beside the dist build, nextest's first exec of 134 fresh test binaries
 # queued behind Gatekeeper's per-binary scan, and the gate took 116-302s where serial took 135-151s.
-# `--quiet` prints one line when green and only the failing lane's own output otherwise, with the
-# same exit code, so an agent reads `$?` and the failure rather than every launched gate.
+# `--quiet` prints one line when green, above it any `skip` row a lane announced, and only the failing
+# lane's own output otherwise, with the same exit code, so an agent reads `$?` and the failure.
 check *flags:
     #!/usr/bin/env bash
     set -uo pipefail
