@@ -54,6 +54,7 @@ pub mod session;
 pub mod settings;
 pub mod skills;
 pub mod slash;
+pub mod spec;
 pub mod spend;
 pub mod subagent;
 pub mod telemetry;

@@ -103,6 +103,7 @@ mod session_faux;
 mod session_mail;
 mod skills_e2e;
 mod snapshot_e2e;
+mod spec_e2e;
 mod subagent;
 mod subagent_fuzz;
 mod telemetry;

@@ -347,6 +347,7 @@ pub fn hook(
     let todos = session.todos_handle();
     let deadline = session.deadline();
     let kernel = session.kernel_state_handle();
+    let spec = session.spec_handle();
     let clock = Mutex::new(None);
     let summary = GitSummary::new(cwd.clone(), session.tree_generation());
     Arc::new(move || {
@@ -429,6 +430,9 @@ pub fn hook(
         }
         if let Some(state) = kernel() {
             lines.push(format!("kernel: {state}"));
+        }
+        if let Some(line) = spec().and_then(|store| store.line()) {
+            lines.push(line);
         }
         if let Some(line) = crate::family::children_line(&host.states()) {
             lines.push(line);
