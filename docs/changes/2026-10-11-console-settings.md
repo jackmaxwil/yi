@@ -1,4 +1,6 @@
 ---
+version: 0.629.0
+decisions: D407, D408, D409
 issue: Closes #1252
 growth: +1060 the settings pane (tabs, rows, picks and typed edits, the Keys tab) and its app wiring, the gear, the daemon's two settings requests, the config writer moved out of yi setup with its lock and staging name, the per-session config read with its module split out of main.rs, and the row rules in yi-types with the 43-row table kept as JSON data; weighed a hand-written row per field in Rust (rustfmt made it 320 lines) and showing only the Session tab (the owner chose everything in config), and the keys overlay it deleted paid back its 46 lines
 raise: crate console +692, crate cli +3, crate acp +24, crate runtime +229, crate types +125, tests +431, comments +27

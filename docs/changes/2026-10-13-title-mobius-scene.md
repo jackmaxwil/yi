@@ -1,4 +1,5 @@
 ---
+version: 0.706.0
 issue: Refs #1385
 growth: +37 the Mobius scene: the flow, its rings and its arm in the cover loop, in title.rs; weighed a texture lookup and a precomputed warp table, and kept the flow in closed form, which is smaller and exact
 raise: comments +4, crate tui +37, tests +35

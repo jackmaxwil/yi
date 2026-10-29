@@ -1,4 +1,5 @@
 ---
+version: 0.606.0
 issue: Closes #1161
 raise: crate cli +22, comments +1
 ---

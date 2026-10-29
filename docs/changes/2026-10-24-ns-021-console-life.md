@@ -1,4 +1,5 @@
 ---
+version: 0.728.0
 issue: Closes #1461, Refs #1442
 growth: +177 the quit sweep, the link guard and the palette paste in HB-console-life, and in HB-console-replay-scopes the replay absorbers (call and result to the frames live updates are, the Review's edit record, the notebook fill) plus the two fixes a review forced, the turn count and the Notebook restart on a replay from entry 0 (+27), and the prompt rule the TUI's replay already reads for that count (+5); weighed for deletion: the dead prompt guard in `send_command` is gone (-3), the quit and headless exits share one `teardown` (net +6, and the real quit path is now the tested one), and the turn count and the restart were each tried as a cut, which leaves Review's Turn scope listing every edit of a session after a reconnect and the Notebook renumbering its cells past 50.
 raise: tests +691, comments +6, crate console +177

@@ -1,4 +1,6 @@
 ---
+version: 0.604.0
+decisions: D394
 issue: Closes #1156
 raise: crate tui +65, crate console +2, comments +6, tests +96
 decision: a drive script's `snap <name>` step keeps the frame drawn at that step as `snap-<name>.cast` and `snap-<name>.txt` in the frames dir, and `scripts/tui_see.py` diffs two runs' snaps into the cell diff (row text and per-cell style changes), the changed regions and 1:1 crops an agent reads in that order; the cast is the ledger of a terminal run and every picture of it is a view rendered on demand; nothing in this pipeline gates a build | the owner wants agents (Claude Code, Yi workers) to see a TUI change ("Agents seeing their changes"), frame dumps cannot show how a change looks, and the owner ruled "Never fail, just show" because a picture gate reddens on font and driver differences | drop the `Snap` step, `write_snap`, `scripts/tui_see.py` and its fixtures under `scripts/proof/tui_see/`

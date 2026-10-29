@@ -1,4 +1,5 @@
 ---
+version: 0.532.0
 issue: Refs #976
 ---
 The review job's `pull_request_target` run has its own concurrency group: a branch that never
