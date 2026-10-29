@@ -1431,7 +1431,7 @@ They cover allowlist and base shape, signatures, identities, pinned head, all
 four caps at the cap and the cap plus one, unique mapping and linear history,
 the composed review/mirror/intake wall (compared case-insensitively, since the owner builds on a case-insensitive disk; both sides of a rename; any `.cargo` directory), symlinks, submodules, executable-bit
 transitions, binary data, LFS, hostile filenames, secrets,
-mirror replacement literals, network literals (URLs, IPs, `localhost`, hostnames on common TLDs, and a hostname on any TLD that follows `@`, precedes `:/`, is the first argument of a network command, or carries a port; a file extension such as `go` or `toml` is a file in `name.ext:42`, and `rs`, `md`, `py` or `sh` count only on a well-known port), `unsafe` blocks, items and attributes, build-time execution,
+mirror replacement literals, network literals (URLs, IPs, `localhost`, hostnames on common TLDs, and a hostname on any TLD that follows `@`, is an scp or rsync `host:` destination, is the first argument of a network command, or carries a port; a file extension such as `go` or `toml` is a file in `name.ext:42`, and `rs`, `md`, `py` or `sh` count only on a well-known port), `unsafe` blocks, items and attributes, build-time execution,
 dependency edits and strict application. `build.rs` is always denied. Secret
 scanning uses the unmodified `scripts/mirror/deny.txt` patterns with no fixture
 ignore. Filenames reject traversal, absolute paths, controls, backslashes,
