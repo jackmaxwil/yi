@@ -635,6 +635,10 @@ def lane_failures(clone, lanes, base_ref="main"):
     found = []
     for lane in lanes:
         command = TEST_LANE if lane == "test" else ["just", "lane", lane]
+        # Incident: the guardrails lane's CI job installs the pinned gitleaks first, and the clone
+        # this runs in ran no workflow step, so the scan's CI-strict skip failed every pass (#1733).
+        if lane == "guardrails":
+            sh(clone, "scripts/scan/install_gitleaks.sh", env=scrubbed(), check=False)
         ran = subprocess.run(command, cwd=clone, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
         if not ran.returncode:
             continue
