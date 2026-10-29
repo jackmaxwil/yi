@@ -9,10 +9,12 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use yi_runtime::session_store::{
-    BranchBounds, EntryOrder, EntryQuery, JsonlRepo, SessionRepo, lock_session,
+    BranchBounds, EntryOrder, EntryQuery, JsonlRepo, RecordQuery, SessionRepo, SessionStore,
+    lock_session,
 };
 use yi_types::entry::Entry;
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, Usage};
+use yi_types::record::LaneRecord;
 
 #[derive(Default)]
 struct ToolRow {
@@ -40,15 +42,19 @@ struct Tokens {
 }
 
 impl Tokens {
-    fn add(&mut self, usage: &yi_types::message::Usage, miss: bool) {
+    fn add(&mut self, usage: &Usage, miss: bool) {
         self.turns = self.turns.saturating_add(1);
+        self.spend(usage);
+        self.misses = self.misses.saturating_add(u64::from(miss));
+    }
+
+    fn spend(&mut self, usage: &Usage) {
         self.input = self.input.saturating_add(usage.input);
         self.output = self.output.saturating_add(usage.output);
         self.cache_read = self.cache_read.saturating_add(usage.cache_read);
         self.cache_write = self.cache_write.saturating_add(usage.cache_write);
         self.cost += usage.cost.total.as_f64().unwrap_or(0.0);
         self.lower_bound |= usage.unknown;
-        self.misses = self.misses.saturating_add(u64::from(miss));
     }
 
     fn hit_rate(&self) -> f64 {
@@ -197,6 +203,34 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
     }
 }
 
+/// Invariant: child lanes and side calls book their spend as [`LaneRecord::Usage`] rows no message carries.
+fn reduce_record(record: &LaneRecord, totals: &mut Totals) {
+    let (LaneRecord::Usage { cause, .. }, Some(usage)) = (record, record.billed_usage()) else {
+        return;
+    };
+    totals.all.spend(usage);
+    totals
+        .by_model
+        .entry(cause.clone())
+        .or_default()
+        .spend(usage);
+}
+
+fn fold_usage(
+    session: &SessionStore,
+    totals: &mut Totals,
+) -> Result<(), yi_runtime::session_store::SessionError> {
+    let query = RecordQuery {
+        record_type: Some("usage"),
+        order: EntryOrder::OldestFirst,
+        ..RecordQuery::default()
+    };
+    for record in &session.find_records(&query)? {
+        reduce_record(record, totals);
+    }
+    Ok(())
+}
+
 pub struct Options {
     pub session_dir: std::path::PathBuf,
     pub plans_dir: std::path::PathBuf,
@@ -266,6 +300,10 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
     let mut totals = Totals::default();
     for entry in &entries {
         reduce_entry(entry, &mut tools, &mut totals);
+    }
+    if let Err(error) = fold_usage(&session, &mut totals) {
+        eprintln!("error: {error}");
+        return 1;
     }
     for row in tools.values_mut() {
         row.durations_ms.sort_unstable();

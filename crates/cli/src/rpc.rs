@@ -1,6 +1,7 @@
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde_json::{Map, Value, json};
 use yi_runtime::session_store::{
@@ -82,29 +83,36 @@ fn message_text(message: &AgentMessage) -> String {
 
 struct RpcState {
     session: AgentSession,
-    repo: JsonlRepo,
-    store: SharedSession,
-    session_id: String,
-    steering_mode: String,
-    follow_up_mode: String,
+    repo: Mutex<JsonlRepo>,
+    store: Mutex<SharedSession>,
+    session_id: Mutex<String>,
+    compacting: AtomicBool,
+}
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl RpcState {
+    fn shared(&self) -> SharedSession {
+        Arc::clone(&locked(&self.store))
+    }
+
     fn store_value<T>(
         &self,
         read: impl FnOnce(&yi_runtime::session_store::SessionStore) -> T,
     ) -> T {
-        read(&lock_session(&self.store))
+        read(&lock_session(&self.shared()))
     }
 
-    fn adopt(&mut self, store: SharedSession) -> Result<(), String> {
+    fn adopt(&self, store: SharedSession) -> Result<(), String> {
         let id = lock_session(&store).metadata().id.clone();
         self.session.reset();
         self.session
             .attach_store(Arc::clone(&store))
             .map_err(|error| error.to_string())?;
-        self.store = store;
-        self.session_id = id;
+        *locked(&self.store) = store;
+        *locked(&self.session_id) = id;
         Ok(())
     }
 
@@ -118,7 +126,7 @@ impl RpcState {
                 .permission_broker()
                 .map(|broker| yi_runtime::plan::authority::Confirmer {
                     broker,
-                    store: Arc::clone(&self.store),
+                    store: self.shared(),
                 });
         let (service, payload) = (Arc::clone(service), payload.clone());
         tokio::task::spawn_blocking(move || {
@@ -129,7 +137,7 @@ impl RpcState {
     }
 
     async fn handle(
-        &mut self,
+        &self,
         command_type: &str,
         id: Option<&str>,
         payload: &Map<String, Value>,
@@ -237,7 +245,10 @@ impl RpcState {
                         .map(str::to_owned),
                     ..CreateOptions::default()
                 };
-                match self.repo.create(options).map_err(|error| error.to_string()) {
+                let created = locked(&self.repo)
+                    .create(options)
+                    .map_err(|error| error.to_string());
+                match created {
                     Ok(store) => match self.adopt(store) {
                         Ok(()) => data_frame(id, "new_session", json!({"cancelled": false})),
                         Err(error) => error_frame(id, "new_session", &error),
@@ -260,11 +271,9 @@ impl RpcState {
                         "model": model,
                         "thinkingLevel": self.session.effort().to_string(),
                         "isStreaming": self.session.status() == Status::Running,
-                        "isCompacting": false,
-                        "steeringMode": self.steering_mode,
-                        "followUpMode": self.follow_up_mode,
+                        "isCompacting": self.compacting.load(Ordering::SeqCst),
+                        "sessionId": locked(&self.session_id).clone(),
                         "sessionFile": file,
-                        "sessionId": self.session_id,
                         "sessionName": name,
                         "autoCompactionEnabled": self.session.compactor().is_some(),
                         "messageCount": self.session.messages().len(),
@@ -308,14 +317,16 @@ impl RpcState {
                 "get_available_thinking_levels",
                 json!({"levels": levels_of(&self.session.model())}),
             ),
-            "set_steering_mode" => {
-                self.steering_mode = text_arg("mode").to_owned();
-                ok_frame(id, "set_steering_mode")
-            }
-            "set_follow_up_mode" => {
-                self.follow_up_mode = text_arg("mode").to_owned();
-                ok_frame(id, "set_follow_up_mode")
-            }
+            "set_steering_mode" => error_frame(
+                id,
+                "set_steering_mode",
+                "this build delivers every steer as it arrives; there is no mode to set",
+            ),
+            "set_follow_up_mode" => error_frame(
+                id,
+                "set_follow_up_mode",
+                "this build queues every follow-up as it arrives; there is no mode to set",
+            ),
             "get_messages" => data_frame(
                 id,
                 "get_messages",
@@ -354,7 +365,7 @@ impl RpcState {
             ),
             "set_session_name" => {
                 let name = Some(text_arg("name").to_owned()).filter(|name| !name.is_empty());
-                match lock_session(&self.store).set_name(name) {
+                match lock_session(&self.shared()).set_name(name) {
                     Ok(()) => ok_frame(id, "set_session_name"),
                     Err(error) => error_frame(id, "set_session_name", &error.to_string()),
                 }
@@ -369,7 +380,11 @@ impl RpcState {
                     .map(message_text);
                 data_frame(id, "get_last_assistant_text", json!({"text": text}))
             }
-            "get_commands" => data_frame(id, "get_commands", json!({"commands": []})),
+            "get_commands" => data_frame(
+                id,
+                "get_commands",
+                json!({"commands": yi_runtime::slash::SESSION_VERBS}),
+            ),
             "switch_session" => {
                 let path = PathBuf::from(text_arg("sessionPath"));
                 match yi_runtime::session_store::load_session(&path) {
@@ -391,8 +406,8 @@ impl RpcState {
                         })
                         .unwrap_or_default()
                 });
-                let forked = self.repo.fork(
-                    &self.session_id.clone(),
+                let forked = locked(&self.repo).fork(
+                    &locked(&self.session_id).clone(),
                     &ForkScope::Branch {
                         entry_id: Some(entry_id),
                         position: Some(ForkPosition::Before),
@@ -444,14 +459,13 @@ pub fn run_rpc(
         eprintln!("error: failed to attach session store: {error}");
         return 1;
     }
-    let mut state = RpcState {
+    let state = Arc::new(RpcState {
         session,
-        repo,
-        store,
-        session_id,
-        steering_mode: "all".to_owned(),
-        follow_up_mode: "all".to_owned(),
-    };
+        repo: Mutex::new(repo),
+        store: Mutex::new(store),
+        session_id: Mutex::new(session_id),
+        compacting: AtomicBool::new(false),
+    });
 
     runtime.block_on(async move {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -465,6 +479,8 @@ pub fn run_rpc(
             }
         });
         let mut events = state.session.subscribe();
+        let mut answers = tokio::task::JoinSet::new();
+        let mut ahead: Option<tokio::sync::oneshot::Receiver<()>> = None;
         loop {
             tokio::select! {
                 line = command_rx.recv() => {
@@ -482,21 +498,50 @@ pub fn run_rpc(
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_owned();
-                            let frame = state.handle(&command_type, id.as_deref(), &payload).await;
-                            write_line(&frame);
+                            if command_type == "compact" {
+                                state.compacting.store(true, Ordering::SeqCst);
+                            }
+                            // Invariant: a state query answers while a compact runs; mutations stay ordered.
+                            let bypass = command_type == "get_state"
+                                && state.compacting.load(Ordering::SeqCst);
+                            let queued = if bypass { None } else { ahead.take() };
+                            let (finished, next) = tokio::sync::oneshot::channel();
+                            if !bypass {
+                                ahead = Some(next);
+                            }
+                            let answering = Arc::clone(&state);
+                            answers.spawn(async move {
+                                if let Some(queued) = queued {
+                                    let _ = queued.await;
+                                }
+                                let frame = answering
+                                    .handle(&command_type, id.as_deref(), &payload)
+                                    .await;
+                                if command_type == "compact" {
+                                    answering.compacting.store(false, Ordering::SeqCst);
+                                }
+                                write_line(&frame);
+                                if !bypass {
+                                    let _ = finished.send(());
+                                }
+                            });
                         }
                         _ => write_line(&error_frame(None, "", "invalid command: not a JSON object")),
                     }
                 }
                 event = yi_runtime::next_event(&mut events) => {
-                    let value = match event {
-                        Some(Ok(event)) => serde_json::to_value(&event),
-                        Some(Err(gap)) => serde_json::to_value(gap),
-                        None => break,
-                    };
-                    if let Ok(value) = value {
-                        write_line(&value);
+                    if !relay(event) {
+                        break;
                     }
+                }
+            }
+        }
+        let mut open = true;
+        while !answers.is_empty() {
+            tokio::select! {
+                _ = answers.join_next() => {}
+                event = yi_runtime::next_event(&mut events), if open => {
+                    open = relay(event);
                 }
             }
         }
@@ -515,6 +560,18 @@ pub fn run_rpc(
         }
         0
     })
+}
+
+fn relay(event: Option<Result<yi_types::event::AgentEvent, yi_types::event::EventGap>>) -> bool {
+    let value = match event {
+        Some(Ok(event)) => serde_json::to_value(&event),
+        Some(Err(gap)) => serde_json::to_value(gap),
+        None => return false,
+    };
+    if let Ok(value) = value {
+        write_line(&value);
+    }
+    true
 }
 
 /// An elision applied too, but it is not a summary: it says so, apart from a compaction's

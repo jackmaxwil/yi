@@ -1,8 +1,11 @@
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::scratch::Scratch;
 
@@ -395,5 +398,220 @@ fn an_rpc_session_is_not_told_it_is_alone() -> TestResult {
         "no prompt slots recorded: {names:?}"
     );
     assert!(!names.iter().any(|name| name == "unattended"), "{names:?}");
+    Ok(())
+}
+
+/// Faux replies: `(ask_chars, reply_chars, lag_ms, priced)` per request, the lag being how long
+/// the reply takes to land, so a command that awaits it is measurably in flight.
+fn cassette(dir: &Path, replies: &[(usize, usize, u64, bool)]) -> Result<PathBuf, Box<dyn Error>> {
+    let usage = |priced: bool| {
+        let tokens = if priced { 200_000 } else { 0 };
+        json!({"input": tokens, "output": 10, "cacheRead": 0, "cacheWrite": 0,
+               "totalTokens": tokens, "cost": {"input": 0, "output": 0, "cacheRead": 0,
+                                               "cacheWrite": 0, "total": 0}})
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut at = 0_u64;
+    for (ask_chars, reply_chars, lag_ms, priced) in replies {
+        at = at.saturating_add(100);
+        lines.push(
+            json!({"kind": "entry", "lane": "main", "type": "message", "id": format!("u{at}"),
+                   "parentId": null, "seq": 1, "timestamp": at,
+                   "message": {"role": "user", "content": "q".repeat(*ask_chars),
+                               "timestamp": at}})
+            .to_string(),
+        );
+        let landed = at.saturating_add(*lag_ms);
+        lines.push(
+            json!({"kind": "entry", "lane": "main", "type": "message", "id": format!("a{landed}"),
+                   "parentId": null, "seq": 1, "timestamp": landed,
+                   "message": {"role": "assistant", "api": "faux", "provider": "faux",
+                               "model": "faux-1",
+                               "content": [{"type": "text",
+                                            "text": "word ".repeat(reply_chars / 5)}],
+                               "usage": usage(*priced), "stopReason": "stop",
+                               "timestamp": landed}})
+            .to_string(),
+        );
+    }
+    let path = dir.join("cassette.jsonl");
+    std::fs::write(&path, lines.join("\n"))?;
+    Ok(path)
+}
+
+/// An rpc child whose stdin stays open, so a command can arrive while another is still in flight.
+struct Live {
+    child: Child,
+    stdin: ChildStdin,
+    frames: Receiver<Value>,
+}
+
+impl Live {
+    fn start(dir: &Path, cassette: &Path) -> Result<Self, Box<dyn Error>> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the protocol contract is the spawned binary's stdio; tests must drive the real process"
+        )]
+        let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args([
+                "rpc",
+                "--model",
+                "faux/faux-1",
+                "--faux",
+                &cassette.display().to_string(),
+                "--session-dir",
+                &dir.join("sessions").display().to_string(),
+                "--cwd",
+                &dir.display().to_string(),
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let stdin = child.stdin.take().ok_or("no stdin")?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let (sender, frames) = channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+                    break;
+                };
+                if sender.send(frame).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Self {
+            child,
+            stdin,
+            frames,
+        })
+    }
+
+    fn send(&mut self, command: Value) -> Result<(), Box<dyn Error>> {
+        serde_json::to_writer(&mut self.stdin, &command)?;
+        self.stdin.write_all(b"\n")?;
+        self.stdin.flush()?;
+        Ok(())
+    }
+
+    fn next_frame(&mut self) -> Result<Option<Value>, Box<dyn Error>> {
+        self.next_frame_within(Duration::from_secs(120))
+    }
+
+    fn next_frame_within(&mut self, limit: Duration) -> Result<Option<Value>, Box<dyn Error>> {
+        match self.frames.recv_timeout(limit) {
+            Ok(frame) => Ok(Some(frame)),
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => Ok(None),
+        }
+    }
+
+    fn until(&mut self, wanted: impl Fn(&Value) -> bool) -> Result<Option<Value>, Box<dyn Error>> {
+        while let Some(frame) = self.next_frame()? {
+            if wanted(&frame) {
+                return Ok(Some(frame));
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A command the loop answers inline parks the event arm, and a turn streaming into the broadcast
+/// buffer overflows it: the client loses frames it was never told it lost.
+#[test]
+fn a_command_in_flight_does_not_starve_the_event_stream() -> TestResult {
+    let dir = temp_dir("busy")?;
+    let stream = cassette(&dir, &[(5, 100_000, 0, false)])?;
+    let mut live = Live::start(&dir, &stream)?;
+    live.send(json!({"id": "p", "type": "prompt", "message": "hello"}))?;
+    let (mut asked, mut answered, mut gaps) = (0_u64, 0_u64, 0_u64);
+    let mut ended = false;
+    loop {
+        let quiet = Duration::from_secs(1);
+        let next = if ended {
+            live.next_frame_within(quiet)?
+        } else {
+            live.next_frame()?
+        };
+        let Some(frame) = next else { break };
+        match frame["type"].as_str().unwrap_or_default() {
+            "event_gap" => gaps = gaps.saturating_add(1),
+            "message_update" if asked < 160 => {
+                for _ in 0..4 {
+                    live.send(json!({
+                        "id": format!("g{asked}"),
+                        "type": "goal",
+                        "action": "get",
+                    }))?;
+                    asked = asked.saturating_add(1);
+                }
+            }
+            "response" if frame["command"] == "goal" => {
+                answered = answered.saturating_add(1);
+            }
+            "agent_end" => ended = true,
+            _ => {}
+        }
+        if ended && asked > 0 && answered == asked {
+            break;
+        }
+    }
+    assert!(
+        asked > 0,
+        "the turn streamed no update to answer a command on"
+    );
+    assert_eq!(asked, answered, "every command was answered");
+    assert_eq!(
+        gaps, 0,
+        "answering a command dropped {gaps} event frame(s) the client never asked to skip"
+    );
+    Ok(())
+}
+
+/// A compact over a paced summary takes seconds; a client asking its state meanwhile must hear
+/// about it, not a constant false delivered behind the compact's own reply.
+#[test]
+fn a_compact_in_flight_reports_compacting() -> TestResult {
+    let dir = temp_dir("compacting")?;
+    let paced = cassette(
+        &dir,
+        &[
+            (100_000, 10, 0, true),
+            (100_000, 15, 0, true),
+            (0, 20, 1_200, false),
+            (0, 20, 1_200, false),
+        ],
+    )?;
+    let mut live = Live::start(&dir, &paced)?;
+    for turn in 0..2 {
+        live.send(json!({"id": format!("p{turn}"), "type": "prompt",
+                         "message": "z".repeat(100_000)}))?;
+        assert!(
+            live.until(|frame| frame["type"] == "agent_end")?.is_some(),
+            "turn {turn} never ended"
+        );
+    }
+    live.send(json!({"id": "c", "type": "compact"}))?;
+    live.send(json!({"id": "s", "type": "get_state"}))?;
+    let state = live
+        .until(|frame| frame["type"] == "response" && frame["id"] == "s")?
+        .ok_or("the state query went unanswered")?;
+    assert_eq!(
+        state["data"]["isCompacting"], true,
+        "a compact was in flight and the state said otherwise: {state}"
+    );
+    assert!(
+        live.until(|frame| frame["type"] == "response" && frame["id"] == "c")?
+            .is_some(),
+        "the compact never answered"
+    );
     Ok(())
 }
