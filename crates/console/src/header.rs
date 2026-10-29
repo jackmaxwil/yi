@@ -9,10 +9,11 @@ use yi_tui::colors::Theme;
 
 use crate::app::App;
 use crate::keys;
+use crate::model::SidebarMode;
 
 /// Invariant: hit widths come from the label builder the bar draws with.
 pub(crate) fn tab_hits(app: &App, bar: Rect) -> Vec<(Rect, usize)> {
-    let mut x = bar.x;
+    let mut x = bar.x.saturating_add(hidden_shift(app));
     let mut hits = Vec::new();
     for (index, tab) in app.state.tabs.iter().enumerate() {
         let width = label_width(&tab_label(index, tab.zoomed));
@@ -20,6 +21,18 @@ pub(crate) fn tab_hits(app: &App, bar: Rect) -> Vec<(Rect, usize)> {
         x = x.saturating_add(width);
     }
     hits
+}
+
+/// The way back from a hidden sidebar: its chord, at the header's left, where the tabs start.
+fn hidden_hint(app: &App) -> Option<String> {
+    (app.state.sidebar == SidebarMode::Hidden).then(|| {
+        let key = keys::chord_for(keys::Action::ToggleSidebar, app.cmd_hints);
+        format!("{key} sidebar")
+    })
+}
+
+fn hidden_shift(app: &App) -> u16 {
+    hidden_hint(app).map_or(0, |hint| label_width(&hint).saturating_add(1))
 }
 
 fn tab_label(index: usize, zoomed: bool) -> String {
@@ -77,6 +90,19 @@ pub(crate) fn header_buttons(header: Rect, taken: u16) -> Vec<(Rect, keys::Actio
 }
 
 pub(crate) fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    if let Some(hint) = hidden_hint(app) {
+        let at = Rect {
+            width: hidden_shift(app).min(area.width),
+            ..area
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(hint, theme.muted_style().add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+            ])),
+            at,
+        );
+    }
     let buttons = app.hits.iter().flat_map(|hits| &hits.header_buttons);
     for (rect, action) in buttons {
         let Some((glyph, word, _)) = HEADER_BUTTONS.iter().find(|(.., a)| a == action) else {
@@ -97,6 +123,12 @@ pub(crate) fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect, theme:
 }
 
 fn render_tabs(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let shift = hidden_shift(app);
+    let area = Rect {
+        x: area.x.saturating_add(shift),
+        width: area.width.saturating_sub(shift),
+        ..area
+    };
     let mut spans = Vec::new();
     for (index, tab) in app.state.tabs.iter().enumerate() {
         let label = tab_label(index, tab.zoomed);

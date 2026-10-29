@@ -4,11 +4,14 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use serde_json::json;
 use unicode_width::UnicodeWidthStr;
 use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 
 use crate::app::App;
+use crate::app::RequestKind;
 use crate::avatar::Placement;
+use crate::client::Outbound;
 use crate::keys::{self, Action};
 use crate::model::{Mode, SessionId, SessionRow, SessionStatus, SidebarMode, Zone, now_ms};
 use crate::render::Hit;
@@ -157,6 +160,7 @@ fn name_cols(app: &App) -> usize {
 
 pub fn width(app: &mut App) -> u16 {
     match app.state.sidebar {
+        SidebarMode::Hidden => 0,
         SidebarMode::Rail => 8,
         SidebarMode::Full => {
             // Incident: narrowing as a turn's children cleared re-wrapped every pane mid-turn.
@@ -247,6 +251,9 @@ pub(crate) fn plus_split(line: &Line<'_>) -> (usize, usize) {
 }
 
 pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
+    if app.state.sidebar == SidebarMode::Hidden {
+        return Vec::new();
+    }
     let mut rows = Vec::new();
     let rail = app.state.sidebar == SidebarMode::Rail;
     let mut beyond = 0_usize;
@@ -629,5 +636,21 @@ pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme
                 cell.set_style(style);
             }
         }
+    }
+}
+
+impl App {
+    /// The state a press lands on is the config's, so the next console starts there.
+    pub(crate) fn toggle_sidebar(&mut self, outbound: &Outbound) {
+        self.state.sidebar = self.state.sidebar.next();
+        if self.state.sidebar == SidebarMode::Hidden {
+            self.state.cycle_zone();
+        }
+        self.send_request(
+            outbound,
+            RequestKind::Sidebar,
+            "_yi/set_default",
+            json!({"id": "console.sidebar", "value": self.state.sidebar.key()}),
+        );
     }
 }

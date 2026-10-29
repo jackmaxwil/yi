@@ -243,7 +243,7 @@ pub const CHORDS: [Chord; 26] = [
         None,
     ),
     chord(
-        "sidebar: rail or full",
+        "sidebar: rail, full or hidden",
         "⌥b",
         "⌘B",
         "",

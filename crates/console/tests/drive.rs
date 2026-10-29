@@ -476,6 +476,7 @@ fn ready_marker(sidebar: SidebarMode) -> &'static str {
     match sidebar {
         SidebarMode::Full => "s-alpha",
         SidebarMode::Rail => "1 SA",
+        SidebarMode::Hidden => "s-alpha",
     }
 }
 
@@ -1591,6 +1592,8 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
          wait-frame 3000 s-beta\n\
          cmd-b\n\
          wait-frame 3000 !s-beta\n\
+         cmd-b\n\
+         wait-frame 3000 1 SA\n\
          cmd-b\n\
          wait-frame 3000 s-beta\n\
          quit\n",
@@ -3281,6 +3284,9 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
          cmd-b\n\
          wait-frame 3000 2 SA  s-alpha\n\
          wait-frame 3000 demo-root ▾\n\
+         cmd-b\n\
+         wait-frame 3000 !s-alpha\n\
+         wait-frame 3000 !1 SB\n\
          cmd-b\n\
          wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 !s-alpha\n\

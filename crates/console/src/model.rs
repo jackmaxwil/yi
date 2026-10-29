@@ -119,13 +119,34 @@ pub struct Group {
 pub enum SidebarMode {
     Rail,
     Full,
+    Hidden,
 }
 
 impl SidebarMode {
     pub fn next(self) -> Self {
         match self {
             Self::Rail => Self::Full,
-            Self::Full => Self::Rail,
+            Self::Full => Self::Hidden,
+            Self::Hidden => Self::Rail,
+        }
+    }
+
+    /// The name `console.sidebar` carries in config.json.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Rail => "rail",
+            Self::Full => "full",
+            Self::Hidden => "hidden",
+        }
+    }
+}
+
+impl From<yi_types::config::SidebarState> for SidebarMode {
+    fn from(state: yi_types::config::SidebarState) -> Self {
+        match state {
+            yi_types::config::SidebarState::Rail => Self::Rail,
+            yi_types::config::SidebarState::Full => Self::Full,
+            yi_types::config::SidebarState::Hidden => Self::Hidden,
         }
     }
 }
@@ -768,5 +789,15 @@ impl ConsoleState {
         if index < self.tabs.len() {
             self.active_tab = index;
         }
+    }
+}
+
+impl ConsoleState {
+    pub fn cycle_zone(&mut self) {
+        self.zone = match self.zone {
+            Zone::Sidebar => Zone::Panes,
+            Zone::Panes if self.sidebar == SidebarMode::Hidden => Zone::Panes,
+            Zone::Panes => Zone::Sidebar,
+        };
     }
 }

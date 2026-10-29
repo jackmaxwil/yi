@@ -260,14 +260,23 @@ pub struct CatalogConfig {
     pub refresh_hours: Option<u64>,
 }
 
-/// `console.titleIntro`: draw the title field at console start (on);
-/// `console.titleWeights`: scene name to weight, the draw's odds; absent or empty, Kali 8, every other scene 2.
+/// `console.titleIntro`: draw the title field at console start (on); `console.titleWeights`: scene
+/// name to weight; `console.sidebar`: the state the console starts in, which ⌥b writes as it cycles.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConsoleConfig {
     pub auto_side: Option<bool>,
     pub title_intro: Option<bool>,
     pub title_weights: Option<std::collections::BTreeMap<String, u32>>,
+    pub sidebar: Option<SidebarState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarState {
+    Rail,
+    Full,
+    Hidden,
 }
 
 /// `kernel.prewarm`: boot the IPython kernel in the background at session open so the first

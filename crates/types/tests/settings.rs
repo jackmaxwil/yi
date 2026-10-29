@@ -92,7 +92,8 @@ fn leaves() -> Vec<String> {
             fields!(ConsoleConfig {
                 auto_side,
                 title_intro,
-                title_weights
+                title_weights,
+                sidebar
             }),
         ),
         ("browser", fields!(BrowserConfig { path })),
@@ -249,5 +250,26 @@ fn a_value_past_a_bound_or_of_the_wrong_type_is_refused_with_the_rule() -> Resul
         Some("permissions.mode takes one of auto, ask, yolo")
     );
     assert_eq!(refusal(mode, &Value::Null), None, "unset is always allowed");
+    Ok(())
+}
+
+/// #1713: the third state ⌥b lands on is one the row takes and the strict parse loads.
+#[test]
+fn the_sidebar_row_takes_the_hidden_state_it_saves() -> Result<(), Box<dyn std::error::Error>> {
+    let row = rows()
+        .into_iter()
+        .find(|row| row.id == "console.sidebar")
+        .ok_or("no console.sidebar row")?;
+    assert_eq!(refusal(&row, &json!("hidden")), None);
+    assert_eq!(
+        refusal(&row, &json!("wide")).as_deref(),
+        Some("console.sidebar takes one of rail, full, hidden")
+    );
+    let (config, _) =
+        yi_types::config::parse(&json!({"console": {"sidebar": "hidden"}}).to_string())?;
+    assert_eq!(
+        config.console.and_then(|console| console.sidebar),
+        Some(yi_types::config::SidebarState::Hidden)
+    );
     Ok(())
 }
