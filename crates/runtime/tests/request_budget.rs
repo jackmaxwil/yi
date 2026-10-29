@@ -768,7 +768,7 @@ async fn role_bodies(
 ) -> Result<Vec<(&'static str, Value)>, Box<dyn Error>> {
     let scratch = Scratch::new("yi-role-prefix")?;
     let ws = scratch.join("ws");
-    std::fs::create_dir_all(&ws)?;
+    std::fs::create_dir_all(ws.join(".git"))?;
     let mode = match workspace {
         Workspace::Bare => PermissionMode::Yolo,
         Workspace::Lane | Workspace::Main => PermissionMode::Auto,
