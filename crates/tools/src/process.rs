@@ -292,13 +292,16 @@ pub fn run_captured(
 pub fn run_captured_until(
     command: Command,
     stdin: Option<Vec<u8>>,
-    cancelled: &CancelFlag,
+    cancelled: Option<&CancelFlag>,
     timeout: Duration,
     cap: usize,
 ) -> Result<CommandCapture, String> {
-    let until = std::time::Instant::now() + timeout;
-    let caller = Arc::clone(cancelled);
-    let stop: CancelFlag = Arc::new(move || caller() || std::time::Instant::now() >= until);
+    let until = std::time::Instant::now().checked_add(timeout);
+    let caller = cancelled.map(Arc::clone);
+    let stop: CancelFlag = Arc::new(move || {
+        caller.as_ref().is_some_and(|caller| caller())
+            || until.is_some_and(|until| std::time::Instant::now() >= until)
+    });
     run_captured(command, stdin, &stop, cap)
 }
 

@@ -728,9 +728,14 @@ fn run(
     let command = command_for(documents, converter, dir, source.path, staging, pages);
     // The bytes the read gate judged, never the name again (#890); the name gives the extension.
     let bytes = Some(source.bytes.to_vec());
-    let capture =
-        crate::process::run_captured_until(command, bytes, cancelled, documents.timeout, 8 * 1024)
-            .map_err(Converted::Refused)?;
+    let capture = crate::process::run_captured_until(
+        command,
+        bytes,
+        Some(cancelled),
+        documents.timeout,
+        8 * 1024,
+    )
+    .map_err(Converted::Refused)?;
     if capture.cancelled {
         return Err(Converted::Refused(format!(
             "conversion stopped (cancelled, or past {}s)",

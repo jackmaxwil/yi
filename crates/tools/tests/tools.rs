@@ -516,38 +516,6 @@ fn a_hung_exec_tool_is_skipped_and_the_others_load() -> TestResult {
     Ok(())
 }
 
-/// A 100 ms probe loads within the public deadline; a three-second probe is named as skipped.
-#[cfg(unix)]
-#[test]
-fn exec_tool_probes_stop_at_the_public_deadline() -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
-    let fast_dir = temp_dir("exec-deadline-fast")?;
-    let slow_dir = temp_dir("exec-deadline-slow")?;
-    for (dir, name, delay) in [(&fast_dir, "fast", "0.1"), (&slow_dir, "slow", "3")] {
-        let script = dir.join(name);
-        fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nsleep {delay}\nprintf '{{\"name\":\"{name}\",\"input_schema\":{{\"type\":\"object\"}}}}'\n"
-            ),
-        )?;
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
-    }
-    let (tools, skipped) = discover_exec_tools(&fast_dir);
-    assert_eq!(tools.len(), 1, "{skipped:?}");
-    assert_eq!(tools[0].name(), "fast");
-    assert!(skipped.is_empty(), "{skipped:?}");
-    let (tools, skipped) = discover_exec_tools(&slow_dir);
-    assert!(tools.is_empty(), "the three-second probe loaded");
-    assert_eq!(skipped.len(), 1);
-    assert_eq!(skipped[0].path, slow_dir.join("slow"));
-    assert!(
-        skipped[0].reason.contains("timed out after 2s"),
-        "{skipped:?}"
-    );
-    Ok(())
-}
-
 #[test]
 fn glob_skips_gitignored_paths() -> TestResult {
     let dir = temp_dir("gitignore")?;

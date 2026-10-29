@@ -106,6 +106,8 @@ pub fn discover_exec_tools(dir: &Path) -> (Vec<ExecTool>, Vec<SkippedExecTool>) 
     discover_within(dir, PROBE_DEADLINE)
 }
 
+/// Invariant: probes run side by side, each with its own deadline, so a slow sibling enumerated
+/// first can neither skip a later tool nor stretch discovery past one deadline.
 fn discover_within(
     dir: &Path,
     deadline: std::time::Duration,
@@ -113,59 +115,56 @@ fn discover_within(
     let Ok(entries) = fs::read_dir(dir) else {
         return (Vec::new(), Vec::new());
     };
-    let until = std::time::Instant::now() + deadline;
-    let never: crate::tool::CancelFlag = std::sync::Arc::new(|| false);
+    let paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| is_executable_file(path))
+        .collect();
+    let probed: Vec<Result<ExecTool, SkippedExecTool>> = std::thread::scope(|scope| {
+        let probes: Vec<_> = paths
+            .into_iter()
+            .map(|path| scope.spawn(move || probe(path, deadline)))
+            .collect();
+        probes
+            .into_iter()
+            .filter_map(|probe| probe.join().ok())
+            .collect()
+    });
     let (mut tools, mut skipped) = (Vec::new(), Vec::new());
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !is_executable_file(&path) {
-            continue;
-        }
-        let remaining = until.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            skipped.push(SkippedExecTool {
-                path,
-                reason: format!("schema probe timed out after {}s", deadline.as_secs_f64()),
-            });
-            continue;
-        }
-        let mut command = crate::process::command(&path);
-        command.arg("--schema");
-        let capture = match run_captured_until(command, None, &never, remaining, OUTPUT_CAP) {
-            Ok(capture) => capture,
-            Err(reason) => {
-                skipped.push(SkippedExecTool { path, reason });
-                continue;
-            }
-        };
-        let reason = if capture.cancelled {
-            Some(format!(
-                "schema probe timed out after {}s",
-                deadline.as_secs_f64()
-            ))
-        } else if capture.exit_code != Some(0) {
-            Some(match capture.exit_code {
-                Some(code) => format!("--schema exited with code {code}"),
-                None => "--schema terminated without an exit code".to_owned(),
-            })
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            skipped.push(SkippedExecTool { path, reason });
-            continue;
-        }
-        match ExecTool::from_schema_output(path.clone(), &capture.stdout) {
-            Some(tool) => tools.push(tool),
-            None => skipped.push(SkippedExecTool {
-                path,
-                reason: "no valid schema on stdout".to_owned(),
-            }),
+    for outcome in probed {
+        match outcome {
+            Ok(tool) => tools.push(tool),
+            Err(skip) => skipped.push(skip),
         }
     }
     tools.sort_by(|left, right| left.name.cmp(&right.name));
     skipped.sort_by(|left, right| left.path.cmp(&right.path));
     (tools, skipped)
+}
+
+fn probe(path: PathBuf, deadline: std::time::Duration) -> Result<ExecTool, SkippedExecTool> {
+    let mut command = crate::process::command(&path);
+    command.arg("--schema");
+    let capture = match run_captured_until(command, None, None, deadline, OUTPUT_CAP) {
+        Ok(capture) => capture,
+        Err(reason) => return Err(SkippedExecTool { path, reason }),
+    };
+    let reason = if capture.cancelled {
+        format!("schema probe timed out after {}s", deadline.as_secs_f64())
+    } else if capture.exit_code != Some(0) {
+        match capture.exit_code {
+            Some(code) => format!("--schema exited with code {code}"),
+            None => "--schema terminated without an exit code".to_owned(),
+        }
+    } else {
+        return ExecTool::from_schema_output(path.clone(), &capture.stdout).ok_or(
+            SkippedExecTool {
+                path,
+                reason: "no valid schema on stdout".to_owned(),
+            },
+        );
+    };
+    Err(SkippedExecTool { path, reason })
 }
 
 #[cfg(unix)]
@@ -220,6 +219,23 @@ mod tests {
         assert!(skipped.is_empty(), "{skipped:?}");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name(), "fast");
+        Ok(())
+    }
+
+    #[test]
+    fn a_slow_sibling_cannot_skip_a_later_tool() -> TestResult {
+        let dir = crate::scratch::Scratch::new("yi-tools-exec-slow-siblings")?;
+        for name in ["slow-a", "slow-b"] {
+            let script = dir.join(name);
+            fs::write(
+                &script,
+                format!("#!/bin/sh\nsleep 0.2\nprintf '{{\"name\":\"{name}\"}}'\n"),
+            )?;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+        }
+        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_millis(300));
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(tools.len(), 2);
         Ok(())
     }
 }
