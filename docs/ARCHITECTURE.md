@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.796.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.797.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```

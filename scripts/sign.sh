@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 file="${1:?usage: sign.sh <file>}"
-key="${YI_SIGNING_KEY:-$HOME/.ssh/id_ed25519}"
+key="${YI_SIGNING_KEY:-$HOME/.ssh/yi-release}"
 signers="${YI_ALLOWED_SIGNERS:-allowed_signers}"
 namespace="yi-release"
 
@@ -27,7 +27,9 @@ if [ ! -f "$signers" ]; then
 fi
 
 rm -f "$file.sig"
-ssh-keygen -Y sign -f "$key" -n "$namespace" "$file" >/dev/null 2>&1
+# A passphrase-protected key is read from the agent once it is loaded with `ssh-add KEY`.
+ssh-keygen -Y sign -f "$key" -n "$namespace" "$file" >/dev/null ||
+  { echo "could not sign with $key; if it has a passphrase, load it: ssh-add $key (macOS: ssh-add --apple-use-keychain $key)" >&2; exit 1; }
 # Signing with a key nobody can verify against is worse than not signing, so
 # the signature is checked here rather than first by whoever downloads it.
 identity=$(awk 'NR==1{print $1}' "$signers")

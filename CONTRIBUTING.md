@@ -19,9 +19,12 @@ to the rewritten mirror base. A refusal arrives as one GitHub comment with the
 exact `intake: …` reason and the full checked head. Push a corrected head so
 every check runs again. A passing change becomes a draft forge PR labelled
 `external` and `autofix:hold`; review does not authorize execution or merge.
+No contributor code runs on a runner until the owner applies `run-ci`.
 
 After the owner lands the forge PR, the mirror is rewritten and the GitHub PR
 is closed rather than marked merged. Rebase the topic branch onto the new
 mirror main with `git fetch https://github.com/jackmaxwil/yi.git main && git
 rebase FETCH_HEAD`. Your forge squash commit has a new id and does not claim
 to carry the original commit signatures.
+
+A contribution is accepted under the Apache License 2.0 in `LICENSE` (section 5).
