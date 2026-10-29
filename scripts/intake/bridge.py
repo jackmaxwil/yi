@@ -339,12 +339,18 @@ def check_19_markers(case: Case) -> Any:
     return ALLOW
 
 
+# A TLD that is also a field name (`self.app.run()`) is skipped when a call follows it.
+HOSTNAME = re.compile(r"(?i)\b(?:[a-z0-9-]+\.)+(?:com|net|org|edu|gov|mil|io|dev|app|cloud|lan|local|internal|invalid|onion|arpa)\b(?!\(|\.\w+\()")
+# The keyword may sit alone before its brace on the next line, so a prose line ending in it is refused too.
+UNSAFE = re.compile(r"\bunsafe\s*(?:\{|//|/\*|$)|\bunsafe\s+(?:fn|impl|trait|extern)\b")
+
+
 def network_literal(text: str) -> Optional[str]:
     if re.search(r"(?i)\b[a-z][a-z0-9+.-]*://", text):
         return "URL"
     if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text) or re.search(r"(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b", text):
         return "IP literal"
-    if re.search(r"(?i)\blocalhost\b", text) or re.search(r"(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b", text):
+    if re.search(r"(?i)\blocalhost\b", text) or HOSTNAME.search(text):
         return "hostname"
     return None
 
@@ -359,7 +365,7 @@ def check_20_network(case: Case) -> Any:
 
 def check_21_unsafe(case: Case) -> Any:
     for line in added_lines(case):
-        if re.search(r"\bunsafe\b", line.text):
+        if UNSAFE.search(line.text):
             return refusal("unsafe", f"'{line.path}:{line.line}' adds unsafe")
     return ALLOW
 

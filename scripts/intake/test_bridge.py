@@ -103,9 +103,14 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("url", "network-literal", added(base, "https://example.com/path"), "network-literal")
     add("ip", "network-literal", added(base, "8.8.8.8"), "network-literal")
     add("hostname-edu", "network-literal", added(base, "example.edu"), "network-literal")
+    add("hostname-com", "network-literal", added(base, "ping evil.example.com"), "network-literal")
+    add("hostname-internal", "network-literal", added(base, "db.internal:5432"), "network-literal")
+    add("localhost", "network-literal", added(base, "curl localhost"), "network-literal")
     add("git-url", "network-literal", added(base, "git://host/repo"), "network-literal")
     add("ipv6", "network-literal", added(base, "2001:4860:4860::8888"), "network-literal")
     add("unsafe", "unsafe", added(base, "unsafe { call(); }"), "unsafe")
+    add("unsafe-fn", "unsafe", added(base, "pub unsafe fn read(ptr: *const u8) -> u8 {"), "unsafe")
+    add("unsafe-brace-next-line", "unsafe", added(base, "    unsafe"), "unsafe")
     add("proc-macro", "build", added(base, "proc-macro = true", "crates/probe/Cargo.toml"), "build")
     add("dependency-section", "build", added(base, "[dependencies]", "Cargo.toml"), "build")
     add("dependency", "dependencies", added(base, "serde = \"1\"", "Cargo.toml"), "dependencies")
@@ -259,6 +264,12 @@ def check_signed_object() -> None:
         assert refused.returncode != 0
 
 
+def check_ordinary_text_is_allowed() -> None:
+    base = valid_case()
+    for text in ("let n = x.len();", "self.changes.push(line.path)", "see Cargo.toml and README.md", "mod args.rs;", "// the raw call is unsafe because it aliases", "#![forbid(unsafe_code)]", "self.app.run();", "self.io.flush()"):
+        assert bridge.evaluate(added(base, text)) == bridge.ALLOW, text
+
+
 def check_dry_run_write_detection() -> None:
     class Fake:
         def __init__(self):
@@ -354,6 +365,7 @@ def selfcheck() -> int:
         red.append(f"{name} · disable {check}: expected {decision.text}; got {shown}")
     check_dry_run_write_detection()
     check_overrides()
+    check_ordinary_text_is_allowed()
     assert bridge.server_import_refusal().text == "intake: import: server writes stay disabled until stage 3 installs the run-ci hold"
     payload = bridge.draft_payload(valid)
     labels = {"external", "autofix:hold"}
