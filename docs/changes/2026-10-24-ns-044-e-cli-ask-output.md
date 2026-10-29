@@ -1,4 +1,5 @@
 ---
+version: 0.754.0
 issue: Closes #1481, Refs #1442
 raise: tests +90, crate cli +30
 ---

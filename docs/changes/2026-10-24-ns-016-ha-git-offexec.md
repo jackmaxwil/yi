@@ -1,4 +1,5 @@
 ---
+version: 0.726.0
 issue: Closes #1457, Refs #1442
 raise: tests +144, crate runtime +17
 ---

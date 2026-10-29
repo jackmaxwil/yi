@@ -1,4 +1,5 @@
 ---
+version: 0.709.0
 issue: Refs #1385
 growth: +103 the Spirals scene, a twelve-state cyclic automaton in the cache module
 raise: comments +7, crate tui +103, tests +43

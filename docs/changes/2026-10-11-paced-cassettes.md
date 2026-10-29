@@ -1,4 +1,5 @@
 ---
+version: 0.671.0
 issue: Closes #1265
 growth: +425 measured by check_growth against the fork: runtime +229 (the virtual clock `FauxTime`, the delay split and `paced` rewrite, four unit tests), session +45 (the cassette reader), tui +133 (the drive's settle before and after each tick step, the arrival and turn counters it reads, two unit tests), cli +1, ai +17 (the timed queue); weighed for deletion: nothing in the stream path was dead, and the fixed per-word `pace` stays because the deadline tests drive it; a wall-clock-only pace was weighed and dropped because a frozen scene would then depend on the wall and the cells would differ between runs; the settle (+40 over the first draft) was kept because the first draft's single wait let two runs of the same ticks differ by a few cells on a loaded lane
 raise: crate ai +17, crate cli +1, crate runtime +229, crate session +45, crate tui +133, tests +126, comments +18
