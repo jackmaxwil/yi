@@ -95,7 +95,7 @@ pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
         "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts" => {
             brace_block_resolver(request.text, request.line, BraceSyntax::JavaScript)
         }
-        "sh" | "bash" | "zsh" | "ksh" | "fish" => {
+        "sh" | "bash" | "zsh" | "ksh" | "fish" | "mk" | "" => {
             brace_block_resolver(request.text, request.line, BraceSyntax::Plain)
         }
         _ => brace_block_resolver(request.text, request.line, BraceSyntax::CStyle),

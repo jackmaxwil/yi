@@ -186,24 +186,34 @@ fn division_operators_and_continuations_do_not_hide_delimiters() -> TestResult {
 #[test]
 fn shell_globs_do_not_start_block_comments() -> TestResult {
     let dir = temp_dir("hashline-shell-glob-not-comment")?;
-    fs::write(
-        dir.join("run.sh"),
-        "run() {\n    cp *.log /var/backups/*\n    echo done\n}\n",
-    )?;
-    let output = find(&dir, "run.sh", "run()");
-    assert!(output.contains("[find: block at lines 1-4 of"), "{output}");
+    for name in ["run.sh", "deploy", ".bashrc", "Makefile", "rules.mk"] {
+        fs::write(
+            dir.join(name),
+            "run() {\n    cp *.log /var/backups/*\n    echo done\n}\n",
+        )?;
+        let output = find(&dir, name, "run()");
+        assert!(
+            output.contains("[find: block at lines 1-4 of"),
+            "{name}: {output}"
+        );
+    }
     Ok(())
 }
 
 #[test]
 fn a_regex_literal_opening_a_continuation_line_does_not_hide_delimiters() -> TestResult {
     let dir = temp_dir("hashline-regex-continuation")?;
-    fs::write(
-        dir.join("split.js"),
-        "function f() {\n    const pattern =\n        /[/*]/;\n    return pattern;\n}\n",
-    )?;
-    let output = find(&dir, "split.js", "function f()");
-    assert!(output.contains("[find: block at lines 1-5 of"), "{output}");
+    for name in ["split.js", "split.mts", "split.cts"] {
+        fs::write(
+            dir.join(name),
+            "function f() {\n    const pattern =\n        /[/*]/;\n    return pattern;\n}\n",
+        )?;
+        let output = find(&dir, name, "function f()");
+        assert!(
+            output.contains("[find: block at lines 1-5 of"),
+            "{name}: {output}"
+        );
+    }
     Ok(())
 }
 
