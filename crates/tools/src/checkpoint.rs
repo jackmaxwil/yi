@@ -56,6 +56,26 @@ fn serial_for(git_dir: &Path) -> Arc<Mutex<()>> {
         .unwrap_or_else(PoisonError::into_inner);
     Arc::clone(locks.entry(git_dir.to_path_buf()).or_default())
 }
+/// The store itself, and the session home holding it: a home parked inside the work tree is not
+/// project content. Incident: a probe home there stored its kernel venv again on each rebuild.
+fn not_project_content(checkpoint_root: &Path, project: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![checkpoint_root.to_path_buf()];
+    let Some(yi) = checkpoint_root
+        .parent()
+        .filter(|dir| dir.file_name().is_some_and(|name| name == ".yi"))
+    else {
+        return roots;
+    };
+    let Some(home) = yi.parent() else {
+        return roots;
+    };
+    let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    roots.push(match real(home) == real(project) {
+        true => yi.to_path_buf(),
+        false => home.to_path_buf(),
+    });
+    roots
+}
 
 impl Checkpoints {
     pub fn open(checkpoint_root: &Path, project: &Path) -> Result<Self, CheckpointError> {
@@ -65,8 +85,10 @@ impl Checkpoints {
         let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let mut staged = ["add", "--all", "--", "."].map(str::to_owned).to_vec();
         // Incident: `yi` started in `~` staged the shadow into itself, each capture slower.
-        if let Ok(inside) = real(checkpoint_root).strip_prefix(real(project)) {
-            staged.push(format!(":(exclude,literal){}", inside.to_string_lossy()));
+        for root in not_project_content(checkpoint_root, project) {
+            if let Ok(inside) = real(&root).strip_prefix(real(project)) {
+                staged.push(format!(":(exclude,literal){}", inside.to_string_lossy()));
+            }
         }
         let checkpoints = Self {
             serial: serial_for(&git_dir),
