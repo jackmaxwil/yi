@@ -1,8 +1,8 @@
 ---
 issue: Closes #1718
-growth: +431 additive wire metadata and one shared live/replay projection; a second renderer, timeline, console implementation and persistent terminal bytes were weighed for deletion and rejected as duplicates
+growth: +443 additive wire metadata and one shared live/replay projection; a second renderer, timeline, console implementation and persistent terminal bytes were weighed for deletion and rejected as duplicates
 decision: Subagents should be persistent in their two locations in the scrollback: at start and end | One shared formatter projects the durable spawn and end records into two concise rows, so the live card no longer needs to become the permanent end record | Remove the replay projection and restore the committed full Task cell; the added optional wire fields remain additive and old readers ignore them
-raise: crate console +4, crate runtime +129, crate tools +1, crate tui +279, crate types +18, tests +972
+raise: crate console +4, crate runtime +129, crate tools +13, crate tui +279, crate types +18, tests +1012
 ---
 A child now gets one persistent start row when it is admitted and one persistent end row for each run. The rows name the child and its role and task at the start, then its actual outcome, elapsed time, tokens, optional cost, start id, and first result or error line. The committed end row replaces the full finished card; the live card and its focus view stay unchanged. The 32-card live-tracking cap still applies only to live state, not to committed rows.
 
