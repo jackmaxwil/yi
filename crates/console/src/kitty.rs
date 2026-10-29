@@ -13,16 +13,6 @@ pub(crate) fn next_notebook_id(old: Option<u32>) -> u32 {
     let [even, odd] = NOTEBOOK_IDS;
     if old == Some(even) { odd } else { even }
 }
-/// The graphics decision [`run_console`](crate::run_console) records on the app, resolved from
-/// the environment it read: a multiplexer swallows the raw APC escapes this crate emits.
-pub fn graphics(
-    term: Option<&str>,
-    term_program: Option<&str>,
-    kitty_window_id: Option<&str>,
-    multiplexed: bool,
-) -> bool {
-    yi_tui::orb::kitty::supported_in(term, term_program, kitty_window_id, multiplexed)
-}
 
 /// Transmit the PNG and place `id` over `rect`. The payload is already base64, the wire
 /// form the kernel attachment carries, so nothing decodes here.

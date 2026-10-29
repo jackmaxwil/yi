@@ -124,7 +124,7 @@ fn terminal_environments_share_graphics_support_but_not_chord_support() {
     ];
     for (name, term, program, window_id, multiplexed, graphics, chords) in environments {
         assert_eq!(
-            yi_console::kitty::graphics(Some(term), program, window_id, multiplexed),
+            yi_tui::orb::kitty::supported_in(Some(term), program, window_id, multiplexed),
             graphics,
             "{name} graphics"
         );

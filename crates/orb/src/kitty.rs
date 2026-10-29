@@ -18,12 +18,6 @@ pub fn supported_in(
     kitty_named_terminal(term, term_program) || kitty_window_id.is_some()
 }
 
-/// Invariant: kitty's FAQ has tmux users set `default-terminal "xterm-kitty"`, so TERM can
-/// name no multiplexer; TMUX and STY are the variables tmux and screen set themselves.
-pub fn multiplexed() -> bool {
-    std::env::var_os("TMUX").is_some() || std::env::var_os("STY").is_some()
-}
-
 /// The terminal's own name, without the KITTY_WINDOW_ID fallback: a terminal that answers the
 /// graphics protocol is also the one whose command chords the user's keyboard sends.
 pub fn kitty_named_terminal(term: Option<&str>, term_program: Option<&str>) -> bool {
@@ -31,12 +25,14 @@ pub fn kitty_named_terminal(term: Option<&str>, term_program: Option<&str>) -> b
         || term_program.is_some_and(|program| program == "ghostty")
 }
 
+/// Invariant: kitty's FAQ has tmux users set `default-terminal "xterm-kitty"`, so TERM can
+/// name no multiplexer; TMUX and STY are the variables tmux and screen set themselves.
 pub fn supported() -> bool {
     supported_in(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
         std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
-        multiplexed(),
+        std::env::var_os("TMUX").is_some() || std::env::var_os("STY").is_some(),
     )
 }
 
