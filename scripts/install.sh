@@ -91,15 +91,15 @@ json_escape() {
 # A bad signature refuses the install; with no .sig or no ssh-keygen the sha256 is the only check,
 # and that is said. YI_ALLOWED_SIGNERS names another signers file, as for scripts/sign.sh.
 verify() {
-  local base=$1 work=$2 name=$3 signers identity
-  local got=0
-  get "$base/$name.sig" "$work/$name.sig" 2>/dev/null || got=$?
-  # curl's 22 is an HTTP error status and 37 an unreadable file://: the .sig is absent. Any other
-  # failure is a fetch that went wrong, which is not evidence the release is unsigned.
-  case $got in
-    0) ;;
-    22 | 37) echo "install.sh: this release has no signature; integrity is the sha256 check only" >&2; return 0 ;;
-    *) echo "install.sh: fetching $name.sig failed (curl exit $got); nothing installed" >&2; return 1 ;;
+  local base=$1 work=$2 name=$3 signers identity code got=0
+  # Invariant: only a 404, or a file:// path that is not there (curl 37), means the release has no
+  # .sig; a 403, a 5xx or a failed connection is a fetch that went wrong and refuses the install.
+  code=$(curl -sSL --proto '=https,file' --proto-redir '=https' -o "$work/$name.sig" \
+    -w '%{http_code}' "$base/$name.sig" 2>/dev/null) || got=$?
+  case $got:$code in
+    0:200 | 0:000) ;;
+    0:404 | 37:*) echo "install.sh: this release has no signature; integrity is the sha256 check only" >&2; return 0 ;;
+    *) echo "install.sh: fetching $name.sig failed (curl exit $got, status $code); nothing installed" >&2; return 1 ;;
   esac
   if ! command -v ssh-keygen >/dev/null; then
     echo "install.sh: no ssh-keygen here to check the signature; integrity is the sha256 check only" >&2

@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 use crate::loopback::read_request;
 use crate::scratch::Scratch;
+use crate::text;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -129,14 +130,6 @@ impl Account {
             .current_dir(self.dir.join("project"))
             .output()
     }
-}
-
-fn text(output: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 /// The recorded turn's reasoning, joined from its own deltas: the text Moonshot needs echoed.

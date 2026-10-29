@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::scratch::Scratch;
+use crate::text;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -134,14 +135,6 @@ fn install(scratch: &Scratch, base: &Path, signers: &Path) -> Command {
     bash
 }
 
-fn text(out: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    )
-}
-
 /// A signed release of `version` under `scratch/release`, packaged by package.sh with `key`.
 fn signed_release(
     scratch: &Scratch,
@@ -259,26 +252,34 @@ fn a_signature_fetch_that_fails_but_not_for_absence_installs_nothing() -> TestRe
     let scratch = Scratch::new("yi-install-sigfetch")?;
     let release_key = key(&scratch.join("keys"), "test-release")?;
     signed_release(&scratch, "9.9.3", &release_key)?;
-    // curl's 6 is a host that did not resolve: the .sig may well exist on the release.
+    // A host that did not resolve (curl 6) and a server that refused the file (403, which curl's
+    // -f folds into the 22 a 404 also gets) both leave a .sig that may well exist on the release.
     let (shim, path) = (scratch.join("bin"), std::env::var("PATH")?);
     std::fs::create_dir_all(&shim)?;
-    let curl = format!(
-        "#!/bin/sh\ncase \"$*\" in *.sig*) exit 6 ;; esac\nPATH='{path}' exec curl \"$@\"\n"
-    );
-    std::fs::write(shim.join("curl"), curl)?;
-    std::fs::set_permissions(shim.join("curl"), std::fs::Permissions::from_mode(0o755))?;
-
-    let out = install(&scratch, &scratch.join("release"), &release_key.1)
-        .env("PATH", format!("{}:{path}", shim.display()))
-        .output()?;
-    let said = text(&out);
-    assert_eq!(out.status.code(), Some(1), "{said}");
-    assert!(
-        said.contains("fetching yi-9.9.3-") && said.contains("(curl exit 6); nothing installed"),
-        "{said}"
-    );
-    assert!(!said.contains("has no signature"), "{said}");
-    assert!(!scratch.join("home/.local/bin/yi").exists());
+    for (sig, said_why) in [
+        ("exit 6", "curl exit 6,"),
+        ("printf 403; exit 0", "status 403)"),
+    ] {
+        let curl = format!(
+            "#!/bin/sh\ncase \"$*\" in *.sig*) {sig} ;; esac\nPATH='{path}' exec curl \"$@\"\n"
+        );
+        std::fs::write(shim.join("curl"), curl)?;
+        std::fs::set_permissions(shim.join("curl"), std::fs::Permissions::from_mode(0o755))?;
+        let out = install(&scratch, &scratch.join("release"), &release_key.1)
+            .env("PATH", format!("{}:{path}", shim.display()))
+            .output()?;
+        let said = text(&out);
+        assert_eq!(out.status.code(), Some(1), "{said}");
+        assert!(
+            said.contains("fetching yi-9.9.3-") && said.contains(said_why),
+            "{said}"
+        );
+        assert!(
+            said.contains("nothing installed") && !said.contains("has no signature"),
+            "{said}"
+        );
+        assert!(!scratch.join("home/.local/bin/yi").exists());
+    }
     Ok(())
 }
 
