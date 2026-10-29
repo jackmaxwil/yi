@@ -1,0 +1,7 @@
+---
+issue: Closes #1550
+raise: tests +97
+---
+The checker recipe was a screen (`evals/checker_screen.py`) nobody could call from a session; it is now a skill, `skills/yi/checker/SKILL.md`, beside `unattended`. It says to write the requirement list from the task text, spawn one `role="worker"` child with the task text in its brief and `deny_url=["history://"]` so the child reads no transcript of the root's, of the root's parent or of a sibling, and have it write a `checks.py` of `PASS <id>` / `FAIL <id>` lines outside the workspace. The root starts each requirement row with the check that proves it — a plan row's `check=`, its contract's `decider: {cmd}`, or the checks program itself where there is no plan — and a verifier may only append rows: it judges the finished work, it never relaxes a row or edits the work. Nothing is hidden from the implementer; a failing check reaches it as the check and its output.
+
+The skill is proven where a model would run it. `the_checker_skill_is_listed_and_its_spawn_snippet_walls_history` installs the shipped file under a scratch home, reads it back as a catalog line and through `yi://skills/checker`, then runs the skill's own python fence in the kernel and reads the `rlm.run` payload it sent: `deny_url` is `["history://"]`, `Wall::denies_history` is true, and a `history://parent/since/0` read is refused by `deny_url`. The same test with the snippet's `deny_url` misspelled fails, because the wall then refuses nothing.

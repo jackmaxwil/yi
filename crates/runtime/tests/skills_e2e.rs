@@ -658,3 +658,100 @@ fn a_skill_within_a_repository_is_listed_only_there() -> TestResult {
     assert_eq!((reachable(&ours), reachable(&theirs)), (1, 0));
     Ok(())
 }
+
+/// Incident: the checker recipe was a screen nobody could call; a skill a model is pointed at
+/// must spawn the child it claims, so the snippet is run in the kernel and its wall is read back.
+#[tokio::test]
+async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> TestResult {
+    let root = Scratch::new("yi-skills-checker")?;
+    let (project, home) = (root.join("project"), root.join("home"));
+    std::fs::create_dir_all(&project)?;
+    let shipped =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi/checker/SKILL.md");
+    let text = std::fs::read_to_string(&shipped)?;
+    let installed = home.join(".yi/skills/yi/checker/SKILL.md");
+    std::fs::create_dir_all(installed.parent().ok_or("no parent")?)?;
+    std::fs::write(&installed, &text)?;
+
+    let catalog = yi_runtime::skills_catalog(&project, &home, yi_runtime::Bytes(16_384))
+        .ok_or("no catalog")?;
+    assert!(
+        catalog.text.contains("- checker: "),
+        "the checker skill must be a catalog line: {}",
+        catalog.text
+    );
+    let resolver = yi_runtime::fetch::Resolver::new(project.clone(), yi_runtime::Wall::default())
+        .with_home(home.clone());
+    let whole = resolver.fetch(&"yi://skills/checker".parse()?)?;
+    assert!(whole.text.contains("name: checker"), "{}", whole.text);
+
+    let snippet = python_block(&text).ok_or("the checker skill ships no python snippet")?;
+    let seen: Arc<std::sync::Mutex<Option<Value>>> = Arc::new(std::sync::Mutex::new(None));
+    let mut registry = HostRegistry::default();
+    registry.register_mcp_stubs();
+    {
+        let seen = Arc::clone(&seen);
+        registry.register("rlm.run", move |payload| {
+            let seen = Arc::clone(&seen);
+            let handle = json!({"rlm_child_id": "sub-checker", "name": "worker-1",
+                "session_dir": "/tmp/sub-checker", "model": "faux/faux-1"});
+            Box::pin(async move {
+                *seen.lock().map_err(|_| "poisoned".to_owned())? = Some(Value::Object(payload));
+                handle
+                    .as_object()
+                    .cloned()
+                    .ok_or_else(|| "handle".to_owned())
+            })
+        });
+    }
+    let service = Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: project.clone(),
+        home: home.clone(),
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        on_boot: None,
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling: None,
+    }));
+    let out = cell(&service, snippet)
+        .await
+        .map_err(|error| error.to_string())?;
+    service.dispose().await;
+    let stdout = &out.result.stdout;
+    assert!(
+        stdout.contains("worker-1"),
+        "the snippet must spawn its child and name it: {stdout} {}",
+        out.result.stderr
+    );
+
+    let payload = seen
+        .lock()
+        .map_err(|_| "poisoned")?
+        .clone()
+        .ok_or("the snippet spawned nothing")?;
+    let kwargs = payload
+        .get("kwargs")
+        .and_then(Value::as_object)
+        .ok_or("no kwargs")?;
+    let wall = yi_runtime::Wall::from_kwargs(kwargs, &project)?;
+    assert!(
+        wall.denies_history(),
+        "the snippet's spawn must wall history: {payload}"
+    );
+    let url: yi_types::url::Url = "history://parent/since/0".parse()?;
+    let refusal = wall
+        .check_url(&url, &project)
+        .ok_or("the wall must refuse a history read")?;
+    assert!(refusal.contains("deny_url"), "{refusal}");
+    Ok(())
+}
+
+/// The first ```python fence of a skill: the block the model would copy into a cell.
+fn python_block(text: &str) -> Option<String> {
+    let fenced = text.split("```python\n").nth(1)?;
+    Some(fenced.split("\n```").next()?.to_owned())
+}
