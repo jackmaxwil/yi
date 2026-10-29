@@ -1,6 +1,6 @@
-//! The release scripts as a release runs them: `scripts/package.sh` writes the archive and its
-//! `.sha256`, `just publish` folds those into SHA256SUMS, and `scripts/install.sh`, with no release
-//! tree beside it, installs only what SHA256SUMS vouches for.
+//! The release scripts as a release runs them: `scripts/package.sh` writes and signs the archive,
+//! `just publish` folds the `.sha256` files into SHA256SUMS, and `scripts/install.sh`, with no
+//! release tree beside it, installs only what SHA256SUMS vouches for and the signature confirms.
 
 use std::error::Error;
 use std::os::unix::fs::PermissionsExt;
@@ -12,7 +12,6 @@ use crate::scratch::Scratch;
 type TestResult = Result<(), Box<dyn Error>>;
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-const UNSIGNED: [(&str, &str); 1] = [("YI_RELEASE_UNSIGNED", "1")];
 
 /// The triple install.sh names this machine by, which package.sh puts in the archive name.
 fn triple() -> Result<String, Box<dyn Error>> {
@@ -29,8 +28,29 @@ fn triple() -> Result<String, Box<dyn Error>> {
     Ok(format!("{arch}-{os}"))
 }
 
-/// Runs package.sh on a stand-in binary that prints `says`; each test owns its `version`, since
-/// package.sh writes under the repository's target/package.
+/// A throwaway release key under `dir` and the one-line signers file naming it `who`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release keys are ssh-keygen keys, as scripts/sign.sh makes them"
+)]
+fn key(dir: &Path, who: &str) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    std::fs::create_dir_all(dir)?;
+    let key = dir.join("key");
+    let made = Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", who, "-f"])
+        .arg(&key)
+        .status()?;
+    if !made.success() {
+        return Err("ssh-keygen could not make a key".into());
+    }
+    let public = std::fs::read_to_string(dir.join("key.pub"))?;
+    let signers = dir.join("allowed_signers");
+    std::fs::write(&signers, format!("{who} {}\n", public.trim()))?;
+    Ok((key, signers))
+}
+
+/// Runs package.sh, signing with `key`, on a stand-in binary that prints `says`; each test owns
+/// its `version`, since package.sh writes under the repository's target/package.
 #[expect(
     clippy::disallowed_methods,
     reason = "the producer under test is package.sh as the release runs it"
@@ -39,21 +59,18 @@ fn package(
     scratch: &Scratch,
     version: &str,
     says: &str,
-    env: &[(&str, &str)],
+    key: &(PathBuf, PathBuf),
 ) -> Result<Output, Box<dyn Error>> {
     let binary = scratch.join("yi");
     std::fs::write(&binary, format!("#!/bin/sh\necho '{says}'\n"))?;
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))?;
-    let mut run = Command::new("bash");
-    run.arg(format!("{ROOT}/scripts/package.sh"))
+    Ok(Command::new("bash")
+        .arg(format!("{ROOT}/scripts/package.sh"))
         .args([version, triple()?.as_str()])
         .arg(&binary)
-        .env_remove("YI_RELEASE_UNSIGNED")
-        .env("YI_SIGNING_KEY", scratch.join("no-such-key"));
-    for (key, value) in env {
-        run.env(key, value);
-    }
-    Ok(run.output()?)
+        .env("YI_SIGNING_KEY", &key.0)
+        .env("YI_ALLOWED_SIGNERS", &key.1)
+        .output()?)
 }
 
 fn packaged(version: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -67,24 +84,36 @@ fn beside(archive: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(format!("{}{suffix}", archive.display()))
 }
 
-/// Removes what package.sh left under target/package for `version`.
-fn unpackage(version: &str) -> Result<(), Box<dyn Error>> {
+/// Takes what package.sh left under target/package for `version`: the archive, its digest line
+/// and its signature, each None when package.sh did not write it.
+fn unpackage(version: &str) -> Result<[Option<Vec<u8>>; 3], Box<dyn Error>> {
     let archive = packaged(version)?;
     let _ = std::fs::remove_dir_all(format!("{ROOT}/target/package/yi-{version}-{}", triple()?));
-    for suffix in ["", ".sha256", ".sig"] {
+    let mut taken = [None, None, None];
+    for (slot, suffix) in taken.iter_mut().zip(["", ".sha256", ".sig"]) {
+        *slot = std::fs::read(beside(&archive, suffix)).ok();
         let _ = std::fs::remove_file(beside(&archive, suffix));
     }
-    Ok(())
+    Ok(taken)
 }
 
-/// A release directory holding `served` under the archive's name, beside the SHA256SUMS that
-/// `just publish` folds from the `.sha256` package.sh wrote for the archive it vouches for.
-fn release(dir: &Path, version: &str, served: &[u8]) -> Result<(), Box<dyn Error>> {
+/// A release directory as `just publish` uploads it: `served` under the archive's name, the
+/// SHA256SUMS folded from package.sh's `.sha256`, and the `.sig` when there is one.
+fn release(
+    dir: &Path,
+    version: &str,
+    served: &[u8],
+    digest: &[u8],
+    sig: Option<&[u8]>,
+) -> Result<(), Box<dyn Error>> {
     let archive = packaged(version)?;
     let name = archive.file_name().ok_or("the archive path has no name")?;
     std::fs::create_dir_all(dir)?;
-    std::fs::copy(beside(&archive, ".sha256"), dir.join("SHA256SUMS"))?;
+    std::fs::write(dir.join("SHA256SUMS"), digest)?;
     std::fs::write(dir.join(name), served)?;
+    if let Some(sig) = sig {
+        std::fs::write(beside(&dir.join(name), ".sig"), sig)?;
+    }
     Ok(())
 }
 
@@ -92,12 +121,18 @@ fn release(dir: &Path, version: &str, served: &[u8]) -> Result<(), Box<dyn Error
     clippy::disallowed_methods,
     reason = "the contract is the script as bash runs it"
 )]
-fn install(scratch: &Scratch, base: &Path, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+fn install(
+    scratch: &Scratch,
+    base: &Path,
+    signers: &Path,
+    args: &[&str],
+) -> Result<Output, Box<dyn Error>> {
     Ok(Command::new("bash")
         .arg(format!("{ROOT}/scripts/install.sh"))
         .args(args)
         .env("HOME", scratch.join("home"))
         .env("YI_RELEASE_BASE", format!("file://{}", base.display()))
+        .env("YI_ALLOWED_SIGNERS", signers)
         .env_remove("YI_PREFIX")
         .env_remove("YI_VERSION")
         .current_dir(&**scratch)
@@ -112,26 +147,37 @@ fn text(out: &Output) -> String {
     )
 }
 
-#[test]
-fn a_vouched_archive_installs_the_binary_its_runtime_and_receipt() -> TestResult {
-    let scratch = Scratch::new("yi-install-ok")?;
-    let packed = package(&scratch, "9.9.1", "yi 9.9.1", &UNSIGNED)?;
-    assert!(packed.status.success(), "{}", text(&packed));
+/// A signed release of `version` under `scratch/release`, packaged by package.sh with `key`.
+fn signed_release(
+    scratch: &Scratch,
+    version: &str,
+    key: &(PathBuf, PathBuf),
+) -> Result<(), Box<dyn Error>> {
+    let packed = package(scratch, version, &format!("yi {version}"), key)?;
+    let [archive, digest, sig] = unpackage(version)?;
+    let (Some(archive), Some(digest)) = (archive, digest) else {
+        return Err(format!("package.sh wrote no archive: {}", text(&packed)).into());
+    };
     release(
         &scratch.join("release"),
-        "9.9.1",
-        &std::fs::read(packaged("9.9.1")?)?,
-    )?;
-    unpackage("9.9.1")?;
+        version,
+        &archive,
+        &digest,
+        sig.as_deref(),
+    )
+}
 
-    let out = install(&scratch, &scratch.join("release"), &[])?;
+#[test]
+fn a_vouched_and_signed_archive_installs_the_binary_its_runtime_and_receipt() -> TestResult {
+    let scratch = Scratch::new("yi-install-ok")?;
+    let release_key = key(&scratch.join("keys"), "test-release")?;
+    signed_release(&scratch, "9.9.1", &release_key)?;
+
+    let out = install(&scratch, &scratch.join("release"), &release_key.1, &[])?;
     let said = text(&out);
     assert!(out.status.success(), "{said}");
+    assert!(said.contains("is signed by test-release"), "{said}");
     assert!(said.contains("installed yi 9.9.1 at"), "{said}");
-    assert!(
-        said.contains("this release is unsigned; integrity is the sha256 check only"),
-        "{said}"
-    );
     let home = scratch.join("home");
     assert!(home.join(".yi/python/yi_runtime").is_dir());
     assert!(home.join(".yi/skills/yi").is_dir());
@@ -145,21 +191,23 @@ fn a_vouched_archive_installs_the_binary_its_runtime_and_receipt() -> TestResult
 #[test]
 fn an_archive_whose_sha256_differs_from_sha256sums_installs_nothing() -> TestResult {
     let scratch = Scratch::new("yi-install-tampered")?;
-    assert!(
-        package(&scratch, "9.9.2", "yi 9.9.2 swapped", &UNSIGNED)?
-            .status
-            .success()
-    );
-    let swapped = std::fs::read(packaged("9.9.2")?)?;
-    assert!(
-        package(&scratch, "9.9.2", "yi 9.9.2", &UNSIGNED)?
-            .status
-            .success()
-    );
-    release(&scratch.join("release"), "9.9.2", &swapped)?;
-    unpackage("9.9.2")?;
+    let release_key = key(&scratch.join("keys"), "test-release")?;
+    package(&scratch, "9.9.2", "yi 9.9.2 swapped", &release_key)?;
+    let [swapped, ..] = unpackage("9.9.2")?;
+    package(&scratch, "9.9.2", "yi 9.9.2", &release_key)?;
+    let [_, digest, sig] = unpackage("9.9.2")?;
+    let (Some(swapped), Some(digest)) = (swapped, digest) else {
+        return Err("package.sh wrote no archive".into());
+    };
+    release(
+        &scratch.join("release"),
+        "9.9.2",
+        &swapped,
+        &digest,
+        sig.as_deref(),
+    )?;
 
-    let out = install(&scratch, &scratch.join("release"), &[])?;
+    let out = install(&scratch, &scratch.join("release"), &release_key.1, &[])?;
     let said = text(&out);
     assert_eq!(out.status.code(), Some(1), "{said}");
     assert!(
@@ -171,18 +219,56 @@ fn an_archive_whose_sha256_differs_from_sha256sums_installs_nothing() -> TestRes
 }
 
 #[test]
+fn an_archive_signed_by_another_key_installs_nothing() -> TestResult {
+    let scratch = Scratch::new("yi-install-forged")?;
+    let forger = key(&scratch.join("forger"), "test-release")?;
+    let release_key = key(&scratch.join("keys"), "test-release")?;
+    signed_release(&scratch, "9.9.6", &forger)?;
+
+    let out = install(&scratch, &scratch.join("release"), &release_key.1, &[])?;
+    let said = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{said}");
+    assert!(
+        said.contains("is not test-release's signature") && said.contains("nothing installed"),
+        "{said}"
+    );
+    assert!(!scratch.join("home").exists());
+    Ok(())
+}
+
+#[test]
+fn a_release_without_a_signature_says_the_sha256_is_its_only_check() -> TestResult {
+    let scratch = Scratch::new("yi-install-nosig")?;
+    let release_key = key(&scratch.join("keys"), "test-release")?;
+    package(&scratch, "9.9.7", "yi 9.9.7", &release_key)?;
+    let [archive, digest, _] = unpackage("9.9.7")?;
+    let (Some(archive), Some(digest)) = (archive, digest) else {
+        return Err("package.sh wrote no archive".into());
+    };
+    release(&scratch.join("release"), "9.9.7", &archive, &digest, None)?;
+
+    let out = install(&scratch, &scratch.join("release"), &release_key.1, &[])?;
+    let said = text(&out);
+    assert!(out.status.success(), "{said}");
+    assert!(
+        said.contains("this release has no signature; integrity is the sha256 check only"),
+        "{said}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_dry_run_names_the_archive_and_writes_nothing() -> TestResult {
     let scratch = Scratch::new("yi-install-dry")?;
-    let packed = package(&scratch, "9.9.3", "yi 9.9.3", &UNSIGNED)?;
-    assert!(packed.status.success(), "{}", text(&packed));
-    release(
-        &scratch.join("release"),
-        "9.9.3",
-        &std::fs::read(packaged("9.9.3")?)?,
-    )?;
-    unpackage("9.9.3")?;
+    let release_key = key(&scratch.join("keys"), "test-release")?;
+    signed_release(&scratch, "9.9.3", &release_key)?;
 
-    let out = install(&scratch, &scratch.join("release"), &["--dry-run"])?;
+    let out = install(
+        &scratch,
+        &scratch.join("release"),
+        &release_key.1,
+        &["--dry-run"],
+    )?;
     let said = text(&out);
     assert!(out.status.success(), "{said}");
     assert!(
@@ -194,25 +280,43 @@ fn a_dry_run_names_the_archive_and_writes_nothing() -> TestResult {
 }
 
 #[test]
-fn package_signs_by_default_and_leaves_no_archive_it_could_not_sign() -> TestResult {
+fn package_signs_and_leaves_no_archive_it_could_not_sign() -> TestResult {
     let scratch = Scratch::new("yi-package-signs")?;
-    let out = package(&scratch, "9.9.4", "yi 9.9.4", &[])?;
-    let left = packaged("9.9.4")?.exists();
-    unpackage("9.9.4")?;
+    let missing = (scratch.join("no-such-key"), scratch.join("no-such-signers"));
+    let out = package(&scratch, "9.9.4", "yi 9.9.4", &missing)?;
+    let [left, ..] = unpackage("9.9.4")?;
     assert!(!out.status.success(), "{}", text(&out));
     assert!(text(&out).contains("no signing key"), "{}", text(&out));
-    assert!(!left, "an unsigned archive was left to publish");
+    assert!(left.is_none(), "an unsigned archive was left to publish");
 
-    let out = package(&scratch, "9.9.5", "yi 9.9.5", &UNSIGNED)?;
-    let archive = packaged("9.9.5")?;
-    let (kept, signed) = (archive.exists(), beside(&archive, ".sig").exists());
-    unpackage("9.9.5")?;
-    let said = text(&out);
-    assert!(out.status.success(), "{said}");
-    assert!(
-        said.contains("UNSIGNED:") && said.contains("yi update refuses it"),
-        "{said}"
+    let release_key = key(&scratch.join("keys"), "test-release")?;
+    let out = package(&scratch, "9.9.5", "yi 9.9.5", &release_key)?;
+    let [archive, _, sig] = unpackage("9.9.5")?;
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(archive.is_some() && sig.is_some(), "{}", text(&out));
+    Ok(())
+}
+
+#[test]
+fn the_installer_trusts_the_one_key_yi_update_compiles_in() -> TestResult {
+    let scratch = Scratch::new("yi-install-signer")?;
+    let signers = std::fs::read_to_string(format!("{ROOT}/allowed_signers"))?;
+    let out = install(
+        &scratch,
+        &scratch.join("release"),
+        Path::new(""),
+        &["--help"],
+    )?;
+    assert!(out.status.success(), "{}", text(&out));
+    let trusted = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        signers.lines().count(),
+        1,
+        "allowed_signers holds more than one signer"
     );
-    assert!(kept && !signed);
+    assert!(
+        trusted.contains(signers.trim()),
+        "--help trusts:\n{trusted}\nallowed_signers:\n{signers}"
+    );
     Ok(())
 }

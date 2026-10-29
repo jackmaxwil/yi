@@ -286,8 +286,7 @@ publish version:
     assets=(target/package/yi-{{version}}-*.tar.gz*)
     [ -e "${assets[0]}" ] || { echo "nothing built for {{version}} -- run: just prerelease {{version}}"; exit 1; }
     for archive in target/package/yi-{{version}}-*.tar.gz; do
-      [ -e "$archive.sig" ] || [ "${YI_RELEASE_UNSIGNED:-}" = 1 ] || {
-        echo "$archive has no .sig; sign it, or set YI_RELEASE_UNSIGNED=1 to publish it unsigned"; exit 1; }
+      [ -e "$archive.sig" ] || { echo "$archive has no .sig; run: just prerelease {{version}}"; exit 1; }
     done
     # scripts/install.sh finds the latest archive for its machine, and its digest, in this one file.
     cat target/package/yi-{{version}}-*.tar.gz.sha256 > target/package/SHA256SUMS
