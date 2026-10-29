@@ -1431,13 +1431,13 @@ They cover allowlist and base shape, signatures, identities, pinned head, all
 four caps at the cap and the cap plus one, unique mapping and linear history,
 the composed review/mirror/intake wall (compared case-insensitively, since the owner builds on a case-insensitive disk; both sides of a rename; any `.cargo` directory), symlinks, submodules, executable-bit
 transitions, binary data, LFS, hostile filenames, secrets,
-mirror replacement literals, network literals (URLs, IPs, `localhost`, hostnames on common TLDs, and a hostname on any TLD that follows `@`, is the argument of a network command, or carries a port unless its TLD is a source-file extension such as `rs`, `md`, `py` or `sh`, since `main.rs:42` is a file reference), `unsafe` blocks, items and attributes, build-time execution,
+mirror replacement literals, network literals (URLs, IPs, `localhost`, hostnames on common TLDs, and a hostname on any TLD that follows `@`, precedes `:/`, is the first argument of a network command, or carries a port; a file extension such as `go` or `toml` is a file in `name.ext:42`, and `rs`, `md`, `py` or `sh` count only on a well-known port), `unsafe` blocks, items and attributes, build-time execution,
 dependency edits and strict application. `build.rs` is always denied. Secret
 scanning uses the unmodified `scripts/mirror/deny.txt` patterns with no fixture
 ignore. Filenames reject traversal, absolute paths, controls, backslashes,
 case-fold collisions and non-ASCII/confusables. Application runs `git apply
 --check --whitespace=error`, then `git apply --index` with the same whitespace
-rule; no three-way merge or rename guessing is permitted. A bare hostname on a rarer TLD, even quoted, with no port, `@` or command beside it, and a ported host on `rs`, `md`, `py` or `sh`, are not seen by the network check (`row.id`, `"response.failed"` and `main.rs:42` read the same); the lens and the review read them.
+rule; no three-way merge or rename guessing is permitted. A bare hostname on a rarer TLD, even quoted, with no port, `@` or command beside it, and a host on `rs`, `md`, `py` or `sh` on a port outside the well-known list, are not seen by the network check (`row.id`, `"response.failed"` and `main.rs:4444` read the same); the lens and the review read them.
 
 The final lens alone is non-deterministic. It receives only the bounded diff
 inside an escaped `yi-external trust="untrusted"` fence through `yi ask

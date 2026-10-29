@@ -329,19 +329,25 @@ def check_18_markers(case: Case) -> Any:
 
 
 # Bare text is a hostname only on a common TLD, and not when a call follows (`self.app.run()`).
-# Any TLD counts where syntax makes it an endpoint: host:port, user@host, or after a network
-# command, as that command's own argument. A bare name on a rarer TLD, even quoted, reads like
-# `row.id` and `"response.failed"`. The port form skips file extensions: `main.rs:42` is a file.
+# Where syntax makes a name an endpoint (host:port, host:/path, user@host, the first argument of a
+# network command) any TLD counts; a bare rarer one, even quoted, reads like `row.id` or
+# `"response.failed"`. In host:port a file extension is a file (`main.rs:42`), except that the
+# extensions which are also TLDs count on a well-known port.
 LABELS = r"(?:[a-z0-9-]+\.)+"
+COMMON = "com|net|org|edu|gov|mil|io|dev|app|cloud|lan|local|internal|invalid|onion|arpa"
+FILE_EXT = "toml|jsonl?|ya?ml|txt|lock|js|ts|tsx|jsx|mjs|cjs|cfg|ini|conf|log|html?|css|csv|xml|svg|sql|go|zig|cpp|hpp|cxx|hxx|rb|java|kt|cs|php|swift|proto|lua|exs?|mk|rst|tex|png|jpe?g|gif|pdf|webp|ico|wasm"
+FILE_TLD = "rs|md|py|sh|pl|pm|cc|zip|mov|am|in|ml"
+WELL_KNOWN = "22|25|53|80|110|143|443|465|587|993|995|1080|3128|8000|8080|8443|8888|9000"
 ANY_HOST = rf"{LABELS}[a-z]{{2,}}\b"
 HOSTNAME = re.compile(
-    rf"(?i)\b{LABELS}(?:com|net|org|edu|gov|mil|io|dev|app|cloud|lan|local|internal|invalid|onion|arpa)\b(?!\(|\.\w+\()"
-    rf"|(?<![\w.]){LABELS}(?!(?:rs|md|toml|py|jsonl?|ya?ml|txt|lock|sh|js|ts|cfg|ini|log|html|css|csv|xml|svg|sql)\b)[a-z]{{2,}}:\d{{1,5}}\b"
+    rf"(?i)\b{LABELS}(?:{COMMON})\b(?!\(|\.\w+\()"
+    rf"|(?<![\w./]){LABELS}(?:(?!(?:{FILE_EXT}|{FILE_TLD})\b)[a-z]{{2,}}:\d{{1,5}}|(?:{FILE_TLD}):(?:{WELL_KNOWN}))\b"
+    rf"|(?<![\w.]){ANY_HOST}:[/~]"
     rf"|(?<=\w)@{ANY_HOST}"
-    rf"|\b(?:curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ping|dig|nslookup)\b(?:\s+-\S+(?:\s+\d+)?)*\s+{ANY_HOST}"
+    rf"|\b(?:curl|wget|ssh|sftp|nc|ncat|telnet|ping|dig|nslookup)\b(?:\s+-\S+(?:\s+\d+)?)*\s+{ANY_HOST}"
 )
 # The keyword may sit alone before its brace on the next line, so a prose line ending in it is refused too.
-UNSAFE = re.compile(r"\bunsafe\s*(?:\{|\(|//|/\*|$)|\bunsafe\s+(?:fn|impl|trait|extern)\b")
+UNSAFE = re.compile(r"\bunsafe\s*(?:\{|//|/\*|$)|\bunsafe\s+(?:fn|impl|trait|extern)\b|(?:#!?\[|cfg_attr\().*\bunsafe\s*\(")
 
 
 def network_literal(text: str) -> Optional[str]:
@@ -714,8 +720,8 @@ def parse_commit_map(path: pathlib.Path) -> dict[str, str]:
     return mapping
 
 
-def git(args: list[str], cwd: Optional[pathlib.Path] = None, data: Optional[bytes] = None, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=cwd, input=data, capture_output=True, check=check)
+def git(args: list[str], cwd: Optional[pathlib.Path] = None, data: Optional[bytes] = None, check: bool = True, env: Optional[dict[str, str]] = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd, input=data, capture_output=True, check=check, env=env)
 
 
 def git_text(args: list[str], cwd: Optional[pathlib.Path] = None) -> str:
