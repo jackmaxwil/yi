@@ -311,6 +311,42 @@ fn a_slot_whose_repository_was_recreated_is_a_free_slot() -> TestResult {
     Ok(())
 }
 
+/// Incident: deleting `~/.yi/lanes` left its worktrees registered, and the next claim was
+/// refused for the slot path the pool owns.
+#[test]
+fn a_claim_rebuilds_a_slot_git_still_registers_without_its_directory() -> TestResult {
+    let rig = Rig::new("lanes-gone")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-gone", ClaimBase::Main)?;
+    let slot = lane.slot();
+    drop(lane);
+    let path = pool.dir().join(slot.to_string());
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "lock",
+            "--reason",
+            "session:s-gone",
+            &path.to_string_lossy(),
+        ],
+    )?;
+    std::fs::remove_dir_all(rig.home.join(".yi/lanes"))?;
+    let back = pool.claim("s-back", ClaimBase::Main)?;
+    assert_eq!(back.slot(), slot);
+    assert_eq!(
+        git(back.path(), &["symbolic-ref", "--short", "HEAD"])?,
+        "yi/s-back"
+    );
+    let registered = git(&rig.repo, &["worktree", "list", "--porcelain"])?;
+    let entries = registered
+        .lines()
+        .filter(|line| line.starts_with("worktree "))
+        .count();
+    assert_eq!(entries, 2, "the repository and one slot:\n{registered}");
+    Ok(())
+}
+
 /// A `pid-` session cannot be resumed and a drive that died at startup left three of them:
 /// the pool was full of slots holding nothing, and only a hand-run reap freed it.
 #[test]

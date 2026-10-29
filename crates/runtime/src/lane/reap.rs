@@ -126,3 +126,13 @@ impl Pool {
         Ok(lost)
     }
 }
+impl Pool {
+    /// Incident: a deleted lanes directory left the slot registered, and `worktree add` refused
+    /// the path this pool owns for a lock no session holds.
+    pub(super) fn add_fresh(&self, slot: SlotIndex, add: &[&str]) -> Result<(), LaneError> {
+        let path = self.slot_path(slot);
+        let text = path.to_string_lossy();
+        let _ = git(&self.repo, &["worktree", "remove", "-f", "-f", &text]);
+        git(&self.repo, add).map(|_| ())
+    }
+}
