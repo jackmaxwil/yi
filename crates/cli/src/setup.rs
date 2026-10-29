@@ -174,6 +174,7 @@ fn classifier_step(out: &mut dyn Write, edits: &mut Vec<Edit>) -> Result<(), Str
         vec!["models", "classifier"],
         json!(yi_runtime::classifier::JEV),
     ));
+    edits.push((vec!["classifier", "url"], Value::Null));
     Ok(())
 }
 

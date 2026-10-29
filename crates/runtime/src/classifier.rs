@@ -10,6 +10,7 @@ use yi_types::config::{ApprovalMode, ClassifierConfig, UserConfig};
 use yi_types::message::{AgentMessage, Content, UserContent};
 
 use crate::AgentSession;
+use crate::mailbox::clamp;
 
 pub const DEFAULT_URL: &str = "https://openrouter.ai/api";
 pub const JEV: &str = "typesafe/jev-1.13";
@@ -265,9 +266,13 @@ const DEFAULT_ALLOW_DESTRUCTIVE_AT: f64 = 0.9;
 const DEFAULT_ASK_AT: f64 = 0.05;
 const DEFAULT_DELAY_SECS: u64 = 30;
 const CONTEXT_CHARS: usize = 1000;
+const CONTEXT_NAME: &str = "classifier.context_chars";
+const CONTEXT_NEXT: &str = "the classifier judges this head only";
 const COMMAND_CHARS: usize = 4000;
 const WRITABLE_CAP: usize = 8;
 const RECENT_CALLS: usize = 2;
+const HISTORY_TAIL: usize = 256;
+const PROBE_MS: u64 = 3000;
 
 pub struct Thresholds {
     pub allow_at: f64,
@@ -425,10 +430,19 @@ impl Approver {
             .and_then(|reason| reason.strip_suffix(": "))
             .unwrap_or(call.reason);
         let mut state: serde_json::Map<_, _> = [
-            ("tool", capped(call.tool)),
+            (
+                "tool",
+                clamp(call.tool, CONTEXT_CHARS, CONTEXT_NAME, CONTEXT_NEXT),
+            ),
             ("command", call.display.to_owned()),
-            ("cwd", capped(call.cwd)),
-            ("why Yi asks", capped(why)),
+            (
+                "cwd",
+                clamp(call.cwd, CONTEXT_CHARS, CONTEXT_NAME, CONTEXT_NEXT),
+            ),
+            (
+                "why Yi asks",
+                clamp(why, CONTEXT_CHARS, CONTEXT_NAME, CONTEXT_NEXT),
+            ),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), serde_json::json!(value)))
@@ -438,7 +452,10 @@ impl Approver {
         };
         let messages = history();
         if let Some(task) = messages.iter().rev().find_map(crate::rules::typed_text) {
-            state.insert("user task".to_owned(), serde_json::json!(capped(&task)));
+            state.insert(
+                "user task".to_owned(),
+                serde_json::json!(clamp(&task, CONTEXT_CHARS, CONTEXT_NAME, CONTEXT_NEXT)),
+            );
         }
         state.insert(
             "recent commands".to_owned(),
@@ -446,7 +463,7 @@ impl Approver {
         );
         let mut writable: Vec<String> = (project.writable.iter())
             .take(WRITABLE_CAP)
-            .map(|root| capped(root))
+            .map(|root| clamp(root, CONTEXT_CHARS, CONTEXT_NAME, CONTEXT_NEXT))
             .collect();
         if project.writable.len() > WRITABLE_CAP {
             writable.push(format!(
@@ -457,7 +474,7 @@ impl Approver {
         state.insert(
             "project".to_owned(),
             serde_json::json!({
-                "root": capped(&project.root),
+                "root": clamp(&project.root, CONTEXT_CHARS, CONTEXT_NAME, CONTEXT_NEXT),
                 "writable": writable,
                 "protected branches": project.protected_branches,
                 "checkpoints": CHECKPOINTS,
@@ -465,17 +482,6 @@ impl Approver {
         );
         state
     }
-}
-
-fn capped(text: &str) -> String {
-    let total = text.chars().count();
-    if total <= CONTEXT_CHARS {
-        return text.to_owned();
-    }
-    let kept: String = text.chars().take(CONTEXT_CHARS).collect();
-    format!(
-        "{kept} [cut: {CONTEXT_CHARS} of {total} chars kept, cap CONTEXT_CHARS {CONTEXT_CHARS}]"
-    )
 }
 
 /// The last calls that have a result, oldest first: the call being judged has none yet.
@@ -498,19 +504,31 @@ fn recent(messages: &[AgentMessage]) -> Vec<String> {
                 name,
                 arguments,
                 ..
-            } if answered.contains(id.as_str()) => Some(capped(&match arguments
-                .get("command")
-                .and_then(serde_json::Value::as_str)
-            {
-                Some(command) if name == "bash" => command.to_owned(),
-                _ => format!("{name} {}", serde_json::Value::Object(arguments.clone())),
-            })),
+            } if answered.contains(id.as_str()) => Some(clamp(
+                &call_line(name, arguments),
+                CONTEXT_CHARS,
+                CONTEXT_NAME,
+                CONTEXT_NEXT,
+            )),
             _ => None,
         })
         .take(RECENT_CALLS)
         .collect();
     calls.reverse();
     calls
+}
+
+/// Incident: a `write` or `edit` call's arguments are the file's body, so a judgement reads the
+/// tool and the path it names, never the payload it carries.
+fn call_line(name: &str, arguments: &serde_json::Map<String, serde_json::Value>) -> String {
+    let text = |key: &str| arguments.get(key).and_then(serde_json::Value::as_str);
+    if name == "bash" {
+        return text("command").unwrap_or(name).to_owned();
+    }
+    match text("path").or_else(|| text("file_path")) {
+        Some(path) => format!("{name} {path}"),
+        None => name.to_owned(),
+    }
 }
 
 fn class(command: Option<&str>) -> &'static str {
@@ -548,27 +566,82 @@ pub fn message_id(text: &str) -> String {
 pub struct Endpoint {
     pub model: String,
     pub url: String,
-    /// The retired Laya checkpoint `models.classifier` still names, now read as Jev.
-    pub legacy: Option<String>,
 }
 
-/// Incident: the owner's config names the Laya checkpoint `english` with a loopback URL no
-/// sidecar answers any more, so a name with no provider prefix means Jev at OpenRouter.
-pub fn endpoint(config: &UserConfig) -> Option<Endpoint> {
-    let named = config.models.as_ref()?.classifier.clone()?;
+pub enum Armed {
+    Off,
+    At(Endpoint),
+    /// A config that names a classifier which will not run, and why.
+    Refused(String),
+}
+
+/// Incident: a config may still name the retired Laya checkpoint, whose loopback URL no sidecar
+/// answers any more, and the bearer is the user's own OpenRouter account key.
+pub fn arm(config: &UserConfig) -> Armed {
+    let Some(named) = (config.models.as_ref()).and_then(|models| models.classifier.clone()) else {
+        return Armed::Off;
+    };
     if !named.contains('/') {
-        return Some(Endpoint {
-            model: JEV.to_owned(),
-            url: DEFAULT_URL.to_owned(),
-            legacy: Some(named),
-        });
+        return Armed::Refused(format!(
+            "models.classifier `{named}` is a retired Laya checkpoint and no longer runs, so the classifier stays off; `{JEV}` is its replacement at OpenRouter"
+        ));
     }
-    let url = (config.classifier.as_ref()).and_then(|block| block.url.clone());
-    Some(Endpoint {
+    let Some(configured) = (config.classifier.as_ref()).and_then(|block| block.url.clone()) else {
+        return Armed::At(Endpoint {
+            model: named,
+            url: DEFAULT_URL.to_owned(),
+        });
+    };
+    if !reachable(&configured) {
+        return Armed::Refused(format!(
+            "classifier.url {configured} is neither {DEFAULT_URL} nor loopback, so the classifier stays off rather than send the OpenRouter key there"
+        ));
+    }
+    Armed::At(Endpoint {
         model: named,
-        url: url.unwrap_or_else(|| DEFAULT_URL.to_owned()),
-        legacy: None,
+        url: configured,
     })
+}
+
+/// Invariant: a configured URL is honoured only where the account key may go, which is the
+/// provider's own host over TLS and this machine.
+fn reachable(url: &str) -> bool {
+    let Some(named) = host(url) else {
+        return false;
+    };
+    (url.starts_with("https://") && host(DEFAULT_URL) == Some(named))
+        || matches!(named, "127.0.0.1" | "localhost" | "::1")
+}
+
+fn host(url: &str) -> Option<&str> {
+    let rest = (url.strip_prefix("https://")).or_else(|| url.strip_prefix("http://"))?;
+    let authority = rest.split('/').next()?;
+    let host = authority.rsplit('@').next()?;
+    match host.strip_prefix('[') {
+        Some(literal) => literal.split(']').next(),
+        None => Some(host.split(':').next()?),
+    }
+}
+
+/// One question with a short deadline: does the endpoint answer at all, or is a row green over a
+/// key that was revoked? Answers the round trip in milliseconds.
+pub fn probe(at: &Endpoint, key: Option<&str>) -> Result<u64, String> {
+    let request = DecisionRequest {
+        state: [("message".to_owned(), serde_json::json!("ping"))]
+            .into_iter()
+            .collect(),
+        questions: [(
+            "probe".to_owned(),
+            Question::Noul {
+                instructions: "Answer yes.".to_owned(),
+            },
+        )]
+        .into(),
+        model: Some(at.model.clone()),
+    };
+    let started = Instant::now();
+    yi_ai::decide::decide(&at.url, key, Duration::from_millis(PROBE_MS), &request)?;
+    Ok(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))
 }
 
 pub fn timing(block: &ClassifierConfig) -> Option<Timing> {
@@ -607,13 +680,18 @@ pub fn thresholds(block: &ClassifierConfig) -> Thresholds {
 }
 
 pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConfig) -> Vec<String> {
-    let Some(Endpoint { model, url, .. }) = endpoint(config) else {
-        return Vec::new();
+    let mut warnings = Vec::new();
+    let Endpoint { model, url } = match arm(config) {
+        Armed::Off => return warnings,
+        Armed::At(at) => at,
+        Armed::Refused(why) => {
+            warnings.push(why);
+            return warnings;
+        }
     };
     let block = config.classifier.clone().unwrap_or_default();
     let timing = timing(&block);
     let broker = session.permission_broker();
-    let mut warnings = Vec::new();
     if let (Some(Timing::AfterDelay(_)), Some(broker)) = (&timing, broker.as_ref())
         && !broker.asks_close_on_settle()
     {
@@ -656,7 +734,7 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
             journal(session),
         );
         broker.set_approver(Arc::new(
-            approver.with_context(project, session.history_handle()),
+            approver.with_context(project, session.history_tail(HISTORY_TAIL)),
         ));
     }
     let Some(rules) = session.rules_engine() else {
@@ -688,27 +766,38 @@ fn journal(session: &AgentSession) -> Record {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_legacy_laya_checkpoint_means_jev_at_openrouter_and_a_named_model_keeps_its_url()
+    fn a_retired_laya_checkpoint_stays_off_and_a_named_model_keeps_a_url_it_may_reach()
     -> serde_json::Result<()> {
         let (owners, _) = yi_types::config::parse(
             r#"{"models":{"classifier":"english"},"classifier":{"url":"http://127.0.0.1:8000","threshold":0.9}}"#,
         )?;
-        let jev = super::endpoint(&owners);
-        assert_eq!(
-            jev.as_ref()
-                .map(|at| (at.model.as_str(), at.url.as_str(), at.legacy.as_deref())),
-            Some((super::JEV, "https://openrouter.ai/api", Some("english")))
+        assert!(
+            matches!(super::arm(&owners), super::Armed::Refused(why) if why.contains("english")),
+            "the Laya era config must not be repointed at a paid remote model"
         );
         let (own, _) = yi_types::config::parse(
             r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:9"}}"#,
         )?;
-        let named = super::endpoint(&own);
-        assert_eq!(
-            named
-                .as_ref()
-                .map(|at| (at.url.as_str(), at.legacy.is_none())),
-            Some(("http://127.0.0.1:9", true))
+        let at = match super::arm(&own) {
+            super::Armed::At(at) => at,
+            _ => {
+                return Err(serde_json::Error::io(std::io::Error::other(
+                    "arm refused loopback",
+                )));
+            }
+        };
+        assert_eq!(at.url, "http://127.0.0.1:9");
+        let (lan, _) = yi_types::config::parse(
+            r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://not-openrouter.example:8000"}}"#,
+        )?;
+        assert!(
+            matches!(super::arm(&lan), super::Armed::Refused(why) if why.contains("not-openrouter.example")),
+            "the account key must not reach a host off this machine"
         );
+        let (plain, _) = yi_types::config::parse(
+            r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://openrouter.ai/api"}}"#,
+        )?;
+        assert!(matches!(super::arm(&plain), super::Armed::Refused(_)));
         Ok(())
     }
 

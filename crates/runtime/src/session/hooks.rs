@@ -289,6 +289,25 @@ impl AgentSession {
         })
     }
 
+    /// Invariant: a judgement reads the tail, so its cost is the bound and not the session; the
+    /// whole transcript is cloned only for a child's fork.
+    pub fn history_tail(&self, tail: usize) -> Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            shared
+                .messages
+                .lock()
+                .map(|messages| {
+                    let start = messages.len().saturating_sub(tail);
+                    messages
+                        .get(start..)
+                        .map(<[AgentMessage]>::to_vec)
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        })
+    }
+
     /// Summed under the lock, not over a history clone; `None` when poisoned, never a fake `0.0`.
     /// The flag is true when a reply came back without usage, so the sum is a lower bound.
     pub fn cost_handle(&self) -> Arc<dyn Fn() -> Option<(f64, bool)> + Send + Sync> {

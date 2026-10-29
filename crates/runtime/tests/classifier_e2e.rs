@@ -1062,7 +1062,10 @@ fn defaults() -> yi_runtime::classifier::Thresholds {
 }
 
 /// The transcript the recorded question was asked after: the task, then answered calls.
-fn transcript(task: &str, commands: &[&str]) -> Result<Vec<AgentMessage>, Box<dyn Error>> {
+pub(crate) fn transcript(
+    task: &str,
+    commands: &[&str],
+) -> Result<Vec<AgentMessage>, Box<dyn Error>> {
     let calls: Vec<serde_json::Value> = (commands.iter().enumerate())
         .map(|(index, command)| {
             serde_json::json!({"type": "toolCall", "id": format!("c{index}"), "name": "bash", "arguments": {"command": command}})

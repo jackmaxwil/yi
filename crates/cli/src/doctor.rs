@@ -92,25 +92,29 @@ fn classifier_answers(site: &Site) -> Finding {
     let Ok((config, _)) = read_config(&site.home) else {
         return ok("see config");
     };
-    let Some(yi_runtime::classifier::Endpoint { model, url, legacy }) =
-        yi_runtime::classifier::endpoint(&config)
-    else {
-        return ok("off; `yi setup` offers it");
+    let at = match yi_runtime::classifier::arm(&config) {
+        yi_runtime::classifier::Armed::Off => return ok("off; `yi setup` offers it"),
+        yi_runtime::classifier::Armed::Refused(why) => return fail(why),
+        yi_runtime::classifier::Armed::At(at) => at,
     };
-    let read_as = legacy
-        .map(|named| {
-            format!("; models.classifier `{named}` is a retired Laya checkpoint, read as {model}")
-        })
-        .unwrap_or_default();
-    if yi_runtime::auth::stored_key(&site.home, "openrouter").is_none() {
+    let Some(key) = yi_runtime::auth::stored_key(&site.home, "openrouter") else {
         return fail(format!(
-            "{model} at {url} needs an OpenRouter key{read_as}; {}",
+            "{} at {} needs an OpenRouter key; {}",
+            at.model,
+            at.url,
             yi_runtime::auth::missing_message("openrouter")
         ));
+    };
+    match yi_runtime::classifier::probe(&at, Some(key.expose())) {
+        Ok(ms) => ok(format!(
+            "{} at {} answered in {ms} ms; typed messages, judged commands and the working directory leave the machine",
+            at.model, at.url
+        )),
+        Err(error) => fail(format!(
+            "{} at {} did not answer: {error}; check the network, the key (`yi auth openrouter`) and `classifier.url`",
+            at.model, at.url
+        )),
     }
-    ok(format!(
-        "{model} at {url}; typed messages and judged commands leave the machine{read_as}"
-    ))
 }
 
 fn catalog_age(site: &Site) -> Finding {

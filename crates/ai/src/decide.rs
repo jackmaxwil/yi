@@ -1,5 +1,5 @@
+use std::sync::OnceLock;
 use std::time::Duration;
-
 use yi_types::classifier::{DecisionRequest, DecisionResponse};
 
 const BODY_CAP: u64 = 64 * 1024;
@@ -14,11 +14,10 @@ pub fn decide(
 ) -> Result<DecisionResponse, String> {
     let url = format!("{}/v1/systemone", base_url.trim_end_matches('/'));
     let body = serde_json::to_string(request).map_err(|error| error.to_string())?;
-    let agent = ureq::AgentBuilder::new()
-        .user_agent(yi_types::USER_AGENT)
+    let mut call = agent()
+        .post(&url)
         .timeout(deadline)
-        .build();
-    let mut call = agent.post(&url).set("content-type", "application/json");
+        .set("content-type", "application/json");
     if let Some(key) = key {
         call = call.set("authorization", &format!("Bearer {key}"));
     }
@@ -33,4 +32,16 @@ pub fn decide(
     )
     .map_err(|error| error.to_string())?;
     serde_json::from_str(&text).map_err(|error| format!("not a decision: {error}"))
+}
+
+/// Incident: the endpoint moved from loopback to a remote HTTPS host, so a per-call agent paid a
+/// DNS lookup and a TLS handshake on every judged command.
+fn agent() -> &'static ureq::Agent {
+    static SHARED: OnceLock<ureq::Agent> = OnceLock::new();
+    SHARED.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .user_agent(yi_types::USER_AGENT)
+            .max_idle_connections(8)
+            .build()
+    })
 }

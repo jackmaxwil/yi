@@ -2049,6 +2049,85 @@ fn doctor_lines(output: &Output) -> Vec<String> {
     stdout(output).lines().map(str::to_owned).collect()
 }
 
+/// Answers one request with `body` and hands back what it read.
+fn answering(body: &'static str) -> std::io::Result<(u16, std::thread::JoinHandle<String>)> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let handle = std::thread::spawn(move || {
+        let mut seen = String::new();
+        if let Ok((stream, _)) = listener.accept() {
+            let mut reader = BufReader::new(stream);
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut sent = vec![0; length];
+            let _ = reader.read_exact(&mut sent);
+            seen = String::from_utf8_lossy(&sent).into_owned();
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = reader.get_mut().write_all(reply.as_bytes());
+        }
+        seen
+    });
+    Ok((port, handle))
+}
+
+/// The classifier row answers for the endpoint it names: a stored key and an endpoint that
+/// answers is ok, the same config without the key is a FAIL the user can act on, and the probe
+/// names the model it asked.
+#[test]
+fn doctor_answers_for_the_classifier_endpoint() -> TestResult {
+    let workspace = Workspace::new("doctor-classifier")?;
+    let yi_dir = workspace.0.join("home/.yi");
+    std::fs::create_dir_all(&yi_dir)?;
+    let (port, served) = answering(r#"{"answers":{"probe":{"type":"noul","noul":0.9}}}"#)?;
+    std::fs::write(
+        yi_dir.join("config.json"),
+        format!(
+            r#"{{"models":{{"classifier":"typesafe/jev-1.13"}},"classifier":{{"url":"http://127.0.0.1:{port}"}}}}"#
+        ),
+    )?;
+    let keyless = workspace.yi_env(&["doctor"], NO_KERNEL)?;
+    let lines = doctor_lines(&keyless);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("FAIL  classifier")
+                && line.contains("needs an OpenRouter key")),
+        "{lines:?}"
+    );
+    let tokens = yi_dir.join("providers/tokens");
+    std::fs::create_dir_all(&tokens)?;
+    std::fs::write(
+        tokens.join("openrouter.json"),
+        r#"{"version":1,"kind":"key","access":"sk-or-test","expires_ms":0}"#,
+    )?;
+    let keyed = workspace.yi_env(&["doctor"], NO_KERNEL)?;
+    let lines = doctor_lines(&keyed);
+    assert!(
+        lines.iter().any(|line| line.starts_with("ok    classifier")
+            && line.contains("typesafe/jev-1.13")
+            && line.contains("answered")),
+        "{lines:?}"
+    );
+    let seen: Value = serde_json::from_str(&served.join().map_err(|_| "the endpoint thread")?)?;
+    assert_eq!(
+        seen["model"], "typesafe/jev-1.13",
+        "the probe names the configured model"
+    );
+    Ok(())
+}
+
 /// A dead socket file is the one repair `doctor --fix` makes without asking; a ledger row
 /// whose root is gone is reported and left to the daemon that owns the file.
 #[test]

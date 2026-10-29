@@ -845,6 +845,8 @@ async fn after_delay_warns_where_prompts_never_close() -> Result<(), Box<dyn Err
     Ok(())
 }
 
+type Brokered = (Arc<yi_runtime::PermissionBroker>, Vec<String>, AgentSession);
+
 /// The session shape every approval surface builds before `classifier::attach` runs: an
 /// auto-mode broker behind the runtime wiring, then a classifier config parsed from `raw`.
 fn brokered_with_classifier(
@@ -854,6 +856,17 @@ fn brokered_with_classifier(
     extra: &str,
     port: u16,
 ) -> Result<(Arc<yi_runtime::PermissionBroker>, Vec<String>), Box<dyn Error>> {
+    let (broker, warnings, _session) = brokered_session(name, asker, close_on_settle, extra, port)?;
+    Ok((broker, warnings))
+}
+
+fn brokered_session(
+    name: &str,
+    asker: Option<yi_runtime::Asker>,
+    close_on_settle: bool,
+    extra: &str,
+    port: u16,
+) -> Result<Brokered, Box<dyn Error>> {
     let root = scratch(name)?;
     let home = root.join("home");
     std::fs::create_dir_all(&home)?;
@@ -905,7 +918,7 @@ fn brokered_with_classifier(
     );
     let (config, _) = yi_types::config::parse(&raw)?;
     let warnings = yi_runtime::classifier::attach(&session, &root, &home, &config);
-    Ok((broker, warnings))
+    Ok((broker, warnings, session))
 }
 
 /// The OpenRouter key `yi login openrouter` stores under `home`, which the classifier needs.
@@ -1943,6 +1956,62 @@ async fn an_unset_classifier_threshold_points_at_0_9_through_attach() -> Result<
     Ok(())
 }
 
+/// The question a judgement sends is the one `attach` builds from the live session: the project
+/// it read from the broker and the task and answered calls of the session's own transcript.
+#[tokio::test]
+async fn attach_sends_the_sessions_project_task_and_answered_calls() -> Result<(), Box<dyn Error>> {
+    const SAFE: &str =
+        r#"{"model":"typesafe/jev-1.13-20260917","answers":{"safe":{"type":"noul","noul":0.95}}}"#;
+    let (port, served) = crate::classifier_e2e::sidecar(vec![SAFE])?;
+    let asker: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let (broker, warnings, session) =
+        brokered_session("yi-attach-question", Some(asker), false, "", port)?;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    session.seed_messages(crate::classifier_e2e::transcript(
+        "tidy the widget code",
+        &["echo one", "echo two"],
+    )?);
+    let mut args = serde_json::Map::new();
+    args.insert("command".to_owned(), serde_json::json!("cargo publish"));
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c9", &args, None);
+    assert!(outcome.allowed, "{}", outcome.reason);
+    let seen = served.join().map_err(|_| "the endpoint thread panicked")?;
+    let sent: serde_json::Value = serde_json::from_str(seen.first().ok_or("nothing sent")?)?;
+    let state = &sent["state"];
+    assert_eq!(state["user task"], "tidy the widget code");
+    assert_eq!(
+        state["recent commands"],
+        serde_json::json!(["echo one", "echo two"])
+    );
+    let project = &state["project"];
+    assert_eq!(project["protected branches"], serde_json::json!(["main"]));
+    assert_eq!(
+        project["writable"].as_array().map(Vec::len),
+        Some(1),
+        "attach read the writable roots off the broker: {project:?}"
+    );
+    assert_eq!(project["root"], project["writable"][0]);
+    assert_eq!(
+        state
+            .as_object()
+            .map(|map| map.keys().cloned().collect::<Vec<_>>()),
+        Some(
+            [
+                "tool",
+                "command",
+                "cwd",
+                "why Yi asks",
+                "user task",
+                "recent commands",
+                "project"
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        ),
+        "the measured V2 question's keys, in its order"
+    );
+    Ok(())
+}
 fn journal_text(root: &std::path::Path) -> Result<String, Box<dyn Error>> {
     fn visit(
         dir: &std::path::Path,
