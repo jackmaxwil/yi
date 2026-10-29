@@ -96,6 +96,7 @@ const FLAGS: &[Flag] = &[
     Flag { name: "continue", value: None, summary: "resume the newest session for this directory" },
     Flag { name: "session", value: Some("id"), summary: "resume this session" },
     Flag { name: "schema", value: Some("schema"), summary: "answer JSON valid against this schema" },
+    Flag { name: "check", value: Some("CMD"), summary: "after ask: re-prompt until this command exits 0" },
     Flag { name: "since", value: Some("span"), summary: "after stats: fold the sessions of this window" },
     Flag { name: "by", value: Some("axis"), summary: "after stats: group by model, upstream, day, prices or plan" },
     Flag { name: "top", value: Some("n"), summary: "after stats: list the n costliest sessions" },
@@ -148,6 +149,7 @@ const UNREAD: &[(&str, &str)] = &[
     ("thinking", "set \"thinking\" in ~/.yi/config.json"),
     ("system", "pass it to `yi ask` or `yi tui`"),
     ("schema", "pass it to `yi ask`"),
+    ("check", "pass it to `yi ask`"),
     ("deadline", "pass it to `yi ask` or a headless drive"),
 ];
 

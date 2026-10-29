@@ -83,6 +83,29 @@ pub(crate) fn evidence_once(first: bool, evidence: String) -> String {
     }
 }
 
+/// Why a check did not pass, typed so a caller can release instead of re-prompting when the
+/// failure is not the model's to fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckFailure {
+    /// A Claude Code shell hook refused the command.
+    Refused(String),
+    Spawn(String),
+    TimedOut(u64),
+    /// The command ran and its exit was not 0; the evidence is the viewed capture.
+    Red(String),
+}
+
+impl CheckFailure {
+    pub fn evidence(&self) -> String {
+        match self {
+            Self::Refused(why) => why.clone(),
+            Self::Spawn(error) => format!("goal check failed to run: {error}"),
+            Self::TimedOut(ms) => format!("goal check timed out after {ms} ms"),
+            Self::Red(evidence) => evidence.clone(),
+        }
+    }
+}
+
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
 pub(crate) fn run_check(
     check: &str,
@@ -90,7 +113,29 @@ pub(crate) fn run_check(
     timeout_ms: u64,
     hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> Result<(), String> {
-    crate::claude_hooks::guard_shell(hooks, check, cwd)?;
+    run_check_typed_under(check, cwd, timeout_ms, hooks).map_err(|failed| failed.evidence())
+}
+
+/// [`run_check`] without a session's hooks, its failure still typed: `yi ask --check` releases
+/// on a spawn or a timeout and only re-prompts a check that ran and was red.
+///
+/// # Errors
+/// Any check that is not exit 0, with the reason it did not run.
+pub fn run_check_typed(
+    check: &str,
+    cwd: &std::path::Path,
+    timeout_ms: u64,
+) -> Result<(), CheckFailure> {
+    run_check_typed_under(check, cwd, timeout_ms, None)
+}
+
+fn run_check_typed_under(
+    check: &str,
+    cwd: &std::path::Path,
+    timeout_ms: u64,
+    hooks: Option<&crate::claude_hooks::Hooks>,
+) -> Result<(), CheckFailure> {
+    crate::claude_hooks::guard_shell(hooks, check, cwd).map_err(CheckFailure::Refused)?;
     let mut command = yi_tools::keyless_command("sh");
     command.arg("-c").arg(check).current_dir(cwd);
     let deadline = Instant::now()
@@ -98,18 +143,18 @@ pub(crate) fn run_check(
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
     let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP)
-        .map_err(|error| format!("goal check failed to run: {error}"))?;
+        .map_err(CheckFailure::Spawn)?;
     if capture.cancelled {
-        return Err(format!("goal check timed out after {timeout_ms} ms"));
+        return Err(CheckFailure::TimedOut(timeout_ms));
     }
     match capture.exit_code {
         Some(0) => Ok(()),
         code => {
             let exit = code.map_or_else(|| "signal".to_owned(), |code| code.to_string());
-            Err(format!(
+            Err(CheckFailure::Red(format!(
                 "goal check `{check}` exited {exit}:\n{}",
                 check_view(check, cwd, None, &capture)
-            ))
+            )))
         }
     }
 }

@@ -42,6 +42,8 @@ pub(crate) struct Args {
     pub(crate) deadline: Option<u64>,
     pub(crate) resume: Resume,
     pub(crate) schema: Option<String>,
+    /// `--check CMD`: after each turn of `yi ask`, re-prompt until this command exits 0.
+    pub(crate) check: Vec<String>,
     pub(crate) stats: stats::Query,
     pub(crate) prompt: String,
 }
@@ -92,6 +94,7 @@ pub(super) fn parse_from(
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
+    let mut check = Vec::new();
     let mut stats_flags = stats::Flags::default();
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_iter(argv);
@@ -134,6 +137,7 @@ pub(super) fn parse_from(
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
+            Long("check") => check.push(parser.value()?.string()?),
             Long("since") if command == "stats" => {
                 stats_flags.since = Some(parser.value()?.string()?)
             }
@@ -191,6 +195,7 @@ pub(super) fn parse_from(
             (None, false) => Resume::Fresh,
         },
         schema,
+        check,
         stats: stats_flags.typed()?,
         prompt: prompt_parts.join(" "),
     };

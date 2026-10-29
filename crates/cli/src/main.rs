@@ -3,6 +3,7 @@
 
 mod args;
 mod ask;
+mod ask_check;
 mod catalog;
 mod commands;
 mod debug;

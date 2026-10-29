@@ -1,5 +1,4 @@
 use std::time::{Duration, Instant};
-
 use yi_runtime::Status;
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
@@ -87,6 +86,8 @@ pub(super) fn run(args: &Args) -> i32 {
         headless: !interactive,
     };
     let json = args.json;
+    let checks = args.check.clone();
+    let dir = crate::effective_cwd(args);
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
@@ -94,12 +95,54 @@ pub(super) fn run(args: &Args) -> i32 {
         {
             return refuse(json, 1, &ErrorClass::Harness("busy".into()), "session busy");
         }
-        stream(&session, &host, modes, schema.as_ref(), (ends, deadline)).await
+        let screen = Screen {
+            session: &session,
+            host: &host,
+            modes,
+            schema: schema.as_ref(),
+            ends,
+            deadline,
+        };
+        let mut outcome = stream(&screen).await;
+        if !checks.is_empty() {
+            outcome = crate::ask_check::chase(&screen, &checks, &dir, outcome).await;
+        }
+        if let Some((said, line)) = leftovers_now(&session, &host) {
+            eprintln!("warning: {said}");
+            if json {
+                println!("{line}");
+            }
+        }
+        if json {
+            println!("{}", outcome.line);
+        }
+        outcome.code
     });
     release_lane(lane.as_deref());
     runtime.shutdown_timeout(left(deadline));
     yi_runtime::spend::drain_settled(deadline);
     code
+}
+
+/// The family a run leaves live, named once after its last turn.
+fn leftovers_now(
+    session: &yi_runtime::AgentSession,
+    host: &yi_runtime::SubagentHost,
+) -> Option<(String, serde_json::Value)> {
+    let status = host.status();
+    let members = status.get("members").and_then(serde_json::Value::as_array);
+    let services: Vec<String> = members
+        .into_iter()
+        .flatten()
+        .filter(|member| member["service"] == true)
+        .filter_map(|member| member["name"].as_str().map(str::to_owned))
+        .collect();
+    let family = Family {
+        members: &host.states(),
+        services: &services,
+        requests: &host.open_requests(),
+    };
+    leftovers(&family, session.pending_count())
 }
 
 /// Invariant: a `--json` run that ends before the loop still closes with a `final` line.
@@ -164,11 +207,11 @@ fn emit_structured(schema: &yi_runtime::schema::Schema, said: &[String], json: b
 }
 
 #[derive(Clone, Copy)]
-struct Modes {
-    json: bool,
-    eval: bool,
-    no_deltas: bool,
-    headless: bool,
+pub(super) struct Modes {
+    pub(super) json: bool,
+    pub(super) eval: bool,
+    pub(super) no_deltas: bool,
+    pub(super) headless: bool,
 }
 
 fn left(deadline: Option<Instant>) -> Duration {
@@ -189,46 +232,50 @@ fn patience(holding: bool, ends: Option<Instant>) -> Option<Duration> {
     }
 }
 
-async fn stream(
-    session: &yi_runtime::AgentSession,
-    host: &yi_runtime::SubagentHost,
-    modes: Modes,
-    schema: Option<&yi_runtime::schema::Schema>,
-    (ends, deadline): (Option<Instant>, Option<Instant>),
-) -> i32 {
+/// One turn: its exit, its final line, and whether a writing or executing tool ran.
+pub(super) struct Outcome {
+    pub(super) code: i32,
+    pub(super) kind: String,
+    pub(super) acted: bool,
+    pub(super) line: serde_json::Value,
+}
+
+/// Everything a turn streams from: the session, its host, how to print, and its clock.
+pub(super) struct Screen<'a> {
+    pub(super) session: &'a yi_runtime::AgentSession,
+    pub(super) host: &'a yi_runtime::SubagentHost,
+    pub(super) modes: Modes,
+    pub(super) schema: Option<&'a yi_runtime::schema::Schema>,
+    pub(super) ends: Option<Instant>,
+    pub(super) deadline: Option<Instant>,
+}
+
+pub(super) async fn stream(screen: &Screen<'_>) -> Outcome {
+    let (session, host, modes, schema, ends, deadline) = (
+        screen.session,
+        screen.host,
+        screen.modes,
+        screen.schema,
+        screen.ends,
+        screen.deadline,
+    );
     let held = || host.holds_owner();
     let working = || host.holds_owner() || session.status() != Status::Idle;
-    let (code, last) = follow(session.subscribe(), [&held, &working], modes, schema, ends).await;
+    let (code, line, acted) =
+        follow(session.subscribe(), [&held, &working], modes, schema, ends).await;
     // Incident: nothing drove the runtime after the deadline, so a looping cell outlived it.
     if session.status() != Status::Idle {
         session.abort();
         let _still_busy_is_left_to_the_shutdown =
             tokio::time::timeout(left(deadline), session.wait_idle()).await;
     }
-    let json = modes.json;
-    let status = host.status();
-    let members = status.get("members").and_then(serde_json::Value::as_array);
-    let services: Vec<String> = members
-        .into_iter()
-        .flatten()
-        .filter(|member| member["service"] == true)
-        .filter_map(|member| member["name"].as_str().map(str::to_owned))
-        .collect();
-    let family = Family {
-        members: &host.states(),
-        services: &services,
-        requests: &host.open_requests(),
-    };
-    if let Some((said, line)) = leftovers(&family, session.pending_count()) {
-        eprintln!("warning: {said}");
-        if json {
-            println!("{line}");
-        }
+    let kind = line["kind"].as_str().unwrap_or_default().to_owned();
+    Outcome {
+        code,
+        kind,
+        acted,
+        line,
     }
-    if json {
-        println!("{last}");
-    }
-    code
 }
 
 struct Family<'a> {
@@ -352,12 +399,13 @@ async fn follow(
     }: Modes,
     schema: Option<&yi_runtime::schema::Schema>,
     ends: Option<Instant>,
-) -> (i32, serde_json::Value) {
+) -> (i32, serde_json::Value, bool) {
     let (mut answer, mut said, mut exit) = (String::new(), Vec::new(), 0);
     let (mut holding, mut ended) = (false, false);
     let (mut last_stop, mut said_anything, mut due) = (None, false, false);
     let (mut last_error, mut finished, mut schema_failed) = (None, false, false);
     let (mut calls, mut denied) = (std::collections::HashMap::new(), None);
+    let mut acted = false;
     loop {
         let next = match patience(holding, ends) {
             None => yi_runtime::next_event(&mut events).await,
@@ -431,8 +479,11 @@ async fn follow(
         }
         match &event {
             AgentEvent::ToolExecutionStart {
-                tool_call_id, args, ..
+                tool_call_id,
+                tool_name,
+                args,
             } => {
+                acted |= super::ask_check::PROGRESS.contains(&tool_name.as_str());
                 calls.insert(tool_call_id.clone(), args.clone());
             }
             AgentEvent::ToolExecutionEnd {
@@ -531,7 +582,7 @@ async fn follow(
     if line["kind"] == "quota" {
         exit = EXIT_QUOTA;
     }
-    (exit, line)
+    (exit, line, acted)
 }
 
 #[cfg(test)]
@@ -834,7 +885,7 @@ mod tests {
             headless: true,
         };
         let run = super::follow(receiver, [&never, &never], modes, Some(&schema), None);
-        let (code, line) = runtime.block_on(run);
+        let (code, line, _) = runtime.block_on(run);
         assert_ne!(code, 0);
         assert_eq!(
             (&line["kind"], &line["class"]),
@@ -907,7 +958,7 @@ mod tests {
             headless: true,
         };
         let run = super::follow(receiver, [&holds_once, &never], modes, None, None);
-        let (code, line) = runtime.block_on(run);
+        let (code, line, _) = runtime.block_on(run);
         assert_eq!((code, &line["kind"]), (0, &"stop".into()));
         Ok(())
     }
