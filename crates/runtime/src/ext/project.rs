@@ -227,16 +227,24 @@ pub fn listed(skill: &crate::skills::Skill, home: &Path, named: &[String]) -> bo
     skill.path.starts_with(home.join(".yi/skills")) || named.contains(&skill.name)
 }
 
+/// Incident: a ruler generator header line leaves a blank line behind, so a twin render without
+/// the header hashed apart and both instruction files attached.
 fn instruction_text(content: &str) -> String {
     let is_comment = |line: &&str| {
         let line = line.trim();
         line.starts_with("<!--") && line.find("-->") == line.len().checked_sub(3)
     };
-    content
+    let kept = content
         .lines()
         .filter(|line| !is_comment(line))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect::<Vec<_>>();
+    match (
+        kept.iter().position(|line| !line.trim().is_empty()),
+        kept.iter().rposition(|line| !line.trim().is_empty()),
+    ) {
+        (Some(first), Some(last)) => kept[first..=last].join("\n"),
+        _ => String::new(),
+    }
 }
 
 fn committed(root: &Path, path: &Path, source: &str) -> bool {
