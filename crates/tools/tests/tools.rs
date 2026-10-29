@@ -5,10 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use yi_tools::{
-    BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools,
-    discover_exec_tools_within,
-};
+use yi_tools::{BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools};
 use yi_types::message::Content;
 
 use crate::poll::poll_until;
@@ -519,13 +516,14 @@ fn a_hung_exec_tool_is_skipped_and_the_others_load() -> TestResult {
     Ok(())
 }
 
-/// A 100 ms probe loads at a 300 ms deadline; a 600 ms probe is named as skipped.
+/// A 100 ms probe loads within the public deadline; a three-second probe is named as skipped.
 #[cfg(unix)]
 #[test]
-fn exec_tool_probes_stop_at_their_own_deadline() -> TestResult {
+fn exec_tool_probes_stop_at_the_public_deadline() -> TestResult {
     use std::os::unix::fs::PermissionsExt;
-    let dir = temp_dir("exec-deadline")?;
-    for (name, delay) in [("fast", "0.1"), ("slow", "0.6")] {
+    let fast_dir = temp_dir("exec-deadline-fast")?;
+    let slow_dir = temp_dir("exec-deadline-slow")?;
+    for (dir, name, delay) in [(&fast_dir, "fast", "0.1"), (&slow_dir, "slow", "3")] {
         let script = dir.join(name);
         fs::write(
             &script,
@@ -535,26 +533,16 @@ fn exec_tool_probes_stop_at_their_own_deadline() -> TestResult {
         )?;
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
     }
-    let mut discovered = None;
-    for _ in 0..5 {
-        let (tools, skipped) =
-            discover_exec_tools_within(&dir, std::time::Duration::from_millis(300));
-        assert!(
-            !tools.iter().any(|tool| tool.name() == "slow"),
-            "the 600 ms probe loaded past a 300 ms deadline"
-        );
-        if tools.iter().any(|tool| tool.name() == "fast") {
-            discovered = Some((tools, skipped));
-            break;
-        }
-    }
-    let (tools, skipped) = discovered.ok_or("the 100 ms probe timed out on all five attempts")?;
+    let (tools, skipped) = discover_exec_tools(&fast_dir);
     assert_eq!(tools.len(), 1, "{skipped:?}");
     assert_eq!(tools[0].name(), "fast");
+    assert!(skipped.is_empty(), "{skipped:?}");
+    let (tools, skipped) = discover_exec_tools(&slow_dir);
+    assert!(tools.is_empty(), "the three-second probe loaded");
     assert_eq!(skipped.len(), 1);
-    assert_eq!(skipped[0].path, dir.join("slow"));
+    assert_eq!(skipped[0].path, slow_dir.join("slow"));
     assert!(
-        skipped[0].reason.contains("timed out after 0.3s"),
+        skipped[0].reason.contains("timed out after 2s"),
         "{skipped:?}"
     );
     Ok(())

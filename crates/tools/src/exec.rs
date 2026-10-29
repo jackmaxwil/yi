@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use crate::process::{OUTPUT_CAP, run_captured};
+use crate::process::{OUTPUT_CAP, run_captured, run_captured_until};
 use crate::tool::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 
 pub struct ExecTool {
@@ -102,29 +102,36 @@ pub struct SkippedExecTool {
 }
 
 pub fn discover_exec_tools(dir: &Path) -> (Vec<ExecTool>, Vec<SkippedExecTool>) {
-    discover_exec_tools_within(dir, std::time::Duration::from_secs(2))
+    const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+    discover_within(dir, PROBE_DEADLINE)
 }
 
-pub fn discover_exec_tools_within(
+fn discover_within(
     dir: &Path,
     deadline: std::time::Duration,
 ) -> (Vec<ExecTool>, Vec<SkippedExecTool>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return (Vec::new(), Vec::new());
     };
+    let until = std::time::Instant::now() + deadline;
+    let never: crate::tool::CancelFlag = std::sync::Arc::new(|| false);
     let (mut tools, mut skipped) = (Vec::new(), Vec::new());
     for entry in entries.flatten() {
         let path = entry.path();
         if !is_executable_file(&path) {
             continue;
         }
+        let remaining = until.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            skipped.push(SkippedExecTool {
+                path,
+                reason: format!("schema probe timed out after {}s", deadline.as_secs_f64()),
+            });
+            continue;
+        }
         let mut command = crate::process::command(&path);
         command.arg("--schema");
-        let started = std::sync::Arc::new(std::sync::OnceLock::new());
-        let cancelled: crate::tool::CancelFlag = std::sync::Arc::new(move || {
-            started.get_or_init(std::time::Instant::now).elapsed() >= deadline
-        });
-        let capture = match run_captured(command, None, &cancelled, OUTPUT_CAP) {
+        let capture = match run_captured_until(command, None, &never, remaining, OUTPUT_CAP) {
             Ok(capture) => capture,
             Err(reason) => {
                 skipped.push(SkippedExecTool { path, reason });
@@ -174,4 +181,45 @@ fn is_executable_file(path: &Path) -> bool {
     fs::metadata(path)
         .map(|meta| meta.is_file())
         .unwrap_or(false)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::discover_within;
+    use crate::Tool;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn exec_tool_probes_share_one_deadline() -> TestResult {
+        let dir = crate::scratch::Scratch::new("yi-tools-exec-shared-deadline")?;
+        for name in ["hang-a", "hang-b"] {
+            let script = dir.join(name);
+            fs::write(&script, "#!/bin/sh\nsleep 30\n")?;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+        }
+        let started = std::time::Instant::now();
+        let (_tools, skipped) = discover_within(&dir, std::time::Duration::from_millis(300));
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+        assert_eq!(skipped.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn exec_tool_probes_stop_at_the_deadline() -> TestResult {
+        let dir = crate::scratch::Scratch::new("yi-tools-exec-deadline")?;
+        let script = dir.join("fast");
+        fs::write(
+            &script,
+            "#!/bin/sh\nsleep 0.1\nprintf '{\"name\":\"fast\",\"input_schema\":{\"type\":\"object\"}}'\n",
+        )?;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_millis(300));
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name(), "fast");
+        Ok(())
+    }
 }

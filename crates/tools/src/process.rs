@@ -289,6 +289,19 @@ pub fn run_captured(
     run_captured_live(command, stdin, cancelled, cap, None, None)
 }
 
+pub fn run_captured_until(
+    command: Command,
+    stdin: Option<Vec<u8>>,
+    cancelled: &CancelFlag,
+    timeout: Duration,
+    cap: usize,
+) -> Result<CommandCapture, String> {
+    let until = std::time::Instant::now() + timeout;
+    let caller = Arc::clone(cancelled);
+    let stop: CancelFlag = Arc::new(move || caller() || std::time::Instant::now() >= until);
+    run_captured(command, stdin, &stop, cap)
+}
+
 pub(crate) fn run_captured_live(
     command: Command,
     stdin: Option<Vec<u8>>,
