@@ -551,6 +551,7 @@ pub struct ChunkMapper {
     thinking_index: Option<usize>,
     tools: Vec<ToolSlot>,
     has_finish_reason: bool,
+    refusal: String,
 }
 
 impl ChunkMapper {
@@ -562,6 +563,7 @@ impl ChunkMapper {
             thinking_index: None,
             tools: Vec::new(),
             has_finish_reason: false,
+            refusal: String::new(),
         }
     }
 
@@ -634,6 +636,9 @@ impl ChunkMapper {
         };
         self.on_text_delta(delta, &mut events);
         self.on_thinking_delta(delta, &mut events);
+        if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
+            self.refusal.push_str(refusal);
+        }
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tool_call in tool_calls {
                 self.on_tool_call_delta(tool_call, &mut events);
@@ -791,7 +796,15 @@ impl ChunkMapper {
     }
 
     pub fn finish(mut self) -> Vec<AssistantMessageEvent> {
+        crate::leak::recover_in(&mut self.output);
         let mut events = content_end_events(&mut self.output, |_| true);
+        // Incident: a refusal arrived as `delta.refusal` and the turn ended as an empty Stop, so
+        // the loop read it as an answer with no text. It is the provider's answer, named.
+        if !self.refusal.is_empty() {
+            let refusal = std::mem::take(&mut self.refusal);
+            events.push(self.fail(&format!("The model refused: {refusal}")));
+            return events;
+        }
         let pending = matches!(
             &self.output,
             AgentMessage::Assistant {
@@ -874,10 +887,10 @@ fn run_request(
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
     let crate::request::Wire {
-        api_key,
-        proxy,
+        api_key: _,
+        proxy: _,
         stop,
-        extra,
+        extra: _,
         oauth,
         settle: _,
     } = wire;
@@ -887,15 +900,25 @@ fn run_request(
     let retried = crate::request::waiting(sender);
     let pumped = crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra, &retried),
+        || crate::request::openai_bearer_post(&url, model, body, wire, &retried),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
             }
-            if let Ok(payload) = parse_json_with_repair(&sse.data) {
-                for event in mapper.push_chunk(&payload) {
-                    let _ = sender.blocking_send(event);
-                }
+            let data = sse.data.trim();
+            if data.is_empty() {
+                return Ok(true);
+            }
+            // Incident: an unparsable line was dropped, so a body that stopped being SSE read as
+            // an empty turn; Anthropic has failed its turn on one since the mapper existed.
+            let payload = parse_json_with_repair(data).map_err(|error| {
+                format!(
+                    "Could not parse chat SSE event: {error}: {}",
+                    data.chars().take(200).collect::<String>()
+                )
+            })?;
+            for event in mapper.push_chunk(&payload) {
+                let _ = sender.blocking_send(event);
             }
             Ok(true)
         },

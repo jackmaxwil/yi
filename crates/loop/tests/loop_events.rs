@@ -1434,6 +1434,33 @@ async fn an_exhausted_quota_is_not_retried() {
     );
 }
 
+/// Incident: a 400 was classed transport http, so the loop sent it again with the 99-byte
+/// "the same turn runs again" steer; a 400 refuses the same bytes however many times it is sent.
+#[tokio::test]
+async fn a_400_body_ends_the_turn_with_no_retry_and_no_steer() {
+    let mut refused = faux_assistant_message(Vec::new(), StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut refused {
+        *error_message = Some(
+            "HTTP 400: {\"error\":{\"message\":\"Invalid schema for function 'done'\",\"type\":\"invalid_request_error\"}}"
+                .to_owned(),
+        );
+    }
+    let stream = Scripted::new(vec![
+        refused,
+        faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
+    ]);
+    let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
+    assert!(
+        !collected.iter().any(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE)),
+        "a 400 is final: {collected:?}"
+    );
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(answers, 1, "one request, not a second: {collected:?}");
+}
+
 /// Dies with a read timeout that delivered nothing ending the run: the driver saw a crash, not a resume.
 #[tokio::test]
 async fn a_read_timeout_that_showed_nothing_continues_the_run() {

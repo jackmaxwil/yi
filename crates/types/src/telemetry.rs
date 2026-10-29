@@ -90,6 +90,8 @@ impl Span {
 pub enum ErrorClass {
     Tool(String),
     Provider(String),
+    ProviderQuota,
+    ProviderOverflow,
     TransportHttp(u16),
     TransportTimeout,
     TransportProxy,
@@ -112,6 +114,15 @@ pub enum ErrorClass {
 /// plain 429 stays transport. One constant so a wording change cannot drift the scan.
 pub const QUOTA_STAMP: &str = "quota exhausted:";
 
+/// The bodies a provider sends when the request asks for more context than the model holds:
+/// OpenAI's `context_length_exceeded` and Anthropic's `prompt is too long`.
+const OVERFLOW: [&str; 4] = [
+    "context_length_exceeded",
+    "prompt is too long",
+    "maximum context length",
+    "input is too long",
+];
+
 impl ErrorClass {
     /// A provider's error text names its transport class when it can; the rest is the provider.
     pub fn from_provider_text(text: &str) -> Self {
@@ -119,13 +130,18 @@ impl ErrorClass {
         if lower.contains("no credential for provider") {
             return Self::RefusalNoKey;
         }
+        // Neither of these lifts on a resend, and both classed as transport http 400 and were sent
+        // again (see [`ErrorClass::is_transport`]).
+        if OVERFLOW.iter().any(|needle| lower.contains(needle)) {
+            return Self::ProviderOverflow;
+        }
         if let Some(rest) = lower.split("http ").nth(1)
             && let Some(code) = rest.split(|c: char| !c.is_ascii_digit()).next()
             && let Ok(status) = code.parse::<u16>()
         {
             // Incident: a quota 429 read as transport http and was re-sent; only the ai stamp is final.
             if lower.contains(&format!("http {status} {QUOTA_STAMP}")) {
-                return Self::Provider("quota".to_owned());
+                return Self::ProviderQuota;
             }
             return Self::TransportHttp(status);
         }
@@ -167,18 +183,37 @@ impl ErrorClass {
 }
 
 impl ErrorClass {
-    /// The wire failed, not the provider's answer: a rerun cannot duplicate anything.
+    /// The wire failed, not the provider's answer: a rerun cannot duplicate anything. Any other
+    /// 4xx refuses the same bytes again, so the loop must not spend a retry or a steer on one.
     pub fn is_transport(&self) -> bool {
-        matches!(
-            self,
-            Self::TransportHttp(_)
-                | Self::TransportTimeout
-                | Self::TransportProxy
-                | Self::TransportBody
-                | Self::TransportOs(_)
-                | Self::TransportTls
-                | Self::TransportClosed
-        )
+        match self {
+            Self::TransportHttp(status) => matches!(status, 408 | 409 | 429) || *status >= 500,
+            Self::TransportTimeout
+            | Self::TransportProxy
+            | Self::TransportBody
+            | Self::TransportOs(_)
+            | Self::TransportTls
+            | Self::TransportClosed => true,
+            Self::Tool(_)
+            | Self::Provider(_)
+            | Self::ProviderQuota
+            | Self::ProviderOverflow
+            | Self::RefusalUnknownModel
+            | Self::RefusalNoKey
+            | Self::RefusalPoolFull
+            | Self::RefusalConfig
+            | Self::RefusalWalled
+            | Self::RefusalLane
+            | Self::Invariant(_)
+            | Self::Harness(_)
+            | Self::Other(_) => false,
+        }
+    }
+
+    /// A routing refusal (`HTTP 404: No endpoints found`) lifts when the route or the request shape
+    /// changes; any other 4xx is the same bytes refused, and a resend only spends the retry wall.
+    pub fn is_wire_refusal(&self) -> bool {
+        self.is_transport() || *self == Self::TransportHttp(404)
     }
 }
 
@@ -187,6 +222,8 @@ impl std::fmt::Display for ErrorClass {
         match self {
             Self::Tool(kind) => write!(f, "tool:{kind}"),
             Self::Provider(kind) => write!(f, "provider:{kind}"),
+            Self::ProviderQuota => f.write_str("provider:quota"),
+            Self::ProviderOverflow => f.write_str("provider:overflow"),
             Self::TransportHttp(status) => write!(f, "transport:http_{status}"),
             Self::TransportTimeout => f.write_str("transport:timeout"),
             Self::TransportProxy => f.write_str("transport:proxy"),

@@ -29,6 +29,46 @@ fn the_session_leak_is_one_read_call() -> TestResult {
     Ok(())
 }
 
+/// Incident: a message quoting this module's own example in a fence ran the call it quoted.
+#[test]
+fn a_quoted_block_is_text_and_never_a_call() {
+    let fenced = format!("Here is the shape:\n\n```\n{LEAK}\n```\n");
+    assert!(recover(&fenced).is_none(), "a fenced example is prose");
+    let inline = format!("It prints `{LEAK}` in the prose.");
+    assert!(recover(&inline).is_none(), "an inline example is prose");
+    assert!(
+        recover(&format!("```\n{LEAK}\n```\n{LEAK}")).is_some(),
+        "a block outside the fence is still a call"
+    );
+}
+
+/// Incident: every message's first leaked call was `leak-0`, so a cut keyed by that id answered the
+/// wrong turn's call.
+#[test]
+fn two_messages_each_with_one_leak_get_distinct_ids() -> TestResult {
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let mut message = faux_assistant_message(vec![faux_text(LEAK)], StopReason::Stop);
+        assert!(recover_in(&mut message));
+        let AgentMessage::Assistant { content, .. } = &message else {
+            return Err("assistant".into());
+        };
+        let Some(Content::ToolCall { id, .. }) = content
+            .iter()
+            .find(|block| matches!(block, Content::ToolCall { .. }))
+        else {
+            return Err("no call".into());
+        };
+        ids.push(id.clone());
+    }
+    assert_ne!(
+        ids.first(),
+        ids.get(1),
+        "two messages share one id: {ids:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn prose_around_a_block_survives_and_a_number_reads_as_one() -> TestResult {
     let text = "Reading it now. <tool_call>read<arg_key>path</arg_key><arg_value>a.rs</arg_value><arg_key>limit</arg_key><arg_value>120</arg_value></tool_call> Then the rest.";
@@ -68,7 +108,8 @@ fn recover_in_turns_a_stop_into_a_tool_use_and_leaves_a_clean_message_alone() ->
     assert!(matches!(content.first(), Some(Content::Text { text, .. }) if text.is_empty()));
     assert!(matches!(
         content.get(1),
-        Some(Content::ToolCall { id, name, .. }) if id == "leak-0" && name == "read"
+        Some(Content::ToolCall { id, name, .. })
+            if id.starts_with("leak-") && id.ends_with("-0") && name == "read"
     ));
     let mut clean = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
     let before = clean.clone();

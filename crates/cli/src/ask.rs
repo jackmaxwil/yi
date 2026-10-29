@@ -319,7 +319,7 @@ fn quota_window(text: &str) -> Option<&'static str> {
 fn final_event(deadline: bool, answered: bool, error: Option<&str>) -> serde_json::Value {
     let class = error.map(ErrorClass::from_provider_text);
     let kind = match (&class, deadline, answered) {
-        (Some(ErrorClass::Provider(what)), ..) if what == "quota" => "quota",
+        (Some(ErrorClass::ProviderQuota), ..) => "quota",
         (Some(ErrorClass::TransportTimeout), ..) => "timeout",
         (Some(_), ..) => "error",
         (None, true, _) => "deadline",

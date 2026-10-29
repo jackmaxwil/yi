@@ -2,7 +2,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{LlmContext, Model, ToolChoice, ToolDef};
+use yi_types::model::{LlmContext, Model};
 
 use crate::breakpoints::Encoded;
 use crate::catalog::calculate_cost;
@@ -11,6 +11,8 @@ use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::openai::{OpenAiOptions, mapped_effort};
 use crate::request::{assistant_content_mut, content_end_events};
 use crate::transform::{system_text, transform_messages};
+
+mod convert;
 
 pub fn normalize_responses_tool_call_id(id: &str) -> String {
     id.chars()
@@ -277,58 +279,6 @@ fn freeform_arguments(input: &str) -> Map<String, Value> {
     arguments
 }
 
-fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
-    tools
-        .iter()
-        .map(|tool| match &tool.freeform {
-            Some(format) => json!({
-                "type": "custom",
-                "name": tool.name,
-                "description": tool.description,
-                "format": {
-                    "type": "grammar",
-                    "syntax": "lark",
-                    "definition": format.definition,
-                },
-            }),
-            None => {
-                let closed = crate::schema::strict_tool_json(
-                    &tool.parameters,
-                    strict,
-                    crate::schema::strict,
-                );
-                json!({
-                    "type": "function",
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": closed.as_ref().unwrap_or(&tool.parameters),
-                    "strict": closed.is_some(),
-                })
-            }
-        })
-        .collect()
-}
-
-fn convert_tool_choice(choice: &ToolChoice, tools: Option<&[ToolDef]>) -> Value {
-    match choice {
-        ToolChoice::Auto => json!("auto"),
-        ToolChoice::None => json!("none"),
-        ToolChoice::Tool(forced) => {
-            let emitted_as_custom = tools.is_some_and(|tools| {
-                tools
-                    .iter()
-                    .any(|tool| tool.name == forced.as_str() && tool.freeform.is_some())
-            });
-            let kind = if emitted_as_custom {
-                "custom"
-            } else {
-                "function"
-            };
-            json!({"type": kind, "name": forced.as_str()})
-        }
-    }
-}
-
 fn apply_reasoning(model: &Model, options: &OpenAiOptions, params: &mut Value) {
     let off = model
         .thinking_level_map
@@ -379,10 +329,13 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if let Some(tools) = &context.tools
         && !tools.is_empty()
     {
-        params["tools"] = Value::Array(convert_tools(tools, crate::compat::strict_tools(model)));
+        params["tools"] = Value::Array(convert::convert_tools(
+            tools,
+            crate::compat::strict_tools(model),
+        ));
     }
     if let Some(choice) = &context.tool_choice {
-        params["tool_choice"] = convert_tool_choice(choice, context.tools.as_deref());
+        params["tool_choice"] = convert::convert_tool_choice(choice, context.tools.as_deref());
     }
     apply_reasoning(model, options, &mut params);
     // No explicit breakpoint is known to be accepted on this wire; the provider caches its own
@@ -441,6 +394,7 @@ pub struct EventMapper {
     completed: bool,
     failed: bool,
     closed: bool,
+    refusal: String,
 }
 
 impl EventMapper {
@@ -454,6 +408,7 @@ impl EventMapper {
             completed: false,
             failed: false,
             closed: false,
+            refusal: String::new(),
         }
     }
 
@@ -597,6 +552,7 @@ impl EventMapper {
             }
             return Some(index);
         }
+        self.text_index = None;
         let content = assistant_content_mut(&mut self.output)?;
         let content_index = content.len();
         content.push(Content::ToolCall {
@@ -732,6 +688,7 @@ impl EventMapper {
 
     fn on_item_added(&mut self, item: &Value, events: &mut Vec<AssistantMessageEvent>) {
         match item.get("type").and_then(Value::as_str) {
+            Some("reasoning") => self.thinking_index = None,
             Some("function_call") => {
                 let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
                 let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
@@ -794,7 +751,16 @@ impl EventMapper {
         } else {
             StopReason::Stop
         };
-        self.set_stop(reason, None);
+        if self.refusal.is_empty() {
+            self.set_stop(reason, None);
+        } else {
+            // Incident: `response.refusal.*` ended the turn as an empty Stop and the loop read it
+            // as an answer with no text; the refusal is the provider's answer, named.
+            self.set_stop(
+                StopReason::Error,
+                Some(format!("The model refused: {}", self.refusal)),
+            );
+        }
         self.completed = true;
     }
 
@@ -830,6 +796,16 @@ impl EventMapper {
             "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
                 if let Some(delta) = payload.get("delta").and_then(Value::as_str) {
                     self.append_thinking(delta, &mut events);
+                }
+            }
+            "response.refusal.delta" => {
+                if let Some(delta) = payload.get("delta").and_then(Value::as_str) {
+                    self.refusal.push_str(delta);
+                }
+            }
+            "response.refusal.done" => {
+                if let Some(refusal) = payload.get("refusal").and_then(Value::as_str) {
+                    self.refusal = refusal.to_owned();
                 }
             }
             "response.output_item.added" => {
@@ -948,26 +924,17 @@ fn run_request(
     let mut mapper = EventMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
-    let resent = crate::request::pump_sse_with_resend(
+    let resent = match crate::request::pump_sse_with_resend(
         wire.stop,
-        || {
-            crate::request::openai_bearer_post(
-                &url,
-                model,
-                wire.api_key,
-                body,
-                wire.proxy,
-                wire.extra,
-                &retried,
-            )
-        },
+        || crate::request::openai_bearer_post(&url, model, body, wire, &retried),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
             }
-            let Ok(mut payload) = parse_json_with_repair(&sse.data) else {
-                return Ok(true);
-            };
+            // Incident: an unparsable line was skipped, so a body that stopped being SSE read as
+            // an empty turn; Anthropic has failed its turn on one since the mapper existed.
+            let mut payload = parse_json_with_repair(&sse.data)
+                .map_err(|error| format!("Could not parse Responses SSE event: {error}"))?;
             if payload.get("type").is_none()
                 && let Some(kind) = sse.event.as_deref().filter(|kind| !kind.is_empty())
             {
@@ -984,8 +951,19 @@ fn run_request(
             }
             Ok(true)
         },
-    )
-    .map_err(|message| crate::request::auth_hint(&message, wire.oauth, &model.provider))?;
+    ) {
+        Ok(resent) => resent,
+        // Incident: an error after the first delta threw the turn away, because the fresh mapper in
+        // `stream` was failed instead of this one; the text and usage were billed.
+        Err(message) => {
+            let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
+                &message,
+                wire.oauth,
+                &model.provider,
+            )));
+            return Ok(());
+        }
+    };
     if let Some(first_error) = resent {
         crate::request::note_resend(&mut mapper.output, &first_error);
     }
