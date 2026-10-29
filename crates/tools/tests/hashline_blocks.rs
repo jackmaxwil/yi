@@ -207,6 +207,27 @@ fn shell_globs_do_not_start_block_comments() -> TestResult {
 }
 
 #[test]
+fn a_non_shell_shebang_keeps_c_style_block_comments() -> TestResult {
+    let dir = temp_dir("hashline-non-shell-shebang")?;
+    for (name, shebang) in [
+        ("cli", "#!/usr/bin/env node\n"),
+        ("script", "#!/usr/bin/env -S php -d strict\n"),
+        ("daemon", "#!/opt/bin/ruby\n"),
+    ] {
+        fs::write(
+            dir.join(name),
+            format!("{shebang}function f() {{\n    /* }} */\n    return 1;\n}}\n"),
+        )?;
+        let output = find(&dir, name, "function f()");
+        assert!(
+            output.contains("[find: block at lines 2-5 of"),
+            "{name}: {output}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_regex_literal_opening_a_continuation_line_does_not_hide_delimiters() -> TestResult {
     let dir = temp_dir("hashline-regex-continuation")?;
     for name in ["split.js", "split.mts", "split.cts"] {

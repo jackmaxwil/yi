@@ -1,7 +1,7 @@
 ---
 issue: Closes #1502, Closes #136, Refs #804, Refs #807, Refs #1442
-growth: +359 typed errors, language-aware block/read validation, displayed-clipped anchor metadata and I/O safety after splitting read arguments out of tool.rs and deleting string-slice and prefix-classification code
-raise: crate runtime +26, crate tools +333, tests +466
+growth: +384 typed errors, language-aware block/read validation, displayed-clipped anchor metadata and I/O safety after splitting read arguments out of tool.rs and deleting string-slice and prefix-classification code
+raise: crate runtime +26, crate tools +358, tests +487, comments +2
 ---
 This change combines HB-utf8-tools, HA-EDIT-typed, HA-EDIT-blocks, HA-EDIT-readargs, HA-EDIT-anchor, and HA-EDIT-mvread.
 

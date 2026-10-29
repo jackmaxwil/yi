@@ -99,21 +99,46 @@ pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
         "sh" | "bash" | "zsh" | "ksh" | "fish" | "mk" => {
             brace_block_resolver(request.text, request.line, BraceSyntax::Plain)
         }
-        "" if extensionless_script(path, request.text) => {
+        "" if plain_braces_extensionless(path, request.text) => {
             brace_block_resolver(request.text, request.line, BraceSyntax::Plain)
         }
         _ => brace_block_resolver(request.text, request.line, BraceSyntax::CStyle),
     }
 }
 
-fn extensionless_script(path: &Path, text: &str) -> bool {
+fn plain_braces_extensionless(path: &Path, text: &str) -> bool {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    text.starts_with("#!")
+    shell_shebang(text)
         || name.starts_with('.')
         || matches!(name, "Makefile" | "makefile" | "GNUmakefile" | "Dockerfile")
+}
+
+/// A shebang names the interpreter, so only a shell's `/`+`*` is a glob: `#!/usr/bin/env node`
+/// and `#!/usr/bin/env php` keep C-style block comments.
+fn shell_shebang(text: &str) -> bool {
+    const SHELLS: [&str; 9] = [
+        "sh", "bash", "zsh", "ksh", "dash", "ash", "fish", "csh", "tcsh",
+    ];
+    let Some(line) = text.lines().next().and_then(|line| line.strip_prefix("#!")) else {
+        return false;
+    };
+    let mut words = line
+        .split_whitespace()
+        .filter(|word| !word.starts_with('-'));
+    let first = words.next().unwrap_or_default();
+    let program = if interpreter_name(first) == Some("env") {
+        words.next().unwrap_or_default()
+    } else {
+        first
+    };
+    interpreter_name(program).is_some_and(|name| SHELLS.contains(&name))
+}
+
+fn interpreter_name(word: &str) -> Option<&str> {
+    Path::new(word).file_name().and_then(|name| name.to_str())
 }
 
 impl<'a> Patcher<'a> {
