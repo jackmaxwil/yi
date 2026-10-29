@@ -1,4 +1,5 @@
 ---
+version: 0.691.0
 issue: Closes #1390
 growth: +244 weighed the Kept LRU cap and trim, the open_shared constructor, the child-4 weak assertion and the failed-reopen test against deletion
 raise: crate runtime +236, crate session +8, comments +12

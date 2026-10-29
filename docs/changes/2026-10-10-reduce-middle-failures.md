@@ -1,4 +1,6 @@
 ---
+version: 0.598.0
+decisions: D390
 issue: Closes #1153
 growth: +188 the middle pass in `cap_lines` with its loud cap, pass collapsing, per-file grep grouping with its path test, and the first-line field counted rows need; weighed for deletion: masked dedup of near-identical lines and rustc dedup on code and span (the recorded cases did not need them), and a go-test arm (`-v` bypasses reduction, so it never ran)
 raise: crate tools +188, comments +12, tests +293

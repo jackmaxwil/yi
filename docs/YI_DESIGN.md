@@ -197,7 +197,7 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   `task`, or one dated before attribution existed. Every other user-role message (`host(source)`,
   undated `unproven`), every `custom` kind and both summaries arrive as
   `<yi_internal_context source="…">`; compaction drops the kinds `heartbeat_prompt, advisory,
-  goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D342).
+  goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D352).
 - Reclaim runs inside the run's `convert_to_llm`, before compaction is ever due: a tool result
   at least 1,200 chars long and 5 requests old (never `ask_user`, `plan`, `todo`, or the newest
   `read` of a file the session edited, by the `[path#TAG]` headers the tools print) is cut once the tokens dropped × cache-read price × requests so far beat the
@@ -773,14 +773,14 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   with a notice.
 - Admission refuses at lever `family.cap` (16, an eval run's levers raise it to 128) live sessions,
   at depth `rlm.maxDepth` (1, clamped 1..=3), at `family.max_children` (8, up to
-  128) workers, and on a taken name (D344).
+  128) workers, and on a taken name (D346).
 - `Standing { Worker, Reader, Service }`: reader and service stand outside the worker cap; lease,
   wall and family cap bind them all. A service (`rlm.service(name, brief, restart=3)`)
   respawns on its `ChildRecord` after `Failed { Provider | KernelDeath }`, ≤ 10 per 10 min.
 - The wall only reduces and `under(parent)` makes it hereditary; it refuses at the tool adapter
   before permission, `deny_read` implies write-deny, and bash naming a denied path is refused.
   A walled session also walls the old spill root and every session store and spares its
-  family's spill dir and its own transcript, at the read gate and in its contained profile (D345).
+  family's spill dir and its own transcript, at the read gate and in its contained profile.
 - A lease is drawn under the roster lock; an ask past the parent's deadline less 30 s or its
   unreserved tokens is refused with both numbers. `rlm.revoke` journals `custom{lease}` and
   sends `cancel`; at grace expiry the child is `Repossessed` with its lane `Retained`.

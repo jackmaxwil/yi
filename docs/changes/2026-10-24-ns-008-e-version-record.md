@@ -1,4 +1,6 @@
 ---
+version: 0.720.0
+decisions: D446
 issue: Closes #1450, Refs #1442
 raise: tests +32, crate mcp-cli +11, crate cli +1
 decision: Keep the `version:` line of docs/ARCHITECTURE.md as the product's version of record; the workspace Cargo.toml `0.2.0` stays a placeholder that no release tool and no wire message reads | owner, answering the plan's question on the decided haul groups: "Fix bugs, keep design" (haul group VERSION) | reversible via the recorder also writing [workspace.package] version and build.rs reading it

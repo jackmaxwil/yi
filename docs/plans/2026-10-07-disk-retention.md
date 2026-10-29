@@ -340,12 +340,12 @@ Two items from the original list changed on contact with the tree:
 Re-read the ARCHITECTURE version header and the last D-row immediately before writing either, since
 the numbers below are the next free ones on 2026-10-07 and may be taken by then.
 
-- **D342 (S3).** Yi's stores are swept by one retention table of `{store, live, age, action}`
+- **D401 (S3).** Yi's stores are swept by one retention table of `{store, live, age, action}`
   rows, run hourly behind a stamp and on demand by `yi gc`. Liveness gates every row, and age
   never deletes on its own. Checkpoint repos whose worktree has been gone 7 days are deleted, and
   live repos are pruned at 30 days. Reversible via: delete the module; each row's old trigger
   returns.
-- **D343 (S4).** A free lane slot released more than 14 days ago is removed. This revises D203's
+- **S4, recorded as no decision.** A free lane slot released more than 14 days ago is removed. This revises D203's
   "every slot stays warm by path", and `yi lanes reap N` becomes `yi gc --lane N`. Reversible via:
   drop the row.
 

@@ -1,4 +1,6 @@
 ---
+version: 0.778.0
+decisions: D489
 issue: Closes #1657
 growth: +2004 the hand-rolled tokio child runner was deleted for yi_tools::run_captured, a separate broker verdict enum for the hook's own Verdict, a second loader in yi-cli for the runtime's Hooks::load, a hand-rolled glob for `if` for Yi's own PathGlob and command parser, a new spill writer for CellSpill, and a second patch preparer for the edit tool's own preview, which now reads the same per-file changes the hooks do; next-turn delivery of async output and the http, prompt, agent and mcp_tool handler types were weighed and not built (each is skipped with a notice); what remains is trust-gated loading with Claude's scope precedence, the two-way argument mapping, the `.claude` write guard and the `yi mcp` seam
 raise: crate runtime +1838, crate cli +103, crate types +15, crate mcp-cli +35, crate tools +23, tests +2368, comments +45

@@ -1,4 +1,5 @@
 ---
+version: 0.753.0
 issue: Refs #1487, Refs #1442
 raise: tests +574, crate runtime +87
 ---

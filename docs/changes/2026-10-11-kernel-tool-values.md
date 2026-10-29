@@ -1,4 +1,6 @@
 ---
+version: 0.676.0
+decisions: D422
 issue: Closes #1243
 growth: +626 (+933 with the stage before it): one value shape per tool in yi-types and the code that fills each; weighed: values only for grep, read and edit (the owner kept every tool when asked with the cost), and one generic text value (it gives a program nothing it cannot already parse)
 decision: a tool called by a kernel program fills `ToolOutput::value`, a fixed `yi_types::tool_value` shape the `tool.call` reply carries and the transcript never holds, and collects past the model view's caps, with `grep`, `read` and a glob bounded by a 64 MiB and a 100,000-item fuse and every value naming what it left out in `cut`; `AgentTool::execute_program` is the one seam, defaulting to no value | programs parsed the text the model reads, and a dogfood run regex-parsed grep's view and missed half the sites on its first try; the caps protect the model's context, which a program's variables are not | drop `execute_program`'s override and the `value` field; every caller falls back to the text

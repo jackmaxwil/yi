@@ -1,4 +1,5 @@
 ---
+version: 0.776.0
 issue: Closes #1500, Refs #1442
 growth: +30 the one loud cut for a child's return (+28 in mailbox.rs: the row writer and its opener, the sender's character count read from context_chars and refused when it is of the wrong shape, and the refusal tail the two result refusals share), the context_chars entry in the rlm.run allowlist (+1) and the TUI's match of a cut preview's head (+3), less the preview's own cut branch (-2); weighed for deletion: the preview's separate ellipsis branch and the schema refusal's whole-text embed are gone, a second row writer for the context total was folded into the same clamp, and leaving the allowlist entry out was rejected because a refused kwarg would stop the kernel's count from ever arriving
 raise: comments +5, crate runtime +27, crate tui +3, tests +351

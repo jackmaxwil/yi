@@ -1,4 +1,5 @@
 ---
+version: 0.563.0
 issue: Refs #976
 ---
 The autofix job refreshes Yi's OpenRouter catalog before it runs (Refs #976). A fresh runner knew

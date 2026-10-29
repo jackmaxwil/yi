@@ -1,4 +1,6 @@
 ---
+version: 0.666.0
+decisions: D420
 issue: Closes #1258
 growth: +210 the `--control` socket (`Control`, `serve`, `serve_solo`, the flag and its connect in both shells), one `timing_step` over the one `WaitPoll` the headless drive, the console and the control socket now share for `tick`/`hold`/`release`/`wait-idle`, the console's step player and its `working` predicate, and the orb reading the app clock; weighed for deletion: running the headless drive engine against a real terminal backend (it has no orb, logos or kitty path, so the pictures the term host exists for would vanish), sending the keys over the socket too (the real input path through Ghostty's bytes would no longer be exercised), and a second timing implementation in the interactive loop (it would drift from the headless one the snaps are compared against); the headless loop's own tick, release and wait-idle arms were deleted in favour of the shared step
 raise: crate tui +139, crate console +41, crate cli +30, comments +5, tests +102

@@ -1,4 +1,5 @@
 ---
+version: 0.741.0
 issue: Closes #1467, Refs #1442
 raise: tests +221, comments +4, crate runtime +44
 ---

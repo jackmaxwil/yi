@@ -1,4 +1,5 @@
 ---
+version: 0.705.0
 issue: Refs #1385
 growth: +56 the Solid scene: the sphere trace and its swing, 65 lines of title.rs; weighed folding it into the Echo field and dropping the swing, and kept both: the owner ranked the sphere-traced name first of the scenes not yet drawn
 raise: comments +3, crate tui +56, tests +61

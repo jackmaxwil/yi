@@ -1,4 +1,5 @@
 ---
+version: 0.744.0
 issue: Closes #1493, Refs #1442
 raise: tests +148, comments +4, crate orb +3
 ---

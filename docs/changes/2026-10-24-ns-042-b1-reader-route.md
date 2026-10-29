@@ -1,4 +1,6 @@
 ---
+version: 0.763.0
+decisions: D482, D483
 issue: Refs #937, Refs #1442
 raise: comments +5, crate runtime +113, tests +367
 decision: plan delegations whose spec role is reader, whose accept is not a command, with no isolation and read/grep tools spawn as role="reader", with their context as the partition and their schema inlined (revises D308 and YI_DESIGN.md:615) | owner: "approved now: the D308/D334/D255 revisions"; a plan Reader's fixed prefix falls from 47-130 KB to about 4.5 KB | insert role="root" unconditionally in kwargs_of again

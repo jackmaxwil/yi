@@ -1,4 +1,6 @@
 ---
+version: 0.631.0
+decisions: D410
 issue: Closes #1254
 growth: +246 the `open` config key and row, the export, its seven-day prune and the command build in yi_runtime::settings with their tests, the daemon's `_yi/open` and its one spawn site, the menu's Open in row and request, and the console option that carries the names; weighed a built-in app list (the owner chose apps listed in config) and running the app from the console (it may not spawn)
 raise: crate acp +50, crate cli +6, crate console +32, crate runtime +127, crate types +11, tests +83, comments +9

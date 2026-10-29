@@ -1,4 +1,5 @@
 ---
+version: 0.792.0
 issue: Closes #1432
 growth: +182 the status row now carries a hue per role and a changed-path count; deletion weighed first: the dirty read reuses `environment::git_summary` instead of a second porcelain parser, and the two title slots on the composer are one
 raise: crate tui +188, tests +248, comments +13

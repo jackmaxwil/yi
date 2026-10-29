@@ -1,4 +1,6 @@
 ---
+version: 0.783.0
+decisions: D492, D493
 issue: Closes #1490, Refs #1048, Refs #1442
 raise: tests +766, comments +17, crate runtime +403
 growth: +393 the fork seed's move beside reader::seed (+3), the version 2 prompt snapshot with its build-slot rule and the non-freezing prompt read (+39), the generation-keyed git summary cache (+50), the reclaim section memo, the fetch-row check and the memo's two tests (+117, about 95 of them the tests, which live in reclaim.rs because the memo is crate-private), the review round's notice row on a cut fork seed (+13), the snapshot's own entry type, late marks and slot sizes (+26), the git cache's retry and applied-rewrite arm (+11), the memo test's cutting replay (+34, test code in reclaim.rs), and the incremental claim history and current-main resolutions (+22), and the atomic fetch-row reservation (+2); weighed for deletion: the fork seed reuses compaction::fitting_start instead of a walk of its own, the review helpers moved rather than being copied, the fetch-row fix shares one locked update helper, and the memo's tests could move to tests/ only by making reclaim's Overlay and Sections public, which widens the surface for a test

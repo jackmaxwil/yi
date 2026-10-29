@@ -1,4 +1,6 @@
 ---
+version: 0.607.0
+decisions: D396
 issue: Closes #1157
 growth: +286 one `Clock` value every on-screen duration and animation reads (31 display sites in yi-tui, the console's split animation and copy flash), the `tick`/`snap-strip`/`hold`/`release` drive steps with their parse checks, the console's tick helper and hold refusal, and `FauxHold` in the faux stream; weighed for deletion: a thread-local clock override (fewer touched lines, but a hidden global the drive and the chat panes would both have to remember to set), freezing time without `hold` (the in-flight states the owner asked for never reach a frame), and threading the clock through the console's session-age labels too (their stamps come from the daemon's wall clock, so a client-side freeze cannot make them deterministic)
 raise: crate tui +170, crate console +41, crate runtime +75, comments +24, tests +63
