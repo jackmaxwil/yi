@@ -762,7 +762,7 @@ impl Pool {
 
     pub fn claim(&self, session: &str, base: ClaimBase) -> Result<Lane, LaneError> {
         let _span = yi_types::trace::span("lane.claim");
-        let _pool = self.lock()?;
+        let pool_lock = self.lock()?;
         let (mut held, mut orphans) = (0_u8, 0_u8);
         let mut free = None;
         // A resumed session's tree holds its only copy of the work, so its gone slot is kept.
@@ -788,21 +788,23 @@ impl Pool {
         }
         for n in 0..self.slots {
             let slot = SlotIndex(n);
-            if !self.slot_path(slot).is_dir() {
-                free = Some((slot, None, true));
-                break;
-            }
+            // Invariant: the guard comes before the directory test, so a slot another claimer
+            // is still creating reads held and two claimers never pick one fresh slot.
             let (guard, holder) = self.probe(slot)?;
             if holder.is_some() {
                 held = held.saturating_add(1);
                 continue;
+            }
+            if !self.slot_path(slot).is_dir() {
+                free = Some((slot, guard, true));
+                break;
             }
             if self.repo_gone(slot) {
                 self.stop_warmer(slot)?;
                 let path = self.slot_path(slot);
                 std::fs::remove_dir_all(&path).map_err(io_error(&path))?;
                 self.write_state(slot, &SlotState::default())?;
-                free = Some((slot, Some(guard), true));
+                free = Some((slot, guard, true));
                 break;
             }
             match self.read_state(slot)?.session {
@@ -811,14 +813,14 @@ impl Pool {
                     let mut state = self.read_state(slot)?;
                     state.session = None;
                     self.write_state(slot, &state)?;
-                    free = Some((slot, Some(guard), false));
+                    free = Some((slot, guard, false));
                     break;
                 }
                 Some(_) => orphans = orphans.saturating_add(1),
                 // Invariant: a dirty tree with no session is an older binary's quit, never free.
                 None if self.dirty(slot) => orphans = orphans.saturating_add(1),
                 None => {
-                    free = Some((slot, Some(guard), false));
+                    free = Some((slot, guard, false));
                     break;
                 }
             }
@@ -830,10 +832,7 @@ impl Pool {
                 orphans,
             });
         };
-        let guard = match guard {
-            Some(guard) => guard,
-            None => self.probe(slot)?.0,
-        };
+        drop(pool_lock);
         let branch = BranchName::for_session(session)?;
         let sha = self.resolve(&base, true)?;
         let path = self.slot_path(slot);
@@ -895,39 +894,6 @@ impl Pool {
             released: false,
             _held: guard,
         })
-    }
-
-    /// Incident: a killed install leaves half a tree, so the lockfile hash is forgotten too.
-    fn stop_warmer(&self, slot: SlotIndex) -> Result<(), LaneError> {
-        let mut state = self.read_state(slot)?;
-        let Some(pid) = state.warm.as_ref().and_then(|warm| warm.pid) else {
-            return Ok(());
-        };
-        let running = || yi_kernel::bootstrap::process_is_running(pid).map_err(io_error(&self.dir));
-        if !running()? {
-            return Ok(());
-        }
-        let term = ["-c", r#"kill -TERM "$1""#, "kill", &pid.to_string()];
-        let _the_poll_below_sees_a_failed_term =
-            capture(&self.dir, "/bin/sh", &term, probe_deadline());
-        let started = std::time::Instant::now();
-        let _span = yi_types::trace::span("lane.warmer_exit");
-        let mut pace = yi_types::backoff::backoff(std::time::Duration::from_millis(200));
-        while running()? {
-            if started.elapsed().as_millis() >= u128::from(WARMER_EXIT_WAIT_MS) {
-                return Err(LaneError::WarmerStuck {
-                    slot,
-                    pid,
-                    waited_ms: WARMER_EXIT_WAIT_MS,
-                });
-            }
-            std::thread::sleep(pace());
-        }
-        if let Some(warm) = state.warm.as_mut() {
-            warm.pid = None;
-        }
-        state.lockfile = None;
-        self.write_state(slot, &state)
     }
 
     /// Incident: a repository recreated at its path left slots whose `.git` named a gone gitdir.

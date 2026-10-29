@@ -74,15 +74,39 @@ pub const TOOLCHAINS: [Toolchain; 6] = [
     },
 ];
 
-pub fn detect(tree: &Path) -> Option<&'static Toolchain> {
+pub fn detect(tree: &Path) -> Vec<&'static Toolchain> {
     TOOLCHAINS
         .iter()
-        .find(|toolchain| tree.join(toolchain.lockfile).is_file())
+        .filter(|toolchain| tree.join(toolchain.lockfile).is_file())
+        .collect()
+}
+
+fn lockfiles_key(tree: &Path, toolchains: &[&Toolchain]) -> Option<String> {
+    let hashes = toolchains
+        .iter()
+        .map(|toolchain| lockfile_hash(tree, toolchain))
+        .collect::<Option<Vec<_>>>()?;
+    match &hashes[..] {
+        [] => None,
+        [one] => Some(one.clone()),
+        many => Some(crate::ext::content_hash(&many.join("\n"))),
+    }
 }
 
 pub fn lockfile_hash(tree: &Path, toolchain: &Toolchain) -> Option<String> {
     let bytes = std::fs::read(tree.join(toolchain.lockfile)).ok()?;
     Some(crate::ext::content_hash(&String::from_utf8_lossy(&bytes)))
+}
+
+/// An interpreter's script counts by its stem, so `node …/npm ci` is npm's warmer.
+pub(super) fn is_warmer(tree: &Path, argv: &[String]) -> bool {
+    detect(tree).iter().any(|toolchain| {
+        toolchain.warm.first().is_some_and(|program| {
+            argv.iter().any(|arg| {
+                Path::new(arg).file_stem().and_then(|stem| stem.to_str()) == Some(*program)
+            })
+        })
+    })
 }
 
 fn seen_path(pool: &Pool) -> PathBuf {
@@ -100,7 +124,8 @@ fn read_seen(pool: &Pool) -> Result<SeenLockfiles, LaneError> {
     }
 }
 
-fn mark_seen(pool: &Pool, hash: &str) -> Result<(), LaneError> {
+pub(super) fn mark_seen(pool: &Pool, hash: &str) -> Result<(), LaneError> {
+    let _pool = pool.lock()?;
     let mut seen = read_seen(pool)?;
     if seen.hashes.iter().any(|known| known == hash) {
         return Ok(());
@@ -111,7 +136,7 @@ fn mark_seen(pool: &Pool, hash: &str) -> Result<(), LaneError> {
         path: path.clone(),
         source,
     })?;
-    std::fs::write(&path, bytes).map_err(|source| LaneError::Io { path, source })
+    yi_session::replace_file(&path, &bytes).map_err(|source| LaneError::Io { path, source })
 }
 
 /// Seatbelt-contained like a bash call: slot and scratch writable, credentials unreadable.
@@ -134,22 +159,24 @@ fn contained(
     ))
 }
 
-/// Invariant: a matching lockfile hash makes the claim git-only.
+/// Invariant: a matching lockfile hash makes the claim git-only; every lockfile present syncs.
 pub fn sync(pool: &Pool, slot: SlotIndex, tree: &Path) -> Result<Option<String>, LaneError> {
     let _span = yi_types::trace::span("lane.toolchain_sync");
-    let Some(toolchain) = detect(tree) else {
-        return Ok(None);
-    };
-    let Some(hash) = lockfile_hash(tree, toolchain) else {
+    let toolchains = detect(tree);
+    let Some(hash) = lockfiles_key(tree, &toolchains) else {
         return Ok(None);
     };
     let mut state = pool.read_state(slot)?;
     if state.lockfile.as_deref() == Some(hash.as_str()) {
         return Ok(None);
     }
-    if let Some(argv) = toolchain.sync
-        && let Some((program, args, sandbox)) = contained(tree, pool.home(), argv)
-    {
+    for toolchain in &toolchains {
+        let Some(argv) = toolchain.sync else {
+            continue;
+        };
+        let Some((program, args, sandbox)) = contained(tree, pool.home(), argv) else {
+            continue;
+        };
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
         super::capture_named(
             tree,
@@ -165,16 +192,19 @@ pub fn sync(pool: &Pool, slot: SlotIndex, tree: &Path) -> Result<Option<String>,
     state.lockfile = Some(hash.clone());
     pool.write_state(slot, &state)?;
     mark_seen(pool, &hash)?;
-    Ok(Some(toolchain.lockfile.to_owned()))
+    let names: Vec<&str> = toolchains
+        .iter()
+        .map(|toolchain| toolchain.lockfile)
+        .collect();
+    Ok(Some(names.join(", ")))
 }
 
 /// Invariant: the warmer only rebuilds a lockfile hash a session already synced.
 pub fn warm(pool: &Pool, slot: SlotIndex) -> Result<(), LaneError> {
     let tree = pool.dir().join(slot.to_string());
-    let Some(toolchain) = detect(&tree) else {
-        return Ok(());
-    };
-    let Some(hash) = lockfile_hash(&tree, toolchain) else {
+    let toolchains = detect(&tree);
+    let (Some(toolchain), Some(hash)) = (toolchains.first(), lockfiles_key(&tree, &toolchains))
+    else {
         return Ok(());
     };
     if !read_seen(pool)?.hashes.contains(&hash) {
@@ -228,6 +258,72 @@ pub fn warm(pool: &Pool, slot: SlotIndex) -> Result<(), LaneError> {
         let _ = reaper.write_state(slot, &state);
     });
     Ok(())
+}
+
+impl Pool {
+    /// Incident: a killed install leaves half a tree, so the lockfile hash is forgotten too.
+    pub(super) fn stop_warmer(&self, slot: SlotIndex) -> Result<(), LaneError> {
+        let mut state = self.read_state(slot)?;
+        let Some(pid) = state.warm.as_ref().and_then(|warm| warm.pid) else {
+            return Ok(());
+        };
+        let running =
+            || yi_kernel::bootstrap::process_is_running(pid).map_err(super::io_error(&self.dir));
+        if !running()? {
+            return Ok(());
+        }
+        // Incident: a receipt outlives its warmer, and its pid can name an unrelated process.
+        let argv = process_argv(&self.dir, pid);
+        if !argv.is_some_and(|argv| is_warmer(&self.slot_path(slot), &argv)) {
+            if let Some(warm) = state.warm.as_mut() {
+                warm.pid = None;
+            }
+            return self.write_state(slot, &state);
+        }
+        let term = ["-c", r#"kill -TERM "$1""#, "kill", &pid.to_string()];
+        let _the_poll_below_sees_a_failed_term =
+            super::capture(&self.dir, "/bin/sh", &term, super::probe_deadline());
+        let started = std::time::Instant::now();
+        let _span = yi_types::trace::span("lane.warmer_exit");
+        let mut pace = yi_types::backoff::backoff(std::time::Duration::from_millis(200));
+        while running()? {
+            if started.elapsed().as_millis() >= u128::from(super::WARMER_EXIT_WAIT_MS) {
+                return Err(LaneError::WarmerStuck {
+                    slot,
+                    pid,
+                    waited_ms: super::WARMER_EXIT_WAIT_MS,
+                });
+            }
+            std::thread::sleep(pace());
+        }
+        if let Some(warm) = state.warm.as_mut() {
+            warm.pid = None;
+        }
+        state.lockfile = None;
+        self.write_state(slot, &state)
+    }
+}
+
+/// The argv `pid` runs now, or `None` when it cannot be read; slim Linux images ship no ps(1).
+fn process_argv(cwd: &Path, pid: u32) -> Option<Vec<String>> {
+    if let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) {
+        let text = String::from_utf8_lossy(&cmdline);
+        return Some(
+            text.split('\0')
+                .filter(|arg| !arg.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        );
+    }
+    let pid = pid.to_string();
+    let args = super::capture(
+        cwd,
+        "/bin/ps",
+        &["-o", "args=", "-p", &pid],
+        super::probe_deadline(),
+    )
+    .ok()?;
+    Some(args.split_whitespace().map(str::to_owned).collect())
 }
 
 #[cfg(test)]

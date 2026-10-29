@@ -41,8 +41,8 @@ pub use ipython::{CellCalls, CellSpill, IpythonTool, KernelBridge, KernelCellOut
 pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, run_or_background};
 pub use orient::GetContextTool;
 pub use process::{
-    CommandCapture, OUTPUT_CAP, command, edit_file, git_root, keyless_command, run_captured,
-    spill_path,
+    CommandCapture, OUTPUT_CAP, command, edit_file, git_root, host_git, keyless_command,
+    run_captured, spill_path,
 };
 pub use reduce::{Involuntary, Reduced, VIEW_CEILING, reduce, rerun, view};
 pub use sandbox::{

@@ -44,6 +44,19 @@ pub fn keyless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     process
 }
 
+/// [`keyless_command`] for a git Yi drives on its own repository: a caller's `GIT_INDEX_FILE`,
+/// `GIT_WORK_TREE` or `GIT_DIR` never redirects it, and paths come back unquoted.
+pub fn host_git() -> Command {
+    let mut process = keyless_command("git");
+    for (variable, _) in std::env::vars_os() {
+        if variable.to_string_lossy().starts_with("GIT_") {
+            process.env_remove(variable);
+        }
+    }
+    process.args(["-c", "core.quotepath=false"]);
+    process
+}
+
 #[derive(Debug, Clone)]
 pub struct CommandCapture {
     pub stdout: String,

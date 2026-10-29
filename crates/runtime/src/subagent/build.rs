@@ -33,6 +33,53 @@ impl Drop for Reservation<'_> {
 }
 
 impl SubagentHost {
+    /// A child lane branches from the parent's own HEAD, so its merge lands back in
+    /// the parent's checkout rather than on `main`.
+    pub(super) fn claim_child_lane(
+        &self,
+        child_id: &str,
+    ) -> Result<
+        (
+            crate::lane::Lane,
+            crate::plan::capacity::Permit,
+            Option<String>,
+        ),
+        String,
+    > {
+        // The worker share, never the whole pool: a lane the workers take here is one the
+        // engine cannot verify a candidate in (plan section 7.6).
+        let permit = self
+            .capacity
+            .reserve(crate::plan::capacity::Purpose::Worker)
+            .map_err(|error| error.to_string())?;
+        let pool = crate::lane::Pool::open(
+            &self.options.home,
+            &self.options.cwd,
+            self.options.lane_slots,
+        )
+        .map_err(|error| error.to_string())?;
+        let head = crate::lane::git(
+            &self.options.cwd,
+            &["rev-parse", "--verify", "HEAD^{commit}"],
+        )
+        .map_err(|error| error.to_string())?;
+        let head = head.trim().to_owned();
+        let lane = pool
+            .claim(child_id, crate::lane::ClaimBase::Commit(head.clone()))
+            .map_err(|error| error.to_string())?;
+        // Invariant: a child is cut at the commit, so the parent's uncommitted edits are not in it.
+        let left_out = crate::lane::reap::Uncommitted::read(&self.options.cwd)
+            .ok()
+            .filter(|dirt| !dirt.is_empty())
+            .map(|dirt| {
+                let short: String = head.chars().take(8).collect();
+                format!(
+                    "the child starts at HEAD {short}, without {dirt} in your checkout: pass them as local:// context or spawn without a worktree"
+                )
+            });
+        Ok((lane, permit, left_out))
+    }
+
     /// Invariant: the roster lock is never held across a build, so `states` and `list` answer
     /// while a factory runs; the name and the slot are reserved under it instead.
     pub(super) fn reserve(

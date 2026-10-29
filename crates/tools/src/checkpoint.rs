@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use crate::process::command;
+use crate::process::host_git;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeId(String);
@@ -111,6 +111,7 @@ impl Checkpoints {
             "diff",
             "--no-renames",
             "--name-status",
+            "-z",
             "--cached",
             tree.as_str(),
         ])?;
@@ -133,6 +134,7 @@ impl Checkpoints {
                     "diff",
                     "--no-renames",
                     "--name-status",
+                    "-z",
                     tree.as_str(),
                     since.as_str(),
                 ])?;
@@ -149,17 +151,30 @@ impl Checkpoints {
                     .collect()
             }
         };
+        let mut pathspecs = Vec::new();
         for change in &changes {
-            let path = change.path.to_string_lossy().into_owned();
             match change.kind {
                 ChangeKind::Restored => {
-                    self.git(&["checkout", tree.as_str(), "--", &path])?;
+                    pathspecs.extend_from_slice(b":(literal)");
+                    pathspecs.extend_from_slice(change.path.to_string_lossy().as_bytes());
+                    pathspecs.push(0);
                 }
                 ChangeKind::Deleted => {
-                    let _absent_is_the_goal = std::fs::remove_file(self.work_tree.join(&path));
+                    let _absent_is_the_goal =
+                        std::fs::remove_file(self.work_tree.join(&change.path));
                 }
                 ChangeKind::Kept => {}
             }
+        }
+        // Invariant: an empty pathspec makes `checkout <tree>` a switch, so none runs then.
+        if !pathspecs.is_empty() {
+            let checkout = [
+                "checkout",
+                tree.as_str(),
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ];
+            self.git_fed(&checkout, Some(&pathspecs))?;
         }
         self.stage()?;
         Ok(changes)
@@ -190,7 +205,7 @@ impl Checkpoints {
             vec!["read-tree", tree.as_str()],
             vec!["checkout-index", "-a", "-f"],
         ] {
-            let mut process = command("git");
+            let mut process = host_git();
             process
                 .env("GIT_INDEX_FILE", &index)
                 .arg("--git-dir")
@@ -235,26 +250,39 @@ impl Checkpoints {
     }
 
     fn git(&self, args: &[&str]) -> Result<String, CheckpointError> {
+        self.git_fed(args, None)
+    }
+
+    fn git_fed(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<String, CheckpointError> {
+        use std::io::Write;
         let verb = args.first().copied().unwrap_or_default();
         let _span = yi_types::trace::span("checkpoint.git").arg("verb", verb);
         let _serialized = self
             .serial
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut process = command("git");
+        let mut process = host_git();
         process
             .arg("--git-dir")
             .arg(&self.git_dir)
             .arg("--work-tree")
             .arg(&self.work_tree)
             .args(args)
-            .current_dir(&self.work_tree);
-        let output = process
-            .output()
-            .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
+            .current_dir(&self.work_tree)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let missing = |error: std::io::Error| CheckpointError::GitMissing(error.to_string());
+        let mut child = process.spawn().map_err(missing)?;
+        if let Some(mut pipe) = child.stdin.take()
+            && let Some(bytes) = stdin
+        {
+            pipe.write_all(bytes).map_err(missing)?;
+        }
+        let output = child.wait_with_output().map_err(missing)?;
         if !output.status.success() {
             return Err(CheckpointError::Git {
-                command: args.first().copied().unwrap_or_default().to_owned(),
+                command: verb.to_owned(),
                 message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
             });
         }
@@ -262,18 +290,12 @@ impl Checkpoints {
     }
 }
 
-/// Read relative to the earlier tree, with renames split by `--no-renames` (an `R` row named
-/// a path the tree lacks): `A` is a path the turn added, everything else one to check out.
+/// Read relative to the earlier tree from `-z` rows (status NUL path NUL), with renames split by
+/// `--no-renames`: `A` is a path the turn added, everything else one to check out.
 fn parse_changes(diff: &str) -> Vec<Change> {
+    let mut fields = diff.split('\0');
     let mut changes = Vec::new();
-    for line in diff.lines() {
-        let mut fields = line.split('\t');
-        let Some(status) = fields.next() else {
-            continue;
-        };
-        let Some(path) = fields.next_back() else {
-            continue;
-        };
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
         let kind = match status.chars().next() {
             Some('A') => ChangeKind::Deleted,
             Some(_) => ChangeKind::Restored,
@@ -300,7 +322,7 @@ pub fn work_tree(git_dir: &Path) -> Option<PathBuf> {
 /// Invariant: captures write no ref, so every object is unreachable and `prune` keeps what is
 /// younger than `keep` plus whatever a younger tree still names.
 pub fn prune(git_dir: &Path, keep: std::time::Duration) -> Result<(), CheckpointError> {
-    let output = command("git")
+    let output = host_git()
         .arg("--git-dir")
         .arg(git_dir)
         .arg("prune")
