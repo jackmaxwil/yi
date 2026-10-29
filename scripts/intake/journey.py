@@ -176,14 +176,16 @@ def stage_three(case: bridge.Case, repo: pathlib.Path, transport: FakeTransport)
 def stage_four(case: bridge.Case, transport: FakeTransport, number: int) -> str:
     landed = "f" * 40
     transport.mirror[transport.imported] = landed
-    assert bridge.land_case(transport, case).code == "land"
+    decision = bridge.land_case(transport, case)
+    assert isinstance(decision, bridge.Refusal) and decision.code == "land", f"not merged: {decision}"
     assert not any("PATCH" in call[0] for call in transport.github_writes)
     assert not any(call[1].endswith("/issues/1/comments") for call in transport.github_writes)
 
     transport.pulls[number]["merged"] = True
     mirrorless = "e" * 40
     transport.pulls[number]["head"]["sha"] = mirrorless
-    assert bridge.land_case(transport, case).code == "mapping"
+    decision = bridge.land_case(transport, case)
+    assert isinstance(decision, bridge.Refusal) and decision.code == "mapping", f"no mapping: {decision}"
     transport.pulls[number]["head"]["sha"] = transport.imported
     assert bridge.land_case(transport, case) == bridge.ALLOW
     comment = next(body for method, path, body in transport.github_writes if path.endswith(f"/issues/{case.number}/comments") and (body["body"] or "").startswith("landed as "))["body"]
@@ -193,7 +195,8 @@ def stage_four(case: bridge.Case, transport: FakeTransport, number: int) -> str:
 
     missing = FakeTransport(case, transport.repo)
     missing.pulls[77] = {"number": 77, "head": {"ref": "gh/someone-else", "sha": "0" * 40}, "labels": [], "state": "open", "merged": True}
-    assert bridge.land_case(missing, case).code == "land"
+    decision = bridge.land_case(missing, case)
+    assert isinstance(decision, bridge.Refusal) and decision.code == "land", f"no forge pull: {decision}"
     assert not missing.github_writes
     return landed
 
