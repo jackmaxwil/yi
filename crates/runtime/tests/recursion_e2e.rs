@@ -3622,9 +3622,27 @@ fn wired_root(
     wall: yi_runtime::Wall,
     sandbox: Option<yi_tools::Sandbox>,
 ) -> (AgentSession, Arc<ProviderStream>, Arc<SubagentHost>) {
-    let provider = Arc::new(ProviderStream::new(None));
     // Every turn of the family, the parent's woken one too, answers the result object.
-    provider.queue_faux(vec![child_reply(PROTOCOL_ANSWER); 8]);
+    wired_scripted(
+        root,
+        wall,
+        sandbox,
+        0,
+        1,
+        vec![child_reply(PROTOCOL_ANSWER); 8],
+    )
+}
+
+fn wired_scripted(
+    root: &std::path::Path,
+    wall: yi_runtime::Wall,
+    sandbox: Option<yi_tools::Sandbox>,
+    depth: u8,
+    max_depth: u8,
+    script: Vec<AgentMessage>,
+) -> (AgentSession, Arc<ProviderStream>, Arc<SubagentHost>) {
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(script);
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
@@ -3657,8 +3675,8 @@ fn wired_root(
             lane_slots: 1,
             broker: Some(Arc::new(broker)),
             tools: Arc::new(yi_tools::builtin_tools),
-            depth: 0,
-            max_depth: 1,
+            depth,
+            max_depth,
             rlm_dir: root.join("rlm"),
             family_dir: None,
             summarizer: None,
@@ -5448,5 +5466,112 @@ async fn a_failure_from_a_child_reads_failed_in_wait() -> TestResult {
     let waited = harness.host.wait(1_000, None).await?;
     assert_eq!(waited["states"]["sorry"], json!("failed"), "{waited:?}");
     assert_eq!(waited["notes"]["sorry"], json!("the fixture is missing"));
+    Ok(())
+}
+
+/// #1571: a spawn refused after its directory was made (here for the one worker lane the pool
+/// splits out) left a `sub-*` behind, so the family named a child that never ran.
+#[tokio::test]
+async fn a_spawn_refused_by_the_lane_pool_leaves_no_directory() -> TestResult {
+    let repo = Scratch::new("yi-spawn-dir")?;
+    crate::repo::init_repo(&repo)?;
+    std::fs::create_dir_all(repo.join("home"))?;
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "holding the lane",
+        tool_command: None,
+        cwd: Some(repo.to_path_buf()),
+        wake_parent: None,
+    })?;
+    harness.host.spawn(
+        "hold the lane".to_owned(),
+        protocol_kwargs("held", &[("isolation", json!("worktree"))]),
+    )?;
+    let dirs = || -> Result<Vec<String>, Box<dyn Error>> {
+        let mut names: Vec<String> = std::fs::read_dir(&harness.root)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("sub-"))
+            .collect();
+        names.sort();
+        Ok(names)
+    };
+    assert_eq!(
+        dirs()?.len(),
+        1,
+        "the admitted child has its directory: {:?}",
+        dirs()?
+    );
+    let refused = harness.host.spawn(
+        "take a lane".to_owned(),
+        protocol_kwargs("refused", &[("isolation", json!("worktree"))]),
+    );
+    let reason = refused.err().ok_or("the worker lane is already held")?;
+    assert!(reason.contains("worker capacity is full"), "{reason}");
+    assert_eq!(
+        dirs()?.len(),
+        1,
+        "the refused spawn left no sub-* behind: {:?}",
+        dirs()?
+    );
+    Ok(())
+}
+
+/// #1571: expiry ran only on a depth-0 session's plan timer, so a grandchild below depth 0
+/// had its grace served by nobody. The host's own loop serves it, with no `expire` call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_childs_host_expires_its_grandchilds_lease() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let root = Scratch::new("yi-lease-depth")?;
+    std::fs::create_dir_all(root.join("project"))?;
+    let mut holding = Map::new();
+    holding.insert("command".to_owned(), json!("sleep 30"));
+    let script = vec![faux_assistant_message(
+        vec![yi_ai::faux::faux_tool_call("call-1", "bash", holding)],
+        StopReason::ToolUse,
+    )];
+    let (session, _provider, host) =
+        wired_scripted(&root, yi_runtime::Wall::default(), None, 1, 3, script);
+    let store = support::memory_store("yi-lease-depth");
+    session.attach_store(Arc::clone(&store))?;
+    host.spawn("hold the lane".to_owned(), protocol_kwargs("held", &[]))?;
+    for _ in 0..POLL_ATTEMPTS {
+        let running = host
+            .children_view()
+            .first()
+            .is_some_and(|view| view.update.activity == ChildActivity::Executing);
+        if running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    host.revoke("held", 0, "scope changed")?;
+    let mut repossessed = false;
+    for _ in 0..POLL_ATTEMPTS {
+        let entries = yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery {
+            custom_type: Some("lease".to_owned()),
+            order: yi_session::EntryOrder::OldestFirst,
+            ..yi_session::EntryQuery::default()
+        })?;
+        repossessed = entries.iter().any(|entry| match entry {
+            yi_types::entry::Entry::Custom {
+                data: Some(data), ..
+            } => matches!(
+                serde_json::from_value::<LeaseRecord>(data.clone()),
+                Ok(LeaseRecord::Repossessed(_))
+            ),
+            _ => false,
+        });
+        if repossessed {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    assert!(
+        repossessed,
+        "the host's own expiry loop served the grace, so its journal holds the repossession"
+    );
     Ok(())
 }

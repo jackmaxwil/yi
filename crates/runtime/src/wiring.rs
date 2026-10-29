@@ -639,7 +639,6 @@ fn wire_plan_engine(
             Arc::new(move |message, mode| hook(message, mode))
         });
         let children = Arc::clone(host);
-        let leased = Arc::clone(host);
         let mut timer = crate::plan::timer::PlanTimer::new(engine)
             .with_children(Arc::new(move || children.states()), {
                 let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
@@ -648,10 +647,6 @@ fn wire_plan_engine(
                     stalled.publish_all();
                 })
             })
-            .with_leases(Arc::new(move || {
-                let host = Arc::clone(&leased);
-                tokio::spawn(async move { host.expire().await });
-            }))
             .with_owned({
                 let store = session.store_handle();
                 Arc::new(move || {
@@ -669,14 +664,6 @@ fn wire_plan_engine(
             }));
         }
         let timer = Arc::new(timer);
-        // A grace rides the loop's own due-time set, so an earlier one interrupts its sleep.
-        let due = Arc::clone(&timer);
-        host.set_lease_clock(
-            None,
-            Some(Arc::new(move |grace| {
-                due.wake_at(due.now().checked_add(grace).unwrap_or_else(|| due.now()));
-            })),
-        );
         crate::plan::timer::spawn(timer);
         crate::plan::loop_coupling::coupling(
             session,
@@ -866,6 +853,14 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         });
     }
     let host = subagent_host(session, &wiring, &plans_dir);
+    let expiry = crate::lease::spawn_expiry(Arc::clone(&host));
+    host.set_lease_clock(
+        None,
+        Some(Arc::new(move |grace| {
+            let now = std::time::Instant::now();
+            expiry.wake_at(now.checked_add(grace).unwrap_or(now));
+        })),
+    );
     host.register(&mut registry);
     crate::mailbox::register_receive(session, &host, &mut registry);
     let environment = crate::environment::hook(session, &wiring, Arc::clone(&host));

@@ -890,10 +890,10 @@ fn run_rpc(args: &Args) -> i32 {
         Ok(runtime) => runtime,
         Err(code) => return code,
     };
-    let session = {
+    let (session, host) = {
         let _guard = runtime.enter();
         match build_session(args, None, None, false, [false; 2]) {
-            Ok((session, _host)) => session,
+            Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
     };
@@ -903,6 +903,8 @@ fn run_rpc(args: &Args) -> i32 {
     };
     let lane = session.lane();
     let code = rpc::run_rpc(session, &options, runtime);
+    // A client that hung up ends its children first, so none of their lanes outlives it.
+    let _revoked = host.close();
     release_lane(lane.as_deref());
     code
 }

@@ -87,6 +87,9 @@ pub(super) fn run(args: &Args) -> i32 {
         headless: !interactive,
     };
     let json = args.json;
+    // Each live child is revoked under its own `parent_close` once the answer is in: an ask
+    // that ends with a worktree child running would otherwise leave its lane held.
+    let closing = std::sync::Arc::clone(&host);
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
@@ -96,8 +99,8 @@ pub(super) fn run(args: &Args) -> i32 {
         }
         stream(&session, &host, modes, schema.as_ref(), (ends, deadline)).await
     });
+    let _revoked = closing.close();
     release_lane(lane.as_deref());
-    runtime.shutdown_timeout(left(deadline));
     yi_runtime::spend::drain_settled(deadline);
     code
 }

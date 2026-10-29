@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
@@ -256,4 +256,51 @@ pub(super) fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> 
         "Unsupported rlm.run kwargs: {}",
         unsupported.join(", ")
     ))
+}
+
+/// Invariant: a spawn refused after its directory was made leaves none behind, so the family
+/// names only children that ran (a placeable, a lane, a container and the build all refuse).
+pub(super) struct SpawnDir {
+    path: PathBuf,
+    listed: bool,
+}
+
+impl SpawnDir {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(super) fn keep(&mut self) {
+        self.listed = true;
+    }
+}
+
+impl Drop for SpawnDir {
+    fn drop(&mut self) {
+        if !self.listed {
+            let _removal_is_the_point = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+pub(super) fn create_child_dir(parent_dir: &Path) -> Result<(SpawnDir, String), String> {
+    std::fs::create_dir_all(parent_dir).map_err(|error| error.to_string())?;
+    for _ in 0..100 {
+        let suffix = super::random_suffix()?;
+        let dir = parent_dir.join(format!("sub-{suffix}"));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {
+                return Ok((
+                    SpawnDir {
+                        path: dir,
+                        listed: false,
+                    },
+                    format!("sub-{suffix}"),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(format!("{}: {error}", dir.display())),
+        }
+    }
+    Err("Unable to create unique RLM child session directory".to_owned())
 }

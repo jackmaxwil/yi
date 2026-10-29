@@ -3274,3 +3274,109 @@ async fn a_check_past_the_deadline_is_cut_while_the_executor_serves() -> TestRes
     );
     Ok(())
 }
+
+/// #1571: git refusing the merge for an overlapping dirty file starts no merge at all, so the
+/// steer carries git's own reason; `merge --abort`'s "no merge to abort" used to replace it.
+#[test]
+fn a_dirty_lane_refused_the_merge_of_main_names_gits_reason() -> TestResult {
+    let rig = Rig::new("mergemain-dirty")?;
+    std::fs::write(rig.repo.join("a.txt"), "base\n")?;
+    git(&rig.repo, &["add", "a.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "base"])?;
+    git(
+        &rig.repo,
+        &["remote", "add", "origin", "file:///nonexistent"],
+    )?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-dirty", ClaimBase::Main)?;
+    std::fs::write(rig.repo.join("a.txt"), "moved on main\n")?;
+    git(&rig.repo, &["commit", "-qam", "main moved"])?;
+    let head = git(&rig.repo, &["rev-parse", "HEAD"])?;
+    git(
+        &rig.repo,
+        &["update-ref", "refs/remotes/origin/main", &head],
+    )?;
+    std::fs::write(lane.path().join("a.txt"), "kept here\n")?;
+    let (handle, steers) = handle_for(Some(lane), None);
+    handle.land("Land the dirty lane")?;
+    let told = steers.recv_timeout(std::time::Duration::from_secs(60))?;
+    assert!(
+        told.contains("a.txt") && told.contains("would be overwritten"),
+        "the steer names the file and git's words: {told}"
+    );
+    Ok(())
+}
+
+/// #1571: the conflict steer cut its list at twenty files and said nothing about the cut; a
+/// model reading it believed it had every conflict.
+#[test]
+fn a_conflict_steer_names_the_cap_it_was_cut_at() -> TestResult {
+    let rig = Rig::new("mergemain-many")?;
+    let names: Vec<String> = (0..21).map(|n| format!("f{n}.txt")).collect();
+    for name in &names {
+        std::fs::write(rig.repo.join(name), "base\n")?;
+    }
+    let mut added: Vec<&str> = vec!["add"];
+    added.extend(names.iter().map(String::as_str));
+    git(&rig.repo, &added)?;
+    git(&rig.repo, &["commit", "-qm", "base"])?;
+    git(
+        &rig.repo,
+        &["remote", "add", "origin", "file:///nonexistent"],
+    )?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-many", ClaimBase::Main)?;
+    for name in &names {
+        std::fs::write(lane.path().join(name), "the lane moved\n")?;
+    }
+    git(lane.path(), &["commit", "-qam", "the lane moved"])?;
+    for name in &names {
+        std::fs::write(rig.repo.join(name), "main moved\n")?;
+    }
+    git(&rig.repo, &["commit", "-qam", "main moved"])?;
+    let head = git(&rig.repo, &["rev-parse", "HEAD"])?;
+    git(
+        &rig.repo,
+        &["update-ref", "refs/remotes/origin/main", &head],
+    )?;
+    let (handle, steers) = handle_for(Some(lane), None);
+    handle.land("Land the many")?;
+    let told = steers.recv_timeout(std::time::Duration::from_secs(60))?;
+    assert!(
+        told.contains(
+            "[20 of 21 conflicted files (CONFLICT_FILES_MAX 20); git diff --name-only --diff-filter=U in"
+        ),
+        "the steer carries the cut's row: {told}"
+    );
+    Ok(())
+}
+
+/// #1571: the exits that are not the ACP handle now close their host, so a live worktree
+/// child is revoked and its slot comes back instead of staying held by a session that ended.
+#[tokio::test]
+async fn a_close_revoking_a_live_worktree_child_returns_its_slot() -> TestResult {
+    let rig = Rig::new("close-slot")?;
+    let family = writer(&rig, "echo unsaved > draft.txt; sleep 30").await?;
+    assert!(
+        family.host.cwd_of("writer").is_some(),
+        "the child holds a worktree lane"
+    );
+    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1_000_000));
+    let clock = std::sync::Arc::clone(&ticks);
+    family.host.set_lease_clock(
+        Some(std::sync::Arc::new(move || {
+            clock.load(std::sync::atomic::Ordering::SeqCst)
+        })),
+        None,
+    );
+    assert_eq!(family.host.close(), ["writer"]);
+    ticks.store(1_030_001, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(family.host.expire().await, ["writer"]);
+    let pool = rig.pool(2)?;
+    assert!(
+        matches!(&pool.list()?[..], [SlotView::Idle { .. }, ..]),
+        "the closed session's child gave its slot back: {:?}",
+        pool.list()?
+    );
+    Ok(())
+}

@@ -100,6 +100,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             height: common.height,
         };
         let session = std::sync::Arc::new(session);
+        let closing = std::sync::Arc::clone(&host);
         let code = yi_tui::run_headless(
             runtime,
             std::sync::Arc::clone(&session),
@@ -108,11 +109,13 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             options,
             drive,
         );
+        let _revoked = closing.close();
         leave_lane(&session);
         print_resume_hint(&session, &session_name);
         return code;
     }
     let session = std::sync::Arc::new(session);
+    let closing = std::sync::Arc::clone(&host);
     let code = yi_tui::run_tui(
         runtime,
         std::sync::Arc::clone(&session),
@@ -121,6 +124,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         options,
         control,
     );
+    let _revoked = closing.close();
     leave_lane(&session);
     print_resume_hint(&session, &session_name);
     code

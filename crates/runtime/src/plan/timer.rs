@@ -34,9 +34,6 @@ pub struct PlanTimer {
     ticking: AtomicBool,
     children: Option<(Children, Arc<NoticeFn>)>,
     latch: Mutex<StuckLatch>,
-    /// The lease timer's job (plan section 7.4): run on every wake, before the backstop tick is
-    /// even looked at, so a tick still in flight never delays a cancel's expiry.
-    leases: Option<Arc<dyn Fn() + Send + Sync>>,
     owned: Option<Owned>,
     arm: Option<Arm>,
 }
@@ -51,7 +48,6 @@ impl PlanTimer {
             ticking: AtomicBool::new(false),
             children: None,
             latch: Mutex::new(StuckLatch::default()),
-            leases: None,
             owned: None,
             arm: None,
         }
@@ -77,16 +73,6 @@ impl PlanTimer {
     pub fn with_children(mut self, children: Children, notice: Arc<NoticeFn>) -> Self {
         self.children = Some((children, notice));
         self
-    }
-
-    pub fn with_leases(mut self, expire: Arc<dyn Fn() + Send + Sync>) -> Self {
-        self.leases = Some(expire);
-        self
-    }
-
-    /// The injected clock's now, for a caller turning a grace into a due time.
-    pub fn now(&self) -> Instant {
-        (self.clock)()
     }
 
     /// Registers a due time; one earlier than every other registered interrupts the loop's
@@ -186,9 +172,6 @@ impl PlanTimer {
     /// wait for, so a slow tick never delays a stuck check and neither stalls the reactor.
     fn wake_once(self: &Arc<Self>) {
         let now = (self.clock)();
-        if let Some(expire) = &self.leases {
-            expire();
-        }
         let watching = Arc::clone(self);
         tokio::task::spawn_blocking(move || {
             watching.watch();
