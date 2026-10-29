@@ -1,4 +1,5 @@
 ---
+version: 0.647.0
 raise: crate console +17, crate types +31, tests +10, comments +4
 ---
 The `_yi/fork` request and the `_yi/committed` notice are typed in yi-types now (`AcpForkParams`, `AcpForkPosition`, `AcpCommitted`), as every wire shape is meant to be, rather than built with ad hoc JSON at each end. Two things changed on the wire with them. A position other than `before` or `at` is refused by name (`position is before or at, not sideways`) where a typo used to read as `before`. And the prompt a re-ask hands back rides `_meta.yi.prefill` on the session result, where the spec puts Yi's own fields, instead of a custom field at the result's root; the console reads it there, and still at the root while a daemon from the previous build is serving. A fork request that names no position forks before the entry.

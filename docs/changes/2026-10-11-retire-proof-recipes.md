@@ -1,4 +1,6 @@
 ---
+version: 0.626.0
+decisions: D404
 issue: Closes #1227
 decision: `just tui-proof` and `just console-proof` are gone; a TUI proof artifact is made by `just tui-see run <scene>`, whose snaps are the stills and whose `--video` keeps the whole run as motion (agg's `run.gif` headless, Ghostty's `run.webp` on `--host term`); `just console-pty` stays, since it checks the console's real-terminal handshake and makes no picture | the two recipes played a drive script and rendered it with agg, which `tui-see` already does from the scene's own `#!` line (solo or console, any size) besides diffing base against head, rendering in real Ghostty and posting to every TUI pull request; the owner agreed on 2026-10-11 to keep one tool | restore the two recipes from git history and the doctrine's `just tui-proof` sentence
 ---

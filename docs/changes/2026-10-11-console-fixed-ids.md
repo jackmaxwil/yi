@@ -1,4 +1,6 @@
 ---
+version: 0.645.0
+decisions: D417
 issue: Closes #1257
 decision: `YI_FIXED_IDS`, read by `IdGenerator::new`, makes the session ids a process mints a process-wide counter (`01a00000-0000-7000-8000-<n>`, from 1) instead of random; only the TUI scene runner sets it | the id hashes to a console session's avatar and badge colours, so every console snap differed in a few cells between any two runs and the PR comment had to say to read past them | delete `FIXED_IDS_VAR` and the `fixed` field; `IdGenerator::new` mints random ids again
 raise: crate session +39, tests +44, comments +2

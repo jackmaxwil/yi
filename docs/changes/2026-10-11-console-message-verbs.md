@@ -1,4 +1,6 @@
 ---
+version: 0.628.0
+decisions: D406
 issue: Closes #1253
 growth: +564 the menu's ledger rows and their dispatch (rewind, re-ask, fork, inspect, raw JSON), the cell-to-entry lookup and the branch the console keeps from replays and live notices, the worker's `_yi/committed` emit and `_yi/fork` handler, with their tests; weighed stamping an entry id onto every cell (one entry draws as several cells, slices merge, and the live path names no entry) and a new `_yi/entry` fetch for Inspect (the console already holds every replayed entry)
 raise: crate console +378, crate tui +79, crate acp +107, tests +438, comments +28
