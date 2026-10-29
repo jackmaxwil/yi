@@ -16,8 +16,6 @@ pub(crate) fn quoted(text: &str) -> String {
 }
 
 /// The repository's top; a worktree never borrows the main checkout's.
-/// Incident: a scratch workspace under `TMPDIR=/repo/../scratch` walked the lexical
-/// ancestors through `/repo` and attached that repo's AGENTS.md to a bare session.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
     let real = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     real.ancestors()
@@ -454,7 +452,6 @@ mod tests {
 
     #[test]
     fn an_uncut_stream_is_decoded_whole() {
-        // Twelve two-byte characters: the 17-byte head of a 35-byte cap ends inside the ninth.
         let text = "é".repeat(12);
         let spill = Mutex::new(Spill::new(None));
         assert_eq!(
@@ -471,7 +468,6 @@ mod tests {
             let capture = run_captured(command("true"), None, &never, OUTPUT_CAP)?;
             assert_eq!(capture.exit_code, Some(0));
         }
-        // The watchdog's 50 ms sleep used to floor each of these at 50 ms.
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_millis(200),
@@ -500,8 +496,6 @@ mod tests {
 
     #[test]
     fn a_process_group_dies_with_no_kill_binary_on_path() -> Fallible {
-        // The group kill runs in this process, so the test reruns itself under a PATH with no
-        // `kill` on it, as in the benchmark images; the rerun makes the assertions.
         if std::env::var_os("PATH").is_none_or(|path| path != "/nonexistent") {
             let rerun = command(std::env::current_exe()?)
                 .args([
@@ -510,7 +504,6 @@ mod tests {
                 ])
                 .env("PATH", "/nonexistent")
                 .output()?;
-            // libtest exits 0 on a filter that matches nothing, so the rerun must say it ran one.
             let stdout = String::from_utf8_lossy(&rerun.stdout);
             assert!(
                 rerun.status.success() && stdout.contains("1 passed"),
