@@ -637,23 +637,34 @@ def parse_diff_path(raw: str) -> str:
     return raw
 
 
+HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
 def parse_diff(patch: bytes) -> list[Change]:
+    """Invariant: hunk counts decide what is content, so a body line that reads as a header never moves a path.
+    Split on \n alone, as git does: str.splitlines also breaks on \f and \x1c."""
     changes: list[Change] = []
     current: Optional[Change] = None
-    new_line = 0
-    in_hunk = False
-    for raw in patch.decode("utf-8", "surrogateescape").splitlines():
-        if raw.startswith("diff --git "):
+    new_line = old_left = new_left = 0
+    for raw in patch.decode("utf-8", "surrogateescape").split("\n"):
+        if current and (old_left or new_left):
+            if raw.startswith("+"):
+                current.added.append(AddedLine(current.path or current.old_path or "", new_line, raw[1:]))
+                new_line, new_left = new_line + 1, new_left - 1
+            elif raw.startswith("-"):
+                current.deleted, old_left = current.deleted + 1, old_left - 1
+            elif raw == "" or raw.startswith(" "):
+                new_line, old_left, new_left = new_line + 1, old_left - 1, new_left - 1
+        elif raw.startswith("diff --git "):
             header = raw[len("diff --git "):]
             quoted = re.fullmatch(r'("(?:\\.|[^"])+")\s+("(?:\\.|[^"])+")', header)
-            left, separator, right = header.rpartition(" b/")
-            current = Change(parse_diff_path(right) if separator else "")
+            old = new = header[2:(len(header) - 1) // 2]
             if quoted:
-                current.old_path, current.path = (parse_diff_path(part) for part in quoted.groups())
-            elif separator:
-                current.old_path = parse_diff_path(left.removeprefix("diff --git ").removeprefix("a/"))
+                old, new = (parse_diff_path(part) for part in quoted.groups())
+            elif header != f"a/{old} b/{new}":
+                raise ValueError(f"unparsable diff header: {header[:80]!r}")
+            current = Change(new, old)
             changes.append(current)
-            in_hunk = False
         elif current is None:
             continue
         elif raw.startswith("old mode "):
@@ -673,18 +684,13 @@ def parse_diff(patch: bytes) -> list[Change]:
         elif raw.startswith("+++ "):
             current.path = parse_diff_path(raw[4:])
         elif raw.startswith("@@ "):
-            match = re.search(r"\+(\d+)(?:,\d+)?", raw)
-            new_line = int(match.group(1)) if match else 0
-            in_hunk = True
+            hunk = HUNK.match(raw)
+            if hunk is None:
+                raise ValueError(f"malformed hunk header in {current.path}")
+            old, start, new = hunk.groups()
+            new_line, old_left, new_left = int(start), int(old or 1), int(new or 1)
         elif raw.startswith(("GIT binary patch", "Binary files ")):
             current.binary = True
-        elif in_hunk and raw.startswith("+") and not raw.startswith("+++"):
-            current.added.append(AddedLine(current.path or current.old_path or "", new_line, raw[1:]))
-            new_line += 1
-        elif in_hunk and raw.startswith("-") and not raw.startswith("---"):
-            current.deleted += 1
-        elif in_hunk and raw.startswith(" "):
-            new_line += 1
     return changes
 
 

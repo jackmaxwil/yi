@@ -173,6 +173,45 @@ def check_real_patch_edges() -> None:
 
 
 
+def real_diff(before: dict[str, str], after: dict[str, str]) -> bytes:
+    env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+    with tempfile.TemporaryDirectory(prefix="intake-forged-") as temp:
+        def git(*args: str) -> bytes:
+            return subprocess.run(["git", "-C", temp, *args], env=env, check=True, capture_output=True).stdout
+
+        def write(files: dict[str, str]) -> None:
+            for name, text in files.items():
+                (pathlib.Path(temp) / name).parent.mkdir(parents=True, exist_ok=True)
+                (pathlib.Path(temp) / name).write_bytes(text.encode())
+            git("add", "-A")
+
+        git("init", "-q")
+        write(before)
+        git("-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-qm", "Base")
+        write(after)
+        return git("diff", "--cached", "--no-renames", "--binary", "--full-index")
+
+
+def check_forged_headers() -> None:
+    workflow = ".forgejo/workflows/x.yml"
+    spaced = ".forgejo/workflows/ b/ok.yml"
+    lines = "".join(f"{number}\n" for number in range(30))
+    forged = {
+        "deleted line reads as a --- header": ({workflow: "a\n-- docs/x\nb\n"}, {workflow: "a\nb\n"}, [(workflow, [], 1)]),
+        "added line reads as a +++ header": ({workflow: "a\nb\n"}, {workflow: "a\n++ docs/ok.md\nb\n"}, [(workflow, ["++ docs/ok.md"], 0)]),
+        "both header lines forged, the bypass": ({workflow: "a\n-- docs/x\nb\n"}, {workflow: "a\nb\n++ docs/ok.md\n"}, [(workflow, ["++ docs/ok.md"], 1)]),
+        "form feed splits an added line": ({workflow: "a\n"}, {workflow: "a\x0c+++ b/docs/ok.md\n"}, [(workflow, ["a\x0c+++ b/docs/ok.md"], 1)]),
+        "two hunks, the second ending without a newline": ({workflow: lines}, {workflow: lines.replace("\n1\n", "\nx\n").replace("\n28\n", "\n-- y\n").rstrip("\n")}, [(workflow, ["x", "-- y", "29"], 3)]),
+        "empty file under a ' b' directory": ({}, {spaced: ""}, [(spaced, [], 0)]),
+    }
+    for name, (before, after, expected) in forged.items():
+        patch = real_diff(before, after)
+        changes = bridge.parse_diff(patch)
+        assert [(c.path, [line.text for line in c.added], c.deleted) for c in changes] == expected, f"{name}: {changes}"
+        refused = bridge.check_10_deny_paths(dataclasses.replace(valid_case(), changes=changes, patch=patch))
+        assert isinstance(refused, bridge.Refusal) and refused.text.endswith("is denied by .forgejo/"), f"{name}: {refused}"
+
+
 def check_real_fixture() -> None:
     pr = json.loads((FIXTURES / "pull-request.json").read_text())
     commits = json.loads((FIXTURES / "commits.json").read_text())
@@ -297,6 +336,7 @@ def selfcheck() -> int:
     check_real_fixture()
     check_rewrite_helper()
     check_real_patch_edges()
+    check_forged_headers()
     check_signed_object()
     valid = valid_case()
     assert bridge.evaluate(valid) == bridge.ALLOW
