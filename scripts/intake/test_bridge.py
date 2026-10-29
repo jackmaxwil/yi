@@ -96,7 +96,8 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("executable", "executable", with_change(base, new_mode="100755"), "mode")
     add("binary", "binary", with_change(base, binary=True), "binary")
     add("lfs", "lfs", added(base, "version https://git-lfs.github.com/spec/v1"), "lfs")
-    add("rename-side", "rename", with_change(base, rename=True, old_path="README", path="scripts/intake/allowed.json"), "path")
+    add("rename-new-side", "path", with_change(base, rename=True, old_path="README", path="scripts/intake/allowed.json"), "path")
+    add("rename-old-side", "path", with_change(base, rename=True, old_path="scripts/intake/allowed.json", path="README"), "path")
     add("dot-dot", "filename", with_change(base, path="docs/../escape", old_path="docs/../escape"), "filename")
     add("case-fold", "filename", dataclasses.replace(base, changes=base.changes + [bridge.Change("Readme")]), "filename")
     add("non-ascii", "filename", with_change(base, path="docs/ångström.md", old_path="docs/ångström.md"), "filename")
@@ -342,7 +343,8 @@ EXPECTED = {
     "executable": "intake: mode: 'README' changes the executable bit",
     "binary": "intake: binary: 'README' is binary",
     "lfs": "intake: lfs: 'README' is an LFS pointer",
-    "rename-side": "intake: path: rename side 'scripts/intake/allowed.json' is denied by scripts/intake/",
+    "rename-new-side": "intake: path: 'scripts/intake/allowed.json' is denied by scripts/intake/",
+    "rename-old-side": "intake: path: 'scripts/intake/allowed.json' is denied by scripts/intake/",
     "dot-dot": "intake: filename: 'docs/../escape' fails empty, '.' or '..' component",
     "case-fold": "intake: filename: 'Readme' fails case-fold collision with 'README'",
     "secret": "intake: content: 'README:2' matches a secret/private pattern",
@@ -361,7 +363,7 @@ EXPECTED = {
 
 
 def selfcheck() -> int:
-    assert len(bridge.CHECKS) == 25
+    assert len(bridge.CHECKS) == 24
     check_real_fixture()
     check_rewrite_helper()
     check_real_patch_edges()
@@ -394,7 +396,7 @@ def selfcheck() -> int:
     assert payload["draft"] is True and payload["head"] == bridge.branch_name(valid)
     assert 'trust="untrusted"' in payload["body"]
     print("\n".join("seen-red " + line for line in red))
-    print(f"ok   intake selfcheck ({len(red)} hostile cases, 25 ordered checks, real fixtures)")
+    print(f"ok   intake selfcheck ({len(red)} hostile cases, 24 ordered checks, real fixtures)")
     return 0
 
 

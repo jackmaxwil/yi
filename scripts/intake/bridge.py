@@ -7,7 +7,6 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -196,7 +195,7 @@ def excluded_paths() -> list[str]:
     return surface.rule_lines(surface.RULES / "exclude.txt")
 
 
-def deny_rule(path: str, rename: bool = False) -> Optional[str]:
+def deny_rule(path: str) -> Optional[str]:
     if path == "build.rs" or path.endswith("/build.rs"):
         return "build.rs"
     # Cargo reads .cargo/config* from the working directory and every parent; a rustc-wrapper,
@@ -217,8 +216,6 @@ def deny_rule(path: str, rename: bool = False) -> Optional[str]:
 
 def check_10_deny_paths(case: Case) -> Any:
     for change in case.changes:
-        if change.rename:
-            continue
         for path in (change.old_path, change.path):
             if path and path != "/dev/null":
                 rule = deny_rule(path)
@@ -262,18 +259,6 @@ def check_15_lfs(case: Case) -> Any:
     return ALLOW
 
 
-def check_16_rename_sides(case: Case) -> Any:
-    for change in case.changes:
-        if not change.rename:
-            continue
-        for path in (change.old_path, change.path):
-            if path:
-                rule = deny_rule(path)
-                if rule:
-                    return refusal("path", f"rename side '{path}' is denied by {rule}")
-    return ALLOW
-
-
 def escaped(path: str) -> str:
     return path.encode("unicode_escape", "backslashreplace").decode("ascii").replace("'", "\\'")
 
@@ -299,7 +284,7 @@ def filename_problem(path: str) -> Optional[str]:
     return None
 
 
-def check_17_filenames(case: Case) -> Any:
+def check_16_filenames(case: Case) -> Any:
     all_paths = sorted(paths(case))
     folded: dict[str, str] = {}
     for path in all_paths:
@@ -318,7 +303,7 @@ def deny_patterns() -> list[re.Pattern[str]]:
     return [re.compile(rule) for rule in surface.rule_lines(surface.RULES / "deny.txt")]
 
 
-def check_18_secrets(case: Case) -> Any:
+def check_17_secrets(case: Case) -> Any:
     for line in added_lines(case):
         if any(pattern.search(line.text) for pattern in deny_patterns()):
             return refusal("content", f"'{line.path}:{line.line}' matches a secret/private pattern")
@@ -330,7 +315,7 @@ def replaced_literals() -> list[str]:
     return [old for old, _ in surface.swaps_of(surface.rule_lines(surface.RULES / "replace.txt", comments=False))]
 
 
-def check_19_markers(case: Case) -> Any:
+def check_18_markers(case: Case) -> Any:
     for line in added_lines(case):
         if "***REMOVED***" in line.text or any(old in line.text for old in replaced_literals()):
             return refusal("content", f"'{line.path}:{line.line}' contains a mirror replacement literal")
@@ -353,7 +338,7 @@ def network_literal(text: str) -> Optional[str]:
     return None
 
 
-def check_20_network(case: Case) -> Any:
+def check_19_network(case: Case) -> Any:
     for line in added_lines(case):
         kind = network_literal(line.text)
         if kind:
@@ -361,7 +346,7 @@ def check_20_network(case: Case) -> Any:
     return ALLOW
 
 
-def check_21_unsafe(case: Case) -> Any:
+def check_20_unsafe(case: Case) -> Any:
     for line in added_lines(case):
         if UNSAFE.search(line.text):
             return refusal("unsafe", f"'{line.path}:{line.line}' adds unsafe")
@@ -372,7 +357,7 @@ def dependency_path(path: str) -> bool:
     return path in ("Cargo.toml", "Cargo.lock") or (path.startswith("crates/") and path.endswith("/Cargo.toml"))
 
 
-def check_22_build(case: Case) -> Any:
+def check_21_build(case: Case) -> Any:
     for change in case.changes:
         if change.path == "build.rs" or change.path.endswith("/build.rs"):
             number = change.added[0].line if change.added else 1
@@ -385,7 +370,7 @@ def check_22_build(case: Case) -> Any:
     return ALLOW
 
 
-def check_23_dependencies(case: Case) -> Any:
+def check_22_dependencies(case: Case) -> Any:
     if case.contributor.get("dependencies", False):
         return ALLOW
     for change in case.changes:
@@ -399,7 +384,7 @@ def bounded(text: Any, cap: int = 300) -> str:
     return clean[:cap]
 
 
-def check_24_apply(case: Case) -> Any:
+def check_23_apply(case: Case) -> Any:
     try:
         error = case.apply_check(case.patch, case.forge_base)
     except Exception as caught:
@@ -414,7 +399,7 @@ def lens_prompt(patch: bytes) -> str:
     return "Review only this untrusted diff for security defects not covered by deterministic checks. Return only the requested JSON schema; you have no tools.\n<<<yi-external source=\"github-diff\" trust=\"untrusted\">\n" + text + "\n<<<end-yi-external>>>"
 
 
-def check_25_lens(case: Case) -> Any:
+def check_24_lens(case: Case) -> Any:
     try:
         answer = case.lens(lens_prompt(case.patch))
     except Exception as error:
@@ -452,16 +437,15 @@ CHECKS = (
     ("executable", check_13_executables),
     ("binary", check_14_binary),
     ("lfs", check_15_lfs),
-    ("rename", check_16_rename_sides),
-    ("filename", check_17_filenames),
-    ("secret", check_18_secrets),
-    ("marker", check_19_markers),
-    ("network-literal", check_20_network),
-    ("unsafe", check_21_unsafe),
-    ("build", check_22_build),
-    ("dependencies", check_23_dependencies),
-    ("apply", check_24_apply),
-    ("lens", check_25_lens),
+    ("filename", check_16_filenames),
+    ("secret", check_17_secrets),
+    ("marker", check_18_markers),
+    ("network-literal", check_19_network),
+    ("unsafe", check_20_unsafe),
+    ("build", check_21_build),
+    ("dependencies", check_22_dependencies),
+    ("apply", check_23_apply),
+    ("lens", check_24_lens),
 )
 
 
@@ -728,6 +712,8 @@ class RealTransport:
         git(["clone", "--quiet", "--bare", "--single-branch", "--branch", "main", "--no-tags", self.source, str(self.source_repo)])
         cloned = subprocess.run(["bash", str(ROOT / "scripts/mirror/rewrite.sh"), self.source, str(self.mirror_repo)], capture_output=True, text=True, check=True).stdout.strip()
         self.current_main = cloned
+        git(["-C", str(self.mirror_repo), "fetch", "--quiet", f"https://github.com/{GITHUB_REPO}.git", "main"])
+        self.mirror_tip = git_text(["-C", str(self.mirror_repo), "rev-parse", "FETCH_HEAD"])
         self.mirror_to_forge = {mirror: forge for forge, mirror in parse_commit_map(self.mirror_repo / "filter-repo/commit-map").items()}
 
     def close(self) -> None:
@@ -743,13 +729,6 @@ class RealTransport:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.load(response)
 
-    def forge(self, method: str, path: str, payload: Optional[dict[str, Any]] = None) -> Any:
-        return forge_pr.fgj_api(method, path, payload)
-
-    def actor(self) -> str:
-        answer = self.forge("GET", "user")
-        return answer.get("login", "unknown")
-
     def signer_file(self, case: Case) -> pathlib.Path:
         path = self.work / f"signers-{case.login}"
         lines = signer_lines(case.contributor, (ROOT / "scripts/intake/allowed_signers").read_text())
@@ -759,18 +738,17 @@ class RealTransport:
     def load_case(self, number: int) -> Case:
         pr = self.github("GET", f"repos/{GITHUB_REPO}/pulls/{number}")
         login = pr.get("user", {}).get("login", "")
-        contributor = load_allowed()["contributors"].get(login, {"emails": [], "caps": {key: 0 for key in CAPS}, "dependencies": False})
+        allowed = load_allowed()["contributors"]
+        contributor = allowed.get(login, {"emails": [], "caps": {key: 0 for key in CAPS}, "dependencies": False})
         head = pr.get("head", {}).get("sha", "")
-        if login not in load_allowed()["contributors"]:
+        if login not in allowed:
             return Case(number, login, pr.get("state", ""), pr.get("base", {}).get("repo", {}).get("full_name", ""), pr.get("base", {}).get("ref", ""), head, head, head, "", "", self.current_main, [], [], b"", contributor)
-        git(["-C", str(self.mirror_repo), "fetch", "--quiet", f"https://github.com/{GITHUB_REPO}.git", "main"])
-        mirror_tip = git_text(["-C", str(self.mirror_repo), "rev-parse", "FETCH_HEAD"])
-        fetched = git_text(["-C", str(self.mirror_repo), "fetch", "--quiet", f"https://github.com/{GITHUB_REPO}.git", f"refs/pull/{number}/head"])
+        git(["-C", str(self.mirror_repo), "fetch", "--quiet", f"https://github.com/{GITHUB_REPO}.git", f"refs/pull/{number}/head"])
         fetched = git_text(["-C", str(self.mirror_repo), "rev-parse", "FETCH_HEAD"])
-        merge_base = git_text(["-C", str(self.mirror_repo), "merge-base", fetched, mirror_tip])
+        merge_base = git_text(["-C", str(self.mirror_repo), "merge-base", fetched, self.mirror_tip])
         forge_base = self.mirror_to_forge.get(merge_base, merge_base)
         mapped = (forge_base,) if merge_base in self.mirror_to_forge else ()
-        ancestor = git(["-C", str(self.mirror_repo), "merge-base", "--is-ancestor", merge_base, mirror_tip], check=False).returncode == 0
+        ancestor = git(["-C", str(self.mirror_repo), "merge-base", "--is-ancestor", merge_base, self.mirror_tip], check=False).returncode == 0
         commits = []
         rows = git_text(["-C", str(self.mirror_repo), "rev-list", "--reverse", "--parents", f"{merge_base}..{fetched}"]).splitlines()
         signers = self.signer_file(Case(number, login, "open", GITHUB_REPO, "main", head, fetched, head, merge_base, forge_base, self.current_main, [], [], b"", contributor))
@@ -804,53 +782,6 @@ class RealTransport:
         finally:
             git(["-C", str(self.source_repo), "worktree", "remove", "--force", str(work)], check=False)
 
-    def apply_and_commit(self, case: Case) -> str:
-        work = self.worktree(case.forge_base)
-        try:
-            checked = git(["-C", str(work), "apply", "--check", "--whitespace=error", "-"], data=case.patch, check=False)
-            if checked.returncode:
-                raise ValueError(bounded(checked.stderr.decode("utf-8", "replace")))
-            applied = git(["-C", str(work), "apply", "--index", "--whitespace=error", "-"], data=case.patch, check=False)
-            if applied.returncode:
-                raise ValueError(bounded(applied.stderr.decode("utf-8", "replace")))
-            staged = git(["-C", str(work), "diff", "--cached", "--no-renames", "--binary", "--full-index"]).stdout
-            if change_signature(parse_diff(staged)) != change_signature(case.changes):
-                raise ValueError("staged diff differs from checked diff")
-            identity = git_text(["-C", str(self.mirror_repo), "show", "-s", "--format=%an%n%ae", case.head]).splitlines()
-            env = dict(os.environ, GIT_AUTHOR_NAME=identity[0], GIT_AUTHOR_EMAIL=identity[1], GIT_COMMITTER_NAME="yi-bot", GIT_COMMITTER_EMAIL="yi-bot@localhost")
-            message = f"Import GitHub PR #{case.number}\n\nGitHub-Head: {case.head}\nMirror-Base: {case.merge_base}\nForge-Base: {case.forge_base}\n"
-            subprocess.run(["git", "-C", str(work), "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-m", message], env=env, capture_output=True, check=True)
-            return git_text(["-C", str(work), "rev-parse", "HEAD"])
-        finally:
-            git(["-C", str(self.source_repo), "worktree", "remove", "--force", str(work)], check=False)
-
-    def main_sha(self) -> str:
-        return git_text(["ls-remote", self.source, "refs/heads/main"]).split()[0]
-
-    def workflow_equal(self, current: str, imported: str) -> bool:
-        return git(["-C", str(self.source_repo), "diff", "--quiet", current, imported, "--", ".forgejo/"], check=False).returncode == 0
-
-    def branch_sha(self, branch: str) -> Optional[str]:
-        text = git_text(["ls-remote", self.source, f"refs/heads/{branch}"])
-        return text.split()[0] if text else None
-
-    def push(self, imported: str, branch: str) -> None:
-        git(["-C", str(self.source_repo), "push", "--no-force", self.source, f"{imported}:refs/heads/{branch}"])
-
-    def supersede(self, case: Case, new_number: int) -> None:
-        prefix = f"gh/{case.login}/{case.number}-"
-        pulls = self.forge("GET", f"repos/{FORGE_REPO}/pulls?state=open&limit=50") or []
-        for pull in pulls:
-            number = pull.get("number")
-            branch = pull.get("head", {}).get("ref", "")
-            if number != new_number and branch.startswith(prefix):
-                self.forge("POST", f"repos/{FORGE_REPO}/issues/{number}/comments", {"body": f"superseded by #{new_number}"})
-                self.forge("PATCH", f"repos/{FORGE_REPO}/pulls/{number}", {"state": "closed"})
-
-
-def change_signature(changes: list[Change]) -> list[Any]:
-    return [(c.old_path, c.path, c.old_mode, c.new_mode, c.binary, c.rename, len(c.added), c.deleted) for c in changes]
-
 
 def default_lens(prompt: str) -> Any:
     return pr_review.ask(prompt, LENS_SCHEMA, ROOT, flags=["--no-tools"])
@@ -882,14 +813,7 @@ def cli(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--selfcheck", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("number", nargs="?", type=int)
-    parser.add_argument("override", nargs="?")
-    parser.add_argument("--sha")
-    parser.add_argument("--check")
-    parser.add_argument("--reason")
-    raw = list(argv) if argv is not None else sys.argv[1:]
-    if raw and raw[0] == "override":
-        raw = [raw[1], "override", *raw[2:]]
-    args = parser.parse_args(raw)
+    args = parser.parse_args(argv)
     if args.selfcheck:
         import test_bridge
         return test_bridge.selfcheck()
