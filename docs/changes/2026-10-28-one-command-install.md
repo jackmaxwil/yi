@@ -1,4 +1,6 @@
 ---
+version: 0.799.0
+decisions: D501, D502
 issue: Closes #1741
 raise: tests +336
 decision: the public mirror also pushes each forge `v*` tag whose commit is on main, at the commit filter-repo rewrote it to, and no other tag, on every mirror run, which a push to main or a dispatch on main starts and a tag push does not (amends D172) | a GitHub release needs its tag on the mirror, and a tag made through the release API would point at a commit the next rules change rewrites away, while the mirror re-derives every tag on each run; a tag trigger, or a dispatch on another ref, would run the token-bearing workflow from that tree rather than main's | drop the tag loop from scripts/mirror/sync.sh; tags it pushed stay published
