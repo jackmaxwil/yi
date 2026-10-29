@@ -370,6 +370,15 @@ impl Store {
     }
 
     fn reconcile_index(&self) -> Result<Vec<IndexLine>, StoreError> {
+        let kept = self.indexed()?;
+        if kept != self.index()? {
+            self.replace(INDEX, &render_index(&kept))?;
+        }
+        Ok(kept)
+    }
+
+    /// The index as reconcile would write it, read without writing anything.
+    pub(crate) fn indexed(&self) -> Result<Vec<IndexLine>, StoreError> {
         let lines = self.index()?;
         let notes = self.notes();
         let mut seen: Vec<MemoryName> = Vec::new();
@@ -393,9 +402,6 @@ impl Store {
                     text: format!("- [{}]({}) — {}", note.name, note.name.file(), note.hook),
                 });
             }
-        }
-        if kept != lines {
-            self.replace(INDEX, &render_index(&kept))?;
         }
         Ok(kept)
     }
