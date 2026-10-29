@@ -27,6 +27,7 @@ FORGE_REPO = "apex/yi"
 LENS_SCHEMA = {"type": "object", "required": ["refusals"], "properties": {"refusals": {"type": "array", "items": {"type": "object", "required": ["path", "line", "reason"], "properties": {"path": {"type": "string"}, "line": {"type": "integer"}, "reason": {"type": "string"}}}}}}
 OVERRIDABLE = {"commits", "files", "lines", "bytes", "network-literal", "unsafe", "lens"}
 CAPS = ("commits", "files", "lines", "bytes")
+PLAIN_EMAIL = re.compile(r"^[^@\s<>]+@[^@\s<>]+$")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -85,6 +86,7 @@ class Case:
     apply_check: Callable[[bytes, str], Optional[str]] = lambda _patch, _base: None
     lens: Callable[[str], Any] = lambda _prompt: {"refusals": []}
     user_id: Optional[int] = None
+    signer: Optional[str] = None
 
 
 @dataclasses.dataclass
@@ -447,6 +449,23 @@ def check_24_lens(case: Case) -> Any:
     return ALLOW
 
 
+def check_25_import_as(case: Case) -> Any:
+    mapping = case.contributor.get("import_as")
+    if mapping is None:
+        return ALLOW
+    if not isinstance(mapping, dict):
+        return refusal("import-as", f"contributor '{case.login}' import_as is not an object")
+    for field in ("name", "email", "consent"):
+        value = mapping.get(field)
+        if not isinstance(value, str) or not value.strip():
+            return refusal("import-as", f"contributor '{case.login}' has import_as without {field}")
+    if any(char in mapping["name"] for char in "<>\n"):
+        return refusal("import-as", f"contributor '{case.login}' import_as name '{bounded(mapping['name'], 80)}' carries an address")
+    if not PLAIN_EMAIL.match(mapping["email"]):
+        return refusal("import-as", f"contributor '{case.login}' import_as email '{bounded(mapping['email'], 80)}' is not a plain address")
+    return ALLOW
+
+
 CHECKS = (
     ("allowlist", check_01_allowlist),
     ("signature", check_02_signatures),
@@ -472,6 +491,7 @@ CHECKS = (
     ("dependencies", check_22_dependencies),
     ("apply", check_23_apply),
     ("lens", check_24_lens),
+    ("import-as", check_25_import_as),
 )
 
 
@@ -602,7 +622,7 @@ def rule_hashes() -> dict[str, str]:
 
 
 def audit_payload(case: Case, imported: str, outcome: Outcome, actor: str, override: Optional[dict[str, str]]) -> dict[str, Any]:
-    return {"github_pr": case.number, "github_login": case.login, "head": case.head, "mirror_merge_base": case.merge_base, "forge_base": case.forge_base, "imported": imported, "branch": branch_name(case), "rule_hashes": rule_hashes(), "checks": outcome.checks, "actor": actor, "override": override, "original_refusal": outcome.overridden.text if outcome.overridden else None}
+    return {"github_pr": case.number, "github_login": case.login, "github_url": f"https://github.com/{GITHUB_REPO}/pull/{case.number}", "github_email": case.contributor["emails"][0], "signer": case.signer, "head": case.head, "mirror_merge_base": case.merge_base, "forge_base": case.forge_base, "imported": imported, "branch": branch_name(case), "rule_hashes": rule_hashes(), "checks": outcome.checks, "actor": actor, "override": override, "original_refusal": outcome.overridden.text if outcome.overridden else None}
 
 
 def import_case(case: Case, transport: Any, override: Optional[dict[str, str]] = None) -> ImportResult:
@@ -731,6 +751,46 @@ def git_text(args: list[str], cwd: Optional[pathlib.Path] = None) -> str:
     return git(args, cwd).stdout.decode().strip()
 
 
+def signer_fingerprint(repo: pathlib.Path, signers: pathlib.Path, sha: str) -> Optional[str]:
+    out = git(["-C", str(repo), "-c", "gpg.format=ssh", "-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", "--raw", sha], check=False)
+    found = re.search(r"key (SHA256:[A-Za-z0-9+/]+)", (out.stdout + out.stderr).decode("utf-8", "replace"))
+    return found.group(1) if out.returncode == 0 and found else None
+
+
+def import_identity(case: Case) -> dict[str, str]:
+    mapping = case.contributor.get("import_as") or {}
+    return {"name": mapping.get("name") or case.login, "email": mapping.get("email") or case.contributor["emails"][0]}
+
+
+def remap_signoff(message: str, original: str, mapping: dict[str, str]) -> str:
+    """Invariant: only the trailer naming the imported author moves; every other byte of the message stays."""
+    moved = f"Signed-off-by: {mapping['name']} <{mapping['email']}>"
+    return "\n".join(moved if line.lower().startswith("signed-off-by:") and original in line else line for line in message.split("\n"))
+
+
+def imported_message(case: Case) -> str:
+    message = f"Import GitHub PR #{case.number}\n\nGitHub-Head: {case.head}\nMirror-Base: {case.merge_base}\nForge-Base: {case.forge_base}\n"
+    mapping = case.contributor.get("import_as")
+    return remap_signoff(message, case.contributor["emails"][0], mapping) if mapping else message
+
+
+def commit_import(work: pathlib.Path, case: Case) -> str:
+    applied = git(["-C", str(work), "apply", "--index", "--whitespace=error", "-"], data=case.patch, check=False)
+    if applied.returncode:
+        raise SystemExit(applied.stderr.decode("utf-8", "replace"))
+    identity = import_identity(case)
+    env = dict(os.environ, GIT_AUTHOR_NAME=identity["name"], GIT_AUTHOR_EMAIL=identity["email"], GIT_COMMITTER_NAME="yi-bot", GIT_COMMITTER_EMAIL="yi-bot@localhost")
+    subprocess.run(["git", "-C", str(work), "-c", "core.hooksPath=/dev/null", "commit", "-m", imported_message(case)], env=env, check=True, capture_output=True)
+    return git_text(["-C", str(work), "rev-parse", "HEAD"])
+
+
+def mapping_line(case: Case) -> str:
+    identity = import_identity(case)
+    mapping = case.contributor.get("import_as")
+    consent = f", consent: {mapping['consent']}" if mapping else ""
+    return f"{identity['name']} <{identity['email']}>{consent}"
+
+
 class RealTransport:
     def __init__(self) -> None:
         validate_registry()
@@ -794,14 +854,7 @@ class RealTransport:
     def apply_and_commit(self, case: Case) -> str:
         work = self.worktree(case.forge_base)
         try:
-            applied = git(["-C", str(work), "apply", "--index", "--whitespace=error", "-"], data=case.patch, check=False)
-            if applied.returncode:
-                raise SystemExit(applied.stderr.decode("utf-8", "replace"))
-            email = case.contributor["emails"][0]
-            env = dict(os.environ, GIT_AUTHOR_NAME=case.login, GIT_AUTHOR_EMAIL=email, GIT_COMMITTER_NAME="yi-bot", GIT_COMMITTER_EMAIL="yi-bot@localhost")
-            message = f"Import GitHub PR #{case.number}\n\nGitHub-Head: {case.head}\nMirror-Base: {case.merge_base}\nForge-Base: {case.forge_base}\n"
-            subprocess.run(["git", "-C", str(work), "-c", "core.hooksPath=/dev/null", "commit", "-m", message], env=env, check=True, capture_output=True)
-            return git_text(["-C", str(work), "rev-parse", "HEAD"])
+            return commit_import(work, case)
         finally:
             git(["-C", str(self.source_repo), "worktree", "remove", "--force", str(work)], check=False)
 
@@ -847,6 +900,7 @@ class RealTransport:
         case.body = pr.get("body") or ""
         case.apply_check = self.apply_check
         case.lens = default_lens
+        case.signer = signer_fingerprint(self.mirror_repo, signers, commits[-1].sha) if commits and commits[-1].signature else None
         return case
 
     def worktree(self, base: str) -> pathlib.Path:
@@ -1008,6 +1062,7 @@ def cli(argv: Optional[list[str]] = None) -> int:
             else:
                 decision = evaluate(case)
                 print(f"PR #{number} {decision if decision == ALLOW else 'REFUSE ' + decision.text}")
+                print(f"PR #{number} author {mapping_line(case)}")
         return 0
     finally:
         transport.close()

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import contextlib
 import copy
 import dataclasses
+import io
 import json
 import os
 import pathlib
@@ -44,6 +46,40 @@ def valid_case() -> bridge.Case:
     case.body = recorded["body"]
     case.apply_check = apply_check
     case._fixture_temp = base
+    return case
+
+
+IMPORT_AS = json.loads((FIXTURES / "import-as.json").read_text())
+FINGERPRINT = IMPORT_AS["contributor"]["fingerprints"][0]
+
+
+@contextlib.contextmanager
+def second_contributor():
+    """The fixture's second contributor is registered in memory; allowed.json carries the owner's real entries only."""
+    allowed = copy.deepcopy(bridge.load_allowed())
+    allowed["contributors"][IMPORT_AS["login"]] = copy.deepcopy(IMPORT_AS["contributor"])
+    with unittest.mock.patch.object(bridge, "load_allowed", lambda: allowed):
+        yield allowed
+
+
+def mapped_case() -> bridge.Case:
+    case = valid_case()
+    row = IMPORT_AS["contributor"]
+    case.login = IMPORT_AS["login"]
+    case.user_id = row["user_id"]
+    case.contributor = copy.deepcopy(row)
+    case.commits = [bridge.Commit(H, row["emails"][0], row["emails"][0])]
+    case.signer = row["fingerprints"][0]
+    return case
+
+
+def unmapped_case() -> bridge.Case:
+    case = mapped_case()
+    case.login = "jackmaxwil"
+    case.user_id = None
+    case.contributor = copy.deepcopy(bridge.load_allowed()["contributors"]["jackmaxwil"])
+    case.commits = [bridge.Commit(H, "mazac@chapman.edu", "mazac@chapman.edu")]
+    case.signer = None
     return case
 
 
@@ -152,6 +188,12 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("dependency", "dependencies", added(base, "serde = \"1\"", "Cargo.toml"), "dependencies")
     add("dependency-case", "dependencies", added(base, "serde = \"1\"", "crates/probe/cargo.toml"), "dependencies")
     add("lockfile-case", "dependencies", dataclasses.replace(base, changes=[bridge.Change("CARGO.LOCK")]), "dependencies")
+    without_consent = copy.deepcopy(IMPORT_AS["contributor"])
+    del without_consent["import_as"]["consent"]
+    add("import-as-no-consent", "import-as", dataclasses.replace(mapped_case(), contributor=without_consent), "import-as")
+    addressed = copy.deepcopy(IMPORT_AS["contributor"])
+    addressed["import_as"]["email"] = "Maximillian Ludwick <max@example.invalid>"
+    add("import-as-addressed-email", "import-as", dataclasses.replace(mapped_case(), contributor=addressed), "import-as")
 
     def failed_apply(_patch: bytes, _base: str):
         return "error: patch failed: README:1"
@@ -306,6 +348,8 @@ def check_signed_object() -> None:
         wrong = repo / "wrong_signers"
         wrong.write_text("intake-fixture@example.invalid " + (generated.with_suffix(".pub")).read_text())
         assert not bridge.commit_verified(repo, wrong, sha)
+        assert bridge.signer_fingerprint(repo, signers, sha) == fingerprint
+        assert bridge.signer_fingerprint(repo, wrong, sha) is None
 
         def drifts(fingerprints: list[str], registry_text: str) -> bool:
             allowed.write_text(json.dumps({"contributors": {"fixture": {**contributor, "fingerprints": fingerprints}}}))
@@ -320,6 +364,83 @@ def check_signed_object() -> None:
         assert drifts(["SHA256:" + "A" * 43], registry), "a fingerprint that is not the key's was accepted"
         assert drifts([fingerprint], ""), "a pinned fingerprint with no key was accepted"
         assert drifts([fingerprint], registry + "stranger@example.invalid " + public + "\n"), "a key for an unpinned principal was accepted"
+
+
+def import_commit(case: bridge.Case) -> tuple[pathlib.Path, str]:
+    repo = fixture_repo(pathlib.Path(tempfile.mkdtemp(prefix="intake-import-")), {"README": b"Hello World!\n"})
+    with unittest.mock.patch.dict(os.environ, {"GIT_AUTHOR_DATE": "2026-10-28T00:00:00Z", "GIT_COMMITTER_DATE": "2026-10-28T00:00:00Z"}):
+        return repo, bridge.commit_import(repo, case)
+
+
+def identity_of(repo: pathlib.Path, sha: str, field: str) -> str:
+    return bridge.git_text(["-C", str(repo), "show", "-s", f"--format={field}", sha])
+
+
+def check_mapped_import() -> None:
+    mapped = mapped_case()
+    with second_contributor():
+        assert bridge.evaluate(mapped) == bridge.ALLOW
+    repo, sha = import_commit(mapped)
+    assert identity_of(repo, sha, "%an <%ae>") == "Maximillian Ludwick <30126044+Madmaxme@users.noreply.github.com>"
+    assert identity_of(repo, sha, "%cn <%ce>") == "yi-bot <yi-bot@localhost>"
+    plain = unmapped_case()
+    other, plain_sha = import_commit(plain)
+    assert identity_of(other, plain_sha, "%an <%ae>") == "jackmaxwil <mazac@chapman.edu>"
+    assert identity_of(repo, sha, "%aI") == identity_of(other, plain_sha, "%aI") == "2026-10-28T00:00:00Z", "the mapping moved the author date"
+    assert identity_of(repo, sha, "%T") == identity_of(other, plain_sha, "%T"), "the mapping moved the tree"
+    assert identity_of(repo, sha, "%B") == identity_of(other, plain_sha, "%B"), "the mapping moved the message body"
+    objects = "".join(bridge.git(["-C", str(repo), "cat-file", "-p", row]).stdout.decode() for row in bridge.git_text(["-C", str(repo), "rev-list", "--all"]).split())
+    assert mapped.login not in objects and mapped.contributor["emails"][0] not in objects, "an imported commit object carries the source account"
+    audit = bridge.audit_payload(mapped, sha, bridge.run_checks(mapped), "jack", None)
+    shown = json.dumps(audit)
+    assert mapped.login in shown and mapped.contributor["emails"][0] in shown, "the record lost the source account"
+    assert audit["github_url"] == f"https://github.com/{bridge.GITHUB_REPO}/pull/{mapped.number}"
+    assert audit["signer"] == FINGERPRINT
+
+
+def check_import_as_refusals() -> None:
+    base = mapped_case()
+    with second_contributor():
+        for field in ("consent", "name"):
+            broken = copy.deepcopy(base.contributor)
+            del broken["import_as"][field]
+            assert bridge.evaluate(dataclasses.replace(base, contributor=broken)).text == f"intake: import-as: contributor '{base.login}' has import_as without {field}"
+        addressed = copy.deepcopy(base.contributor)
+        addressed["import_as"]["email"] = "Maximillian Ludwick <max@example.invalid>"
+        assert bridge.evaluate(dataclasses.replace(base, contributor=addressed)).text == f"intake: import-as: contributor '{base.login}' import_as email 'Maximillian Ludwick <max@example.invalid>' is not a plain address"
+        named = copy.deepcopy(base.contributor)
+        named["import_as"]["name"] = "Maximillian <max@example.invalid>"
+        assert bridge.evaluate(dataclasses.replace(base, contributor=named)).text == f"intake: import-as: contributor '{base.login}' import_as name 'Maximillian <max@example.invalid>' carries an address"
+
+
+def check_signoff_rewrite() -> None:
+    case = mapped_case()
+    original, mapping = case.contributor["emails"][0], case.contributor["import_as"]
+    source = f"Add the README section\n\nSigned-off-by: Pranav Chavan <{original}>\nCo-authored-by: Pranav <{original}>\n"
+    assert bridge.remap_signoff(source, original, mapping) == "Add the README section\n\nSigned-off-by: Maximillian Ludwick <30126044+Madmaxme@users.noreply.github.com>\nCo-authored-by: Pranav <pranavchavan2024.it@mmcoe.edu.in>\n"
+    assert bridge.imported_message(case) == bridge.imported_message(unmapped_case())
+    assert bridge.mapping_line(case) == "Maximillian Ludwick <30126044+Madmaxme@users.noreply.github.com>, consent: Max, iMessage, 2026-10-29"
+    assert bridge.mapping_line(unmapped_case()) == "jackmaxwil <mazac@chapman.edu>"
+
+
+def check_dry_run_prints_mapping() -> None:
+    case = mapped_case()
+
+    class Fake:
+        def load_case(self, number: int) -> bridge.Case:
+            assert number == case.number
+            return case
+
+        def github(self, method: str, path: str, payload=None):
+            return []
+
+        def close(self) -> None:
+            return None
+
+    out = io.StringIO()
+    with second_contributor(), unittest.mock.patch.object(bridge, "RealTransport", Fake), unittest.mock.patch.object(sys, "stdout", out):
+        assert bridge.cli(["--dry-run", str(case.number)]) == 0
+    assert out.getvalue() == f"PR #{case.number} ALLOW\nPR #{case.number} author Maximillian Ludwick <30126044+Madmaxme@users.noreply.github.com>, consent: Max, iMessage, 2026-10-29\n", out.getvalue()
 
 
 def check_ordinary_text_is_allowed() -> None:
@@ -417,11 +538,13 @@ EXPECTED = {
     "replaced-context": f"intake: apply: patch does not apply strictly to Forgejo base {F}: error: patch failed: README:1",
     "invalid-lens": "intake: lens unavailable: invalid lens output",
     "lens-refusal": "intake: lens: model-added refusal",
+    "import-as-no-consent": "intake: import-as: contributor 'pranavjcs' has import_as without consent",
+    "import-as-addressed-email": "intake: import-as: contributor 'pranavjcs' import_as email 'Maximillian Ludwick <max@example.invalid>' is not a plain address",
 }
 
 
 def selfcheck() -> int:
-    assert len(bridge.CHECKS) == 24
+    assert len(bridge.CHECKS) == 25
     check_real_fixture()
     check_filter_repo()
     check_rewrite_helper()
@@ -432,19 +555,24 @@ def selfcheck() -> int:
     assert bridge.evaluate(valid) == bridge.ALLOW
     check_caps()
     red = []
-    for name, check, case, code in hostile_cases():
-        decision = bridge.evaluate(case)
-        assert isinstance(decision, bridge.Refusal), f"{name}: expected refusal, got {decision}"
-        assert decision.text.startswith(f"intake: {code}: "), decision.text
-        if name in EXPECTED:
-            assert decision.text == EXPECTED[name], f"{name}: {decision.text}"
-        without = bridge.evaluate(case, disabled=frozenset({check}))
-        assert without != decision, f"{name}: disabling {check} kept {decision.text}"
-        shown = without if isinstance(without, str) else without.text
-        red.append(f"{name} · disable {check}: expected {decision.text}; got {shown}")
+    with second_contributor():
+        for name, check, case, code in hostile_cases():
+            decision = bridge.evaluate(case)
+            assert isinstance(decision, bridge.Refusal), f"{name}: expected refusal, got {decision}"
+            assert decision.text.startswith(f"intake: {code}: "), decision.text
+            if name in EXPECTED:
+                assert decision.text == EXPECTED[name], f"{name}: {decision.text}"
+            without = bridge.evaluate(case, disabled=frozenset({check}))
+            assert without != decision, f"{name}: disabling {check} kept {decision.text}"
+            shown = without if isinstance(without, str) else without.text
+            red.append(f"{name} · disable {check}: expected {decision.text}; got {shown}")
     check_dry_run_write_detection()
     check_overrides()
     check_ordinary_text_is_allowed()
+    check_mapped_import()
+    check_import_as_refusals()
+    check_signoff_rewrite()
+    check_dry_run_prints_mapping()
     check_lens_runs_without_tools_and_repairs_prose()
     payload = bridge.draft_payload(valid)
     labels = {"external", "autofix:hold"}
@@ -454,7 +582,7 @@ def selfcheck() -> int:
     assert payload["draft"] is True and payload["head"] == bridge.branch_name(valid)
     assert 'trust="untrusted"' in payload["body"]
     print("\n".join("seen-red " + line for line in red))
-    print(f"ok   intake selfcheck ({len(red)} hostile cases, 24 ordered checks, real fixtures)")
+    print(f"ok   intake selfcheck ({len(red)} hostile cases, 25 ordered checks, real fixtures)")
     return 0
 
 

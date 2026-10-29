@@ -78,9 +78,9 @@ class FakeTransport:
         assert applied.returncode == 0, applied.stderr.decode()
         staged = subprocess.check_output(["git", "-C", str(self.repo), "diff", "--cached", "--no-renames", "--binary", "--full-index"])
         assert change_signature(bridge.parse_diff(staged)) == change_signature(case.changes)
-        env = dict(os.environ, GIT_AUTHOR_NAME="Recorded Author", GIT_AUTHOR_EMAIL=case.contributor["emails"][0], GIT_COMMITTER_NAME="yi-bot", GIT_COMMITTER_EMAIL="yi-bot@localhost", GIT_AUTHOR_DATE="2026-10-28T00:00:00Z", GIT_COMMITTER_DATE="2026-10-28T00:00:00Z")
-        message = f"Import GitHub PR #{case.number}\n\nGitHub-Head: {case.head}\nMirror-Base: {case.merge_base}\nForge-Base: {case.forge_base}\n"
-        subprocess.run(["git", "-C", str(self.repo), "-c", "core.hooksPath=/dev/null", "commit", "-m", message], env=env, check=True, capture_output=True)
+        identity = bridge.import_identity(case)
+        env = dict(os.environ, GIT_AUTHOR_NAME=identity["name"], GIT_AUTHOR_EMAIL=identity["email"], GIT_COMMITTER_NAME="yi-bot", GIT_COMMITTER_EMAIL="yi-bot@localhost", GIT_AUTHOR_DATE="2026-10-28T00:00:00Z", GIT_COMMITTER_DATE="2026-10-28T00:00:00Z")
+        subprocess.run(["git", "-C", str(self.repo), "-c", "core.hooksPath=/dev/null", "commit", "-m", bridge.imported_message(case)], env=env, check=True, capture_output=True)
         self.imported = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
         return self.imported
 
@@ -201,6 +201,23 @@ def stage_four(case: bridge.Case, transport: FakeTransport, number: int) -> str:
     return landed
 
 
+def mapped_import() -> str:
+    case = test_bridge.mapped_case()
+    repo, _ = repository(case)
+    transport = FakeTransport(case, repo)
+    with test_bridge.second_contributor():
+        result = bridge.import_case(case, transport)
+    assert result.decision == bridge.ALLOW, result.decision
+    history = "".join(subprocess.check_output(["git", "-C", str(repo), "cat-file", "-p", sha]).decode() for sha in subprocess.check_output(["git", "-C", str(repo), "rev-list", "--all"], text=True).split())
+    assert case.login not in history and case.contributor["emails"][0] not in history, "an imported commit object names the source account"
+    comment = next(call[2]["body"] for call in transport.forge_calls if call[1].endswith("/issues/42/comments") and bridge.AUDIT_MARK in call[2]["body"])
+    audit = json.loads(comment.split("```json", 1)[1].split("```", 1)[0])
+    assert audit["github_login"] == case.login and audit["github_email"] == case.contributor["emails"][0], "the record lost the source account"
+    assert audit["github_url"] == f"https://github.com/{bridge.GITHUB_REPO}/pull/{case.number}"
+    assert audit["imported"] == transport.imported
+    assert subprocess.check_output(["git", "-C", str(repo), "show", "-s", "--format=%an <%ae>", transport.imported], text=True).strip() == "Maximillian Ludwick <30126044+Madmaxme@users.noreply.github.com>"
+    return transport.imported
+
 def main() -> int:
     refused = dataclasses.replace(test_bridge.valid_case(), login="stranger")
     decision = bridge.evaluate(refused)
@@ -235,12 +252,13 @@ def main() -> int:
     assert result.audit["head"] == case.head and result.audit["forge_base"] == base
     assert result.audit["imported"] == transport.imported and result.audit["actor"] == "jack"
     assert result.audit["github_pr"] == case.number and result.audit["mirror_merge_base"] == case.merge_base
-    assert len(result.audit["checks"]) == 24 and all(row["decision"] == "ALLOW" for row in result.audit["checks"])
+    assert len(result.audit["checks"]) == 25 and all(row["decision"] == "ALLOW" for row in result.audit["checks"])
     assert any(call[1].endswith("/issues/42/comments") for call in transport.forge_calls)
     assert transport.github_writes[-1][2]["body"].endswith(json.dumps(result.audit, indent=2, sort_keys=True) + "\n```")
 
     number = stage_three(case, repo, transport)
     landed = stage_four(case, transport, number)
+    mapped_import()
 
     overridden = dataclasses.replace(case, commits=test_bridge.many_commits(case, case.contributor["caps"]["commits"] + 1))
     second_repo, _ = repository(overridden)
@@ -266,6 +284,7 @@ def main() -> int:
     print(f"ALLOW {expected_branch} draft=42 labels={','.join(labels)} run-ci=held strict-base={base}")
     print("ok   intake stage-3 hold (owner-only run-ci, audited diff and workflows pinned)")
     print(f"ok   intake stage-4 landing (landed as {landed} on Forgejo, closed not merged, mapping from the commit map)")
+    print("ok   intake import_as (the imported commit names the chosen identity, the forge record keeps the GitHub account)")
     print("ok   intake journey (real git, fake HTTP, zero network)")
     return 0
 
