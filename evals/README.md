@@ -629,6 +629,15 @@ python3 evals/kill.py report
   browser sidecar never turned healthy and legacy-utility-triage's oracle could not commit through the GUI.
   Its Kimi family reads unrun like EXP-B3c's, so until the sweep can carry a Kimi route its verdict is UNRESOLVED (no Kimi trial ran);
   a flash-only run decides nothing, so it is not run with `--without-kimi`.
+- **EXP-B1e** is `evals/kill/b1-exp-e.py`, ladder step 10: ten Auto-mode tasks that each ask a
+  worker for one call a broker refuses, run twice — the fragment-free head and the `EVAL_KILL_ARM_BINARY`
+  build cut before `ext::narrow` stopped attaching the permission mode. A spec may name its own
+  `binary`, so one test compares two builds. `evals/worker_mode.py` scores each run from the
+  worker's own session: a **retry** is the same refused command sent again after its denial, never
+  the different reversible form that follows one, and a **failed task** is a worker that wrote no
+  `report.md`. Its two recorded transcripts are `fixtures/worker_mode/`, written by the real binary
+  under faux against a lane where the worker's write outside the tree is refused;
+  `selftest.check_worker_mode` pins the counter, the scoring and the verdict.
 - Each test's rows are copied to `evals/trials/ns-<test>.jsonl` for its owning PR.
   `selftest.check_kill` pins all of this against a fake yi that replays recorded streams.
 
