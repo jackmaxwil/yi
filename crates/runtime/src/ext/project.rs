@@ -71,10 +71,12 @@ impl TrustGate {
         write_table(&self.path, &table)
     }
 
-    pub fn revoke(&self, root: &Path) -> Result<(), String> {
+    pub fn revoke(&self, root: &Path) -> Result<bool, String> {
         let mut table = self.table();
-        table.remove(&root.display().to_string());
-        write_table(&self.path, &table)
+        if table.remove(&root.display().to_string()).is_none() {
+            return Ok(false);
+        }
+        write_table(&self.path, &table).map(|()| true)
     }
 
     pub fn grants(&self) -> Vec<(String, usize)> {

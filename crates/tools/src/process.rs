@@ -21,7 +21,7 @@ pub(crate) fn quoted(text: &str) -> String {
 /// `/repo/../scratch`) climbed to `/repo/..` and then `/repo`, attaching a sibling
 /// checkout's AGENTS.md as trusted instructions.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let cwd = yi_permission::lexical_normalize(&std::path::absolute(cwd).ok()?);
     (cwd.ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
@@ -477,10 +477,15 @@ mod tests {
             None,
             "a dotted path is not an ancestor of the repo it passes through"
         );
+        assert_eq!(
+            git_root(&repo.join("..").join("scratch").join("missing")),
+            None,
+            "an unresolvable dotted path does not fall back to the lexical walk"
+        );
         assert_eq!(git_root(&scratch), None);
         assert_eq!(
             git_root(&repo.join("src")),
-            Some(std::fs::canonicalize(&repo)?)
+            Some(yi_permission::lexical_normalize(&repo))
         );
         std::fs::remove_dir_all(&base)?;
         Ok(())

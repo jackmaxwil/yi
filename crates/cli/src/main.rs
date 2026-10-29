@@ -492,9 +492,13 @@ fn run_trust(args: &Args) -> i32 {
             0
         }
         "revoke" => match gate.revoke(&root) {
-            Ok(()) => {
+            Ok(true) => {
                 println!("revoked trust for {}", root.display());
                 0
+            }
+            Ok(false) => {
+                eprintln!("no trust grant for {}", root.display());
+                1
             }
             Err(error) => {
                 eprintln!("error: {error}");
