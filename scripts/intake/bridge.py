@@ -328,12 +328,18 @@ def check_18_markers(case: Case) -> Any:
     return ALLOW
 
 
-# A TLD that is also a field name (`self.app.run()`) is skipped when a call follows it.
-HOSTNAME = re.compile(r"(?i)\b(?:[a-z0-9-]+\.)+(?:com|net|org|edu|gov|mil|io|dev|app|cloud|lan|local|internal|invalid|onion|arpa)\b(?!\(|\.\w+\()")
-# Any TLD counts where the text is used as an endpoint (quoted, with a port, after @ or a network
-# command); row.id and Cargo.toml are not, so an unquoted bare name on a TLD outside HOSTNAME is not seen here.
-HOST = r"(?:[a-z0-9-]+\.)+(?!(?:rs|md|toml|py|jsonl?|ya?ml|txt|lock|sh|js|ts|cfg|ini|log|html|css|csv|xml|svg|png|jpg|gif|sql|zip|gz|tar)\b)[a-z]{2,}\b(?!\.\w)"
-ENDPOINT = re.compile(rf"(?i)[\"'`]{HOST}(?::\d+)?(?:/[^\"'`\s]*)?[\"'`]|(?<![\w.]){HOST}:\d{{1,5}}\b|(?<=\w)@{HOST}|\b(?:curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ping|dig|nslookup)\b[^\n]*?(?<![\w.]){HOST}")
+# Bare text is a hostname only on a common TLD, and not when a call follows (`self.app.run()`).
+# Any TLD counts where syntax makes it an endpoint: host:port, user@host, or after a network
+# command. A bare name on a rarer TLD, even quoted, reads like `row.id` and `"response.failed"`.
+# The port form skips file extensions, so `main.rs:42` is a file reference.
+LABELS = r"(?:[a-z0-9-]+\.)+"
+ANY_HOST = rf"{LABELS}[a-z]{{2,}}\b"
+HOSTNAME = re.compile(
+    rf"(?i)\b{LABELS}(?:com|net|org|edu|gov|mil|io|dev|app|cloud|lan|local|internal|invalid|onion|arpa)\b(?!\(|\.\w+\()"
+    rf"|(?<![\w.]){LABELS}(?!(?:rs|md|toml|py|jsonl?|ya?ml|txt|lock|sh|js|ts|cfg|ini|log|html|css|csv|xml|svg|sql)\b)[a-z]{{2,}}:\d{{1,5}}\b"
+    rf"|(?<=\w)@{ANY_HOST}"
+    rf"|\b(?:curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ping|dig|nslookup)\b[^\n]*?(?<![\w.]){ANY_HOST}"
+)
 # The keyword may sit alone before its brace on the next line, so a prose line ending in it is refused too.
 UNSAFE = re.compile(r"\bunsafe\s*(?:\{|\(|//|/\*|$)|\bunsafe\s+(?:fn|impl|trait|extern)\b")
 
@@ -343,7 +349,7 @@ def network_literal(text: str) -> Optional[str]:
         return "URL"
     if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text) or re.search(r"(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b", text):
         return "IP literal"
-    if re.search(r"(?i)\blocalhost\b", text) or HOSTNAME.search(text) or ENDPOINT.search(text):
+    if re.search(r"(?i)\blocalhost\b", text) or HOSTNAME.search(text):
         return "hostname"
     return None
 
