@@ -10,6 +10,10 @@ impl LineMap {
         Self(crate::diff::line_map(old_text, new_text))
     }
 
+    pub fn from_script(script: &crate::diff::EditScript) -> Self {
+        Self(script.line_map())
+    }
+
     pub fn line(&self, line: u64) -> Option<u64> {
         let index = usize::try_from(line.checked_sub(1)?).ok()?;
         self.0.get(index).copied().flatten()

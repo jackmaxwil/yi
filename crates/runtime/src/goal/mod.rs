@@ -90,14 +90,9 @@ pub(crate) fn run_check(
     timeout_ms: u64,
     hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> Result<(), String> {
-    crate::claude_hooks::guard_shell(hooks, check, cwd)?;
-    let mut command = yi_tools::keyless_command("sh");
-    command.arg("-c").arg(check).current_dir(cwd);
-    let deadline = Instant::now()
-        .checked_add(std::time::Duration::from_millis(timeout_ms))
-        .unwrap_or_else(Instant::now);
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP)
+    let capture = ShellCheck::new(check, cwd, hooks)
+        .within(timeout_ms)
+        .run()
         .map_err(|error| format!("goal check failed to run: {error}"))?;
     if capture.cancelled {
         return Err(format!("goal check timed out after {timeout_ms} ms"));
@@ -117,8 +112,101 @@ pub(crate) fn run_check(
 /// The environment a checker may see beyond what its manifest declares (plan section 6.3).
 pub const CHECKER_ENV_BASE: [&str; 4] = ["PATH", "HOME", "LANG", "TMPDIR"];
 
-/// # Errors
-/// No spawn, or a Claude Code Bash hook refused it. `/bin/sh -c`, `env_clear()` plus the allowlist.
+/// Who a check's child sees: nothing of the host's, or the names its manifest declares.
+pub(crate) enum Env<'a> {
+    Keyless,
+    Allowlist(&'a [String]),
+}
+
+/// One shell check. The goal's, plan verify's and the `exec://` adapter's runners are this
+/// builder with a different environment policy, deadline and reading of the output.
+pub(crate) struct ShellCheck<'a> {
+    command: &'a str,
+    cwd: &'a std::path::Path,
+    hooks: Option<&'a crate::claude_hooks::Hooks>,
+    env: Env<'a>,
+    stdin: Option<Vec<u8>>,
+    deadline: Instant,
+    stop: Option<&'a yi_tools::CancelFlag>,
+}
+
+impl<'a> ShellCheck<'a> {
+    pub(crate) fn new(
+        command: &'a str,
+        cwd: &'a std::path::Path,
+        hooks: Option<&'a crate::claude_hooks::Hooks>,
+    ) -> Self {
+        Self {
+            command,
+            cwd,
+            hooks,
+            env: Env::Keyless,
+            stdin: None,
+            deadline: Instant::now(),
+            stop: None,
+        }
+    }
+
+    pub(crate) fn env(mut self, env: Env<'a>) -> Self {
+        self.env = env;
+        self
+    }
+
+    pub(crate) fn stdin(mut self, stdin: Option<Vec<u8>>) -> Self {
+        self.stdin = stdin;
+        self
+    }
+
+    pub(crate) fn within(mut self, timeout_ms: u64) -> Self {
+        self.deadline = Instant::now()
+            .checked_add(std::time::Duration::from_millis(timeout_ms))
+            .unwrap_or_else(Instant::now);
+        self
+    }
+
+    pub(crate) fn until(mut self, deadline: Instant) -> Self {
+        self.deadline = deadline;
+        self
+    }
+
+    pub(crate) fn stop(mut self, stop: Option<&'a yi_tools::CancelFlag>) -> Self {
+        self.stop = stop;
+        self
+    }
+
+    /// # Errors
+    /// A Claude Code Bash hook refused it, or the shell did not spawn.
+    pub(crate) fn run(self) -> Result<yi_tools::CommandCapture, String> {
+        crate::claude_hooks::guard_shell(self.hooks, self.command, self.cwd)?;
+        let mut shell = match self.env {
+            Env::Keyless => yi_tools::keyless_command("sh"),
+            Env::Allowlist(declared) => {
+                let mut shell = yi_tools::command("/bin/sh");
+                shell.env_clear();
+                let names = CHECKER_ENV_BASE
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .chain(declared.iter().cloned());
+                for name in names {
+                    if let Some(value) = std::env::var_os(&name) {
+                        shell.env(name, value);
+                    }
+                }
+                shell
+            }
+        };
+        shell.arg("-c").arg(self.command).current_dir(self.cwd);
+        let deadline = self.deadline;
+        let stop = self.stop.cloned();
+        let cancelled: yi_tools::CancelFlag = Arc::new(move || {
+            Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop())
+        });
+        yi_tools::run_captured(shell, self.stdin, &cancelled, yi_tools::OUTPUT_CAP)
+    }
+}
+
+/// `/bin/sh -c`, `env_clear()` plus the allowlist; the caller reads the capture, and its Err is
+/// no spawn or a refused Bash hook.
 pub(crate) fn run_check_in(
     cwd: &std::path::Path,
     command: &str,
@@ -128,22 +216,12 @@ pub(crate) fn run_check_in(
     stop: Option<&yi_tools::CancelFlag>,
     hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> Result<yi_tools::CommandCapture, String> {
-    crate::claude_hooks::guard_shell(hooks, command, cwd)?;
-    let mut shell = yi_tools::command("/bin/sh");
-    shell.arg("-c").arg(command).current_dir(cwd).env_clear();
-    for name in CHECKER_ENV_BASE
-        .iter()
-        .map(|name| (*name).to_owned())
-        .chain(env_names.iter().cloned())
-    {
-        if let Some(value) = std::env::var_os(&name) {
-            shell.env(name, value);
-        }
-    }
-    let stop = stop.cloned();
-    let cancelled: yi_tools::CancelFlag =
-        Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
-    yi_tools::run_captured(shell, stdin, &cancelled, yi_tools::OUTPUT_CAP)
+    ShellCheck::new(command, cwd, hooks)
+        .env(Env::Allowlist(env_names))
+        .stdin(stdin)
+        .until(deadline)
+        .stop(stop)
+        .run()
 }
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
@@ -735,4 +813,69 @@ pub fn attach_goal(
         }
     });
     service
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::{CHECKER_ENV_BASE, Env, ShellCheck};
+
+    fn names(env_dump: &str) -> Vec<&str> {
+        env_dump
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    #[test]
+    fn the_env_policy_decides_what_the_check_sees() -> Result<(), Box<dyn Error>> {
+        let cwd = std::env::current_dir()?;
+        let declared = ["DUP_SMOKE_UNSET".to_owned()];
+        let allowlisted = ShellCheck::new("env", &cwd, None)
+            .env(Env::Allowlist(&declared))
+            .run()?;
+        let seen = names(&allowlisted.stdout);
+        assert!(seen.contains(&"PATH"), "{seen:?}");
+        let allowed: Vec<&str> = CHECKER_ENV_BASE
+            .iter()
+            .copied()
+            .chain(declared.iter().map(String::as_str))
+            .collect();
+        // `/bin/sh` sets these itself after `env_clear()`; anything else is inheritance.
+        let shell_own = ["PWD", "SHLVL", "OLDPWD", "_"];
+        for name in &seen {
+            assert!(
+                allowed.contains(name) || shell_own.contains(name),
+                "{name} reached the allowlisted check: {seen:?}"
+            );
+        }
+        let host: Vec<String> = std::env::vars_os()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .filter(|name| !allowed.contains(&name.as_str()))
+            .filter(|name| !shell_own.contains(&name.as_str()))
+            .collect();
+        for name in &host {
+            assert!(
+                !seen.contains(&name.as_str()),
+                "{name} was inherited past the allowlist: {seen:?}"
+            );
+        }
+        let keyless = ShellCheck::new("env", &cwd, None).run()?;
+        let inherited = names(&keyless.stdout);
+        assert!(
+            inherited.len() >= seen.len(),
+            "the keyless check inherits what the allowlisted one was denied: {inherited:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_check_past_its_deadline_is_cancelled() -> Result<(), Box<dyn Error>> {
+        let cwd = std::env::current_dir()?;
+        let capture = ShellCheck::new("sleep 5", &cwd, None).within(50).run()?;
+        assert!(capture.cancelled, "{capture:?}");
+        Ok(())
+    }
 }

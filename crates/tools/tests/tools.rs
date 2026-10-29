@@ -3276,7 +3276,148 @@ fn a_write_result_carries_the_tag_an_edit_must_cite() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn multiline_hits_keep_their_line_numbers_in_a_linear_walk() -> TestResult {
+    let dir = temp_dir("grep-multiline-linear")?;
+    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/grep.rs"))?;
+    let mut text = String::with_capacity(4 << 20);
+    while text.len() < 4 << 20 {
+        text.push_str(&source);
+    }
+    fs::write(dir.join("big.rs"), &text)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let pattern = "let ";
+    let started = std::time::Instant::now();
+    let found = GrepTool::default().execute(
+        args(&[("pattern", json!(pattern)), ("multiline", json!(true))]),
+        &context,
+    );
+    let took = started.elapsed();
+    let shown = output_text(&found);
+    let matcher = regex::Regex::new(pattern)?;
+    assert!(
+        matcher.find_iter(&text).count() >= 10_000,
+        "the fixture must carry about fifteen thousand matches"
+    );
+    for found in matcher.find_iter(&text).take(5) {
+        let line = text
+            .get(..found.start())
+            .unwrap_or_default()
+            .matches('\n')
+            .count()
+            .saturating_add(1);
+        assert!(
+            shown.contains(&format!("big.rs:{line}:")),
+            "a hit on line {line} was numbered elsewhere: {}",
+            shown.chars().take(400).collect::<String>()
+        );
+    }
+    let bound = Duration::from_secs(2);
+    assert!(
+        took < bound,
+        "the quadratic walk took {took:?}; a linear one is well under {bound:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_crate_root_is_checked_without_reading_its_children() -> TestResult {
+    let dir = temp_dir("syntax-root")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    fs::write(dir.join("child.rs"), "pub fn broken( {\n")?;
+    let root = WriteTool::default().execute(
+        args(&[
+            ("path", json!("lib.rs")),
+            ("content", json!("mod child;\npub fn ok() {}\n")),
+        ]),
+        &context,
+    );
+    let Some(syntax) = root.result.details.get("syntax").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    assert_eq!(
+        syntax,
+        "syntax: ok",
+        "the child's error is not the root's: {}",
+        output_text(&root)
+    );
+    let broken = WriteTool::default().execute(
+        args(&[
+            ("path", json!("lib.rs")),
+            ("content", json!("pub fn ok() {}\npub fn broken( {\n")),
+        ]),
+        &context,
+    );
+    let text = output_text(&broken);
+    assert!(text.contains("syntax: error line 2:"), "{text}");
+    Ok(())
+}
+
 /// A placeholder tag names the road back rather than only the rule it broke (#473).
+#[test]
+fn a_two_section_edit_of_a_recorded_session_renders_one_patch_per_section() -> TestResult {
+    let dir = temp_dir("edit-session-fixture")?;
+    let session = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tui/tests/fixtures/sessions/01a129b6.jsonl"
+    ))?;
+    fs::write(dir.join("session.jsonl"), &session)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let read = yi_tools::hashline::tool::HashlineReadTool::new(std::sync::Arc::clone(&state))
+        .execute(args(&[("path", json!("session.jsonl"))]), &context);
+    let shown = output_text(&read);
+    let tag = shown
+        .lines()
+        .next()
+        .and_then(|header| header.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or_else(|| {
+            format!(
+                "no tag on the read result: {}",
+                shown.chars().take(300).collect::<String>()
+            )
+        })?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: std::sync::Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!(
+                "[session.jsonl#{tag}]\nPUT 1.=1:\n+{{\"probe\":1}}\nPUT 3.=3:\n+{{\"probe\":3}}\n"
+            )),
+        )]),
+        &context,
+    );
+    let reply = output_text(&edit);
+    assert!(!edit.is_error, "{reply}");
+    assert!(
+        reply.starts_with("[session.jsonl#"),
+        "a file block opens the reply"
+    );
+    assert_eq!(
+        reply.matches("updated;").count(),
+        1,
+        "one block for one file"
+    );
+    assert!(
+        reply.contains("1:{\"probe\":1}") && reply.contains("3:{\"probe\":3}"),
+        "both sections render their own changed line"
+    );
+    let after = fs::read_to_string(dir.join("session.jsonl"))?;
+    let lines: Vec<&str> = after.lines().collect();
+    assert_eq!(lines.first().copied(), Some("{\"probe\":1}"));
+    assert_eq!(lines.get(2).copied(), Some("{\"probe\":3}"));
+    assert_eq!(
+        lines.len(),
+        session.lines().count(),
+        "two replacements keep the line count"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_placeholder_tag_refusal_names_where_the_tag_comes_from() -> TestResult {
     let dir = temp_dir("write-tag-refusal")?;

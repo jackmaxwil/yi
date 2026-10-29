@@ -43,6 +43,7 @@ pub struct PatchSectionResult {
     pub first_changed_line: Option<u64>,
     pub warnings: Vec<String>,
     pub move_dest: Option<String>,
+    pub script: crate::diff::EditScript,
 }
 
 pub struct PreparedSection {
@@ -342,6 +343,7 @@ impl<'a> Patcher<'a> {
                 first_changed_line: None,
                 warnings,
                 move_dest: None,
+                script: crate::diff::EditScript::default(),
             });
         }
 
@@ -360,6 +362,7 @@ impl<'a> Patcher<'a> {
                 first_changed_line: None,
                 warnings,
                 move_dest: None,
+                script: crate::diff::EditScript::default(),
             });
         }
 
@@ -383,6 +386,7 @@ impl<'a> Patcher<'a> {
                 .remove(&self.resolve_path(&section.path), &self.walls))
             .map_err(|error| format!("failed to remove {}: {error}", section.path))?;
             let file_hash = self.snapshots.record(&dest_canonical, &after, None);
+            let script = crate::diff::EditScript::between(&prepared.normalized, &after);
             return Ok(PatchSectionResult {
                 path: dest.clone(),
                 canonical_path: dest_canonical,
@@ -394,6 +398,7 @@ impl<'a> Patcher<'a> {
                 first_changed_line: prepared.apply_result.first_changed_line,
                 warnings,
                 move_dest: Some(dest),
+                script,
             });
         }
 
@@ -403,6 +408,7 @@ impl<'a> Patcher<'a> {
         let file_hash = self
             .snapshots
             .record(&prepared.canonical_path, &after, None);
+        let script = crate::diff::EditScript::between(&prepared.normalized, &after);
         Ok(PatchSectionResult {
             path: section.path.clone(),
             canonical_path: prepared.canonical_path.clone(),
@@ -414,6 +420,7 @@ impl<'a> Patcher<'a> {
             first_changed_line: prepared.apply_result.first_changed_line,
             warnings,
             move_dest: None,
+            script,
         })
     }
 

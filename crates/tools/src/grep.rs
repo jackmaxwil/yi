@@ -202,9 +202,10 @@ struct FileHits {
 
 fn hits_in(matcher: &regex::Regex, normalized: &str, multiline: bool, def: bool) -> Vec<usize> {
     let mut hits: Vec<usize> = if multiline {
+        let newlines: Vec<usize> = normalized.match_indices('\n').map(|(at, _)| at).collect();
         let mut hits: Vec<usize> = matcher
             .find_iter(normalized)
-            .map(|found| normalized[..found.start()].matches('\n').count())
+            .map(|found| newlines.partition_point(|at| *at < found.start()))
             .collect();
         hits.dedup();
         hits
@@ -218,11 +219,7 @@ fn hits_in(matcher: &regex::Regex, normalized: &str, multiline: bool, def: bool)
     };
     if def {
         let lines: Vec<&str> = normalized.split('\n').collect();
-        hits.retain(|index| {
-            lines
-                .get(*index)
-                .is_some_and(|line| crate::orient::is_decl(line))
-        });
+        hits.retain(|index| lines.get(*index).is_some_and(|l| crate::orient::is_decl(l)));
     }
     hits
 }

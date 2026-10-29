@@ -852,7 +852,7 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         // seen set rebases onto the new tag rather than shrinking to the hunk windows (#473).
         let carried: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before) {
             Some(prior) => {
-                let map = super::rebase::LineMap::between(&result.before, &result.after);
+                let map = super::rebase::LineMap::from_script(&result.script);
                 prior
                     .seen_lines
                     .iter()
@@ -865,7 +865,7 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         let mut seen: Vec<u64> = Vec::new();
         // Every hunk gets a window, not just the first: a window the model cannot see is a
         // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
-        for changed in crate::diff::changed_after_lines(&result.before, &result.after) {
+        for changed in result.script.changed_after_lines() {
             let lo = changed.saturating_sub(EDIT_CONTEXT_LINES).max(1);
             let hi = changed.saturating_add(EDIT_CONTEXT_LINES).min(total);
             let start = seen
@@ -1051,18 +1051,19 @@ impl Tool for HashlineEditTool {
             }
             noop.remove(&result.canonical_path);
             diff.push_str(
-                crate::diff::patch(
-                    &result.before,
-                    &result.after,
-                    Path::new(&result.canonical_path),
-                )
-                .as_str(),
+                result
+                    .script
+                    .patch(Path::new(&result.canonical_path))
+                    .as_str(),
             );
             if result.op != SectionOp::Delete {
                 checked.push((rendered.len(), result.canonical_path.as_str()));
             }
             rendered.push(render_section_result(result, snapshots));
         }
+        // Invariant: the snapshot lock is released before the checker spawns, so a slow
+        // checker does not serialize every other session's edit.
+        drop(state);
         let (verdicts, layer) = post_edit_checks(&checked, &results, context);
         let mut syntax: Option<String> = None;
         for ((index, _), line) in checked.iter().zip(verdicts) {
@@ -1121,8 +1122,7 @@ fn post_edit_checks(
         .collect();
     let regions: Vec<(String, u64)> = (updates.iter())
         .flat_map(|result| {
-            let (path, before) = (&result.canonical_path, &result.before);
-            crate::ripwire::regions(&top, path, before, &result.after)
+            crate::ripwire::regions(&top, &result.canonical_path, &result.script, &result.after)
         })
         .collect();
     let removed: Vec<(String, String)> = (updates.iter())

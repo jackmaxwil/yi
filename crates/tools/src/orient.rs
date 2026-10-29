@@ -50,6 +50,31 @@ const GATES: [(&str, &str); 6] = [
 /// Invariant: an absent layer is named, never dropped — Err carries the reason.
 type LayerBody = Result<String, String>;
 
+/// A packet layer: `None` when the call did not ask for it, so it is neither counted nor read.
+struct Layer {
+    name: &'static str,
+    body: Option<LayerBody>,
+    unasked: &'static str,
+}
+
+impl Layer {
+    fn asked(&self) -> bool {
+        self.body.is_some()
+    }
+
+    fn shown(&self) -> bool {
+        matches!(self.body, Some(Ok(_)))
+    }
+
+    fn render(&self) -> String {
+        match &self.body {
+            Some(Ok(text)) => clamp(self.name, text.clone()),
+            Some(Err(reason)) => format!("absent: {reason}"),
+            None => format!("not asked: {}", self.unasked),
+        }
+    }
+}
+
 pub struct GetContextTool;
 
 impl Tool for GetContextTool {
@@ -58,7 +83,7 @@ impl Tool for GetContextTool {
     }
 
     fn description(&self) -> &str {
-        "One orientation packet for the working directory: task map, symbol neighborhood, file skeletons, git change heat, gate commands, prior mining issues. Layers are clamped and name what they cut; the header says how many were available. Call it once, first, in a repository you have not read this session. PARTIAL - k of n layers means the missing layers are absent, not empty; read what the packet names."
+        "One orientation packet for the working directory: task map, symbol neighborhood, file skeletons, git change heat, gate commands, prior mining issues. Layers are clamped and name what they cut; the header counts what the call asked for. Call it once, first, in a repository you have not read this session. PARTIAL - k of n layers means a layer that was asked for is absent, not empty; read what the packet names."
     }
 
     fn schema(&self) -> Value {
@@ -81,11 +106,14 @@ impl Tool for GetContextTool {
         let (text, layers) = packet(task, symbol, context);
         let mut output = text_output(text);
         output.value = context.program.then(|| {
-            let layer = |(name, body): (&str, LayerBody)| {
-                let (body, absent) =
-                    body.map_or_else(|why| (None, Some(why)), |text| (Some(text), None));
+            let layer = |layer: Layer| {
+                let (body, absent) = match layer.body {
+                    Some(Ok(text)) => (Some(text), None),
+                    Some(Err(why)) => (None, Some(why)),
+                    None => (None, Some(format!("not asked: {}", layer.unasked))),
+                };
                 yi_types::tool_value::ContextLayer {
-                    name: name.to_owned(),
+                    name: layer.name.to_owned(),
                     body,
                     absent,
                 }
@@ -100,21 +128,17 @@ impl Tool for GetContextTool {
 }
 
 /// The packet as the model reads it, and every layer whole for a program.
-fn packet(
-    task: Option<&str>,
-    symbol: Option<&str>,
-    context: &ToolContext,
-) -> (String, [(&'static str, LayerBody); 6]) {
+fn packet(task: Option<&str>, symbol: Option<&str>, context: &ToolContext) -> (String, [Layer; 6]) {
     let root = context.cwd.as_path();
     // The ripwire calls wait on another process, so they run beside the heat and the walk.
     let (map, near, heat, skeleton) = std::thread::scope(|scope| {
         let map = scope.spawn(|| {
             let _span = yi_types::trace::span("context.ripwire");
-            task_map(task, context)
+            task.map(|task| task_map(task, context))
         });
         let near = scope.spawn(|| {
             let _span = yi_types::trace::span("context.ripwire");
-            neighborhood(symbol, context)
+            symbol.map(|symbol| neighborhood(symbol, context))
         });
         let heat_span = yi_types::trace::span("context.heat");
         let heat = change_heat(context);
@@ -123,37 +147,62 @@ fn packet(
         let skeleton = skeletons(root, symbol, heat.as_ref().ok(), context);
         (joined(map), joined(near), heat, skeleton)
     });
-    let layers: [(&'static str, LayerBody); 6] = [
-        ("task map", map),
-        ("symbol neighborhood", near),
-        ("file skeletons", skeleton),
-        ("git change heat", git_heat(heat)),
-        ("gate commands", gates(root)),
-        ("prior issues", issues(root, context)),
+    let issues = root
+        .join(ISSUES_PATH)
+        .exists()
+        .then(|| issues(root, context));
+    let layers = [
+        Layer {
+            name: "task map",
+            body: map,
+            unasked: "pass task=<the change in plain words>",
+        },
+        Layer {
+            name: "symbol neighborhood",
+            body: near,
+            unasked: "pass symbol=<a function or type name>",
+        },
+        Layer {
+            name: "file skeletons",
+            body: Some(skeleton),
+            unasked: "",
+        },
+        Layer {
+            name: "git change heat",
+            body: Some(git_heat(heat)),
+            unasked: "",
+        },
+        Layer {
+            name: "gate commands",
+            body: Some(gates(root)),
+            unasked: "",
+        },
+        Layer {
+            name: "prior issues",
+            body: issues,
+            unasked: "no .yi/mining/issues.jsonl in the working directory",
+        },
     ];
-    let present = layers.iter().filter(|(_, body)| body.is_ok()).count();
-    let total = layers.len();
+    let present = layers.iter().filter(|layer| layer.shown()).count();
+    let total = layers.iter().filter(|layer| layer.asked()).count();
     let mut out = String::from("# orientation packet\n");
     if present == total {
         out.push_str("COMPLETE\n");
     } else {
         out.push_str(&format!("PARTIAL - {present} of {total} layers\n"));
     }
-    for (name, body) in &layers {
-        out.push_str(&format!("\n## {name}\n"));
-        match body {
-            Ok(text) => out.push_str(&clamp(name, text.clone())),
-            Err(reason) => out.push_str(&format!("absent: {reason}")),
-        }
+    for layer in &layers {
+        out.push_str(&format!("\n## {}\n", layer.name));
+        out.push_str(&layer.render());
         out.push('\n');
     }
     (out, layers)
 }
 
-fn joined(layer: std::thread::ScopedJoinHandle<'_, LayerBody>) -> LayerBody {
+fn joined(layer: std::thread::ScopedJoinHandle<'_, Option<LayerBody>>) -> Option<LayerBody> {
     layer
         .join()
-        .unwrap_or_else(|_| Err("the layer's thread panicked".to_owned()))
+        .unwrap_or_else(|_| Some(Err("the layer's thread panicked".to_owned())))
 }
 
 fn clamp(name: &str, body: String) -> String {
@@ -169,8 +218,7 @@ fn clamp(name: &str, body: String) -> String {
     format!("{kept}\n[{name} truncated at {LAYER_CAP} bytes]")
 }
 
-fn task_map(task: Option<&str>, context: &ToolContext) -> LayerBody {
-    let task = task.ok_or_else(|| "no task argument was given".to_owned())?;
+fn task_map(task: &str, context: &ToolContext) -> LayerBody {
     let root = &crate::ripwire::root(&context.cwd);
     let answer = crate::ripwire::json(root, &[&format!("--for={task}")], &context.cancelled)?;
     let rows = answer.get("sigs").and_then(Value::as_array);
@@ -207,8 +255,8 @@ fn task_map(task: Option<&str>, context: &ToolContext) -> LayerBody {
     Ok(out.join("\n"))
 }
 
-fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
-    let symbol = bare(symbol.ok_or_else(|| "no symbol argument was given".to_owned())?);
+fn neighborhood(symbol: &str, context: &ToolContext) -> LayerBody {
+    let symbol = bare(symbol);
     let root = &crate::ripwire::root(&context.cwd);
     let ask = |verb: &str| -> Result<(String, bool), String> {
         let flag = format!("--{verb}={symbol}");
@@ -399,22 +447,6 @@ fn order_line(ranked: &[(u8, usize, String)], symbol: Option<&str>) -> String {
     }
 }
 
-pub(crate) fn skeleton(text: &str, cap: usize) -> (Vec<String>, usize) {
-    let mut heads: Vec<String> = text
-        .lines()
-        .filter(|line| DECL_HEADS.iter().any(|head| line.starts_with(head)))
-        .map(decl_head)
-        .collect();
-    let total = heads.len();
-    if total > cap {
-        heads.truncate(cap);
-        heads.push(format!(
-            "[{cap} of {total} heads, cap {cap} per file — grep def=true for all]"
-        ));
-    }
-    (heads, total)
-}
-
 /// Visibility, export and storage words that may open a declaration before its keyword.
 const DECL_PREFIXES: &str =
     "pub crate super export default async unsafe extern static inline public private protected";
@@ -470,6 +502,40 @@ pub(crate) fn decl_head(line: &str) -> String {
 pub(crate) fn is_decl(line: &str) -> bool {
     let trimmed = line.trim_start();
     DECL_HEADS.iter().any(|head| trimmed.starts_with(head))
+}
+
+/// One indent level, a tab counted as four columns: an `impl` method or a class's method shows.
+const ONE_LEVEL: usize = 4;
+
+fn indent_width(line: &str) -> usize {
+    line.chars()
+        .take_while(|space: &char| space.is_whitespace())
+        .map(|space| match space {
+            '\t' => ONE_LEVEL,
+            _ => 1,
+        })
+        .sum()
+}
+
+fn is_head(line: &str) -> bool {
+    let head = line.trim_start();
+    DECL_HEADS.iter().any(|prefix| head.starts_with(prefix))
+}
+
+pub(crate) fn skeleton(text: &str, cap: usize) -> (Vec<String>, usize) {
+    let mut heads: Vec<String> = text
+        .lines()
+        .filter(|line| indent_width(line) <= ONE_LEVEL && is_head(line))
+        .map(decl_head)
+        .collect();
+    let total = heads.len();
+    if total > cap {
+        heads.truncate(cap);
+        heads.push(format!(
+            "[{cap} of {total} heads, cap {cap} per file — grep def=true for all]"
+        ));
+    }
+    (heads, total)
 }
 
 struct Heat {
@@ -595,11 +661,75 @@ fn issue_row(line: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
+    use super::skeleton;
+
+    fn real(path: &str) -> Result<String, Box<dyn Error>> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        Ok(std::fs::read_to_string(root.join(path))?)
+    }
+
     #[test]
     fn a_clamped_layer_ends_on_a_whole_row() {
         let clamped = super::clamp("heat", "abcdef\n".repeat(1_000));
         let (kept, marker) = clamped.rsplit_once('\n').unwrap_or_default();
         assert_eq!(marker, "[heat truncated at 4000 bytes]");
         assert!(kept.lines().all(|row| row == "abcdef"), "{kept}");
+    }
+
+    #[test]
+    fn impl_methods_and_class_defs_reach_the_skeleton() -> Result<(), Box<dyn Error>> {
+        let rust = real("src/hashline/tool.rs")?;
+        let (heads, _) = skeleton(&rust, usize::MAX);
+        assert!(
+            heads.iter().any(|head| head.starts_with("impl Tool for")),
+            "the impl itself: {heads:?}"
+        );
+        assert!(
+            heads
+                .iter()
+                .any(|head| head.trim_start().starts_with("fn execute(")),
+            "a method one level in: {heads:?}"
+        );
+        let python = real("../../python/yi_runtime/src/rlm/__init__.py")?;
+        let (heads, _) = skeleton(&python, usize::MAX);
+        assert!(
+            heads
+                .iter()
+                .any(|head| head.starts_with("class Reply(dict)")),
+            "{heads:?}"
+        );
+        assert!(
+            heads
+                .iter()
+                .any(|head| head.trim_start().starts_with("def _misuse(self, how: str)")),
+            "a class method one level in: {heads:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_nested_definition_and_a_second_indent_level_stay_out() {
+        let text = "impl Outer {\n    fn kept() {\n        fn hidden() {}\n    }\n}\n";
+        let (heads, total) = skeleton(text, usize::MAX);
+        assert_eq!(total, 2, "{heads:?}");
+        assert!(heads.iter().any(|head| head.trim_start() == "fn kept()"));
+        assert!(!heads.iter().any(|head| head.contains("hidden")));
+        // A tab is one level (four columns), eight spaces are two.
+        let (heads, _) = skeleton("\tdef tabbed(self):\n        def deep(self):\n", 8);
+        assert_eq!(heads, vec!["\tdef tabbed(self):".to_owned()]);
+    }
+
+    #[test]
+    fn the_head_cap_row_still_names_kept_over_total() {
+        let text: String = (0..5).map(|n| format!("    fn m{n}() {{}}\n")).collect();
+        let (heads, total) = skeleton(&text, 3);
+        assert_eq!(total, 5);
+        assert_eq!(heads.len(), 4);
+        assert_eq!(
+            heads.last().map(String::as_str),
+            Some("[3 of 5 heads, cap 3 per file — grep def=true for all]")
+        );
     }
 }
