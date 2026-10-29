@@ -1177,7 +1177,7 @@ fn sixteen_first_reads_of_one_journal_reduce_it_once() -> TestResult {
 }
 
 /// A journal rewritten in place to the same length, with its mtime put back, reads as the
-/// new bytes: a key of length and mtime alone would hand back the old plan.
+/// new bytes, whether its last line is whole or torn.
 #[test]
 fn a_same_length_rewrite_with_its_mtime_restored_reads_the_new_plan() -> TestResult {
     let dir = Scratch::new("yi-plan-journal-same-length")?;
@@ -1209,17 +1209,27 @@ fn a_same_length_rewrite_with_its_mtime_restored_reads_the_new_plan() -> TestRes
     ))?;
     let c = std::fs::read(&path)?;
     assert_eq!(b.len(), c.len(), "the two histories are the same length");
-    let mtime = std::fs::metadata(&path)?.modified()?;
-    assert_eq!(store.read(&id)?.todos[1].label.as_str(), "cut c");
-    let file = std::fs::OpenOptions::new().write(true).open(&path)?;
     use std::io::Write as _;
-    (&file).write_all(&b)?;
-    file.set_times(std::fs::FileTimes::new().set_modified(mtime))?;
-    drop(file);
-    assert_eq!(std::fs::metadata(&path)?.modified()?, mtime);
-    std::fs::remove_file(store.path(&id))?;
-    assert_eq!(store.read(&id)?.todos[1].label.as_str(), "cut b");
-    assert_eq!(store.read(&id)?, uncached(&store, &id)?);
+    let rewrite_and_read_back = |b_tail: &[u8], c_tail: &[u8]| -> TestResult {
+        let mut b = b.clone();
+        let mut c = c.clone();
+        b.extend_from_slice(b_tail);
+        c.extend_from_slice(c_tail);
+        std::fs::write(&path, &c)?;
+        let mtime = std::fs::metadata(&path)?.modified()?;
+        assert_eq!(store.read(&id)?.todos[1].label.as_str(), "cut c");
+        let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+        (&file).write_all(&b)?;
+        file.set_times(std::fs::FileTimes::new().set_modified(mtime))?;
+        drop(file);
+        assert_eq!(std::fs::metadata(&path)?.modified()?, mtime);
+        std::fs::remove_file(store.path(&id))?;
+        assert_eq!(store.read(&id)?.todos[1].label.as_str(), "cut b");
+        assert_eq!(store.read(&id)?, uncached(&store, &id)?);
+        Ok(())
+    };
+    rewrite_and_read_back(b"", b"")?;
+    rewrite_and_read_back(b"{\"b\":", b"{\"c\":")?;
     Ok(())
 }
 
