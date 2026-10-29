@@ -327,7 +327,7 @@ def cmd_check(args):
         title, body = pr["title"], pr.get("body") or ""
     else:
         title = args.title or ""
-        body = body_text(args)
+        body = compose_body(args)
     errs = check_problems(title, body)
     for err in errs:
         print(err)
@@ -351,17 +351,11 @@ def dedupe_counted(body, counted):
     return "\n".join(out).strip()
 
 
-def body_text(args):
-    return cite(pathlib.Path(args.body).read_text().strip() if args.body else "", args)
-
-
-def cite(body, args):
-    cites = [f"Closes #{n}" for n in args.closes] + [f"Refs #{n}" for n in args.refs]
-    return ", ".join(cites) + ("\n\n" + body if body else "") if cites else body
-
-
 def compose_body(args):
-    body = body_text(args)
+    body = pathlib.Path(args.body).read_text().strip() if args.body else ""
+    cites = [f"Closes #{n}" for n in args.closes] + [f"Refs #{n}" for n in args.refs]
+    if cites:
+        body = ", ".join(cites) + ("\n\n" + body if body else "")
     counted = subprocess.run(
         (sys.executable, str(ROOT / "scripts/pr_body.py")), capture_output=True, text=True, check=False
     ).stdout.strip()
@@ -677,7 +671,7 @@ def selfcheck():
     assert not [e for e in drafted if e.startswith("title:")], "a draft title passes the title rule"
     assert any("no `## Why needed`" in e for e in drafted), "`just pr open` runs the template check"
     # Incident: the D249 hard-cap line missed the ratchet regex, so `just push` went on.
-    import contextlib, io, check_binary_size
+    import contextlib, io, types, check_binary_size
 
     over = check_binary_size.problems(9_500_000, check_binary_size.HARD_CAP_BYTES)[0]
     assert over == "dist binary 9500000 > hard cap 9437184 bytes", over
@@ -757,24 +751,25 @@ def selfcheck():
         globals()["fgj_api"] = real_fgj
     assert stopped == 1, "a refused PATCH is not reported as an edit"
     assert any("no `## Why needed`" in line for line in seen.getvalue().splitlines()), seen.getvalue()
-    grown = lambda: (([], [], 200, ([], [])), None)
-    gate.measure = grown
-    flagged = "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED)
+    gate.measure = lambda: (([], [], 200, ([], [])), None)
+    prefill = "## UI changes\n\nNone.\n"
+    unlisted = "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED if title != "UI changes")
     body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_check.md"
-    body_file.write_text(flagged)
-    issue_ok, judged, real_check = gate.issue_problems, [], check_problems
+    body_file.write_text(unlisted)
+    issue_ok, judged, real_check, real_run = gate.issue_problems, [], check_problems, subprocess.run
     gate.issue_problems = lambda *a: []
     globals()["check_problems"] = lambda title, body: judged.append(body) or real_check(title, body)
+    subprocess.run = lambda cmd, *a, **k: types.SimpleNamespace(stdout=prefill) if "pr_body.py" in str(cmd) else real_run(cmd, *a, **k)
     try:
         for closes, want in (([1], 0), ([], 1)):
             with contextlib.redirect_stdout(io.StringIO()):
                 code = cmd_check(argparse.Namespace(number=None, title="Keep the gate", body=str(body_file), closes=closes, refs=[]))
             assert code == want, ("pr check judges the body as pr open composes it", closes, code)
     finally:
-        gate.measure, gate.issue_problems = real_measure, issue_ok
+        gate.measure, gate.issue_problems, subprocess.run = real_measure, issue_ok, real_run
         globals()["check_problems"] = real_check
         body_file.unlink()
-    assert judged[0] == "Closes #1\n\n" + flagged.strip(), ("pr check judges the stripped body pr open submits", judged[0])
+    assert judged[0] == "Closes #1\n\n" + unlisted.strip() + "\n\n" + prefill.strip(), ("pr check judges the body pr open submits", judged[0])
     # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green,
     # because nothing here built the verbs; a name the parser wires that no longer exists
     # now fails this flag instead of the next `just commit`.
