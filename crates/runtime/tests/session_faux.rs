@@ -774,7 +774,7 @@ async fn a_settled_ask_is_journaled_in_the_session() -> Result<(), Box<dyn Error
 }
 
 /// The owner: approval "should be on by default". A session attached with a classifier, armed by
-/// default or by the `approve` key that armed it before, mints the key under the session's HOME.
+/// default or by the `approve` key that armed it before, reads the OpenRouter key under HOME.
 /// Headless, with nobody wired to answer, an auto-mode ask the classifier is sure of still fails
 /// closed. Dies with an unattended classifier allow.
 #[tokio::test]
@@ -899,12 +899,24 @@ fn brokered_with_classifier(
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
+    openrouter_key(&home)?;
     let raw = format!(
-        r#"{{"models": {{"classifier": "english"}}, "classifier": {{"url": "http://127.0.0.1:{port}"{extra}}}}}"#
+        r#"{{"models": {{"classifier": "typesafe/jev-1.13"}}, "classifier": {{"url": "http://127.0.0.1:{port}"{extra}}}}}"#
     );
     let (config, _) = yi_types::config::parse(&raw)?;
     let warnings = yi_runtime::classifier::attach(&session, &root, &home, &config);
     Ok((broker, warnings))
+}
+
+/// The OpenRouter key `yi login openrouter` stores under `home`, which the classifier needs.
+fn openrouter_key(home: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    let tokens = home.join(".yi/providers/tokens");
+    std::fs::create_dir_all(&tokens)?;
+    std::fs::write(
+        tokens.join("openrouter.json"),
+        r#"{"version":1,"kind":"key","access":"sk-or-test","expires_ms":0}"#,
+    )?;
+    Ok(())
 }
 
 /// What the model was sent, in order: user text, reminder text, or `assistant`.
@@ -1886,8 +1898,9 @@ async fn an_unset_classifier_threshold_points_at_0_9_through_attach() -> Result<
     let mut repo = JsonlRepo::new(root.join("sessions"), "/tmp/yi-unset-threshold");
     session.attach_store(Arc::clone(&repo.create(CreateOptions::default())?))?;
     session.set_rules_engine(Arc::new(RuleEngine::new(Vec::new())));
+    openrouter_key(&home)?;
     let raw = format!(
-        r#"{{"models":{{"classifier":"english"}},"classifier":{{"url":"http://127.0.0.1:{port}"}}}}"#
+        r#"{{"models":{{"classifier":"typesafe/jev-1.13"}},"classifier":{{"url":"http://127.0.0.1:{port}"}}}}"#
     );
     let (config, _) = yi_types::config::parse(&raw)?;
     let warnings = yi_runtime::classifier::attach(&session, &root, &home, &config);

@@ -71,7 +71,7 @@ message points the model at one.
 |---|---|---|
 | `model`, `thinking` | none, `medium` | the session's `provider/id`; `off` to `max` reasoning effort |
 | `models.summarizer`, `.advisor`, `.autoReview` | main model, off, off | compaction and titles; naming a model turns that reviewer on |
-| `models.classifier` | off | the local [Laya](https://huggingface.co/convaiinnovations/laya) permission and skill classifier |
+| `models.classifier` | off | TypeSafe's Jev through OpenRouter (`typesafe/jev-1.13`) as the permission and skill classifier; typed messages and judged commands leave the machine |
 | `routing` | none | OpenRouter's `provider` object, sent as written |
 | `permissions.mode`, `permissions.allow` | `auto`, none | `ask`, `auto` or `yolo`; calls that run unasked, e.g. `"bash cargo test*"` |
 | `tui.pace` | 100 | streaming reveal speed in percent; 0 paints at once |

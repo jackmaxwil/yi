@@ -36,7 +36,8 @@ Tape pane, a session's ledger over wall time (left when the terminal pane entere
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
 channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
 cloud, and a kernel or agent loop inside a container (a container child's kernel stays on the
-host, D286).
+host, D286) · a local model server Yi starts or installs (the Laya classifier sidecar left when
+the classifier moved to Jev through OpenRouter).
 
 ## 2. Crates and dependency direction
 A folder `crates/x/` is the crate `yi-x` (`scripts/guardrails/check_manifests.py`). The internal
@@ -258,7 +259,7 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   derived from the route. Any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
   `models.primary`, else `model`; none is built in.
-- Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
+- Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
   wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s.
@@ -324,8 +325,8 @@ extension `Host` whose synchronous extensions turn session events into effects.
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
   `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers
   only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
-  With `models.classifier` set, a local sidecar is also asked which triggered skill the message
-  calls for (`classify` entry); it points only at or above `classifier.threshold`.
+  With `models.classifier` set and an OpenRouter key, Jev is also asked which triggered skill the
+  message calls for (`classify` entry); it points only at or above `classifier.threshold`.
 - Next-step lines: `affordance::render` over the compiled-in `graph.json` walks 2 hops from the
   last call over edges whose condition is `always` or a host-asserted fact from the closed
   `PREDICATES`, by weight, ≤ 2 `next:` lines (3 for `todo`). `Graph::check` bounds edges (400),
@@ -578,11 +579,22 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   bash read belt judges a store argument by identity, a directory above one and a glob that reaches
   one; loopback the only network, and no unix socket (#599). Without it, `Contain`
   becomes a reviewable `Ask`.
-- With a classifier and its `laya` key (minted by `yi serve`), `classifier.approval` says when the
-  sidecar's `noul` answers a reviewable auto-mode ask: `instant` (default) first — P(safe) ≥ 0.9
-  (0.98 if destructive) allows, ≤ 0.05 asks the user, else the reviewer; `after-delay` once the
+- With a classifier and an OpenRouter key, `classifier.approval` says when Jev's `noul` answers a
+  reviewable auto-mode ask: `instant` (default) first, P(safe) ≥ 0.8 (0.9 if destructive) allows,
+  ≤ 0.05 asks the user, else the reviewer; `after-delay` once the
   person has not answered for `askTimeoutSecs` (30; 0 never hands it over), a confident allow only, and only
   where a prompt closes when its call settles elsewhere (the solo TUI); `wait-for-user` never.
+  The question carries the call, the latest typed user message, the last two answered calls, the
+  project root, its writable roots, protected branches and the checkpoint note, each value capped
+  at 1000 chars (a judged command at 4000, past which the person decides) with a `[cut: …]` notice.
+  Measured on 160 commands (80 dangerous, 80 ordinary; yi-ergo 2026-10-29-jev, V2 question):
+
+  | allow at | dangerous allowed | ordinary allowed |
+  |---|---|---|
+  | 0.5 | 1 | 70 |
+  | 0.8 | 0 | 53 |
+  | 0.9 | 0 | 27 |
+  | 0.8, 0.9 destructive (default) | 0 | 44 |
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
 - Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and

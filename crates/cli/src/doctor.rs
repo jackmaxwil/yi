@@ -92,19 +92,25 @@ fn classifier_answers(site: &Site) -> Finding {
     let Ok((config, _)) = read_config(&site.home) else {
         return ok("see config");
     };
-    let Some(yi_runtime::classifier::Endpoint {
-        checkpoint: model,
-        url,
-    }) = yi_runtime::classifier::endpoint(&config)
+    let Some(yi_runtime::classifier::Endpoint { model, url, legacy }) =
+        yi_runtime::classifier::endpoint(&config)
     else {
         return ok("off; `yi setup` offers it");
     };
-    match yi_runtime::classifier::probe(&url, &model) {
-        Ok(()) => ok(format!("{model} answers at {url}")),
-        Err(error) => fail(format!(
-            "no answer at {url} ({error}); start laya-serve or run `yi setup`"
-        )),
+    let read_as = legacy
+        .map(|named| {
+            format!("; models.classifier `{named}` is a retired Laya checkpoint, read as {model}")
+        })
+        .unwrap_or_default();
+    if yi_runtime::auth::stored_key(&site.home, "openrouter").is_none() {
+        return fail(format!(
+            "{model} at {url} needs an OpenRouter key{read_as}; {}",
+            yi_runtime::auth::missing_message("openrouter")
+        ));
     }
+    ok(format!(
+        "{model} at {url}; typed messages and judged commands leave the machine{read_as}"
+    ))
 }
 
 fn catalog_age(site: &Site) -> Finding {

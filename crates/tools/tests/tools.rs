@@ -4069,7 +4069,6 @@ fn bash_inherits_no_provider_key() -> TestResult {
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
         "GEMINI_API_KEY",
-        "LAYA_API_KEY",
     ];
     for name in keys.iter().chain(&["YI_906_ORDINARY"]) {
         // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.

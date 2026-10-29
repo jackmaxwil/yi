@@ -4,8 +4,8 @@ use yi_types::classifier::{DecisionRequest, DecisionResponse};
 
 const BODY_CAP: u64 = 64 * 1024;
 
-/// Invariant: an error is the cause alone; the journal, the pause notice, setup and doctor each
-/// prefix the sidecar's URL once.
+/// Invariant: an error is the cause alone; the journal, the pause notice and doctor each prefix
+/// the endpoint's URL once.
 pub fn decide(
     base_url: &str,
     key: Option<&str>,
@@ -23,7 +23,7 @@ pub fn decide(
         call = call.set("authorization", &format!("Bearer {key}"));
     }
     let response = call.send_string(&body).map_err(|error| match error {
-        ureq::Error::Status(code, _) => format!("the sidecar answered HTTP {code}"),
+        ureq::Error::Status(code, _) => format!("the classifier answered HTTP {code}"),
         ureq::Error::Transport(transport) => crate::request::transport_cause(&transport),
     })?;
     let mut text = String::new();
