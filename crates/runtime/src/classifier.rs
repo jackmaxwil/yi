@@ -467,7 +467,7 @@ impl Approver {
             .collect();
         if project.writable.len() > WRITABLE_CAP {
             writable.push(format!(
-                "[cut: {WRITABLE_CAP} of {} writable roots kept, cap WRITABLE_CAP {WRITABLE_CAP}]",
+                "… [kept {WRITABLE_CAP} of {} writable roots · cap WRITABLE_CAP = {WRITABLE_CAP} · the root above is the one sent]",
                 project.writable.len()
             ));
         }

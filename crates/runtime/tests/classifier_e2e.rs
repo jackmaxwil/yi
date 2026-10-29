@@ -1316,7 +1316,9 @@ fn an_oversized_command_is_never_sent_and_a_long_task_is_cut_with_a_notice() -> 
     let cut = sent["state"]["user task"].as_str().unwrap_or_default();
     assert_eq!(cut.chars().filter(|c| *c == 'é').count(), 1000);
     assert!(
-        cut.ends_with("[cut: 1000 of 1500 chars kept, cap CONTEXT_CHARS 1000]"),
+        cut.ends_with(
+            "… [kept 1000 of 1500 chars · cap classifier.context_chars = 1000 · the classifier judges this head only]"
+        ),
         "{cut}"
     );
     Ok(())
