@@ -303,7 +303,7 @@ fn a_cursor_account_list_becomes_one_catalog_entry() -> TestResult {
 }
 
 #[test]
-fn a_cursor_refresh_http_error_has_only_its_shared_status() -> TestResult {
+fn a_cursor_refresh_http_error_keeps_its_cause() -> TestResult {
     let body = r#"{"error":{"message":"the model or engine was not found; out of credits"}}"#;
     let reply = crate::kimi_wire::json_reply("404 remote instructions", body);
     let (port, _, served) = crate::loopback_server::serve([reply])?;
@@ -322,6 +322,9 @@ fn a_cursor_refresh_http_error_has_only_its_shared_status() -> TestResult {
     let error = result
         .err()
         .ok_or("Cursor refresh unexpectedly succeeded")?;
-    assert_eq!(error.to_string(), "HTTP 404");
+    assert_eq!(
+        error.to_string(),
+        "HTTP 404: the model or engine was not found"
+    );
     Ok(())
 }

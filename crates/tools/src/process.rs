@@ -16,7 +16,12 @@ pub(crate) fn quoted(text: &str) -> String {
 }
 
 /// The repository's top; a worktree never borrows the main checkout's.
+///
+/// Incident: ancestors are lexical, so a cwd holding `..` (a TMPDIR of
+/// `/repo/../scratch`) climbed to `/repo/..` and then `/repo`, attaching a sibling
+/// checkout's AGENTS.md as trusted instructions.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     (cwd.ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
@@ -458,6 +463,27 @@ mod tests {
             drain_capped(text.as_bytes(), 35, None, (&spill, Stream::Out)),
             (text, None)
         );
+    }
+
+    #[test]
+    fn a_dotdot_cwd_never_climbs_to_a_sibling_repo() -> Fallible {
+        let base = std::env::temp_dir().join(format!("yi-git-root-{}", std::process::id()));
+        let (repo, scratch) = (base.join("repo"), base.join("scratch"));
+        std::fs::create_dir_all(repo.join(".git"))?;
+        std::fs::create_dir_all(repo.join("src"))?;
+        std::fs::create_dir_all(&scratch)?;
+        assert_eq!(
+            git_root(&repo.join("..").join("scratch")),
+            None,
+            "a dotted path is not an ancestor of the repo it passes through"
+        );
+        assert_eq!(git_root(&scratch), None);
+        assert_eq!(
+            git_root(&repo.join("src")),
+            Some(std::fs::canonicalize(&repo)?)
+        );
+        std::fs::remove_dir_all(&base)?;
+        Ok(())
     }
 
     #[test]
