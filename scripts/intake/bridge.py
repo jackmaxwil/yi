@@ -335,14 +335,14 @@ def check_18_markers(case: Case) -> Any:
 # that rs, md, py and sh, which are also TLDs, count on a well-known port.
 LABELS = r"(?:[a-z0-9-]+\.)+"
 COMMON = "com|net|org|edu|gov|mil|io|dev|app|cloud|lan|local|internal|invalid|onion|arpa"
-FILE_EXT = "toml|jsonl?|ya?ml|txt|lock|js|ts|tsx|jsx|mjs|cjs|cfg|ini|conf|log|html?|css|csv|xml|svg|sql|go|zig|cpp|hpp|cxx|hxx|rb|java|kt|cs|php|swift|proto|lua|exs?|mk|rst|tex|png|jpe?g|gif|pdf|webp|ico|wasm"
+FILE_EXT = "toml|jsonl?|ya?ml|txt|lock|js|ts|tsx|jsx|mjs|cjs|cfg|ini|conf|log|html?|css|csv|xml|svg|sql|go|zig|cpp|hpp|cxx|hxx|rb|java|kt|cs|php|swift|proto|lua|exs?|rst|tex|png|jpe?g|gif|pdf|webp|ico|wasm"
 FILE_TLD = "rs|md|py|sh"
 WELL_KNOWN = "22|25|53|80|110|143|443|465|587|993|995|1080|3128|8000|8080|8443|8888|9000"
 NET_HOST = rf"{LABELS}(?!(?:{FILE_EXT})\b)[a-z]{{2,}}\b"
 HOSTNAME = re.compile(
     rf"(?i)\b{LABELS}(?:{COMMON})\b(?!\(|\.\w+\()"
     rf"|(?<![\w.]){LABELS}(?!(?:{FILE_EXT}|{FILE_TLD})\b)[a-z]{{2,}}:\d{{1,5}}\b"
-    rf"|(?<![\w./]){LABELS}(?:{FILE_TLD}):(?:{WELL_KNOWN})\b"
+    rf"|(?<![\w.])(?<![^/]/){LABELS}(?:{FILE_TLD}):(?:{WELL_KNOWN})\b"
     rf"|(?<=\w)@{NET_HOST}"
     rf"|\b(?:scp|rsync)\b[^\n]*?\s{NET_HOST}::?"
     rf"|\b(?:curl|wget|ssh|sftp|nc|ncat|telnet|ping|dig|nslookup)\b(?:\s+-\S+(?:\s+(?:\d+|\"[^\"]*\"|'[^']*'))?)*\s+{NET_HOST}"
