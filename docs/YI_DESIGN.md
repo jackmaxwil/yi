@@ -1426,12 +1426,12 @@ verifies every commit locally against that login's signer file and recomputes
 the diff with `git diff --no-renames --binary --full-index`. GitHub's
 `verification` badge is diagnostic, never proof.
 
-Twenty-five ordered checks return `ALLOW` or one typed `intake: …` refusal.
+Twenty-four ordered checks return `ALLOW` or one typed `intake: …` refusal.
 They cover allowlist and base shape, signatures, identities, pinned head, all
 four caps at the cap and the cap plus one, unique mapping and linear history,
-the composed review/mirror/intake wall, symlinks, submodules, executable-bit
-transitions, binary data, LFS, both rename sides, hostile filenames, secrets,
-mirror replacement markers, network literals, `unsafe`, build-time execution,
+the composed review/mirror/intake wall (both sides of a rename, any `.cargo` directory), symlinks, submodules, executable-bit
+transitions, binary data, LFS, hostile filenames, secrets,
+mirror replacement literals, network literals (URLs, IPs, hostnames under a known TLD), `unsafe` blocks and items, build-time execution,
 dependency edits and strict application. `build.rs` is always denied. Secret
 scanning uses the unmodified `scripts/mirror/deny.txt` patterns with no fixture
 ignore. Filenames reject traversal, absolute paths, controls, backslashes,
