@@ -463,8 +463,10 @@ async fn a_cell_that_changes_one_name_writes_only_that_name() -> TestResult {
         .map(|queue| queue.join("\n"))
         .unwrap_or_default();
     assert!(
-        announced.contains("could not be restored and must be recreated if needed: small."),
-        "a missing blob must be named, not dropped: {announced}"
+        announced.contains(
+            "could not be restored and must be recreated if needed: small (FileNotFoundError"
+        ),
+        "a missing blob must be named, with why, not dropped: {announced}"
     );
     Ok(())
 }

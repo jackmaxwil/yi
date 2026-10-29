@@ -153,10 +153,13 @@ pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> S
         ));
     }
     if !restore.failed.is_empty() {
-        let names: Vec<&str> = restore
+        let names: Vec<String> = restore
             .failed
             .iter()
-            .map(|failure| failure.name.as_str())
+            .map(|failure| match failure.reason.is_empty() {
+                true => failure.name.clone(),
+                false => format!("{} ({})", failure.name, failure.reason),
+            })
             .collect();
         lines.push(format!(
             "These could not be restored and must be recreated if needed: {}.",

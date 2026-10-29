@@ -27,6 +27,10 @@ pub fn blobs_dir_for(snapshot_path: &Path) -> PathBuf {
     snapshot_path.with_extension("blobs")
 }
 
+fn skips_path_for(snapshot_path: &Path) -> PathBuf {
+    snapshot_path.with_extension("skips.json")
+}
+
 // JSON string escaping is a valid subset of Python string-literal escaping.
 fn py_str(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned())
@@ -48,6 +52,7 @@ pub fn build_snapshot_code(
     // All builtins are sourced via the locally-imported _b alias so the helper
     // keeps working even when the user namespace shadows names like list/open.
     let blobs = py_path(&blobs_dir_for(out_path));
+    let skips = py_path(&skips_path_for(out_path));
     format!(
         r#"def _yi_snapshot_state():
     import builtins as _b, hashlib, io, json, os, sys
@@ -183,6 +188,7 @@ pub fn build_snapshot_code(
             if not os.path.exists(path):
                 durable(path, blob)
         sync_dir(blobs)
+        durable({skips}, json.dumps(skipped).encode())
         durable({out}, dill.dumps(index))
         sync_dir(os.path.dirname({out}))
     except _b.BaseException as _err:
@@ -236,6 +242,7 @@ pub fn build_restore_code(in_path: &Path) -> String {
     // Builtins via the local _b alias so a shadowed name in the user namespace
     // (list/open/print/…) can't break the restore path.
     let blobs = py_path(&blobs_dir_for(in_path));
+    let skips = py_path(&skips_path_for(in_path));
     format!(
         r#"def _yi_restore_state():
     import builtins as _b, json, os
@@ -278,6 +285,14 @@ pub fn build_restore_code(in_path: &Path) -> String {
             restored.append(name)
         except _b.Exception as _err:
             failed.append({{"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]}})
+    try:
+        with _b.open({skips}, "rb") as fh:
+            for entry in json.loads(fh.read().decode("utf-8", "replace")):
+                name = entry.get("name") if _b.isinstance(entry, _b.dict) else None
+                if _b.isinstance(name, _b.str) and name not in ns:
+                    failed.append(entry)
+    except _b.Exception:
+        pass
     _b.print({marker} + json.dumps({{"restored": _b.sorted(restored), "failed": failed}}))
 
 

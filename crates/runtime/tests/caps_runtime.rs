@@ -471,10 +471,30 @@ fn the_restore_notice_lists_a_bounded_number_of_names() -> TestResult {
 
     let failed = yi_runtime::restore_notice_text(&revived(1, 100));
     assert!(
-        failed.contains("gone099."),
-        "names to recreate stay whole: {failed}"
+        failed.contains("gone099 (PicklingError)"),
+        "names to recreate stay whole, with the reason they did not: {failed}"
     );
     assert!(row_in(&failed).is_none(), "{failed}");
+    Ok(())
+}
+
+#[test]
+fn the_restore_notice_names_why_a_variable_did_not_come_back() -> TestResult {
+    let notice = yi_runtime::restore_notice_text(&revived(1, 1));
+    assert!(
+        notice.contains("gone000 (PicklingError)"),
+        "the reason the name could not be restored travels with it: {notice}"
+    );
+
+    let mut bare = revived(1, 1);
+    if let Some(failure) = bare.failed.first_mut() {
+        failure.reason.clear();
+    }
+    let notice = yi_runtime::restore_notice_text(&bare);
+    assert!(
+        notice.contains("gone000.") && !notice.contains("()"),
+        "a failure with no reason named stays a bare name: {notice}"
+    );
     Ok(())
 }
 

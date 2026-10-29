@@ -1,0 +1,134 @@
+//! A name the snapshot could not take is named again at resume: the skip list beside the index
+//! reaches the restore marker, so a revived kernel says which variables did not come back and why.
+
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use yi_kernel::snapshot::{build_restore_code, build_snapshot_code, parse_restore_result};
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+/// pickle standing in for dill: the skip list is the contract, not the serializer's format.
+const STUB_DILL: &str = "import pickle
+
+settings = {}
+
+
+def dump(value, buffer):
+    pickle.dump(value, buffer)
+
+
+def dumps(value):
+    return pickle.dumps(value)
+
+
+def load(fh):
+    return pickle.load(fh)
+
+
+def loads(blob):
+    return pickle.loads(blob)
+";
+
+const NAMESPACE: &str = r#"class _IP:
+    user_ns = {"small": 1, "big": bytearray(200)}
+    user_ns_hidden = {}
+
+
+def get_ipython():
+    return _IP()
+"#;
+
+const RESTORE_NAMESPACE: &str = r#"class _IP:
+    user_ns = {}
+    user_ns_hidden = {}
+
+
+def get_ipython():
+    return _IP()
+"#;
+
+fn scratch() -> Result<PathBuf, Box<dyn Error>> {
+    let dir = std::env::temp_dir().join(format!("yi-snap-skips-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// One helper module's code run in a `python3` that has the namespace injected, as the kernel's
+/// own bootstrap does; stdout carries the result marker line.
+fn run(dir: &Path, helper: &str, namespace: &str, code: &str) -> Result<String, Box<dyn Error>> {
+    let helper_path = dir.join("helper.py");
+    fs::write(&helper_path, code)?;
+    let driver_path = dir.join("driver.py");
+    let driver = format!(
+        "import sys\n{namespace}\npath = sys.argv[1]\n\
+         exec(compile(open(path).read(), path, \"exec\"), {{\"get_ipython\": get_ipython, \"__name__\": \"driven\"}})\n"
+    );
+    fs::write(&driver_path, driver)?;
+    let stub = dir.join("stub");
+    fs::create_dir_all(&stub)?;
+    fs::write(stub.join("dill.py"), STUB_DILL)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the contract is the generated helper running in a real python3, not a stub of it"
+    )]
+    let output = Command::new("python3")
+        .arg(&driver_path)
+        .arg(&helper_path)
+        .env("PYTHONPATH", &stub)
+        .output()?;
+    let said = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success(),
+        "{helper} failed: {said}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(said)
+}
+
+#[test]
+fn a_name_the_snapshot_skipped_comes_back_named_at_resume() -> TestResult {
+    let dir = scratch()?;
+    let state = dir.join("kernel-state.dill");
+    let snapshot = build_snapshot_code(&state, 1 << 20, 64, false);
+    let said = run(&dir, "snapshot", NAMESPACE, &snapshot)?;
+    assert!(
+        said.contains("\"saved\": [\"small\"]"),
+        "the small name is saved and the oversized one is not: {said}"
+    );
+    assert!(
+        said.contains("\"name\": \"big\"") && said.contains("size cap"),
+        "the snapshot marker counts the name it left out: {said}"
+    );
+    let restore = build_restore_code(&state);
+    let said = run(&dir, "restore", RESTORE_NAMESPACE, &restore)?;
+    let result = parse_restore_result(&said, &state).ok_or("no restore marker line")?;
+    assert_eq!(
+        result.restored,
+        vec!["small"],
+        "only the saved name is restored: {said}"
+    );
+    let names: Vec<&str> = result
+        .failed
+        .iter()
+        .map(|failed| failed.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["big"],
+        "the name the snapshot skipped is reported as not restored: {said}"
+    );
+    assert!(
+        result.failed[0].reason.contains("size cap"),
+        "the reason travels with it: {}",
+        result.failed[0].reason
+    );
+    let skips = fs::read_to_string(state.with_extension("skips.json"))?;
+    assert!(
+        skips.contains("\"name\": \"big\"") && skips.contains("size cap"),
+        "the skip list sits beside the index: {skips}"
+    );
+    Ok(())
+}
