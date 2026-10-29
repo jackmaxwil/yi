@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 
 use crate::loopback::read_request;
+use crate::plan_ops::streams as text;
 use crate::scratch::Scratch;
-use crate::text;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
