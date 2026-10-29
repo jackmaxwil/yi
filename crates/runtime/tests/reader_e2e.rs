@@ -4,39 +4,15 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
+pub(crate) use crate::faux_model::faux_model;
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{Effort, Model, ModelCost, Reuse};
+use yi_types::model::{Effort, Model, Reuse};
 
 type TestResult = Result<(), Box<dyn Error>>;
 type Script = Arc<Mutex<Vec<AgentMessage>>>;
-
-pub(crate) fn faux_model(context_window: u64) -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 pub(crate) struct Family {
     root: Scratch,

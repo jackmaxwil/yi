@@ -627,7 +627,12 @@ fn demo_family(root: &Path, repo: &Path, home: &Path, cell: String) -> Demo {
             cwd: repo.to_path_buf(),
             home: home.to_path_buf(),
             lane_slots: 9,
-            defaults: Arc::new(|| (support::faux_model(), yi_types::model::Effort::Medium)),
+            defaults: Arc::new(|| {
+                (
+                    support::faux_model(128_000),
+                    yi_types::model::Effort::Medium,
+                )
+            }),
             factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
                 let cwd = build
                     .cwd

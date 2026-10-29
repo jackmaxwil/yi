@@ -5,6 +5,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+use crate::faux_model::faux_model;
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
 use yi_runtime::environment::{
@@ -13,34 +14,8 @@ use yi_runtime::environment::{
 };
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, ENVIRONMENT_TAG, StopReason, UserContent};
-use yi_types::model::{Model, ModelCost};
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 fn text_of(message: &AgentMessage) -> String {
     match message {
@@ -77,7 +52,7 @@ async fn the_environment_block_never_enters_the_persisted_transcript() -> TestRe
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -112,7 +87,7 @@ async fn the_environment_block_is_read_once_per_request_not_per_prompt() -> Test
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -152,7 +127,7 @@ async fn the_session_cost_sums_every_assistant_turn() -> TestResult {
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -454,7 +429,7 @@ async fn a_run_that_writes_nothing_runs_git_status_once_redrive_included() -> Te
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },

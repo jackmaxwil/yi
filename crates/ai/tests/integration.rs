@@ -5,6 +5,7 @@
 mod scratch;
 
 mod anthropic_mapper;
+mod catalog_timeout;
 #[path = "../../types/tests/support/model.rs"]
 mod common;
 mod compat;
@@ -25,9 +26,12 @@ mod oauth;
 mod openai_mapper;
 mod openai_responses;
 mod openrouter;
+#[path = "support/plain.rs"]
+mod plain;
 mod proxy;
 mod pump_stop;
 mod quota;
+mod read_timeout;
 mod refresh;
 mod resend;
 mod strict_tools;

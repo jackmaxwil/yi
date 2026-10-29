@@ -8,6 +8,10 @@ use crate::scratch::Scratch;
 
 use crate::acp_schema::Schema;
 use crate::session_files::session_files;
+#[path = "../../runtime/tests/support/faux_model.rs"]
+mod faux_model;
+
+use self::faux_model::faux_model;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -577,31 +581,6 @@ fn prompt_until_idle(
     })
 }
 
-fn faux_model() -> yi_types::model::Model {
-    let zero = || serde_json::Number::from(0_u64);
-    yi_types::model::Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: yi_types::model::ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
-
 fn event_of(frame: &Value) -> Result<yi_types::event::AgentEvent, Box<dyn Error>> {
     Ok(serde_json::from_value(
         frame["params"]["update"]["event"].clone(),
@@ -738,7 +717,7 @@ fn yi_event_stream_is_lossless_for_a_faux_turn() -> TestResult {
     );
 
     let options = yi_tui::TuiOptions {
-        model: faux_model(),
+        model: faux_model(128_000),
         session_name: "lossless".to_owned(),
         cwd: dir.display().to_string(),
         lane: None,

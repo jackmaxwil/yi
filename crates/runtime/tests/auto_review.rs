@@ -4,6 +4,7 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
+use crate::faux_model::faux_model;
 use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_runtime::auto_review::{ReviewOutcome, Reviewer, parse_outcome, review_fragment};
@@ -11,35 +12,9 @@ use yi_runtime::permission::{CallOutcome, PermissionBroker};
 use yi_runtime::{AskOutcome, Asker, PermissionMode, ProviderStream};
 use yi_tools::ToolKind;
 use yi_types::message::StopReason;
-use yi_types::model::{Model, ModelCost};
 use yi_types::permission::Answerer;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 struct Harness {
     broker: Arc<PermissionBroker>,
@@ -102,7 +77,10 @@ fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harn
     ));
     let provider = Arc::new(ProviderStream::new(None));
     if with_reviewer {
-        broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(&provider), faux_model())));
+        broker.set_reviewer(Arc::new(Reviewer::new(
+            Arc::clone(&provider),
+            faux_model(128_000),
+        )));
     }
     Ok(Harness {
         broker,
@@ -501,7 +479,7 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
         let session = yi_runtime::AgentSession::new(
             yi_runtime::SessionConfig {
                 system_prompt: String::new(),
-                model: faux_model(),
+                model: faux_model(128_000),
                 thinking_level: None,
                 tool_execution: yi_runtime::ExecutionMode::Sequential,
             },
@@ -520,7 +498,10 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
         let mut tools: Vec<Arc<dyn yi_tools::Tool>> = Vec::new();
         yi_runtime::auto_review::wire_role(
             &session,
-            (named.then(faux_model), Some(Arc::clone(&harness.broker))),
+            (
+                named.then(|| faux_model(128_000)),
+                Some(Arc::clone(&harness.broker)),
+            ),
             &harness.provider,
             &mut tools,
             None,
@@ -565,7 +546,7 @@ fn a_root_nobody_attends_is_handed_the_default_and_goes_on() -> TestResult {
         let session = yi_runtime::AgentSession::new(
             yi_runtime::SessionConfig {
                 system_prompt: String::new(),
-                model: faux_model(),
+                model: faux_model(128_000),
                 thinking_level: None,
                 tool_execution: yi_runtime::ExecutionMode::Sequential,
             },

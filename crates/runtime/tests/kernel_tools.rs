@@ -2,6 +2,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::faux_model::faux_model;
 use crate::scratch::Scratch;
 use serde_json::{Map, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
@@ -15,32 +16,6 @@ use yi_runtime::{
 use yi_tools::CellCalls;
 use yi_types::event::{AgentEvent, ToolResult};
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{Model, ModelCost};
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -88,7 +63,7 @@ fn session(cwd: &Path, codes: &[&str]) -> AgentSession {
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -538,7 +513,7 @@ async fn an_attached_session_answers_tool_calls_and_stores_their_rows() -> Resul
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },

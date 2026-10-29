@@ -4,7 +4,9 @@ use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params, normalize_openai_t
 use yi_ai::sse::{SseDecoder, SseEvent};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{Effort, LlmContext, Model, ModelCost, ToolDef};
+use yi_types::model::{Effort, LlmContext, Model, ModelCost};
+
+use crate::plain::plain_context as context;
 
 fn model(reasoning: bool) -> Model {
     let n =
@@ -29,28 +31,7 @@ fn model(reasoning: bool) -> Model {
         compat: None,
         thinking_level_map: Some(json!({"off": "none", "high": "high"})),
         headers: None,
-    }
-}
-
-fn context() -> LlmContext {
-    LlmContext {
-        cache_ttl: yi_types::model::Ttl::Min5,
-        system_prompt: "be terse".to_owned(),
-        messages: vec![AgentMessage::user_input(
-            UserContent::Text("hi".to_owned()),
-            0,
-        )],
-        transient: Vec::new(),
-        schema: None,
-        shared_through: None,
-        reuse: yi_types::model::Reuse::Loop,
-        tools: Some(vec![ToolDef {
-            name: "bash".to_owned(),
-            description: "run".to_owned(),
-            parameters: json!({"type":"object","properties":{"cmd":{"type":"string"}}}),
-            freeform: None,
-        }]),
-        tool_choice: None,
+        read_timeout_secs: None,
     }
 }
 

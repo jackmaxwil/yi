@@ -5,38 +5,12 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::{Arc, Barrier, Mutex};
 
-use serde_json::Number;
+use crate::faux_model::faux_model;
 use yi_runtime::fetch::{FETCH_ENTRY_TYPE, FetchError, FetchLog, FetchRecord, Page, Resolver};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Wall};
-use yi_types::model::{Model, ModelCost};
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 fn memory_store() -> yi_session::SharedSession {
     Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
@@ -57,7 +31,7 @@ fn a_store_attached_after_the_resolver_still_serves_history() -> TestResult {
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_loop::ExecutionMode::Sequential,
         },
@@ -947,7 +921,7 @@ async fn the_wired_resolver_reads_names_until_a_history_wall_turns_them_off() ->
         let mut session = AgentSession::new(
             SessionConfig {
                 system_prompt: String::new(),
-                model: faux_model(),
+                model: faux_model(128_000),
                 thinking_level: None,
                 tool_execution: yi_loop::ExecutionMode::Sequential,
             },

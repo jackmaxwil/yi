@@ -39,6 +39,7 @@ pub fn model_for(id: &str) -> Model {
         compat: None,
         thinking_level_map: None,
         headers: None,
+        read_timeout_secs: None,
     }
 }
 

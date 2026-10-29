@@ -590,7 +590,7 @@ async fn an_unsafe_answer_goes_straight_to_the_user() -> TestResult {
     gate.broker
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
-            crate::support::faux_model(),
+            crate::support::faux_model(128_000),
         )));
     let outcome = tokio::task::block_in_place(|| run(&gate, "make deploy"));
     assert!(!outcome.allowed, "{}", outcome.reason);
@@ -852,7 +852,7 @@ async fn a_call_the_user_refused_is_not_reopened_by_the_classifier() -> TestResu
     gate.broker
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
-            crate::support::faux_model(),
+            crate::support::faux_model(128_000),
         )));
     let first = tokio::task::block_in_place(|| run(&gate, "make deploy"));
     assert!(!first.allowed, "{}", first.reason);
@@ -895,7 +895,7 @@ async fn a_call_the_reviewer_refused_is_not_reopened_by_the_classifier() -> Test
     gate.broker
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
-            crate::support::faux_model(),
+            crate::support::faux_model(128_000),
         )));
     let first = tokio::task::block_in_place(|| run(&gate, "make deploy"));
     let again = tokio::task::block_in_place(|| run(&gate, "make deploy"));
@@ -934,7 +934,7 @@ async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
     gate.broker
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
-            crate::support::faux_model(),
+            crate::support::faux_model(128_000),
         )));
     assert!(!tokio::task::block_in_place(|| run(&gate, "make deploy")).allowed);
     let again = tokio::task::block_in_place(|| run(&gate, "make deploy"));

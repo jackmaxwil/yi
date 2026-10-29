@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::faux_model::faux_model;
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::ExecutionMode;
@@ -87,31 +88,6 @@ impl Tool for FakeTool {
 }
 
 static EDIT_CHANGES: AtomicU32 = AtomicU32::new(0);
-
-fn faux_model() -> yi_types::model::Model {
-    let zero = || serde_json::Number::from(0u64);
-    yi_types::model::Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: yi_types::model::ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 fn command(text: &str) -> Value {
     json!({"type": "command", "command": text})
@@ -239,7 +215,7 @@ impl Case {
         ]);
         let config = SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         };

@@ -7,6 +7,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::faux_model::faux_model;
 use yi_runtime::{HostRegistry, KernelService, KernelServiceOptions};
 use yi_tools::{CancelFlag, KernelBridge, Sandbox};
 
@@ -283,7 +284,7 @@ fn walled_session(
     let mut session = yi_runtime::AgentSession::new(
         yi_runtime::SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_loop::ExecutionMode::Sequential,
         },
@@ -449,31 +450,6 @@ async fn a_global_harness_save_asks_the_permission_broker() -> TestResult {
         "a global harness save must ask and honor the answer (asked {asked}): {stdout}"
     );
     Ok(())
-}
-
-fn faux_model() -> yi_types::model::Model {
-    let zero = || serde_json::Number::from(0u64);
-    yi_types::model::Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: yi_types::model::ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
 }
 
 /// Incident: `exec.spawn`, the host half of the kernel's `bash()`, ran with no sandbox, so a

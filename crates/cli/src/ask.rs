@@ -513,7 +513,8 @@ async fn follow(
     } else if ended && !said_anything && exit == 0 {
         eprintln!("error: the run ended with no assistant text at all");
         exit = 1;
-    } else if !json && exit == 0 && matches!(last_stop, Some((StopReason::Error, _))) {
+    } else if exit == 0 && matches!(last_stop, Some((StopReason::Error, _))) {
+        // Incident: `--json` read a stall as success, because the exit carried plain mode's rule.
         exit = 1;
     }
     // Incident: a hold that expired with no `--deadline` set closed as kind `deadline`.
@@ -754,6 +755,53 @@ mod tests {
             };
             let run = super::follow(receiver, [&never, &never], modes, None, None);
             assert_eq!(runtime.block_on(run).0, super::EXIT_QUOTA, "json {json}");
+        }
+        Ok(())
+    }
+
+    /// Dies with a `--json` run that answered and then hit a provider error exiting 0: a script
+    /// branches on the exit, so a stall the final line named read as a clean run.
+    #[test]
+    fn a_run_that_ends_on_a_provider_error_exits_non_zero_in_json_too()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::faux::{faux_assistant_message, faux_text};
+        use yi_types::message::{AgentMessage, StopReason};
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let never = || false;
+        let said = faux_assistant_message(vec![faux_text("half the work")], StopReason::Stop);
+        let mut stalled = faux_assistant_message(Vec::new(), StopReason::Error);
+        if let AgentMessage::Assistant { error_message, .. } = &mut stalled {
+            *error_message = Some("timed out reading response after 2 s".to_owned());
+        }
+        for json in [true, false] {
+            let (events, receiver) = tokio::sync::broadcast::channel(8);
+            events.send(AgentEvent::MessageEnd {
+                message: said.clone(),
+            })?;
+            events.send(AgentEvent::MessageEnd {
+                message: stalled.clone(),
+            })?;
+            events.send(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            })?;
+            let modes = super::Modes {
+                json,
+                eval: false,
+                no_deltas: false,
+                headless: true,
+            };
+            let run = super::follow(receiver, [&never, &never], modes, None, None);
+            let (code, line) = runtime.block_on(run);
+            assert_eq!(code, 1, "json {json}");
+            assert_eq!(line["kind"], "timeout", "json {json}");
+            assert!(
+                line["message"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("timed out reading response after 2 s")),
+                "json {json}: {line}"
+            );
         }
         Ok(())
     }

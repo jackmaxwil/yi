@@ -12,6 +12,7 @@ use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_ai::openai::ChunkMapper;
 use yi_ai::sse::SseDecoder;
 
+use crate::faux_model::faux_model;
 use yi_loop::ExecutionMode;
 use yi_runtime::goal::{
     GOAL_EXISTS_ERROR, GoalService, StoreHandle, attach_goal, budget_limit_text, continuation_text,
@@ -20,36 +21,10 @@ use yi_runtime::goal::{
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::goal::{Goal, GoalStatus};
 use yi_types::message::{AgentMessage, Cost, StopReason, Usage, UserContent};
-use yi_types::model::{Model, ModelCost};
 use yi_types::schedule::DeliveryMode;
 use yi_types::subagent::Discovery;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 fn memory_store() -> yi_session::SharedSession {
     Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
@@ -235,7 +210,7 @@ data: {"type":"message_stop"}
 "#;
 
 fn mapped(sse: &str) -> Result<AgentMessage, Box<dyn Error>> {
-    let mut mapper = Mapper::new(&faux_model());
+    let mut mapper = Mapper::new(&faux_model(128_000));
     let mut decoder = SseDecoder::default();
     let mut events = decoder.feed(sse);
     events.extend(decoder.finish());
@@ -286,7 +261,7 @@ fn a_cached_reply_costs_the_goal_its_fresh_tokens_and_not_its_cache_reads() -> T
 fn a_prompt_count_below_its_cache_counts_still_costs_the_goal_its_reply() -> TestResult {
     let (_plans, (service, store, _delivered)) = service_with_plans()?;
     service.create("odd gateway", Some(1000), None, None)?;
-    let mut mapper = ChunkMapper::new(&faux_model());
+    let mut mapper = ChunkMapper::new(&faux_model(128_000));
     let _ = mapper.push_chunk(&json!({
         "id": "chatcmpl-1",
         "choices": [{"delta": {"content": "Checked."}, "finish_reason": "stop"}],
@@ -327,7 +302,7 @@ async fn active_goal_continues_past_idle_until_a_failing_turn_blocks_it() -> Tes
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },

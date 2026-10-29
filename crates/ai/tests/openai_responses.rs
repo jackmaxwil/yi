@@ -3,8 +3,10 @@ use std::error::Error;
 use yi_ai::openai::OpenAiOptions;
 use yi_ai::openai_responses::{EventMapper, build_params};
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{Effort, LlmContext, Model, ModelCost, ToolDef};
+use yi_types::message::{AgentMessage, Content, StopReason};
+use yi_types::model::{Effort, Model, ModelCost, ToolDef};
+
+use crate::plain::plain_context as context;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -31,28 +33,7 @@ fn model(reasoning: bool) -> Model {
         compat: Some(json!({"supportsExplicitPromptCacheMode": true})),
         thinking_level_map: Some(json!({"off": "none", "high": "high"})),
         headers: None,
-    }
-}
-
-fn context() -> LlmContext {
-    LlmContext {
-        cache_ttl: yi_types::model::Ttl::Min5,
-        system_prompt: "be terse".to_owned(),
-        messages: vec![AgentMessage::user_input(
-            UserContent::Text("hi".to_owned()),
-            0,
-        )],
-        transient: Vec::new(),
-        schema: None,
-        shared_through: None,
-        reuse: yi_types::model::Reuse::Loop,
-        tools: Some(vec![ToolDef {
-            name: "bash".to_owned(),
-            description: "run".to_owned(),
-            parameters: json!({"type":"object","properties":{"cmd":{"type":"string"}}}),
-            freeform: None,
-        }]),
-        tool_choice: None,
+        read_timeout_secs: None,
     }
 }
 

@@ -43,7 +43,7 @@ fn new_session(provider: &Arc<ProviderStream>) -> AgentSession {
     AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },

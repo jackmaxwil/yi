@@ -37,7 +37,7 @@ fn post(port: u16) -> Result<String, Box<dyn Error>> {
         &[],
         &probe,
         None,
-        &|_| {},
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), &|_| {}),
     ) {
         Ok(_) => Err("a 429 was taken as a success".into()),
         Err(error) => Ok(error),

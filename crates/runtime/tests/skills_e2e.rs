@@ -17,7 +17,6 @@ use yi_types::model::{Model, ModelCost};
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn vision_faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
         name: "Faux".to_owned(),
@@ -26,18 +25,13 @@ fn vision_faux_model() -> Model {
         base_url: "http://localhost:0".to_owned(),
         reasoning: false,
         input: vec!["text".to_owned(), "image".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
+        cost: ModelCost::free(),
         context_window: 128_000,
         max_tokens: 16_384,
         compat: None,
         thinking_level_map: None,
         headers: None,
+        read_timeout_secs: None,
     }
 }
 

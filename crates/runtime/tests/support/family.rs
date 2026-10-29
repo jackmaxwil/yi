@@ -5,13 +5,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub(crate) use crate::faux_model::faux_model;
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::{
     AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions, Wall,
 };
 use yi_types::lease::LeaseRecord;
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{Model, ModelCost};
 
 /// The `details.errorKind` a tool's refusal names, `untagged` when it names none: what the
 /// tool-failure census reads.
@@ -97,31 +97,6 @@ pub async fn wait_for_path(path: &Path, message: &str) -> Result<(), Box<dyn std
     Err(message.into())
 }
 
-pub fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
-
 /// `hold` makes every child run that shell command first, so its turn stays open; each
 /// reply bills 120 tokens and costs a quarter dollar.
 pub fn family(
@@ -156,7 +131,7 @@ pub fn family_with_slots(
         cwd,
         home: dir.join("home"),
         lane_slots,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        defaults: Arc::new(|| (faux_model(128_000), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut seen) = seen.lock() {
                 seen.push(Built {

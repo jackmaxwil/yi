@@ -885,9 +885,11 @@ fn run_request(
     let mut mapper = ChunkMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
+    let retry = crate::request::Retry::new(model.read_timeout(), &retried);
     let pumped = crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra, &retried),
+        &retry,
+        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra, &retry),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);

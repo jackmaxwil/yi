@@ -123,6 +123,7 @@ fn model_from(
             .and_then(|k| k.thinking_level_map.clone())
             .or(if ladder.is_null() { None } else { Some(ladder) }),
         headers: known.and_then(|k| k.headers.clone()),
+        read_timeout_secs: None,
     })
 }
 

@@ -4,6 +4,7 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::Arc;
 
+pub(crate) use crate::faux_model::faux_model;
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_context::{Settings, Tokens};
 use yi_loop::ExecutionMode;
@@ -11,32 +12,7 @@ use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, StopReason, UserContent};
-use yi_types::model::{Effort, Model, ModelCost};
-
-pub(crate) fn faux_model(context_window: u64) -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
+use yi_types::model::Effort;
 
 fn reply_with_usage(text: &str, input: i64, total: i64) -> AgentMessage {
     let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Stop);

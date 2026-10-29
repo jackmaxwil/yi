@@ -255,13 +255,19 @@ fn every_agent_identifies_as_yi_and_a_profile_header_replaces_it() -> TestResult
     let probe =
         yi_ai::breakpoints::Encoded::provider_prefix(json!({"model": "p"}), "messages", Vec::new());
     let quiet = |_| {};
-    yi_ai::request::send_with_retry(&format!("{base}/chat"), &[], &probe, None, &quiet)?;
+    yi_ai::request::send_with_retry(
+        &format!("{base}/chat"),
+        &[],
+        &probe,
+        None,
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), &quiet),
+    )?;
     yi_ai::request::send_with_retry(
         &format!("{base}/chat"),
         &[("User-Agent".to_owned(), "profile/1".to_owned())],
         &probe,
         None,
-        &quiet,
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), &quiet),
     )?;
     yi_ai::request::get_json(&format!("{base}/models"), &[], None, 1024)?;
     let spec = yi_oauth::registry::OauthCode {

@@ -155,11 +155,62 @@ fn agent(url: &str, proxy: Option<&ProxyConfig>) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
         .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(std::time::Duration::from_secs(20));
+        .timeout_read(SHORT_READ_TIMEOUT);
     if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
         builder = builder.proxy(proxy.clone());
     }
     builder.build()
+}
+
+/// The short calls' deadline: a catalog refresh or a usage read can wait for the next session,
+/// and no model's own `readTimeoutSecs` bounds them.
+pub const SHORT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Invariant: both retry layers count into one place, so the notice names the requests that ran.
+pub struct Retry<'a> {
+    pub deadline: std::time::Duration,
+    attempts: std::sync::atomic::AtomicU32,
+    pub on_wait: &'a dyn Fn(Wait),
+}
+
+impl<'a> Retry<'a> {
+    pub fn new(deadline: std::time::Duration, on_wait: &'a dyn Fn(Wait)) -> Self {
+        Self {
+            deadline,
+            attempts: std::sync::atomic::AtomicU32::new(0),
+            on_wait,
+        }
+    }
+
+    pub fn ran(&self) -> u32 {
+        self.attempts.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn bump(&self) {
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Incident: ureq words the connect and read deadlines alike, and only the read one is the
+/// gateway that never sends its first token.
+fn read_timed_out(text: &str) -> bool {
+    text.contains("timed out reading response")
+}
+
+/// Invariant: a stall names the field that fixes it and the wait that ran, because the retry
+/// layers used to spend the deadline twice on a gateway that had already proved silent.
+pub fn read_timeout_notice(read_timeout: std::time::Duration, attempts: u32) -> String {
+    let ran = match attempts {
+        1 => "1 attempt ran".to_owned(),
+        other => format!("{other} attempts ran"),
+    };
+    format!(
+        "timed out reading response after {} s (the model's readTimeoutSecs, default {}); \
+         raise readTimeoutSecs on the model in the catalog entry; {ran}, not retried",
+        read_timeout.as_secs(),
+        yi_types::model::DEFAULT_READ_TIMEOUT_SECS
+    )
 }
 
 fn read_capped(response: ureq::Response, url: &str, cap: usize) -> Result<Value, String> {
@@ -218,15 +269,22 @@ pub fn waiting(sender: &Sender<AssistantMessageEvent>) -> impl Fn(Wait) + '_ {
 /// Past this a pooled connection is not trusted: a NAT may have dropped it without a FIN.
 const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(30);
 
-static POOLED: std::sync::Mutex<Option<(ureq::Agent, std::time::Instant)>> =
-    std::sync::Mutex::new(None);
+static POOLED: std::sync::Mutex<Option<Pooled>> = std::sync::Mutex::new(None);
+
+/// A deadline is built into the agent, so a pool keyed by nothing but idle time handed a fast
+/// model's connection the slow model's bound.
+struct Pooled {
+    agent: ureq::Agent,
+    idle_since: std::time::Instant,
+    read_timeout: std::time::Duration,
+}
 
 // ponytail: a proxied request pools nothing; key the pool by proxy if that path matters.
-fn stream_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
+fn stream_agent(proxy: Option<&ureq::Proxy>, read_timeout: std::time::Duration) -> ureq::Agent {
     let builder = ureq::AgentBuilder::new()
         .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(30))
-        .timeout_read(std::time::Duration::from_secs(60));
+        .timeout_read(read_timeout);
     if let Some(proxy) = proxy {
         return builder.proxy(proxy.clone()).build();
     }
@@ -234,18 +292,26 @@ fn stream_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
         return builder.build();
     };
     let agent = match pooled.take() {
-        Some((agent, idle_since)) if idle_since.elapsed() < KEEP_ALIVE => agent,
+        Some(held)
+            if held.idle_since.elapsed() < KEEP_ALIVE && held.read_timeout == read_timeout =>
+        {
+            held.agent
+        }
         _ => builder.build(),
     };
-    *pooled = Some((agent.clone(), std::time::Instant::now()));
+    *pooled = Some(Pooled {
+        agent: agent.clone(),
+        idle_since: std::time::Instant::now(),
+        read_timeout,
+    });
     agent
 }
 
 fn pooled_idle_from_now() {
     if let Ok(mut pooled) = POOLED.lock()
-        && let Some((_, idle_since)) = pooled.as_mut()
+        && let Some(held) = pooled.as_mut()
     {
-        *idle_since = std::time::Instant::now();
+        held.idle_since = std::time::Instant::now();
     }
 }
 
@@ -254,11 +320,14 @@ pub fn send_with_retry(
     headers: &[(String, String)],
     body: &crate::breakpoints::Encoded,
     proxy: Option<&ProxyConfig>,
-    on_retry: &dyn Fn(Wait),
+    retry: &Retry<'_>,
 ) -> Result<ureq::Response, String> {
     let policy = RetryPolicy::default();
     let started = std::time::Instant::now();
-    let agent = stream_agent(proxy.and_then(|config| config.proxy_for(host_of(url))));
+    let agent = stream_agent(
+        proxy.and_then(|config| config.proxy_for(host_of(url))),
+        retry.deadline,
+    );
     let body = {
         let _span = yi_types::trace::span("ai.serialize");
         body.to_string()
@@ -275,6 +344,7 @@ pub fn send_with_retry(
         let sending = yi_types::trace::span("ai.http_send")
             .arg("attempt", attempt)
             .arg("bytes", body.len());
+        retry.bump();
         let sent = request.send_string(&body);
         drop(sending);
         match sent {
@@ -298,22 +368,31 @@ pub fn send_with_retry(
                 }
                 let delay = retry_delay(attempt, retry_after_ms, retry_after, &policy);
                 attempt = attempt.saturating_add(1);
-                announce(on_retry, attempt, &policy, delay, format!("HTTP {status}"));
+                announce(
+                    retry.on_wait,
+                    attempt,
+                    &policy,
+                    delay,
+                    format!("HTTP {status}"),
+                );
                 if let Some(delay) = delay {
                     std::thread::sleep(delay);
                 }
             }
             Err(error) => {
+                // Incident: ureq writes the URL first, so an 80-char cut kept it and lost why.
+                let reason = match &error {
+                    ureq::Error::Transport(transport) => transport_cause(transport),
+                    ureq::Error::Status(..) => error.to_string(),
+                };
+                if read_timed_out(&reason) {
+                    return Err(read_timeout_notice(retry.deadline, retry.ran()));
+                }
                 if attempt < policy.max_attempts && started.elapsed() < policy.max_total_wall {
                     let delay = retry_delay(attempt, None, None, &policy);
                     attempt = attempt.saturating_add(1);
-                    // Incident: ureq writes the URL first, so an 80-char cut kept it and lost why.
-                    let reason = match &error {
-                        ureq::Error::Transport(transport) => transport_cause(transport),
-                        ureq::Error::Status(..) => error.to_string(),
-                    };
                     let cause: String = reason.chars().take(80).collect();
-                    announce(on_retry, attempt, &policy, delay, cause);
+                    announce(retry.on_wait, attempt, &policy, delay, cause);
                     if let Some(delay) = delay {
                         std::thread::sleep(delay);
                     }
@@ -385,6 +464,7 @@ pub fn pump_sse(
 /// a body that died before its first event is sent once more; the first error returns (D146).
 pub fn pump_sse_with_resend(
     stop: Option<&std::sync::atomic::AtomicBool>,
+    retry: &Retry<'_>,
     send: impl Fn() -> Result<ureq::Response, String>,
     mut on_event: impl FnMut(SseEvent) -> Result<bool, String>,
 ) -> Result<Option<String>, String> {
@@ -409,6 +489,11 @@ pub fn pump_sse_with_resend(
             Ok(()) => {
                 pooled_idle_from_now();
                 return Ok(first_error);
+            }
+            // A silent gateway already spent the model's whole deadline: one more wait is longer
+            // than the bound the field sets.
+            Err(text) if read_timed_out(&text) => {
+                return Err(read_timeout_notice(retry.deadline, retry.ran()));
             }
             // Incident: `Bad address (os error 14)` killed a trial's third request
             // before any byte arrived (ledger 0017, issue #256).
@@ -564,7 +649,7 @@ pub fn openai_bearer_post(
     body: &crate::breakpoints::Encoded,
     proxy: Option<&ProxyConfig>,
     extra: &[(String, String)],
-    on_retry: &dyn Fn(Wait),
+    retry: &Retry<'_>,
 ) -> Result<ureq::Response, String> {
     let headers = headers_for(model, vec![("authorization", format!("Bearer {api_key}"))]);
     send_with_retry(
@@ -572,7 +657,7 @@ pub fn openai_bearer_post(
         &merge_headers(headers, extra.to_vec()),
         body,
         proxy,
-        on_retry,
+        retry,
     )
 }
 
