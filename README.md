@@ -15,7 +15,8 @@ yi --version
 The installer takes this machine's archive from the latest [release](https://github.com/jackmaxwil/yi/releases),
 installs it only if its sha256 matches the release's `SHA256SUMS`, and puts `yi` in `~/.local/bin`
 and its Python runtime and skills in `~/.yi`. Releases are built for macOS on Apple Silicon
-(`aarch64-apple-darwin`). `| bash -s -- --dry-run` (or `--help`) changes nothing. By hand:
+(`aarch64-apple-darwin`) and are not signed yet, so the sha256 check catches a damaged download,
+not a tampered release. `| bash -s -- --dry-run` (or `--help`) changes nothing. By hand:
 
 ```bash
 v=X.Y.Z t=aarch64-apple-darwin; base=https://github.com/jackmaxwil/yi/releases/download/v$v
