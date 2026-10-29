@@ -18,5 +18,6 @@ jobs:
       - run: |
           uv tool install "git-filter-repo==$(cat scripts/mirror/filter-repo.version)"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Enabling this pass is the owner's step; --poll is the write pass it can become.
       - name: decide every open GitHub PR with every write sealed
         run: python3 scripts/intake/bridge.py --dry-run

@@ -19,8 +19,8 @@ merge is allowed, a moved change is not) and `.forgejo/` equal to current main.
 GitHub PR, gives the one-line rebase instruction and closes it, mapping the forge
 head through the mirror's commit map. Both run behind the transport seam and are
 tested with the fake transport only; the real transport's write half is not
-exercised here. `just intake --poll` is the pass `.forgejo/workflows/intake.yml`
-would run, and that workflow is inert: `workflow_dispatch` only, its cron line
+exercised here. `just intake --poll` is the write pass, while `.forgejo/workflows/intake.yml`
+runs the read-only one and is inert: `workflow_dispatch` only, its cron line
 present and commented, naming no secret.
 
 `docs/FORGE.md` gains the `external` runner, the hold's argument and a "GitHub
