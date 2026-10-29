@@ -491,9 +491,16 @@ impl PlanEngine {
     /// under the temp dir, so the checker's writes never move the token the checkout is judged by.
     fn run_verifier(&self, prepared: &Prepared) -> Verdict {
         let artifacts = self.store.artifacts(&prepared.id);
-        let workspace = Workspace(
-            std::env::temp_dir().join(format!("yi-verify-{}", self.store.request_nonce())), // nosemgrep: yi-rust-temp-dir request_nonce gives each verifier a unique workspace.
-        );
+        let workspace = match Self::verifier_dir(&self.store.request_nonce()) {
+            Ok(path) => Workspace(path),
+            Err(error) => {
+                return self.verifier.abstained(
+                    &prepared.token,
+                    &prepared.contract,
+                    &format!("verifier workspace could not be created: {error}"),
+                );
+            }
+        };
         if let Err(reason) =
             self.snapshotter
                 .materialize(&self.cwd, &prepared.token.snapshot, &workspace.0)
@@ -512,6 +519,21 @@ impl PlanEngine {
         };
         self.verifier
             .run(&prepared.token, &prepared.contract, &snapshot)
+    }
+
+    /// Invariant: the workspace is created here, exclusively and 0700, so a local user who guessed the
+    /// name finds it taken instead of owning a directory the contract's check then runs inside.
+    fn verifier_dir(nonce: &str) -> std::io::Result<std::path::PathBuf> {
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        // nosemgrep: yi-rust-temp-dir -- the name is created exclusively below, so this never reuses one.
+        let path = std::env::temp_dir().join(format!("yi-verify-{nonce}"));
+        builder.create(&path)?;
+        Ok(path)
     }
 
     /// Steps 5 and 6, under the lease again.
@@ -820,4 +842,28 @@ pub(super) fn stale_detail(was: &VerificationToken, now: &VerificationToken) -> 
         moved.push("the token no longer matches".to_owned());
     }
     moved.join("; ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_verifier_workspace_is_created_once_and_never_reused()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let nonce = format!("{}-test", std::process::id());
+        let path = PlanEngine::verifier_dir(&nonce)?;
+        assert!(
+            PlanEngine::verifier_dir(&nonce).is_err(),
+            "a second verifier reused {path:?}"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path)?.permissions())
+                & 0o777,
+            0o700
+        );
+        let _cleaned = std::fs::remove_dir_all(&path);
+        Ok(())
+    }
 }

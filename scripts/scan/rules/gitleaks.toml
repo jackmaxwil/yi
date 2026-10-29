@@ -12,13 +12,13 @@ keywords = ["aiza"]
 [[rules]]
 id = "yi-openrouter-api-key"
 description = "OpenRouter API key"
-regex = '''\bsk-or-v1-[0-9a-f]{64}\b'''
+regex = '''\bsk-(?:ant|or-v1|proj)-[\w-]{16,}'''
 keywords = ["sk-or-v1-"]
 
 [[rules]]
 id = "yi-anthropic-api-key"
 description = "Anthropic API key"
-regex = '''\bsk-ant-api03-[0-9A-Za-z_-]{80,}\b'''
+regex = '''\bsk-(?:ant|or-v1|proj)-[\w-]{16,}'''
 keywords = ["sk-ant-api03-"]
 
 [[rules]]
@@ -30,7 +30,7 @@ keywords = ["sk-"]
 [[rules]]
 id = "yi-github-pat"
 description = "GitHub personal access token"
-regex = '''\bghp_[0-9A-Za-z]{36}\b'''
+regex = '''\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{30,}'''
 keywords = ["ghp_"]
 
 [[rules]]

@@ -6,7 +6,7 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) asset=darwin_arm64; hash=b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5 ;;
   *) echo "gitleaks: unsupported platform $(uname -s)-$(uname -m)"; exit 1 ;;
 esac
-dest="${1:-/usr/local/bin}"
+dest=/usr/local/bin
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 url="https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_${asset}.tar.gz"
@@ -22,6 +22,5 @@ fi
 [ "$actual" = "$hash" ] || { echo "gitleaks: SHA-256 mismatch"; exit 1; }
 tar -xzf "$work/gitleaks.tar.gz" -C "$work" gitleaks
 chmod +x "$work/gitleaks"
-mkdir -p "$dest"
 mv "$work/gitleaks" "$dest/gitleaks"
 "$dest/gitleaks" version
