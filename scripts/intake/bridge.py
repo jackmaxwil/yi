@@ -330,15 +330,15 @@ def check_18_markers(case: Case) -> Any:
 
 # Bare text is a hostname only on a common TLD, and not when a call follows (`self.app.run()`).
 # Any TLD counts where syntax makes it an endpoint: host:port, user@host, or after a network
-# command. A bare name on a rarer TLD, even quoted, reads like `row.id` and `"response.failed"`.
-# The port form skips file extensions, so `main.rs:42` is a file reference.
+# command, as that command's own argument. A bare name on a rarer TLD, even quoted, reads like
+# `row.id` and `"response.failed"`. The port form skips file extensions: `main.rs:42` is a file.
 LABELS = r"(?:[a-z0-9-]+\.)+"
 ANY_HOST = rf"{LABELS}[a-z]{{2,}}\b"
 HOSTNAME = re.compile(
     rf"(?i)\b{LABELS}(?:com|net|org|edu|gov|mil|io|dev|app|cloud|lan|local|internal|invalid|onion|arpa)\b(?!\(|\.\w+\()"
     rf"|(?<![\w.]){LABELS}(?!(?:rs|md|toml|py|jsonl?|ya?ml|txt|lock|sh|js|ts|cfg|ini|log|html|css|csv|xml|svg|sql)\b)[a-z]{{2,}}:\d{{1,5}}\b"
     rf"|(?<=\w)@{ANY_HOST}"
-    rf"|\b(?:curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ping|dig|nslookup)\b[^\n]*?(?<![\w.]){ANY_HOST}"
+    rf"|\b(?:curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ping|dig|nslookup)\b(?:\s+-\S+(?:\s+\d+)?)*\s+{ANY_HOST}"
 )
 # The keyword may sit alone before its brace on the next line, so a prose line ending in it is refused too.
 UNSAFE = re.compile(r"\bunsafe\s*(?:\{|\(|//|/\*|$)|\bunsafe\s+(?:fn|impl|trait|extern)\b")

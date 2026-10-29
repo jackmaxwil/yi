@@ -75,13 +75,8 @@ class FakeTransport:
 
 
 def repository(case: bridge.Case) -> tuple[pathlib.Path, str]:
-    repo = pathlib.Path(tempfile.mkdtemp(prefix="intake-journey-git-"))
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    (repo / "README").write_text("Hello World!\n")
-    subprocess.run(["git", "-C", str(repo), "add", "README"], check=True)
-    env = dict(os.environ, GIT_AUTHOR_NAME="Base", GIT_AUTHOR_EMAIL="base@example.invalid", GIT_COMMITTER_NAME="Base", GIT_COMMITTER_EMAIL="base@example.invalid")
-    subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "commit", "-m", "Base"], env=env, check=True, capture_output=True)
-    base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    repo = test_bridge.fixture_repo(pathlib.Path(tempfile.mkdtemp(prefix="intake-journey-git-")), {"README": b"Hello World!\n"})
+    base = test_bridge.git_in(repo, "rev-parse", "HEAD").decode().strip()
     case.forge_base = base
     case.current_main = base
     case.apply_check = lambda patch, _base: subprocess.run(["git", "-C", str(repo), "apply", "--check", "--whitespace=error", "-"], input=patch, capture_output=True, check=False).stderr.decode() or None
