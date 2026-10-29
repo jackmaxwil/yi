@@ -67,6 +67,7 @@ pub(crate) struct ChildRow {
     start_committed: bool,
     replayed: bool,
     end_committed: bool,
+    end_pushed: bool,
 }
 
 impl ChildRow {
@@ -96,6 +97,7 @@ impl ChildRow {
             start_committed: false,
             replayed: false,
             end_committed: false,
+            end_pushed: false,
         }
     }
 
@@ -159,18 +161,12 @@ impl<'a> ChildEnd<'a> {
 
 fn end_rule(end: ChildEnd<'_>) -> Cell {
     let parent_closed = !end.completed && end.error == Some(yi_runtime::PARENT_CLOSED);
-    let outcome = if end.completed {
-        "done"
-    } else if parent_closed {
+    let outcome = if parent_closed {
         yi_runtime::PARENT_CLOSED
+    } else if end.exit.is_none() {
+        if end.completed { "done" } else { "failed" }
     } else {
-        match end.exit {
-            Some(ChildExit::Completed) => "done",
-            Some(ChildExit::Failed { .. } | ChildExit::Other) | None => "failed",
-            Some(ChildExit::Interrupted) => "cancelled",
-            Some(ChildExit::Reaped) => "reaped",
-            Some(ChildExit::Repossessed) => "revoked",
-        }
+        yi_runtime::family::read_exit(end.exit).row
     };
     let mut text = format!("subagent {} ({}) · {outcome}", end.name, end.id.as_str());
     if let Some(ms) = end.elapsed_ms {
@@ -379,6 +375,7 @@ impl App {
                 }
                 if let Some(row) = self.projection.rows.get_mut(&row_key) {
                     row.end_committed = false;
+                    row.end_pushed = false;
                 }
             }
             state.cell.flag = update.flag.clone();
@@ -422,9 +419,9 @@ impl App {
         }
         if status != TaskStatus::Running
             && let Some(row) = self.projection.rows.get_mut(&row_key)
-            && row.ends.is_empty()
-            && !row.end_committed
+            && !row.end_pushed
         {
+            row.end_pushed = true;
             row.ends.push(end_rule(ChildEnd::live(update)));
         }
         self.commit_finished_tasks();

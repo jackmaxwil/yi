@@ -233,8 +233,11 @@ impl ChildRecord {
                 self.phase = Phase::Live;
                 self.exit = Some(exit);
                 self.activity = ChildActivity::Waiting;
-                self.error = if exit != ChildExit::Completed
-                    && self.error.as_deref() == Some(super::PARENT_CLOSED)
+                let lease_ending = matches!(
+                    exit,
+                    ChildExit::Repossessed | ChildExit::Interrupted | ChildExit::Reaped
+                );
+                self.error = if lease_ending && self.error.as_deref() == Some(super::PARENT_CLOSED)
                 {
                     self.error.clone()
                 } else {

@@ -238,6 +238,25 @@ fn terminal_first_rows_name_every_actual_outcome() -> TestResult {
 }
 
 #[test]
+fn a_second_run_under_an_open_cell_keeps_its_own_end_row() -> TestResult {
+    let mut app = app();
+    app.reduce_agent(AgentEvent::AgentStart);
+    app.reduce_agent(tool_start("cell-1"));
+    app.adopt(&running("sub-1", "session-1"), None, Some("cell-1"));
+    app.reduce_child_update(&finished("sub-1", "session-1", ChildExit::Completed));
+    app.reduce_child_update(&running("sub-1", "session-1"));
+    app.reduce_child_update(&finished("sub-1", "session-1", ChildExit::Interrupted));
+    assert!(child_rows(&mut app).is_empty(), "nothing commits early");
+    app.reduce_agent(tool_end("cell-1"));
+    let rows = child_rows(&mut app);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    let endings = |word: &str| rows.iter().filter(|row| row.contains(word)).count();
+    assert_eq!(endings("· done ·"), 1, "{rows:?}");
+    assert_eq!(endings("· cancelled ·"), 1, "{rows:?}");
+    Ok(())
+}
+
+#[test]
 fn a_running_update_rearms_only_the_end_and_a_new_session_gets_a_new_start() -> TestResult {
     let mut app = app();
     app.adopt(&running("sub-1", "session-1"), None, None);

@@ -49,7 +49,18 @@ fn host(depth: u8, parent_dir: PathBuf, parent: Slot) -> Arc<SubagentHost> {
 }
 
 fn host_with_hold(depth: u8, parent_dir: PathBuf, parent: Slot, hold: bool) -> Arc<SubagentHost> {
-    host_with_providers(depth, parent_dir, parent, hold).0
+    host_with_providers(depth, parent_dir, parent, hold, false).0
+}
+
+fn hung_up(text: &str) -> yi_types::message::AgentMessage {
+    let mut message = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text(text)],
+        yi_types::message::StopReason::Error,
+    );
+    if let yi_types::message::AgentMessage::Assistant { error_message, .. } = &mut message {
+        *error_message = Some("the provider hung up".to_owned());
+    }
+    message
 }
 
 fn host_with_providers(
@@ -57,6 +68,7 @@ fn host_with_providers(
     parent_dir: PathBuf,
     parent: Slot,
     hold: bool,
+    fail: bool,
 ) -> (Arc<SubagentHost>, Providers) {
     let providers = Arc::new(std::sync::Mutex::new(Vec::new()));
     let factory_providers = Arc::clone(&providers);
@@ -79,7 +91,12 @@ fn host_with_providers(
             }
             let n = spawned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let answer = format!("the token is minted in auth.rs, answer {n}");
-            provider.queue_faux(vec![crate::support::priced_reply(&answer, 0.012)]);
+            let reply = if fail {
+                hung_up(&answer)
+            } else {
+                crate::support::priced_reply(&answer, 0.012)
+            };
+            provider.queue_faux(vec![reply]);
             if hold {
                 provider.faux_hold.arm("text_delta", 1);
             }
@@ -116,7 +133,7 @@ async fn held_child(
     let scratch = Scratch::new(label)?;
     let (session, root_file, _) = root_session(&scratch)?;
     let (host, providers) =
-        host_with_providers(0, scratch.join("rlm-1"), slot(Some(session)), true);
+        host_with_providers(0, scratch.join("rlm-1"), slot(Some(session)), true, false);
     host.spawn("Keep running.".to_owned(), kwargs("closed"))?;
     let provider = providers
         .lock()
@@ -292,6 +309,35 @@ async fn an_interruption_during_parent_close_grace_keeps_that_cause() -> TestRes
         .ok_or("no end line")?;
     assert_eq!(end["exit"]["kind"], "interrupted");
     assert_eq!(end["error"], "parent closed", "{lines:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_child_failing_during_parent_close_grace_keeps_its_own_error() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-parent-close-failed")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let (host, providers) =
+        host_with_providers(0, scratch.join("rlm-1"), slot(Some(session)), true, true);
+    host.spawn("Keep running.".to_owned(), kwargs("closed"))?;
+    let provider = providers
+        .lock()
+        .map_err(|_| "poisoned")?
+        .first()
+        .cloned()
+        .ok_or("no child provider")?;
+    assert!(
+        crate::support::wait_until(2_000, || provider.faux_hold.reached()).await,
+        "the stream never held"
+    );
+    assert_eq!(host.close(), ["closed"]);
+    assert!(provider.faux_hold.release());
+    let lines = ended(&root_file).await?;
+    let end = lines
+        .iter()
+        .find(|line| line["event"] == "ended")
+        .ok_or("no end line")?;
+    assert_eq!(end["exit"]["kind"], "failed", "{lines:?}");
+    assert_eq!(end["error"], "the provider hung up", "{lines:?}");
     Ok(())
 }
 
