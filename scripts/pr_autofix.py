@@ -51,8 +51,8 @@ PASS_SECS = forge_pr.job_secs("autofix") - SETUP_SECS
 CAP_DAY, CAP_PR = 25.0, 8.0
 # The owner's tiers (2026-10-01; DeepSeek V4.1 Flash and Kimi K3.1 Pro replaced GLM 5.3 on 2026-10-27, and
 # GPT-6.1 Terra replaced Kimi on 2026-10-29), meant for roughly 60/30/10 of fixes: (model, thinking), cheapest
-# first. The medium id is OpenRouter's latest-Terra alias: models.dev, which builds the catalog, lacks 6.1-terra.
-TIERS = (("openrouter/deepseek/deepseek-v4.1-flash-1017", "high"), ("openrouter/~openai/gpt-terra-latest", "xhigh"),
+# first. The medium tier uses the bundled Terra id at high; its thinking map does not advertise xhigh.
+TIERS = (("openrouter/deepseek/deepseek-v4.1-flash-1017", "high"), ("openrouter/openai/gpt-5.6-terra", "high"),
          ("openrouter/anthropic/claude-opus-5.5", "high"))
 TIER_NAMES = ("low", "medium", "high")
 # Points that move a fix up a tier: cut where 61/30/9 of the 44 fixable blocked rounds of
@@ -1192,6 +1192,8 @@ def selfcheck():
         errs.append("a pass starts a fix that cannot finish before the runner's limit, or refuses one that fits")
     if decide(set(), ["a.rs"], 60, asked=True) != "fix":
         errs.append("a fix asked for by number waits out the quiet hours")
+    if TIERS[1] != ("openrouter/openai/gpt-5.6-terra", "high"):
+        errs.append(f"the medium tier is {TIERS[1]}, not the bundled Terra model at its supported thinking level")
     tiers = [(points(3, 0), 0, 0), (points(2, 4), 0, 1), (points(4, 2), 0, 1), (points(4, 3), 0, 2), (points(1, 2), 1, 1),
              (points(1, 2), 2, 2), (points(9, 9), 3, 2)]
     errs += [f"{score} points after {tried} miss(es) took {tier_for(score, tried)}, not tier {want}"
