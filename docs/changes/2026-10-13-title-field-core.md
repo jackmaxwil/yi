@@ -1,4 +1,6 @@
 ---
+version: 0.689.0
+decisions: D429, D430, D431, D432
 issue: Refs #1385
 growth: +610 title animation and its two scenes: title.rs about 310, console plumbing, the draw's options, the frame throttle and the image gating, the skip key and its tests 210, cli 19, orb 17, types 4; weighed dropping the Echo scene, the weights key and the landing, and none can go: the owner kept the echo, asked for a customizable weighted draw, and judged the work on a start that covers the whole TUI and ends on the small mark with no second logo
 raise: comments +40, crate cli +19, crate console +247, crate orb +17, crate tui +339, crate types +4, tests +360

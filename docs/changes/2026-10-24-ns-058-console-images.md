@@ -1,4 +1,6 @@
 ---
+version: 0.759.0
+decisions: D478
 issue: Closes #1494, Closes #806, Refs #1442
 growth: +412 the hundred-slot lease of a chat pane's kitty ids and the one map of every console id owner (E-uilife-kitty-ids, +57 of src and a four-line card id reader in yi-tui beside +249 of in-crate tests, since the escapes a frame writes are reachable only inside the crate), and the notebook's image lengths with the drop of every older cell's image data (E-uilife-notebook-mem, +10 of src beside +92 of in-crate tests over a recorded 200 KB figure); weighed for deletion: a free-list struct beside the per-frame owners map, which already is the live set, so the free slots are read from it; the tests under crates/console/tests, which would have made the frame presenter, the pane binder and the lease public for a test alone; dropping the RemotePort entries and committed messages that hold the same images, which `/tree` and the cell-to-entry match read
 raise: comments +7, crate console +408, crate tui +4

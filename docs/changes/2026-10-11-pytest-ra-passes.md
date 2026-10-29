@@ -1,4 +1,5 @@
 ---
+version: 0.612.0
 issue: Closes #1186
 raise: tests +22
 ---

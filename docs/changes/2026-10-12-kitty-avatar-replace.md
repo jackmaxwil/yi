@@ -1,4 +1,5 @@
 ---
+version: 0.664.0
 issue: Closes #1335
 raise: crate console +40, comments +2
 ---

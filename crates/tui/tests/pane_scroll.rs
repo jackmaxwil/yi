@@ -341,17 +341,22 @@ fn a_first_prompt_rolls_into_an_empty_pane() -> TestResult {
     app.reduce_agent(AgentEvent::AgentStart);
     let status = |rows: &[String]| rows.iter().position(|row| row.contains("faux-1"));
     let (empty, _) = paint(&mut app, &mut scroll);
-    let mut was = status(&empty).ok_or("no status row")?;
+    let composer = status(&empty).ok_or("no status row")?;
     let text: Vec<String> = (0..6).map(|i| format!("prompt line {i}")).collect();
     app.commit_cell(&Cell::User {
         text: text.join("\n"),
     });
     let mut moves = Vec::new();
+    let mut shown = 0;
     for _ in 0..20 {
         let (rows, _) = paint(&mut app, &mut scroll);
-        let now = status(&rows).ok_or("no status row")?;
-        moves.push(now.saturating_sub(was));
-        was = now;
+        assert_eq!(status(&rows), Some(composer), "the composer moved");
+        let now = rows
+            .iter()
+            .filter(|row| row.contains("prompt line"))
+            .count();
+        moves.push(now.saturating_sub(shown));
+        shown = now;
     }
     assert!(moves.iter().all(|&rows| rows <= 1), "{moves:?}");
     assert!(
@@ -382,5 +387,28 @@ fn a_first_prompt_scrolled_away_and_back_stays_where_it_was() -> TestResult {
     scroll = 0;
     let (back, _) = paint(&mut app, &mut scroll);
     assert_eq!(back, settled, "the prompt rolled in again");
+    Ok(())
+}
+
+#[test]
+fn composer_bottom_uses_the_panes_bottom_at_a_nonzero_offset() -> TestResult {
+    let area = Rect::new(7, 5, 60, 24);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 40));
+    let mut app = app();
+    let _ = yi_tui::render::paint_pane(&mut app, None, &mut buffer, area, &mut 0);
+    let bottom = usize::from(area.bottom().saturating_sub(1));
+    let rows: Vec<String> = (0..area.bottom())
+        .map(|y| {
+            (0..buffer.area.width)
+                .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        common::composer_bottom(&rows),
+        Some(bottom),
+        "composer bottom is not on row {bottom}: {:?}",
+        rows.last()
+    );
     Ok(())
 }

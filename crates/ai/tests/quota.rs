@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde_json::{Value, json};
 use yi_ai::kimi::usage_line;
 use yi_ai::retry::quota_exhausted;
+use yi_types::telemetry::ErrorClass;
 
 use crate::loopback_server::serve;
 type TestResult = Result<(), Box<dyn Error>>;
@@ -52,6 +53,10 @@ fn a_quota_429_is_final_and_a_rate_limit_429_still_retries() -> TestResult {
         let error = post(port)?;
         assert_eq!(seen.load(Ordering::SeqCst), 1, "{body}");
         assert_eq!(error, format!("HTTP 429 quota exhausted: {body}"));
+        assert_eq!(
+            ErrorClass::from_provider_text(&error).to_string(),
+            "provider:quota"
+        );
     }
     let (port, seen) = refusing(THROTTLE)?;
     let error = post(port)?;
@@ -60,6 +65,10 @@ fn a_quota_429_is_final_and_a_rate_limit_429_still_retries() -> TestResult {
         "a throttle was not retried"
     );
     assert_eq!(error, format!("HTTP 429: {THROTTLE}"));
+    assert_eq!(
+        ErrorClass::from_provider_text(&error).to_string(),
+        "transport:http_429"
+    );
     Ok(())
 }
 

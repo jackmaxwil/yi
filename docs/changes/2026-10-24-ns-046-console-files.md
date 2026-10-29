@@ -1,4 +1,5 @@
 ---
+version: 0.732.0
 issue: Closes #1483, Refs #831, Refs #1442
 growth: +182 the save that keeps a file's mode, link and endings, a reload's endings included (E-uifile-write, +18) and the private compose draft (+24), the session directory and HOME for the palette's paths, and the directory an editor or viewer keeps for the next one (E-uifile-workdir, +21, the HOME the CLI hands the console included), the top pin for the viewers and Review, and the drag that follows the pin to its row offset (E-uilife-viewer-top, +30), the kept rows of the markdown, diff and Review panes and the diff's revision (E-uiperf-panes, +40), and the editor's tab stops, its display-width column map both ways, the line limit, the cursor cell by drawn width and the find that wraps to its own line (E-uifile-tabs, +49, its tab stop shared with the markdown renderer); weighed for deletion: the temp-and-rename could wait for #831's shared replace, which yi-console cannot reach, and a clock in the draft name, which the lint forbids and a per-call random salt from the standard library replaces
 raise: tests +760, comments +18, crate cli +1, crate console +154, crate tui +27
