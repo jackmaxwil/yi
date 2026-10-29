@@ -1,4 +1,6 @@
 ---
+version: 0.635.0
+decisions: D414
 issue: Refs #1184
 growth: +334 the history grep in fetch/grep.rs (the resolver walk, read's window on a root, the one-session-at-a-time scan, its four cut rows, the call-labelled assistant lines and the argument guard), the corpus listing on Transcripts, the shared admission in fetch/mod.rs, the counted line cut in family.rs and grep's exported matcher; weighed a `history://<agent>/grep/<pattern>` read selector, which would have reused render_history but put a regex in a URL path, and folding compact.recall and compact.search into it, which the eval did not ask for; the read and grep decorators now share one routed type instead of two
 raise: crate runtime +320, crate tools +14, tests +420, comments +17

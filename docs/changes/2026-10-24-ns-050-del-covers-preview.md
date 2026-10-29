@@ -1,4 +1,6 @@
 ---
+version: 0.793.0
+decisions: D499
 issue: Closes #1486, Refs #1442
 decision: the covered-write preview is deleted by D228's own reversible-via: plan/covers.rs, ToolAdapter's check slot and the plan tool's covers property go; Contract.covers stays in yi-types unread so frozen contracts that carry it decode to the same digest, and old pending covered contracts still start (revises D228) | owner: "deleting the ~3,850 flagged lines" (2026-10-23); done stays the one acceptance, and Bet 3 runs a row check at done and answer only | revert this whole change (its parent-commit diff)
 ---
