@@ -15,6 +15,7 @@ hashline edit (+ registers, instrumented) | `toolcells::an_edit_cell_shows_the_c
 hashline edit (+ registers, instrumented) | `hashline_patcher::mv_onto_an_existing_file_is_refused_without_changing_either_file`
 hashline edit (+ registers, instrumented) | `hashline_patcher::a_latin1_file_reports_not_utf8_instead_of_inviting_an_overwrite`
 hashline edit (+ registers, instrumented) | `hashline_patcher::a_clipped_row_anchors_an_adjacent_insert_but_not_its_replacement`
+hashline edit (+ registers, instrumented) | `hashline_patcher::unseen_gap_anchors_are_refused_without_changing_the_file`
 hashline edit (+ registers, instrumented) | `hashline_patcher::an_anchor_past_the_end_is_not_called_unseen`
 first-run setup (`yi setup`) | `journeys::setup_saves_the_answered_steps_and_keeps_every_other_key`
 first-run setup (`yi setup`) | `journeys::setup_saves_the_classifier_only_once_one_answers` (T2)

@@ -1,7 +1,7 @@
 ---
 issue: Closes #1502, Closes #136, Refs #804, Refs #807, Refs #1442
 growth: +345 typed errors, language-aware block/read validation, displayed-clipped anchor metadata and I/O safety after splitting read arguments out of tool.rs and deleting string-slice and prefix-classification code
-raise: crate runtime +192, crate tools +319, tests +897, comments +13
+raise: crate runtime +192, crate tools +319, tests +924, comments +13
 ---
 This change combines HB-utf8-tools, HA-EDIT-typed, HA-EDIT-blocks, HA-EDIT-readargs, HA-EDIT-anchor, and HA-EDIT-mvread.
 
@@ -11,4 +11,4 @@ Block resolution covers multiline Python signatures, including single-quoted def
 
 Non-Rust block comments keep their delimiters out of block depth across line boundaries, and comment markers inside regular-expression classes do not swallow the rest of a line.
 
-Ordinary unseen gap anchors were already refused before this change: the parent collects a gap anchor and the unseen-line guard refuses it. The new behaviour is the clipped-row carve-out alone, and `hashline_patcher::a_clipped_row_anchors_an_adjacent_insert_but_not_its_replacement` is the test that proves it. Only displayed clipped rows can anchor adjacent inserts and register pastes without their full text; every replacement still requires shown lines. Addressable line counts exclude the trailing split artifact, moves refuse to overwrite an existing destination, and unreadable files report their actual read failure instead of inviting an overwrite.
+Ordinary unseen gap anchors were already refused before this change: the parent collects a gap anchor and the unseen-line guard refuses it. The new behaviour is the clipped-row carve-out alone, and `hashline_patcher::a_clipped_row_anchors_an_adjacent_insert_but_not_its_replacement` is the test that proves it. `hashline_patcher::unseen_gap_anchors_are_refused_without_changing_the_file` guards only that the carve-out leaves ordinary unseen gap anchors refused; it passes on the parent too, so it is a regression guard and not a red proof. Only displayed clipped rows can anchor adjacent inserts and register pastes without their full text; every replacement still requires shown lines. Addressable line counts exclude the trailing split artifact, moves refuse to overwrite an existing destination, and unreadable files report their actual read failure instead of inviting an overwrite.
