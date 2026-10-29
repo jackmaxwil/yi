@@ -422,6 +422,8 @@ catastrophic-path denylist M10 | `decide::a_catastrophic_target_in_any_segment_i
 `yi update` | `tarball::tests::a_file_is_replaced_by_a_directory_and_restored`
 `yi update` | `tarball::tests::a_failed_link_falls_back_to_a_copy`
 `yi update` | `update::the_token_goes_only_to_the_forge_host`
+`yi update` | `install_script::a_vouched_archive_installs_the_binary_its_runtime_and_receipt`
+`yi update` | `install_script::an_archive_whose_sha256_differs_from_sha256sums_installs_nothing`
 cursor login and models | `cursor_login::poll_waits_through_404_then_stores_the_token`
 cursor login and models | `cursor_login::refresh_keeps_the_old_refresh_when_the_body_omits_one`
 cursor login and models | `cursor_login::cursor_is_a_built_in_until_a_profile_file_exists`

@@ -285,6 +285,9 @@ publish version:
     auth="Authorization: token $FORGEJO_TOKEN"
     assets=(target/package/yi-{{version}}-*.tar.gz*)
     [ -e "${assets[0]}" ] || { echo "nothing built for {{version}} -- run: just prerelease {{version}}"; exit 1; }
+    # scripts/install.sh finds the latest archive for its machine, and its digest, in this one file.
+    cat target/package/yi-{{version}}-*.tar.gz.sha256 > target/package/SHA256SUMS
+    assets+=(target/package/SHA256SUMS)
     body=$(printf '{"tag_name":"v%s","name":"v%s"}' '{{version}}' '{{version}}')
     # python3, not sed: the response carries several "id" keys -- the author's
     # among them -- and a greedy match takes the last one rather than the
