@@ -7,8 +7,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use crate::plan_ops::streams as text;
 use crate::scratch::Scratch;
-use crate::text;
 
 type TestResult = Result<(), Box<dyn Error>>;
 

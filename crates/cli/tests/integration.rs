@@ -39,11 +39,3 @@ mod python_client;
 mod rpc_protocol;
 mod serve_daemon;
 mod tui_drive;
-
-fn text(out: &std::process::Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    )
-}

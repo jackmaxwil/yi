@@ -1,6 +1,6 @@
 ---
 issue: Closes #1741
-raise: tests +344
+raise: tests +336
 decision: the public mirror also pushes each forge `v*` tag whose commit is on main, at the commit filter-repo rewrote it to, and no other tag, on every mirror run, which a push to main or a dispatch on main starts and a tag push does not (amends D172) | a GitHub release needs its tag on the mirror, and a tag made through the release API would point at a commit the next rules change rewrites away, while the mirror re-derives every tag on each run; a tag trigger, or a dispatch on another ref, would run the token-bearing workflow from that tree rather than main's | drop the tag loop from scripts/mirror/sync.sh; tags it pushed stay published
 decision: the first install checks the archive's sha256 against the release's `SHA256SUMS`, then, when the release carries a `.sig` and `ssh-keygen` is on PATH, the signature against the one `allowed_signers` line it embeds, refusing a bad one or a `.sig` it could not fetch for any reason but absence; with no `.sig` or no `ssh-keygen` it says the sha256 is its only check | the install script runs before any `yi` exists, so it cannot use `yi update`'s verifier, and a key fetched beside the archive would prove nothing the digest does not; the embedded line is the same trust anchor `yi update` compiles in, held equal by a test | fetch nothing but the digest, the archive and the `.sig`; drop the embedded line and verify through `yi update` after the first install
 ---
