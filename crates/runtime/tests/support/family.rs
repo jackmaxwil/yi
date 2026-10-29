@@ -38,6 +38,14 @@ pub fn priced_reply(text: &str, dollars: f64) -> AgentMessage {
     message
 }
 
+pub fn hung_up(text: &str) -> AgentMessage {
+    let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut message {
+        *error_message = Some("the provider hung up".to_owned());
+    }
+    message
+}
+
 pub fn child_session(
     build: yi_runtime::ChildBuild<'_>,
     provider: Arc<ProviderStream>,

@@ -52,17 +52,6 @@ fn host_with_hold(depth: u8, parent_dir: PathBuf, parent: Slot, hold: bool) -> A
     host_with_providers(depth, parent_dir, parent, hold, false).0
 }
 
-fn hung_up(text: &str) -> yi_types::message::AgentMessage {
-    let mut message = yi_ai::faux::faux_assistant_message(
-        vec![yi_ai::faux::faux_text(text)],
-        yi_types::message::StopReason::Error,
-    );
-    if let yi_types::message::AgentMessage::Assistant { error_message, .. } = &mut message {
-        *error_message = Some("the provider hung up".to_owned());
-    }
-    message
-}
-
 fn host_with_providers(
     depth: u8,
     parent_dir: PathBuf,
@@ -92,7 +81,7 @@ fn host_with_providers(
             let n = spawned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let answer = format!("the token is minted in auth.rs, answer {n}");
             let reply = if fail {
-                hung_up(&answer)
+                crate::support::hung_up(&answer)
             } else {
                 crate::support::priced_reply(&answer, 0.012)
             };
