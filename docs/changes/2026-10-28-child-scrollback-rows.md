@@ -10,4 +10,6 @@ The existing `custom{child}` spawn and end entries carry the values needed to re
 
 Live updates and replay use one projection and formatter. A row whose `spawnedBy` cell has not committed waits behind that antecedent, unresolved references flush in ledger order at replay EOF, and a late end appends at finish with a back-reference to its start. Console inherits the same behavior through the shared `yi-tui` reducer; no second renderer or sidebar state is added.
 
+The repository root that a walk, the project instructions and `yi trust` key on now resolves links, `..` and a relative cwd before it picks the top, so `yi --cwd .` and a checkout reached through a link name their repository, and the top comes back in the caller's own spelling so the ignore files above a walk still bind it.
+
 A new cell variant, a second timeline, persisted terminal bytes, and retroactive field fabrication were rejected as larger designs that the existing trail and `Cell::Rule` path do not need.
