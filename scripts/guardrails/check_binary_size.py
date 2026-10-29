@@ -7,7 +7,7 @@ the baseline so the baseline can never be edited past it, and the cap itself mov
 with a `decision:` line: it went 7, 8, 9 MiB, each time the baseline reached it."""
 import json, platform, re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import BASE, DIST_BIN, ROOT, fail, fork, no_fork, scratch_repo
+from _common import BASE, DIST_BIN, ROOT, dist_source_roots, fail, fork, no_fork, scratch_repo
 import check_changes
 
 HARD_CAP_BYTES = 9_437_184  # 9 MiB: D249 set 8, raised for the console workbench (#1354)
@@ -36,6 +36,13 @@ def problems(size, budget, hard_cap=HARD_CAP_BYTES, name="binary_size_budget.jso
     elif size > budget + JITTER:
         errs.append(f"dist binary {size} > {budget} + {JITTER} bytes ({name})")
     return errs
+
+
+def leaks(blob, roots):
+    """Incident: three dist builds of one tree measured 8,653,648, 8,670,192 and 8,703,216 bytes
+    because the kernel crate embedded its checkout path, so the size tracked the directory name."""
+    return [f"dist binary embeds the build path {r}: size now depends on where it was built"
+            for r in dict.fromkeys(roots) if len(r) > 1 and r.encode() in blob]
 
 
 def cap_errors(was, now, decisions):
@@ -94,6 +101,9 @@ def selfcheck():
     assert errs == ["dist binary 900000 > 800000 + 16384 bytes (binary_size_budget.json)"], errs
     # a compliant size and baseline is clean
     assert problems(700_000, 800_000, hard_cap=cap) == []
+    # a checkout path inside the binary is flagged; the same bytes without it, and a bare "/", are clean
+    assert len(leaks(b"x/w/yi/crates/kernel\0", ["/w/yi", "/h/.cargo"])) == 1
+    assert leaks(b"/c/foo/src/lib.rs", ["/w/yi", "/"]) == []
     # growth inside the jitter allowance passes, at the allowance too; one byte past it fails
     assert problems(800_016, 800_000, hard_cap=cap) == []
     assert problems(800_000 + JITTER, 800_000, hard_cap=cap) == []
@@ -128,6 +138,8 @@ def main(argv):
     path, cap = baseline()
     budget = json.loads(path.read_text())["max_bytes"]
     errs += problems(size, budget, hard_cap=cap, name=path.name)
+    roots = [str(p) for r in (ROOT, *dist_source_roots()) for p in (r, r.resolve())]
+    errs += leaks(DIST_BIN.read_bytes(), roots)
     fail(errs, f"binary_size ({size} bytes; {path.name} {budget} + {JITTER}, cap {cap})")
     return 0
 
