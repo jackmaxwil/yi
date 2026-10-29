@@ -40,6 +40,16 @@ after() {
   return "$rc"
 }
 
+# Only this flag proves --quiet keeps a green gate's skip row while dropping the rest of its output.
+if [ "${1:-}" = --selfcheck ]; then
+  N=3 QUIET=1
+  printf 'skip deny (advisory database unreachable)\nnoise\n' > "$OUT/1.out"; echo 0 > "$OUT/1.rc"
+  printf 'only noise\n' > "$OUT/2.out"; echo 0 > "$OUT/2.rc"
+  printf 'FAIL x\nwhy\n' > "$OUT/3.out"; echo 1 > "$OUT/3.rc"
+  [ "$(drain)" = "$(printf 'skip deny (advisory database unreachable)\nFAIL x\nwhy')" ] || { echo "FAIL quiet drain keeps skip rows and failures only"; exit 1; }
+  echo "ok guardrails quiet selfcheck"; exit 0
+fi
+
 run "$PY" scripts/guardrails/check_manifests.py
 run "$PY" scripts/guardrails/check_boundaries.py
 run "$PY" scripts/guardrails/check_filenames.py
@@ -84,6 +94,7 @@ run "$PY" scripts/tui_monkey.py --selfcheck
 run "$PY" scripts/tui_pty.py --selfcheck
 # Only this flag proves the skip row cannot swallow a real advisory.
 run "$PY" scripts/guardrails/check_deny.py --selfcheck
+run bash "$0" --selfcheck
 # The tool-surface lock is equality over hashes, so a comparison that drifted would
 # pass every change or refuse every run; only this flag walks the delta cases.
 run "$PY" scripts/guardrails/check_request_budget.py --selfcheck

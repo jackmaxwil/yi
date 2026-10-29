@@ -86,6 +86,7 @@ check *flags:
       out=$(just $lane 2>&1)
       rc=$?
       if [ "$rc" != 0 ]; then printf '%s\n' "$out"; exit "$rc"; fi
+      printf '%s\n' "$out" | grep '^skip ' || true
     done
     echo "check: lint, guardrails and test green"
 
