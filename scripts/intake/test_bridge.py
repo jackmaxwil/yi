@@ -99,7 +99,7 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("non-ascii", "filename", with_change(base, path="docs/ångström.md", old_path="docs/ångström.md"), "filename")
     add("secret", "secret", added(base, "ghp_" + "A" * 30), "content")
     add("placeholder", "marker", added(base, "***REMOVED***"), "content")
-    add("replacement", "marker", added(base, "the infra repository"), "content")
+    add("replacement", "marker", added(base, "token fixture-oauth-token"), "content")
     add("url", "network-literal", added(base, "https://example.com/path"), "network-literal")
     add("ip", "network-literal", added(base, "8.8.8.8"), "network-literal")
     add("hostname-edu", "network-literal", added(base, "example.edu"), "network-literal")
@@ -266,7 +266,7 @@ def check_signed_object() -> None:
 
 def check_ordinary_text_is_allowed() -> None:
     base = valid_case()
-    for text in ("let n = x.len();", "self.changes.push(line.path)", "see Cargo.toml and README.md", "mod args.rs;", "// the raw call is unsafe because it aliases", "#![forbid(unsafe_code)]", "self.app.run();", "self.io.flush()"):
+    for text in ("let n = x.len();", "self.changes.push(line.path)", "see Cargo.toml and README.md", "mod args.rs;", "// the raw call is unsafe because it aliases", "#![forbid(unsafe_code)]", "self.app.run();", "self.io.flush()", "the infra repository", "cd ~/.yi"):
         assert bridge.evaluate(added(base, text)) == bridge.ALLOW, text
 
 
@@ -327,9 +327,9 @@ EXPECTED = {
     "rename-side": "intake: path: rename side 'scripts/intake/allowed.json' is denied by scripts/intake/",
     "dot-dot": "intake: filename: 'docs/../escape' fails empty, '.' or '..' component",
     "case-fold": "intake: filename: 'Readme' fails case-fold collision with 'README'",
-    "secret": "intake: content: 'README:2' matches secret/private pattern deny.txt:15",
-    "placeholder": "intake: content: 'README:2' contains mirror replacement marker placeholder",
-    "replacement": "intake: content: 'README:2' contains mirror replacement marker replace.txt:4",
+    "secret": "intake: content: 'README:2' matches a secret/private pattern",
+    "placeholder": "intake: content: 'README:2' contains a mirror replacement literal",
+    "replacement": "intake: content: 'README:2' contains a mirror replacement literal",
     "url": "intake: network-literal: 'README:2' contains URL; owner review is required",
     "ip": "intake: network-literal: 'README:2' contains IP literal; owner review is required",
     "unsafe": "intake: unsafe: 'README:2' adds unsafe",

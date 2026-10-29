@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import dataclasses
+import functools
 import hashlib
 import json
 import os
@@ -15,6 +16,8 @@ from typing import Any, Callable, Optional
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+import check_public_surface as surface
 import forge_pr
 import pr_review
 
@@ -188,8 +191,9 @@ def check_09_base_history(case: Case) -> Any:
     return ALLOW
 
 
+@functools.cache
 def excluded_paths() -> list[str]:
-    return [line.strip() for line in (ROOT / "scripts/mirror/exclude.txt").read_text().splitlines() if line.strip() and not line.startswith("#")]
+    return surface.rule_lines(surface.RULES / "exclude.txt")
 
 
 def deny_rule(path: str, rename: bool = False) -> Optional[str]:
@@ -201,7 +205,7 @@ def deny_rule(path: str, rename: bool = False) -> Optional[str]:
     rule = next((rule for rule in extra if path == rule.rstrip("/") or path.startswith(rule)), None)
     if rule:
         return rule
-    excluded = next((rule for rule in excluded_paths() if path == rule.rstrip("/") or path.startswith(rule.rstrip("/") + "/")), None)
+    excluded = next((rule for rule in excluded_paths() if surface.excluded(path, [rule])), None)
     if excluded:
         return f"mirror exclude.txt: {excluded}"
     return None
@@ -305,37 +309,27 @@ def check_17_filenames(case: Case) -> Any:
     return ALLOW
 
 
-def deny_patterns() -> list[tuple[str, re.Pattern[str]]]:
-    rows = []
-    for number, line in enumerate((ROOT / "scripts/mirror/deny.txt").read_text().splitlines(), 1):
-        if line and not line.startswith("#"):
-            rows.append((f"deny.txt:{number}", re.compile(line)))
-    return rows
+@functools.cache
+def deny_patterns() -> list[re.Pattern[str]]:
+    return [re.compile(rule) for rule in surface.rule_lines(surface.RULES / "deny.txt")]
 
 
 def check_18_secrets(case: Case) -> Any:
     for line in added_lines(case):
-        for rule, pattern in deny_patterns():
-            if pattern.search(line.text):
-                return refusal("content", f"'{line.path}:{line.line}' matches secret/private pattern {rule}")
+        if any(pattern.search(line.text) for pattern in deny_patterns()):
+            return refusal("content", f"'{line.path}:{line.line}' matches a secret/private pattern")
     return ALLOW
 
 
-def replacements() -> list[tuple[str, str, str]]:
-    rows = []
-    for number, line in enumerate((ROOT / "scripts/mirror/replace.txt").read_text().splitlines(), 1):
-        old, _, new = line.partition("==>")
-        rows.append((f"replace.txt:{number}", old, new or "***REMOVED***"))
-    return rows
+@functools.cache
+def replaced_literals() -> list[str]:
+    return [old for old, _ in surface.swaps_of(surface.rule_lines(surface.RULES / "replace.txt", comments=False))]
 
 
 def check_19_markers(case: Case) -> Any:
     for line in added_lines(case):
-        if "***REMOVED***" in line.text:
-            return refusal("content", f"'{line.path}:{line.line}' contains mirror replacement marker placeholder")
-        for rule, old, new in replacements():
-            if old in line.text or new in line.text:
-                return refusal("content", f"'{line.path}:{line.line}' contains mirror replacement marker {rule}")
+        if "***REMOVED***" in line.text or any(old in line.text for old in replaced_literals()):
+            return refusal("content", f"'{line.path}:{line.line}' contains a mirror replacement literal")
     return ALLOW
 
 
