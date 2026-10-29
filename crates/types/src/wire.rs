@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 use crate::entry::Entry;
@@ -42,8 +42,54 @@ pub enum Fact {
     /// Design §15.1: the session goal lives beside the header as a fact line,
     /// outside the entry tree, so compaction cannot lose it.
     Goal { goal: crate::goal::Goal },
-    /// The task DAG shares the goal's compaction-immunity by construction.
-    Plan { plan: crate::plan::Plan },
+    /// An older build's plan, which nothing reads; raw, so the line re-emits byte for byte.
+    Plan { plan: Value },
+    /// A `fact` this build does not know; kept as written.
+    #[serde(untagged)]
+    Other(UnknownFact),
+}
+
+/// The line's object less `kind` and `seq`, which the mutation carries.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct UnknownFact(Map<String, Value>);
+
+impl<'de> Deserialize<'de> for UnknownFact {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        unknown_tag(deserializer, "fact", &["name", "label", "goal", "plan"]).map(Self)
+    }
+}
+
+/// A line whose `kind` this build does not know; `seq` is read so the sequence stays whole.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct UnknownMutation(Map<String, Value>);
+
+impl UnknownMutation {
+    pub fn seq(&self) -> Option<u64> {
+        self.0.get("seq").and_then(Value::as_u64)
+    }
+}
+
+impl<'de> Deserialize<'de> for UnknownMutation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        unknown_tag(deserializer, "kind", &["entry", "record", "lane", "fact"]).map(Self)
+    }
+}
+
+/// Invariant: the typed variants are tried first, so a known tag reaching here did not decode.
+fn unknown_tag<'de, D: Deserializer<'de>>(
+    deserializer: D,
+    tag: &str,
+    known: &[&str],
+) -> Result<Map<String, Value>, D::Error> {
+    let raw = Map::deserialize(deserializer)?;
+    match raw.get(tag).and_then(Value::as_str) {
+        Some(name) if !known.contains(&name) => Ok(raw),
+        _ => Err(serde::de::Error::custom(format!(
+            "a known or missing {tag} that does not decode"
+        ))),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,6 +120,36 @@ pub enum Mutation {
         #[serde(flatten)]
         fact: Fact,
     },
+    /// A `kind` this build does not know; kept as written.
+    #[serde(untagged)]
+    Other(UnknownMutation),
+}
+
+impl Mutation {
+    pub fn seq(&self) -> Option<u64> {
+        match self {
+            Self::Entry { entry, .. } => Some(entry.seq()),
+            Self::Record { record } => Some(record.seq()),
+            Self::Lane { seq, .. } | Self::Fact { seq, .. } => Some(*seq),
+            Self::Other(unknown) => unknown.seq(),
+        }
+    }
+
+    /// A line this build keeps as written and reads nothing from.
+    pub fn is_unread(&self) -> bool {
+        matches!(
+            self,
+            Self::Other(_)
+                | Self::Entry {
+                    entry: Entry::Other(_),
+                    ..
+                }
+                | Self::Fact {
+                    fact: Fact::Other(_),
+                    ..
+                }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

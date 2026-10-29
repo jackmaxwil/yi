@@ -388,6 +388,18 @@ fn presented(store: &yi_session::SharedSession, id: &MailId) -> bool {
     entries.is_ok_and(|entries| shown(&entries).contains(id.0.as_str()))
 }
 
+pub(crate) fn resumed(
+    store: &yi_session::SharedSession,
+    entries: &[yi_types::entry::Entry],
+) -> Vec<AgentMessage> {
+    let mut queued = unread(entries);
+    if let Some(lines) = yi_session::lock_session(store).unread_lines() {
+        let source = yi_types::message::HostSource::Restore;
+        queued.push(AgentMessage::host_text(source, &lines.note(), 0));
+    }
+    queued
+}
+
 /// Invariant: an inbox entry with no presented message entry is queued again; `progress` never.
 pub(crate) fn unread(entries: &[yi_types::entry::Entry]) -> Vec<AgentMessage> {
     use yi_types::entry::Entry;

@@ -292,3 +292,105 @@ fn deleting_a_session_deletes_the_children_it_holds() -> TestResult {
     assert!(sibling.exists(), "nothing beside it is touched");
     Ok(())
 }
+
+fn pi_unknown_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../types/tests/fixtures/v4-pi-unknown.jsonl")
+}
+
+/// Dies with a session Pi or a newer Yi wrote refused whole as an invalid file: its unknown
+/// lines are kept byte for byte, counted for the resume note, and a new turn appends after them.
+#[test]
+fn a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes() -> TestResult {
+    let dir = Scratch::new("yi-session-jsonl")?;
+    let path = dir.join("pi-unknown.jsonl");
+    fs::copy(pi_unknown_fixture(), &path)?;
+    let before = fs::read_to_string(&path)?;
+    let mut store = load_session(&path)?;
+
+    let unread = store
+        .unread_lines()
+        .ok_or("the unknown lines were not counted")?;
+    assert_eq!((unread.count, unread.first_line), (6, 4));
+    assert!(unread.note().contains("6 lines"), "{}", unread.note());
+    assert_eq!(store.leaf_id("main")?.as_deref(), Some("yi-after"));
+    let message = yi_types::message::AgentMessage::User {
+        content: yi_types::message::UserContent::Text("resumed".to_owned()),
+        timestamp: 1,
+        attribution: Default::default(),
+    };
+    store.append_message("main", message)?;
+
+    let after = fs::read_to_string(&path)?;
+    assert!(
+        after.starts_with(&before),
+        "a known build rewrote the lines it cannot read"
+    );
+    let reloaded = load_session(&path)?;
+    assert_eq!(reloaded.unread_lines(), store.unread_lines());
+    assert_eq!(reloaded.log(&LogOptions::default())?.len(), 10);
+    let branch = reloaded.find_entries_on_branch(
+        "main",
+        &EntryQuery::default(),
+        &yi_session::BranchBounds::default(),
+    )?;
+    let types: Vec<&str> = branch
+        .iter()
+        .map(yi_types::entry::Entry::type_name)
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "message",
+            "message",
+            "context_edit",
+            "label",
+            "custom_message",
+            "session_info",
+            "message",
+            "message"
+        ]
+    );
+    Ok(())
+}
+
+struct FailsMidLine {
+    file: fs::File,
+    budget: usize,
+}
+
+impl std::io::Write for FailsMidLine {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.budget == 0 {
+            return Err(std::io::Error::other("No space left on device"));
+        }
+        let take = bytes.len().min(self.budget);
+        self.budget = self.budget.saturating_sub(take);
+        self.file.write(bytes.get(..take).unwrap_or_default())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+/// Dies with the disk-full incident: a write that stops mid-line left half a line the next append
+/// landed after, so the session failed to load. The failed append is cut back to where it began.
+#[test]
+fn a_short_write_leaves_the_file_as_it_was() -> TestResult {
+    let dir = Scratch::new("yi-session-jsonl")?;
+    let path = dir.join("short.jsonl");
+    fs::copy(golden_fixture(), &path)?;
+    let before = fs::read(&path)?;
+    let file = fs::OpenOptions::new().append(true).open(&path)?;
+    let cut = file.try_clone()?;
+    let mut short = FailsMidLine { file, budget: 17 };
+    let line = br#"{"kind":"entry","lane":"main","type":"custom","id":"late"}"#;
+
+    let written = yi_session::append_line(&mut short, before.len() as u64, line, |len| {
+        cut.set_len(len)
+    });
+    assert!(written.is_err(), "the short write must still fail");
+    assert_eq!(fs::read(&path)?, before);
+    load_session(&path)?;
+    Ok(())
+}

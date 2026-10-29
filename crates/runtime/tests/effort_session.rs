@@ -183,3 +183,42 @@ fn resume_comes_back_on_the_model_and_effort_it_left_on() -> TestResult {
     assert_eq!(second.model().id, "claude-haiku-4-5");
     Ok(())
 }
+
+/// Dies with a resumed session dropping the lines it cannot read without a word: the model is
+/// told on its first turn how many lines were kept unread and where the first one is.
+#[tokio::test]
+async fn a_session_with_unknown_lines_says_so_where_the_user_looks() -> TestResult {
+    let dir = Scratch::new("yi-resume-unread")?;
+    let file = dir.join("pi-unknown.jsonl");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../types/tests/fixtures/v4-pi-unknown.jsonl");
+    std::fs::copy(fixture, &file)?;
+    let store = Arc::new(std::sync::Mutex::new(yi_session::load_session(&file)?));
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text("noted")],
+        yi_types::message::StopReason::Stop,
+    )]);
+    let resumed = session(model("m", false, None), None, provider);
+    resumed.attach_store(store)?;
+    resumed.prompt("carry on")?;
+    resumed.wait_idle().await;
+    let notes: Vec<String> = (resumed.messages().iter())
+        .filter_map(|message| match message {
+            yi_types::message::AgentMessage::User {
+                content: yi_types::message::UserContent::Text(text),
+                attribution:
+                    yi_types::message::Attribution::Host(yi_types::message::HostSource::Restore),
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    let note = notes.first().ok_or("no restore note")?;
+    assert!(
+        note.contains("6 lines") && note.contains("line 4"),
+        "{note}"
+    );
+    Ok(())
+}
