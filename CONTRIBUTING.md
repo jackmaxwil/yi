@@ -7,4 +7,5 @@ A pull request opened there is closed unmerged.
 
 When contributions open, a change sent to the mirror is applied to the forge by
 hand: the mirror is regenerated from the forge, so your commit arrives under a new
-id with your authorship kept.
+id with your authorship kept. A contribution is accepted under the Apache License 2.0
+in `LICENSE` (section 5).

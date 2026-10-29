@@ -188,7 +188,8 @@ One file, `~/.yi/config.json`; every key is in
 
 ## License
 
-MIT, in `LICENSE`. `vendor/` keeps its upstream Apache-2.0 notices.
+Apache License 2.0, in `LICENSE`; the copyright notice (Jack Mazac and AiBridge LLC) is in
+`NOTICE`. `vendor/` keeps its upstream licenses.
 
 [codeact]: https://arxiv.org/abs/2402.01030
 [rlm]: https://arxiv.org/abs/2512.24601
