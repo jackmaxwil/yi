@@ -140,64 +140,66 @@ def check_caps() -> None:
     for case in at_cap:
         assert bridge.evaluate(case) == bridge.ALLOW
 
+FIXTURE_ENV = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+
+
+def git_in(repo: pathlib.Path, *args: str) -> bytes:
+    return subprocess.run(["git", "-C", str(repo), *args], env=FIXTURE_ENV, check=True, capture_output=True).stdout
+
+
+def stage(repo: pathlib.Path, files: dict[str, bytes]) -> None:
+    for name, data in files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_bytes(data)
+    git_in(repo, "add", "-A")
+
+
+def fixture_repo(repo: pathlib.Path, files: dict[str, bytes]) -> pathlib.Path:
+    repo.mkdir(parents=True, exist_ok=True)
+    git_in(repo, "init", "-q", "-b", "main")
+    stage(repo, files)
+    git_in(repo, "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-qm", "Base")
+    return repo
+
+
+def staged_patch(repo: pathlib.Path) -> bytes:
+    return git_in(repo, "diff", "--cached", "--no-renames", "--binary", "--full-index")
+
+
 def check_rewrite_helper() -> None:
-    env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
     with tempfile.TemporaryDirectory(prefix="intake-rewrite-") as temp:
-        source = pathlib.Path(temp) / "source"
+        source = fixture_repo(pathlib.Path(temp) / "source", {"README": b"safe fixture\n"})
         rewritten = pathlib.Path(temp) / "rewritten.git"
-        subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
-        (source / "README").write_text("safe fixture\n")
-        subprocess.run(["git", "-C", str(source), "add", "README"], check=True)
-        subprocess.run(["git", "-C", str(source), "-c", "core.hooksPath=/dev/null", "commit", "-m", "Base"], env=env, check=True, capture_output=True)
-        original = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+        original = git_in(source, "rev-parse", "HEAD").decode().strip()
         out = subprocess.run(["bash", str(ROOT / "scripts/mirror/rewrite.sh"), str(source), str(rewritten)], capture_output=True, text=True, check=True)
         assert out.stdout.strip() == original, out.stdout
-        mirror = subprocess.check_output(["git", "-C", str(rewritten), "rev-parse", "main"], text=True).strip()
+        mirror = git_in(rewritten, "rev-parse", "main").decode().strip()
         mapping = bridge.parse_commit_map(rewritten / "filter-repo/commit-map")
         assert mapping[original] == mirror
         assert {new: old for old, new in mapping.items()}[mirror] == original
 
 
 def check_real_patch_edges() -> None:
-    env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
     with tempfile.TemporaryDirectory(prefix="intake-mode-patch-") as temp:
-        repo = pathlib.Path(temp)
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        (repo / "script.sh").write_text("exit 0\n")
-        subprocess.run(["git", "-C", str(repo), "add", "script.sh"], check=True)
-        subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "commit", "-m", "Base"], env=env, check=True, capture_output=True)
+        repo = fixture_repo(pathlib.Path(temp), {"script.sh": b"exit 0\n"})
         (repo / "script.sh").chmod(0o755)
-        patch = subprocess.check_output(["git", "-C", str(repo), "diff", "--no-renames", "--binary", "--full-index"])
+        stage(repo, {})
+        patch = staged_patch(repo)
         case = dataclasses.replace(valid_case(), changes=bridge.parse_diff(patch), patch=patch)
         assert bridge.check_13_executables(case).text == "intake: mode: 'script.sh' changes the executable bit"
     with tempfile.TemporaryDirectory(prefix="intake-binary-patch-") as temp:
-        repo = pathlib.Path(temp)
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        (repo / "blob.dat").write_bytes(b"\x00\x01\x02")
-        subprocess.run(["git", "-C", str(repo), "add", "blob.dat"], check=True)
-        patch = subprocess.check_output(["git", "-C", str(repo), "diff", "--cached", "--no-renames", "--binary", "--full-index"])
+        repo = fixture_repo(pathlib.Path(temp), {})
+        stage(repo, {"blob.dat": b"\x00\x01\x02"})
+        patch = staged_patch(repo)
         case = dataclasses.replace(valid_case(), changes=bridge.parse_diff(patch), patch=patch)
         assert bridge.check_14_binary(case).text == "intake: binary: 'blob.dat' is binary"
 
 
-
 def real_diff(before: dict[str, str], after: dict[str, str]) -> bytes:
-    env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid", GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
     with tempfile.TemporaryDirectory(prefix="intake-forged-") as temp:
-        def git(*args: str) -> bytes:
-            return subprocess.run(["git", "-C", temp, *args], env=env, check=True, capture_output=True).stdout
-
-        def write(files: dict[str, str]) -> None:
-            for name, text in files.items():
-                (pathlib.Path(temp) / name).parent.mkdir(parents=True, exist_ok=True)
-                (pathlib.Path(temp) / name).write_bytes(text.encode())
-            git("add", "-A")
-
-        git("init", "-q")
-        write(before)
-        git("-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-qm", "Base")
-        write(after)
-        return git("diff", "--cached", "--no-renames", "--binary", "--full-index")
+        repo = fixture_repo(pathlib.Path(temp), {name: text.encode() for name, text in before.items()})
+        stage(repo, {name: text.encode() for name, text in after.items()})
+        return staged_patch(repo)
 
 
 def check_forged_headers() -> None:
