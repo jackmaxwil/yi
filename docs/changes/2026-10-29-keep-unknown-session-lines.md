@@ -1,4 +1,5 @@
 ---
+version: 0.805.0
 issue: Closes #1557
 raise: crate session +32, tests +99, comments +3
 ---
