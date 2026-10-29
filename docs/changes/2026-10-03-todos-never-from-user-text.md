@@ -1,4 +1,6 @@
 ---
+version: 0.566.0
+decisions: D361
 issue: Closes #1030, Closes #1031
 raise: crate tui +1, tests +71
 decision: user text never seeds the todo list: the agent alone writes todos, with the `first_list` backstop and the hidden planning hint kept and the hint now saying nothing was written for it and a pasted document is context; a list line needs one to three digits and a space after its marker (revises D148) | the owner: "Never from my text", and that the seed did not slice a message correctly and was low quality and noisy; pasted README text and numeric output such as `1.234 ms` filled the todo block before the model replied | restore `seed` and `seeded_text` from D148
