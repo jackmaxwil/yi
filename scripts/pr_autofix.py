@@ -49,9 +49,10 @@ PER_RUN = 3
 FIX_SECS, REPAIR_SECS, SETUP_SECS = 1200, 600, 5 * 60
 PASS_SECS = forge_pr.job_secs("autofix") - SETUP_SECS
 CAP_DAY, CAP_PR = 25.0, 8.0
-# The owner's tiers (2026-10-01; DeepSeek V4.1 Flash and Kimi K3.1 Pro replaced GLM 5.3 on 2026-10-27),
-# meant for roughly 60/30/10 of fixes: (model, thinking), cheapest first.
-TIERS = (("openrouter/deepseek/deepseek-v4.1-flash-1017", "high"), ("openrouter/moonshotai/kimi-k3.1-pro", "medium"),
+# The owner's tiers (2026-10-01; DeepSeek V4.1 Flash and Kimi K3.1 Pro replaced GLM 5.3 on 2026-10-27, and
+# GPT-6.1 Terra replaced Kimi on 2026-10-29), meant for roughly 60/30/10 of fixes: (model, thinking), cheapest
+# first. The medium id is OpenRouter's latest-Terra alias: models.dev, which builds the catalog, lacks 6.1-terra.
+TIERS = (("openrouter/deepseek/deepseek-v4.1-flash-1017", "high"), ("openrouter/~openai/gpt-terra-latest", "xhigh"),
          ("openrouter/anthropic/claude-opus-5.5", "high"))
 TIER_NAMES = ("low", "medium", "high")
 # Points that move a fix up a tier: cut where 61/30/9 of the 44 fixable blocked rounds of
