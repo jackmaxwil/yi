@@ -274,6 +274,9 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         goal: Option<GoalText>,
         rows: Vec<SetRow>,
+        /// The rows it does not name stay as they are rather than leaving the plan.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_rest: bool,
     },
     View {
         full: bool,

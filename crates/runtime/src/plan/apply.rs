@@ -546,7 +546,7 @@ pub(super) fn apply_set(
     blobs: &[Blob],
 ) -> Result<Outcome, PlanOpError> {
     let mut said = Vec::new();
-    let (request, struck) = keep_omitted(engine, request, &mut said);
+    let (request, struck, _kept) = keep_omitted(engine, request, &mut said);
     let outcome = engine.apply_with(request, blobs)?;
     let mut outcome = drop_struck(engine, outcome, struck, &mut said);
     outcome.notices.extend(said);
@@ -554,14 +554,14 @@ pub(super) fn apply_set(
 }
 
 /// Invariant: a `set` from a stale view never deletes a row it left out; the session todo list
-/// holds the same rule, so a fix to one walks the other. A row leaves by state `dropped`.
+/// holds the same rule, and the kept rows come back beside the request for a set that opens one.
 pub(super) fn keep_omitted(
     engine: &PlanEngine,
     mut request: OpRequest,
     said: &mut Vec<String>,
-) -> (OpRequest, Vec<OpRequest>) {
+) -> (OpRequest, Vec<OpRequest>, Vec<SetRow>) {
     if !matches!(request.op, Op::Set { .. }) {
-        return (request, Vec::new());
+        return (request, Vec::new(), Vec::new());
     }
     let view = view_request(&request.actor, request.plan.clone());
     let held = engine
@@ -572,8 +572,14 @@ pub(super) fn keep_omitted(
         expected_revision: None,
         ..request.clone()
     };
-    let Op::Set { rows, .. } = &mut request.op else {
-        return (request, Vec::new());
+    let opening = request.plan.is_none()
+        && matches!(request.op, Op::Set { goal: Some(_), .. })
+        && engine.resolve(None).is_err();
+    let Op::Set {
+        rows, keep_rest, ..
+    } = &mut request.op
+    else {
+        return (request, Vec::new(), Vec::new());
     };
     let struck: Vec<OpRequest> = (rows.iter())
         .filter(|row| row.state == TodoStateName::Abandoned)
@@ -603,9 +609,13 @@ pub(super) fn keep_omitted(
         .collect();
     if !kept.is_empty() {
         said.push(format!("{} rows not named stay as they are", kept.len()));
+        if opening {
+            rows.extend(kept.iter().cloned());
+        } else {
+            *keep_rest = true;
+        }
     }
-    rows.extend(kept);
-    (request, struck)
+    (request, struck, kept)
 }
 
 /// The struck rows of a checklist `set`, dropped once the rest of it landed.

@@ -15,7 +15,7 @@ use yi_runtime::plan::store::PlanStore;
 use yi_runtime::plan::tool::PlanTool;
 use yi_runtime::plan::verify::session_has;
 use yi_tools::{Tool, ToolContext};
-use yi_types::plan::canonical::Digest;
+use yi_types::plan::canonical::{Chained, Digest};
 use yi_types::plan::contract::{CheckerManifest, Decider};
 use yi_types::plan::doc::{
     AgentId, Delegation, Isolation, Plan, TodoAddr, TodoLabel, TodoState, TodoStateName,
@@ -1044,5 +1044,38 @@ fn a_program_gets_the_plan_it_changed_and_the_model_none() -> TestResult {
     assert_eq!(plan["goal"], "ship the release");
     context.program = false;
     assert!(rig.tool.execute(input, &context).value.is_none());
+    Ok(())
+}
+
+/// Dies with a set record that pads every row it did not name: a two-row set on a thirty-todo
+/// plan wrote a 12.9 KB record, and every replay re-read rows nobody changed.
+#[test]
+fn a_set_record_names_only_the_rows_it_changes() -> TestResult {
+    let rig = rig("set-record")?;
+    let todos = (0..30)
+        .map(|at| json!({"label": format!("step {at:02}")}))
+        .collect::<Vec<_>>();
+    let plan = opened(&rig, Value::Array(todos))?;
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "todos": [
+            {"label": "step 00", "state": "done"}, {"label": "step 01", "state": "done"}]}),
+    );
+    assert!(!refused, "{text}");
+    let records = rig.store.journal(&plan.id).read()?.records;
+    let last = records.last().ok_or("no record")?;
+    assert_eq!(last.record.op, "set");
+    let line = String::from_utf8(last.line()?)?;
+    let rows = last.args["rows"].as_array().ok_or("no rows")?.len();
+    assert!(
+        line.len() <= 1024,
+        "the set record is {} bytes over {rows} rows",
+        line.len()
+    );
+    assert_eq!(rows, 2, "the record carries the rows it names");
+    let after = rig.store.read(&plan.id)?;
+    assert_eq!(after.todos.len(), 30, "the unnamed rows stay");
+    assert_eq!(state_of(&rig, "step 00")?, "Done");
+    assert_eq!(state_of(&rig, "step 02")?, "Pending");
     Ok(())
 }

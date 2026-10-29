@@ -471,6 +471,7 @@ fn checker_cannot_gain_permission_through_contract() -> TestResult {
                 spec: spec.clone(),
                 state: yi_types::plan::doc::TodoStateName::Pending,
             }],
+            keep_rest: false,
         },
         request_id: None,
         expected_revision: None,

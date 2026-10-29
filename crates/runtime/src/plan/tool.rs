@@ -500,6 +500,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                 }
                 _ => parse_checklist(&need::<String>(args, kind, "list")?)?,
             },
+            keep_rest: opt(args, kind, "keep_rest")?.unwrap_or(false),
         },
         OpKind::View => Op::View {
             full: opt(args, kind, "full")?.unwrap_or(false),
@@ -633,7 +634,8 @@ impl PlanTool {
             return self.each(&args, labels, said);
         }
         let (request, blobs) = declared(&self.actor, &args)?;
-        let (request, struck) = super::apply::keep_omitted(&self.engine, request, &mut said);
+        let (request, struck, mut kept) =
+            super::apply::keep_omitted(&self.engine, request, &mut said);
         if let Op::Accept { .. } = &request.op {
             let confirming = self.confirming.as_ref();
             return Ok(
@@ -706,12 +708,8 @@ impl PlanTool {
             }
             Err(refused @ (PlanOpError::NoPlan | PlanOpError::NotActive { .. })) => {
                 let first = match &request.op {
-                    Op::Set {
-                        goal: Some(goal), ..
-                    } => Some(goal.as_str().to_owned()),
-                    Op::Set { goal: None, rows } => {
-                        rows.first().map(|row| row.spec.label.to_string())
-                    }
+                    Op::Set { goal, rows, .. } => (goal.as_ref().map(|g| g.as_str().to_owned()))
+                        .or_else(|| rows.first().map(|row| row.spec.label.to_string())),
                     Op::Append { todos } | Op::Supersede { todos, .. } => {
                         todos.first().map(|todo| todo.label.to_string())
                     }
@@ -722,10 +720,15 @@ impl PlanTool {
                 };
                 let goal = GoalText::new(&first).map_err(PlanOpError::Doc)?;
                 let op = match request.op.clone() {
-                    Op::Set { rows, .. } => Op::Set {
-                        goal: Some(goal),
-                        rows,
-                    },
+                    Op::Set { mut rows, .. } => {
+                        kept.retain(|k| !rows.iter().any(|r| r.spec.label == k.spec.label));
+                        rows.extend(kept);
+                        Op::Set {
+                            goal: Some(goal),
+                            rows,
+                            keep_rest: false,
+                        }
+                    }
                     Op::Append { todos } | Op::Supersede { todos, .. } => Op::Init { goal, todos },
                     other => other,
                 };
