@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 use crate::message::{AgentMessage, Usage};
@@ -102,63 +102,61 @@ const ENTRY_TYPES: [&str; 7] = [
     "custom",
 ];
 
-/// The tree fields are read out so the entry stays in its branch; `raw` is the line's object.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UnknownEntry {
-    id: String,
-    parent_id: Option<String>,
-    seq: u64,
-    raw: Map<String, Value>,
-}
+/// The line's object as written; the tree fields are read out of it, never mirrored beside it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct UnknownEntry(Map<String, Value>);
 
 impl UnknownEntry {
-    pub fn type_name(&self) -> &str {
-        self.raw.get("type").and_then(Value::as_str).unwrap_or("")
+    fn id(&self) -> &str {
+        self.0.get("id").and_then(Value::as_str).unwrap_or_default()
     }
 
-    fn set(&mut self, key: &str, value: Value) {
-        if let Some(slot) = self.raw.get_mut(key) {
-            *slot = value;
-        } else {
-            self.raw.insert(key.to_owned(), value);
+    fn parent_id(&self) -> Option<&str> {
+        match self.0.get("parentId") {
+            Some(Value::String(parent)) => Some(parent),
+            _ => None,
         }
     }
-}
 
-impl Serialize for UnknownEntry {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.raw.serialize(serializer)
+    fn seq(&self) -> u64 {
+        self.0
+            .get("seq")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+    }
+
+    fn assign(&mut self, parent_id: Option<String>, seq: u64, timestamp: u64) {
+        let parent = parent_id.map_or(Value::Null, Value::from);
+        self.0.insert("parentId".to_owned(), parent);
+        self.0.insert("seq".to_owned(), Value::from(seq));
+        self.0
+            .insert("timestamp".to_owned(), Value::from(timestamp));
+    }
+
+    fn set_seq(&mut self, seq: u64) {
+        self.0.insert("seq".to_owned(), Value::from(seq));
     }
 }
 
 impl<'de> Deserialize<'de> for UnknownEntry {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
-        let raw = Map::deserialize(deserializer)?;
-        let tag = raw.get("type").and_then(Value::as_str);
-        if tag.is_none_or(|tag| ENTRY_TYPES.contains(&tag)) {
-            return Err(D::Error::custom("a known entry type that does not decode"));
-        }
-        let id = raw.get("id").and_then(Value::as_str);
-        let seq = raw.get("seq").and_then(Value::as_u64);
-        let (Some(id), Some(seq)) = (id, seq) else {
+        let raw = crate::wire::unknown_tag(deserializer, "type", &ENTRY_TYPES)?;
+        if raw.get("id").and_then(Value::as_str).is_none()
+            || raw.get("seq").and_then(Value::as_u64).is_none()
+        {
             return Err(D::Error::custom("an unknown entry needs an id and a seq"));
-        };
-        let parent_id = match raw.get("parentId") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(parent)) => Some(parent.clone()),
-            Some(_) => {
-                return Err(D::Error::custom(
-                    "an unknown entry's parentId is not a string",
-                ));
-            }
-        };
-        Ok(Self {
-            id: id.to_owned(),
-            parent_id,
-            seq,
-            raw,
-        })
+        }
+        if !matches!(
+            raw.get("parentId"),
+            None | Some(Value::Null) | Some(Value::String(_))
+        ) {
+            return Err(D::Error::custom(
+                "an unknown entry's parentId is not a string",
+            ));
+        }
+        Ok(Self(raw))
     }
 }
 
@@ -172,7 +170,7 @@ impl Entry {
             | Self::Compaction { id, .. }
             | Self::BranchSummary { id, .. }
             | Self::Custom { id, .. } => id,
-            Self::Other(unknown) => &unknown.id,
+            Self::Other(unknown) => unknown.id(),
         }
     }
 
@@ -185,7 +183,7 @@ impl Entry {
             | Self::Compaction { parent_id, .. }
             | Self::BranchSummary { parent_id, .. }
             | Self::Custom { parent_id, .. } => parent_id.as_deref(),
-            Self::Other(unknown) => unknown.parent_id.as_deref(),
+            Self::Other(unknown) => unknown.parent_id(),
         }
     }
 
@@ -198,7 +196,7 @@ impl Entry {
             | Self::Compaction { seq, .. }
             | Self::BranchSummary { seq, .. }
             | Self::Custom { seq, .. } => *seq,
-            Self::Other(unknown) => unknown.seq,
+            Self::Other(unknown) => unknown.seq(),
         }
     }
 
@@ -211,7 +209,7 @@ impl Entry {
             | Self::Compaction { timestamp, .. }
             | Self::BranchSummary { timestamp, .. }
             | Self::Custom { timestamp, .. } => *timestamp,
-            Self::Other(unknown) => (unknown.raw.get("timestamp"))
+            Self::Other(unknown) => (unknown.0.get("timestamp"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
         }
@@ -226,7 +224,7 @@ impl Entry {
             Self::Compaction { .. } => "compaction",
             Self::BranchSummary { .. } => "branch_summary",
             Self::Custom { .. } => "custom",
-            Self::Other(unknown) => unknown.type_name(),
+            Self::Other(_) => "unknown",
         }
     }
 
@@ -285,16 +283,7 @@ impl Entry {
                 *seq = new_seq;
                 *timestamp = new_timestamp;
             }
-            Self::Other(unknown) => {
-                unknown.set(
-                    "parentId",
-                    new_parent_id.clone().map_or(Value::Null, Value::from),
-                );
-                unknown.parent_id = new_parent_id;
-                unknown.set("seq", Value::from(new_seq));
-                unknown.seq = new_seq;
-                unknown.set("timestamp", Value::from(new_timestamp));
-            }
+            Self::Other(unknown) => unknown.assign(new_parent_id, new_seq, new_timestamp),
         }
     }
 
@@ -307,10 +296,7 @@ impl Entry {
             | Self::Compaction { seq, .. }
             | Self::BranchSummary { seq, .. }
             | Self::Custom { seq, .. } => *seq = new_seq,
-            Self::Other(unknown) => {
-                unknown.set("seq", Value::from(new_seq));
-                unknown.seq = new_seq;
-            }
+            Self::Other(unknown) => unknown.set_seq(new_seq),
         }
     }
 }

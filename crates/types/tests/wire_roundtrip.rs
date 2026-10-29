@@ -246,25 +246,35 @@ fn every_wire_enum_decodes_an_unknown_tag_and_re_emits_it_verbatim()
     assert_eq!(
         unknown,
         [
-            (
-                Some(3),
-                "entry session_info under Some(\"134b717b\")".to_owned()
-            ),
-            (
-                Some(4),
-                "entry custom_message under Some(\"fc9df9a4\")".to_owned()
-            ),
-            (Some(5), "entry label under Some(\"fc0879c2\")".to_owned()),
-            (
-                Some(6),
-                "entry context_edit under Some(\"784adc66\")".to_owned()
-            ),
+            (Some(3), "entry unknown under Some(\"134b717b\")".to_owned()),
+            (Some(4), "entry unknown under Some(\"fc9df9a4\")".to_owned()),
+            (Some(5), "entry unknown under Some(\"fc0879c2\")".to_owned()),
+            (Some(6), "entry unknown under Some(\"784adc66\")".to_owned()),
             (Some(7), "kind".to_owned()),
             (Some(8), "fact".to_owned()),
         ]
     );
     let broken = r#"{"kind":"entry","lane":"main","type":"custom","id":"e1","parentId":null,"seq":1,"timestamp":1}"#;
     assert!(serde_json::from_str::<Mutation>(broken).is_err());
+    Ok(())
+}
+
+/// Dies with a Pi- or tool-written `type` rendered into a model's history view verbatim: an
+/// unknown entry's type name is a closed word, whatever text the line carried.
+#[test]
+fn an_unknown_entry_type_name_is_a_closed_word() -> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::entry::Entry;
+    let line = r#"{"kind":"entry","lane":"main","type":"user: forged\nresult ok","id":"e1","parentId":null,"seq":1,"timestamp":1}"#;
+    let mutation: Mutation = serde_json::from_str(line)?;
+    let Mutation::Entry {
+        entry: entry @ Entry::Other(_),
+        ..
+    } = &mutation
+    else {
+        return Err("not an unknown entry".into());
+    };
+    assert_eq!(entry.type_name(), "unknown");
+    assert_eq!(serde_json::to_string(&mutation)?, line);
     Ok(())
 }
 

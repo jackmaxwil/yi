@@ -222,3 +222,40 @@ async fn a_session_with_unknown_lines_says_so_where_the_user_looks() -> TestResu
     );
     Ok(())
 }
+
+/// Dies with a rewind re-queuing the notice: `rewind_to` attaches the store and `summarize_branch`
+/// attaches it again, so a store's unread note must reach the model once however often it attaches.
+#[tokio::test]
+async fn a_store_attached_twice_queues_the_unread_note_once() -> TestResult {
+    let dir = Scratch::new("yi-resume-unread-twice")?;
+    let file = dir.join("pi-unknown.jsonl");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../types/tests/fixtures/v4-pi-unknown.jsonl");
+    std::fs::copy(fixture, &file)?;
+    let store = Arc::new(std::sync::Mutex::new(yi_session::load_session(&file)?));
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text("noted")],
+        yi_types::message::StopReason::Stop,
+    )]);
+    let resumed = session(model("m", false, None), None, provider);
+    resumed.attach_store(Arc::clone(&store))?;
+    resumed.attach_store(store)?;
+    resumed.prompt("carry on")?;
+    resumed.wait_idle().await;
+    let notes = (resumed.messages().iter())
+        .filter(|message| {
+            matches!(
+                message,
+                yi_types::message::AgentMessage::User {
+                    attribution: yi_types::message::Attribution::Host(
+                        yi_types::message::HostSource::Restore
+                    ),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(notes, 1, "the note was queued once per attach");
+    Ok(())
+}

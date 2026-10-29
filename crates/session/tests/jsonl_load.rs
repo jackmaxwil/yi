@@ -308,7 +308,7 @@ fn a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes() -
     let mut store = load_session(&path)?;
 
     let unread = store
-        .unread_lines()
+        .take_unread_lines()
         .ok_or("the unknown lines were not counted")?;
     assert_eq!((unread.count, unread.first_line), (6, 4));
     assert!(unread.note().contains("6 lines"), "{}", unread.note());
@@ -325,8 +325,8 @@ fn a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes() -
         after.starts_with(&before),
         "a known build rewrote the lines it cannot read"
     );
-    let reloaded = load_session(&path)?;
-    assert_eq!(reloaded.unread_lines(), store.unread_lines());
+    let mut reloaded = load_session(&path)?;
+    assert_eq!(reloaded.take_unread_lines(), Some(unread));
     assert_eq!(reloaded.log(&LogOptions::default())?.len(), 10);
     let branch = reloaded.find_entries_on_branch(
         "main",
@@ -340,14 +340,7 @@ fn a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes() -
     assert_eq!(
         types,
         [
-            "message",
-            "message",
-            "context_edit",
-            "label",
-            "custom_message",
-            "session_info",
-            "message",
-            "message"
+            "message", "message", "unknown", "unknown", "unknown", "unknown", "message", "message"
         ]
     );
     Ok(())
@@ -385,7 +378,6 @@ fn a_short_write_leaves_the_file_as_it_was() -> TestResult {
     let cut = file.try_clone()?;
     let mut short = FailsMidLine { file, budget: 17 };
     let line = br#"{"kind":"entry","lane":"main","type":"custom","id":"late"}"#;
-
     let written = yi_session::append_line(&mut short, before.len() as u64, line, |len| {
         cut.set_len(len)
     });

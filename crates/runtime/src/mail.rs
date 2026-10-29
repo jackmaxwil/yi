@@ -393,7 +393,7 @@ pub(crate) fn resumed(
     entries: &[yi_types::entry::Entry],
 ) -> Vec<AgentMessage> {
     let mut queued = unread(entries);
-    if let Some(lines) = yi_session::lock_session(store).unread_lines() {
+    if let Some(lines) = yi_session::lock_session(store).take_unread_lines() {
         let source = yi_types::message::HostSource::Restore;
         queued.push(AgentMessage::host_text(source, &lines.note(), 0));
     }

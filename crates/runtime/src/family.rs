@@ -447,7 +447,7 @@ pub fn compact_entry(entry: &Entry) -> (String, bool) {
         },
         Entry::BranchSummary { .. } => "branch summary".to_owned(),
         Entry::Custom { custom_type, .. } => format!("custom {custom_type}"),
-        Entry::Other(unknown) => format!("unread {}", unknown.type_name()),
+        Entry::Other(_) => "unread unknown".to_owned(),
         Entry::ModelChange { model_id, .. } => format!("model {model_id}"),
         Entry::ThinkingLevelChange { thinking_level, .. } => format!("thinking {thinking_level}"),
         Entry::ActiveToolsChange { .. } => "tools changed".to_owned(),

@@ -64,10 +64,9 @@ fn append_to(path: &Path, line: &str) -> Result<(), SessionError> {
             path.display()
         ))
     };
-    let mut file = OpenOptions::new().append(true).open(path).map_err(failed)?;
+    let file = OpenOptions::new().append(true).open(path).map_err(failed)?;
     let at = file.metadata().map_err(failed)?.len();
-    let cut = file.try_clone().map_err(failed)?;
-    append_line(&mut file, at, line.as_bytes(), |len| cut.set_len(len)).map_err(failed)
+    append_line(&mut &file, at, line.as_bytes(), |len| file.set_len(len)).map_err(failed)
 }
 
 fn encode_line(mutation: &Mutation) -> Result<String, SessionError> {
@@ -121,8 +120,9 @@ impl SessionStore {
         Ok(())
     }
 
-    pub fn unread_lines(&self) -> Option<UnreadLines> {
-        self.unread
+    /// Taken, not read: a store attached again must not queue its note twice.
+    pub fn take_unread_lines(&mut self) -> Option<UnreadLines> {
+        self.unread.take()
     }
 
     /// Mirrors a replayed `Fact::Name` into the metadata snapshot every caller reads.

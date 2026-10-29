@@ -78,7 +78,7 @@ impl<'de> Deserialize<'de> for UnknownMutation {
 }
 
 /// Invariant: the typed variants are tried first, so a known tag reaching here did not decode.
-fn unknown_tag<'de, D: Deserializer<'de>>(
+pub(crate) fn unknown_tag<'de, D: Deserializer<'de>>(
     deserializer: D,
     tag: &str,
     known: &[&str],
