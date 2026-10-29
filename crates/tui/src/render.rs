@@ -529,7 +529,7 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
                     Some(base.saturating_add(behind.div_ceil(ROLL_ROWS)))
                 }
                 yi_types::config::FollowMode::Page if column.len() > base => {
-                    Some(base.saturating_add((height / 2).max(1).min(above)))
+                    Some(base.saturating_add((height / 2).max(1).min(above.max(1))))
                 }
                 yi_types::config::FollowMode::Page => Some(base),
                 yi_types::config::FollowMode::Still if base < above => {

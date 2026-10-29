@@ -323,7 +323,7 @@ fn follow_mode(
     })
 }
 
-#[cfg(feature = "tui")]
+#[cfg(all(feature = "tui", target_os = "macos"))]
 fn reduce_motion_plist(bytes: &[u8]) -> Option<bool> {
     if bytes.starts_with(b"bplist00") {
         return binary_reduce_motion(bytes);
@@ -343,7 +343,7 @@ fn reduce_motion_plist(bytes: &[u8]) -> Option<bool> {
     }
 }
 
-#[cfg(feature = "tui")]
+#[cfg(all(feature = "tui", target_os = "macos"))]
 fn binary_reduce_motion(bytes: &[u8]) -> Option<bool> {
     let trailer = bytes.len().checked_sub(32)?;
     let offset_size = usize::from(*bytes.get(trailer.checked_add(6)?)?);
@@ -376,7 +376,7 @@ fn binary_reduce_motion(bytes: &[u8]) -> Option<bool> {
     None
 }
 
-#[cfg(feature = "tui")]
+#[cfg(all(feature = "tui", target_os = "macos"))]
 fn binary_object(bytes: &[u8], at: usize) -> Option<(u8, usize, usize)> {
     let marker = *bytes.get(at)?;
     let kind = marker >> 4;
@@ -394,7 +394,7 @@ fn binary_object(bytes: &[u8], at: usize) -> Option<(u8, usize, usize)> {
     Some((kind, count, start.checked_add(width)?))
 }
 
-#[cfg(feature = "tui")]
+#[cfg(all(feature = "tui", target_os = "macos"))]
 fn binary_string_is(bytes: &[u8], at: usize, expected: &[u8]) -> bool {
     let Some((0x05, count, start)) = binary_object(bytes, at) else {
         return false;
@@ -405,7 +405,7 @@ fn binary_string_is(bytes: &[u8], at: usize, expected: &[u8]) -> bool {
         == Some(expected)
 }
 
-#[cfg(feature = "tui")]
+#[cfg(all(feature = "tui", target_os = "macos"))]
 fn be_uint(bytes: &[u8], at: usize, size: usize) -> Option<usize> {
     let end = at.checked_add(size)?;
     bytes.get(at..end)?.iter().try_fold(0usize, |value, byte| {
@@ -581,6 +581,7 @@ mod tests {
             FollowMode::Slide
         );
     }
+    #[cfg(target_os = "macos")]
     #[test]
     fn reduce_motion_reads_xml_and_binary_plists() {
         let xml = |value: &str| {

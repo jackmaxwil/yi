@@ -146,13 +146,15 @@ fn follow_modes_change_only_the_following_view() {
     let text = (0..20)
         .map(|i| format!("paragraph {i}\n\n"))
         .collect::<String>();
-    for (mode, moves) in [
+    for (mode, follows) in [
         (FollowMode::Slide, true),
         (FollowMode::Page, true),
         (FollowMode::Still, false),
     ] {
         let moved = !moves_while_streaming_mode("", &text, 0, mode).is_empty();
-        assert_eq!(moved, moves, "{mode:?}");
+        assert_eq!(moved, follows, "{mode:?} at the bottom");
+        let held = moves_while_streaming_mode("", &text, 12, mode);
+        assert!(held.is_empty(), "{mode:?} dragged a held view: {held:#?}");
     }
 }
 
@@ -386,6 +388,46 @@ fn page_clamps_its_jump_when_the_floor_is_over_half_the_pane() -> TestResult {
         after.iter().any(|row| row.contains("let x003"))
             && !after.iter().any(|row| row.contains("let x008")),
         "second page window: {after:#?}"
+    );
+    Ok(())
+}
+#[test]
+fn a_page_pane_whose_floor_fills_it_stops_asking_for_redraws() -> TestResult {
+    let area = Rect::new(0, 0, AREA.width, 8);
+    let mut app = seeded();
+    app.set_follow(FollowMode::Page);
+    let (commands, _) = yi_tui::app::command_channel();
+    yi_tui::input::handle_terminal_event(
+        &mut app,
+        &commands,
+        CtEvent::Paste("draft\nline\nline\nline".to_owned()),
+    );
+    app.set_kitty(true);
+    let floor = yi_tui::render::layout_chat(&mut app, None, None).floor;
+    assert!(
+        floor >= area.height,
+        "test setup: floor {floor} of {}",
+        area.height
+    );
+    let code: Vec<String> = (0..20).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    let mut scroll = 0;
+    let mut phase = 0;
+    let (mut asked, mut settled) = (0, false);
+    for _ in 0..40 {
+        let _ = app.take_redraw(&mut phase);
+        let _ = paint_in(&mut app, area, &mut scroll);
+        if !app.take_redraw(&mut phase) {
+            settled = true;
+            break;
+        }
+        asked += 1;
+    }
+    assert!(
+        settled,
+        "the pane asked for {asked} more frames and never settled"
     );
     Ok(())
 }
