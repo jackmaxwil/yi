@@ -255,17 +255,13 @@ def verify(tmp, recorded, bad):
 
 
 def selfcheck():
-    bad = drift_cases() + [f"the drift selfcheck passes with the {c} check off, so it refutes nothing"
-                           for c in DRIFT_CHECKS if not drift_cases(c)]
-    if bad:
-        print("FAIL record selfcheck\n" + "\n".join(f"  {b}" for b in bad))
-        return 1
     if subprocess.run(("git", "-C", str(ROOT), "cat-file", "-e", PIN), capture_output=True).returncode:
         print(f"FAIL record selfcheck\n  the fixture commit {PIN[:9]} is missing; fetch main's full history")
         return 1
     real = landed(ROOT, PIN)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-record-"))
-    bad = []
+    bad = drift_cases() + [f"the drift selfcheck passes with the {c} check off, so it refutes nothing"
+                           for c in DRIFT_CHECKS if not drift_cases(c)]
     # Incident: CI writes bytecode, so the scratch repo showed __pycache__ as untracked and every clean-tree check failed.
     run = lambda *a: subprocess.run((sys.executable, "-B") + a, cwd=tmp, capture_output=True, text=True)
     status = lambda: git(tmp, "status", "--porcelain")
@@ -311,6 +307,10 @@ def selfcheck():
         refused = run("scripts/record_changes.py")
         if refused.returncode != 1 or status():
             bad.append(f"a backlog without --backfill exited {refused.returncode}, status {status()!r}")
+        drifted = run("scripts/record_changes.py", "--drift")
+        oldest = f"{min(BACKLOG, key=lambda n: real[n][0])}, the oldest of {len(BACKLOG)} unrecorded change files"
+        if drifted.returncode != 1 or oldest not in drifted.stdout or "record_changes.py --backfill" not in drifted.stdout or status():
+            bad.append(f"--drift over a backlog that landed weeks ago exited {drifted.returncode}: {drifted.stdout[-200:]!r}")
         typo = run("scripts/record_changes.py", "--dryrun", "--backfill")
         if typo.returncode != 2 or status():
             bad.append(f"a mistyped --dry-run beside --backfill exited {typo.returncode}, status {status()[:80]!r}")
@@ -335,6 +335,9 @@ def selfcheck():
         (tmp / LOG).write_text(log)
         sh("checkout", "-q", "-b", "topic")
         run("scripts/record_changes.py", "--backfill")
+        caught_up = run("scripts/record_changes.py", "--drift")
+        if caught_up.returncode or "record: 0 change file(s) unrecorded" not in caught_up.stdout:
+            bad.append(f"--drift after the backfill exited {caught_up.returncode}: {caught_up.stdout[-200:]!r}")
         views, dates = verify(tmp, BACKLOG, bad)
         if dates.get("0.532.0") != real["2026-10-01-acp-close-cancels.md"][1]:
             bad.append(f"0.532.0 is dated {dates.get('0.532.0')}, not the day main landed its file")
