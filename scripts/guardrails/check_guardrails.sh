@@ -10,8 +10,7 @@ FAST=0 QUIET=0
 for arg in "$@"; do
   case "$arg" in --fast) FAST=1 ;; --quiet) QUIET=1 ;; esac
 done
-PY="${PY:-$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)}"
-"$PY" -c "import tomllib" 2>/dev/null || { echo "FAIL: $PY lacks tomllib (need python >= 3.11)"; exit 1; }
+PY=$(scripts/py.sh) || exit 1
 FAILED=0
 # Every gate reads the tree and none writes it, so they all run at once; `drain` prints each
 # one's output in launch order, so the report still reads most-legible-failure-first.

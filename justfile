@@ -27,9 +27,7 @@ clippy-no-tui:
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Incident: one suite run left 23 checkpoint repos in the real ~/.yi, 11,633 of them by
-    # 2026-10-07. The suite's HOME is the worktree's target/yi-home, deleted with the worktree.
-    [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just test
+    scripts/suite_home.sh test
     if command -v cargo-nextest >/dev/null; then
       # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
       profile=local
@@ -41,14 +39,13 @@ test:
     # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
     cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
-py := `command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3`
+py := `scripts/py.sh`
 
 # A local inner loop, never a gate: the generated quick profiles omit tests measured at 5 s or more.
 test-quick:
     #!/usr/bin/env bash
     set -euo pipefail
-    # The suite's HOME, as in `test` above.
-    [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just test-quick
+    scripts/suite_home.sh test-quick
     {{py}} scripts/slow_tests.py --check
     profile=quick
     [ -z "${CI:-}" ] || profile=quick-ci
@@ -58,8 +55,7 @@ test-quick:
 slow-tests:
     #!/usr/bin/env bash
     set -euo pipefail
-    # The suite's HOME, as in `test` above.
-    [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just slow-tests
+    scripts/suite_home.sh slow-tests
     cargo nextest run --workspace --profile timing
     {{py}} scripts/slow_tests.py target/nextest/timing/timing.xml
 

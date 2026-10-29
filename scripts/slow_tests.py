@@ -2,8 +2,6 @@
 """Generate and validate the opt-in quick-test filter from nextest JUnit timings."""
 import json
 import re
-import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -101,21 +99,47 @@ def validate_recipe(text):
         raise CheckFailure("just test selects the quick filterset")
 
 
-def defined_in_source(name):
-    """Name only: a stale row that survives this check excludes nothing, so a false accept costs no test."""
-    return subprocess.run(["git", "grep", "-q", "-w", "-F", f"fn {name}", "--", "crates"], cwd=ROOT).returncode == 0
+def crate_dir(package, root=ROOT):
+    for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
+        if re.search(rf'^name = "{re.escape(package)}"$', manifest.read_text(), re.M):
+            return manifest.parent
+    return None
 
 
-def validate_recipe(text):
-    if re.search(r"\bquick(?:-ci)?\b|default-filter|--filterset|\s-E\s", text):
-        raise CheckFailure("just test selects the quick filterset")
+def defined_in_source(binary, name, root=ROOT):
+    """A row missing here is explainable only by a cfg gate on that very function: a name that
+    survives as an ungated helper, or in another crate, still reads as stale."""
+    crate = crate_dir(binary.split("::", 1)[0], root)
+    if crate is None:
+        return False
+    leaf = name.rsplit("::", 1)[-1]
+    found = subprocess.run(
+        ["git", "grep", "-n", "-F", f"fn {leaf}(", "--", crate.relative_to(root).as_posix()],
+        cwd=root, capture_output=True, text=True,
+    )
+    for hit in found.stdout.splitlines():
+        path, _, location = hit.partition(":")
+        lines = (root / path).read_text().splitlines()
+        line = int(location.split(":", 1)[0])
+        if cfg_gated(lines, line - 1):
+            return True
+    return False
+
+
+def cfg_gated(lines, index):
+    for context in reversed(lines[:index]):
+        stripped = context.strip()
+        if stripped.startswith("#[cfg("):
+            return True
+        if stripped.startswith("#[") or stripped.startswith("//") or not stripped:
+            continue
+        return False
+    return False
 
 
 def validate(rows, all_tests, filtered_tests, recipe, defined=defined_in_source):
-    """A row absent from this platform's listing is stale unless its function is still defined:
-    Incident: the macOS-only sandbox tests were red on the Linux gate as "stale"."""
     absent = rows - all_tests
-    gated = {row for row in absent if defined(row[1].rsplit("::", 1)[-1])}
+    gated = {row for row in absent if defined(*row)}
     errors = [f"stale slow test: {binary} {name}" for binary, name in sorted(absent - gated)]
     excluded = all_tests - filtered_tests
     errors += [f"slow filter failed to exclude: {binary} {name}" for binary, name in sorted((rows - gated) - excluded)]
@@ -130,7 +154,7 @@ def validate(rows, all_tests, filtered_tests, recipe, defined=defined_in_source)
         print(f"quick: {len(gated)} listed tests are not compiled on this platform: " + ", ".join(sorted(name for _, name in gated)))
 
 
-def repo_check():
+def config_rows():
     with CONFIG.open("rb") as stream:
         profiles = tomllib.load(stream)["profile"]
     expression = profiles["quick"]["default-filter"]
@@ -138,18 +162,25 @@ def repo_check():
         raise CheckFailure("quick profiles must inherit local outside CI and default under CI")
     if profiles["quick-ci"]["default-filter"] != expression:
         raise CheckFailure("quick and quick-ci slow filtersets differ")
-    rows = parse_rows(expression)
+    return expression, parse_rows(expression)
+
+
+def dry_run(recipe):
+    run = subprocess.run(["just", "--dry-run", recipe], cwd=ROOT, capture_output=True, text=True)
+    if run.returncode:
+        raise CheckFailure(f"just --dry-run {recipe} exited {run.returncode}: {run.stderr.strip()}")
+    return run.stdout
+
+
+def repo_check():
+    expression, rows = config_rows()
     all_tests = nextest_list()
     filtered_tests = nextest_list(expression)
-    recipe = subprocess.run(["just", "--dry-run", "test"], cwd=ROOT, capture_output=True, text=True)
-    if recipe.returncode:
-        raise CheckFailure(f"just --dry-run test exited {recipe.returncode}: {recipe.stderr.strip()}")
-    validate(rows, all_tests, filtered_tests, recipe.stdout)
+    validate(rows, all_tests, filtered_tests, dry_run("test"))
     print(
         f"quick: {len(rows)} tests skipped as slow (>=5 s, list .config/nextest.toml, "
         "regenerate: just slow-tests)"
     )
-    return rows, all_tests, filtered_tests, recipe.stdout
 
 
 def expect_failure(name, function, needle):
@@ -186,35 +217,52 @@ def selfcheck_generator():
         assert parse_rows(filterset(escaped)) == set(escaped)
 
 
+def selfcheck_predicate():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        for crate, name, body in (
+            ("demo", "yi-demo", '#[cfg(target_os = "macos")]\nfn gated_here() {}\nfn ungated_here() {}\n'),
+            ("other", "yi-other", '#[cfg(target_os = "macos")]\nfn only_elsewhere() {}\n'),
+        ):
+            (root / "crates" / crate).mkdir(parents=True)
+            (root / "crates" / crate / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n')
+            (root / "crates" / crate / "lib.rs").write_text(body)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "crates"], cwd=root, check=True)
+        assert defined_in_source("yi-demo::integration", "mod::gated_here", root)
+        assert not defined_in_source("yi-demo::integration", "mod::ungated_here", root), "an ungated helper excused a stale row"
+        assert not defined_in_source("yi-demo::integration", "mod::only_elsewhere", root), "another crate's function excused a stale row"
+
+
 def selfcheck():
     selfcheck_generator()
-    if shutil.which("cargo-nextest") is None and not os.environ.get("CI"):
-        print("skip slow_tests repo check (cargo-nextest is not installed; the generator selfcheck ran)")
-        return
-    rows, all_tests, filtered_tests, recipe = repo_check()
-    stale = ("fake::integration", "fake::no_such_test_anywhere")
+    selfcheck_predicate()
+    _, rows = config_rows()
+    recipe = dry_run("test")
+    validate_recipe(recipe)
+    known = {("yi-x::integration", "mod::a"), ("yi-x::integration", "mod::b")}
+    validate(known, known, set(), recipe)
     expect_failure(
-        "stale entry",
-        lambda: validate(set(rows) | {stale}, all_tests, filtered_tests, recipe),
-        "stale slow test: fake::integration fake::no_such_test_anywhere",
+        "a row this platform does not run",
+        lambda: validate(known | {("yi-x::integration", "mod::gone")}, known, set(), recipe),
+        "stale slow test: yi-x::integration mod::gone",
     )
-    gated = sorted(rows)[0]
-    validate(set(rows) | {stale}, all_tests - {gated}, filtered_tests - {gated}, recipe,
-             defined=lambda name: name == "no_such_test_anywhere" or defined_in_source(name))
-    assert defined_in_source(gated[1].rsplit("::", 1)[-1])
-    changed = set(rows)
-    removed = changed.pop()
     expect_failure(
         "filter membership",
-        lambda: validate(changed, all_tests, filtered_tests, recipe),
-        f"slow filter excludes unlisted test: {removed[0]} {removed[1]}",
+        lambda: validate(known, known, {("yi-x::integration", "mod::a")}, recipe),
+        "slow filter failed to exclude: yi-x::integration mod::a",
+    )
+    expect_failure(
+        "filter excludes unlisted test",
+        lambda: validate({("yi-x::integration", "mod::a")}, known, set(), recipe),
+        "slow filter excludes unlisted test: yi-x::integration mod::b",
     )
     expect_failure(
         "full recipe",
         lambda: validate_recipe("cargo nextest run --workspace --profile quick"),
         "just test selects the quick filterset",
     )
-    print("ok   slow_tests selfcheck")
+    print(f"ok   slow_tests selfcheck ({len(rows)} listed rows)")
 
 
 def main(argv):
