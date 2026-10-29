@@ -1,4 +1,5 @@
 ---
+version: 0.561.0
 issue: Closes #860
 raise: crate ai +28, crate types +164, tests +294
 ---

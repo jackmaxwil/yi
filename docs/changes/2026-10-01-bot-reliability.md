@@ -1,4 +1,6 @@
 ---
+version: 0.531.0
+decisions: D345
 issue: Refs #996
 decision: the review job runs on `pull_request_target`, so its workflow file is always main's, and a schema answer in prose gets one repair turn on the same session before a round is voided (amends D319, D332) | all 9 voided review jobs of 2026-10-01 were a refuter answering in prose ("refuted=false — …", "**Refuted.**"); a `pull_request` run reads the PR's own copy of review.yml, which a PR can edit to pass the required check | return review.yml to `pull_request` and drop the `--continue` repair in `pr_review.ask`
 ---

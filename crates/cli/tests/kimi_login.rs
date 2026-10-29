@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 
 use crate::loopback::read_request;
+use crate::plan_ops::streams as text;
 use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -131,14 +132,6 @@ impl Account {
     }
 }
 
-fn text(output: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-}
-
 /// The recorded turn's reasoning, joined from its own deltas: the text Moonshot needs echoed.
 fn recorded_reasoning() -> String {
     BASH_TURN
@@ -205,7 +198,11 @@ fn a_device_login_refreshes_the_list_and_a_kimi_turn_streams_through_it() -> Tes
     ])?;
     assert_eq!(ask.status.code(), Some(0), "{}", text(&ask));
     let events = String::from_utf8_lossy(&ask.stdout);
-    let last: Value = serde_json::from_str(events.lines().last().ok_or("no events")?)?;
+    let last_line = events.lines().last().ok_or("no events")?;
+    let stop: Value = serde_json::from_str(last_line)?;
+    assert_eq!(stop["type"], "final", "a json run ends by saying why");
+    let end = events.lines().rev().nth(1).ok_or("no agent_end")?;
+    let last: Value = serde_json::from_str(end)?;
     let messages = last["messages"].as_array().ok_or("no messages")?;
     assert!(
         messages.iter().any(|message| message["content"]

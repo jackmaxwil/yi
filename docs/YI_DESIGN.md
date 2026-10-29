@@ -117,7 +117,6 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Child asks the human | Envelope (request to parent) + child flag | D233 |
 | Shared family objects | Kernel `rlm.put` / `rlm.get` + Url (`family://`) | D164 |
 | Paged reading of anything | Url + `fetch` pages | D213 |
-| Checker after every covered write | Contract (`covers`) + Tool | D228 |
 | Heartbeat | Schedule + Todo + Session run queue (steer or follow-up) | D283 |
 | Next-step hints | Tool result + procedural graph | D219 |
 
@@ -136,7 +135,7 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 - A last line failing as JSON syntax or EOF is a torn write: the file is atomically rewritten to
   its valid prefix. Any other bad line fails the load.
 - `pi_v4_fixtures_roundtrip_byte_identical` re-serializes every line and whole file of
-  `crates/types/tests/fixtures/*.jsonl` byte-identically; `JsonlRepo` and `MemRepo` pass one
+  `crates/types/tests/fixtures/v4-*.jsonl` byte-identically; `JsonlRepo` and `MemRepo` pass one
   suite, `crates/session/tests/conformance.rs`. Ids are validated before any path join.
 - Owner: [`crates/session/src/`](../crates/session/src/); Settled by: D32, D33, D78, D115
 - State: `SessionRepo { create, open, list, delete, fork }` → `Arc<Mutex<SessionStore>>`;
@@ -198,7 +197,7 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   `task`, or one dated before attribution existed. Every other user-role message (`host(source)`,
   undated `unproven`), every `custom` kind and both summaries arrive as
   `<yi_internal_context source="…">`; compaction drops the kinds `heartbeat_prompt, advisory,
-  goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D342).
+  goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D352).
 - Reclaim runs inside the run's `convert_to_llm`, before compaction is ever due: a tool result
   at least 1,200 chars long and 5 requests old (never `ask_user`, `plan`, `todo`, or the newest
   `read` of a file the session edited, by the `[path#TAG]` headers the tools print) is cut once the tokens dropped × cache-read price × requests so far beat the
@@ -774,14 +773,14 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   with a notice.
 - Admission refuses at lever `family.cap` (16, an eval run's levers raise it to 128) live sessions,
   at depth `rlm.maxDepth` (1, clamped 1..=3), at `family.max_children` (8, up to
-  128) workers, and on a taken name (D344).
+  128) workers, and on a taken name (D346).
 - `Standing { Worker, Reader, Service }`: reader and service stand outside the worker cap; lease,
   wall and family cap bind them all. A service (`rlm.service(name, brief, restart=3)`)
   respawns on its `ChildRecord` after `Failed { Provider | KernelDeath }`, ≤ 10 per 10 min.
 - The wall only reduces and `under(parent)` makes it hereditary; it refuses at the tool adapter
   before permission, `deny_read` implies write-deny, and bash naming a denied path is refused.
   A walled session also walls the old spill root and every session store and spares its
-  family's spill dir and its own transcript, at the read gate and in its contained profile (D345).
+  family's spill dir and its own transcript, at the read gate and in its contained profile.
 - A lease is drawn under the roster lock; an ask past the parent's deadline less 30 s or its
   unreserved tokens is refused with both numbers. `rlm.revoke` journals `custom{lease}` and
   sends `cancel`; at grace expiry the child is `Repossessed` with its lane `Retained`.
@@ -890,8 +889,8 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 
 ### 13.1 Contracts
 A `Contract` ([`contract.rs`](../crates/types/src/plan/contract.rs)) is 1..=16 items
-`{id, critical, weight, decider}` with a `threshold`, a `min_coverage` and `covers` globs.
-
+`{id, critical, weight, decider}` with a `threshold` and a `min_coverage`. Its legacy `covers`
+field still decodes so an old contract keeps its frozen digest.
 - `Decider { Cmd, Schema, Example, Judge }`. `ContractClass { Writer, Reader, Inline, Service }`
   sets a floor (a critical `cmd`/`example`, `schema`, or either); `Service` is refused.
 - `start` freezes the contract by digest with the attempt. `done` commits
@@ -902,12 +901,11 @@ A `Contract` ([`contract.rs`](../crates/types/src/plan/contract.rs)) is 1..=16 i
   `plan.done_refusal_cap`-th refusal (default 3) derives `block{on: User}`.
 - `start` refuses a `judge` item and names the deciders that run (`cmd`, `schema`, `example`);
   the variant decodes so old journals replay, and a started one abstains `no judge`.
+- A legacy contract's retired `covers` globs are inert; its cmd items run at done.
 - `Resolution { VerifiedDone, AcceptedByUser, LegacyUnverified }`. A todo with a contract or a
   stated acceptance completes only beside one, on every path (`set`, `import`, `repair`,
   `supersede` share the validator); any other on the caller's word.
-- A non-error write to a path a running todo `covers` runs its `cmd` items on a copy of the
-  writer's tree within 60 s and appends `contract "<label>" check: <verdict>`; it journals nothing.
-- Owner: [`plan/done.rs`](../crates/runtime/src/plan/done.rs). Settled by: D194, D216, D228.
+- Owner: [`plan/done.rs`](../crates/runtime/src/plan/done.rs). Settled by: D194, D216.
 
 ### 13.2 Worktree acceptance
 A worktree todo needs a contract; it is Done only via acceptance or as `AcceptedByUser`.

@@ -1,4 +1,5 @@
 use crate::scratch;
+use crate::support::wait_until;
 use scratch::Scratch;
 
 use std::collections::HashSet;
@@ -443,21 +444,6 @@ fn start_scheduler(store: &Arc<JobStore>, deliver: Arc<DeliverFn>) -> Scheduler 
         counter = counter.saturating_add(1);
         format!("dsp-{counter}")
     })
-}
-
-/// A submitted job reaches the timer over a channel, so a fixed sleep is either
-/// flaky or slow; every wait here polls the state it actually depends on.
-async fn wait_until(within_ms: u64, mut ready: impl FnMut() -> bool) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(within_ms);
-    loop {
-        if ready() {
-            return true;
-        }
-        if std::time::Instant::now() > deadline {
-            return false;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
 }
 
 fn run_count(store: &Arc<JobStore>, id: &str) -> u64 {

@@ -683,7 +683,6 @@ impl AgentSession {
                     )
                     .with_auto_background(auto_background)
                     .with_rules(self.rules_engine())
-                    .with_check(crate::plan::covers::write_check(self.plan_service()))
                     .with_wall(self.wall())
                     .with_spills(spills.clone())
                     .with_selector(selector.clone())

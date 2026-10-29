@@ -1,4 +1,5 @@
 ---
+version: 0.568.0
 issue: Closes #1032
 growth: +151 the owed-turn rule for a user steer that missed the loop's last read, the errored-run flag that withholds it, the emitter lifted out of `run_once` to stay under the function cap, and one ctrl+c guard for every bottom view; weighed for deletion: the per-popup ctrl+c arms (deleted for the one guard) and the errored-run flag (kept: without it an errored turn relaunches the steer into the same failure)
 raise: crate console +2, crate runtime +127, crate tui +22, tests +374, comments +4

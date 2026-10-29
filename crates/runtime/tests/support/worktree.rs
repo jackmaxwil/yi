@@ -128,14 +128,9 @@ pub fn bench(
     }
     let store = PlanStore::open(root.join("plans"))?;
     let plan = PlanId::slug(GOAL)?;
-    let manifest = json!({
-        "manifest": 1, "command": check, "cwd": "snapshot_root", "cwd_subdir": null,
-        "protected": [], "timeout_ms": 60_000, "env": [],
-        "reads_outside_snapshot": shape == Shape::ReadsOutside
-    });
-    let checker = store.artifacts(&plan).put(
-        &serde_json::to_vec(&manifest)?,
-        "application/vnd.yi.checker-manifest+json",
+    let checker = crate::checker::put_checker(
+        &store.artifacts(&plan),
+        &crate::checker::checker_manifest(check, 60_000, &[], shape == Shape::ReadsOutside),
         &store.nonce(),
     )?;
     let contract: Contract = serde_json::from_value(json!({

@@ -55,10 +55,14 @@ jobs:
       # The image carries just and the uv the kernel journey boots, so the
       # install steps the GitHub file needs are both gone.
       - run: just postmerge
+      # Incident: a red journey skipped the evals and the live append behind it, so the telemetry
+      # branch, 4 to 21 postmerge files a day until 2026-10-14, has had two since.
       - run: just postmerge-evals
+        if: always()
       # The live suite on main is the lane's memory: one run per merge, appended to the
       # telemetry branch the PR verdicts read their baseline from. No secret, no run.
       - name: live suite on main, appended to the telemetry branch
+        if: always()
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           EVAL_ROUTING: '{"order":["coreweave/nvfp4"],"allow_fallbacks":false}'
@@ -83,16 +87,23 @@ jobs:
           FORGEJO_REPOSITORY: ${{ github.repository }}
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/forge_tracking.py --comment-closed
+      # A record job that stopped running left 271 change files unrecorded and nothing red on main;
+      # this goes red past 10 unrecorded files or one older than 3 days, whatever the record job did.
+      - name: unrecorded change files
+        if: always()
+        run: python3 scripts/record_changes.py --drift
 
   # Incident: pr.yml promised "one key per lane, shared with postmerge", but postmerge saved
   # only `test`, so `lint` and `guardrails` built cold on every pull request and a cold
   # `live` build was cancelled by the runner's clock three times in a row. A branch can read
   # only the caches main saved, so main saves every lane's key here, warm for the next push.
+  # Invariant: `test` is in the matrix so each main commit carries the PR gate's own test lane
+  # as a status; green pull requests that fail together turn that commit red within one run.
   warm:
     strategy:
       fail-fast: false
       matrix:
-        lane: [lint, guardrails]
+        lane: [lint, guardrails, test]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

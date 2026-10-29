@@ -367,6 +367,16 @@ impl Backend for VT100Backend {
     }
 }
 
+/// The row the composer's bottom border sits on, when it is the last row given: both corners
+/// intact. Callers hand it the rows up to the pane's bottom, so the border is the pane's last.
+#[allow(dead_code, reason = "the shared harness serves several test binaries")]
+pub fn composer_bottom(rows: &[String]) -> Option<usize> {
+    let at = rows.len().checked_sub(1)?;
+    rows.get(at)
+        .filter(|row| row.contains('╰') && row.contains('╯'))
+        .map(|_| at)
+}
+
 /// A minimal catalog-free model for `TuiOptions`.
 #[allow(dead_code, reason = "the shared harness serves several test binaries")]
 pub fn test_model(id: &str) -> yi_types::model::Model {

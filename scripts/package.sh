@@ -24,12 +24,17 @@ cp "$binary" "$stage/bin/yi"
 cp -R python "$stage/python"
 cp -R skills "$stage/skills"
 cp -R completions "$stage/completions"
-cp README.md "$stage/README.md"
+cp README.md LICENSE NOTICE "$stage/"
 cp scripts/install.sh "$stage/install.sh"
 chmod +x "$stage/install.sh"
 
 mkdir -p target/package
 tar -C target/package -czf "target/package/${name}.tar.gz" "$name"
 ( cd target/package && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
-scripts/sign.sh "target/package/${name}.tar.gz"
+# Invariant: an archive leaves here signed; a signature that fails takes the archive with it, so
+# no unsigned one is left for `just publish` to find.
+if ! scripts/sign.sh "target/package/${name}.tar.gz"; then
+  rm -f "target/package/${name}.tar.gz" "target/package/${name}.tar.gz.sha256"
+  exit 1
+fi
 echo "target/package/${name}.tar.gz"
