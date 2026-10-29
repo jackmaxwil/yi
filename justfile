@@ -289,7 +289,8 @@ publish version:
       [ -e "$archive.sig" ] || { echo "$archive has no .sig; run: just prerelease {{version}}"; exit 1; }
     done
     # scripts/install.sh finds the latest archive for its machine, and its digest, in this one file.
-    cat target/package/yi-{{version}}-*.tar.gz.sha256 > target/package/SHA256SUMS
+    { echo "# yi {{version}} forge build of commit $(git rev-parse HEAD)"; cat target/package/yi-{{version}}-*.tar.gz.sha256; } \
+      > target/package/SHA256SUMS
     assets+=(target/package/SHA256SUMS)
     body=$(printf '{"tag_name":"v%s","name":"v%s"}' '{{version}}' '{{version}}')
     # python3, not sed: the response carries several "id" keys -- the author's
