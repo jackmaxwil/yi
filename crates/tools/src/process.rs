@@ -16,11 +16,8 @@ pub(crate) fn quoted(text: &str) -> String {
 }
 
 /// The repository's top; a worktree never borrows the main checkout's.
-/// Incident: a scratch workspace under `TMPDIR=/repo/../scratch` walked the lexical
-/// ancestors through `/repo` and attached that repo's AGENTS.md to a bare session.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    let real = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    real.ancestors()
+    (cwd.ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }
