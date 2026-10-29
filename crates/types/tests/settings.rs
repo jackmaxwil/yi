@@ -57,6 +57,7 @@ fn leaves() -> Vec<String> {
         mail,
         open,
         browser,
+        providers,
     });
     let nested = [
         (

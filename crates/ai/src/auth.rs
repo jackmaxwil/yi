@@ -38,16 +38,41 @@ pub struct Resolved {
     pub headers: Vec<(String, String)>,
 }
 
+/// Where a `config.json` provider's key is: `apiKeyEnv`'s variable, else the literal `apiKey`.
+#[derive(Debug, Clone, Default)]
+pub struct CustomKey {
+    pub env: Option<String>,
+    pub literal: Option<String>,
+}
+
+static CUSTOM_KEYS: std::sync::OnceLock<Vec<(String, CustomKey)>> = std::sync::OnceLock::new();
+
+/// Set once at config load, before the first credential is resolved.
+pub fn set_custom_keys(keys: Vec<(String, CustomKey)>) {
+    let _already_set = CUSTOM_KEYS.set(keys);
+}
+
+fn custom_key(provider: &str) -> Option<&'static CustomKey> {
+    (CUSTOM_KEYS.get()?.iter())
+        .find(|(id, _)| id == provider)
+        .map(|(_, key)| key)
+}
+
 fn env_var(provider: &str) -> Option<&'static str> {
+    if let Some(custom) = custom_key(provider) {
+        return custom.env.as_deref();
+    }
     (yi_types::PROVIDER_KEY_VARS.iter())
         .find(|(name, _)| *name == provider)
         .map(|(_, variable)| *variable)
 }
 
 fn env_key(provider: &str) -> Option<Secret> {
-    let variable = env_var(provider)?;
-    std::env::var(variable)
-        .ok()
+    let from_env = env_var(provider)
+        .and_then(|variable| std::env::var(variable).ok())
+        .filter(|value| !value.is_empty());
+    from_env
+        .or_else(|| custom_key(provider)?.literal.clone())
         .filter(|value| !value.is_empty())
         .map(Secret::new)
 }

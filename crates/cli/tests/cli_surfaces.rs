@@ -2129,6 +2129,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "config",
             "classifier",
             "catalog",
+            "providers",
             "python-runtime",
             "kernel-toolchain",
             "kernel-boot",
@@ -2140,7 +2141,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "plugins"
         ]
     );
-    assert_eq!(rows[11]["detail"], "no session here", "{rows}");
+    assert_eq!(rows[12]["detail"], "no session here", "{rows}");
     Ok(())
 }
 
@@ -2165,7 +2166,7 @@ fn doctor_reports_a_cache_notice_and_leaves_the_session_file_alone() -> TestResu
     std::fs::write(&file, &torn)?;
     let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
     let rows: Value = serde_json::from_str(&stdout(&json))?;
-    let row = &rows[11];
+    let row = &rows[12];
     assert_eq!(row["name"], "cache", "{rows}");
     assert_eq!(row["status"], "ok", "{row}");
     let detail = row["detail"].as_str().ok_or("detail")?;
