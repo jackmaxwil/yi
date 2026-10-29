@@ -140,6 +140,49 @@ pub fn line_map(pre: &str, post: &str) -> Vec<Option<u64>> {
     map
 }
 
+/// What an edit moved: the `post` lines it authored, and the `pre` rows it removed or rewrote
+/// with the numbering they held, so a reply can answer with counts and the rows that went away.
+pub struct ChangedLines<'a> {
+    pub authored: Vec<u64>,
+    pub removed: Vec<(u64, &'a str)>,
+}
+
+pub fn changed_lines<'a>(pre: &'a str, post: &str) -> ChangedLines<'a> {
+    let mut change = ChangedLines {
+        authored: Vec::new(),
+        removed: Vec::new(),
+    };
+    if pre == post {
+        return change;
+    }
+    let before = split_lines(pre);
+    let after = split_lines(post);
+    let mut before_line: u64 = 1;
+    let mut after_line: u64 = 1;
+    for (op, _) in edit_script(&before, &after) {
+        match op {
+            Op::Keep => {
+                before_line = before_line.saturating_add(1);
+                after_line = after_line.saturating_add(1);
+            }
+            Op::Add => {
+                change.authored.push(after_line);
+                after_line = after_line.saturating_add(1);
+            }
+            Op::Remove => {
+                if let Some(text) = usize::try_from(before_line.saturating_sub(1))
+                    .ok()
+                    .and_then(|index| before.get(index))
+                {
+                    change.removed.push((before_line, text));
+                }
+                before_line = before_line.saturating_add(1);
+            }
+        }
+    }
+    change
+}
+
 fn split_lines(text: &str) -> Vec<&str> {
     let mut lines: Vec<&str> = text.split('\n').collect();
     if lines.last() == Some(&"") {

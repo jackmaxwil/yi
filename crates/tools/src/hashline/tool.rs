@@ -26,7 +26,6 @@ const READ_LINE_CLIP: usize = super::patcher::SEEN_LINE_REVEAL_MAX_COLUMNS;
 /// Incident: 182 byte-identical no-op edits on one path in 205 calls before an
 /// abort; this many consecutive no-ops now escalate the soft hint to an error.
 const NOOP_HARD_LIMIT: u32 = 3;
-const EDIT_CONTEXT_LINES: u64 = 3;
 
 #[derive(Default)]
 pub struct HashlineState {
@@ -833,61 +832,6 @@ pub struct HashlineEditTool {
     pub freeform_grammar: bool,
 }
 
-fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotStore) -> String {
-    let mut out = vec![result.header.clone()];
-    let op = match result.op {
-        SectionOp::Update => "updated",
-        SectionOp::Delete => "deleted",
-        SectionOp::Noop => "unchanged",
-    };
-    match (&result.move_dest, result.first_changed_line) {
-        (Some(dest), _) => out.push(format!("{op}; moved to {dest}")),
-        (None, Some(line)) => out.push(format!("{op}; first change at line {line}")),
-        (None, None) => out.push(op.to_owned()),
-    }
-    if result.op != SectionOp::Delete {
-        let lines: Vec<&str> = result.after.split('\n').collect();
-        let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
-        // Invariant: an unchanged line the model saw is still a line it saw, so the prior
-        // seen set rebases onto the new tag rather than shrinking to the hunk windows (#473).
-        let carried: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before) {
-            Some(prior) => {
-                let map = super::rebase::LineMap::between(&result.before, &result.after);
-                prior
-                    .seen_lines
-                    .iter()
-                    .flatten()
-                    .filter_map(|line| map.line(*line))
-                    .collect()
-            }
-            None => Vec::new(),
-        };
-        let mut seen: Vec<u64> = Vec::new();
-        // Every hunk gets a window, not just the first: a window the model cannot see is a
-        // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
-        for changed in crate::diff::changed_after_lines(&result.before, &result.after) {
-            let lo = changed.saturating_sub(EDIT_CONTEXT_LINES).max(1);
-            let hi = changed.saturating_add(EDIT_CONTEXT_LINES).min(total);
-            let start = seen
-                .last()
-                .map_or(lo, |last| lo.max(last.saturating_add(1)));
-            for line_num in start..=hi {
-                let index = usize::try_from(line_num.saturating_sub(1)).unwrap_or(usize::MAX);
-                if let Some(text) = lines.get(index) {
-                    out.push(format_numbered_line(line_num, text));
-                    seen.push(line_num);
-                }
-            }
-        }
-        seen.extend(carried);
-        snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
-    }
-    for warning in &result.warnings {
-        out.push(format!("warning: {warning}"));
-    }
-    out.join("\n")
-}
-
 impl Tool for HashlineEditTool {
     fn name(&self) -> &str {
         "edit"
@@ -1061,7 +1005,7 @@ impl Tool for HashlineEditTool {
             if result.op != SectionOp::Delete {
                 checked.push((rendered.len(), result.canonical_path.as_str()));
             }
-            rendered.push(render_section_result(result, snapshots));
+            rendered.push(super::messages::section_reply(result, snapshots));
         }
         let (verdicts, layer) = post_edit_checks(&checked, &results, context);
         let mut syntax: Option<String> = None;

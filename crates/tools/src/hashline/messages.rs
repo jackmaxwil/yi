@@ -1,7 +1,10 @@
 use super::format::{
     FileTag, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_RANGE_SEP, format_numbered_line,
 };
-use super::patcher::{SEEN_LINE_REVEAL_CAP, SEEN_LINE_REVEAL_MAX_COLUMNS};
+use super::patcher::{
+    PatchSectionResult, SEEN_LINE_REVEAL_CAP, SEEN_LINE_REVEAL_MAX_COLUMNS, SectionOp,
+};
+use super::snapshots::SnapshotStore;
 use super::types::BlockSpan;
 
 pub const MISMATCH_CONTEXT: u64 = 2;
@@ -556,4 +559,70 @@ of a multi-line construct. For only this statement use `{plain}`.",
         ));
     }
     message
+}
+
+pub const EDIT_REMOVED_CAP: usize = 8;
+pub const EDIT_REMOVED_CLIP: usize = 120;
+
+pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore) -> String {
+    let mut out = vec![result.header.clone()];
+    let op = match result.op {
+        SectionOp::Update => "updated",
+        SectionOp::Delete => "deleted",
+        SectionOp::Noop => "unchanged",
+    };
+    if result.op == SectionOp::Delete {
+        out.push(op.to_owned());
+    } else {
+        let change = crate::diff::changed_lines(&result.before, &result.after);
+        let counts = format!("+{} -{}", change.authored.len(), change.removed.len());
+        let at = change
+            .authored
+            .first()
+            .copied()
+            .or(result.first_changed_line);
+        out.push(match (&result.move_dest, at) {
+            (Some(dest), _) => format!("{op}; {counts}, moved to {dest}"),
+            (None, Some(line)) => format!("{op}; {counts} at line {line}"),
+            (None, None) => format!("{op}; {counts}"),
+        });
+        for (line, text) in change.removed.iter().take(EDIT_REMOVED_CAP) {
+            let (text, _) = crate::tool::clip(text, EDIT_REMOVED_CLIP);
+            out.push(format!("-{}", format_numbered_line(*line, &text)));
+        }
+        if change.removed.len() > EDIT_REMOVED_CAP {
+            out.push(crate::tool::cut_row(
+                EDIT_REMOVED_CAP,
+                change.removed.len(),
+                "removed rows",
+                "EDIT_REMOVED_CAP",
+                EDIT_REMOVED_CAP,
+                &format!(
+                    "the file no longer holds them; read(\"{}\") shows what is there now",
+                    result.path
+                ),
+            ));
+        }
+        // Invariant: the prior seen set rebases onto the new tag (#473), and the rows the
+        // model authored are seen though the reply never reprints them: both stay anchors.
+        let mut seen: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before)
+        {
+            Some(prior) => {
+                let map = super::rebase::LineMap::between(&result.before, &result.after);
+                prior
+                    .seen_lines
+                    .iter()
+                    .flatten()
+                    .filter_map(|line| map.line(*line))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        seen.extend(change.authored.iter().copied());
+        snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
+    }
+    for warning in &result.warnings {
+        out.push(format!("warning: {warning}"));
+    }
+    out.join("\n")
 }

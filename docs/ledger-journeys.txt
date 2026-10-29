@@ -12,6 +12,10 @@ hashline edit (+ registers, instrumented) | `tools::a_grep_apply_carries_the_syn
 hashline edit (+ registers, instrumented) | `tools::a_write_through_a_symlink_is_refused`
 hashline edit (+ registers, instrumented) | `tools::a_changed_contract_names_the_callers_that_still_call_the_old_one`
 hashline edit (+ registers, instrumented) | `toolcells::an_edit_cell_shows_the_check_rows_the_model_read_under_its_diff`
+hashline edit (+ registers, instrumented) | `tools::a_twelve_row_edit_replies_with_counts_not_the_new_text`
+hashline edit (+ registers, instrumented) | `tools::an_edit_that_drops_a_kept_line_shows_it`
+hashline edit (+ registers, instrumented) | `tools::nine_removed_rows_report_the_cap_and_the_read_that_shows_the_rest`
+hashline edit (+ registers, instrumented) | `tools::a_follow_up_edit_anchors_on_an_authored_unprinted_row`
 first-run setup (`yi setup`) | `journeys::setup_saves_the_answered_steps_and_keeps_every_other_key`
 first-run setup (`yi setup`) | `journeys::setup_saves_the_classifier_only_once_one_answers` (T2)
 Claude Code tool hooks | `claude_hooks::a_hook_allow_never_lifts_a_configured_deny_rule`
