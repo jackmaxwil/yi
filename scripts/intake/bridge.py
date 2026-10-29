@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from typing import Any, Callable, Optional
 
@@ -758,6 +759,59 @@ class RealTransport:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.load(response)
 
+    def forge(self, method: str, path: str, payload: Optional[dict[str, Any]] = None) -> Any:
+        return forge_pr.fgj_api(method, path, payload)
+
+    def actor(self) -> str:
+        return (forge_pr.fgj_api("GET", "user") or {}).get("login", "")
+
+    def mirror_sha(self, forge_sha: str) -> Optional[str]:
+        return {forge: mirror for mirror, forge in self.mirror_to_forge.items()}.get(forge_sha)
+
+    def main_sha(self) -> str:
+        return git_text(["-C", str(self.source_repo), "rev-parse", "main"])
+
+    def workflow_equal(self, current: str, imported: str) -> bool:
+        return git(["-C", str(self.source_repo), "diff", "--quiet", current, imported, "--", ".forgejo/"], check=False).returncode == 0
+
+    def patch_equal(self, imported: str, head: str) -> bool:
+        def branches(sha: str) -> bytes:
+            return git(["-C", str(self.source_repo), "diff", "--binary", "--full-index", f"{self.current_main}...{sha}"]).stdout
+        return branches(imported) == branches(head)
+
+    def branch_sha(self, branch: str) -> Optional[str]:
+        row = self.forge("GET", f"repos/{FORGE_REPO}/branches/{branch}") or {}
+        return (row.get("commit") or {}).get("id")
+
+    def push(self, imported: str, branch: str) -> None:
+        git(["-C", str(self.source_repo), "push", "--quiet", "origin", f"{imported}:refs/heads/{branch}"])
+
+    def rerun(self, number: int) -> None:
+        self.forge("PATCH", f"repos/{FORGE_REPO}/pulls/{number}", {"state": "closed"})
+        time.sleep(2)
+        self.forge("PATCH", f"repos/{FORGE_REPO}/pulls/{number}", {"state": "open"})
+
+    def apply_and_commit(self, case: Case) -> str:
+        work = self.worktree(case.forge_base)
+        try:
+            applied = git(["-C", str(work), "apply", "--index", "--whitespace=error", "-"], data=case.patch, check=False)
+            if applied.returncode:
+                raise SystemExit(applied.stderr.decode("utf-8", "replace"))
+            email = case.contributor["emails"][0]
+            env = dict(os.environ, GIT_AUTHOR_NAME=case.login, GIT_AUTHOR_EMAIL=email, GIT_COMMITTER_NAME="yi-bot", GIT_COMMITTER_EMAIL="yi-bot@localhost")
+            message = f"Import GitHub PR #{case.number}\n\nGitHub-Head: {case.head}\nMirror-Base: {case.merge_base}\nForge-Base: {case.forge_base}\n"
+            subprocess.run(["git", "-C", str(work), "-c", "core.hooksPath=/dev/null", "commit", "-m", message], env=env, check=True, capture_output=True)
+            return git_text(["-C", str(work), "rev-parse", "HEAD"])
+        finally:
+            git(["-C", str(self.source_repo), "worktree", "remove", "--force", str(work)], check=False)
+
+    def supersede(self, case: Case, number: int) -> None:
+        prefix = f"gh/{case.login}/{case.number}-"
+        for pull in self.forge("GET", f"repos/{FORGE_REPO}/pulls?state=open&limit=50") or []:
+            if ((pull.get("head") or {}).get("ref") or "").startswith(prefix) and pull.get("number") != number:
+                self.forge("POST", f"repos/{FORGE_REPO}/issues/{pull['number']}/comments", {"body": f"Superseded by {FORGE_REPO}#{number} for {GITHUB_REPO}#{case.number}."})
+                self.forge("PATCH", f"repos/{FORGE_REPO}/pulls/{pull['number']}", {"state": "closed"})
+
     def signer_file(self, case: Case) -> pathlib.Path:
         path = self.work / f"signers-{case.login}"
         lines = signer_lines(case.contributor, (ROOT / "scripts/intake/allowed_signers").read_text())
@@ -827,34 +881,129 @@ class DryRunTransport:
 
     def __getattr__(self, name: str) -> Any:
         value = getattr(self.inner, name)
-        if self.prohibit_writes and name in ("forge", "apply_and_commit", "push"):
+        if self.prohibit_writes and name in ("forge", "apply_and_commit", "push", "rerun", "supersede"):
             raise RuntimeError("dry-run write attempted")
         return value
 
 
-def server_import_refusal() -> Refusal:
-    return Refusal("import", "intake: import: server writes stay disabled until stage 3 installs the run-ci hold")
+AUDIT_MARK = "<!-- yi-intake -->"
+REBASE = "git fetch https://github.com/jackmaxwil/yi.git main && git rebase FETCH_HEAD"
+
+
+def owner_guard(transport: Any) -> Optional[Refusal]:
+    return None if transport.actor() == "jack" else refusal("owner", "only the owner may admit an external change or land it")
+
+
+def forge_labels(pull: dict[str, Any]) -> set[str]:
+    return {row.get("name") if isinstance(row, dict) else str(row) for row in pull.get("labels") or []}
+
+
+def audit_comment(transport: Any, number: int) -> Optional[dict[str, Any]]:
+    for comment in transport.forge("GET", f"repos/{FORGE_REPO}/issues/{number}/comments") or []:
+        body = comment.get("body") or ""
+        if body.startswith(AUDIT_MARK):
+            return json.loads(body.split("```json", 1)[1].split("```", 1)[0])
+    return None
+
+
+def forge_pull_for(transport: Any, case: Case) -> Optional[dict[str, Any]]:
+    for pull in transport.forge("GET", f"repos/{FORGE_REPO}/pulls?state=all&limit=50") or []:
+        if (pull.get("head") or {}).get("ref") == branch_name(case):
+            return pull
+    return None
+
+
+def admit_run_ci(transport: Any, number: int) -> Any:
+    guard = owner_guard(transport)
+    if guard:
+        return guard
+    pull = transport.forge("GET", f"repos/{FORGE_REPO}/pulls/{number}")
+    if not pull:
+        return refusal("hold", f"{FORGE_REPO}#{number}: no such pull request")
+    if "external" not in forge_labels(pull):
+        return refusal("hold", f"{FORGE_REPO}#{number} is not external; only an imported change waits for run-ci")
+    if pull.get("merged") or pull.get("state") != "open":
+        return refusal("hold", f"{FORGE_REPO}#{number} is {pull.get('state')}, not an open pull request")
+    head = (pull.get("head") or {}).get("sha") or ""
+    try:
+        audit = audit_comment(transport, number)
+    except (IndexError, ValueError):
+        return refusal("hold", f"{FORGE_REPO}#{number} carries an unreadable intake audit comment")
+    if not audit or not audit.get("imported"):
+        return refusal("hold", f"{FORGE_REPO}#{number} carries no intake audit comment")
+    imported = audit["imported"]
+    if not transport.patch_equal(imported, head) or not transport.workflow_equal(transport.main_sha(), head):
+        return refusal("hold", f"{FORGE_REPO}#{number} head {head} is not audited change {imported} on current main")
+    transport.forge("POST", f"repos/{FORGE_REPO}/issues/{number}/labels", {"labels": ["run-ci"]})
+    transport.rerun(number)
+    return ALLOW
+
+
+def land_case(transport: Any, case: Case) -> Any:
+    pull = forge_pull_for(transport, case)
+    if not pull:
+        return refusal("land", f"no imported pull request for {branch_name(case)}")
+    number = pull.get("number")
+    if not pull.get("merged"):
+        return refusal("land", f"{FORGE_REPO}#{number} is not merged; GitHub #{case.number} stays open")
+    landed = transport.mirror_sha((pull.get("head") or {}).get("sha") or "")
+    if not landed:
+        return refusal("mapping", f"{FORGE_REPO}#{number} head is not in the mirror commit map")
+    body = f"landed as {landed} on Forgejo\n\nThe mirror's main is rewritten, so this pull request is closed rather than marked merged. Rebase onto the new main: `{REBASE}`"
+    transport.github("POST", f"repos/{GITHUB_REPO}/issues/{case.number}/comments", {"body": body})
+    transport.github("PATCH", f"repos/{GITHUB_REPO}/pulls/{case.number}", {"state": "closed"})
+    return ALLOW
+
+
+def poll(transport: Any) -> int:
+    for row in transport.github("GET", f"repos/{GITHUB_REPO}/pulls?state=open&per_page=100"):
+        case = transport.load_case(row["number"])
+        pull = forge_pull_for(transport, case)
+        if pull is None:
+            result = import_case(case, transport).decision
+        elif pull.get("merged"):
+            result = land_case(transport, case)
+        else:
+            continue
+        print(f"PR #{case.number}: {result if isinstance(result, str) else result.text}")
+    return 0
 
 
 def cli(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--selfcheck", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--run-ci", type=int)
+    parser.add_argument("--land", type=int)
+    parser.add_argument("--poll", action="store_true")
     parser.add_argument("number", nargs="?", type=int)
     args = parser.parse_args(argv)
     if args.selfcheck:
         import test_bridge
         return test_bridge.selfcheck()
-    if not args.dry_run:
-        print(server_import_refusal().text)
-        return 1
     transport = RealTransport()
+    sealed = DryRunTransport(transport) if args.dry_run or not (args.run_ci or args.land or args.poll or args.number) else transport
     try:
+        if args.run_ci:
+            decision = admit_run_ci(transport, args.run_ci)
+            print(f"{FORGE_REPO}#{args.run_ci}: {decision if isinstance(decision, str) else decision.text}")
+            return 0 if decision == ALLOW else 1
+        if args.land:
+            case = sealed.load_case(args.land)
+            decision = land_case(transport, case)
+            print(f"PR #{case.number}: {decision if isinstance(decision, str) else decision.text}")
+            return 0 if decision == ALLOW else 1
+        if args.poll:
+            return poll(transport)
         numbers = [args.number] if args.number else [row["number"] for row in transport.github("GET", f"repos/{GITHUB_REPO}/pulls?state=open&per_page=100")]
         for number in numbers:
-            case = DryRunTransport(transport).load_case(number)
-            decision = evaluate(case)
-            print(f"PR #{number} {decision if decision == ALLOW else 'REFUSE ' + decision.text}")
+            case = sealed.load_case(number)
+            if sealed is transport:
+                result = import_case(case, transport).decision
+                print(f"PR #{number}: {result if isinstance(result, str) else result.text}")
+            else:
+                decision = evaluate(case)
+                print(f"PR #{number} {decision if decision == ALLOW else 'REFUSE ' + decision.text}")
         return 0
     finally:
         transport.close()

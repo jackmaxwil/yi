@@ -19,11 +19,17 @@ class FakeTransport:
     def __init__(self, case: bridge.Case, repo: pathlib.Path) -> None:
         self.case = case
         self.repo = repo
+        self.main = case.current_main
         self.github_writes = []
         self.forge_calls = []
         self.pushes = []
         self.imported = None
         self.login = "jack"
+        self.pulls = {}
+        self.comments = {}
+        self.reruns = []
+        self.mirror = {}
+        self.workflow_same = True
 
     def github(self, method: str, path: str, payload=None):
         if method == "GET":
@@ -33,9 +39,34 @@ class FakeTransport:
 
     def forge(self, method: str, path: str, payload=None):
         self.forge_calls.append((method, path, payload))
-        if path.endswith("/pulls"):
-            return {"number": 42}
+        base = path.split("?", 1)[0]
+        if base.endswith("/pulls") and method == "GET":
+            return list(self.pulls.values())
+        if base.endswith("/pulls") and method == "POST":
+            number = 42
+            self.pulls[number] = {"number": number, "head": {"ref": payload["head"], "sha": self.imported}, "labels": [], "state": "open", "merged": False}
+            return {"number": number}
+        if "/issues/" in base and base.endswith("/labels") and method == "POST":
+            self.pulls[int(base.split("/issues/")[1].split("/")[0])]["labels"].extend({"name": name} for name in payload["labels"])
+            return {}
+        if "/issues/" in base and base.endswith("/comments"):
+            number = int(base.split("/issues/")[1].split("/")[0])
+            if method == "GET":
+                return self.comments.get(number, [])
+            self.comments.setdefault(number, []).append({"body": payload["body"]})
+            return {}
+        if "/pulls/" in base:
+            number = int(base.rsplit("/", 1)[1])
+            pull = self.pulls.get(number)
+            if method == "GET":
+                return pull
+            if method == "PATCH" and pull is not None:
+                pull["state"] = (payload or {}).get("state", pull["state"])
+                return pull
         return {}
+
+    def labels(self, number: int) -> list:
+        return [row["name"] for row in self.pulls[number]["labels"]]
 
     def actor(self) -> str:
         return self.login
@@ -57,7 +88,14 @@ class FakeTransport:
         return self.case.current_main
 
     def workflow_equal(self, current: str, imported: str) -> bool:
+        if not self.workflow_same:
+            return False
         return subprocess.run(["git", "-C", str(self.repo), "diff", "--quiet", current, imported, "--", ".forgejo/"], check=False).returncode == 0
+
+    def patch_equal(self, imported: str, head: str) -> bool:
+        def branches(sha: str) -> bytes:
+            return subprocess.run(["git", "-C", str(self.repo), "diff", "--binary", f"{self.main}...{sha}"], capture_output=True, check=True).stdout
+        return branches(imported) == branches(head)
 
     def branch_sha(self, branch: str):
         out = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "--verify", f"refs/heads/{branch}"], capture_output=True, text=True, check=False)
@@ -70,6 +108,12 @@ class FakeTransport:
     def supersede(self, case: bridge.Case, new_number: int) -> None:
         self.forge_calls.append(("SUPERSEDE", str(case.number), new_number))
 
+    def mirror_sha(self, forge_sha: str):
+        return self.mirror.get(forge_sha)
+
+    def rerun(self, number: int) -> None:
+        self.reruns.append(number)
+
     def run_ci(self) -> None:
         raise AssertionError("external import started CI without an owner action")
 
@@ -81,6 +125,77 @@ def repository(case: bridge.Case) -> tuple[pathlib.Path, str]:
     case.current_main = base
     case.apply_check = lambda patch, _base: subprocess.run(["git", "-C", str(repo), "apply", "--check", "--whitespace=error", "-"], input=patch, capture_output=True, check=False).stderr.decode() or None
     return repo, base
+
+
+def commit_file(repo: pathlib.Path, text: str) -> str:
+    (repo / "README").write_text(text)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "move"], check=True, capture_output=True, env=dict(os.environ, GIT_COMMITTER_DATE="2026-10-28T00:00:00Z", GIT_AUTHOR_DATE="2026-10-28T00:00:00Z"))
+    return subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+
+def stage_three(case: bridge.Case, repo: pathlib.Path, transport: FakeTransport) -> str:
+    number = 42
+    assert transport.labels(number) == ["external", "autofix:hold"]
+    assert bridge.admit_run_ci(transport, number) == bridge.ALLOW
+    assert transport.labels(number) == ["external", "autofix:hold", "run-ci"]
+    assert transport.reruns == [number]
+    assert not any("DELETE" in call[0] for call in transport.forge_calls)
+
+    hostile = {
+        "a non-owner actor": ({"login": "mallory"}, "owner"),
+        "a forge pull request without external": ({"labels": []}, "hold"),
+        "a merged pull request": ({"merged": True}, "hold"),
+        "a missing audit comment": ({"audit": False}, "hold"),
+        "a head whose diff moved": ({"head": "moved"}, "hold"),
+        "a head whose workflows moved": ({"workflow_same": False}, "hold"),
+    }
+    for name, (bad, code) in hostile.items():
+        fresh = FakeTransport(case, repo)
+        fresh.imported = transport.imported
+        fresh.mirror = dict(transport.mirror)
+        pull = {"number": number, "head": {"ref": bridge.branch_name(case), "sha": transport.imported}, "labels": [{"name": "external"}], "state": "open", "merged": False}
+        fresh.pulls[number] = pull
+        audit = bridge.audit_payload(case, transport.imported, bridge.run_checks(case), "jack", None)
+        fresh.comments[number] = [{"body": bridge.AUDIT_MARK + "\n```json\n" + json.dumps(audit) + "\n```"}] if bad.get("audit", True) else []
+        fresh.login = bad.get("login", "jack")
+        if "labels" in bad:
+            pull["labels"] = [{"name": name} for name in bad["labels"]]
+        if "merged" in bad:
+            pull["merged"] = bad["merged"]
+        if "head" in bad:
+            pull["head"]["sha"] = commit_file(repo, "moved after the audit\n")
+        if "workflow_same" in bad:
+            fresh.workflow_same = bad["workflow_same"]
+        decision = bridge.admit_run_ci(fresh, number)
+        assert isinstance(decision, bridge.Refusal) and decision.code == code, f"{name}: {decision}"
+        assert not any(call[1].endswith("/labels") for call in fresh.forge_calls), name
+        assert not fresh.reruns, name
+    return number
+
+
+def stage_four(case: bridge.Case, transport: FakeTransport, number: int) -> str:
+    landed = "f" * 40
+    transport.mirror[transport.imported] = landed
+    assert bridge.land_case(transport, case).code == "land"
+    assert not any("PATCH" in call[0] for call in transport.github_writes)
+    assert not any(call[1].endswith("/issues/1/comments") for call in transport.github_writes)
+
+    transport.pulls[number]["merged"] = True
+    mirrorless = "e" * 40
+    transport.pulls[number]["head"]["sha"] = mirrorless
+    assert bridge.land_case(transport, case).code == "mapping"
+    transport.pulls[number]["head"]["sha"] = transport.imported
+    assert bridge.land_case(transport, case) == bridge.ALLOW
+    comment = next(body for method, path, body in transport.github_writes if path.endswith(f"/issues/{case.number}/comments") and (body["body"] or "").startswith("landed as "))["body"]
+    assert comment.startswith(f"landed as {landed} on Forgejo\n")
+    assert bridge.REBASE in comment and comment.count(bridge.REBASE) == 1
+    assert any(method == "PATCH" and path.endswith(f"/pulls/{case.number}") and body == {"state": "closed"} for method, path, body in transport.github_writes)
+
+    missing = FakeTransport(case, transport.repo)
+    missing.pulls[77] = {"number": 77, "head": {"ref": "gh/someone-else", "sha": "0" * 40}, "labels": [], "state": "open", "merged": True}
+    assert bridge.land_case(missing, case).code == "land"
+    assert not missing.github_writes
+    return landed
 
 
 def main() -> int:
@@ -121,6 +236,9 @@ def main() -> int:
     assert any(call[1].endswith("/issues/42/comments") for call in transport.forge_calls)
     assert transport.github_writes[-1][2]["body"].endswith(json.dumps(result.audit, indent=2, sort_keys=True) + "\n```")
 
+    number = stage_three(case, repo, transport)
+    landed = stage_four(case, transport, number)
+
     overridden = dataclasses.replace(case, commits=test_bridge.many_commits(case, case.contributor["caps"]["commits"] + 1))
     second_repo, _ = repository(overridden)
     second = FakeTransport(overridden, second_repo)
@@ -143,6 +261,8 @@ def main() -> int:
     assert accepted.audit["original_refusal"] == "intake: commits: 21 exceeds per-login cap 20"
     print(line)
     print(f"ALLOW {expected_branch} draft=42 labels={','.join(labels)} run-ci=held strict-base={base}")
+    print("ok   intake stage-3 hold (owner-only run-ci, audited diff and workflows pinned)")
+    print(f"ok   intake stage-4 landing (landed as {landed} on Forgejo, closed not merged, mapping from the commit map)")
     print("ok   intake journey (real git, fake HTTP, zero network)")
     return 0
 

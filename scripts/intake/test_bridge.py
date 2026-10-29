@@ -446,7 +446,6 @@ def selfcheck() -> int:
     check_overrides()
     check_ordinary_text_is_allowed()
     check_lens_runs_without_tools_and_repairs_prose()
-    assert bridge.server_import_refusal().text == "intake: import: server writes stay disabled until stage 3 installs the run-ci hold"
     payload = bridge.draft_payload(valid)
     labels = {"external", "autofix:hold"}
     assert labels == {"external", "autofix:hold"}
