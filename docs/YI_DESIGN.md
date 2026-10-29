@@ -1286,7 +1286,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools, runtime | the `grep` tool and Claude Code hook matchers; the Age and break-property tables stay out | — |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
-| `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
+| `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui, runtime | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime, logos and the runtime's prompts, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
@@ -1296,7 +1296,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `vt100` | — | console (tui: dev) | the terminal pane's screen: a parsed cell grid with attributes, scrollback, DECCKM and bracketed-paste state (#1378) | `alacritty_terminal` (an event loop and a larger tree); a hand-rolled VT parser |
 
 Dev: `vt100`, `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
-`macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
+`macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui, runtime) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
 
 ### 18.4 Features
 Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep:yi-console"]`.

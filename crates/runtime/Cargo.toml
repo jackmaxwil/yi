@@ -26,6 +26,10 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 globset = { workspace = true }
 regex = { workspace = true }
+miniz_oxide = { workspace = true }
+
+[build-dependencies]
+miniz_oxide = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

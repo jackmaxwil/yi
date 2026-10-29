@@ -11,9 +11,16 @@ use yi_types::subagent::Discovery;
 
 use crate::args::Args;
 
-pub const CONTINUATION_TEMPLATE: &str = include_str!("prompts/continuation.md");
-pub const BUDGET_LIMIT_TEMPLATE: &str = include_str!("prompts/budget_limit.md");
-pub const OBJECTIVE_UPDATED_TEMPLATE: &str = include_str!("prompts/objective_updated.md");
+use crate::packed::Packed;
+
+static CONTINUATION: Packed =
+    Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/continuation.zz")));
+static BUDGET_LIMIT: Packed =
+    Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/budget_limit.zz")));
+static OBJECTIVE_UPDATED: Packed = Packed::new(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/objective_updated.zz"
+)));
 
 pub const GOAL_EXISTS_ERROR: &str = "A goal already exists and is not finished; use goal.update(status=\"complete\"|\"blocked\") to finish it first.";
 pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one with goal.create.";
@@ -260,15 +267,15 @@ pub fn continuation_text(goal: &Goal, plan: Option<&yi_types::plan::doc::Plan>) 
         ("check_status", check_status),
         ("plan_frontier", plan_frontier),
     ];
-    fill(CONTINUATION_TEMPLATE, goal, extra)
+    fill(CONTINUATION.text(), goal, extra)
 }
 
 pub fn budget_limit_text(goal: &Goal) -> String {
-    fill(BUDGET_LIMIT_TEMPLATE, goal, Vec::new())
+    fill(BUDGET_LIMIT.text(), goal, Vec::new())
 }
 
 pub fn objective_updated_text(goal: &Goal) -> String {
-    fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
+    fill(OBJECTIVE_UPDATED.text(), goal, Vec::new())
 }
 
 fn goal_prompt_message(text: String) -> AgentMessage {

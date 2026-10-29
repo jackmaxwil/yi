@@ -9,8 +9,11 @@ use super::project::{ProjectResources, TrustGate, git_root};
 use super::telemetry::RouteTelemetry;
 use super::{Host, Rank, Slot, Trust};
 
-const ORCHESTRATE: &str = include_str!("../prompts/orchestrate.md");
-const HAR_CORE: &str = include_str!("../prompts/har-core.md");
+use crate::packed::Packed;
+
+static ORCHESTRATE: Packed =
+    Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/orchestrate.zz")));
+static HAR_CORE: Packed = Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/har-core.zz")));
 
 pub struct ExtOptions {
     pub cwd: PathBuf,
@@ -28,7 +31,7 @@ pub struct ExtOptions {
 fn rust_pack() -> Pack {
     Pack {
         name: "lang-rust".to_owned(),
-        fragment: HAR_CORE.to_owned(),
+        fragment: HAR_CORE.text().to_owned(),
         project_markers: vec!["Cargo.toml".to_owned()],
         write_extensions: vec!["rs".to_owned()],
     }
@@ -77,7 +80,7 @@ pub fn install(options: ExtOptions) -> Host {
     ));
     register_packs(&mut host, &cwd, &home);
     if can_delegate {
-        host.register(Box::new(Orchestrate::new(ORCHESTRATE)));
+        host.register(Box::new(Orchestrate::new(ORCHESTRATE.text())));
     }
     host.register(Box::new(Plugins { home }));
     host.register(Box::new(RouteTelemetry::new()));

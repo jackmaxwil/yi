@@ -5,10 +5,12 @@ use yi_permission::{ReviewedAsk, UserVerdict};
 use yi_types::message::AgentMessage;
 use yi_types::model::Model;
 
+use crate::packed::Packed;
 use crate::provider::ProviderStream;
 use crate::session::{AgentSession, SessionConfig};
 
-pub const AUTO_REVIEW_PROMPT: &str = include_str!("prompts/auto_review.md");
+static AUTO_REVIEW: Packed =
+    Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/auto_review.zz")));
 
 /// Incident: the reviewer sits in front of every unprovable command in auto mode, so a
 /// stalled provider would stall the agent. Past the cap the answer is a denial, not a wait.
@@ -98,7 +100,7 @@ impl Reviewer {
     pub async fn review(&self, request: &ReviewRequest) -> ReviewOutcome {
         let session = AgentSession::new(
             SessionConfig {
-                system_prompt: AUTO_REVIEW_PROMPT.to_owned(),
+                system_prompt: AUTO_REVIEW.text().to_owned(),
                 model: self.model.clone(),
                 thinking_level: None,
                 tool_execution: yi_loop::ExecutionMode::Sequential,

@@ -7,15 +7,27 @@ use yi_types::url::{Scheme, Url};
 
 use crate::session::{AgentSession, SessionConfig};
 
-const FENCED_READER: &str = concat!(
-    include_str!("../prompts/reader.md"),
-    include_str!("../prompts/reader_fenced.md")
-);
-const UNFENCED_READER: &str = concat!(
-    include_str!("../prompts/reader.md"),
-    include_str!("../prompts/reader_unfenced.md")
-);
-pub const WORKER_PROMPT: &str = include_str!("../prompts/worker.md");
+use crate::packed::Packed;
+
+static READER: Packed = Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/reader.zz")));
+static READER_FENCED: Packed = Packed::new(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/reader_fenced.zz"
+)));
+static READER_UNFENCED: Packed = Packed::new(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/reader_unfenced.zz"
+)));
+static WORKER: Packed = Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/worker.zz")));
+
+fn reader_prompt(fenced: bool) -> String {
+    let tail = if fenced {
+        READER_FENCED.text()
+    } else {
+        READER_UNFENCED.text()
+    };
+    format!("{}{tail}", READER.text())
+}
 pub(crate) const PARTITION_CAP: usize = 65_536;
 
 pub(crate) fn full_child(refusal: &str) -> String {
@@ -179,8 +191,7 @@ pub fn session(
     let mut child = AgentSession::new(
         SessionConfig {
             system_prompt: match reader.role {
-                Role::Reader if reader.fenced => FENCED_READER.to_owned(),
-                Role::Reader => UNFENCED_READER.to_owned(),
+                Role::Reader => reader_prompt(reader.fenced),
                 Role::Worker => String::new(),
             },
             model: build.model,
@@ -190,7 +201,7 @@ pub fn session(
         provider,
     );
     if reader.role == Role::Worker {
-        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER_PROMPT));
+        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER.text()));
         child.enable_compaction();
     }
     child.set_turn_cap(reader.turns);

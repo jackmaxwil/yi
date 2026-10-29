@@ -2331,6 +2331,7 @@ name = "yi-runtime"
 version = "0.2.0"
 dependencies = [
  "globset",
+ "miniz_oxide",
  "proptest",
  "regex",
  "serde_json",
