@@ -374,6 +374,102 @@ async fn active_goal_continues_past_idle_until_a_failing_turn_blocks_it() -> Tes
 }
 
 #[test]
+fn three_idle_continuations_reach_the_next_request_as_one_newest_copy() -> TestResult {
+    let (_plans, (service, _store, delivered)) = service_with_plans()?;
+    service.create("ship the port «完成»", None, None, None)?;
+    let reply = || faux_assistant_message(vec![faux_text("still working")], StopReason::Stop);
+    let mut record = vec![AgentMessage::user_input(
+        UserContent::Text("start".to_owned()),
+        0,
+    )];
+    let mut requests = vec![yi_context::convert_to_llm(&record)];
+    for _ in 0..3 {
+        service.observe(&yi_types::event::AgentEvent::AgentStart);
+        service.observe(&yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+        let continuation = delivered
+            .lock()
+            .map_err(|error| error.to_string())?
+            .pop()
+            .ok_or("an idle AgentEnd under an Active goal delivers a continuation")?;
+        record.push(reply());
+        record.push(continuation);
+        requests.push(yi_context::convert_to_llm(&record));
+    }
+    let sent = |request: &[AgentMessage]| {
+        request
+            .iter()
+            .filter(|message| yi_context::internal_source(message) == Some("goal"))
+            .count()
+    };
+    assert_eq!(
+        sent(requests.last().ok_or("a request")?),
+        1,
+        "the fourth request carries exactly one goal continuation"
+    );
+    let newest = requests
+        .last()
+        .ok_or("a request")?
+        .iter()
+        .find(|message| yi_context::internal_source(message) == Some("goal"))
+        .ok_or("the newest continuation")?;
+    let AgentMessage::User {
+        content: UserContent::Text(text),
+        ..
+    } = newest
+    else {
+        return Err("the continuation is fenced user text".into());
+    };
+    assert!(
+        text.contains("ship the port «完成»"),
+        "the newest copy is the active goal's: {text}"
+    );
+    let bytes = |request: &Vec<AgentMessage>| serde_json::to_vec(request).map(|body| body.len());
+    let growth: Vec<usize> = requests
+        .windows(2)
+        .map(|pair| Ok(bytes(&pair[1])? - bytes(&pair[0])?))
+        .collect::<Result<Vec<usize>, serde_json::Error>>()?;
+    assert!(
+        growth[0] >= growth[2] + 4_000,
+        "an idle AgentEnd after the second continuation grows a request by at most its reply: \
+         {growth:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_session_with_one_continuation_sends_its_copy_unchanged() -> TestResult {
+    let (_plans, (service, store, delivered)) = service_with_plans()?;
+    service.create("finish the port", None, None, None)?;
+    service.observe(&yi_types::event::AgentEvent::AgentStart);
+    service.observe(&yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+    let AgentMessage::Custom {
+        content: UserContent::Text(text),
+        timestamp,
+        ..
+    } = delivered
+        .lock()
+        .map_err(|error| error.to_string())?
+        .pop()
+        .ok_or("a continuation")?
+    else {
+        return Err("the continuation is a custom text message".into());
+    };
+    let record = vec![
+        AgentMessage::user_input(UserContent::Text("start".to_owned()), 0),
+        faux_assistant_message(vec![faux_text("working")], StopReason::Stop),
+        AgentMessage::host_note("goal_prompt", text.clone(), timestamp),
+    ];
+    let sent = yi_context::convert_to_llm(&record);
+    assert_eq!(
+        sent.last(),
+        Some(&yi_context::wrap_internal("goal", &text, timestamp)),
+        "one continuation is sent as it was written"
+    );
+    assert!(yi_session::lock_session(&store).goal().is_some());
+    Ok(())
+}
+
+#[test]
 fn placeholders_in_check_output_and_plan_labels_stay_literal() -> TestResult {
     use yi_types::plan::doc::{GoalText, Plan, PlanId, PlanTier, Todo, TodoLabel};
     let label = "port «A» {{ objective }} 完成";

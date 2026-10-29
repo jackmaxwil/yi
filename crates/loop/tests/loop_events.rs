@@ -10,7 +10,7 @@ use yi_loop::interrupt::InterruptSignal;
 use yi_loop::tool::{AgentTool, ToolFuture, ToolOutcome, error_tool_result};
 use yi_loop::{ExecutionMode, LoopConfig, LoopContext, run_loop};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
-use yi_types::message::{AgentMessage, StopReason};
+use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model, ModelCost, ToolChoice, ToolDef};
 
 fn faux_model() -> Model {
@@ -1034,6 +1034,77 @@ async fn from_the_second_cut_glm_5_3_flash_is_shown_where_its_reasoning_stopped(
         assert!(body.starts_with(yi_loop::CUT_REDRIVE_TEXT), "{text}");
         assert!(text.chars().count() < 10_000, "a quote, not the cut");
     }
+}
+
+fn cut_naming(chars: usize, label: usize) -> AgentMessage {
+    let last = format!("\nwhere turn {label} stopped: «l'induzione» still owes a step");
+    let filler = "the bound holds at n=4, check n=5 again, ".repeat(chars / 40 + 1);
+    let thinking: String = filler
+        .chars()
+        .take(chars.saturating_sub(last.chars().count()))
+        .chain(last.chars())
+        .collect();
+    let mut message = faux_assistant_message(vec![faux_thinking(&thinking)], StopReason::Stop);
+    if let AgentMessage::Assistant { usage, .. } = &mut message {
+        usage.unknown = true;
+    }
+    message
+}
+
+fn re_drive(request: &LlmContext) -> Option<String> {
+    let fence = "<yi_internal_context source=\"length_redrive\">\n";
+    request
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => text
+                .strip_prefix(fence)?
+                .strip_suffix("</yi_internal_context>")?
+                .strip_suffix('\n')
+                .map(str::to_owned),
+            _ => None,
+        })
+}
+
+/// Incident: a second cut's 8,000 quoted chars rode every later request after a reply answered it.
+#[tokio::test]
+async fn a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail() {
+    let script = vec![
+        cut_naming(48_002, 1),
+        cut_naming(48_002, 2),
+        faux_assistant_message(
+            vec![faux_tool_call("c-1", "echo", Map::new())],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ];
+    let model = glm_5_3_flash().expect("the bundled catalog carries glm-5.3-flash");
+    let (stream, _bodies) = run_on_glm(&model, script, None).await;
+    let requests = stream.requests();
+    assert_eq!(requests.len(), 4, "two cuts, a tool call and the answer");
+    let unread = re_drive(&requests[2].1).expect("the second cut is re-driven with a quote");
+    assert!(
+        unread.contains("<cut_reasoning>") && unread.contains("«l'induzione»"),
+        "an unread re-drive is sent whole: {unread}"
+    );
+    let read = re_drive(&requests[3].1).expect("the re-drive stays in the conversation");
+    assert_eq!(
+        read,
+        yi_loop::CUT_REDRIVE_TEXT,
+        "a reply answered the quote, so the nudge text goes alone"
+    );
+    assert!(
+        requests[3]
+            .1
+            .messages
+            .iter()
+            .any(|message| matches!(message, AgentMessage::Assistant { .. })),
+        "the reply that read the quote is intact"
+    );
 }
 
 /// A prompt queued behind a spiral runs in the same loop (ACP `session/prompt` while busy):

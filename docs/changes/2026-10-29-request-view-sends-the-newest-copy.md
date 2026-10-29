@@ -1,0 +1,5 @@
+---
+issue: Closes #1559
+raise: crate context +55, comments +2, tests +167
+---
+A request carries one goal continuation, the newest, and a re-drive's quoted reasoning only until a reply answers it. Every idle `AgentEnd` under an Active goal queued another 4.87 KB of constant continuation instructions, and nothing left the window before compaction, so a long goal re-sent each copy on every request; the request view now keeps only the newest (`docs/ARCHITECTURE.md` goals row, `goal_e2e::three_idle_continuations_reach_the_next_request_as_one_newest_copy`). A second reasoning cut's re-drive quotes the last 8,000 chars of the cut turn, and a read re-drive rode every later request with that derivation inside it; once an assistant reply follows it, the request sends the nudge text alone while the session record keeps the quote (`loop_events::a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail`). Only the request view changed: `convert_to_llm` gains two lifetimes, `superseded_by_kind` and `until_next_turn`, and no record, no session file and no message is dropped.

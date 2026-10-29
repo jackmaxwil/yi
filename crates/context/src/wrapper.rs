@@ -109,6 +109,30 @@ const HOST_NUDGES: [&str; 5] = [
     "discovery",
 ];
 
+/// Invariant: only a kind's newest copy reaches a request; every older goal continuation rode too.
+const SUPERSEDED_BY_KIND: [&str; 1] = ["goal_prompt"];
+
+/// Invariant: a kind keeps its quoted tail only until a reply follows it, then the record's alone.
+const QUOTE_UNTIL_NEXT_TURN: [&str; 1] = ["length_redrive"];
+
+pub fn superseded_by_kind(custom_type: &str) -> bool {
+    SUPERSEDED_BY_KIND.contains(&custom_type)
+}
+
+pub fn quote_until_next_turn(custom_type: &str) -> bool {
+    QUOTE_UNTIL_NEXT_TURN.contains(&custom_type)
+}
+
+pub fn without_quote(text: &str) -> String {
+    let Some(start) = text.find("<cut_reasoning>") else {
+        return text.to_owned();
+    };
+    let head = text.get(..start).unwrap_or_default().trim_end_matches('\n');
+    head.rsplit_once("\n\n")
+        .map_or(head, |(intro, _)| intro)
+        .to_owned()
+}
+
 /// Removes wrapped internal context, so per-window injections die with it, and every host
 /// nudge a reply followed: one queued after the last reply is unread, and some are raised once.
 pub fn drop_internal(messages: &[AgentMessage]) -> Vec<AgentMessage> {
