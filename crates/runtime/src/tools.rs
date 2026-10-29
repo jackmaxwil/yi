@@ -24,7 +24,6 @@ pub struct ToolAdapter {
     rules: Option<Arc<crate::rules::RuleEngine>>,
     wall: crate::wall::Wall,
     ext: Option<crate::session::ExtHook>,
-    check: Option<Arc<crate::plan::covers::WriteCheck>>,
     job_owner: Option<yi_tools::jobs::JobOwner>,
     rejections: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
     hooks: Option<crate::claude_hooks::Attached>,
@@ -67,13 +66,7 @@ fn unsent_empties(schema: &Value, mut args: Map<String, Value>) -> Map<String, V
 /// so it reaches the model unflagged and keeps its `details.errorKind`.
 fn verdict_is_a_result(output: &mut yi_tools::ToolOutput) {
     let verdict = Some(yi_types::event::ToolErrorKind::Verdict.as_str());
-    if output
-        .result
-        .details
-        .get("errorKind")
-        .and_then(Value::as_str)
-        == verdict
-    {
+    if yi_types::event::ToolErrorKind::from_details(&output.result.details) == verdict {
         output.is_error = false;
     }
 }
@@ -86,11 +79,7 @@ fn result_text(result: &yi_types::event::ToolResult) -> String {
 /// producers branched on, and one ipython needle wins, in the order they were tried.
 fn facts_of(tool: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
     let text = result_text(&output.result);
-    let kind = output
-        .result
-        .details
-        .get("errorKind")
-        .and_then(Value::as_str);
+    let kind = yi_types::event::ToolErrorKind::from_details(&output.result.details);
     let kind = kind.unwrap_or(yi_types::event::ToolErrorKind::ToolError.as_str());
     let mut holds = vec![match output.is_error {
         true => format!("{}({kind})", yi_types::graph::RESULT_ERROR),
@@ -312,7 +301,7 @@ pub(crate) fn spill_roots_and_stores(
 }
 
 /// Invariant: a walled session reads only its family's spills and its own transcript: the spill
-/// roots and session stores are walled, the board's spill dir and the transcript spared (D345).
+/// roots and session stores are walled, the board's spill dir and the transcript spared.
 pub(crate) fn walled_roots(
     wall: &crate::wall::Wall,
     broker: Option<&PermissionBroker>,
@@ -348,7 +337,6 @@ impl ToolAdapter {
             rules: None,
             wall: crate::wall::Wall::default(),
             ext: None,
-            check: None,
             job_owner: None,
             rejections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             hooks: None,
@@ -397,11 +385,6 @@ impl ToolAdapter {
 
     pub fn with_wall(mut self, wall: crate::wall::Wall) -> Self {
         self.wall = wall;
-        self
-    }
-
-    pub fn with_check(mut self, check: Option<Arc<crate::plan::covers::WriteCheck>>) -> Self {
-        self.check = check;
         self
     }
 
@@ -539,7 +522,6 @@ impl ToolAdapter {
         let rules = self.rules.clone();
         let wall = self.wall.clone();
         let ext = self.ext.clone();
-        let check = self.check.clone();
         let call_id = tool_call_id.to_owned();
         Box::pin(async move {
             let cancel = Arc::clone(&context.cancelled);
@@ -759,10 +741,7 @@ impl ToolAdapter {
                     yi_types::event::ToolErrorKind::Denied,
                 ));
             }
-            let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
-                .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
             let (cwd, hook_args) = (context.cwd.clone(), args.clone());
-            let check_cancel = Arc::clone(&cancel);
             let output = tokio::task::spawn_blocking(move || {
                 let _span = yi_types::trace::span("tool.execute").arg("tool", tool.name());
                 tool.execute(args, &context)
@@ -822,14 +801,6 @@ impl ToolAdapter {
                             .chain(outside)
                     {
                         crate::affordance::append(&mut output.result, &line);
-                    }
-                    if let (Some(check), Some(written), false) = (check, written, output.is_error) {
-                        let verdict = tokio::task::spawn_blocking(move || {
-                            check(&written, &cwd, &check_cancel)
-                        });
-                        if let Ok(Some(line)) = verdict.await {
-                            crate::affordance::append(&mut output.result, &line);
-                        }
                     }
                     let text = result_text(&output.result);
                     if let Some(rules) = &rules {

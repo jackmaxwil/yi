@@ -1,4 +1,5 @@
 ---
+version: 0.674.0
 issue: Refs #1315
 raise: comments +3, crate cli +3, crate runtime +14, tests +153
 ---

@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use yi_runtime::Status;
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
+use yi_types::telemetry::ErrorClass;
 
 use super::{
     Args, Resume, attach_store, build_session, exit_refused, release_lane, render_text,
@@ -10,6 +11,7 @@ use super::{
 };
 
 const HOLD_POLL: Duration = Duration::from_millis(500);
+const EXIT_DENIED: i32 = 4;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 pub(super) fn run(args: &Args) -> i32 {
@@ -18,24 +20,25 @@ pub(super) fn run(args: &Args) -> i32 {
         .deadline
         .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
     let interactive = std::io::stdin().is_terminal();
+    let config = ErrorClass::RefusalConfig;
     // Incident: a review round's prompt passed Linux's 128 KiB cap on one argument (E2BIG).
     let prompt = match args.prompt.as_str() {
         "-" => match std::io::read_to_string(std::io::stdin()) {
             Ok(text) if !text.is_empty() => text,
-            Ok(_) => {
-                eprintln!("error: no prompt on stdin");
-                return 2;
-            }
+            Ok(_) => return refuse(args.json, 2, &config, "no prompt on stdin"),
             Err(error) => {
-                eprintln!("error: reading the prompt from stdin: {error}");
-                return 2;
+                let message = format!("reading the prompt from stdin: {error}");
+                return refuse(args.json, 2, &config, &message);
             }
         },
         given => given.to_owned(),
     };
     let runtime = match crate::current_thread() {
         Ok(runtime) => runtime,
-        Err(code) => return code,
+        Err(code) => {
+            let class = ErrorClass::Harness("runtime".to_owned());
+            return early_final(args.json, code, &class, "the async runtime did not start");
+        }
     };
     // Session wiring spawns runtime tasks, so the runtime context must exist before it.
     let target = session_target(args);
@@ -46,7 +49,10 @@ pub(super) fn run(args: &Args) -> i32 {
         // Every spelling of a headless ask (`ask`, bare prompt words) lands here: no tty, no asker.
         match build_session(args, asker, Some(&target.id), false, [!interactive, true]) {
             Ok(built) => built,
-            Err(refused) => return exit_refused(refused),
+            Err(refused) => {
+                let (class, reason) = (refused.class.clone(), refused.reason.clone());
+                return early_final(args.json, exit_refused(refused), &class, &reason);
+            }
         }
     };
     let attaching = yi_types::trace::span("ask.attach_store");
@@ -60,16 +66,13 @@ pub(super) fn run(args: &Args) -> i32 {
             eprintln!("warning: session store unavailable: {error}");
         }
         Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
+            let store = ErrorClass::Harness("store".into());
+            return refuse(args.json, 1, &store, &error.to_string());
         }
     }
     let schema = match crate::schema(args) {
         Some(Ok(schema)) => Some(schema),
-        Some(Err(error)) => {
-            eprintln!("error: {error}");
-            return 2;
-        }
+        Some(Err(error)) => return refuse(args.json, 2, &config, &error),
         None => None,
     };
     let lane = session.lane();
@@ -81,14 +84,15 @@ pub(super) fn run(args: &Args) -> i32 {
         json: args.json,
         eval: args.eval,
         no_deltas: args.no_deltas,
+        headless: !interactive,
     };
+    let json = args.json;
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
             .is_err()
         {
-            eprintln!("error: session busy");
-            return 1;
+            return refuse(json, 1, &ErrorClass::Harness("busy".into()), "session busy");
         }
         stream(&session, &host, modes, schema.as_ref(), (ends, deadline)).await
     });
@@ -96,6 +100,23 @@ pub(super) fn run(args: &Args) -> i32 {
     runtime.shutdown_timeout(left(deadline));
     yi_runtime::spend::drain_settled(deadline);
     code
+}
+
+/// Invariant: a `--json` run that ends before the loop still closes with a `final` line.
+fn early_final(json: bool, code: i32, class: &ErrorClass, message: &str) -> i32 {
+    if json {
+        println!("{}", error_final(class, message));
+    }
+    code
+}
+
+fn refuse(json: bool, code: i32, class: &ErrorClass, message: &str) -> i32 {
+    eprintln!("error: {message}");
+    early_final(json, code, class, message)
+}
+
+fn error_final(class: &ErrorClass, message: &str) -> serde_json::Value {
+    serde_json::json!({"type": "final", "kind": "error", "class": class.to_string(), "message": message})
 }
 
 /// D10: `--schema` answers are JSON or a non-zero exit, never prose. The answer is the newest
@@ -147,6 +168,7 @@ struct Modes {
     json: bool,
     eval: bool,
     no_deltas: bool,
+    headless: bool,
 }
 
 fn left(deadline: Option<Instant>) -> Duration {
@@ -176,7 +198,7 @@ async fn stream(
 ) -> i32 {
     let held = || host.holds_owner();
     let working = || host.holds_owner() || session.status() != Status::Idle;
-    let code = follow(session.subscribe(), [&held, &working], modes, schema, ends).await;
+    let (code, last) = follow(session.subscribe(), [&held, &working], modes, schema, ends).await;
     // Incident: nothing drove the runtime after the deadline, so a looping cell outlived it.
     if session.status() != Status::Idle {
         session.abort();
@@ -202,6 +224,9 @@ async fn stream(
         if json {
             println!("{line}");
         }
+    }
+    if json {
+        println!("{last}");
     }
     code
 }
@@ -254,6 +279,67 @@ fn leftovers(family: &Family<'_>, undelivered: usize) -> Option<(String, serde_j
     Some((said, line))
 }
 
+const EXIT_QUOTA: i32 = 4;
+
+/// The reset instant is the first `YYYY-MM-DDTHH:MM:SSZ` in the provider's message.
+fn reset_instant(text: &str) -> Option<&str> {
+    const SHAPE: &[u8; 20] = b"dddd-dd-ddTdd:dd:ddZ";
+    text.char_indices().find_map(|(at, _)| {
+        let window = text.get(at..at.checked_add(SHAPE.len())?)?;
+        let fits = window.bytes().zip(SHAPE).all(|(byte, want)| match want {
+            b'd' => byte.is_ascii_digit(),
+            want => byte == *want,
+        });
+        fits.then_some(window)
+    })
+}
+
+/// Best effort: the first window the text names, whole words only (`15h` and `17d` name nothing).
+fn quota_window(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    let unit_next = |at: usize, units: [&str; 2]| {
+        words
+            .get(at.saturating_add(1))
+            .is_some_and(|next| units.contains(next))
+    };
+    words.iter().enumerate().find_map(|(at, word)| match *word {
+        "5h" => Some("5h"),
+        "7d" | "week" | "weekly" => Some("7d"),
+        "5" if unit_next(at, ["hour", "hours"]) => Some("5h"),
+        "7" if unit_next(at, ["day", "days"]) => Some("7d"),
+        _ => None,
+    })
+}
+
+/// The last event of a json run: why it stopped, in one closed vocabulary a driver can branch on.
+fn final_event(deadline: bool, answered: bool, error: Option<&str>) -> serde_json::Value {
+    let class = error.map(ErrorClass::from_provider_text);
+    let kind = match (&class, deadline, answered) {
+        (Some(ErrorClass::Provider(what)), ..) if what == "quota" => "quota",
+        (Some(ErrorClass::TransportTimeout), ..) => "timeout",
+        (Some(_), ..) => "error",
+        (None, true, _) => "deadline",
+        (None, false, true) => "stop",
+        (None, false, false) => "no_answer",
+    };
+    let mut line = serde_json::json!({"type": "final", "kind": kind});
+    if let (Some(class), Some(text)) = (class, error) {
+        line["class"] = class.to_string().into();
+        line["message"] = text.into();
+    }
+    if kind == "quota"
+        && let Some(text) = error
+    {
+        line["window"] = quota_window(text).into();
+        line["reset"] = reset_instant(text).into();
+    }
+    line
+}
+
 /// Incident: a plan child's finish wakes the owner, so it waits, but only on what wakes it (#489).
 async fn follow(
     mut events: tokio::sync::broadcast::Receiver<AgentEvent>,
@@ -262,13 +348,16 @@ async fn follow(
         json,
         eval,
         no_deltas,
+        headless,
     }: Modes,
     schema: Option<&yi_runtime::schema::Schema>,
     ends: Option<Instant>,
-) -> i32 {
+) -> (i32, serde_json::Value) {
     let (mut answer, mut said, mut exit) = (String::new(), Vec::new(), 0);
     let (mut holding, mut ended) = (false, false);
     let (mut last_stop, mut said_anything, mut due) = (None, false, false);
+    let (mut last_error, mut finished, mut schema_failed) = (None, false, false);
+    let (mut calls, mut denied) = (std::collections::HashMap::new(), None);
     loop {
         let next = match patience(holding, ends) {
             None => yi_runtime::next_event(&mut events).await,
@@ -324,10 +413,16 @@ async fn follow(
                 AgentMessage::Assistant {
                     stop_reason,
                     content,
+                    error_message,
                     ..
                 },
         } = &event
         {
+            last_error = (*stop_reason == StopReason::Error).then(|| {
+                error_message
+                    .clone()
+                    .unwrap_or_else(|| "provider error".to_owned())
+            });
             let text = yi_types::message::has_text(content);
             said_anything |= text;
             due |= text;
@@ -335,6 +430,26 @@ async fn follow(
             said.push(std::mem::take(&mut answer));
         }
         match &event {
+            AgentEvent::ToolExecutionStart {
+                tool_call_id, args, ..
+            } => {
+                calls.insert(tool_call_id.clone(), args.clone());
+            }
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                tool_name,
+                result,
+                is_error,
+            } => {
+                let args = calls.remove(tool_call_id);
+                let refused = *is_error
+                    && yi_types::event::ToolErrorKind::from_details(&result.details)
+                        == Some(yi_types::event::ToolErrorKind::Denied.as_str());
+                denied = refused.then(|| {
+                    let reason = yi_types::message::join_text(&result.content, "\n");
+                    (tool_name.clone(), args.unwrap_or_default(), reason)
+                });
+            }
             AgentEvent::MessageEnd {
                 message:
                     AgentMessage::Assistant {
@@ -359,7 +474,7 @@ async fn follow(
             }
             AgentEvent::AgentEnd { .. } if held() => holding = true,
             AgentEvent::AgentEnd { .. } => {
-                ended = true;
+                (ended, finished) = (true, true);
                 break;
             }
             _ => {}
@@ -367,8 +482,23 @@ async fn follow(
     }
     if ended && let Some(schema) = schema {
         exit = emit_structured(schema, &said, json);
+        schema_failed = exit != 0;
     } else if ended && !json {
         println!();
+    }
+    if ended
+        && headless
+        && exit == 0
+        && let Some((tool, args, reason)) = denied
+    {
+        eprintln!("error: the run ended on a denied {tool} call {args}: {reason}");
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"type": "denied", "tool": tool, "args": args, "reason": reason})
+            );
+        }
+        exit = EXIT_DENIED;
     }
     let final_answer = matches!(last_stop, Some((StopReason::Stop, true)));
     if ended && eval && !final_answer {
@@ -383,10 +513,25 @@ async fn follow(
     } else if ended && !said_anything && exit == 0 {
         eprintln!("error: the run ended with no assistant text at all");
         exit = 1;
-    } else if !json && matches!(last_stop, Some((StopReason::Error, _))) {
+    } else if !json && exit == 0 && matches!(last_stop, Some((StopReason::Error, _))) {
         exit = 1;
     }
-    exit
+    // Incident: a hold that expired with no `--deadline` set closed as kind `deadline`.
+    let deadline = !finished && ends.is_some_and(|at| Instant::now() >= at);
+    let mut line = final_event(deadline, final_answer, last_error.as_deref());
+    if exit == EXIT_DENIED && matches!(line["kind"].as_str(), Some("stop" | "no_answer")) {
+        let class = ErrorClass::Harness("denied".to_owned());
+        line = error_final(&class, "the run ended on a denied tool call");
+    }
+    // The final line describes the run's exit, so a clean stop whose answer broke the schema is an error.
+    if schema_failed && matches!(line["kind"].as_str(), Some("stop" | "no_answer")) {
+        let class = ErrorClass::Harness("schema".to_owned());
+        line = error_final(&class, "answer does not match --schema");
+    }
+    if line["kind"] == "quota" {
+        exit = EXIT_QUOTA;
+    }
+    (exit, line)
 }
 
 #[cfg(test)]
@@ -475,11 +620,16 @@ mod tests {
             json: true,
             eval: false,
             no_deltas: false,
+            headless: false,
         };
         let run = super::follow(receiver, [&always, &always], modes, None, ends);
         let ran =
             runtime.block_on(async { tokio::time::timeout(Duration::from_secs(5), run).await });
-        assert_eq!(ran.ok(), Some(1), "the steered turn outlived the deadline");
+        assert_eq!(
+            ran.ok().map(|run| (run.0, run.1["kind"].clone())),
+            Some((1, "deadline".into())),
+            "the steered turn outlived the deadline"
+        );
         drop(events);
         Ok(())
     }
@@ -509,9 +659,10 @@ mod tests {
                 json: true,
                 eval,
                 no_deltas: false,
+                headless: false,
             };
             let run = super::follow(receiver, [&never, &never], modes, None, None);
-            assert_eq!(runtime.block_on(run), code, "eval {eval}");
+            assert_eq!(runtime.block_on(run).0, code, "eval {eval}");
         }
         Ok(())
     }
@@ -545,10 +696,219 @@ mod tests {
                 json: false,
                 eval: false,
                 no_deltas: false,
+                headless: false,
             };
             let run = super::follow(receiver, [&never, &never], modes, None, None);
-            assert_eq!(runtime.block_on(run), code);
+            assert_eq!(runtime.block_on(run).0, code);
         }
+        Ok(())
+    }
+
+    /// Dies with a quota 429 read as plain transport: the run exited 1 or 0 with no reset time,
+    /// and a driver could not tell the 5-hour window from a crash.
+    #[test]
+    fn a_quota_refusal_ends_the_run_with_its_window_and_exit_code()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::faux::faux_assistant_message;
+        use yi_types::message::StopReason;
+        let text = "HTTP 429 quota exhausted: {\"error\":{\"message\":\"You have reached the 5 hour usage limit, resets at 2026-10-27T18:00:00Z\",\"type\":\"exceeded_current_quota_error\"}}";
+        let line = super::final_event(false, false, Some(text));
+        assert_eq!(line["kind"], "quota");
+        assert_eq!(line["window"], "5h");
+        assert_eq!(line["reset"], "2026-10-27T18:00:00Z");
+        let both = "quota exhausted: the 5 hour limit is spent; the weekly limit is fine";
+        assert_eq!(super::quota_window(both), Some("5h"));
+        assert_eq!(
+            super::quota_window("quota exhausted, retry in 15h or 17d"),
+            None
+        );
+        let timeout = super::final_event(
+            false,
+            false,
+            Some("Network Error: timed out reading response"),
+        );
+        assert_eq!(timeout["kind"], "timeout");
+        assert_eq!(super::final_event(true, true, None)["kind"], "deadline");
+        assert_eq!(super::final_event(false, true, None)["kind"], "stop");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let never = || false;
+        let mut message = faux_assistant_message(Vec::new(), StopReason::Error);
+        if let yi_types::message::AgentMessage::Assistant { error_message, .. } = &mut message {
+            *error_message = Some(text.to_owned());
+        }
+        for json in [true, false] {
+            let (events, receiver) = tokio::sync::broadcast::channel(8);
+            events.send(AgentEvent::MessageEnd {
+                message: message.clone(),
+            })?;
+            events.send(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            })?;
+            let modes = super::Modes {
+                json,
+                eval: false,
+                no_deltas: false,
+                headless: true,
+            };
+            let run = super::follow(receiver, [&never, &never], modes, None, None);
+            assert_eq!(runtime.block_on(run).0, super::EXIT_QUOTA, "json {json}");
+        }
+        Ok(())
+    }
+
+    /// Dies with an interactive user's own "no" read as a refusal nobody could answer, or a
+    /// denial the model got past held against the run: only a headless run that ends on one exits 4.
+    #[test]
+    fn only_a_headless_run_that_ends_on_a_refused_call_exits_4()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use serde_json::json;
+        use yi_runtime::faux::{faux_assistant_message, faux_text};
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let never = || false;
+        let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+        let cases = [
+            (true, vec![true], 4),
+            (false, vec![true], 0),
+            (true, vec![true, false], 0),
+        ];
+        for (headless, calls, code) in cases {
+            let (events, receiver) = tokio::sync::broadcast::channel(16);
+            for (n, refused) in calls.into_iter().enumerate() {
+                let (id, kind) = (format!("c{n}"), refused.then_some("denied"));
+                let start = json!({"type": "tool_execution_start", "toolCallId": id,
+                    "toolName": "bash", "args": {"command": format!("run {n}")}});
+                let end = json!({"type": "tool_execution_end", "toolCallId": id, "toolName": "bash",
+                    "result": {"content": [], "details": {"errorKind": kind}}, "isError": refused});
+                for wire in [start, end] {
+                    events.send(serde_json::from_value(wire)?)?;
+                }
+            }
+            events.send(AgentEvent::MessageEnd {
+                message: answer.clone(),
+            })?;
+            events.send(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            })?;
+            let modes = super::Modes {
+                json: true,
+                eval: false,
+                no_deltas: false,
+                headless,
+            };
+            let run = super::follow(receiver, [&never, &never], modes, None, None);
+            assert_eq!(runtime.block_on(run).0, code, "headless {headless}");
+        }
+        Ok(())
+    }
+
+    /// Dies with `final` built from the loop alone: a clean stop whose answer broke `--schema`
+    /// exited 1 yet closed as `stop`, which a driver branching on `kind` read as success.
+    #[test]
+    fn a_schema_failure_closes_the_run_as_an_error() -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::faux::{faux_assistant_message, faux_text};
+        use yi_types::message::StopReason;
+        let path =
+            std::env::temp_dir().join(format!("yi-final-schema-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"type":"object","required":["n"]}"#)?;
+        let schema = yi_runtime::schema::Schema::load(&path.to_string_lossy())?;
+        std::fs::remove_file(&path)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let never = || false;
+        let answer = faux_assistant_message(vec![faux_text("{\"m\":1}")], StopReason::Stop);
+        let (events, receiver) = tokio::sync::broadcast::channel(8);
+        events.send(AgentEvent::MessageEnd { message: answer })?;
+        events.send(AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        })?;
+        let modes = super::Modes {
+            json: true,
+            eval: false,
+            no_deltas: false,
+            headless: true,
+        };
+        let run = super::follow(receiver, [&never, &never], modes, Some(&schema), None);
+        let (code, line) = runtime.block_on(run);
+        assert_ne!(code, 0);
+        assert_eq!(
+            (&line["kind"], &line["class"]),
+            (&"error".into(), &"harness:schema".into())
+        );
+        Ok(())
+    }
+
+    /// Dies with a later provider error replacing the distinct refusal exit a script depends on.
+    #[test]
+    fn a_refusal_followed_by_a_provider_error_still_exits_4()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use serde_json::json;
+        use yi_runtime::faux::faux_assistant_message;
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let (events, receiver) = tokio::sync::broadcast::channel(8);
+        for wire in [
+            json!({"type": "tool_execution_end", "toolCallId": "c0", "toolName": "bash",
+                "result": {"content": [], "details": {"errorKind": "denied"}}, "isError": true}),
+            serde_json::to_value(AgentEvent::MessageEnd {
+                message: faux_assistant_message(Vec::new(), StopReason::Error),
+            })?,
+            serde_json::to_value(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            })?,
+        ] {
+            events.send(serde_json::from_value(wire)?)?;
+        }
+        let never = || false;
+        let modes = super::Modes {
+            json: false,
+            eval: false,
+            no_deltas: false,
+            headless: true,
+        };
+        assert_eq!(
+            runtime
+                .block_on(super::follow(receiver, [&never, &never], modes, None, None))
+                .0,
+            4
+        );
+        Ok(())
+    }
+
+    /// Dies with every run that was not closed by `AgentEnd` called a deadline: the owner's
+    /// hold expired once its children finished, no `--deadline` was set, and `final` said so.
+    #[test]
+    fn a_hold_that_expires_closes_the_run_as_a_stop_not_a_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::faux::{faux_assistant_message, faux_text};
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+        let (events, receiver) = tokio::sync::broadcast::channel(8);
+        events.send(AgentEvent::MessageEnd { message: answer })?;
+        events.send(AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        })?;
+        let (held, never) = (std::cell::Cell::new(true), || false);
+        let holds_once = || held.replace(false);
+        let modes = super::Modes {
+            json: true,
+            eval: false,
+            no_deltas: false,
+            headless: true,
+        };
+        let run = super::follow(receiver, [&holds_once, &never], modes, None, None);
+        let (code, line) = runtime.block_on(run);
+        assert_eq!((code, &line["kind"]), (0, &"stop".into()));
         Ok(())
     }
 

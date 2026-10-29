@@ -1,4 +1,6 @@
 ---
+version: 0.609.0
+decisions: D397
 issue: Closes #1165
 decision: every tool a root session's model can call and every plugin has a skill: a shipped `SKILL.md` whose frontmatter says `covers: tool:<name>` or `covers: plugin:<name>`, or an on-demand `yi://tools/<name>` guide; the gaps that predate the rule sit in a `PENDING` list in `request_budget::every_model_tool_and_plugin_is_covered_by_a_skill_or_pending` that only shrinks, and a `covers:` naming a tool or plugin that no longer exists fails | the owner, 2026-10-10: "make this a persisted durable enforced principle: every major agent tool/feature needs a corresponding skill"; `skills/yi/grid` outlived grid while ripwire, its replacement, had no skill | delete the test and `.ruler/082-skills.md`
 raise: tests +87

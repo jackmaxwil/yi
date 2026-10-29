@@ -2276,6 +2276,18 @@ mod contracts {
         Ok((goal, specs))
     }
 
+    fn put_checker(
+        store: &PlanStore,
+        plan: &PlanId,
+        command: &str,
+    ) -> Result<ArtifactRef, Box<dyn Error>> {
+        crate::checker::put_checker(
+            &store.artifacts(plan),
+            &crate::checker::checker_manifest(command, 10_000, &[], false),
+            &store.nonce(),
+        )
+    }
+
     /// A contract built here, not from a fixture: one critical cmd item over a manifest.
     fn cmd_contract(
         store: &PlanStore,
@@ -2283,15 +2295,7 @@ mod contracts {
         command: &str,
         class: &str,
     ) -> Result<Contract, Box<dyn Error>> {
-        let manifest = json!({
-            "manifest": 1, "command": command, "cwd": "snapshot_root", "cwd_subdir": null,
-            "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
-        });
-        let put = store.artifacts(plan).put(
-            &serde_json::to_vec(&manifest)?,
-            "application/vnd.yi.checker-manifest+json",
-            &store.nonce(),
-        )?;
+        let put = put_checker(store, plan, command)?;
         Ok(serde_json::from_value(json!({
             "class": class,
             "items": [{"id": "check", "critical": true, "weight": 100,
@@ -3857,20 +3861,35 @@ mod contracts {
 
     /// The journal the done path wrote while a one-juror jury sat on a judge item, before the
     /// judge tier was deleted; yi-types holds it as the golden for the shapes it still decodes.
-    fn judged_journal() -> Result<String, Box<dyn Error>> {
+    fn journal_fixture(name: &str) -> Result<String, Box<dyn Error>> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../types/tests/fixtures/journals/plan-judge-verdict-v1.jsonl");
+            .join("../types/tests/fixtures/journals")
+            .join(name);
         Ok(std::fs::read_to_string(path)?)
     }
 
-    /// A store holding the first `records` lines of [`judged_journal`] as its plan's journal.
+    fn seed_journal(
+        store: &PlanStore,
+        plan: &PlanId,
+        text: &str,
+        records: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        let lines: Vec<&str> = text.lines().take(records).collect();
+        std::fs::create_dir_all(store.plan_dir(plan))?;
+        std::fs::write(store.journal_path(plan), format!("{}\n", lines.join("\n")))?;
+        Ok(())
+    }
+
+    /// A store holding the first `records` lines of the recorded judge fixture as its journal.
     fn judged_store(temp: &Scratch, records: usize) -> Result<(PlanStore, PlanId), Box<dyn Error>> {
         let store = PlanStore::open(temp.join("plans"))?;
         let plan = planned()?;
-        let text = judged_journal()?;
-        let lines: Vec<&str> = text.lines().take(records).collect();
-        std::fs::create_dir_all(store.plan_dir(&plan))?;
-        std::fs::write(store.journal_path(&plan), format!("{}\n", lines.join("\n")))?;
+        seed_journal(
+            &store,
+            &plan,
+            &journal_fixture("plan-judge-verdict-v1.jsonl")?,
+            records,
+        )?;
         Ok((store, plan))
     }
 
@@ -3910,8 +3929,12 @@ mod contracts {
     fn a_journal_holding_a_judge_verdict_still_replays() -> TestResult {
         let temp = Scratch::new("yi-judge-replay")?;
         let (store, plan) = judged_store(&temp, usize::MAX)?;
-        let last: JournalRecord =
-            serde_json::from_str(judged_journal()?.lines().last().ok_or("an empty fixture")?)?;
+        let last: JournalRecord = serde_json::from_str(
+            journal_fixture("plan-judge-verdict-v1.jsonl")?
+                .lines()
+                .last()
+                .ok_or("an empty fixture")?,
+        )?;
         let todo = todo_of(&store, &plan, "write the migration report")?;
         assert!(
             matches!(todo.state, TodoState::Done { .. }),
@@ -3928,15 +3951,7 @@ mod contracts {
     fn a_started_judge_item_abstains_without_a_judge_and_holds_the_todo() -> TestResult {
         let temp = Scratch::new("yi-judge-held")?;
         let (store, plan) = judged_store(&temp, 2)?;
-        let manifest = json!({
-            "manifest": 1, "command": "true", "cwd": "snapshot_root", "cwd_subdir": null,
-            "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
-        });
-        let checker = store.artifacts(&plan).put(
-            &serde_json::to_vec(&manifest)?,
-            "application/vnd.yi.checker-manifest+json",
-            &store.nonce(),
-        )?;
+        let checker = put_checker(&store, &plan, "true")?;
         let ws = temp.join("ws");
         std::fs::create_dir_all(&ws)?;
         let engine = PlanEngine::new(store.clone(), Arc::new(Stub::default()))
@@ -4321,16 +4336,10 @@ mod contracts {
         let rig = rig("yi-f0c-verbose-refusal", None)?;
         let plan = planned()?;
         // Six items, each ending in 2,000 control characters: six bytes apiece once escaped.
-        let manifest = json!({
-            "manifest": 1,
-            "command": "awk 'BEGIN { for (i = 0; i < 2000; i++) printf \"\\001\" }'; exit 1",
-            "cwd": "snapshot_root", "cwd_subdir": null, "protected": [], "timeout_ms": 10_000,
-            "env": [], "reads_outside_snapshot": false
-        });
-        let put = rig.store.artifacts(&plan).put(
-            &serde_json::to_vec(&manifest)?,
-            "application/vnd.yi.checker-manifest+json",
-            &rig.store.nonce(),
+        let put = put_checker(
+            &rig.store,
+            &plan,
+            "awk 'BEGIN { for (i = 0; i < 2000; i++) printf \"\\001\" }'; exit 1",
         )?;
         let items: Vec<Value> = (0..6)
             .map(|index| {
@@ -4667,260 +4676,69 @@ mod contracts {
         Ok(())
     }
 
-    /// An inline todo started by the owner whose contract covers `src/*.rs` and runs `command`.
-    fn covered_rig(name: &str, command: &str) -> Result<(Rig, PlanId, PathBuf), Box<dyn Error>> {
-        covered_rig_verified(name, command, Verifier::new(20_000))
-    }
-
-    fn covered_rig_verified(
-        name: &str,
-        command: &str,
-        verifier: Verifier,
-    ) -> Result<(Rig, PlanId, PathBuf), Box<dyn Error>> {
-        let rig = rig_verified(name, None, verifier)?;
+    #[test]
+    fn a_pending_covered_contract_from_an_old_journal_still_starts() -> TestResult {
+        let rig = rig("yi-g4-legacy-pending-covers", None)?;
         let plan = planned()?;
-        let mut contract = cmd_contract(&rig.store, &plan, command, "inline")?;
-        contract.covers = vec!["src/*.rs".to_owned()];
-        init(&rig.engine, vec![contracted("alpha", contract)?])?;
+        seed_journal(
+            &rig.store,
+            &plan,
+            &journal_fixture("plan-covers-contract.jsonl")?,
+            1,
+        )?;
+        put_checker(&rig.store, &plan, "exit 0")?;
+        rig.store.write(&rig.store.read(&plan)?)?;
         start(&rig.engine, &plan, "alpha")?;
-        let lib = rig.ws.join("src/lib.rs");
-        std::fs::create_dir_all(rig.ws.join("src"))?;
-        Ok((rig, plan, lib))
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "alpha")?.state,
+            TodoState::Running { .. }
+        ));
+        Ok(())
     }
 
-    fn never() -> yi_tools::CancelFlag {
-        Arc::new(|| false)
-    }
-
-    // Dies with the check slot in tools.rs or `preview`'s debounce: no hook and the write result
-    // carries no verdict; no debounce and the unchanged tree runs the checker twice. Dies with
-    // the debounce keyed by the written bytes: `src/ok` appears beside an unchanged `lib.rs`
-    // and the stale fail is served again.
     #[tokio::test]
-    async fn a_covered_write_runs_the_cmd_item_and_debounces() -> TestResult {
-        let scratch = Scratch::new("yi-g4-debounce-runs")?;
-        let runs_at = scratch.join("runs");
-        let command = format!("echo ran >> {}; test -f src/ok", runs_at.display());
-        let (rig, _plan, lib) = covered_rig("yi-g4-debounce", &command)?;
-        let runs = || std::fs::read_to_string(&runs_at).map_or(0, |text| text.lines().count());
-        let engine = Arc::clone(&rig.engine);
-        let check: Arc<yi_runtime::plan::covers::WriteCheck> =
-            Arc::new(move |paths, cwd, cancel| engine.preview(&Actor::Owner, paths, cwd, cancel));
-        let adapter = yi_runtime::tools::ToolAdapter::new(
-            Arc::new(yi_tools::WriteTool::default()),
-            rig.ws.clone(),
-            Arc::new(|| false),
-            None,
-        )
-        .with_check(Some(check));
+    async fn a_covered_write_gets_no_preview_line() -> TestResult {
+        let rig = rig("yi-g4-no-preview", None)?;
+        let plan = planned()?;
+        seed_journal(
+            &rig.store,
+            &plan,
+            &journal_fixture("plan-covers-contract.jsonl")?,
+            usize::MAX,
+        )?;
+        rig.store.write(&rig.store.read(&plan)?)?;
+        let todo = todo_of(&rig.store, &plan, "alpha")?;
+        assert!(matches!(todo.state, TodoState::Running { .. }));
+        assert_eq!(
+            todo.contract.as_ref().ok_or("contract")?.covers,
+            ["src/*.rs"]
+        );
+        let provider = Arc::new(yi_runtime::ProviderStream::new(None));
+        let mut session = yi_runtime::AgentSession::new(
+            yi_runtime::SessionConfig {
+                system_prompt: String::new(),
+                model: crate::support::faux_model(),
+                thinking_level: None,
+                tool_execution: yi_runtime::ExecutionMode::Sequential,
+            },
+            provider,
+        );
+        let service = yi_runtime::plan::attach_plan(&session, None, rig.store.dir().to_path_buf());
+        service.set_engine(Arc::clone(&rig.engine), Actor::Owner);
+        session.set_plan_service(service);
+        session.use_tools_with_background(yi_tools::builtin_tools(), rig.ws.clone(), None, None);
+        let adapter = session
+            .tools()
+            .into_iter()
+            .find(|tool| tool.definition().name == "write")
+            .ok_or("no wired write tool")?;
         let mut args = Map::new();
         args.insert("path".to_owned(), json!("src/lib.rs"));
         args.insert("content".to_owned(), json!("fn a() {}\n"));
         let signal = yi_loop::interrupt::InterruptSignal::default();
-        let written = yi_loop::AgentTool::execute(&adapter, "call-1", args, &signal).await;
+        let written = adapter.execute("call-1", args, &signal).await;
         let text = serde_json::to_string(&written.result.content)?;
-        assert!(
-            text.contains("contract \\\"alpha\\\" check: fail: exit 1"),
-            "{text}"
-        );
-        assert_eq!(runs(), 1);
-        let preview = || {
-            rig.engine
-                .preview(&Actor::Owner, std::slice::from_ref(&lib), &rig.ws, &never())
-        };
-        let again = preview();
-        assert!(again.is_some_and(|line| line.starts_with("contract \"alpha\" check: fail")));
-        assert_eq!(runs(), 1, "an unchanged tree runs nothing");
-        std::fs::write(rig.ws.join("src/ok"), "")?;
-        std::fs::write(&lib, "fn a() {}\n")?;
-        assert_eq!(preview().as_deref(), Some("contract \"alpha\" check: pass"));
-        assert_eq!(runs(), 2, "the same bytes over a changed tree run again");
-        assert_eq!(preview().as_deref(), Some("contract \"alpha\" check: pass"));
-        assert_eq!(runs(), 2);
-        Ok(())
-    }
-
-    // Dies with the checker run on the live cwd: its byproduct lands in the owner's tree and
-    // the golden file it rewrites passes, so `done`'s before and after digests agree.
-    #[test]
-    fn a_preview_leaves_the_tree_unchanged_and_guards_protected_paths() -> TestResult {
-        let (rig, plan, lib) = covered_rig("yi-g4-live", "exit 0")?;
-        let manifest = json!({
-            "manifest": 1, "command": "echo made > byproduct; echo rewritten > golden.txt",
-            "cwd": "snapshot_root", "cwd_subdir": null, "protected": ["golden.txt"],
-            "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
-        });
-        let put = rig.store.artifacts(&plan).put(
-            &serde_json::to_vec(&manifest)?,
-            "application/vnd.yi.checker-manifest+json",
-            &rig.store.nonce(),
-        )?;
-        let contract: Contract = serde_json::from_value(json!({
-            "class": "inline", "covers": ["*.txt"],
-            "items": [{"id": "golden", "critical": true, "weight": 100,
-                       "decider": {"cmd": {"checker": put, "timeout_ms": 10_000}}}],
-            "threshold": 1000, "min_coverage": 1000
-        }))?;
-        rig.engine.apply(at(
-            &plan,
-            Op::Append {
-                todos: vec![contracted("beta", contract)?],
-            },
-        ))?;
-        start(&rig.engine, &plan, "beta")?;
-        let golden = rig.ws.join("golden.txt");
-        std::fs::write(&golden, "the golden bytes\n")?;
-        std::fs::write(&lib, "x")?;
-        let line = rig
-            .engine
-            .preview(&Actor::Owner, &[golden.clone(), lib], &rig.ws, &never());
-        let line = line.ok_or("no verdict")?;
-        assert!(line.contains("contract \"alpha\" check: pass"), "{line}");
-        assert!(
-            line.contains("contract \"beta\" check: fail: protected path golden.txt changed"),
-            "{line}"
-        );
-        assert_eq!(std::fs::read_to_string(&golden)?, "the golden bytes\n");
-        assert!(
-            !rig.ws.join("byproduct").exists(),
-            "the live tree gained a file"
-        );
-        Ok(())
-    }
-
-    // Dies with the preview's cancel flag unwired: Esc leaves the checker running to its own
-    // timeout. Dies with the session deadline ignored: a slow checker holds the write result.
-    #[test]
-    fn a_preview_stops_on_cancel_and_at_the_deadline() -> TestResult {
-        use std::time::{Duration, Instant};
-        let (rig, _plan, lib) = covered_rig("yi-g4-cancel", "sleep 30")?;
-        std::fs::write(&lib, "x")?;
-        let started = Instant::now();
-        let cancel: yi_tools::CancelFlag =
-            Arc::new(move || started.elapsed() > Duration::from_millis(200));
-        let line = rig
-            .engine
-            .preview(&Actor::Owner, std::slice::from_ref(&lib), &rig.ws, &cancel);
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "{:?}",
-            started.elapsed()
-        );
-        assert!(line.is_some_and(|line| line.contains("check: abstain")));
-        let ends = Instant::now()
-            .checked_add(Duration::from_millis(300))
-            .ok_or("clock")?;
-        let (rig, _plan, lib) = covered_rig_verified(
-            "yi-g4-deadline",
-            "sleep 30",
-            Verifier::new(20_000).with_deadline(ends),
-        )?;
-        std::fs::write(&lib, "x")?;
-        let started = Instant::now();
-        let line = rig.engine.preview(&Actor::Owner, &[lib], &rig.ws, &never());
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "{:?}",
-            started.elapsed()
-        );
-        assert!(line.is_some_and(|line| line.contains("check: abstain")));
-        Ok(())
-    }
-
-    // Dies with `covered`'s glob filter: match every path and all three writes get a line.
-    #[test]
-    fn an_uncovered_write_gets_no_line() -> TestResult {
-        let (rig, _plan, lib) = covered_rig("yi-g4-uncovered", "exit 0")?;
-        let nested = rig.ws.join("src/deep/mod.rs");
-        let readme = rig.ws.join("README.md");
-        let outside = rig.ws.join("../src/lib.rs");
-        for path in [&lib, &nested, &readme, &outside] {
-            std::fs::create_dir_all(path.parent().ok_or("parent")?)?;
-            std::fs::write(path, "x")?;
-        }
-        for path in [nested, readme, outside] {
-            let line = rig.engine.preview(
-                &Actor::Owner,
-                std::slice::from_ref(&path),
-                &rig.ws,
-                &never(),
-            );
-            assert_eq!(line, None, "{}", path.display());
-        }
-        let covered = rig.engine.preview(&Actor::Owner, &[lib], &rig.ws, &never());
-        assert_eq!(covered.as_deref(), Some("contract \"alpha\" check: pass"));
-        Ok(())
-    }
-
-    // Dies with the `Running { by }` filter in `preview`: read every running todo and the
-    // first child sees the second child's red verdict and the owner's. Dies with the check run
-    // in the engine's checkout: the marker is only in the child's own.
-    #[test]
-    fn a_child_sees_only_its_own_todos_verdict() -> TestResult {
-        let rig = rig("yi-g4-child", None)?;
-        let plan = planned()?;
-        let covering = |command: &str| -> Result<Contract, Box<dyn Error>> {
-            let mut contract = cmd_contract(&rig.store, &plan, command, "inline")?;
-            contract.covers = vec!["*.txt".to_owned()];
-            Ok(contract)
-        };
-        let mut alpha = delegated_spec("alpha")?;
-        alpha.contract = Some(covering("test -f alpha.marker")?);
-        let mut beta = delegated_spec("beta")?;
-        beta.contract = Some(covering("exit 1")?);
-        init(
-            &rig.engine,
-            vec![alpha, beta, contracted("gamma", covering("exit 3")?)?],
-        )?;
-        start(&rig.engine, &plan, "gamma")?;
-        let child = |label: &str| -> Result<Actor, Box<dyn Error>> {
-            match todo_of(&rig.store, &plan, label)?.state {
-                TodoState::Running { by } => Ok(Actor::Child(by)),
-                other => Err(format!("{label} is {other:?}, not started by the engine").into()),
-            }
-        };
-        let checkout = rig.ws.join("../alpha-checkout");
-        std::fs::create_dir_all(&checkout)?;
-        std::fs::write(checkout.join("alpha.marker"), "")?;
-        for root in [&checkout, &rig.ws] {
-            std::fs::write(root.join("note.txt"), "x")?;
-        }
-        let at = |root: &Path| [root.join("note.txt")];
-        let alpha = rig
-            .engine
-            .preview(&child("alpha")?, &at(&checkout), &checkout, &never());
-        assert_eq!(alpha.as_deref(), Some("contract \"alpha\" check: pass"));
-        let beta = rig
-            .engine
-            .preview(&child("beta")?, &at(&rig.ws), &rig.ws, &never());
-        assert!(
-            beta.as_deref()
-                .is_some_and(|line| line.starts_with("contract \"beta\" check: fail: exit 1")),
-            "{beta:?}"
-        );
-        let owner = rig
-            .engine
-            .preview(&Actor::Owner, &at(&rig.ws), &rig.ws, &never());
-        assert!(
-            owner
-                .as_deref()
-                .is_some_and(|line| line.starts_with("contract \"gamma\" check: fail: exit 3")),
-            "{owner:?}"
-        );
-        Ok(())
-    }
-
-    // Dies with a preview that goes through `done`: the journal gains a
-    // `verification_requested` and a verdict, and the todo's refusal count moves.
-    #[test]
-    fn a_preview_writes_no_journal_record() -> TestResult {
-        let (rig, plan, lib) = covered_rig("yi-g4-journal", "exit 1")?;
-        std::fs::write(&lib, "x")?;
-        let before = kinds(&rig.store, &plan)?;
-        let line = rig.engine.preview(&Actor::Owner, &[lib], &rig.ws, &never());
-        assert!(line.is_some_and(|line| line.contains("check: fail")));
-        assert_eq!(kinds(&rig.store, &plan)?, before);
-        assert_eq!(todo_of(&rig.store, &plan, "alpha")?.refusals, 0);
+        assert!(!text.contains("contract \\\"alpha\\\" check:"), "{text}");
         Ok(())
     }
 

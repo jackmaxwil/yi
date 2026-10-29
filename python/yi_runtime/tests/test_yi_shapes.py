@@ -124,6 +124,18 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         run = await plan.run(shape=fork_join, budget=30)
         self.assertEqual(run.outcome, "verified_success", await run.status())
         self.assertEqual(host.starts.count("a"), 2, "the red verdict is retried once the engine lands it")
+    async def test_an_unmoved_active_child_is_not_mistaken_for_a_reaped_one(self) -> None:
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        await writers(plan, host, "a", "b", state="running")
+        run = await plan.run(shape=fork_join, budget=30, detach=True)
+        await asyncio.sleep(0.02)
+        host.children[f"{plan.id}/a"] = "finished"
+        await asyncio.sleep(0.05)
+        self.assertFalse(run._reaped, "a sibling's digest keeps the unmoved child's retained state")
+        host.children[f"{plan.id}/b"] = "finished"
+        await asyncio.wait_for(run, timeout=5)
+        self.assertEqual(run.outcome, "verified_success")
 
     async def test_a_finish_the_engine_settles_later_is_read_on_a_short_poll(self) -> None:
         """Dies with the short poll armed only for a reaped child: the wait already reported `a`

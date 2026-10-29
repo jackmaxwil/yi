@@ -1,4 +1,6 @@
 ---
+version: 0.752.0
+decisions: D474
 issue: Refs #1480, Refs #1442
 raise: tests +12
 decision: a worker's system prompt omits the permission-mode fragment, revising D334 and the worker bullet of YI_DESIGN section 11 | owner: "approved now: the D308/D334/D255 revisions"; it saves 1,490 B per worker request in Auto, and it stays only if kill test (e) shows no rise in denied-call retries or failed tasks | re-attach the Rank::Mode slot in ext::narrow
