@@ -981,6 +981,8 @@ def cli(argv: Optional[list[str]] = None) -> int:
     if args.selfcheck:
         import test_bridge
         return test_bridge.selfcheck()
+    if args.dry_run and (args.run_ci or args.land or args.poll):
+        parser.error("--dry-run seals every write; use it alone or with a number")
     transport = RealTransport()
     sealed = DryRunTransport(transport) if args.dry_run or not (args.run_ci or args.land or args.poll or args.number) else transport
     try:
