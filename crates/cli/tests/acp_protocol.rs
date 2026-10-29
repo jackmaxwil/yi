@@ -5,6 +5,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use serde_json::{Value, json};
 
 use crate::scratch::Scratch;
+use crate::yi_bin::yi_command;
 
 use crate::acp_schema::Schema;
 use crate::session_files::session_files;
@@ -31,13 +32,8 @@ impl AcpClient {
     }
 
     fn spawn_with(dir: &std::path::Path, model: &[&str]) -> Result<Self, Box<dyn Error>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the protocol contract is the spawned binary's stdio; tests must drive the real process"
-        )]
-        let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+        let mut child = yi_command(&dir.join("home"))
             // Invariant: a harness never claims from the person's pool.
-            .env("HOME", dir.join("home"))
             .arg("acp")
             .args(model)
             .args([

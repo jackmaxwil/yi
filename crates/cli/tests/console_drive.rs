@@ -4,9 +4,10 @@
 
 use std::error::Error;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::session_files::frames_text;
+use crate::yi_bin::yi_command;
 
 use crate::scratch::Scratch;
 
@@ -17,11 +18,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 fn run_console(dir: &Path, socket: &Path, root: &Path, script: &str, extra: &[&str]) -> TestResult {
     let keys = dir.join("script.keys");
     std::fs::write(&keys, script)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "true E2E: the shipped binary drives the shipped daemon"
-    )]
-    let status = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let status = yi_command(&dir.join("home"))
         .args([
             "console",
             "--headless",
@@ -33,7 +30,6 @@ fn run_console(dir: &Path, socket: &Path, root: &Path, script: &str, extra: &[&s
             &keys.display().to_string(),
         ])
         .args(extra)
-        .env("HOME", dir.join("home"))
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -254,11 +250,7 @@ fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
     let solo_keys = dir.join("solo.keys");
     std::fs::write(&solo_keys, &body)?;
     let solo_frames = dir.join("solo-frames");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "true E2E: the shipped binary in headless drive mode"
-    )]
-    let status = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let status = yi_command(&home)
         .args([
             "tui",
             "--headless",
@@ -271,7 +263,6 @@ fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
             "--frames",
             &solo_frames.display().to_string(),
         ])
-        .env("HOME", &home)
         .current_dir(&root)
         .status()?;
     if !status.success() {
@@ -288,11 +279,7 @@ fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
             &keys,
             format!("wait-frame 8000 !connecting…\nkey alt-n\n{body}"),
         )?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "true E2E: the shipped binary drives the shipped daemon"
-        )]
-        let status = Command::new(env!("CARGO_BIN_EXE_yi"))
+        let status = yi_command(&home)
             .args([
                 "console",
                 "--headless",
@@ -305,7 +292,6 @@ fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
                 "--frames",
                 &console_frames.display().to_string(),
             ])
-            .env("HOME", &home)
             .status()?;
         if !status.success() {
             return Err(format!("console exited {status}").into());
@@ -330,16 +316,11 @@ fn a_console_drive_honours_its_deadline() -> TestResult {
     let dir = Scratch::new("yi-console-deadline")?;
     let keys = dir.join("script.keys");
     std::fs::write(&keys, "wait 3000\nquit\n")?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "true E2E: the shipped binary's own drive clock"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let output = yi_command(dir.home()?.as_path())
         .args(["console", "--headless", "--deadline", "1", "--keys"])
         .arg(&keys)
         .arg("--socket")
         .arg(dir.join("no-daemon.sock"))
-        .env("HOME", dir.home()?)
         .stdin(Stdio::null())
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -358,11 +339,7 @@ fn terminal_run(name: &str, script: &str) -> Result<Scratch, Box<dyn Error>> {
     std::fs::create_dir_all(&root)?;
     let keys = dir.join("script.keys");
     std::fs::write(&keys, script)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "true E2E: the shipped binary opens a real PTY through its own shim"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let output = yi_command(dir.home()?.as_path())
         .args(["console", "--headless", "--size", "100x24", "--keys"])
         .arg(&keys)
         .arg("--frames")
@@ -372,7 +349,6 @@ fn terminal_run(name: &str, script: &str) -> Result<Scratch, Box<dyn Error>> {
         .arg("--socket")
         .arg(dir.join("no-daemon.sock"))
         .env_clear()
-        .env("HOME", dir.home()?)
         .env("PATH", "/usr/bin:/bin")
         .env("SHELL", "/bin/sh")
         .env("PS1", "$ ")

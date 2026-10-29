@@ -22,6 +22,8 @@ mod scratch;
 mod session_files;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/yi_bin.rs"]
+mod yi_bin;
 
 mod acp_protocol;
 mod browser;

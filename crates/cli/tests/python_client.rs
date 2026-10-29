@@ -312,7 +312,7 @@ fn a_permission_ask_is_refused_and_the_client_continues() -> TestResult {
         &[
             &program.display().to_string(),
             CLIENT_DIR,
-            env!("CARGO_BIN_EXE_yi"),
+            crate::yi_bin::BIN,
             &repo.display().to_string(),
             &script.display().to_string(),
             &dir.join("sessions").display().to_string(),
@@ -363,7 +363,7 @@ fn a_python_program_fans_out_readers_with_no_model_turn_at_the_root() -> TestRes
         &[
             &program.display().to_string(),
             CLIENT_DIR,
-            env!("CARGO_BIN_EXE_yi"),
+            crate::yi_bin::BIN,
             &repo.display().to_string(),
             &script.display().to_string(),
             &dir.join("sessions").display().to_string(),

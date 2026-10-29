@@ -1,10 +1,12 @@
 use std::error::Error;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 /// Incident: a daemon on the real HOME started the owner's real classifier sidecar.
+use crate::yi_bin::yi_command;
+
 pub fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
     let home = dir.join("home");
     std::fs::create_dir_all(&home)?;
@@ -21,11 +23,7 @@ pub fn spawn_daemon_with(
     flags: &[&str],
 ) -> Result<(Child, PathBuf), Box<dyn Error>> {
     let socket = dir.join("yi.sock");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the daemon contract is the spawned binary's socket; tests must drive the real process"
-    )]
-    let child = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let child = yi_command(home)
         .args([
             "serve",
             "--socket",
@@ -37,7 +35,6 @@ pub fn spawn_daemon_with(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .env("HOME", home)
         .env_remove("LAYA_API_KEY")
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(5);
