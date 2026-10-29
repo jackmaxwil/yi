@@ -1,0 +1,22 @@
+# The GitHub intake poll is inert until the owner uncomments the cron line and runs it.
+# The owner enables it; until then this is a manual, read-only pass that no schedule starts.
+name: intake
+
+on:
+  # schedule:
+  #   - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          uv tool install "git-filter-repo==$(cat scripts/mirror/filter-repo.version)"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: decide every open GitHub PR with every write sealed
+        run: python3 scripts/intake/bridge.py --dry-run

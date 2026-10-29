@@ -8,6 +8,9 @@
 # lanes on the developer's own mac before every push, which is where macOS
 # coverage now comes from. `permissions:` blocks are omitted because Forgejo
 # ignores them; the token below is the one the runner scopes to this repo.
+#
+# An imported GitHub PR carries `external` and waits for the owner's `run-ci`: a `pull_request`
+# run reads this head's copy, but intake denies `.forgejo/`, so an imported head is main's copy.
 name: pr
 
 on:
@@ -37,11 +40,14 @@ jobs:
     # — that the gate regenerated nothing — into each lane, so splitting the
     # run does not drop it. The rules stay in the justfile (D84); this file
     # only says which lane on which runner.
+    # The label hold: an external PR's code runs only after the owner's `run-ci`, on the
+    # disposable `external` runner. Without that runner the job queues and never executes.
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'external') || contains(github.event.pull_request.labels.*.name, 'run-ci') }}
     strategy:
       fail-fast: false
       matrix:
         lane: [lint, guardrails, test]
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'external') && 'external' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # check_commit_style.py resolves origin/main and refuses to pass blind on
@@ -92,7 +98,10 @@ jobs:
   # is pinned to it. Its own job, so the three gate lanes do not each re-run a
   # one-second python script.
   title:
-    runs-on: ubuntu-latest
+    # Same hold as `gate`, and the same runner question: this job holds the repo token, so an
+    # external head's scripts are replaced by main's before any of them runs.
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'external') || contains(github.event.pull_request.labels.*.name, 'run-ci') }}
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'external') && 'external' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -101,6 +110,9 @@ jobs:
       # The body rule measures this branch against the merge base, the way
       # pr_body.py does — the fetch is what gives it an origin/main to find.
       - run: git fetch --no-tags origin main
+      - name: an external head runs main's scripts beside the token
+        if: contains(github.event.pull_request.labels.*.name, 'external')
+        run: git checkout FETCH_HEAD -- scripts/
       - env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -140,7 +152,8 @@ jobs:
   live:
     # Advisory and paid, and 19% of yi's PR runner time: it runs when the PR
     # carries the `live` label at push time (label, then push or re-run).
-    if: contains(github.event.pull_request.labels.*.name, 'live')
+    # Never on an external PR: the design's table lists live as a job contributor code gets.
+    if: contains(github.event.pull_request.labels.*.name, 'live') && !contains(github.event.pull_request.labels.*.name, 'external')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
