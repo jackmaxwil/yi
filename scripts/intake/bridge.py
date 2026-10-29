@@ -932,8 +932,10 @@ def admit_run_ci(transport: Any, number: int) -> Any:
     if not audit or not audit.get("imported"):
         return refusal("hold", f"{FORGE_REPO}#{number} carries no intake audit comment")
     imported = audit["imported"]
-    if not transport.patch_equal(imported, head) or not transport.workflow_equal(transport.main_sha(), head):
-        return refusal("hold", f"{FORGE_REPO}#{number} head {head} is not audited change {imported} on current main")
+    if not transport.patch_equal(imported, head):
+        return refusal("hold", f"{FORGE_REPO}#{number} head {head} is not audited change {imported}")
+    if not transport.workflow_equal(transport.main_sha(), head):
+        return refusal("hold", f"{FORGE_REPO}#{number} head {head} changes .forgejo/ from current main")
     transport.forge("POST", f"repos/{FORGE_REPO}/issues/{number}/labels", {"labels": ["run-ci"]})
     transport.rerun(number)
     return ALLOW
