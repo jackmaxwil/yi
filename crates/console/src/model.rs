@@ -412,6 +412,10 @@ impl Pane {
         }
     }
 
+    pub(crate) fn fills_frame(&self) -> bool {
+        matches!(self.content, PaneContent::Terminal(_))
+    }
+
     pub fn take_ask(&mut self) -> Option<PendingAsk> {
         match &mut self.content {
             PaneContent::Session {

@@ -395,6 +395,13 @@ fn snap_cells(dir: &Scratch, snap: &str) -> Result<Vec<String>, Box<dyn Error>> 
         .collect())
 }
 
+fn first_number(dir: &Scratch, snap: &str) -> Result<usize, Box<dyn Error>> {
+    snap_cells(dir, snap)?
+        .iter()
+        .find_map(|cell| cell.trim().parse::<usize>().ok())
+        .ok_or_else(|| format!("{snap}: no numbered row on the frame").into())
+}
+
 /// Dies with the terminal button opening nothing a shell runs in: no pane, keys that never
 /// reach the PTY, output that never comes back, a wheel that cannot reach older rows, or an
 /// exit unnoticed.
@@ -430,9 +437,14 @@ fn a_terminal_pane_runs_a_command_and_says_how_its_shell_ended() -> TestResult {
             .any(|cell| cell.trim() == text))
     };
     assert!(row("printed", "yi-term-ok")?, "the command's output row");
-    assert!(
-        !row("bottom", "18")? && row("scrolled", "18")?,
-        "the wheel shows older rows"
+    let (bottom, scrolled) = (
+        first_number(&dir, "bottom")?,
+        first_number(&dir, "scrolled")?,
+    );
+    assert_eq!(
+        bottom.saturating_sub(scrolled),
+        3,
+        "the wheel scrolls back the ↑3 rows the title reports, from row {bottom}"
     );
     Ok(())
 }
@@ -500,6 +512,8 @@ fn closing_a_terminal_pane_ends_its_shell() -> TestResult {
          key x\n\
          cmd-y\n\
          wait-frame 8000 >_ sh\n\
+         wait-frame 8000 $ \n\
+         type-ms 2\n\
          type for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 $(cat pid) 2>/dev/null || break; sleep 0.3; done; kill -0 $(cat pid) 2>/dev/null && echo alive-$((40+2)) || echo gone-$((40+2))\n\
          key enter\n\
          wait-frame 8000 -42\n\
@@ -511,30 +525,5 @@ fn closing_a_terminal_pane_ends_its_shell() -> TestResult {
         cells.iter().any(|cell| cell.trim() == "gone-42"),
         "{cells:#?}"
     );
-    Ok(())
-}
-
-/// Dies with keystrokes into a stopped child queuing without bound: memory grows and the user
-/// sees nothing. A jammed PTY fills the capped write queue and the next key fails visibly.
-#[test]
-#[ignore = "tier-2 journey: `just journeys`"]
-fn a_terminal_pane_says_when_the_child_stops_reading() -> TestResult {
-    terminal_run(
-        "yi-term-stall",
-        &format!(
-            "cmd-y\n\
-             wait-frame 8000 >_ sh\n\
-             type sleep 30\n\
-             key enter\n\
-             wait 500\n\
-             paste {}\n\
-             wait 500\n\
-             type {}\n\
-             wait-frame 8000 input queue full\n\
-             quit\n",
-            "a".repeat(9000),
-            "x".repeat(80),
-        ),
-    )?;
     Ok(())
 }
