@@ -4,6 +4,7 @@
     record_changes.py               record every unstamped file in docs/changes, in landing order
     record_changes.py --dry-run     print the plan and write nothing
     record_changes.py --backfill    also record a backlog: files that landed before any was recorded
+    record_changes.py --drift       exit 1 when more than 10 files, or one over 3 days old, wait unrecorded
     record_changes.py --selfcheck   run the recorder over real change files in a scratch repo
 
 Per file, in the order main's first-parent history added them (name order within one commit): the
@@ -11,7 +12,7 @@ minor version in docs/ARCHITECTURE.md goes up by one, its CHANGELOG row goes on 
 becomes the next D-row with its ADR and index line, and the file is stamped `version:` and
 `decisions:`, which check_changes.py refuses a branch to write. A stamped file is never recorded again.
 """
-import os, pathlib, re, shutil, subprocess, sys, tempfile
+import datetime, os, pathlib, re, shutil, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "scripts/guardrails")]
@@ -133,12 +134,53 @@ def ahead(root, last, given):
             f"{given.get(n, 'no decision')}" for n, at in sorted(sites.items())]
 
 
+# Incident: the record job never ran, so 271 change files landed unrecorded and the version, the
+# changelog and the decision log sat four weeks behind main before a release found it.
+DRIFT_FILES, DRIFT_DAYS, DRIFT_CHECKS = 10, 3, ("count", "age")
+
+
+def drift(todo, today, backlog, off=""):
+    """The unrecorded pile past a cap, each error naming the count, the oldest file and the clearing command."""
+    if not todo:
+        return []
+    name, _, date = todo[0]
+    days = (today - datetime.date.fromisoformat(date)).days
+    clear = "run: python3 scripts/record_changes.py" + (" --backfill" if backlog else "")
+    errs = []
+    if len(todo) > DRIFT_FILES and off != "count":
+        errs.append(f"record: {len(todo)} change files wait unrecorded, past the cap of {DRIFT_FILES}; the oldest is {name}; {clear}")
+    if days > DRIFT_DAYS and off != "age":
+        errs.append(f"record: {name}, the oldest of {len(todo)} unrecorded change files, landed {date}, "
+                    f"{days} days ago, past the cap of {DRIFT_DAYS}; {clear}")
+    return errs
+
+
+def drift_cases(off=""):
+    """Each refusal the drift guard owes, at its cap plus one, and a pile at both caps it lets pass."""
+    today = datetime.date(2026, 10, 28)
+    files = lambda n, date: [(f"2026-10-{i + 1:02d}-x.md", "", date) for i in range(n)]
+    bad = []
+    count = drift(files(DRIFT_FILES + 1, "2026-10-28"), today, False, off)
+    if not any("11 change files" in e and "2026-10-01-x.md" in e and "scripts/record_changes.py" in e for e in count):
+        bad.append(f"eleven fresh files were not refused by count: {count}")
+    age = drift(files(1, "2026-10-24"), today, True, off)
+    if not any("4 days ago" in e and "2026-10-01-x.md" in e and "--backfill" in e for e in age):
+        bad.append(f"one file four days old was not refused by age: {age}")
+    if drift(files(DRIFT_FILES, "2026-10-25"), today, False, off) or drift([], today, False, off):
+        bad.append("a pile at both caps, or no pile, was refused")
+    return bad
+
+
 def main(argv, root=ROOT):
-    if set(argv) - {"--dry-run", "--backfill"}:
-        print("usage: record_changes.py [--dry-run] [--backfill] | --selfcheck", file=sys.stderr)
+    if set(argv) - {"--dry-run", "--backfill", "--drift"}:
+        print("usage: record_changes.py [--dry-run] [--backfill] | --drift | --selfcheck", file=sys.stderr)
         return 2
     views, changes = state(root)
     todo = pending(root, "HEAD", changes)
+    if "--drift" in argv:
+        errs = drift(todo, datetime.date.today(), len(todo) == len(changes))
+        print("\n".join(errs) or f"record: {len(todo)} change file(s) unrecorded, within {DRIFT_FILES} files and {DRIFT_DAYS} days")
+        return 1 if errs else 0
     if not todo:
         print("record: nothing to record")
         return 0
@@ -213,6 +255,11 @@ def verify(tmp, recorded, bad):
 
 
 def selfcheck():
+    bad = drift_cases() + [f"the drift selfcheck passes with the {c} check off, so it refutes nothing"
+                           for c in DRIFT_CHECKS if not drift_cases(c)]
+    if bad:
+        print("FAIL record selfcheck\n" + "\n".join(f"  {b}" for b in bad))
+        return 1
     if subprocess.run(("git", "-C", str(ROOT), "cat-file", "-e", PIN), capture_output=True).returncode:
         print(f"FAIL record selfcheck\n  the fixture commit {PIN[:9]} is missing; fetch main's full history")
         return 1
