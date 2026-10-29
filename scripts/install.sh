@@ -109,6 +109,8 @@ download() {
     echo "install.sh: $name has sha256 $got, but SHA256SUMS says $want; nothing installed" >&2
     return 1
   fi
+  get "$base/$name.sig" "$work/$name.sig" 2>/dev/null \
+    || echo "install.sh: this release is unsigned; integrity is the sha256 check only"
   tar -xzf "$work/$name" -C "$work"
   [ -x "$work/${name%.tar.gz}/bin/yi" ] || {
     echo "install.sh: $name holds no ${name%.tar.gz}/bin/yi; nothing installed" >&2; return 1

@@ -31,5 +31,13 @@ chmod +x "$stage/install.sh"
 mkdir -p target/package
 tar -C target/package -czf "target/package/${name}.tar.gz" "$name"
 ( cd target/package && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
-scripts/sign.sh "target/package/${name}.tar.gz"
+rm -f "target/package/${name}.tar.gz.sig"
+# Invariant: an archive leaves here signed, or marked unsigned because YI_RELEASE_UNSIGNED=1 asked;
+# a signature that fails takes the archive with it, so no unsigned one is left to publish.
+if [ "${YI_RELEASE_UNSIGNED:-}" = 1 ]; then
+  echo "UNSIGNED: target/package/${name}.tar.gz has no .sig (YI_RELEASE_UNSIGNED=1); yi update refuses it until it is signed"
+elif ! scripts/sign.sh "target/package/${name}.tar.gz"; then
+  rm -f "target/package/${name}.tar.gz" "target/package/${name}.tar.gz.sha256"
+  exit 1
+fi
 echo "target/package/${name}.tar.gz"
