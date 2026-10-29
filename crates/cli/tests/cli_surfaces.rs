@@ -270,6 +270,9 @@ fn ask_reads_a_prompt_past_the_argument_cap_from_stdin() -> TestResult {
     let empty = run("")?;
     assert_eq!(empty.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&empty.stderr).contains("no prompt on stdin"));
+    let last: Value = serde_json::from_str(stdout(&empty).lines().last().ok_or("no stdout")?)?;
+    assert_eq!(last["type"], "final", "{last}");
+    assert_eq!(last["class"], "refusal:config", "{last}");
     Ok(())
 }
 
@@ -383,7 +386,8 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
     assert!(full.iter().any(|kind| kind == "message_update"), "{full:?}");
     let kept: Vec<_> = full.into_iter().filter(|k| k != "message_update").collect();
     assert_eq!(lean, kept);
-    assert_eq!(lean.last().map(String::as_str), Some("agent_end"));
+    let tail: Vec<_> = lean.iter().rev().take(2).map(String::as_str).collect();
+    assert_eq!(tail, ["final", "agent_end"]);
 
     let mut argv = vec!["--faux", recorded.as_str()];
     argv.extend("--model faux/faux-1 --json --no-deltas look on".split(' '));
@@ -408,6 +412,77 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
             "{stderr}"
         );
     }
+    Ok(())
+}
+
+/// A granted directory that does not exist, or that the sandbox must keep closed, ended the run
+/// before the model answered; a good one let it through. The grant belongs to the run that named
+/// it: the ledger keeps none, so a `--continue` that omits the flag does not inherit it.
+#[test]
+fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> TestResult {
+    let workspace = Workspace::new("allow-write")?;
+    let (home, missing) = (
+        workspace.0.join("home"),
+        workspace.project().join("no-such-dir"),
+    );
+    for dir in [home.to_string_lossy(), missing.to_string_lossy()] {
+        let run = ask(&workspace, "look", &["--allow-write", &dir])?;
+        let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+        assert_eq!(run.status.code(), Some(2), "{dir}: {stderr}");
+        assert!(stderr.contains("allow-write"), "{stderr}");
+    }
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [missing]}}).to_string(),
+    )?;
+    let configured = ask(&workspace, "look", &[])?;
+    assert_eq!(configured.status.code(), Some(2), "{configured:?}");
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [workspace.project()]}}).to_string(),
+    )?;
+    let run = ask(
+        &workspace,
+        "look",
+        &["--allow-write", &workspace.project().to_string_lossy()],
+    )?;
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    let ledger = session_text(&workspace.0.join("home/sessions"))?;
+    assert!(
+        !ledger.contains(yi_types::permission::PERMISSION_RULE_ENTRY),
+        "{ledger}"
+    );
+    Ok(())
+}
+
+/// A relative grant resolves against the invocation directory, not the claimed lane under `$HOME`.
+#[test]
+fn allow_write_relative_dir_uses_the_invocation_directory() -> TestResult {
+    let workspace = Workspace::new("allow-write-relative")?;
+    crate::repo::init_repo(&workspace.project())?;
+    std::fs::create_dir(workspace.project().join("relative-grant"))?;
+    let run = ask(&workspace, "look", &["--allow-write", "relative-grant"])?;
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    Ok(())
+}
+
+/// The grant reached through `permissions.allowWrite` is refused where the flag's is, so a
+/// config chain that stops delivering the value fails here instead of granting nothing.
+#[test]
+fn allow_write_from_config_refuses_a_protected_dir() -> TestResult {
+    let workspace = Workspace::new("allow-write-config")?;
+    let home = workspace.0.join("home");
+    std::fs::create_dir_all(home.join(".yi"))?;
+    std::fs::write(
+        home.join(".yi/config.json"),
+        serde_json::to_string(&json!({
+            "permissions": {"allowWrite": [home.to_string_lossy()]}
+        }))?,
+    )?;
+    let run = ask(&workspace, "look", &[])?;
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    assert_eq!(run.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("allow-write"), "{stderr}");
     Ok(())
 }
 
@@ -1393,6 +1468,53 @@ fn an_unknown_model_names_itself_over_acp() -> TestResult {
         message.contains("unknown model openrouter/openai/gpt-6-astra"),
         "the reason must reach the client, got: {reply}"
     );
+    Ok(())
+}
+
+/// Dies with `final` printed only inside the loop's stream: a driver waiting on the closing
+/// line of `ask --json` saw nothing when the model was unknown.
+#[test]
+fn an_unknown_model_still_closes_a_json_ask_with_a_final_line() -> TestResult {
+    let workspace = Workspace::new("ask-early-final")?;
+    let run = workspace.yi(&[
+        "ask",
+        "--json",
+        "--model",
+        "openrouter/openai/gpt-6-astra",
+        "hi",
+    ])?;
+    assert_ne!(run.status.code(), Some(0), "{run:?}");
+    let last: Value = serde_json::from_str(stdout(&run).lines().last().ok_or("no stdout")?)?;
+    assert_eq!(last["type"], "final", "{run:?}");
+    assert_eq!(last["kind"], "error");
+    assert_eq!(last["class"], "refusal:unknown_model");
+    assert!(
+        last["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("gpt-6-astra")),
+        "{last}"
+    );
+    Ok(())
+}
+
+/// Dies with the store spelling pinned: a driver branching on the closed vocabulary saw
+/// whatever a regression wrote, and nothing failed.
+#[test]
+fn a_resume_the_store_cannot_honour_closes_as_a_harness_store_final() -> TestResult {
+    let workspace = Workspace::new("ask-store-final")?;
+    let run = workspace.yi(&[
+        "ask",
+        "--json",
+        "--model",
+        "faux/faux-1",
+        "--session",
+        "no-such-session",
+        "hi",
+    ])?;
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+    let last: Value = serde_json::from_str(stdout(&run).lines().last().ok_or("no stdout")?)?;
+    assert_eq!(last["type"], "final", "{last}");
+    assert_eq!(last["class"], "harness:store", "{last}");
     Ok(())
 }
 
@@ -2774,11 +2896,73 @@ fn turns_script(
     Ok(path.display().to_string())
 }
 
+/// Dies with a headless run that needed an approval nobody could give exiting 0 with the call
+/// unnamed, so a caller could not tell a refusal from an answer. The `permissions.allow` entry
+/// the refusal prints is the remedy, so it is run: the same call, with that entry, goes through.
+#[test]
+fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -> TestResult {
+    let workspace = Workspace::new("headless-denial")?;
+    let command = "touch 'made[1]'";
+    let script = bash_script(&workspace, command, Some("I could not run it."))?;
+    let flags = ["--confirm", "--json", "--faux", &script];
+    let run = ask(&workspace, "go", &flags)?;
+    let (out, err) = (
+        stdout(&run),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
+    );
+    assert_eq!(run.status.code(), Some(4), "{out}{err}");
+    assert!(err.contains(command), "{err}");
+    assert!(!workspace.project().join("made[1]").exists());
+    let mut lines = out.lines().rev();
+    let last: Value = serde_json::from_str(lines.next().ok_or("no output")?)?;
+    assert_eq!(last["type"], "final", "{out}");
+    assert_eq!(last["kind"], "error", "{out}");
+    assert_eq!(last["class"], "harness:denied", "{out}");
+    let denied: Value = serde_json::from_str(lines.next().ok_or("no denial")?)?;
+    assert_eq!(denied["type"], "denied", "{out}");
+    assert_eq!(denied["tool"], "bash", "{out}");
+    assert_eq!(denied["args"]["command"], command, "{out}");
+    let reason = denied["reason"].as_str().ok_or("no reason")?;
+
+    let (_, tail) = reason
+        .split_once("permissions.allow entry ")
+        .ok_or(reason)?;
+    let entry: String = serde_json::Deserializer::from_str(tail)
+        .into_iter()
+        .next()
+        .ok_or(tail)??;
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allow": [entry]}}).to_string(),
+    )?;
+    let run = ask(&workspace, "go", &flags)?;
+    assert_eq!(run.status.code(), Some(0), "{}", stdout(&run));
+    assert!(workspace.project().join("made[1]").exists());
+    Ok(())
+}
+
+/// Dies with a mistyped `permissions.allow` entry dropped, so the denial it was written to
+/// prevent came back with no word of why.
+#[test]
+fn an_allow_entry_without_a_pattern_ends_the_run_with_exit_2() -> TestResult {
+    let workspace = Workspace::new("allow-entry")?;
+    write_config(&workspace, r#"{"permissions":{"allow":["bash"]}}"#)?;
+    let run = ask(&workspace, "go", &[])?;
+    let err = String::from_utf8_lossy(&run.stderr).into_owned();
+    assert_eq!(run.status.code(), Some(2), "{err}");
+    assert!(err.contains("permissions.allow"), "{err}");
+    Ok(())
+}
+
 /// Dies with the last word started at `--deadline` and followed 90 s past it: the eval
 /// harness kills `yi ask` at the deadline, so the answer and the lane release were lost.
 #[test]
 fn a_run_past_its_deadline_answers_and_exits_inside_it() -> TestResult {
     let workspace = Workspace::new("deadline-last-word")?;
+    write_config(
+        &workspace,
+        r#"{"permissions":{"allow":["bash sleep 100"]}}"#,
+    )?;
     let script = bash_script(&workspace, "sleep 100", Some("the last word"))?;
     let started = std::time::Instant::now();
     let answered = ask(
