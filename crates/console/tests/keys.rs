@@ -75,32 +75,61 @@ fn the_header_buttons_and_terminal_keep_chords_the_terminal_leaves_alone() {
 fn terminal_environments_share_graphics_support_but_not_chord_support() {
     let environments = [
         (
-            "Ghostty",
-            "xterm-256color",
-            Some("ghostty"),
+            "Ghostty TERM",
+            "xterm-ghostty",
             None,
+            None,
+            false,
             true,
             true,
         ),
-        ("kitty", "xterm-kitty", None, Some("1"), true, true),
+        (
+            "Ghostty TERM_PROGRAM",
+            "xterm-256color",
+            Some("ghostty"),
+            None,
+            false,
+            true,
+            true,
+        ),
+        ("kitty", "xterm-kitty", None, Some("1"), false, true, true),
+        (
+            "kitty by window id",
+            "xterm-256color",
+            None,
+            Some("1"),
+            false,
+            true,
+            false,
+        ),
         (
             "tmux in kitty",
             "tmux-256color",
             Some("tmux"),
             Some("1"),
+            true,
             false,
             false,
         ),
-        ("xterm", "xterm-256color", None, None, false, false),
+        (
+            "xterm-kitty in tmux",
+            "xterm-kitty",
+            None,
+            Some("1"),
+            true,
+            false,
+            true,
+        ),
+        ("xterm", "xterm-256color", None, None, false, false, false),
     ];
-    for (name, term, program, window_id, graphics, chords) in environments {
+    for (name, term, program, window_id, multiplexed, graphics, chords) in environments {
         assert_eq!(
-            yi_tui::orb::kitty::supported_in(Some(term), program, window_id),
+            yi_console::kitty::graphics(Some(term), program, window_id, multiplexed),
             graphics,
             "{name} graphics"
         );
         assert_eq!(
-            yi_console::kitty::kitty_named_terminal(Some(term), program),
+            yi_tui::orb::kitty::kitty_named_terminal(Some(term), program),
             chords,
             "{name} chords"
         );

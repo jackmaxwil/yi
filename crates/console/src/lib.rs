@@ -284,14 +284,19 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
     app.wake = Some(event_tx.clone());
-    app.kitty = yi_tui::orb::kitty::supported();
+    app.kitty = crate::kitty::graphics(
+        std::env::var("TERM").ok().as_deref(),
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
+        yi_tui::orb::kitty::multiplexed(),
+    );
     configure(&mut app, options);
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
         std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
     );
-    app.cmd_hints = crate::kitty::kitty_named_terminal(
+    app.cmd_hints = yi_tui::orb::kitty::kitty_named_terminal(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
     );
