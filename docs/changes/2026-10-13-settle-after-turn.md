@@ -1,4 +1,6 @@
 ---
+version: 0.702.0
+decisions: D437
 issue: Closes #1404
 decision: a session's OpenRouter turn that is owed a settlement ends at once with its usage unknown, and the generation record is fetched afterwards on a detached thread whose result is booked on the session as a `settled` usage record (amends D163, D175); the hook rides the session's shared ProviderStream, so a side call's stream (title, compaction) settles after the turn too, its own usage row booked as settled | the owner, 2026-10-12: "End now, cost later"; the record lands about ten seconds after the drop and a cut turn waited up to 28 s for it | drop the hook from `ProviderStream`, which restores the inline wait
 growth: +389 the detached settle thread, its hook plumbing, the deadline-bounded drain and the child-billing and drain regression tests; weighed against restoring the inline wait, which returns the 28 s stall, so nothing was deleted

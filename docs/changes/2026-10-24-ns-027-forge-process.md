@@ -1,4 +1,6 @@
 ---
+version: 0.750.0
+decisions: D473
 issue: Closes #1466, Refs #1442
 decision: A tool-description cut owes no claims ledger when the new text is shorter and every sentence of it is a sentence of the old text, in order (revises D188's rule that a changed key owes the claims ledger) | the request budget already fails only on growth, and in 22 days 48 commits moved request_budget.json and 39 moved tool_surface.json, cuts paying the same sections as additions | revert the PR; the lock's kept text is harmless
 ---
