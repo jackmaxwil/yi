@@ -2185,7 +2185,7 @@ fn compaction_drops_the_host_nudges_it_retained() -> Result<(), Box<dyn Error>> 
 
 /// Stage 6: once dropping old results costs less than resending them, the request carries each
 /// as one `[reclaimed: …]` line, and the next request carries the same bytes, so the cut is
-/// paid once; here no cache is priced, so the cut lands as soon as two results are old enough.
+/// paid once; here no cache is priced, so the cut lands as soon as 20,000 tokens are old enough.
 #[tokio::test(flavor = "multi_thread")]
 async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
 -> Result<(), Box<dyn Error>> {
@@ -2194,7 +2194,7 @@ async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
             "type": "function", "function": {"name": "read", "arguments": format!("{{\"n\":{n}}}")}}]});
         sse_reply(&call, "tool_calls")
     };
-    let mut replies: Vec<String> = (0..8).map(call).collect();
+    let mut replies: Vec<String> = (0..26).map(call).collect();
     replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
     let (port, served) = openrouter_stand_in(replies)?;
     let session = openrouter_session_with(port, 200_000, Settings::default())?;
@@ -2204,7 +2204,7 @@ async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
     session.set_tools(vec![Arc::new(LongResult("read"))]);
     let store = crate::support::memory_store("reclaim-bytes");
     session.attach_store(Arc::clone(&store))?;
-    session.prompt("read the probe eight times")?;
+    session.prompt("read the probe many times")?;
     session.wait_idle().await;
     let bodies = served.join().map_err(|_| "the stand-in panicked")?;
     let cut = |body: &String| -> Result<Vec<String>, serde_json::Error> {
