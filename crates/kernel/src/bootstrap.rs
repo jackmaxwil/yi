@@ -1087,6 +1087,10 @@ mod tests {
         assert!(root.join("yi_runtime").join("src").join("rlm").is_dir());
         assert!(root.join("skills").is_dir());
         assert!(!root.join("yi_runtime").join("tests").exists());
+        assert!(
+            !root.join("yi_runtime").join("uv.lock").exists(),
+            "the embed carries no lockfile nothing reads"
+        );
         assert_ne!(
             root, fallback,
             "the compile-time path never serves an installed binary"
