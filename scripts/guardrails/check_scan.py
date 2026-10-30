@@ -17,12 +17,17 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import BASE, ROOT, fail, test_mask
-from check_public_surface import unscanned
+from check_public_surface import rule_lines, unscanned
 
 BASELINE = BASE / "scan.json"
+# A scanner that ran and found nothing keeps this row, which is what tells the next --update the
+# family is known: without it a family whose rows all fell to zero read as brand new, and its first
+# finding seeded the shrink-only baseline with no refusal.
+TOOL_ROW = ""
 GITLEAKS = (ROOT / "scripts/scan/gitleaks.version").read_text().strip()
 ZIZMOR = "zizmor==1.31.1"
 SEMGREP = "semgrep==1.182.1"
+INSTALL_SECS = 300
 FIXTURES = ROOT / "scripts/scan/fixtures"
 RULES = ROOT / "scripts/scan/rules"
 SCAN_ROOTS = ("evals", "scripts", "python", "crates")
@@ -97,6 +102,26 @@ def require_gitleaks():
         raise Unavailable(f"gitleaks {GITLEAKS} is required, found {proc.stdout.strip() or 'none'}")
     return executable
 
+def gitleaks_ready():
+    executable = shutil.which("gitleaks")
+    return executable is not None and run([executable, "version"]).stdout.strip() == GITLEAKS
+
+
+def provision_gitleaks(strict):
+    """Incident: the CI lanes installed the pinned gitleaks from a workflow step, so the autofix clone
+    ran the lane without it and the CI-strict skip failed every pass (#1733). One gate provisions it."""
+    script = ROOT / "scripts/scan/install_gitleaks.sh"
+    if not strict or not script.is_file() or gitleaks_ready():
+        return
+    try:
+        proc = subprocess.run([str(script)], capture_output=True, text=True, check=False,
+                              timeout=INSTALL_SECS, env=environment())
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"scan: the gitleaks install did not finish: {error}")
+        return
+    if proc.returncode:
+        print(f"scan: the gitleaks install failed ({proc.returncode}): {(proc.stdout + proc.stderr).strip()[-400:]}")
+
 
 def zizmor(paths):
     require_uv(ZIZMOR, "zizmor", ZIZMOR.split("==", 1)[1])
@@ -145,17 +170,24 @@ def semgrep(paths, fixtures=False):
     return findings
 
 
-def go_glob(pattern, off=""):
-    if off == "ignores":
-        return r"^$"
+def go_glob(pattern):
     translated = fnmatch.translate(pattern).replace("(?>", "(?:")
     translated = re.sub(r"\(\?=\(\?P<g\d+>(.*?)\)\)\(\?P=g\d+\)", r"\1", translated)
     return translated.replace(r"\Z", r"\z")
 
 
+def tracked():
+    proc = subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True, text=True, check=False)
+    return proc.stdout.splitlines() if not proc.returncode else []
+
+
 def gitleaks_ignores():
-    """The planted fakes only: a real source path on the shared list must still be scanned."""
-    return tuple(pattern for pattern in unscanned() if "fixtures" in pattern or "planted" in pattern)
+    """A shared ignore reaches gitleaks only when every file it matches is planted under a fixtures
+    directory, so a path a PR adds for real source is still scanned."""
+    paths = tracked()
+    return tuple(pattern for pattern in unscanned()
+                 if (hits := [path for path in paths if fnmatch.fnmatch(path, pattern)])
+                 and all("fixtures" in pathlib.PurePosixPath(path).parts for path in hits))
 
 
 def gitleaks_config(ignores, name):
@@ -255,7 +287,8 @@ def save_baseline(findings, tools, off=""):
         fail(errors + ["refusing to grow the scan baseline"], "scan --update")
     counts = {key: value for key, value in old.items() if key[0] not in tools}
     counts.update(collections.Counter((tool, rule) for tool, rule, _, _ in findings))
-    ordered = sorted([list(key), count] for key, count in counts.items() if count)
+    counts.update({(tool, TOOL_ROW): 0 for tool in tools if not any(key[0] == tool for key in counts)})
+    ordered = sorted([list(key), count] for key, count in counts.items() if count or key[1] == TOOL_ROW)
     BASELINE.write_text(json.dumps(ordered, indent=2) + "\n")
 
 
@@ -323,18 +356,20 @@ def selfcheck(off="", fixtures=None):
             errors.append(f"baseline shrink hint was {hints}")
     if off == "baseline" and not problems and not hints:
         errors.append("disabled baseline checks accepted a new rule id and a shrink")
-    nested = "crates/runtime/tests/fixtures/behavior/a/b/planted-key"
-    for pattern in (*unscanned(), "**/fixtures/**/planted*"):
-        translated = go_glob(pattern, off)
+    planted = "scripts/scan/fixtures/gitleaks/planted-aws.txt"
+    patterns = () if off == "ignores" else unscanned()
+    for pattern in patterns:
+        translated = go_glob(pattern)
         if any(token in translated for token in ("(?=", "(?>", "(?P=")) or translated.endswith(r"\Z"):
             errors.append(f"gitleaks ignore is not RE2-compatible: {pattern}")
-        if fnmatch.fnmatch(nested, pattern) != bool(re.match(translated.replace(r"\z", r"\Z"), nested)):
+        if fnmatch.fnmatch(planted, pattern) != bool(re.match(translated.replace(r"\z", r"\Z"), planted)):
             errors.append(f"gitleaks and public-surface ignores disagree on {pattern}")
+    if not any(fnmatch.fnmatch(planted, pattern) for pattern in patterns):
+        errors.append(f"no shared ignore covers the planted fixture {planted}")
     for real in ("crates/runtime/src/memory/doc.rs", "skills/yi/session-mining/extract.py"):
         if any(fnmatch.fnmatch(real, pattern) for pattern in gitleaks_ignores()):
             errors.append(f"gitleaks skips real source: {real}")
-    deny = {line for line in (ROOT / "scripts/mirror/deny.txt").read_text().splitlines()
-            if line and not line.startswith("#")}
+    deny = set(rule_lines(ROOT / "scripts/mirror/deny.txt"))
     for regex in re.findall(r"^regex = '''(.+)'''$", (RULES / "gitleaks.toml").read_text(), re.M):
         if regex not in deny:
             errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
@@ -373,6 +408,21 @@ def selfcheck(off="", fixtures=None):
             expected = [[["probe", "rule"], 1], [["skipped", "rule"], 7]]
             if json.loads(BASELINE.read_text()) != expected:
                 errors.append("baseline --update changed a scanner that did not run")
+            with contextlib.redirect_stdout(io.StringIO()):
+                save_baseline([], {"fresh"})
+            expected = [[["fresh", ""], 0], [["probe", "rule"], 1], [["skipped", "rule"], 7]]
+            if json.loads(BASELINE.read_text()) != expected:
+                errors.append("a scanner that ran with no findings left no row")
+            grown = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(grown):
+                    save_baseline([("fresh", "rule", "planted.txt", 1)], {"fresh"}, off)
+            except SystemExit:
+                refused = "refusing to grow the scan baseline" in grown.getvalue()
+            else:
+                refused = False
+            if off != "baseline" and not refused:
+                errors.append("a scanner with a presence row absorbed its first finding")
             BASELINE.unlink()
             with contextlib.redirect_stdout(io.StringIO()):
                 save_baseline([], {"probe"})
@@ -443,12 +493,13 @@ def main(argv):
     parser.add_argument("--history", action="store_true")
     args = parser.parse_args(argv)
     strict = bool(os.environ.get("CI"))
+    provision_gitleaks(strict)
     if args.selfcheck:
         findings, tools = gather(fixture_tasks(), strict)
         absent = sorted(set(FAMILIES) - tools)
-        if absent and not strict:
-            print(f"skip scan selfcheck ({', '.join(absent)} did not run, so no fixture family was proved)")
-            return
+        if absent:
+            print(f"skip scan selfcheck ({', '.join(absent)} did not run, so their fixture families are unproved; "
+                  f"the {len(FAMILIES) - len(absent)} of {len(FAMILIES)} families that ran and every scannerless check still do)")
         fixtures = {tool: [row for row in findings if row[0] == tool] for tool in tools}
         if "gitleaks" in fixtures:
             fixtures.update(repository_fixtures())
