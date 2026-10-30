@@ -131,7 +131,7 @@ the acceptance instrument so a child reports a mismatch instead of editing
 the standard. While children run, keep working the tasks you kept.
 
 Context reaches a child four ways: `context_keys` for what you computed
-(the brief), `kernel://main/<var>` for what is live, `family://<name>`
+(the brief), `kernel://main/<var>` for what is live (a child reads it only while you are idle: during an `rlm.wait` it answers busy, so `rlm.put` the value first), `family://<name>`
 for what was `put` (a member with a kernel reads it with `rlm.get`; a reader or worker sees only its sidecar and a partition refuses it, so pass a computed value through `context_keys`), `tree://<name>/<path>` for a file in a worktree.
 
 When a child fails or `rlm.status()` says `stuck`, read its tail

@@ -205,7 +205,7 @@ pub(crate) fn root_session(
     Ok((session, kernel))
 }
 
-async fn printed(
+pub(crate) async fn printed(
     kernel: &Arc<yi_runtime::KernelService>,
     code: &'static str,
 ) -> Result<String, Box<dyn Error>> {
@@ -246,7 +246,7 @@ async fn the_family_board_belongs_to_the_root_session() -> TestResult {
     Ok(())
 }
 
-fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
+pub(crate) fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
     let mut registry = yi_runtime::HostRegistry::default();
     registry.register_mcp_stubs();
     Ok(Arc::new(yi_runtime::KernelService::new(
@@ -268,9 +268,9 @@ fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
     )))
 }
 
-type Read = tokio::task::JoinHandle<Result<yi_runtime::fetch::Fetched, FetchError>>;
+pub(crate) type Read = tokio::task::JoinHandle<Result<yi_runtime::fetch::Fetched, FetchError>>;
 
-fn read_main(
+pub(crate) fn read_main(
     root: &Scratch,
     service: &Arc<KernelService>,
     name: &str,
