@@ -587,7 +587,7 @@ fn window_rows(
             Slot::Group(root) => matches!(&row.control, Some(Hit::Fold(drawn)) if drawn == root),
         })
         .unwrap_or(0);
-    let start = at.saturating_add(1).saturating_sub(visible);
+    let start = crate::panes::first_row(at, visible);
     let end = start.saturating_add(visible).min(rows.len());
     let below = end < rows.len();
     let mut rows = rows;
