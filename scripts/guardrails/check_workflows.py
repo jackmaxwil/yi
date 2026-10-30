@@ -15,7 +15,8 @@ NOT_PLAIN = tuple("'\"|>{[&*!#")
 SKIP = re.compile(r"\[\s*(?:skip[ _-]?ci|ci[ _-]?skip|no[ _-]?ci|skip[ _-]?actions|actions[ _-]?skip)\s*\]", re.I)
 
 JOBS = re.compile(r"^  ([\w-]+):\s*$")
-RUNNER = re.compile(r"^    runs-on:\s*(\S+)\s*$")
+RUNNER = re.compile(r"^    runs-on:(?:\s+(.*?))?\s*$")
+ITEM = re.compile(r"^\s+-\s+(.*?)\s*$")
 
 
 def problems(text, off=""):
@@ -47,25 +48,63 @@ def silenced(text, off=""):
             if not line.lstrip().startswith("#") and SKIP.search(line)]
 
 
+def label(value):
+    """Lanes named by one `runs-on` value: bare, quoted, or a `[a, b]` flow list; none for an expression."""
+    parts = value[1:-1].split(",") if value.startswith("[") and value.endswith("]") else [value]
+    out = []
+    for part in parts:
+        part = part.strip()
+        if len(part) > 1 and part[0] == part[-1] and part[0] in "'\"":
+            part = part[1:-1]
+        if not part or part.startswith("${{") or part.endswith("}}"):
+            return []
+        out.append(part)
+    return out
+
+
 def lanes(text):
-    """{job: runner label} from a workflow's `jobs:` block; a job whose `runs-on` is an expression has none."""
-    out, job = {}, None
+    """({job: [lanes]}, [(job, value)]) from a workflow's `jobs:`; a `runs-on` this cannot read is
+    reported, never dropped: a lane nobody compared is the revert this rule exists to refuse."""
+    out, unread, job, items = {}, [], None, None
     for line in text.splitlines():
+        if items is not None:
+            m = ITEM.match(line)
+            if m and len(line) - len(line.lstrip()) > 4:
+                out[items].extend(label(m.group(1)))
+                continue
+            if not out.get(items):
+                unread.append((items, ""))
+            items = None
         if line.startswith("jobs:"):
             job = None
         elif JOBS.match(line):
             job = JOBS.match(line).group(1)
         elif job and RUNNER.match(line):
-            out[job] = RUNNER.match(line).group(1)
-    return out
+            value = (RUNNER.match(line).group(1) or "").split(" #")[0].strip()
+            names = label(value)
+            if names:
+                out.setdefault(job, []).extend(names)
+            elif value:
+                unread.append((job, value))
+            else:
+                out.setdefault(job, [])
+                items = job
+    if items is not None and not out.get(items):
+        unread.append((items, ""))
+    return out, unread
 
 
 def shared_lane(gate, review, off=""):
-    """(job, lane) of every review job on a lane a gate job of the same estate runs on."""
+    """(job, lane) of every review job on a lane a pr.yml gate job of the same estate runs on."""
     if off == "lane":
         return []
-    gate_lanes = set(lanes(gate).values())
-    return sorted((job, lane) for job, lane in lanes(review).items() if lane in gate_lanes)
+    gate_lanes = {lane for names in lanes(gate)[0].values() for lane in names}
+    return sorted((job, lane) for job, names in lanes(review)[0].items() for lane in names if lane in gate_lanes)
+
+
+def unread_lane(text, off=""):
+    """`runs-on` values the lane rule could not read; an expression there is a lane nobody compared."""
+    return [] if off == "lane" else lanes(text)[1]
 
 
 def selfcheck(off=""):
@@ -76,6 +115,11 @@ def selfcheck(off=""):
     gate = "jobs:\n  gate:\n    runs-on: ubuntu-latest\n"
     shared = "jobs:\n  review:\n    runs-on: ubuntu-latest\n"
     apart = "jobs:\n  review:\n    runs-on: llm\n"
+    noted = "jobs:\n  review:\n    runs-on: ubuntu-latest  # back on the gate lane\n"
+    quoted = "jobs:\n  review:\n    runs-on: \"ubuntu-latest\"\n"
+    flow = "jobs:\n  review:\n    runs-on: [self-hosted, ubuntu-latest]\n"
+    listed = "jobs:\n  review:\n    runs-on:\n      - self-hosted\n      - ubuntu-latest\n"
+    expr = "jobs:\n  review:\n    runs-on: ${{ matrix.os }}\n"
     bad = []
     if [n for n, _ in problems(incident, off)] != [3]:
         bad.append("the incident's plain `if:` holding 'WIP: ' is not refused")
@@ -87,8 +131,14 @@ def selfcheck(off=""):
         bad.append("a comment naming the keyword is refused")
     if shared_lane(gate, shared, off) != [("review", "ubuntu-latest")]:
         bad.append("a review job on the gate's own runner lane is not refused")
+    spellings = (("a trailing comment", noted), ("a quoted label", quoted), ("a flow list", flow), ("a listed lane", listed))
+    for name, text in spellings:
+        if shared_lane(gate, text, off) != [("review", "ubuntu-latest")]:
+            bad.append(f"a review `runs-on` spelled as {name} is not read as the gate's lane")
     if shared_lane(gate, apart, off):
         bad.append("a review job on a lane of its own is refused")
+    if not unread_lane(expr, off):
+        bad.append("a `runs-on` that is an expression is dropped instead of refused")
     return bad
 
 
@@ -112,4 +162,7 @@ if __name__ == "__main__":
              "a round waits an hour or two on the model at a few percent of one CPU, so the gates queued behind "
              "it for up to four hours (#1310): give the round a lane of its own"
              for job, lane in shared_lane(gate, review)]
+    errs += [f".forgejo/workflows/{name}: job {job}'s `runs-on` `{value}` is not a lane this check reads; "
+             "an expression there is a review lane nobody compared, so name the label"
+             for name, text in (("pr.yml", gate), ("review.yml", review)) for job, value in unread_lane(text)]
     fail(errs, "workflows")
