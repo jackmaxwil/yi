@@ -165,10 +165,10 @@ def stops(notes):
 
 
 def retry_due(notes, now):
-    """Whether the label a failure left has run out its window and clears itself. A declined round is
+    """Whether the label a stop left has run out its window and clears itself. A declined round is
     the owner's to rule on and never expires, and the third failure keeps the label for good."""
     newest = max(autofix_rows(notes), key=lambda row: when(row.get("at")), default=None)
-    return bool(newest and newest.get("verdict") == "failed" and stops(notes) <= RETRIES
+    return bool(newest and newest.get("verdict") in ("failed", "capped") and stops(notes) <= RETRIES
                 and when(newest.get("at")) + RETRY_AFTER <= now)
 
 
@@ -178,11 +178,26 @@ def fix_spend(comments):
 
 
 def cap_wait(notes, now):
-    """This PR's spend in the last 24 hours and when that window reopens, or None while under the cap."""
-    inside = [(when(row["at"]), row) for row in autofix_rows(notes) if row.get("at")]
-    inside = [(at, row) for at, row in inside if at > now - WINDOW]
+    """This PR's spend in the last 24 hours and when that window reopens, or None while under the cap.
+    The reopen is when enough of the window has aged out that what is left is under the cap, not when
+    the oldest row expires: a fix that overshot the cap is what usually took the PR past it."""
+    inside = sorted(((when(row["at"]), row) for row in autofix_rows(notes) if row.get("at") and when(row["at"]) > now - WINDOW),
+                    key=lambda pair: pair[0])
     spent = bot_meter.spent([row for _, row in inside])
-    return (spent, min((at for at, _ in inside), default=now) + WINDOW) if spent >= CAP_PR else None
+    if spent < CAP_PR:
+        return None
+    left = spent
+    for at, row in inside:
+        left -= float(row.get("cost") or 0)
+        if left < CAP_PR:
+            return spent, at + WINDOW
+    return spent, inside[-1][0] + WINDOW
+
+
+def cap_reason(spent, reopens):
+    """The wait comment's sentence: what the PR's last 24 hours spent, and when that window reopens."""
+    return (f"this PR's fixes have spent ${spent:.2f} of the ${CAP_PR:.2f} they may in 24 hours; that window "
+            f"reopens at {hourly(reopens)}, and the next pass after it tries again")
 
 
 def waited(notes, now):
@@ -193,7 +208,6 @@ def waited(notes, now):
 def hourly(at):
     """A Unix time as the UTC clock a comment names, which is how a person reads when it reopens."""
     return datetime.datetime.fromtimestamp(at, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
 
 def scrubbed():
     """The environment for anything that runs the PR's code or a model on its text: no forge token."""
@@ -964,8 +978,7 @@ def spent_today(repo):
 
 def quiet_for(pr, notes, now):
     """Seconds since a person last touched the PR: a comment, or a head commit not the bot's."""
-    times = [datetime.datetime.fromisoformat(c["created_at"].replace("Z", "+00:00")).timestamp()
-             for c in notes if (c.get("user") or {}).get("login") != pr_review.BOT]
+    times = [when(c.get("created_at")) for c in notes if (c.get("user") or {}).get("login") != pr_review.BOT]
     head = sh(ROOT, "git", "log", "-1", "--format=%ct%x00%cn", pr["head"]["sha"], check=False).stdout.strip()
     if "\x00" in head and head.split("\x00", 1)[1] != pr_review.BOT:
         times.append(float(head.split("\x00", 1)[0]))
@@ -1014,8 +1027,7 @@ def attempt(repo, pr, ids, asked=False):
     capped = cap_wait(notes, time.time())
     if capped:
         if not waited(notes, time.time()):
-            reason = (f"this PR's fixes have spent ${capped[0]:.2f} of the ${CAP_PR:.2f} they may in 24 hours; that window "
-                      f"reopens at {hourly(capped[1])}, and the next pass after it tries again")
+            reason = cap_reason(*capped)
             meter = bot_meter.Meter()
             post(render(number, {}, "capped", reason, bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), "autofix"), meter))
         return "capped"
@@ -1116,7 +1128,7 @@ def cmd_autofix(args):
         pr = forge_pr.pull(forge_pr.pull_number(args.number))
         print(f"#{pr['number']}: {attempt(repo, pr, ids, asked=True)}")
         return 0
-    pulls = forge_pr.open_pulls(repo)
+    pulls = forge_pr.open_pulls()
     if not isinstance(pulls, list):
         print(f"autofix: the forge did not list the pull requests: {(pulls or {}).get('message')}")
         return 1
@@ -1306,6 +1318,11 @@ def selfcheck():
         errs.append(f"the per-PR cap read {capped}, not {CAP_PR} reopening when its oldest spend expires")
     elif not capped:
         errs.append("two spends that add to the per-PR cap are not capped")
+    # A fix that overshoots is what takes a PR past the cap: the reopen is when the oldest rows have
+    # aged out enough, not when the oldest one has.
+    overshot = [row(0.50, now - 23 * 3600), row(5, now - 6 * 3600), row(5, now - 4 * 3600), row(6.50, now - 3600)]
+    if (capped := cap_wait(overshot, now)) is None or int(capped[1]) != int(now + 18 * 3600):
+        errs.append(f"the per-PR cap named {capped} for $17 spent, not the hour the spend falls under ${CAP_PR:.2f}")
     fail = lambda at, verdict="failed": row(0, at, verdict)
     if not retry_due([fail(now - RETRY_AFTER)], now) or retry_due([fail(now - RETRY_AFTER + 1)], now):
         errs.append("the label a failure left does not clear itself at 12 hours, or clears itself before")
@@ -1314,17 +1331,22 @@ def selfcheck():
     if retry_due([fail(now - RETRY_AFTER, "declined")], now) or retry_due(
             [fail(now - RETRY_AFTER - 60), fail(now - 60, "declined")], now):
         errs.append("a declined round's label expired by itself, which is the owner's to rule on")
+    # A PR the old per-PR cap parked keeps a `capped` row at the top of its ledger and the same label.
+    if not retry_due([fail(now - RETRY_AFTER, "capped")], now):
+        errs.append("a capped row at the top of the ledger keeps a person's label on the PR forever")
     if verdict_of(RuntimeError("fatal: Unable to create '/tmp/c/.git/index.lock': File exists."), tried()) != "deferred":
         errs.append("a git lock an earlier pass left behind counted as a failure, not a deferred attempt")
     status = bot_meter.status_line(bot_meter.Meter(), 3.5, 12.0, "autofix")
-    reason = (f"this PR's fixes have spent ${CAP_PR:.2f} of the ${CAP_PR:.2f} they may in 24 hours; that window "
-              f"reopens at {hourly(now + 3 * 3600)}, and the next pass after it tries again")
+    reason = cap_reason(CAP_PR, now + 3 * 3600)
     wait = render(1, {}, "capped", reason, status)
     if ("**Autofix is waiting**" not in wait or "autofix:failed" in wait or f"${CAP_PR:.2f}" not in wait
             or hourly(now + 3 * 3600) not in wait or "this PR $3.50" not in wait):
         errs.append(f"the wait comment says nothing a person can act on, or parks the PR: {wait!r}")
     if not waited([dict(bot, created_at=iso(now - 60), body=wait)], now) or waited([dict(bot, created_at=iso(now - WINDOW - 60), body=wait)], now):
         errs.append("the wait comment repeats inside its window, or stays silent in the next one")
+    # One ISO parse for the module: a comment the forge returned without a created_at is no time, not a crash.
+    if quiet_for({"head": {"sha": "abc"}}, [{"user": {"login": "someone"}, "body": "x"}], now) != now:
+        errs.append("quiet_for does not read a comment the forge returned without a created_at")
     lost = render(1, {"retry": f"`autofix:failed` clears itself at {hourly(now + RETRY_AFTER)}, when the next pass tries again"},
                   "failed", "the lane stayed red", status)
     if hourly(now + RETRY_AFTER) not in lost or "clears itself" not in lost:
@@ -1622,7 +1644,34 @@ def selfcheck():
                                "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
         if said != "deferred" or ("autofix:failed", True) in labelled:
             errs.append(f"a provider 429 read {said} with labels {labelled}, not deferred and unlabelled")
-        # A round declined whole is posted once and holds its head; a declined high stops for the owner.
+        # The label clears itself inside attempt(), where it runs: an aged failure row releases the PR
+        # and an 11-hour one does not. Delete that branch and the first case reads stopped.
+        module.conflicts_of = lambda base, sha: []
+        pr_review.rounds_of = lambda *a: [{"n": 1, "sha": "abc", "verdict": "clean", "findings": []}]
+        stale = lambda at: [dict(bot, created_at=iso(at), body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 verdict=failed -->\n")]
+        for stale_rows, want in ((stale(now - RETRY_AFTER - 60), "clean"), (stale(now - RETRY_AFTER + 3600), "stopped")):
+            labelled[:], pr_review.comments = [], (lambda repo, n, stale_rows=stale_rows: stale_rows)
+            said = attempt("o/r", {"number": 1, "labels": [{"name": "autofix:failed"}],
+                                   "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
+            lifted = ("autofix:failed", False) in labelled
+            if said != want or lifted != (want == "clean"):
+                errs.append(f"a failure {int((now - when(stale_rows[0]['created_at'])) // 3600)}h old read {said} "
+                            f"with labels {labelled}, not {want} and the label {'lifted' if want == 'clean' else 'kept'}")
+        # The capped branch itself: one wait comment and no failed label, and silence inside its window.
+        module.conflicts_of, posted = (lambda base, sha: []), []
+        pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
+        forge_pr.fgj_api = lambda method, path, body=None, **k: posted.append((body or {}).get("body", "")) or {}
+        over = [row(CAP_PR, now - 3600)]
+        for capped_rows, comments in ((over, 1), (over + [row(0, now - 60, "capped")], 0)):
+            posted[:], labelled[:], pr_review.comments = [], [], (lambda repo, n, capped_rows=capped_rows: capped_rows)
+            said = attempt("o/r", {"number": 1, "title": forge_pr.DRAFT + "t", "labels": [{"name": "autofix"}],
+                                   "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
+            if said != "capped" or ("autofix:failed", True) in labelled or len(posted) != comments \
+                    or (comments and "Autofix is waiting" not in posted[0]):
+                errs.append(f"a capped PR read {said} with labels {labelled} and {len(posted)} comment(s), "
+                            f"not capped, unlabelled and {comments} comment(s)")
+        pr_review.comments, forge_pr.fgj_api = (lambda repo, n: tried_notes), (lambda *a, **k: {})
+        pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
         draft = {"number": 1, "title": forge_pr.DRAFT + "t", "labels": [{"name": "autofix"}],
                  "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
         posted = []

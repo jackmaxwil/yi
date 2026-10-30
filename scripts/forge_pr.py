@@ -34,6 +34,7 @@ def job_secs(workflow):
     return int(found.group(1)) * 60
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+import forge_tracking  # noqa: E402
 import merge_baseline  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
 
@@ -101,23 +102,24 @@ def pull(number):
     return pr
 
 
-def open_pulls(name=None):
+def open_pulls():
     """Every open pull request, page by page: the forge returns 50 a page, and a reader of page one
     alone never sees the oldest. Incident: 102 were open and a pass saw #1830..#1891 only."""
-    page, found = 1, []
-    while True:
-        batch = fgj_api("GET", f"repos/{name or repo()}/pulls?state=open&limit=50&page={page}")
-        if not isinstance(batch, list):
-            return batch
-        found += batch
-        if len(batch) < 50:
-            return found
-        page += 1
+    served = []
+
+    def transport(method, path, body):
+        batch = fgj_api(method, path, body)
+        served.append(batch)
+        return batch
+
+    found = list(forge_tracking.paged(transport, f"repos/{repo()}/pulls?state=open"))
+    # Incident: an unsigned fgj answered the listing with an error object the loop then indexed.
+    return found if isinstance(served[0], list) else served[0]
 
 
-def pull_for_branch(branch_name):
+def pull_for_branch(name):
     for pr in open_pulls() or []:
-        if pr.get("head", {}).get("ref") == branch_name:
+        if pr.get("head", {}).get("ref") == name:
             return pr
     return None
 
@@ -653,6 +655,11 @@ def selfcheck():
     globals()["fgj_api"] = lambda *a, **k: {"message": "no token"}
     try:
         assert open_pulls()["message"] == "no token", "an error object read as a page"
+    finally:
+        globals()["fgj_api"] = real[0]
+    globals()["fgj_api"] = lambda *a, **k: served[:50]
+    try:
+        assert len(open_pulls()) == 50, "a forge that ignores `page` served its first page forever"
     finally:
         globals()["fgj_api"] = real[0]
     assert repo_of("ssh://git@forge.example.invalid:2222/apex/yi.git") == "apex/yi"

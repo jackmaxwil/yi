@@ -6,8 +6,8 @@ The autofixer now sees every open pull request and treats each limit as a delay.
 
 Its numbers are the spend of a PR's last 24 hours ($16), a day's spend ($60), six review fixes and three gate fixes in a row, five fixes a pass and a 90-minute job, and the gate streak's limit is one constant instead of a literal.
 
-A spend limit waits: over the per-PR cap the pass skips the PR and posts one comment per 24-hour window naming the cap and the hour the window reopens, with no `autofix:failed`. The day's cap names the midnight it reopens.
+A spend limit waits: over the per-PR cap the pass skips the PR and posts one comment per 24-hour window naming the cap and the hour the window reopens, which is when enough of it has aged out that the spend falls back under the cap, with no `autofix:failed`. The day's cap names the midnight it reopens.
 
-`autofix:failed` expires. A pass clears the label 12 hours after the failure that set it, twice per PR, and the failure comment says which: the hour it clears itself, or "no more automatic retries, a person is next". The streak restarts from the last failure, so the next fix counts from zero.
+`autofix:failed` expires. A pass clears the label 12 hours after the stop that set it — a failure, or the per-PR cap an older pass parked the PR under — twice per PR, and the failure comment says which: the hour it clears itself, or "no more automatic retries, a person is next". The streak restarts from the last failure, so the next fix counts from zero.
 
 A git `Unable to create …​.lock` is a transient error now, so an attempt that meets one is deferred like a 429 rather than labelled failed.
