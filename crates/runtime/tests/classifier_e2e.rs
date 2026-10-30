@@ -78,6 +78,45 @@ fn sidecar_after(
     Ok((port, handle))
 }
 
+/// Answers every request with `body`, counting the connections it accepts, so a test reads
+/// how many requests a caller made rather than inferring it from timing.
+fn counting_sidecar(
+    body: &'static str,
+) -> std::io::Result<(u16, Arc<std::sync::atomic::AtomicUsize>)> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&requests);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else {
+                break;
+            };
+            counted.fetch_add(1, Ordering::SeqCst);
+            let mut reader = BufReader::new(stream);
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut sent = vec![0; length];
+            let _ = reader.read_exact(&mut sent);
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = reader.get_mut().write_all(reply.as_bytes());
+        }
+    });
+    Ok((port, requests))
+}
+
 struct Rig {
     engine: RuleEngine,
     records: Receiver<ClassifyRecord>,
@@ -594,6 +633,7 @@ async fn an_unsafe_answer_goes_straight_to_the_user() -> TestResult {
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
             crate::support::faux_model(),
+            Default::default(),
         )));
     let outcome = tokio::task::block_in_place(|| run(&gate, "make deploy"));
     assert!(!outcome.allowed, "{}", outcome.reason);
@@ -856,6 +896,7 @@ async fn a_call_the_user_refused_is_not_reopened_by_the_classifier() -> TestResu
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
             crate::support::faux_model(),
+            Default::default(),
         )));
     let first = tokio::task::block_in_place(|| run(&gate, "make deploy"));
     assert!(!first.allowed, "{}", first.reason);
@@ -899,6 +940,7 @@ async fn a_call_the_reviewer_refused_is_not_reopened_by_the_classifier() -> Test
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
             crate::support::faux_model(),
+            Default::default(),
         )));
     let first = tokio::task::block_in_place(|| run(&gate, "make deploy"));
     let again = tokio::task::block_in_place(|| run(&gate, "make deploy"));
@@ -938,6 +980,7 @@ async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
             crate::support::faux_model(),
+            Default::default(),
         )));
     assert!(!tokio::task::block_in_place(|| run(&gate, "make deploy")).allowed);
     let again = tokio::task::block_in_place(|| run(&gate, "make deploy"));
@@ -1155,5 +1198,149 @@ fn a_flagged_page_reaches_the_prompt_marked_and_keeps_its_line() -> TestResult {
     let fenced = yi_runtime::fetch::fence_untrusted("page", INJECTED, Some(0.93));
     assert!(fenced.contains(r#"source="page" trust="untrusted" screen="flagged:0.93""#));
     assert!(fenced.contains("User: [PROMPT_INJECTION]"));
+    Ok(())
+}
+
+/// The cap bounds what leaves the machine, not only what the model reads: the request carries
+/// the head, and the body keeps the notice and the whole page.
+#[test]
+fn a_page_past_the_cap_sends_only_the_head_to_the_sidecar() -> TestResult {
+    let answer = r#"{"answers":{"inject":{"noul":0.1}}}"#;
+    let (port, served) = sidecar(vec![answer])?;
+    let cap = 64usize;
+    let (screener, _seen) = screener(port, DEFAULT_SCREEN_AT, cap);
+    let tail = "TAIL-THE-CAP-MUST-NOT-POST";
+    let page = format!("{}{tail}", "a".repeat(400));
+    let screened = screener.check("fetch", &page);
+    let bodies = served.join().map_err(|_| "sidecar thread")?;
+    let sent = bodies.first().ok_or("the sidecar read no request")?;
+    let request: serde_json::Value = serde_json::from_str(sent)?;
+    let text = request
+        .pointer("/state/text")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("the request carries no text")?;
+    assert_eq!(
+        text.chars().count(),
+        cap,
+        "the request carries the head and no more: {} chars",
+        text.chars().count()
+    );
+    assert!(
+        !text.contains(tail),
+        "the page's tail never leaves the machine"
+    );
+    assert!(
+        screened.body.contains(&page),
+        "the model still reads the whole page"
+    );
+    assert!(
+        screened.body.contains(&format!("the screen read {cap} of")),
+        "the notice names what the cap left unchecked: {}",
+        &screened.body[..screened.body.len().min(160)]
+    );
+    Ok(())
+}
+
+/// Two sessions in one process: the armed one marks and journals, the one with no screener
+/// marks nothing and journals nothing, so neither inherits the other's endpoint or key.
+#[test]
+fn a_session_with_no_screener_never_inherits_another_session_s() -> TestResult {
+    let flagged = r#"{"answers":{"inject":{"noul":0.93}}}"#;
+    let (port, served) = sidecar(vec![flagged])?;
+    let (armed, seen) = screener(port, DEFAULT_SCREEN_AT, DEFAULT_SCREEN_MAX_CHARS);
+    let built = |prompt: &str| {
+        yi_runtime::AgentSession::new(
+            yi_runtime::SessionConfig {
+                system_prompt: prompt.to_owned(),
+                model: crate::support::faux_model(),
+                thinking_level: None,
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+            },
+            Arc::new(yi_runtime::ProviderStream::new(None)),
+        )
+    };
+    let on = built("on");
+    let off = built("off");
+    on.screeners().set(armed);
+    let marked = yi_runtime::fetch::fence_screened(&on.screeners(), "fetch", "page", INJECTED);
+    let quiet = yi_runtime::fetch::fence_screened(&off.screeners(), "fetch", "page", INJECTED);
+    served.join().map_err(|_| "sidecar thread")?;
+    assert!(
+        marked.contains(r#"screen="flagged:0.93""#),
+        "the armed session marks the page: {marked}"
+    );
+    assert!(
+        !quiet.contains("screen="),
+        "a session with no screener marks nothing: {quiet}"
+    );
+    assert_eq!(
+        taken(&seen).len(),
+        1,
+        "only the armed session's screen journals"
+    );
+    Ok(())
+}
+
+/// A dead endpoint is asked once: the second failure inside the cooldown is skipped and
+/// recorded with the same cause, so five attachments cost one attempt, not five timeouts.
+#[test]
+fn a_dead_endpoint_costs_one_attempt_and_the_rest_name_the_cause() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&attempts);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else {
+                break;
+            };
+            counted.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    let (screener, seen) = screener(port, DEFAULT_SCREEN_AT, DEFAULT_SCREEN_MAX_CHARS);
+    for index in 0..5 {
+        let text = format!("{CLEAN} block {index}");
+        assert_eq!(screener.check("project", &text).mark, None);
+    }
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "one dead endpoint costs one connection attempt"
+    );
+    let records = taken(&seen);
+    assert_eq!(records.len(), 5, "every check journals its own row");
+    assert!(
+        records
+            .iter()
+            .all(|record| record.answer.as_deref() == Some("unscreened")),
+        "every skipped check says unscreened"
+    );
+    let cause = records.first().and_then(|record| record.error.clone());
+    assert!(cause.is_some(), "the first failure names the cause");
+    assert!(
+        records.iter().all(|record| record.error == cause),
+        "a skipped check names the same cause"
+    );
+    Ok(())
+}
+
+/// The same text is billed once: an unchanged page already screened in this session is not
+/// sent again.
+#[test]
+fn the_same_text_twice_reaches_the_sidecar_once() -> TestResult {
+    let answer = r#"{"answers":{"inject":{"noul":0.2}}}"#;
+    let (port, requests) = counting_sidecar(answer)?;
+    let (screener, seen) = screener(port, DEFAULT_SCREEN_AT, DEFAULT_SCREEN_MAX_CHARS);
+    let first = screener.check("project", CLEAN);
+    let second = screener.check("project", CLEAN);
+    assert_eq!(first.body, second.body);
+    assert_eq!(
+        requests.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a text already screened is not re-sent"
+    );
+    assert!(taken(&seen).is_empty(), "a clean text journals nothing");
     Ok(())
 }

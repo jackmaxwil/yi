@@ -11,10 +11,11 @@ pub(crate) fn wire_search(
     wiring: &crate::wiring::RuntimeWiring,
     tools: &mut Vec<Arc<dyn Tool>>,
     resolver: &Arc<crate::fetch::Resolver>,
+    screen: crate::classifier::Screeners,
 ) {
     crate::fetch::route_urls(tools, resolver);
     if let Some(provider) = wiring.provider.web_search() {
-        tools.push(Arc::new(WebSearchTool::new(provider)));
+        tools.push(Arc::new(WebSearchTool::new(provider, screen)));
     }
 }
 
@@ -35,11 +36,12 @@ pub const RESULT_CAP_CHARS: usize = 12_000;
 
 pub struct WebSearchTool {
     provider: Arc<dyn SearchProvider>,
+    screen: crate::classifier::Screeners,
 }
 
 impl WebSearchTool {
-    pub fn new(provider: Arc<dyn SearchProvider>) -> Self {
-        Self { provider }
+    pub fn new(provider: Arc<dyn SearchProvider>, screen: crate::classifier::Screeners) -> Self {
+        Self { provider, screen }
     }
 
     fn request(input: &Map<String, Value>) -> Result<SearchRequest, String> {
@@ -239,7 +241,12 @@ impl Tool for WebSearchTool {
                 body.push_str(&cut);
             }
         }
-        let mut output = text_output(crate::fetch::fence_screened("search", "web_search", &body));
+        let mut output = text_output(crate::fetch::fence_screened(
+            &self.screen,
+            "search",
+            "web_search",
+            &body,
+        ));
         output.result.details = json!({
             "provider": response.route.provider(),
             "model": response.route.model(),

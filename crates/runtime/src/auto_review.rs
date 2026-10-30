@@ -33,7 +33,7 @@ pub struct ReviewRequest {
 impl ReviewRequest {
     /// The reviewed text is fenced and labeled so the reviewer can tell the
     /// action from the instructions about judging it.
-    fn render(&self) -> String {
+    fn render(&self, screen: &crate::classifier::Screeners) -> String {
         let mut action = format!("tool: {}\n", self.tool);
         action.push_str(&format!("summary: {}\n", self.display));
         if let Some(command) = &self.command {
@@ -45,7 +45,7 @@ impl ReviewRequest {
         if let Some(patch) = &self.patch {
             action.push_str(&format!("patch:\n{patch}\n"));
         }
-        let screened = crate::classifier::screen("review", &action);
+        let screened = screen.screen("review", &action);
         let mark = match screened.mark {
             Some(score) => format!(" screen=\"flagged:{score:.2}\""),
             None => String::new(),
@@ -94,11 +94,20 @@ pub fn parse_outcome(answer: &str) -> ReviewOutcome {
 pub struct Reviewer {
     provider: Arc<ProviderStream>,
     model: Model,
+    screen: crate::classifier::Screeners,
 }
 
 impl Reviewer {
-    pub fn new(provider: Arc<ProviderStream>, model: Model) -> Self {
-        Self { provider, model }
+    pub fn new(
+        provider: Arc<ProviderStream>,
+        model: Model,
+        screen: crate::classifier::Screeners,
+    ) -> Self {
+        Self {
+            provider,
+            model,
+            screen,
+        }
     }
 
     pub async fn review(&self, request: &ReviewRequest) -> ReviewOutcome {
@@ -113,7 +122,7 @@ impl Reviewer {
         );
         session.set_tools(Vec::new());
         session.set_reuse(yi_types::model::Reuse::OneShot);
-        if session.prompt(&request.render()).is_err() {
+        if session.prompt(&request.render(&self.screen)).is_err() {
             return ReviewOutcome::Deny {
                 reason: "the reviewer session refused the prompt".to_owned(),
             };
@@ -348,7 +357,11 @@ pub fn wire_role(
         tools.push(Arc::new(ask));
         return;
     };
-    broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(provider), model)));
+    broker.set_reviewer(Arc::new(Reviewer::new(
+        Arc::clone(provider),
+        model,
+        session.screeners(),
+    )));
     // P3: tools freeze after SessionStart, so registration is here or nowhere.
     tools.push(Arc::new(
         AskUserTool::new(Some(Arc::clone(&broker)))

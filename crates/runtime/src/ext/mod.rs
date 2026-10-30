@@ -153,6 +153,8 @@ pub struct Host {
     /// The one way the host puts a message in the transcript: a reminder line, or a fragment
     /// attached after the first request (D310). The session presents it at the next boundary.
     deliver: Option<Deliver>,
+    /// The holding session's screen; a host with none attached passes outside text unmarked.
+    screen: crate::classifier::Screeners,
     cwd: PathBuf,
 }
 
@@ -179,6 +181,7 @@ impl Host {
             tool_calls_this_turn: 0,
             mutated: false,
             deliver: None,
+            screen: crate::classifier::Screeners::default(),
             cwd,
         }
     }
@@ -189,6 +192,9 @@ impl Host {
 
     pub fn set_deliver(&mut self, deliver: Deliver) {
         self.deliver = Some(deliver);
+    }
+    pub fn set_screen(&mut self, screen: crate::classifier::Screeners) {
+        self.screen = screen;
     }
 
     /// Before the first request the slot joins the prompt. After it, the text is delivered once
@@ -336,7 +342,7 @@ impl Host {
                         self.frozen.get().is_none(),
                         "an external attach after the first request reaches no request"
                     );
-                    let screened = crate::classifier::screen(kind, &text);
+                    let screened = self.screen.screen(kind, &text);
                     changed |=
                         self.state
                             .attach_external(&source, trust, &screened.body, screened.mark);

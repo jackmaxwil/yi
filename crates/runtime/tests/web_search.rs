@@ -73,7 +73,10 @@ fn response(answer: &str, excerpt: &str) -> SearchResponse {
 
 fn tool_with(result: Result<SearchResponse, SearchError>) -> (WebSearchTool, Arc<FauxSearch>) {
     let provider = Arc::new(FauxSearch::new(result));
-    (WebSearchTool::new(provider.clone()), provider)
+    (
+        WebSearchTool::new(provider.clone(), Default::default()),
+        provider,
+    )
 }
 
 fn args(value: Value) -> Map<String, Value> {

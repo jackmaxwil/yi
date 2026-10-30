@@ -102,7 +102,11 @@ fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harn
     ));
     let provider = Arc::new(ProviderStream::new(None));
     if with_reviewer {
-        broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(&provider), faux_model())));
+        broker.set_reviewer(Arc::new(Reviewer::new(
+            Arc::clone(&provider),
+            faux_model(),
+            yi_runtime::classifier::Screeners::default(),
+        )));
     }
     Ok(Harness {
         broker,

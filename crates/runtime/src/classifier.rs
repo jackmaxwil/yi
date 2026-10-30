@@ -429,11 +429,40 @@ impl Screened {
     }
 }
 
+/// Named for the incident: a dead endpoint cost one full timeout per attachment, so session
+/// start with five project blocks waited five timeouts for an answer none of them got.
+pub const SCREEN_COOLDOWN: Duration = Duration::from_secs(60);
+/// Invariant: one call per distinct text per session, so an unchanged AGENTS.md is never re-billed.
+const SCREEN_CACHE: usize = 512;
+
 pub struct Screener {
     sidecar: Sidecar,
     cut: f64,
     cap: usize,
     record: Record,
+    down: Mutex<Option<(Instant, String)>>,
+    seen: Mutex<BTreeMap<(String, String), Option<f64>>>,
+}
+
+/// The screen a session owns: every attachment, page and reviewed action crossing in from
+/// outside reads this session's slot, so a second session never inherits its endpoint or key.
+#[derive(Clone, Default)]
+pub struct Screeners(Arc<Mutex<Option<Arc<Screener>>>>);
+
+impl Screeners {
+    pub fn set(&self, screener: Arc<Screener>) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(screener);
+        }
+    }
+
+    pub fn screen(&self, kind: &str, text: &str) -> Screened {
+        let screener = self.0.lock().ok().and_then(|slot| slot.clone());
+        match screener {
+            Some(screener) => screener.check(kind, text),
+            None => Screened::clean(text),
+        }
+    }
 }
 
 impl Screener {
@@ -443,6 +472,8 @@ impl Screener {
             cut,
             cap,
             record,
+            down: Mutex::new(None),
+            seen: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -450,20 +481,22 @@ impl Screener {
     /// marks nothing — text from outside still reaches the model, unmarked and journaled.
     pub fn check(&self, kind: &str, text: &str) -> Screened {
         let total = text.chars().count();
-        let head: String = text.chars().take(self.cap).collect();
-        let body = if total > self.cap {
-            format!(
-                "[\u{2026} the screen read {} of {total} chars (classifier.screenMaxChars {}); the rest of this text was not checked for injected instructions]\n{text}",
-                head.chars().count(),
-                self.cap
-            )
-        } else {
-            head
-        };
+        let hash = crate::fetch::content_hash(text);
+        let body = self.body(text, total);
+        if let Some(mark) = self.recall(kind, &hash) {
+            return Screened { mark, body };
+        }
+        if let Some(cause) = self.cooling() {
+            (self.record)(unscreened(kind, &hash, total, cause, 0));
+            return Screened { mark: None, body };
+        }
         let request = DecisionRequest {
             state: [
                 ("kind".to_owned(), serde_json::json!(kind)),
-                ("text".to_owned(), serde_json::json!(body)),
+                (
+                    "text".to_owned(),
+                    serde_json::json!(text.chars().take(self.cap).collect::<String>()),
+                ),
             ]
             .into(),
             questions: [(
@@ -482,66 +515,125 @@ impl Screener {
             self.sidecar.timeout,
             &request,
         );
-        let mut record = ClassifyRecord {
-            consumer: SCREEN_CONSUMER.to_owned(),
-            message: crate::fetch::content_hash(text),
-            answer: None,
-            confidence: None,
-            model: None,
-            latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            fired: false,
-            error: None,
-            extra: [
-                ("sourceKind".to_owned(), serde_json::json!(kind)),
-                ("chars".to_owned(), serde_json::json!(total)),
-            ]
-            .into(),
-        };
+        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let response = match outcome {
             Ok(response) => response,
             Err(error) => {
-                record.answer = Some("unscreened".to_owned());
-                record.error = Some(self.sidecar.named(&error));
-                (self.record)(record);
+                let cause = self.sidecar.named(&error);
+                self.cool(&cause);
+                (self.record)(unscreened(kind, &hash, total, cause, latency_ms));
                 return Screened { mark: None, body };
             }
         };
-        record.model = response.routing.map(|routing| routing.model);
         let score = response
             .answers
             .get(SCREEN_QUESTION)
             .and_then(|answer| answer.noul);
-        record.confidence = score;
-        let Some(score) = score.filter(|score| *score >= self.cut) else {
+        let mark = score.filter(|score| *score >= self.cut);
+        self.keep(kind, &hash, mark);
+        let Some(score) = mark else {
             return Screened { mark: None, body };
         };
-        record.answer = Some("flagged".to_owned());
-        record.fired = true;
-        record
-            .extra
-            .insert("action".to_owned(), serde_json::json!("flagged"));
-        (self.record)(record);
+        (self.record)(ClassifyRecord {
+            consumer: SCREEN_CONSUMER.to_owned(),
+            message: hash,
+            answer: Some("flagged".to_owned()),
+            confidence: Some(score),
+            model: response.routing.map(|routing| routing.model),
+            latency_ms,
+            fired: true,
+            error: None,
+            extra: [
+                ("sourceKind".to_owned(), serde_json::json!(kind)),
+                ("chars".to_owned(), serde_json::json!(total)),
+                ("action".to_owned(), serde_json::json!("flagged")),
+            ]
+            .into(),
+        });
         Screened {
             mark: Some(score),
             body,
         }
     }
-}
 
-static SCREENER: Mutex<Option<Arc<Screener>>> = Mutex::new(None);
+    /// The body the model reads: the notice names what the cap left unchecked, and the whole
+    /// text stays beside it — only the request is bounded to the head.
+    fn body(&self, text: &str, total: usize) -> String {
+        let head: String = text.chars().take(self.cap).collect();
+        if total <= self.cap {
+            return head;
+        }
+        format!(
+            "[\u{2026} the screen read {} of {total} chars (classifier.screenMaxChars {}); the rest of this text was not checked for injected instructions]\n{text}",
+            head.chars().count(),
+            self.cap
+        )
+    }
 
-pub fn install(screener: Option<Arc<Screener>>) {
-    if let Ok(mut slot) = SCREENER.lock() {
-        *slot = screener;
+    fn recall(&self, kind: &str, hash: &str) -> Option<Option<f64>> {
+        self.seen
+            .lock()
+            .ok()?
+            .get(&(kind.to_owned(), hash.to_owned()))
+            .copied()
+    }
+
+    fn keep(&self, kind: &str, hash: &str, mark: Option<f64>) {
+        if let Ok(mut seen) = self.seen.lock() {
+            if seen.len() >= SCREEN_CACHE {
+                seen.clear();
+            }
+            seen.insert((kind.to_owned(), hash.to_owned()), mark);
+        }
+    }
+
+    fn cooling(&self) -> Option<String> {
+        let Ok(mut down) = self.down.lock() else {
+            return None;
+        };
+        match &*down {
+            Some((until, cause)) if Instant::now() < *until => Some(cause.clone()),
+            Some(_) => {
+                *down = None;
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn cool(&self, cause: &str) {
+        if let Ok(mut down) = self.down.lock() {
+            *down = Some((
+                Instant::now()
+                    .checked_add(SCREEN_COOLDOWN)
+                    .unwrap_or_else(Instant::now),
+                cause.to_owned(),
+            ));
+        }
     }
 }
 
-/// The screen for text that crossed in from outside; with none installed the text passes unmarked.
-pub fn screen(kind: &str, text: &str) -> Screened {
-    let screener = SCREENER.lock().ok().and_then(|slot| slot.clone());
-    match screener {
-        Some(screener) => screener.check(kind, text),
-        None => Screened::clean(text),
+fn unscreened(
+    kind: &str,
+    hash: &str,
+    total: usize,
+    cause: String,
+    latency_ms: u64,
+) -> ClassifyRecord {
+    ClassifyRecord {
+        consumer: SCREEN_CONSUMER.to_owned(),
+        message: hash.to_owned(),
+        answer: Some("unscreened".to_owned()),
+        confidence: None,
+        model: None,
+        latency_ms,
+        fired: false,
+        error: Some(cause),
+        extra: [
+            ("sourceKind".to_owned(), serde_json::json!(kind)),
+            ("chars".to_owned(), serde_json::json!(total)),
+        ]
+        .into(),
     }
 }
 
@@ -667,7 +759,7 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         timeout: Duration::from_millis(block.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         threshold: threshold(&block),
     };
-    install(Some(Arc::new(Screener::new(
+    session.screeners().set(Arc::new(Screener::new(
         sidecar.clone(),
         number(&block.screen_at, DEFAULT_SCREEN_AT),
         block
@@ -675,7 +767,7 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
             .and_then(|chars| usize::try_from(chars).ok())
             .unwrap_or(DEFAULT_SCREEN_MAX_CHARS),
         journal(session),
-    ))));
+    )));
     if let (Some(timing), Some(_), Some(broker)) = (timing, &sidecar.key, broker) {
         broker.set_approver(Arc::new(Approver::new(
             sidecar.clone(),

@@ -776,10 +776,15 @@ pub fn fence_untrusted(source: &str, text: &str, screen: Option<f64>) -> String 
     )
 }
 
-/// [`fence_untrusted`] behind the screen: text that crossed in from outside is marked when
-/// the classifier names it as giving the agent instructions.
-pub fn fence_screened(kind: &str, source: &str, text: &str) -> String {
-    let screened = crate::classifier::screen(kind, text);
+/// [`fence_untrusted`] behind a session's screen: text that crossed in from outside is marked
+/// when the classifier names it as giving the agent instructions.
+pub fn fence_screened(
+    screen: &crate::classifier::Screeners,
+    kind: &str,
+    source: &str,
+    text: &str,
+) -> String {
+    let screened = screen.screen(kind, text);
     fence_untrusted(source, &screened.body, screened.mark)
 }
 

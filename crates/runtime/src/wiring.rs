@@ -913,7 +913,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &service,
     );
     let mut tools = (wiring.tools)();
-    crate::web_search::wire_search(&wiring, &mut tools, &resolver);
+    crate::web_search::wire_search(&wiring, &mut tools, &resolver, session.screeners());
     let ipython = crate::kernel_tools::ipython_tool(Arc::clone(&service), Some(calls));
     tools.push(ipython);
     let annotate = crate::annotate::AnnotateTool::new(session.store_handle(), session.reclaimed());
