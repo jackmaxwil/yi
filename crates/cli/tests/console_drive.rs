@@ -424,14 +424,21 @@ fn a_terminal_pane_runs_a_command_and_says_how_its_shell_ended() -> TestResult {
          wait-frame 8000 [exited 3]\n\
          quit\n",
     )?;
-    let row = |snap: &str, text: &str| -> Result<bool, Box<dyn Error>> {
-        Ok(snap_cells(&dir, snap)?
-            .iter()
-            .any(|cell| cell.trim() == text))
-    };
-    assert!(row("printed", "yi-term-ok")?, "the command's output row");
+    let cells = snap_cells(&dir, "printed")?;
     assert!(
-        !row("bottom", "18")? && row("scrolled", "18")?,
+        cells.iter().any(|cell| cell.trim() == "yi-term-ok"),
+        "the command's output row"
+    );
+    // The pane's height decides which `seq` rows have scrolled off, so compare the oldest on screen.
+    let oldest = |snap: &str| -> Result<u32, Box<dyn Error>> {
+        snap_cells(&dir, snap)?
+            .iter()
+            .filter_map(|cell| cell.trim().parse().ok())
+            .min()
+            .ok_or_else(|| format!("no `seq` row in the {snap} frame").into())
+    };
+    assert!(
+        oldest("scrolled")? < oldest("bottom")?,
         "the wheel shows older rows"
     );
     Ok(())
@@ -462,10 +469,11 @@ fn a_terminal_pane_tells_its_shell_each_new_size() -> TestResult {
     let mut seen = Vec::new();
     for (snap, mark) in [("wide", "mark-2"), ("narrow", "mark-3")] {
         let cells = snap_cells(&dir, snap)?;
+        // A framed pane keeps one blank column between each border and its text.
         let drawn = cells
             .iter()
             .find(|cell| cell.trim() == mark)
-            .map(|cell| cell.chars().count())
+            .map(|cell| cell.chars().count().saturating_sub(2))
             .ok_or_else(|| format!("{mark} not on its own row: {cells:#?}"))?;
         let reported = cells
             .iter()
@@ -489,6 +497,8 @@ fn a_terminal_pane_tells_its_shell_each_new_size() -> TestResult {
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn closing_a_terminal_pane_ends_its_shell() -> TestResult {
+    // Incident: 170 typed keys outran the writer's 64-entry queue and dropped some, garbling the
+    // command in 4 runs of 12 and the CI lane; one paste is one entry.
     let dir = terminal_run(
         "yi-term-close",
         "cmd-y\n\
@@ -500,7 +510,7 @@ fn closing_a_terminal_pane_ends_its_shell() -> TestResult {
          key x\n\
          cmd-y\n\
          wait-frame 8000 >_ sh\n\
-         type for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 $(cat pid) 2>/dev/null || break; sleep 0.3; done; kill -0 $(cat pid) 2>/dev/null && echo alive-$((40+2)) || echo gone-$((40+2))\n\
+         paste for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 $(cat pid) 2>/dev/null || break; sleep 0.3; done; kill -0 $(cat pid) 2>/dev/null && echo alive-$((40+2)) || echo gone-$((40+2))\n\
          key enter\n\
          wait-frame 8000 -42\n\
          snap checked\n\
@@ -519,12 +529,14 @@ fn closing_a_terminal_pane_ends_its_shell() -> TestResult {
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_terminal_pane_says_when_the_child_stops_reading() -> TestResult {
+    // Incident: a canonical tty drops what outgrows its line instead of blocking the master, so
+    // `sleep 30` never jammed it; raw mode makes the kernel hold the bytes, and 40000 outgrow it.
     terminal_run(
         "yi-term-stall",
         &format!(
             "cmd-y\n\
              wait-frame 8000 >_ sh\n\
-             type sleep 30\n\
+             type stty -icanon -echo; sleep 30\n\
              key enter\n\
              wait 500\n\
              paste {}\n\
@@ -532,7 +544,7 @@ fn a_terminal_pane_says_when_the_child_stops_reading() -> TestResult {
              type {}\n\
              wait-frame 8000 input queue full\n\
              quit\n",
-            "a".repeat(9000),
+            "a".repeat(40_000),
             "x".repeat(80),
         ),
     )?;
