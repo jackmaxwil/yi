@@ -135,6 +135,9 @@ fn draw_frame<B>(
         let area = frame.area();
         placed = paint_chat(app, &layout, frame.buffer_mut(), area, more);
     });
+    if let Some(still) = app.still.as_mut() {
+        still.shown = layout.live;
+    }
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
     app.card_at = placed
@@ -509,7 +512,10 @@ fn solo_follow(
     budget: usize,
     arrived: usize,
 ) -> usize {
-    let released = app.pane_follow.is_some_and(|(_, _, _, below)| below > 0);
+    let released = app
+        .pane_follow
+        .take()
+        .is_some_and(|(_, _, _, below)| below > 0);
     let key = (app.content_width(), app.mode, app.rows);
     let held = app.follow() == yi_types::config::FollowMode::Still
         && !live.is_empty()
@@ -524,18 +530,16 @@ fn solo_follow(
     match app.still.as_mut().filter(|still| still.key == key) {
         Some(still) => {
             still.hidden = still.hidden.saturating_add(arrived);
-            let hidden = still.hidden;
-            *live = still.shown.clone();
-            hidden
+            *live = std::mem::take(&mut still.shown);
+            still.hidden
         }
         None => {
-            let shown = keep_last(std::mem::take(live), budget.saturating_sub(1));
+            *live = keep_last(std::mem::take(live), budget.saturating_sub(1));
             app.still = Some(Still {
                 key,
                 hidden: 0,
-                shown: shown.clone(),
+                shown: Vec::new(),
             });
-            *live = shown;
             0
         }
     }

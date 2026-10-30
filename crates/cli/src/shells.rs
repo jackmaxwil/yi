@@ -615,6 +615,16 @@ mod tests {
         let mut disabled = binary;
         disabled[24] = 0x08;
         assert_eq!(super::reduce_motion_plist(&disabled), Some(false));
+        let integer = |value: u8| {
+            let mut bytes = binary.to_vec();
+            bytes.splice(24..25, [0x10, value]);
+            if let Some(last) = bytes.last_mut() {
+                *last = 0x1a;
+            }
+            bytes
+        };
+        assert_eq!(super::reduce_motion_plist(&integer(1)), Some(true));
+        assert_eq!(super::reduce_motion_plist(&integer(0)), Some(false));
         assert_eq!(super::reduce_motion_plist(b"bplist00"), None);
         assert_eq!(
             super::reduce_motion_plist(xml("<integer>1</integer>").as_bytes()),
@@ -625,8 +635,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn reduce_motion_reads_the_plist_under_home() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = crate::update::tmp::Tmp::new()?;
-        let home = &tmp.0;
+        let tmp = crate::plan::scratch::Scratch::new("yi-reduce-motion")?;
+        let home: &std::path::Path = &tmp;
         let prefs = home.join("Library/Preferences");
         std::fs::create_dir_all(&prefs)?;
         assert_eq!(super::reduce_motion_in(home), None);

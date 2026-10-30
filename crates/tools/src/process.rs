@@ -556,14 +556,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlinked_cwd_keeps_the_root_in_the_spelling_the_caller_typed() -> Fallible {
-        let dir = std::env::temp_dir().join(format!("yi-git-root-{}", std::process::id()));
-        struct Scratch(std::path::PathBuf);
-        impl Drop for Scratch {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _scratch = Scratch(dir.clone());
+        let dir = crate::scratch::Scratch::new("yi-git-root")?;
         std::fs::create_dir_all(dir.join("real").join("src"))?;
         std::fs::create_dir_all(dir.join("real").join(".git"))?;
         std::os::unix::fs::symlink(dir.join("real"), dir.join("link"))?;

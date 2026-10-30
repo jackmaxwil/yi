@@ -725,8 +725,55 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
     let later = window(&terminal);
     let after = later.join("\n");
     assert_eq!(answer(&held), answer(&later), "the still window moved");
-    assert!(after.contains("more rows · PgDn"), "{later:#?}");
     assert!(!after.contains("row 43 of the answer"), "{later:#?}");
+    let marker = |rows: &[String]| -> Option<usize> {
+        rows.iter().find_map(|row| {
+            row.trim()
+                .strip_prefix("↓ ")?
+                .split_once(" more rows")?
+                .0
+                .parse()
+                .ok()
+        })
+    };
+    let counted = marker(&later);
+    assert_eq!(counted, Some(14), "{later:#?}");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let page_down =
+        ratatui::crossterm::event::Event::Key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::PageDown,
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        ));
+    yi_tui::input::handle_terminal_event(&mut app, &tx, page_down);
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let paged = window(&terminal);
+    assert_eq!(marker(&paged), None, "{paged:#?}");
+    assert_ne!(
+        answer(&held),
+        answer(&paged),
+        "PgDn left the window where it was"
+    );
+    let reseeded =
+        |app: &mut App, terminal: &mut yi_tui::terminal::Terminal<VT100Backend>, rows: usize| {
+            let body: String = (0..rows)
+                .map(|row| format!("- row {row} of the answer\n"))
+                .collect();
+            app.reduce_agent(streamed(&body));
+            yi_tui::render::draw(app, terminal, None);
+            window(terminal)
+        };
+    let seeded = reseeded(&mut app, &mut terminal, 70);
+    assert_eq!(marker(&seeded), None, "{seeded:#?}");
+    let again = reseeded(&mut app, &mut terminal, 90);
+    assert_eq!(
+        answer(&seeded),
+        answer(&again),
+        "the hold never returned: {again:#?}"
+    );
+    assert!(
+        marker(&again).is_some_and(|hidden| hidden > 0),
+        "{again:#?}"
+    );
     Ok(())
 }
 

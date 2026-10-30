@@ -25,7 +25,7 @@ impl App {
 
     pub fn advance_follow(&mut self, rows: usize) {
         let Some((width, mode, pinned, below)) = self.pane_follow else {
-            // The inline view holds its own window, so the first PgDn opens the hold there.
+            // The inline view consumes this once: it shows the newest rows and holds again at the next arrival.
             if !self.pane {
                 self.pane_follow = Some((self.content_width(), self.mode, 0, rows));
             }

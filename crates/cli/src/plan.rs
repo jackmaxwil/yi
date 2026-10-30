@@ -293,7 +293,7 @@ fn plan_records(options: &Options, plan: &PlanId) -> Vec<PlanOpRecord> {
 
 #[cfg(test)]
 #[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+pub(crate) mod scratch;
 
 #[cfg(test)]
 mod tests {
