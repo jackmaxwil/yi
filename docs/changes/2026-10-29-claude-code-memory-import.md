@@ -1,7 +1,7 @@
 ---
 issue: Closes #1859
 growth: +710 the importer is 262 src lines and 448 are the fixtures it can only be trusted with; `Store::import` took the tag as a parameter rather than gaining a second copy, `doc::tagged` is one function, and `yi memory import <dir>` still reaches the same importer
-raise: crate cli +31, crate runtime +669, crate types +10, tests +382, comments +19
+raise: crate cli +31, crate runtime +669, crate types +10, tests +383, comments +19
 decision: the Claude Code memories of the working directory and of `~/.claude/memory` import into the store that owns their scope at session start, behind `memory.importClaude` (default on) and tagged `source: claude` | the owner's memories were stranded in a shape Yi already reads, with only discovery, provenance and staleness missing, and a session start is the one moment a session reads memory | set `memory.importClaude` false, which stops the import and leaves the imported notes in place
 ---
 
