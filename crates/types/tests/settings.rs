@@ -3,7 +3,7 @@ use yi_types::config::{
     BashConfig, BrowserConfig, CatalogConfig, ClassifierConfig, CompactionConfig, ConsoleConfig,
     EditConfig, KernelConfig, MailConfig, McpConfig, ModelRoles, NodeConfig, PermissionsConfig,
     PlanConfig, PlansConfig, RlmConfig, SkillsConfig, SpendConfig, TelemetryConfig, TuiConfig,
-    UserConfig,
+    UserConfig, WebSearchConfig,
 };
 use yi_types::lane::LanesConfig;
 use yi_types::settings::{SettingKind, SettingRow, refusal, rows};
@@ -57,6 +57,7 @@ fn leaves() -> Vec<String> {
         mail,
         open,
         browser,
+        web_search,
     });
     let nested = [
         (
@@ -67,9 +68,11 @@ fn leaves() -> Vec<String> {
                 advisor,
                 auto_review,
                 classifier,
-                selector
+                selector,
+                web_search
             }),
         ),
+        ("web_search", fields!(WebSearchConfig { engine })),
         ("bash", fields!(BashConfig { auto_background_ms })),
         (
             "plan",
@@ -138,6 +141,8 @@ fn leaves() -> Vec<String> {
                 allow_destructive_at,
                 ask_at,
                 ask_timeout_secs,
+                screen_at,
+                screen_max_chars,
             }),
         ),
         (
@@ -156,7 +161,7 @@ fn leaves() -> Vec<String> {
             |field| match nested.iter().find(|(section, _)| *section == field) {
                 Some((section, inner)) => inner
                     .iter()
-                    .map(|leaf| format!("{section}.{}", camel(leaf)))
+                    .map(|leaf| format!("{}.{}", camel(section), camel(leaf)))
                     .collect(),
                 None => vec![camel(field)],
             },
@@ -271,5 +276,20 @@ fn the_sidebar_row_takes_the_hidden_state_it_saves() -> Result<(), Box<dyn std::
         config.console.and_then(|console| console.sidebar),
         Some(yi_types::config::SidebarState::Hidden)
     );
+    Ok(())
+}
+
+#[test]
+fn web_search_role_and_engine_load_from_config() -> Result<(), Box<dyn std::error::Error>> {
+    let (config, _) = yi_types::config::parse(
+        r#"{"models":{"webSearch":"openrouter/deepseek/deepseek-v4-flash"},"webSearch":{"engine":"exa"}}"#,
+    )?;
+    let roles = config.models.ok_or("missing model roles")?;
+    assert_eq!(
+        roles.web_search.as_deref(),
+        Some("openrouter/deepseek/deepseek-v4-flash")
+    );
+    let search = config.web_search.ok_or("missing web search config")?;
+    assert_eq!(search.engine.as_deref(), Some("exa"));
     Ok(())
 }

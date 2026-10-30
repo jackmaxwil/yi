@@ -433,6 +433,10 @@ impl Pane {
         }
     }
 
+    pub(crate) fn fills_frame(&self) -> bool {
+        matches!(self.content, PaneContent::Terminal(_))
+    }
+
     pub fn take_ask(&mut self) -> Option<PendingAsk> {
         match &mut self.content {
             PaneContent::Session {
@@ -750,6 +754,14 @@ impl ConsoleState {
             }
         }
         roots
+    }
+
+    pub fn split_focused_at(&mut self, direction: Direction, ratio: f32) -> Option<Vec<bool>> {
+        let new_id = self.split_focused(direction)?;
+        let tab = self.tabs.get_mut(self.active_tab)?;
+        let path = tab.layout.split_path_of_second(new_id)?;
+        tab.layout.set_ratio_at(&path, ratio);
+        Some(path)
     }
 
     pub fn split_focused(&mut self, direction: Direction) -> Option<PaneId> {
