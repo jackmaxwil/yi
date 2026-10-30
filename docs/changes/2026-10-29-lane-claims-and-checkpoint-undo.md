@@ -1,4 +1,5 @@
 ---
+version: 0.827.0
 issue: Closes #1510
 raise: crate cli +4, crate runtime +162, crate tools +25, tests +352, comments +13
 growth: +191 the warmer's whole-argv identity, the per-lockfile sync warning, the pool lock narrowed to the slot pick and the worktree-spawn notice with its bounded status read; weighed for deletion: `Uncommitted::read` (kept, four callers), a second error formatter beside `briefly` (shared instead) and the cwd probe (deleted)
