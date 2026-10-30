@@ -447,7 +447,7 @@ impl<'a> Patcher<'a> {
         let resolved = self.resolve_path(path);
         let opened = self.gate.open(&resolved, &self.walls);
         match opened
-            .and_then(|file| crate::tool::read_capped(file, &resolved, crate::tool::READ_FILE_CAP))
+            .and_then(|file| crate::tool::read_capped(file, &resolved, crate::tool::Cap::Text))
         {
             Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
             Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {

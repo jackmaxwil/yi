@@ -152,6 +152,32 @@ fn a_pdf_past_the_read_cap_reads_with_pages_and_one_past_the_paged_ceiling_names
     Ok(())
 }
 
+/// A document past the text cap keeps its own ceiling: the converter's, not the model's bytes.
+#[test]
+fn a_pdf_past_the_read_cap_reads_unpaged_under_the_converter_ceiling() -> TestResult {
+    let dir = temp_dir("read-document-cap")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let mut pdf = "%PDF-1.4\n".to_owned();
+    pdf.push_str(&text_of(CAP + 1));
+    fs::write(dir.join("big.pdf"), pdf)?;
+    let unpaged = read(&state, "big.pdf", &context);
+    let text = output_text(&unpaged);
+    assert!(!text.contains("READ_FILE_CAP"), "{text}");
+
+    sized(
+        &dir.join("huge.pdf"),
+        "%PDF-1.4\n",
+        yi_tools::INPUT_CEILING + 1,
+    )?;
+    let past = read(&state, "huge.pdf", &context);
+    let text = output_text(&past);
+    assert!(past.is_error, "{text}");
+    assert!(text.contains("INPUT_CEILING 268435456"), "{text}");
+    assert!(text.contains("pages=1-"), "{text}");
+    Ok(())
+}
+
 #[test]
 fn pages_on_a_text_file_past_the_read_cap_is_refused_at_the_cap() -> TestResult {
     let dir = temp_dir("read-paged-text")?;

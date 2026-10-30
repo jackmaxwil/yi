@@ -69,26 +69,29 @@ impl ToolContext {
     }
 
     /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`, at
-    /// most [`READ_FILE_CAP`] of them.
+    /// most [`READ_FILE_CAP`] of them: the cap every text read and edit takes.
     pub(crate) fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         read_capped(
             self.read_gate().open(path, &self.deny_read)?,
             path,
-            READ_FILE_CAP,
+            Cap::Text,
         )
     }
 
-    /// [`Self::read`] for a page selection, which parses only those pages: capped at
-    /// [`crate::document::PAGED_CEILING`] instead.
-    pub(crate) fn read_paged(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-        let cap = usize::try_from(crate::document::PAGED_CEILING).unwrap_or(usize::MAX);
+    /// [`Self::read`] for a document, under the converter's own ceiling: the parsed text, not the
+    /// source bytes, is what reaches the model, and a page selection parses only those pages.
+    pub(crate) fn read_document(&self, path: &Path, paged: bool) -> std::io::Result<Vec<u8>> {
+        let cap = if paged { Cap::Paged } else { Cap::Document };
         read_capped(self.read_gate().open(path, &self.deny_read)?, path, cap)
     }
 
+    /// The file's first [`crate::document::MARKER_WINDOW`] bytes: what a read past the text cap
+    /// asks before it takes a document under its own ceiling.
     pub(crate) fn read_head(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         let file = self.read_gate().open(path, &self.deny_read)?;
+        let window = u64::try_from(crate::document::MARKER_WINDOW).unwrap_or(u64::MAX);
         let mut head = Vec::new();
-        std::io::Read::read_to_end(&mut std::io::Read::take(file, 1024), &mut head)?;
+        std::io::Read::read_to_end(&mut std::io::Read::take(file, window), &mut head)?;
         Ok(head)
     }
 
@@ -293,39 +296,67 @@ pub(crate) fn read_all(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
 /// The most of one file `read` shows or `edit` takes whole; past it grep searches the file.
 pub const READ_FILE_CAP: usize = 16 * 1024 * 1024;
 
-/// [`read_all`] up to `limit` bytes; past it a `FileTooLarge` error whose text is the cut row.
-pub(crate) fn read_capped(
-    file: std::fs::File,
-    path: &Path,
-    limit: usize,
-) -> std::io::Result<Vec<u8>> {
-    let cap = u64::try_from(limit).unwrap_or(u64::MAX);
+/// [`read_all`] up to its cap; past it a `FileTooLarge` error whose text is the cut row.
+pub(crate) fn read_capped(file: std::fs::File, path: &Path, cap: Cap) -> std::io::Result<Vec<u8>> {
+    let limit = cap.limit();
+    let ceiling = u64::try_from(limit).unwrap_or(u64::MAX);
     let size = file.metadata().map_or(0, |meta| meta.len());
     let mut bytes = Vec::new();
-    if size <= cap {
-        let mut limited = std::io::Read::take(&file, cap.saturating_add(1));
+    if size <= ceiling {
+        let mut limited = std::io::Read::take(&file, ceiling.saturating_add(1));
         std::io::Read::read_to_end(&mut limited, &mut bytes)?;
     }
-    if size <= cap && bytes.len() <= limit {
+    if size <= ceiling && bytes.len() <= limit {
         return Ok(bytes);
     }
     let size = size.max(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-    let shown = path.display();
-    let next = format!("grep path={shown} with a pattern, or bash `sed -n '1,2000p' {shown}`");
     let total = usize::try_from(size).unwrap_or(usize::MAX);
-    let row = cut_row(
-        0,
-        total,
-        "bytes read",
-        if limit == READ_FILE_CAP {
-            "READ_FILE_CAP"
-        } else {
-            "PAGED_CEILING"
-        },
-        limit,
-        &next,
-    );
+    let row = cut_row(0, total, "bytes read", cap.name(), limit, &cap.next(path));
     Err(std::io::Error::new(std::io::ErrorKind::FileTooLarge, row))
+}
+
+/// What a capped read may take of one file, and what its cut row says.
+#[derive(Clone, Copy)]
+pub(crate) enum Cap {
+    /// Text the model reads as bytes, capped at [`READ_FILE_CAP`].
+    Text,
+    /// A document converted whole, capped at the converter's ceiling.
+    Document,
+    /// A document whose page selection parses only those pages.
+    Paged,
+}
+
+impl Cap {
+    fn limit(self) -> usize {
+        let bytes = match self {
+            Self::Text => u64::try_from(READ_FILE_CAP).unwrap_or(u64::MAX),
+            Self::Document => crate::document::INPUT_CEILING,
+            Self::Paged => crate::document::PAGED_CEILING,
+        };
+        usize::try_from(bytes).unwrap_or(usize::MAX)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Text => "READ_FILE_CAP",
+            Self::Document => "INPUT_CEILING",
+            Self::Paged => "PAGED_CEILING",
+        }
+    }
+
+    fn next(self, path: &Path) -> String {
+        let shown = path.display();
+        match self {
+            Self::Text => {
+                format!("grep path={shown} with a pattern, or bash `sed -n '1,2000p' {shown}`")
+            }
+            Self::Document => format!("read path={shown} pages=1- for the pages it can convert"),
+            Self::Paged => {
+                "no read reaches past this: the file is too large to convert at any page selection"
+                    .to_owned()
+            }
+        }
+    }
 }
 
 /// Said when [`overwrite`] could not stage a sibling and wrote the file in place instead.
@@ -492,23 +523,20 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(unix)]
+    /// Incident: a read-only parent proved this fallback on macOS and proved nothing in CI, where
+    /// the runner is root and 0o555 stops no one, so staging succeeded and the row never appeared.
     #[test]
-    fn a_write_into_a_read_only_dir_writes_in_place_and_says_so()
+    fn a_write_into_a_name_with_no_room_for_a_sibling_writes_in_place_and_says_so()
     -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::fs::PermissionsExt;
         let dir = Scratch::new("yi-tools-write-in-place")?;
-        let inner = dir.join("locked");
-        fs::create_dir(&inner)?;
-        let path = inner.join("a.json");
+        let name = format!("{}.json", "a".repeat(250));
+        let path = dir.join(&name);
         fs::write(&path, "{}")?;
-        fs::set_permissions(&inner, fs::Permissions::from_mode(0o555))?;
         let mut input = serde_json::Map::new();
-        input.insert("path".to_owned(), "locked/a.json".into());
+        input.insert("path".to_owned(), name.into());
         input.insert("content".to_owned(), "[1]".into());
         let context = super::ToolContext::new(dir.to_path_buf());
         let output = super::Tool::execute(&crate::builtins::WriteTool::default(), input, &context);
-        fs::set_permissions(&inner, fs::Permissions::from_mode(0o755))?;
         let text = yi_types::message::join_text(&output.result.content, "");
         assert!(!output.is_error, "{text}");
         assert_eq!(fs::read_to_string(&path)?, "[1]");

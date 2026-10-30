@@ -33,7 +33,7 @@ use std::sync::Arc;
 pub use builtins::{BashTool, WriteTool, list_files, wall_refusal, walled};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
-pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};
+pub use document::{Converter, DEFAULT_TIMEOUT, Documents, INPUT_CEILING};
 pub use exec::discover_exec_tools;
 pub use grep::{GrepTool, line_matcher};
 pub use ipython::cell_output;

@@ -459,7 +459,7 @@ impl HashlineReadTool {
                 .to_string_lossy()
                 .into_owned();
             let opened = gate.open(path, &context.deny_read);
-            let cap = crate::tool::READ_FILE_CAP;
+            let cap = crate::tool::Cap::Text;
             let bytes = match opened.and_then(|file| crate::tool::read_capped(file, path, cap)) {
                 Ok(bytes) => bytes,
                 Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {

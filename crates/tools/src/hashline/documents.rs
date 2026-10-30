@@ -44,19 +44,29 @@ impl HashlineReadTool {
         input: &Map<String, Value>,
         context: &ToolContext,
     ) -> ToolOutput {
-        let pages = input.get("pages").and_then(Value::as_str);
-        let parsed = pages.and_then(|spec| crate::document::parse_pages(spec).ok());
-        let paged = parsed.is_some_and(|parsed| {
-            crate::document::ceiling(&parsed) == crate::document::PAGED_CEILING
-        }) && context
-            .read_head(path)
-            .is_ok_and(|head| crate::document::is_pdf(&head));
-        let read = match paged {
-            true => context.read_paged(path),
-            false => context.read(path),
+        let pages = match input.get("pages").and_then(Value::as_str) {
+            Some(spec) => match crate::document::parse_pages(spec) {
+                Ok(_) => Some(spec),
+                Err(reason) => {
+                    return crate::tool::error_output_kind(
+                        reason,
+                        yi_types::event::ToolErrorKind::InvalidArgs,
+                    );
+                }
+            },
+            None => None,
         };
-        let bytes = match read {
+        let bytes = match context.read(path) {
             Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                let Some(document) = self.document_bytes(path, pages, context) else {
+                    return error_output(format!("failed to read {}: {error}", path.display()));
+                };
+                match document {
+                    Ok(bytes) => bytes,
+                    Err(output) => return output,
+                }
+            }
             Err(error) => {
                 return error_output(format!("failed to read {}: {error}", path.display()));
             }
@@ -152,6 +162,26 @@ impl HashlineReadTool {
                 )
             }
         }
+    }
+
+    /// The bytes of a file past the text cap that is a document, under the converter's own
+    /// ceiling; `None` when it is no document, so the text cap's row stands.
+    fn document_bytes(
+        &self,
+        path: &Path,
+        pages: Option<&str>,
+        context: &ToolContext,
+    ) -> Option<Result<Vec<u8>, ToolOutput>> {
+        let head = context.read_head(path).ok()?;
+        if !crate::document::could_be_document(&head) {
+            return None;
+        }
+        let paged = pages.is_some() && crate::document::is_pdf(&head);
+        Some(
+            context.read_document(path, paged).map_err(|error| {
+                error_output(format!("failed to read {}: {error}", path.display()))
+            }),
+        )
     }
 
     fn convert(
