@@ -64,6 +64,7 @@ _yi() {
         '--continue[resume the newest session for this directory]'
         '--session[resume this session]:id:'
         '--schema[answer JSON valid against this schema]:schema:_files'
+        '--check[ask: probe the command and exit, running nothing]:command:'
         '--since[after stats: fold the sessions of this window]:span:'
         '--by[after stats: group by model, upstream, day, prices or plan]:axis:'
         '--top[after stats: list the n costliest sessions]:n:'

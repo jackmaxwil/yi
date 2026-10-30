@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use yi_types::entry::{CustomRecord, Entry};
@@ -21,6 +21,52 @@ pub struct SessionStore {
     state: SessionState,
     file: Option<PathBuf>,
     ids: IdGenerator,
+    unread: Option<UnreadLines>,
+}
+
+/// Lines a load kept as written because this build cannot read them; `first_line` is 1-based.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnreadLines {
+    pub count: usize,
+    pub first_line: usize,
+}
+
+impl UnreadLines {
+    pub fn note(self) -> String {
+        let lines = if self.count == 1 { "line" } else { "lines" };
+        format!(
+            "This session holds {} {lines} this build cannot read, the first at line {}; they are kept as written and left out of the context.",
+            self.count, self.first_line
+        )
+    }
+}
+
+/// Incident: a short write (disk full) left half a line, the next append landed after it, and
+/// the session no longer loaded. Invariant: on failure `file` is cut back to `at`.
+pub fn append_line(
+    file: &mut (impl Write + ?Sized),
+    at: u64,
+    line: &[u8],
+    truncate: impl FnOnce(u64) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let written = file.write_all(line).and_then(|()| file.flush());
+    if let Err(error) = written {
+        truncate(at)?;
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn append_to(path: &Path, line: &str) -> Result<(), SessionError> {
+    let failed = |error: std::io::Error| {
+        SessionError::Storage(format!(
+            "Failed to append session {}: {error}",
+            path.display()
+        ))
+    };
+    let file = OpenOptions::new().append(true).open(path).map_err(failed)?;
+    let at = file.metadata().map_err(failed)?.len();
+    append_line(&mut &file, at, line.as_bytes(), |len| file.set_len(len)).map_err(failed)
 }
 
 fn encode_line(mutation: &Mutation) -> Result<String, SessionError> {
@@ -38,6 +84,7 @@ impl SessionStore {
             state: SessionState::new(),
             file: None,
             ids: IdGenerator::new(),
+            unread: None,
         }
     }
 
@@ -47,6 +94,7 @@ impl SessionStore {
             state: SessionState::new(),
             file: Some(path),
             ids: IdGenerator::new(),
+            unread: None,
         }
     }
 
@@ -58,10 +106,23 @@ impl SessionStore {
         self.file.as_ref()
     }
 
-    pub(crate) fn replay(&mut self, mutation: Mutation) -> Result<(), SessionError> {
+    pub(crate) fn replay(&mut self, mutation: Mutation, line: usize) -> Result<(), SessionError> {
+        let unread = mutation.is_unread();
         self.state.apply_mutation(mutation)?;
         self.sync_name();
+        if unread {
+            let seen = self.unread.get_or_insert(UnreadLines {
+                count: 0,
+                first_line: line,
+            });
+            seen.count = seen.count.saturating_add(1);
+        }
         Ok(())
+    }
+
+    /// Taken, not read: a store attached again must not queue its note twice.
+    pub fn take_unread_lines(&mut self) -> Option<UnreadLines> {
+        self.unread.take()
     }
 
     /// Mirrors a replayed `Fact::Name` into the metadata snapshot every caller reads.
@@ -71,22 +132,7 @@ impl SessionStore {
 
     fn commit(&mut self, mutation: Mutation) -> Result<(), SessionError> {
         if let Some(path) = &self.file {
-            let line = encode_line(&mutation)?;
-            let mut file = OpenOptions::new()
-                .append(true)
-                .open(path)
-                .map_err(|error| {
-                    SessionError::Storage(format!(
-                        "Failed to append session {}: {error}",
-                        path.display()
-                    ))
-                })?;
-            file.write_all(line.as_bytes()).map_err(|error| {
-                SessionError::Storage(format!(
-                    "Failed to append session {}: {error}",
-                    path.display()
-                ))
-            })?;
+            append_to(path, &encode_line(&mutation)?)?;
         }
         self.state.apply_mutation(mutation)?;
         self.sync_name();
@@ -287,17 +333,6 @@ impl SessionStore {
 
     pub fn goal(&self) -> Option<yi_types::goal::Goal> {
         self.state.goal().cloned()
-    }
-
-    pub fn set_plan(&mut self, plan: yi_types::plan::Plan) -> Result<(), SessionError> {
-        self.commit(Mutation::Fact {
-            seq: self.state.next_sequence(),
-            fact: Fact::Plan { plan },
-        })
-    }
-
-    pub fn plan(&self) -> Option<yi_types::plan::Plan> {
-        self.state.plan().cloned()
     }
 
     pub fn set_label(
