@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.805.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.811.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -220,6 +220,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D505 | a newer push to main cancels the mirror run an older one started, instead of leaving both runs to race the tip guard | the recorder's commit now starts a mirror run of its own, so one merge can have two runs, and the older finishing last would force older history over the newer push | delete the concurrency block from mirror.yml |
 | D504 | A note is refused for a key-shaped token that starts at a token edge and carries a digit in its run, and for the <<<yi-external fence only; a <memory mention is allowed (amends docs/memory.md) | disk-backed-storage-layer was refused as an API key, and the only <memory producer, D170's anchors, was struck by D278 | restore key_run's anywhere-in-token find and loops' second clause |
 | D503 | A memory journal append reads only its last record and takes the full replay when the file does not end in one whole record; a broken chain is named by yi memory rebuild, which replays it whole (amends D277 'replay per append') | every memory.read appended a record after replaying and re-verifying the whole chain, so a read cost grew with every read ever made | restore append's replay |
 | D502 | the first install checks the archive's sha256 against the release's `SHA256SUMS`, then, when the release carries a `.sig` and `ssh-keygen` is on PATH, the signature against the one `allowed_signers` line it embeds, refusing a bad one or a `.sig` it could not fetch for any reason but absence; with no `.sig` or no `ssh-keygen` it says the sha256 is its only check | the install script runs before any `yi` exists, so it cannot use `yi update`'s verifier, and a key fetched beside the archive would prove nothing the digest does not; the embedded line is the same trust anchor `yi update` compiles in, held equal by a test | fetch nothing but the digest, the archive and the `.sig`; drop the embedded line and verify through `yi update` after the first install |
