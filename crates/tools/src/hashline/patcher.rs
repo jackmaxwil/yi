@@ -112,9 +112,22 @@ fn plain_braces_extensionless(path: &Path, text: &str) -> bool {
         .and_then(|name| name.to_str())
         .unwrap_or_default();
     shell_shebang(text)
-        || name.starts_with('.')
+        || SHELL_DOTFILES.contains(&name)
         || matches!(name, "Makefile" | "makefile" | "GNUmakefile" | "Dockerfile")
 }
+
+const SHELL_DOTFILES: [&str; 10] = [
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".profile",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".kshrc",
+    ".fishrc",
+];
 
 /// A shebang names the interpreter, so only a shell's `/`+`*` is a glob: `#!/usr/bin/env node`
 /// and `#!/usr/bin/env php` keep C-style block comments.
