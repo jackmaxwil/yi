@@ -5293,7 +5293,7 @@ fn a_resumed_sessions_kernel_cells_fill_the_notebook() -> TestResult {
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 Tooling works\ncmd-i\n\
          wait-frame 3000 ● [6]\nquit\n",
         SidebarMode::Full,
-        (180, 100),
+        (220, 100),
     )?;
     let cells = kernel_cells(KERNEL_SESSION);
     assert_eq!(cells.len(), 6, "the recording holds six kernel calls");
