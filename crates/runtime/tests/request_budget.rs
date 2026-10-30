@@ -1129,6 +1129,50 @@ fn every_deferred_guide_is_one_read_away() -> TestResult {
     Ok(())
 }
 
+/// The surface lock holds only each tool's one-line summary, so the guide body it stopped
+/// showing is pinned here: a sentence lost from a guide fails rather than shipping quiet.
+#[test]
+fn every_deferred_guide_body_is_locked() -> TestResult {
+    use sha2::{Digest, Sha256};
+
+    let lock = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tool_guides.txt"),
+    )?;
+    let (_, tools) = session_tools()?;
+    let mut moved: Vec<String> = Vec::new();
+    let mut pointed = 0;
+    for tool in &tools {
+        for rest in tool.definition().description.split("yi://tools/").skip(1) {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let address = format!("yi://tools/{name}");
+            let want = lock
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("{name} ")))
+                .ok_or_else(|| format!("{address} has no pinned guide hash"))?;
+            let (failed, guide) = read_through(&tools, &address)?;
+            assert!(!failed, "{address}: {guide}");
+            let got = format!("{:x}", Sha256::digest(guide.as_bytes()));
+            if got != want {
+                moved.push(format!("{name} {got}"));
+            }
+            pointed += 1;
+        }
+    }
+    assert!(
+        moved.is_empty(),
+        "guide bodies moved; re-pin tests/fixtures/tool_guides.txt: {moved:?}"
+    );
+    assert_eq!(
+        lock.lines().filter(|line| !line.trim().is_empty()).count(),
+        pointed,
+        "the lock names a guide no description points at"
+    );
+    Ok(())
+}
+
 fn without_prose(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
