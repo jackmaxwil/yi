@@ -406,6 +406,27 @@ Tests are tiered by where they run and what they may spend:
 
 <!-- Source: .ruler/082-skills.md -->
 
+# Teach every feature to Yi
+
+The owner, 2026-10-30, reviewing #1891: "every new feature, tool, pattern, etc available to Yi, MUST
+BE TAUGHT TO YI with a visible schema and skill. Skills are lazy loaded with a pointer but always a
+representative description and compact info."
+
+- A **feature** is anything Yi can use: a tool, a plugin, a `yi` subcommand or flag the model may
+  run, a config key, a marker or file format it reads or writes, a convention. If Yi can reach it,
+  the change that adds it teaches it. A feature nobody taught is half-shipped.
+- A **visible schema** is the exact shape Yi sees without reading source: the tool's JSON schema, a
+  subcommand's usage line and output shape, a config key's type and default, a marker's grammar. It
+  sits compactly in the skill's opening lines, so the body costs one read and the catalog nothing.
+- A **skill** is a shipped `SKILL.md` whose `description` stands alone as the catalog line: what the
+  feature is, when to reach for it, the one thing that surprises. The catalog always shows
+  `name: description` with the pointer `read("yi://skills/<name>")`; the body loads lazily. A skill
+  that falls to the bare-name list, or a description that needs the body to make sense, is a defect.
+- The pull request body says where Yi is taught: the skill path and the catalog line as rendered.
+  A feature-ledger row says it in a `taught:` clause beside `journey:`.
+- Deleting a feature deletes its skill. Until the gate in #1906 reads every kind of feature, the
+  reviewer enforces this section; a pull request that adds a feature without it is not done.
+
 # A skill for every tool
 
 The owner, 2026-10-10: "every major agent tool/feature needs a corresponding skill".
