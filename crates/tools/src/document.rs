@@ -17,8 +17,8 @@ pub(crate) fn ceiling(paged: bool) -> u64 {
     if paged { PAGED_CEILING } else { INPUT_CEILING }
 }
 
-/// The ceiling's one refusal sentence, so a read that stops before allocating and the converter
-/// that stops before parsing cannot drift apart.
+/// The converter's one refusal sentence for a document past its ceiling.
+/// Invariant: the converter checks the ceiling itself, so no caller can hand it a document it may not parse.
 pub(crate) fn ceiling_refusal(size: u64, paged: bool) -> String {
     format!(
         "{size} bytes is past the {} MiB ceiling for converting a document",

@@ -2918,17 +2918,14 @@ fn a_grep_apply_carries_the_syntax_verdict_and_its_patch() -> TestResult {
     Ok(())
 }
 
-/// A grep apply into a directory that cannot hold a sibling falls back to the in-place write, and
-/// the row says so beside the verdict instead of being folded into it.
+/// A grep apply into a name that leaves no room for a sibling falls back to the in-place write,
+/// and the row says so beside the verdict instead of being folded into it.
 #[cfg(unix)]
 #[test]
 fn a_grep_apply_that_cannot_stage_a_sibling_says_it_wrote_in_place() -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
     let dir = temp_dir("grep-apply-in-place")?;
-    let locked = dir.join("locked");
-    fs::create_dir(&locked)?;
-    fs::write(locked.join("a.txt"), "old_name\n")?;
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555))?;
+    let name = format!("{}.txt", "a".repeat(250));
+    fs::write(dir.join(&name), "old_name\n")?;
     let applied = GrepTool::default().execute(
         args(&[
             ("pattern", json!("old_name")),
@@ -2937,13 +2934,12 @@ fn a_grep_apply_that_cannot_stage_a_sibling_says_it_wrote_in_place() -> TestResu
         ]),
         &ToolContext::new(dir.to_path_buf()),
     );
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755))?;
     let text = output_text(&applied);
     assert!(
-        text.contains("locked/a.txt: warning: the file was written in place"),
+        text.contains(&format!("{name}: warning: the file was written in place")),
         "{text}"
     );
-    assert_eq!(fs::read_to_string(locked.join("a.txt"))?, "new_name\n");
+    assert_eq!(fs::read_to_string(dir.join(&name))?, "new_name\n");
     assert_eq!(applied.result.details["syntax"], Value::Null, "{text}");
     Ok(())
 }

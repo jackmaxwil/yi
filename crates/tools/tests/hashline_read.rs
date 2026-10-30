@@ -206,3 +206,23 @@ fn a_glob_lists_a_match_past_the_read_cap_unread_and_reads_the_rest() -> TestRes
     assert!(row.contains("READ_FILE_CAP 16777216"), "{row}");
     Ok(())
 }
+
+/// A document with no pages to select is never told to select them: the only continuation a
+/// 256 MiB docx could be offered would re-enter the same refusal.
+#[test]
+fn a_document_past_the_converter_ceiling_without_pages_names_no_page_selection() -> TestResult {
+    let dir = temp_dir("read-document-ceiling-nonpdf")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    sized(
+        &dir.join("huge.docx"),
+        "PK\x03\x04",
+        yi_tools::INPUT_CEILING + 1,
+    )?;
+    let past = read(&state, "huge.docx", &context);
+    let text = output_text(&past);
+    assert!(past.is_error, "{text}");
+    assert!(text.contains("INPUT_CEILING 268435456"), "{text}");
+    assert!(!text.contains("pages="), "{text}");
+    Ok(())
+}

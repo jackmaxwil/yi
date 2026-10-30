@@ -80,19 +80,8 @@ impl ToolContext {
 
     /// [`Self::read`] for a document, under the converter's own ceiling: the parsed text, not the
     /// source bytes, is what reaches the model, and a page selection parses only those pages.
-    pub(crate) fn read_document(&self, path: &Path, paged: bool) -> std::io::Result<Vec<u8>> {
-        let cap = if paged { Cap::Paged } else { Cap::Document };
+    pub(crate) fn read_document(&self, path: &Path, cap: Cap) -> std::io::Result<Vec<u8>> {
         read_capped(self.read_gate().open(path, &self.deny_read)?, path, cap)
-    }
-
-    /// The file's first [`crate::document::MARKER_WINDOW`] bytes: what a read past the text cap
-    /// asks before it takes a document under its own ceiling.
-    pub(crate) fn read_head(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-        let file = self.read_gate().open(path, &self.deny_read)?;
-        let window = u64::try_from(crate::document::MARKER_WINDOW).unwrap_or(u64::MAX);
-        let mut head = Vec::new();
-        std::io::Read::read_to_end(&mut std::io::Read::take(file, window), &mut head)?;
-        Ok(head)
     }
 
     /// What a write may not land on: both lists of the wall.
@@ -320,8 +309,9 @@ pub(crate) fn read_capped(file: std::fs::File, path: &Path, cap: Cap) -> std::io
 pub(crate) enum Cap {
     /// Text the model reads as bytes, capped at [`READ_FILE_CAP`].
     Text,
-    /// A document converted whole, capped at the converter's ceiling.
-    Document,
+    /// A document converted whole, capped at the converter's ceiling; `pages` says a page
+    /// selection could parse past that ceiling, which only a PDF can.
+    Document { pages: bool },
     /// A document whose page selection parses only those pages.
     Paged,
 }
@@ -330,8 +320,8 @@ impl Cap {
     fn limit(self) -> usize {
         let bytes = match self {
             Self::Text => u64::try_from(READ_FILE_CAP).unwrap_or(u64::MAX),
-            Self::Document => crate::document::INPUT_CEILING,
-            Self::Paged => crate::document::PAGED_CEILING,
+            Self::Document { .. } => crate::document::ceiling(false),
+            Self::Paged => crate::document::ceiling(true),
         };
         usize::try_from(bytes).unwrap_or(usize::MAX)
     }
@@ -339,7 +329,7 @@ impl Cap {
     fn name(self) -> &'static str {
         match self {
             Self::Text => "READ_FILE_CAP",
-            Self::Document => "INPUT_CEILING",
+            Self::Document { .. } => "INPUT_CEILING",
             Self::Paged => "PAGED_CEILING",
         }
     }
@@ -350,7 +340,12 @@ impl Cap {
             Self::Text => {
                 format!("grep path={shown} with a pattern, or bash `sed -n '1,2000p' {shown}`")
             }
-            Self::Document => format!("read path={shown} pages=1- for the pages it can convert"),
+            Self::Document { pages: false } => {
+                "no read converts a document this large, whatever the page selection".to_owned()
+            }
+            Self::Document { pages: true } => {
+                format!("read path={shown} pages=1- for the pages it can convert")
+            }
             Self::Paged => {
                 "no read reaches past this: the file is too large to convert at any page selection"
                     .to_owned()
