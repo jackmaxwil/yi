@@ -153,7 +153,7 @@ fn line_count(text: &str) -> usize {
 
 /// `%%bash` is a shell cell whose output is a shell's; naming it python because
 /// the kernel is a Python one tells the reader the wrong thing about the code.
-fn chip(code: &str) -> &'static str {
+pub fn chip(code: &str) -> &'static str {
     if code.trim_start().starts_with("%%bash") {
         "bash"
     } else {
@@ -283,6 +283,167 @@ pub fn traceback_of(details: &Value) -> String {
         return String::new();
     }
     format!("{ename}: {evalue}")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceRow {
+    Frame,
+    Source,
+    Error,
+    Raised,
+}
+
+fn separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty() && trimmed.chars().all(|c| c == '-')
+}
+
+fn frame(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("File ")
+        || trimmed.starts_with("Cell In[")
+        || trimmed.contains("Traceback (most recent call last)")
+}
+
+fn caret(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty() && trimmed.chars().all(|c| c == '^' || c == '~')
+}
+
+fn gutter(line: &str) -> usize {
+    let bytes = line.as_bytes();
+    let mut at = 0_usize;
+    while bytes
+        .get(at)
+        .is_some_and(|b| matches!(b, b' ' | b'-' | b'>'))
+    {
+        at = at.saturating_add(1);
+    }
+    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+        at = at.saturating_add(1);
+    }
+    while bytes.get(at) == Some(&b' ') {
+        at = at.saturating_add(1);
+    }
+    at
+}
+
+/// A `----> 61` row, as ipython marks the line a frame ran: two dashes at least, then the arrow.
+fn arrow(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let dashes = trimmed
+        .len()
+        .saturating_sub(trimmed.trim_start_matches('-').len());
+    dashes >= 2
+        && trimmed
+            .get(dashes..)
+            .is_some_and(|rest| rest.starts_with('>'))
+}
+
+/// The exception name an unindented row leads with: `Foo.Bar` out of `Foo.Bar: value`.
+fn name_of(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if trimmed.len() < line.len() {
+        return None;
+    }
+    let at = trimmed
+        .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.')))
+        .unwrap_or(trimmed.len());
+    trimmed.get(..at).filter(|name| !name.is_empty())
+}
+
+/// `SyntaxError: invalid syntax`, unindented and named: the one row a failed block exists to say.
+fn exception(line: &str) -> bool {
+    if caret(line) || separator(line) || frame(line) {
+        return false;
+    }
+    name_of(line).is_some_and(|name| {
+        line.get(name.len()..)
+            .is_some_and(|rest| rest.starts_with(':'))
+    })
+}
+
+fn trace_row(line: &str, last: TraceRow, bare: bool) -> TraceRow {
+    if line.trim().is_empty() || separator(line) || frame(line) {
+        return TraceRow::Frame;
+    }
+    let indent = line.len().saturating_sub(line.trim_start().len());
+    let source = arrow(line)
+        || (!caret(line) && indent >= 4 && matches!(last, TraceRow::Frame | TraceRow::Source));
+    if source {
+        TraceRow::Source
+    } else if exception(line) || (bare && bare_exception(line)) {
+        TraceRow::Raised
+    } else {
+        TraceRow::Error
+    }
+}
+
+/// An exception name with no value after it, as a bare `assert` or a bare `SystemExit` prints it.
+fn bare_exception(line: &str) -> bool {
+    name_of(line).is_some_and(|name| name.len() == line.trim_start().len())
+}
+
+/// Invariant: a frame's source row keeps its own syntax colour, and the numbering the kernel
+/// printed above it stays scaffolding, so a twenty-row traceback reads as code and not a wall.
+pub fn traceback_rows(text: &str) -> Vec<(TraceRow, String)> {
+    let lines: Vec<String> = text
+        .trim_end_matches('\n')
+        .split('\n')
+        .map(show_controls)
+        .collect();
+    let last = lines.iter().rposition(|line| !line.trim().is_empty());
+    let (mut previous, mut history) = (TraceRow::Frame, false);
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(at, line)| {
+            let row = trace_row(&line, previous, history && Some(at) == last);
+            history = history || frame(&line) || caret(&line) || arrow(&line);
+            if !line.trim().is_empty() {
+                previous = row;
+            }
+            (row, line)
+        })
+        .collect()
+}
+
+pub fn row_spans(
+    kind: TraceRow,
+    line: &str,
+    lang: Option<&mut highlight::Lang>,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let error = Style::default().fg(theme.error);
+    match kind {
+        TraceRow::Frame => vec![Span::styled(line.to_owned(), theme.dim_style())],
+        TraceRow::Error => vec![Span::styled(line.to_owned(), error)],
+        TraceRow::Raised => vec![Span::styled(
+            line.to_owned(),
+            error.add_modifier(Modifier::BOLD),
+        )],
+        TraceRow::Source => source_spans(line, lang, theme, Style::default().fg(theme.text)),
+    }
+}
+
+fn source_spans(
+    line: &str,
+    lang: Option<&mut highlight::Lang>,
+    theme: &Theme,
+    base: Style,
+) -> Vec<Span<'static>> {
+    let at = gutter(line);
+    let (lead, body) = if line.is_char_boundary(at) {
+        line.split_at(at)
+    } else {
+        ("", line)
+    };
+    let mut spans = vec![Span::styled(lead.to_owned(), theme.dim_style())];
+    match lang {
+        Some(lang) => spans.extend(highlight::spans(body, lang, theme, base)),
+        None => spans.push(Span::styled(body.to_owned(), base)),
+    }
+    spans
 }
 
 /// A failed cell shows its source and its traceback in every mode: a reader who
