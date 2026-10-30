@@ -83,6 +83,7 @@ impl App {
     pub(super) fn open_menu_for_focus(&mut self) {
         let Some(hits) = &self.hits else { return };
         let opened = match self.state.zone {
+            Zone::Sidebar if self.state.header.is_some() => None,
             Zone::Sidebar => hits
                 .sidebar_rows
                 .iter()
@@ -101,6 +102,7 @@ impl App {
 
     pub(super) fn pin_focus(&mut self, outbound: &Outbound) {
         let target = match self.state.zone {
+            Zone::Sidebar if self.state.header.is_some() => None,
             Zone::Sidebar => self.state.selected_id().cloned(),
             Zone::Panes => self.state.focused_session(),
         };
@@ -367,7 +369,7 @@ impl App {
     /// A pane opened to the right of `pane` and focused; `None` when the split made none.
     fn beside(&mut self, pane: PaneId, content: PaneContent) -> Option<PaneId> {
         self.focus_pane(pane);
-        self.split_with_anim(ratatui::layout::Direction::Horizontal);
+        self.split_share(ratatui::layout::Direction::Horizontal, 0.5);
         let new = self.state.focused_pane_id().filter(|id| *id != pane)?;
         if let Some(slot) = self.state.panes.get_mut(&new) {
             slot.content = content;

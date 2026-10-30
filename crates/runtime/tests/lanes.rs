@@ -2742,13 +2742,17 @@ async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dy
 /// A `name` hook in the rig's repository that sleeps two seconds the first time git runs it
 /// and leaves `hook-ran` behind.
 fn slow_hook(rig: &Rig, name: &str) -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
     let mark = rig.root.join("hook-ran");
-    let hook = rig.repo.join(".git/hooks").join(name);
     let script = format!(
         "#!/bin/sh\n[ -e '{0}' ] && exit 0\n: > '{0}'\nsleep 2\n",
         mark.display()
     );
+    write_hook(rig, name, &script)
+}
+
+fn write_hook(rig: &Rig, name: &str, script: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = rig.repo.join(".git/hooks").join(name);
     std::fs::write(&hook, script)?;
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
@@ -3275,6 +3279,54 @@ async fn a_check_past_the_deadline_is_cut_while_the_executor_serves() -> TestRes
     Ok(())
 }
 
+/// A `post-checkout` hook that sleeps `seconds`, so every fresh slot's `worktree add` takes it.
+fn sleeping_checkout(rig: &Rig, seconds: u32) -> TestResult {
+    write_hook(
+        rig,
+        "post-checkout",
+        &format!("#!/bin/sh\nsleep {seconds}\n"),
+    )
+}
+
+fn claim_at_once(pool: &Pool, sessions: usize) -> Vec<Result<Lane, LaneError>> {
+    let start = std::sync::Barrier::new(sessions);
+    std::thread::scope(|scope| {
+        let claims: Vec<_> = (0..sessions)
+            .map(|n| {
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    pool.claim(&format!("s-par-{n}"), ClaimBase::Main)
+                })
+            })
+            .collect();
+        claims
+            .into_iter()
+            .map(|claim| claim.join().unwrap_or(Err(LaneError::Deadline)))
+            .collect()
+    })
+}
+
+/// Dies with a pool that checks parallel worktree children out one at a time.
+#[test]
+fn parallel_claims_check_out_side_by_side() -> TestResult {
+    let rig = Rig::new("par-claim")?;
+    sleeping_checkout(&rig, 1)?;
+    let pool = rig.pool(4)?;
+    let started = std::time::Instant::now();
+    let lanes = claim_at_once(&pool, 4)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    let took = started.elapsed();
+    let slots: std::collections::BTreeSet<_> = lanes.iter().map(Lane::slot).collect();
+    assert_eq!(slots.len(), 4, "four claims hold four slots");
+    assert!(
+        took < std::time::Duration::from_millis(2_500),
+        "four claims over a 1 s checkout hook took {took:?}"
+    );
+    Ok(())
+}
+
 /// Dies with `judge` or `remove` deleted: a dry run removes nothing, `--fix` takes only the
 /// merged clean tree and its `target/`, and each kept tree says why.
 #[test]
@@ -3423,6 +3475,192 @@ fn gc_judges_a_released_lane_by_its_detached_head() -> TestResult {
     Ok(())
 }
 
+/// Dies with two claimers handed one fresh slot once the pool lock no longer covers the add.
+#[test]
+fn an_oversubscribed_pool_never_hands_one_slot_out_twice() -> TestResult {
+    let rig = Rig::new("par-full")?;
+    let pool = rig.pool(4)?;
+    let (mut lanes, mut full) = (Vec::new(), 0);
+    for claim in claim_at_once(&pool, 8) {
+        match claim {
+            Ok(lane) => lanes.push(lane),
+            Err(LaneError::PoolFull { slots: 4, .. }) => full += 1,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let slots: std::collections::BTreeSet<_> = lanes.iter().map(Lane::slot).collect();
+    assert_eq!((lanes.len(), slots.len(), full), (4, 4, 4));
+    Ok(())
+}
+
+/// Dies with a claim that signals whatever process reuses a stale warm receipt's pid.
+#[test]
+fn a_claim_leaves_a_process_that_is_not_the_warmer_alive() -> TestResult {
+    let rig = Rig::new("warm-pid")?;
+    std::fs::write(rig.repo.join("Cargo.lock"), "# lock\n")?;
+    git(&rig.repo, &["add", "Cargo.lock"])?;
+    git(&rig.repo, &["commit", "-qm", "lock"])?;
+    let pool = rig.pool(1)?;
+    let slot = pool.claim("s-first", ClaimBase::Main)?.slot();
+    let (cargo, _) = fake_warmer(&rig)?;
+    let stranger = yi_tools::command("/bin/sh")
+        .arg("-c")
+        .arg(r#"/bin/sh "$1" build >/dev/null 2>&1 & echo $!"#)
+        .arg("sh")
+        .arg(&cargo)
+        .output()?;
+    let pid = String::from_utf8(stranger.stdout)?.trim().to_owned();
+    let path = pool.dir().join(format!("{slot}.json"));
+    let mut state: yi_types::lane::SlotState = serde_json::from_slice(&std::fs::read(&path)?)?;
+    state.warm = Some(yi_types::lane::WarmReceipt {
+        base: String::new(),
+        lockfile: String::new(),
+        pid: Some(pid.parse()?),
+        exit_code: None,
+        started_ms: 0,
+        extra: Default::default(),
+    });
+    std::fs::write(&path, serde_json::to_vec(&state)?)?;
+    let claimed = pool.claim("s-next", ClaimBase::Main);
+    let survived = yi_kernel::bootstrap::process_is_running(pid.parse()?)?;
+    let _ = yi_tools::command("/bin/sh")
+        .args(["-c", r#"kill -KILL "$1""#, "kill", &pid])
+        .status();
+    assert_eq!(claimed?.slot(), slot);
+    assert!(
+        survived,
+        "the claim signalled pid {pid}, a `cargo build`, not the warmer"
+    );
+    Ok(())
+}
+
+/// Dies with a `seen.json` that a concurrent sync tore or that lost another sync's hash.
+#[test]
+fn concurrent_syncs_keep_every_seen_lockfile() -> TestResult {
+    let rig = Rig::new("seen")?;
+    let pool = rig.pool(8)?;
+    let lanes = (0..8)
+        .map(|n| pool.claim(&format!("s-seen-{n}"), ClaimBase::Main))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (n, lane) in lanes.iter().enumerate() {
+        std::fs::write(lane.path().join("Cargo.lock"), format!("# lock {n}\n"))?;
+    }
+    let start = std::sync::Barrier::new(lanes.len());
+    std::thread::scope(|scope| {
+        for lane in &lanes {
+            let start = &start;
+            scope.spawn(move || {
+                start.wait();
+                lane.sync()
+            });
+        }
+    });
+    let seen: yi_types::lane::SeenLockfiles =
+        serde_json::from_slice(&std::fs::read(pool.dir().join("seen.json"))?)?;
+    let hashes: std::collections::BTreeSet<_> = seen.hashes.iter().collect();
+    assert_eq!(hashes.len(), 8, "{:?}", seen.hashes);
+    Ok(())
+}
+
+/// Dies with a sync that runs only the first lockfile's toolchain and leaves `uv.lock` unsynced.
+#[test]
+fn a_tree_with_two_lockfiles_syncs_both() -> TestResult {
+    let rig = Rig::new("two-locks")?;
+    std::fs::write(rig.repo.join("Cargo.lock"), "# lock\n")?;
+    std::fs::write(rig.repo.join("uv.lock"), "not a lockfile\n")?;
+    git(&rig.repo, &["add", "Cargo.lock", "uv.lock"])?;
+    git(&rig.repo, &["commit", "-qm", "locks"])?;
+    let lane = rig.pool(1)?.claim("s-two", ClaimBase::Main)?;
+    let synced = lane.sync();
+    let message = synced.err().ok_or("uv.lock was never synced")?.to_string();
+    assert!(message.contains("uv sync --frozen --offline"), "{message}");
+    Ok(())
+}
+
+/// Dies with a session refused outright because its toolchain sync failed.
+#[test]
+fn a_failed_sync_starts_the_session_with_a_notice() -> TestResult {
+    let rig = Rig::new("soft-sync")?;
+    std::fs::write(rig.repo.join("uv.lock"), "not a lockfile\n")?;
+    git(&rig.repo, &["add", "uv.lock"])?;
+    git(&rig.repo, &["commit", "-qm", "lock"])?;
+    let pool = rig.pool(1)?;
+    let (lane, notice) = yi_runtime::lane::land::claim_root(&pool, "s-soft")?;
+    let notice = notice.ok_or("a failed sync said nothing")?;
+    assert!(
+        notice.starts_with(&format!("lane {}: toolchain sync failed", lane.slot())),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("uv sync --frozen --offline --quiet"),
+        "{notice}"
+    );
+    assert!(!notice.contains('\n'), "one line: {notice}");
+    Ok(())
+}
+
+async fn spawn_reply(rig: &Rig) -> Result<(String, Vec<String>), Box<dyn Error>> {
+    let store = support::memory_store("lanes-base");
+    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, None);
+    let mut asked = serde_json::Map::new();
+    asked.insert("name".to_owned(), "kid".into());
+    asked.insert("role".to_owned(), "root".into());
+    asked.insert("isolation".to_owned(), "worktree".into());
+    let reply = family.host.spawn("look".to_owned(), asked)?;
+    let next = reply["next"].as_str().unwrap_or_default().to_owned();
+    let notices = family.notices.lock().map_err(|_| "poisoned")?.clone();
+    family.reaches("kid", "finished").await;
+    Ok((next, notices))
+}
+
+/// Dies with a worktree child cut at HEAD while nothing tells the parent its edits stay behind.
+#[tokio::test]
+async fn a_worktree_spawn_names_the_edits_its_child_starts_without() -> TestResult {
+    let dirty = Rig::new("base-dirty")?;
+    std::fs::write(dirty.repo.join("README.md"), "edited\n")?;
+    let head = git(&dirty.repo, &["rev-parse", "--short=8", "HEAD"])?;
+    let (next, notices) = spawn_reply(&dirty).await?;
+    let row = format!("the child starts at HEAD {head}, without 1 uncommitted path");
+    assert!(next.starts_with(&row), "{next}");
+    assert!(
+        notices.iter().any(|notice| notice.contains(&row)),
+        "{notices:?}"
+    );
+
+    let clean = Rig::new("base-clean")?;
+    let (next, notices) = spawn_reply(&clean).await?;
+    assert!(!next.contains("uncommitted"), "{next}");
+    assert!(
+        !notices.iter().any(|notice| notice.contains("uncommitted")),
+        "{notices:?}"
+    );
+    Ok(())
+}
+
+/// Dies with a worktree child whose parent's status read failed and so was told nothing at all.
+#[tokio::test]
+async fn a_worktree_spawn_whose_status_fails_still_names_the_head() -> TestResult {
+    let rig = Rig::new("base-unread")?;
+    std::fs::write(rig.repo.join(".git/index"), "not an index\n")?;
+    let head = git(&rig.repo, &["rev-parse", "--short=8", "HEAD"])?;
+    let (next, _) = spawn_reply(&rig).await?;
+    let row = format!("the child starts at HEAD {head}; uncommitted paths not counted: git status");
+    assert!(next.starts_with(&row), "{next}");
+    assert!(next.contains("index"), "git's own cause is dropped: {next}");
+    Ok(())
+}
+
+fn fake_warmer(rig: &Rig) -> Result<(PathBuf, &'static [&'static str]), Box<dyn Error>> {
+    let cargo = rig.root.join("cargo");
+    std::fs::write(&cargo, "sleep 30\n")?;
+    let warm = yi_runtime::lane::toolchain::TOOLCHAINS
+        .iter()
+        .find(|toolchain| toolchain.lockfile == "Cargo.lock")
+        .ok_or("no Cargo.lock toolchain")?
+        .warm;
+    Ok((cargo, warm.get(1..).unwrap_or_default()))
+}
+
 fn merged_crashed_slot(
     rig: &Rig,
     pool: &Pool,
@@ -3458,10 +3696,15 @@ fn merged_crashed_slot(
 #[test]
 fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
     let rig = Rig::new("gc-stale-lock")?;
+    std::fs::write(rig.repo.join("Cargo.lock"), "# lock\n")?;
+    git(&rig.repo, &["add", "Cargo.lock"])?;
+    git(&rig.repo, &["commit", "-qm", "lock"])?;
     let pool = rig.pool(1)?;
     let (path, state_path, mut state) = merged_crashed_slot(&rig, &pool)?;
-    let mut warmer = yi_tools::command("sleep")
-        .arg("30")
+    let (cargo, warm) = fake_warmer(&rig)?;
+    let mut warmer = yi_tools::command("/bin/sh")
+        .arg(&cargo)
+        .args(warm)
         .current_dir(&path)
         .spawn()?;
     let warmer_pid = warmer.id();
