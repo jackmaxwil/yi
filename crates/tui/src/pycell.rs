@@ -355,7 +355,7 @@ fn exception(line: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.'))
 }
 
-fn trace_row(line: &str, last: TraceRow) -> TraceRow {
+fn trace_row(line: &str, last: TraceRow, bare: bool) -> TraceRow {
     if line.trim().is_empty() || separator(line) || frame(line) {
         return TraceRow::Frame;
     }
@@ -364,41 +364,63 @@ fn trace_row(line: &str, last: TraceRow) -> TraceRow {
         || (!caret(line) && indent >= 4 && matches!(last, TraceRow::Frame | TraceRow::Source));
     if source {
         TraceRow::Source
-    } else if exception(line) {
+    } else if exception(line) || (bare && bare_exception(line)) {
         TraceRow::Raised
     } else {
         TraceRow::Error
     }
 }
 
+/// An exception name with no value after it, as a bare `assert` or a bare `SystemExit` prints it.
+fn bare_exception(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    !trimmed.is_empty()
+        && trimmed.len() == line.len()
+        && trimmed
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.'))
+}
+
 /// Invariant: a frame's source row keeps its own syntax colour, and the numbering the kernel
 /// printed above it stays scaffolding, so a twenty-row traceback reads as code and not a wall.
-pub fn traceback_rows(
-    text: &str,
-    code: &str,
-    theme: &Theme,
-) -> Vec<(TraceRow, Vec<Span<'static>>)> {
-    let mut lang = highlight::lang_for(chip(code));
-    let base = Style::default().fg(theme.text);
-    let error = Style::default().fg(theme.error);
-    let mut last = TraceRow::Frame;
-    text.trim_end_matches('\n')
+pub fn traceback_rows(text: &str) -> Vec<(TraceRow, String)> {
+    let lines: Vec<String> = text
+        .trim_end_matches('\n')
         .split('\n')
-        .map(|raw| {
-            let line = show_controls(raw);
-            let row = trace_row(&line, last);
+        .map(show_controls)
+        .collect();
+    let last = lines.iter().rposition(|line| !line.trim().is_empty());
+    let (mut previous, mut history) = (TraceRow::Frame, false);
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(at, line)| {
+            let row = trace_row(&line, previous, history && Some(at) == last);
+            history = history || frame(&line) || caret(&line) || arrow(&line);
             if !line.trim().is_empty() {
-                last = row;
+                previous = row;
             }
-            let spans = match row {
-                TraceRow::Frame => vec![Span::styled(line, theme.dim_style())],
-                TraceRow::Error => vec![Span::styled(line, error)],
-                TraceRow::Raised => vec![Span::styled(line, error.add_modifier(Modifier::BOLD))],
-                TraceRow::Source => source_spans(&line, lang.as_mut(), theme, base),
-            };
-            (row, spans)
+            (row, line)
         })
         .collect()
+}
+
+pub fn row_spans(
+    kind: TraceRow,
+    line: &str,
+    lang: Option<&mut highlight::Lang>,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let error = Style::default().fg(theme.error);
+    match kind {
+        TraceRow::Frame => vec![Span::styled(line.to_owned(), theme.dim_style())],
+        TraceRow::Error => vec![Span::styled(line.to_owned(), error)],
+        TraceRow::Raised => vec![Span::styled(
+            line.to_owned(),
+            error.add_modifier(Modifier::BOLD),
+        )],
+        TraceRow::Source => source_spans(line, lang, theme, Style::default().fg(theme.text)),
+    }
 }
 
 fn source_spans(
@@ -421,15 +443,13 @@ fn source_spans(
     spans
 }
 
-fn traceback_lines(text: &str, code: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    traceback_rows(text, code, theme)
-        .into_iter()
-        .flat_map(|(_, spans)| {
-            let mut row = vec![Span::raw("  ")];
-            row.extend(spans);
-            wrap_line(&Line::from(row), width, "        ")
-        })
-        .collect()
+/// Invariant: the marker names the exception even when the block is tail-capped, so it lands on
+/// the last exception raised and never on a row the cap cuts away.
+pub fn raised_row(rows: &[(TraceRow, String)]) -> usize {
+    rows.iter()
+        .rposition(|(kind, _)| *kind == TraceRow::Raised)
+        .or_else(|| rows.iter().rposition(|(_, line)| !line.trim().is_empty()))
+        .unwrap_or(0)
 }
 
 /// A failed cell shows its source and its traceback in every mode: a reader who
@@ -485,25 +505,22 @@ pub fn lines(
     }
     let raw_stdout = string(&cell.details, "stdout");
     let (stdout, trailing) = split_traceback(&raw_stdout);
-    let plain = Style::default().fg(theme.text);
+    let (plain, error) = (
+        Style::default().fg(theme.text),
+        Style::default().fg(theme.error),
+    );
     for (text, style) in [
         (stdout.to_owned(), plain),
         (string(&cell.details, "result"), plain),
         (string(&cell.details, "stderr"), theme.muted_style()),
+        (trailing.to_owned(), error),
+        (traceback_of(&cell.details), error),
     ] {
         let bounded = (!expanded).then(|| crate::transcript::preview_lines(&text, 5, 5).join("\n"));
         let shown = bounded.as_deref().unwrap_or(&text);
         if !text.trim().is_empty() {
             out.extend(stream_lines(shown, style, inner));
         }
-    }
-    for text in [trailing.to_owned(), traceback_of(&cell.details)] {
-        if text.trim().is_empty() {
-            continue;
-        }
-        let bounded = (!expanded).then(|| crate::transcript::preview_lines(&text, 5, 5).join("\n"));
-        let shown = bounded.as_deref().unwrap_or(&text);
-        out.extend(traceback_lines(shown, &code, inner, theme));
     }
     card(out)
 }

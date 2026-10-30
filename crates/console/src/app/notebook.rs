@@ -667,6 +667,48 @@ mod tests {
             .collect()
     }
 
+    /// Dies with no marker at all: a bare `AssertionError` has no `Name: value` row to raise, so
+    /// the marker fell on row 0, which the last-12 cap then cut away.
+    #[test]
+    fn a_capped_block_marks_the_bare_exception_it_ends_on() -> TestResult {
+        let mut trace = "Traceback (most recent call last):\n".to_owned();
+        for at in 0..20 {
+            trace.push_str(&format!(
+                "  File \"/work/p{at}.py\", line {at}, in f{at}\n    g{at}()\n"
+            ));
+        }
+        trace.push_str("AssertionError\n");
+        let cell = NbCell {
+            number: 1,
+            code: "assert ok".to_owned(),
+            error: Some(trace),
+            ..NbCell::default()
+        };
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let lines = notebook_lines(std::slice::from_ref(&cell), 100, false, &theme, "x");
+        assert!(
+            lines
+                .iter()
+                .map(said)
+                .any(|row| row.contains("traceback last 12 of")),
+            "the block is tail-capped: {:?}",
+            lines.iter().map(said).collect::<Vec<_>>()
+        );
+        let marked: Vec<String> = lines
+            .iter()
+            .map(said)
+            .filter(|row| row.starts_with('✕'))
+            .collect();
+        assert_eq!(marked.len(), 1, "one marker per block: {marked:?}");
+        assert!(
+            marked
+                .first()
+                .is_some_and(|row| row.trim_start_matches('✕').trim() == "AssertionError"),
+            "the marker sits on the row naming the failure: {marked:?}"
+        );
+        Ok(())
+    }
+
     /// Dies with a traceback drawn as one flat wall: its frame headers and the line each frame
     /// ran must not share a colour, and the failure marker must name the exception, once.
     #[test]

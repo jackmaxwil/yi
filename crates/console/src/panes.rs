@@ -271,6 +271,23 @@ fn cap_row(what: &str, cap: &str, next: &str, theme: &Theme) -> Line<'static> {
     )
 }
 
+fn cap_notice(noun: &str, cap: usize, tail: bool, total: usize, theme: &Theme) -> Line<'static> {
+    let what = format!(
+        "{noun} {} {cap} of {total} rows",
+        if tail { "last" } else { "first" }
+    );
+    cap_row(
+        &what,
+        &format!("notebook cap {cap}"),
+        "v shows every row",
+        theme,
+    )
+}
+
+fn cap_first(total: usize, cap: usize, tail: bool, full: bool) -> Option<usize> {
+    (total > cap && !full).then(|| if tail { total.saturating_sub(cap) } else { 0 })
+}
+
 fn cap_rows(
     mut rows: Vec<Line<'static>>,
     (cap, tail, full): (usize, bool, bool),
@@ -278,26 +295,17 @@ fn cap_rows(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let total = rows.len();
-    if full || total <= cap {
+    let Some(first) = cap_first(total, cap, tail, full) else {
         return rows;
-    }
-    let what = format!(
-        "{noun} {} {cap} of {total} rows",
-        if tail { "last" } else { "first" }
-    );
-    let row = cap_row(
-        &what,
-        &format!("notebook cap {cap}"),
-        "v shows every row",
-        theme,
-    );
+    };
+    let notice = cap_notice(noun, cap, tail, total, theme);
     if tail {
-        let mut kept = rows.split_off(total.saturating_sub(cap));
-        kept.insert(0, row);
+        let mut kept = rows.split_off(first);
+        kept.insert(0, notice);
         kept
     } else {
         rows.truncate(cap);
-        rows.push(row);
+        rows.push(notice);
         rows
     }
 }
@@ -333,23 +341,35 @@ fn trace_rows(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let indent = " ".repeat(lead.width());
-    let rows = yi_tui::pycell::traceback_rows(text, code, theme);
-    let mark = rows
-        .iter()
-        .position(|(kind, _)| *kind == yi_tui::pycell::TraceRow::Raised)
-        .unwrap_or(0);
+    let rows = yi_tui::pycell::traceback_rows(text);
+    let total = rows.len();
+    let mark = yi_tui::pycell::raised_row(&rows);
+    let cut = cap_first(total, cap, tail, full);
+    let kept = match cut {
+        Some(first) if tail => first..total,
+        Some(_) => 0..cap.min(total),
+        None => 0..total,
+    };
+    let mut lang = yi_tui::highlight::lang_for(yi_tui::pycell::chip(code));
     let mut out: Vec<Line<'static>> = Vec::new();
-    for (at, (_, spans)) in rows.into_iter().enumerate() {
-        let first = vec![if at == mark {
+    for (at, (kind, line)) in rows.iter().enumerate().skip(kept.start).take(kept.len()) {
+        let mut spans = vec![if at == mark {
             lead.clone()
         } else {
             Span::raw(indent.clone())
         }];
-        let spans = first.into_iter().chain(spans).collect::<Vec<_>>();
+        spans.extend(yi_tui::pycell::row_spans(*kind, line, lang.as_mut(), theme));
         out.extend(yi_tui::wrap::wrap_line(&Line::from(spans), width, &indent));
     }
-    let rows = out;
-    cap_rows(rows, (cap, tail, full), "traceback", theme)
+    if cut.is_some() {
+        let notice = cap_notice("traceback", cap, tail, total, theme);
+        if tail {
+            out.insert(0, notice);
+        } else {
+            out.push(notice);
+        }
+    }
+    out
 }
 
 /// Incident: a `│` gutter read as part of the `cargo tree` box-drawing a cell parsed, so rows
