@@ -300,6 +300,7 @@ fn a_relative_redirect_after_a_directory_change_is_refused() -> TestResult {
         "(cd crates && make) > evals/log",
         "cat <<EOF \\\nbody\nEOF\ncd crates && echo hi > evals/probe.py",
         "cd evals 2>/dev/null && python3 gen.py > probe.py",
+        "cd evals 2>crates/runtime/src/lock.rs",
     ] {
         let reason = refusal(&scoped.bash(command))
             .ok_or_else(|| format!("{command:?} was allowed"))?
