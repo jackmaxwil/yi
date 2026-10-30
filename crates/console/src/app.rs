@@ -916,7 +916,10 @@ impl App {
             Action::Keys => self.open_settings(outbound, crate::settings::KEYS),
             Action::Settings => self.open_settings(outbound, crate::settings::SESSION),
             Action::Menu => self.open_menu_for_focus(),
-            Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
+            Action::ToggleSidebar => {
+                self.state.sidebar = self.state.sidebar.next();
+                self.state.header = None;
+            }
             Action::Pin => self.pin_focus(outbound),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),

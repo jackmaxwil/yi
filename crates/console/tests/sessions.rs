@@ -304,3 +304,144 @@ fn the_rail_lists_the_pin_first_and_parts_workspaces_with_a_blank_row() -> Resul
     assert_eq!(drawn, want);
     Ok(())
 }
+
+fn sidebar_app(sidebar: yi_console::model::SidebarMode) -> yi_console::app::App {
+    use yi_console::model::Link;
+    use yi_tui::colors::{ColorTier, Theme};
+    let mut app =
+        yi_console::app::App::new("/w/yi".to_owned(), Theme::new(ColorTier::Ansi16, true));
+    app.state.sidebar = sidebar;
+    app.state.link = Link::Connected;
+    for (id, root, last_ms) in [
+        ("yi-new", "/w/yi", 900),
+        ("yi-old", "/w/yi", 100),
+        ("legios-new", "/w/legios", 800),
+        ("legios-old", "/w/legios", 200),
+    ] {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: root.to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: Some(id.to_owned()),
+            created_ms: 0,
+            last_ms,
+            pinned: None,
+        });
+    }
+    app
+}
+
+fn press(app: &mut yi_console::app::App, code: ratatui::crossterm::event::KeyCode, mods: u8) {
+    use ratatui::crossterm::event::{Event, KeyEvent, KeyModifiers};
+    let (events, _received) = yi_console::client::events();
+    let socket = std::env::temp_dir().join("yi-sessions-no-daemon.sock");
+    let (outbound, _threads) = yi_console::client::spawn(socket, events);
+    let modifiers = KeyModifiers::from_bits_truncate(mods);
+    app.handle_event(&outbound, Event::Key(KeyEvent::new(code, modifiers)));
+    outbound.shutdown();
+}
+
+fn name_at(app: &yi_console::app::App) -> Option<&str> {
+    app.state.selected_id().map(|id| id.0.as_str())
+}
+
+/// Dies with a header cursor surviving into the rail: `enter` folded a group the rail never
+/// paints instead of opening the selected session, and the first `down` skipped a row.
+#[test]
+fn leaving_the_full_sidebar_drops_a_header_cursor() {
+    use ratatui::crossterm::event::KeyCode;
+    use yi_console::model::{SidebarMode, Slot};
+    let mut app = sidebar_app(SidebarMode::Full);
+    let first = app.state.slots().into_iter().find_map(|slot| match slot {
+        Slot::Row(index) => Some(index),
+        Slot::Group(_) => None,
+    });
+    app.state.selected = first.unwrap_or(0);
+    press(&mut app, KeyCode::Up, 0);
+    assert!(matches!(app.state.cursor(), Slot::Group(_)));
+    press(&mut app, KeyCode::Char('b'), 8);
+    assert_eq!(app.state.sidebar, SidebarMode::Rail);
+    assert!(
+        matches!(app.state.cursor(), Slot::Row(_)),
+        "{:?}",
+        app.state.cursor()
+    );
+    let before = name_at(&app).map(str::to_owned);
+    press(&mut app, KeyCode::Down, 0);
+    assert_ne!(name_at(&app).map(str::to_owned), before);
+    press(&mut app, KeyCode::Enter, 0);
+    assert!(app.state.folded.is_empty(), "{:?}", app.state.folded);
+}
+
+/// Dies with a fold from a header moving `selected` to another group's session, and with `p`
+/// pinning that session while the highlight rests on the header.
+#[test]
+fn a_fold_from_a_header_keeps_the_session_and_pin_ignores_the_header() {
+    use ratatui::crossterm::event::KeyCode;
+    use yi_console::model::{SidebarMode, Slot};
+    let mut app = sidebar_app(SidebarMode::Full);
+    let came_from = app.state.selected;
+    press(&mut app, KeyCode::Up, 0);
+    assert!(matches!(app.state.cursor(), Slot::Group(_)));
+    press(&mut app, KeyCode::Enter, 0);
+    assert!(!app.state.folded.is_empty());
+    assert_eq!(app.state.selected, came_from);
+    press(&mut app, KeyCode::Char('p'), 4);
+    assert_eq!(app.state.banner.as_deref(), Some("no session to pin"));
+}
+
+/// Dies with the cursor's order drifting from the painted order: the slots are what an
+/// arrow steps over, so each must be a header or session the sidebar draws, in its order.
+#[test]
+fn the_cursor_slots_are_the_painted_rows_in_order() {
+    use yi_console::model::{SidebarMode, Slot};
+    use yi_console::render::Hit;
+    use yi_console::sidebar::sidebar_lines;
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::Ansi16, true);
+    for mode in [SidebarMode::Full, SidebarMode::Rail] {
+        let mut app = sidebar_app(mode);
+        app.state.folded.insert("/w/legios".to_owned());
+        let mut painted = Vec::new();
+        for row in sidebar_lines(&app, &theme, 60) {
+            match (row.control, row.index) {
+                (Some(Hit::Fold(root)), _) => painted.push(Slot::Group(root)),
+                (None, Some(index)) if painted.last() != Some(&Slot::Row(index)) => {
+                    painted.push(Slot::Row(index));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(app.state.slots(), painted, "{mode:?}");
+    }
+}
+
+/// Dies with the header's cursor band unpainted: the highlight is the only sign the cursor
+/// stands on a header, and it shows only while the sidebar holds focus.
+#[test]
+fn a_header_under_the_cursor_is_banded_only_while_the_sidebar_has_focus() {
+    use yi_console::model::{SidebarMode, Zone};
+    use yi_console::render::Hit;
+    use yi_console::sidebar::sidebar_lines;
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::Ansi16, true);
+    let mut app = sidebar_app(SidebarMode::Full);
+    app.state.header = Some("/w/legios".to_owned());
+    let banded = |app: &yi_console::app::App, root: &str| -> Option<bool> {
+        let rows = sidebar_lines(app, &theme, 60);
+        let row = rows
+            .iter()
+            .find(|row| matches!(&row.control, Some(Hit::Fold(drawn)) if drawn == root))?;
+        Some(
+            row.line
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(theme.selection_bg())),
+        )
+    };
+    assert_eq!(banded(&app, "/w/legios"), Some(true));
+    assert_eq!(banded(&app, "/w/yi"), Some(false));
+    app.state.zone = Zone::Panes;
+    assert_eq!(banded(&app, "/w/legios"), Some(false));
+}

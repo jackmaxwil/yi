@@ -703,7 +703,9 @@ impl ConsoleState {
 
     /// A folded group keeps its header, so the cursor stays on the one it folded.
     pub fn fold_from_header(&mut self, root: &str) {
+        let came_from = self.selected;
         self.toggle_fold(root);
+        self.selected = came_from;
         self.header = Some(root.to_owned());
     }
 

@@ -1,6 +1,6 @@
 ---
 issue: Closes #1715
-raise: crate console +84, tests +24, comments +8
+raise: crate console +91, tests +165, comments +8
 ---
 The console's full sidebar already grouped sessions by workspace, but a header said nothing about
 how many sessions its group held, and a folded group could only be opened again with a mouse:
@@ -13,7 +13,8 @@ header, `Slot::Row` for a session, so `up` reaches the header above the first ro
 folds or unfolds it. The invariant that pays for the extra state is that the cursor rests on one
 slot at a time: `selected` keeps the session the cursor came from, which is where a fold of a
 group it sits in still lands. The rail paints no headers, so its slots are its rows and its
-navigation is unchanged.
+navigation is unchanged: switching the sidebar drops a header cursor, and `p` and `c` do nothing
+while the cursor rests on a header rather than act on the session `selected` still names.
 
 The counts moved the header text every workspace needle in `tests/drive.rs` matched on, which is
 why ten of them now read `demo-root 2 ▾`; the group test also went red for the count's absence,
