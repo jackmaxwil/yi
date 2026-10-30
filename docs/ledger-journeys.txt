@@ -400,6 +400,7 @@ catastrophic-path denylist M10 | `decide::a_catastrophic_target_in_any_segment_i
 `yi plugin` | `plugin::tests::a_tampered_download_or_a_target_with_no_build_installs_nothing`
 `yi plugin` | `pinned::tests::sixteen_threads_installing_one_pin_publish_it_once_and_leave_no_staging`
 `yi plugin` | `kernel::tests::the_kernel_puts_an_installed_plugin_first_on_its_path`
+`yi plugin` | `kernel_lane::a_plugin_added_after_the_kernel_booted_is_on_the_next_cells_path`
 `yi plugin` | `skills_e2e::the_ripwire_index_is_the_one_line_for_an_installed_plugins_skills`
 `yi plugin` | `skills_e2e::the_ripwire_index_names_every_published_skill_and_no_other`
 `yi plugin` | `fetch_session::a_plugin_skill_and_its_files_are_read_by_address`

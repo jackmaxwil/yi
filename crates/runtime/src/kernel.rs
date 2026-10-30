@@ -13,8 +13,8 @@ pub use crate::kernel_bootstrap::{
     BootFn, RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code,
 };
 use crate::kernel_variables::{
-    VARIABLE_MARKER, VariableReply, dump_variable_code, parse_variable_reply, read_variable_code,
-    render_value,
+    VARIABLE_MARKER, VariableReply, dump_variable_code, parse_variable_reply, py_literal,
+    read_variable_code, render_value,
 };
 pub use crate::kernel_variables::{VariableName, VariableReadError};
 use crate::wiring::make_board;
@@ -247,6 +247,7 @@ pub struct KernelService {
     surface_shown: std::sync::atomic::AtomicBool,
     snapshot_lock: Mutex<Option<(PathBuf, Option<std::fs::File>)>>,
     waited: Mutex<Option<String>>,
+    kernel_path: Mutex<Option<std::ffi::OsString>>,
     own_paths: Option<crate::wiring::OwnPathsFn>,
     user_cells: std::sync::atomic::AtomicUsize,
     pub(crate) cell_calls: std::sync::OnceLock<Arc<dyn yi_tools::CellCalls>>,
@@ -271,6 +272,7 @@ impl KernelService {
             surface_shown: std::sync::atomic::AtomicBool::new(false),
             snapshot_lock: Mutex::new(None),
             waited: Mutex::new(None),
+            kernel_path: Mutex::new(None),
             own_paths: None,
             user_cells: std::sync::atomic::AtomicUsize::new(0),
             cell_calls: std::sync::OnceLock::new(),
@@ -378,10 +380,44 @@ impl KernelService {
                 .into_owned(),
         ));
         env.push(("RLM_GLOBAL_HARNESS_HOST".to_owned(), "1".to_owned()));
-        if let Some(path) = yi_tools::plugin::search_path(&self.options.home) {
+        let path = yi_tools::plugin::search_path(&self.options.home);
+        if let Some(path) = &path {
             env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
         }
+        if let Ok(mut applied) = self.kernel_path.lock() {
+            *applied = path;
+        }
         env
+    }
+
+    /// Incident: the kernel's PATH was fixed at boot, so a plugin added by `yi plugin add`
+    /// mid-session stayed invisible to `!`, `%%bash` and `subprocess` until a restart.
+    async fn refresh_path(&self, manager: &KernelManager) {
+        let Some(path) = yi_tools::plugin::search_path(&self.options.home) else {
+            return;
+        };
+        if self
+            .kernel_path
+            .lock()
+            .is_ok_and(|applied| applied.as_ref() == Some(&path))
+        {
+            return;
+        }
+        let code = format!(
+            "import os as _os\n_os.environ['PATH'] = {}\ndel _os",
+            py_literal(&path.to_string_lossy())
+        );
+        let options = ExecuteOptions {
+            internal: true,
+            ..ExecuteOptions::default()
+        };
+        let done = manager
+            .execute(&code, options)
+            .await
+            .is_ok_and(|result| result.status == yi_types::kernel::ExecuteStatus::Ok);
+        if let (true, Ok(mut applied)) = (done, self.kernel_path.lock()) {
+            *applied = Some(path);
+        }
     }
 
     /// Boot the kernel now so the first cell pays execution only. A failed prewarm, or one a
@@ -668,6 +704,7 @@ impl KernelService {
                 notes.push(self.restart_note(&manager).await);
             }
             notes.extend(self.waited.lock().ok().and_then(|mut waited| waited.take()));
+            self.refresh_path(&manager).await;
             let abort = AbortFlag::default();
             let watcher = {
                 let abort = abort.clone();

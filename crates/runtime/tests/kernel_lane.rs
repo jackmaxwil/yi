@@ -160,6 +160,66 @@ async fn a_cancelled_awaiting_cell_leaves_the_namespace_standing() -> TestResult
     Ok(())
 }
 
+/// Field shape (#1202): `yi plugin add` while a session is open; `!`, `%%bash` and `subprocess`
+/// ran on the PATH the kernel booted with.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn a_plugin_added_after_the_kernel_booted_is_on_the_next_cells_path() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let real_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let scratch = Scratch::new("kernel-plugin-added")?;
+    let home = scratch.home()?;
+    // SAFETY: nextest isolates each test in its own process.
+    unsafe {
+        std::env::set_var(
+            "YI_KERNEL_VENV",
+            yi_kernel::bootstrap::kernel_venv_dir(&real_home),
+        )
+    };
+    let mut registry = HostRegistry::default();
+    registry.register_mcp_stubs();
+    let service = Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: home.clone(),
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        on_boot: None,
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling: None,
+    }));
+    let warm = service
+        .execute_user_cell("print('warm')", &never_cancelled())
+        .await;
+    assert!(!warm.is_error, "the kernel never booted: {warm:?}");
+
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+    std::fs::create_dir_all(ripwire.dir(&home))?;
+    let program = ripwire.dir(&home).join("ripwire");
+    std::fs::write(&program, "#!/bin/sh\n")?;
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))?;
+
+    let bang = service
+        .execute_user_cell("!which ripwire", &never_cancelled())
+        .await;
+    let sub = service
+        .execute_user_cell(
+            "import subprocess\nprint(subprocess.run('which ripwire', shell=True, capture_output=True, text=True).stdout)",
+            &never_cancelled(),
+        )
+        .await;
+    service.dispose().await;
+    let want = program.to_string_lossy().into_owned();
+    assert!(stdout_of(&bang).contains(&want), "{}", text_of(&bang));
+    assert!(stdout_of(&sub).contains(&want), "{}", text_of(&sub));
+    Ok(())
+}
+
 /// A cell deaf to SIGINT outlives the busy window, so the kernel has to go; the state says so
 /// until the next cell.
 #[tokio::test(flavor = "multi_thread")]
