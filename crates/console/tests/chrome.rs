@@ -5,7 +5,7 @@ use std::error::Error;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Direction, Rect};
 use yi_console::app::{App, MouseKind};
 use yi_console::client;
@@ -634,24 +634,28 @@ fn a_press_on_the_lower_title_at_the_split_row_drags_the_split() -> TestResult {
     Ok(())
 }
 
-fn press_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+/// One client for the whole test: no daemon listens, so what a key sends goes nowhere.
+fn no_daemon() -> (client::Outbound, client::ClientThreads) {
     let (events, _received) = client::events();
     let socket = std::env::temp_dir().join("yi-chrome-no-daemon-keys.sock");
-    let (outbound, _threads) = client::spawn(socket, events);
-    app.handle_event(&outbound, CtEvent::Key(KeyEvent::new(code, modifiers)));
-    outbound.shutdown();
+    client::spawn(socket, events)
+}
+
+fn press(app: &mut App, outbound: &client::Outbound, code: KeyCode, modifiers: KeyModifiers) {
+    crate::editor_view::key(app, outbound, KeyEvent::new(code, modifiers));
 }
 
 /// #1713: the third state gives its columns to the pane and keeps the chord back on screen.
 #[test]
 fn a_hidden_sidebar_frees_its_width_and_names_the_chord_back() -> TestResult {
     let (mut app, _) = console()?;
+    let (outbound, _threads) = no_daemon();
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
     let shown = hits(&app)?.panes.first().ok_or("no pane")?.1;
     assert_eq!(hits(&app)?.sidebar_width, 8, "the rail is not drawn");
-    press_key(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
-    press_key(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
     assert_eq!(app.state.sidebar, SidebarMode::Hidden);
     draw(&mut app, &mut terminal)?;
     let found = hits(&app)?;
@@ -681,26 +685,42 @@ fn a_hidden_sidebar_frees_its_width_and_names_the_chord_back() -> TestResult {
     Ok(())
 }
 
+/// #1713: the hint is the only way back a hidden sidebar offers, so no button may paint on it.
+#[test]
+fn a_hidden_sidebar_keeps_its_way_back_on_a_narrow_header() -> TestResult {
+    let (mut app, _) = console()?;
+    app.state.sidebar = SidebarMode::Hidden;
+    let mut terminal = Terminal::new(TestBackend::new(50, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let header = row_text(&terminal, 0);
+    assert!(
+        header.contains("⌥b sidebar"),
+        "a button overwrote the way back: {header:?}"
+    );
+    Ok(())
+}
+
 /// #1713: one chord walks all three states, and focus never sits in a sidebar nobody draws.
 #[test]
 fn the_sidebar_chord_cycles_three_states_and_never_focuses_a_hidden_one() -> TestResult {
     let (mut app, _) = console()?;
+    let (outbound, _threads) = no_daemon();
     app.state.sidebar = SidebarMode::Rail;
     for want in [SidebarMode::Full, SidebarMode::Hidden, SidebarMode::Rail] {
-        press_key(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+        press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
         assert_eq!(app.state.sidebar, want, "the cycle skipped {want:?}");
     }
     app.state.sidebar = SidebarMode::Rail;
     app.state.zone = Zone::Sidebar;
-    press_key(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
     assert_eq!(app.state.zone, Zone::Sidebar, "a drawn sidebar lost focus");
-    press_key(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
     assert_eq!(
         app.state.zone,
         Zone::Panes,
         "focus stayed in the hidden sidebar"
     );
-    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut app, &outbound, KeyCode::Tab, KeyModifiers::NONE);
     assert_eq!(
         app.state.zone,
         Zone::Panes,
