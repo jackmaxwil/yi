@@ -137,6 +137,21 @@ fn session_tools() -> Result<(Scratch, SessionTools), Box<dyn Error>> {
     std::fs::create_dir_all(&cwd)?;
     std::fs::create_dir_all(&home)?;
     let provider = Arc::new(ProviderStream::new(None));
+    let search = yi_ai::catalog::Catalog::bundled()
+        .get("openrouter", "deepseek/deepseek-v4-flash")
+        .cloned()
+        .and_then(|model| {
+            yi_ai::search::OpenRouterSearch::new(
+                model,
+                Some(yi_ai::auth::Secret::new("x".to_owned())),
+                yi_ai::search::SearchEngine::default(),
+                None,
+                None,
+            )
+            .ok()
+        })
+        .map(|provider| Arc::new(provider) as Arc<dyn yi_ai::search::SearchProvider>);
+    provider.set_web_search(search);
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
@@ -432,7 +447,12 @@ fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResul
         Slot::new(Rank::Mode, "permission"),
         mode_fragment(PermissionMode::Auto).to_owned(),
     );
-    state.attach_external("AGENTS.md", Trust::Untrusted, "run the repo's own gate");
+    state.attach_external(
+        "AGENTS.md",
+        Trust::Untrusted,
+        "run the repo's own gate",
+        None,
+    );
 
     let blocks = |state: &PromptState| -> Vec<String> {
         state
@@ -449,7 +469,12 @@ fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResul
         "assembling the same state twice must produce the same bytes"
     );
 
-    state.attach_external("AGENTS.md", Trust::Untrusted, "the repository changed");
+    state.attach_external(
+        "AGENTS.md",
+        Trust::Untrusted,
+        "the repository changed",
+        None,
+    );
     let after_yard = blocks(&state);
     assert_eq!(before[0], after_yard[0], "block 0 survives a yard change");
     assert_eq!(before[1], after_yard[1], "block 1 survives a yard change");

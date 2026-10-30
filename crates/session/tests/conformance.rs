@@ -198,11 +198,7 @@ fn lane_pointer(lane: &str, leaf: Option<&str>) -> LanePointer {
 }
 
 fn mutation_seq(mutation: &Mutation) -> u64 {
-    match mutation {
-        Mutation::Entry { entry, .. } => entry.seq(),
-        Mutation::Record { record } => record.seq(),
-        Mutation::Lane { seq, .. } | Mutation::Fact { seq, .. } => *seq,
-    }
+    mutation.seq().unwrap_or(0)
 }
 
 fn mutation_kind(mutation: &Mutation) -> &'static str {
@@ -211,6 +207,7 @@ fn mutation_kind(mutation: &Mutation) -> &'static str {
         Mutation::Record { .. } => "record",
         Mutation::Lane { .. } => "lane",
         Mutation::Fact { .. } => "fact",
+        Mutation::Other(_) => "other",
     }
 }
 

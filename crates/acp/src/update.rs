@@ -226,7 +226,7 @@ fn tool_kind(tool_name: &str) -> AcpToolKind {
     match tool_name {
         "read" | "glob" => AcpToolKind::Read,
         "edit" | "write" => AcpToolKind::Edit,
-        "grep" => AcpToolKind::Search,
+        "grep" | "web_search" => AcpToolKind::Search,
         "bash" | "ipython" => AcpToolKind::Execute,
         _ => AcpToolKind::Other,
     }

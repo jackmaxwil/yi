@@ -70,6 +70,8 @@ struct Shared {
     status: Mutex<Status>,
     last_usage: Mutex<Option<Usage>>,
     store: Mutex<Option<yi_session::SharedSession>>,
+    /// The session's own screen of outside text; a second session never inherits it.
+    screen: crate::classifier::Screeners,
     store_error: Mutex<Option<String>>,
     events: broadcast::Sender<AgentEvent>,
     tree_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -214,6 +216,7 @@ impl AgentSession {
                 status: Mutex::new(Status::Idle),
                 last_usage: Mutex::new(None),
                 store: Mutex::new(None),
+                screen: crate::classifier::Screeners::default(),
                 store_error: Mutex::new(None),
                 events,
                 tree_generation: Arc::default(),
@@ -279,20 +282,6 @@ impl AgentSession {
             .lock()
             .ok()
             .and_then(|slot| slot.as_ref().map(Arc::clone))
-    }
-
-    pub fn install_extensions(&self, host: crate::ext::Host) {
-        if let Ok(mut slot) = self.shared.ext.lock() {
-            *slot = Some(Arc::new(Mutex::new(host)));
-        }
-        let deliver = self.deliver_hook();
-        if let Some(host) = self.extensions()
-            && let Ok(mut host) = host.lock()
-        {
-            host.set_deliver(Arc::new(move |message| {
-                deliver(message, false);
-            }));
-        }
     }
 
     /// The attached store's id, read when asked: the store may attach after wiring.
@@ -736,7 +725,7 @@ impl AgentSession {
             *messages = loaded;
         }
         if let Ok(mut queue) = self.shared.steer.lock() {
-            for message in crate::mail::unread(&entries) {
+            for message in crate::mail::resumed(&store, &entries) {
                 run::push(&mut queue, Queued::new(message, false, None));
             }
         }

@@ -16,10 +16,12 @@ pub mod environment;
 pub mod ext;
 pub mod family;
 pub mod fetch;
+mod file_cache;
 pub mod gate;
 pub mod goal;
 pub mod history;
 pub mod host;
+pub mod journal;
 pub mod kernel;
 mod kernel_bootstrap;
 mod kernel_doctor;
@@ -61,6 +63,7 @@ pub mod title;
 pub mod todo;
 pub mod tools;
 pub mod wall;
+pub mod web_search;
 pub mod wiring;
 
 pub use checkpoint::{
@@ -97,6 +100,7 @@ pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
 pub use yi_ai::request::ProxyConfig;
 pub use yi_ai::roots;
+pub use yi_ai::search;
 pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
 pub use yi_kernel::tarball;
 
