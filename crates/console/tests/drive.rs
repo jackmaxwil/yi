@@ -4555,6 +4555,35 @@ fn save_thinking(frame: &Value) -> Vec<Value> {
     vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
 }
 
+/// A press on a live option steps it, so the tab a settings pane opens on answers the pointer.
+#[test]
+fn a_press_on_a_session_option_steps_it_and_sends_the_change() -> TestResult {
+    let frame = run_frames_with(
+        "session-click",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_with_efforts),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("_yi/settings", settings_rows),
+            Step::Expect("session/set_config_option", set_high),
+        ],
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-,\nwait-frame 3000 Thinking level\n\
+         mouse down 110 5\nmouse up 110 5\n\
+         wait-frame 3000 Thinking level\nquit\n",
+        SidebarMode::Full,
+        160,
+    )?;
+    let row = frame.lines().find(|line| line.contains("Thinking level"));
+    assert!(
+        row.is_some_and(|line| line.contains("high")),
+        "the press left the option alone: {frame}"
+    );
+    Ok(())
+}
+
 /// The Session tab changes this session through the worker and `d` keeps its value as the
 /// default; the fixture answers only the request the page should have sent.
 #[test]

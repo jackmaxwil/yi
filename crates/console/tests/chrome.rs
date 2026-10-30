@@ -254,6 +254,71 @@ fn a_press_on_a_settings_row_works_the_control_it_names() -> TestResult {
     Ok(())
 }
 
+/// The pane draws only a window of a long page; a wheel over it moves that window now, so a row
+/// past the fold is drawn, hoverable and pressable with no key at all.
+#[test]
+fn a_wheel_over_a_settings_pane_brings_a_row_past_the_fold_into_reach() -> TestResult {
+    let (mut app, pane) = console()?;
+    let rows = yi_types::settings::rows();
+    let tab = (1..=yi_types::settings::TABS.len())
+        .max_by_key(|tab| rows.iter().filter(|row| row.tab == tab_name(*tab)).count())
+        .ok_or("no config tab")?;
+    let page: Vec<_> = rows
+        .into_iter()
+        .filter(|row| row.tab == tab_name(tab))
+        .collect();
+    let mut settings = Settings::new(None, tab);
+    settings.rows = Some(yi_types::settings::rows());
+    app.state.panes.get_mut(&pane).ok_or("no pane")?.content =
+        PaneContent::Settings(Box::new(settings));
+    let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+    draw(&mut app, &mut terminal)?;
+    let last = page.len().saturating_sub(1);
+    let target_of = |app: &App, row: usize| -> Option<Rect> {
+        hits(app)
+            .ok()?
+            .settings_targets
+            .iter()
+            .find_map(|(rect, at, target)| {
+                (*at == pane && *target == Target::Row(row)).then_some(*rect)
+            })
+    };
+    assert!(
+        target_of(&app, last).is_none(),
+        "the page fits at 80x24, so no row is past the fold"
+    );
+    let at = hits(&app)?
+        .panes
+        .iter()
+        .find_map(|(id, rect)| (*id == pane).then_some(*rect))
+        .ok_or("no pane rect")?;
+    let (x, y) = (
+        at.x.saturating_add(at.width / 2),
+        at.y.saturating_add(at.height / 2),
+    );
+    for _ in 0..page.len() {
+        if target_of(&app, last).is_some() {
+            break;
+        }
+        mouse(&mut app, MouseKind::ScrollDown, x, y);
+        draw(&mut app, &mut terminal)?;
+    }
+    let rect = target_of(&app, last).ok_or("the wheel never brought the last row in")?;
+    let drawn = row_text(&terminal, rect.y);
+    assert!(
+        drawn.contains(&page[last].label),
+        "the last row's target sits at {} over {drawn:?}",
+        rect.y
+    );
+    mouse(&mut app, MouseKind::Down, rect.x, rect.y);
+    assert_eq!(
+        settings_of(&app, pane)?.cursor,
+        last,
+        "the press missed the row the wheel brought in"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_pane_with_no_session_titles_itself_without_a_status_dot() -> TestResult {
     let (mut app, _) = console()?;
