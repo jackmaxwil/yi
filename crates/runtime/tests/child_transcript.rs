@@ -214,7 +214,6 @@ async fn an_errored_child_leaves_a_transcript_naming_the_error() -> TestResult {
 async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -> TestResult {
     let (root, host) = host(Some(r#"{"answer": 42}"#))?;
     let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
     host.register(&mut registry);
     let service = KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),

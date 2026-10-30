@@ -499,7 +499,6 @@ mod sealed_store {
         let _ = std::fs::remove_file(&marker);
         let entry = format!("yi584-{}", std::process::id());
         let mut registry = HostRegistry::default();
-        registry.register_mcp_stubs();
         fetch_through_yi_mcp(&mut registry);
         let kernel = Arc::new(KernelService::new(KernelServiceOptions {
             cwd: project,

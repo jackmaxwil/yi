@@ -71,7 +71,6 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
     let compactor = session.compactor().ok_or("no compactor")?;
 
     let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
     {
         let compactor = Arc::clone(&compactor);
         registry.register("compact.run", move |payload| {
@@ -482,7 +481,6 @@ async fn save_read_forget_through_the_kernel() -> TestResult {
     let base = Scratch::new("yi-skills-memory")?;
     std::fs::create_dir_all(base.join("cwd"))?;
     let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
     yi_runtime::memory::attach(
         None,
         &mut registry,

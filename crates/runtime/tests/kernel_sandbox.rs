@@ -43,8 +43,7 @@ fn service(
     sandbox: Sandbox,
     family_dir: Option<PathBuf>,
 ) -> Arc<KernelService> {
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
+    let registry = HostRegistry::default();
     Arc::new(KernelService::new(KernelServiceOptions {
         cwd,
         home,

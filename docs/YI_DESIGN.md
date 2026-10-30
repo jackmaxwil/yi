@@ -626,11 +626,11 @@ A persistent IPython process per session that reaches the host only through host
 
 | owner | verbs |
 |---|---|
-| `kernel.rs` | `exec.spawn/tail/poll/kill/release` (the `bash()` handle), `mcp.config` (`{}`), `mcp.refresh` (error) |
+| `kernel.rs` | `exec.spawn/tail/poll/kill/release` (the `bash()` handle) |
 | `wiring.rs`, `memory/mod.rs`, `history.rs` | `fetch`, `history.grep`, `history.search`, `compact.run` (schedules only), `compact.status`; `memory.save/read/search/forget` |
 | `subagent.rs` | `rlm.run` (returns at admission), `rlm.result/wait/status/list_subagents/delete_subagent/merge_worktree/discard_worktree/find_models`, `model.info`, parent-side `agent_message.send/request/list_agents` |
 | `mailbox.rs`, `lease.rs`, `subagent/service.rs` | child-side `agent_message.send/request/list_agents`, `rlm.receive`; `rlm.interrupt`, `rlm.revoke`; `rlm.service` |
-| `schedule/mod.rs`, `goal/mod.rs`, `plan/mod.rs`, `plan/request.rs` | `rlm_heartbeat.list/create/update/delete`; `goal.get/create/update`; `plan.get`, `plan.op` |
+| `schedule/mod.rs`, `goal/mod.rs`, `plan/mod.rs`, `plan/request.rs` | `rlm_heartbeat.list/create/update/delete`; `goal.get/create/update`; `plan.op` |
 | `kernel_tools.rs` | `tool.list` (the session's table, `ipython` and a root's `ask_user` named as excluded), `tool.call {name, args, cell}` |
 
 - `tool.call` runs the session's own adapter, found at call time, so rules, wall and broker judge
@@ -884,7 +884,7 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 - Shapes: `.yi/plans/<root>/ops.jsonl` (gitignored) of `JournalRecord`
   ([`ledger.rs`](../crates/types/src/plan/ledger.rs)), `.yi/plans/<id>/{plan.json, artifacts/}`,
   `.yi/plans/.lock` (an OS file lock naming its holder's pid), `.yi/schemas/plan.schema.json`. Surfaces: the `plan` tool, host requests
-  `plan.get` and `plan.op`, RPC `plan`, `yi plan`. The session holds `Fact::Plan` as a pointer.
+  `plan.op`, RPC `plan`, `yi plan`. The session holds `Fact::Plan` as a pointer.
 - Settled by: D192, D193, D223, D313.
 
 ### 13.1 Contracts
