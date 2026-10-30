@@ -2,7 +2,7 @@
 issue: Closes #334
 decision: the spec is the harness's object, not the model's | a stop judged by prose passed 3/18 on the six-task slice while the checks failed on one numbered requirement, and the one object that can say which id is red is a check the harness runs | delete the `spec` tool and its store; the stop rule then has no verdict to consult and the prompt's prelude has nothing to announce
 growth: +2535 the spec object, its TAP parse and the freeze that types it, the harness-run stop rule with its refute, the environment line and the skill, and a per-session baseline directory cleared before each freeze; weighed: no artifact or closure gate rebuilt beside it (the config's `gates` key went with D182), no dependency added (the TAP parse is one function over a string), and the first attempt's `bind`, `fanout` and `obligation` stages are left out so the change is the primitive and its stop rule
-raise: crate runtime +2028, crate types +506, tests +746, comments +82
+raise: crate runtime +1920, crate types +520, tests +904, comments +79
 ---
 
 A stop is judged by a check the harness runs, not by the model's prose. The
@@ -15,10 +15,15 @@ once: an `f2p` already green at the baseline, a `p2p` red there, an id the check
 never prints, no `f2p`, an artifact that is the cwd or `/`, a check that prints
 no TAP, a metric without its line, and fewer requirements than the request
 enumerates. A run is the harness's own: a `bash` call naming the checker is not
-a run, so it never clears a red id.
+a run, so it never clears a red id. The check is a command the model wrote, so
+it runs the way `bash` runs one: keyless (no provider key in its environment)
+and inside the session sandbox, on the baseline, on every run and on both
+refute mutants.
 
 The stop rule refuses a clean stop of a request that enumerated items when no
-spec was frozen, when the last run is older than the last write, when any
+spec was frozen, when the last run is older than the last write (which every
+writer tool's own result records, so a fresh green run cannot outlive an edit),
+when any
 requirement is red (naming each id with the check's first diagnostic line) and
 when the refute — the baseline plus the empty and restored artifacts — shows
 the check cannot tell the fixed tree from the untouched one. The refusal
