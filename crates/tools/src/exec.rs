@@ -106,8 +106,8 @@ pub fn discover_exec_tools(dir: &Path) -> (Vec<ExecTool>, Vec<SkippedExecTool>) 
     discover_within(dir, PROBE_DEADLINE)
 }
 
-/// Invariant: probes run side by side under a fixed pool, each with its own deadline, so a slow
-/// sibling enumerated first can neither skip a later tool nor stretch discovery past one deadline.
+/// Invariant: probes run side by side under a pool of four, each with its own deadline measured
+/// from its own start, so a slow sibling enumerated first cannot skip a later tool.
 fn discover_within(
     dir: &Path,
     deadline: std::time::Duration,
@@ -178,7 +178,9 @@ fn probe_all(paths: &[PathBuf], deadline: std::time::Duration) -> Vec<ProbeOutco
                 Err(_) => break,
             }
         }
-        drain();
+        if workers.is_empty() {
+            drain();
+        }
         for worker in workers {
             let _ = worker.join();
         }
@@ -267,6 +269,7 @@ mod tests {
         Ok(())
     }
 
+    /// The slow probe prints a valid schema once it wakes, so only the deadline can skip it.
     #[test]
     fn a_probe_inside_the_deadline_loads_and_one_past_it_is_skipped() -> TestResult {
         let dir = crate::scratch::Scratch::new("yi-tools-exec-limit")?;
@@ -278,14 +281,22 @@ mod tests {
                     "#!/bin/sh\nprintf '{\"name\":\"fast\",\"input_schema\":{\"type\":\"object\"}}'\n"
                         .to_owned(),
                 ),
-                ("slow", "#!/bin/sh\nsleep 30\n".to_owned()),
+                (
+                    "slow",
+                    "#!/bin/sh\nsleep 3\nprintf '{\"name\":\"slow\",\"input_schema\":{\"type\":\"object\"}}'\n"
+                        .to_owned(),
+                ),
             ],
         )?;
-        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(2));
+        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(1));
         assert_eq!(tools.len(), 1, "{skipped:?}");
         assert_eq!(tools[0].name(), "fast");
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].path, dir.join("slow"));
+        assert!(
+            skipped[0].reason.contains("timed out after 1s"),
+            "{skipped:?}"
+        );
         Ok(())
     }
 
@@ -312,11 +323,10 @@ mod tests {
     }
 
     /// The bound the pool holds is what keeps a large tools directory from forking it whole; each
-    /// probe counts its own siblings from `ps` while it hangs, so the peak is observed, not timed.
+    /// probe counts the siblings alive beside it in this scratch dir, so the peak is observed.
     #[test]
     fn exec_tool_probes_run_under_a_fixed_pool() -> TestResult {
         let dir = crate::scratch::Scratch::new("yi-tools-exec-pool")?;
-        let counts = dir.join("counts");
         let total = 8;
         for index in 0..total {
             let name = format!("tool-{index:02}");
@@ -325,25 +335,33 @@ mod tests {
                 &[(
                     &name,
                     format!(
-                        "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  parent=$PPID\n  \
-                         ps -eo ppid=,stat= | awk -v p=\"$parent\" '$1 == p && $2 !~ /^Z/ {{ n++ }} END {{ print n+0 }}' >> '{counts}'\n  sleep 30\n  \
+                        "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  \
+                         ps -eo command= | grep -F '{dir}/tool-' | grep -vc 'grep -F' > '{dir}/seen-{name}'\n  \
+                         sleep 30\n  \
                          printf '{{\"name\":\"{name}\",\"input_schema\":{{\"type\":\"object\"}}}}'\nfi\n",
-                        counts = counts.display(),
+                        dir = dir.display(),
                     ),
                 )],
             )?;
         }
-        let (_tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(2));
+        let (_tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(1));
         assert_eq!(skipped.len(), total, "{skipped:?}");
-        let seen = fs::read_to_string(&counts)?;
-        let peak = seen
-            .lines()
-            .filter_map(|line| line.trim().parse::<usize>().ok())
-            .max()
-            .unwrap_or(0);
+        let mut seen: Vec<usize> = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("seen-"))
+                && let Ok(text) = fs::read_to_string(&path)
+                && let Ok(count) = text.trim().parse()
+            {
+                seen.push(count);
+            }
+        }
+        let peak = seen.iter().copied().max().unwrap_or(0);
         assert!(
-            (2..=PROBE_WORKERS + 1).contains(&peak),
-            "peak {peak} probes ran at once: {seen}"
+            (2..=PROBE_WORKERS).contains(&peak),
+            "peak {peak} probes ran at once: {seen:?}"
         );
         Ok(())
     }
