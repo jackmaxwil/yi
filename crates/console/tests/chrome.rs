@@ -837,8 +837,16 @@ fn the_files_button_opens_a_tree_that_folds_a_folder_and_opens_a_file() -> TestR
     std::fs::write(dir.join(".gitignore"), "build/\n")?;
     let root = dir.display().to_string();
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
-    let (mut app, _) = console()?;
-    app.state.root = root.clone();
+    let (mut app, pane) = console()?;
+    app.state.upsert_row(SessionRow {
+        root: root.clone(),
+        ..row_of("s-alpha", "alpha")
+    });
+    let slot = app.state.panes.get_mut(&pane).ok_or("no pane")?;
+    slot.content = PaneContent::Session {
+        session: Some(SessionId("s-alpha".to_owned())),
+        chat: None,
+    };
     draw(&mut app, &mut terminal)?;
     let files = hits(&app)?
         .header_buttons
@@ -853,6 +861,16 @@ fn the_files_button_opens_a_tree_that_folds_a_folder_and_opens_a_file() -> TestR
     );
     draw(&mut app, &mut terminal)?;
     let popup = *hits(&app)?.overlays.first().ok_or("no tree popup")?;
+    let leaf = std::path::Path::new(&root)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    let title = row_text(&terminal, popup.y);
+    assert!(
+        title.contains(&leaf),
+        "the tree is not rooted at the focused session's dir: {title}"
+    );
     let row_of = |terminal: &Terminal<TestBackend>, needle: &str| -> Option<u16> {
         (popup.y.saturating_add(1)..popup.bottom().saturating_sub(1))
             .find(|y| row_text(terminal, *y).contains(needle))
@@ -868,18 +886,33 @@ fn the_files_button_opens_a_tree_that_folds_a_folder_and_opens_a_file() -> TestR
         drawn.iter().all(|row| !row.contains("skip.rs")),
         "the gitignored folder reached the tree: {drawn:?}"
     );
-    assert!(
-        drawn.iter().all(|row| !row.contains("a.rs")),
-        "a folder one level down started unfolded: {drawn:?}"
-    );
+    let (events, _received) = client::events();
+    let socket = std::env::temp_dir().join("yi-chrome-no-daemon.sock");
+    let (outbound, _threads) = client::spawn(socket, events);
     let inner = row_of(&terminal, "inner").ok_or("no inner row")?;
     mouse(&mut app, MouseKind::Down, popup.x.saturating_add(3), inner);
     draw(&mut app, &mut terminal)?;
-    let file = row_of(&terminal, "a.rs").ok_or("the folder did not unfold")?;
-    mouse(&mut app, MouseKind::Down, popup.x.saturating_add(3), file);
+    assert!(
+        row_of(&terminal, "a.rs").is_some(),
+        "the clicked folder did not unfold"
+    );
+    crate::review::press(&mut app, &outbound, KeyCode::Enter);
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        row_of(&terminal, "a.rs").is_none(),
+        "⏎ on a folder did not fold it"
+    );
+    crate::review::press(&mut app, &outbound, KeyCode::Enter);
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        row_of(&terminal, "a.rs").is_some(),
+        "⏎ did not unfold the folder again"
+    );
+    crate::review::press(&mut app, &outbound, KeyCode::Down);
+    crate::review::press(&mut app, &outbound, KeyCode::Enter);
     assert!(
         matches!(app.state.mode, Mode::Normal),
-        "opening a file left the tree up"
+        "⏎ on a file left the tree up"
     );
     let editor = app
         .state
@@ -892,19 +925,21 @@ fn the_files_button_opens_a_tree_that_folds_a_folder_and_opens_a_file() -> TestR
         .ok_or("no editor pane opened")?;
     assert!(
         editor.ends_with("crates/inner/a.rs"),
-        "the editor opened {editor}, not the clicked file"
+        "⏎ opened {editor}, not the chosen file"
     );
+    draw(&mut app, &mut terminal)?;
+    let files = hits(&app)?
+        .header_buttons
+        .iter()
+        .find(|(_, action)| *action == Action::OpenEditor)
+        .map(|(rect, _)| *rect)
+        .ok_or("no Files button")?;
     mouse(&mut app, MouseKind::Down, files.x, files.y);
-    let (events, _received) = client::events();
-    let socket = std::env::temp_dir().join("yi-chrome-no-daemon.sock");
-    let (outbound, _threads) = client::spawn(socket, events);
-    crate::review::press(&mut app, &outbound, KeyCode::Right);
-    crate::review::press(&mut app, &outbound, KeyCode::Down);
     crate::review::press(&mut app, &outbound, KeyCode::Esc);
     outbound.shutdown();
     assert!(
         matches!(app.state.mode, Mode::Normal),
-        "keys left the tree up"
+        "Esc left the tree up"
     );
     Ok(())
 }

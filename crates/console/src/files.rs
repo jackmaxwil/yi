@@ -1,27 +1,31 @@
 //! The Files button's tree: the workspace's files, folded by folder.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use yi_tui::colors::Theme;
-
-use crate::app::MouseKind;
-use crate::model::{Mode, Zone};
+use yi_tui::popup::Ignore;
 
 /// Invariant: the notice names this cap, so a tree cut here says what cut it.
 const CAP: usize = 20_000;
 
-struct Node {
+pub(crate) struct Node {
     name: String,
-    path: String,
+    path: PathBuf,
     dir: bool,
     depth: usize,
     open: bool,
+}
+
+impl Node {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 pub struct Files {
@@ -39,213 +43,77 @@ const MAX_DEPTH: usize = 32;
 /// Rows one wheel notch moves, matching a pane's scroll step.
 const WHEEL: usize = 3;
 
-/// One `.gitignore` line, its globs split once, kept with the folder it was read from.
-struct Rule {
-    base: String,
-    segments: Vec<Vec<char>>,
-    negate: bool,
-    dir_only: bool,
-    anchored: bool,
-}
-
-impl Rule {
-    fn parse(base: &str, line: &str) -> Option<Self> {
-        let line = line.trim_end();
-        if line.is_empty() || line.starts_with('#') {
-            return None;
-        }
-        let (negate, line) = match line.strip_prefix('!') {
-            Some(rest) => (true, rest),
-            None => (false, line),
-        };
-        let (dir_only, line) = match line.strip_suffix('/') {
-            Some(rest) => (true, rest),
-            None => (false, line),
-        };
-        let pattern = line.strip_prefix('/').unwrap_or(line);
-        (!pattern.is_empty()).then(|| Self {
-            base: base.to_owned(),
-            segments: pattern
-                .split('/')
-                .map(|part| part.chars().collect())
-                .collect(),
-            negate,
-            dir_only,
-            anchored: line.contains('/'),
-        })
-    }
-
-    /// A rule only judges paths under the folder that declared it.
-    fn matches(&self, path: &str, is_dir: bool, globbed: &mut Vec<char>) -> bool {
-        if self.dir_only && !is_dir {
-            return false;
-        }
-        let relative = if self.base.is_empty() {
-            path
-        } else {
-            let Some(rest) = path.strip_prefix(&self.base) else {
-                return false;
-            };
-            let Some(rest) = rest.strip_prefix('/') else {
-                return false;
-            };
-            rest
-        };
-        if self.anchored {
-            let parts: Vec<&str> = relative.split('/').collect();
-            components(&self.segments, &parts, globbed)
-        } else {
-            let Some(segment) = self.segments.first() else {
-                return false;
-            };
-            relative.split('/').any(|name| {
-                globbed.clear();
-                globbed.extend(name.chars());
-                glob(segment, globbed)
-            })
-        }
-    }
-}
-
-fn glob(pattern: &[char], name: &[char]) -> bool {
-    let (mut at, mut from) = (0usize, 0usize);
-    let mut star: Option<usize> = None;
-    let mut mark = 0usize;
-    while from < name.len() {
-        match pattern.get(at) {
-            Some('*') => {
-                star = Some(at);
-                mark = from;
-                at = at.saturating_add(1);
-            }
-            Some('?') => {
-                at = at.saturating_add(1);
-                from = from.saturating_add(1);
-            }
-            Some(char) if Some(char) == name.get(from) => {
-                at = at.saturating_add(1);
-                from = from.saturating_add(1);
-            }
-            _ => match star {
-                Some(star) => {
-                    at = star.saturating_add(1);
-                    mark = mark.saturating_add(1);
-                    from = mark;
-                }
-                None => return false,
-            },
-        }
-    }
-    while pattern.get(at) == Some(&'*') {
-        at = at.saturating_add(1);
-    }
-    at == pattern.len()
-}
-
-/// `**` stands for any run of folders, the other segments for one name each.
-fn components(pattern: &[Vec<char>], path: &[&str], globbed: &mut Vec<char>) -> bool {
-    let Some((head, rest)) = pattern.split_first() else {
-        return path.is_empty();
-    };
-    if head.as_slice() == ['*', '*'] {
-        return (0..=path.len()).any(|skip| match path.get(skip..) {
-            Some(tail) => components(rest, tail, globbed),
-            None => false,
-        });
-    }
-    let Some((name, tail)) = path.split_first() else {
-        return false;
-    };
-    globbed.clear();
-    globbed.extend(name.chars());
-    glob(head, globbed) && components(rest, tail, globbed)
-}
-
-fn ignored(rules: &[Rule], path: &str, is_dir: bool) -> bool {
-    let mut globbed: Vec<char> = Vec::new();
-    rules.iter().fold(false, |verdict, rule| {
-        if rule.matches(path, is_dir, &mut globbed) {
-            !rule.negate
-        } else {
-            verdict
-        }
-    })
-}
-
 struct Walk {
-    kept: Vec<String>,
+    kept: Vec<PathBuf>,
     /// Canonical folders already entered, so a link back up a tree cannot walk forever.
     dirs: Vec<PathBuf>,
+    /// Entries visited, folders and files alike: the budget bounds the read, not the output.
+    visited: usize,
     stopped: bool,
     cap: usize,
 }
 
 /// Paths in the order a folded tree draws them: each folder's entries sorted, its subtree after.
-fn descend(root: &Path, rel: &str, depth: usize, rules: &mut Vec<Rule>, walk: &mut Walk) {
-    if depth > MAX_DEPTH || walk.kept.len() >= walk.cap {
+fn descend(root: &Path, rel: &Path, depth: usize, ignore: &mut Ignore, walk: &mut Walk) {
+    if depth > MAX_DEPTH || walk.stopped {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(root.join(rel)) else {
+    let dir = root.join(rel);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
     };
-    let mut names: Vec<(String, bool)> = entries
+    let mut names: Vec<(OsString, bool)> = entries
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let meta = std::fs::metadata(entry.path()).ok()?;
-            Some((
-                entry.file_name().to_string_lossy().into_owned(),
-                meta.is_dir(),
-            ))
+            Some((entry.file_name(), meta.is_dir()))
         })
         .collect();
     names.sort();
-    let mark = rules.len();
-    if let Ok(text) = std::fs::read_to_string(root.join(rel).join(".gitignore")) {
-        rules.extend(text.lines().filter_map(|line| Rule::parse(rel, line)));
-    }
-    for (name, dir) in names {
-        if walk.kept.len() >= walk.cap {
+    ignore.push_dir(&dir);
+    for (name, is_dir) in names {
+        walk.visited = walk.visited.saturating_add(1);
+        if walk.visited > walk.cap {
             walk.stopped = true;
-            break;
+            return;
         }
-        let child = if rel.is_empty() {
-            name.clone()
-        } else {
-            format!("{rel}/{name}")
-        };
-        if name == NEVER || ignored(rules, &child, dir) {
+        let child = rel.join(&name);
+        let path = root.join(&child);
+        if name == OsStr::new(NEVER) || ignore.ignored(&path, is_dir) {
             continue;
         }
-        if !dir {
+        if !is_dir {
             walk.kept.push(child);
             continue;
         }
-        let Ok(canonical) = std::fs::canonicalize(root.join(&child)) else {
+        let Ok(canonical) = std::fs::canonicalize(&path) else {
             continue;
         };
         if walk.dirs.contains(&canonical) {
             continue;
         }
         walk.dirs.push(canonical);
-        descend(root, &child, depth.saturating_add(1), rules, walk);
+        descend(root, &child, depth.saturating_add(1), ignore, walk);
     }
-    rules.truncate(mark);
 }
 
 /// Sorted paths to pre-order nodes: only the components a path does not share with the one
 /// before it are new, so a folder's children sit contiguously after it.
-fn nodes_of(root: &str, paths: &[String]) -> Vec<Node> {
-    let base = root.trim_end_matches('/');
+fn nodes_of(root: &Path, paths: &[PathBuf]) -> Vec<Node> {
     let mut nodes: Vec<Node> = Vec::new();
-    let mut last: Vec<&str> = Vec::new();
+    let mut last: Vec<&OsStr> = Vec::new();
     for path in paths {
-        let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+        let parts: Vec<&OsStr> = path.iter().collect();
         let shared = last.iter().zip(&parts).take_while(|(a, b)| a == b).count();
         for (depth, name) in parts.iter().enumerate().skip(shared) {
-            let joined = parts.get(..=depth).map(|tail| tail.join("/"));
+            let rel: PathBuf = parts
+                .iter()
+                .take(depth.saturating_add(1))
+                .copied()
+                .collect();
             nodes.push(Node {
-                name: (*name).to_owned(),
-                path: format!("{base}/{}", joined.unwrap_or_default()),
+                name: name.to_string_lossy().into_owned(),
+                path: root.join(rel),
                 dir: depth.saturating_add(1) < parts.len(),
                 depth,
                 open: depth == 0,
@@ -255,7 +123,6 @@ fn nodes_of(root: &str, paths: &[String]) -> Vec<Node> {
     }
     nodes
 }
-
 /// The nodes a drawn frame shows: a folded folder hides every deeper node after it.
 fn walk(nodes: &[Node]) -> impl Iterator<Item = (usize, &Node)> {
     let mut hidden: Option<usize> = None;
@@ -269,7 +136,7 @@ fn walk(nodes: &[Node]) -> impl Iterator<Item = (usize, &Node)> {
 }
 
 impl Files {
-    fn open(root: &str) -> Self {
+    pub(crate) fn open(root: &str) -> Self {
         Self::opened(root, CAP)
     }
 
@@ -278,6 +145,7 @@ impl Files {
         let mut walked = Walk {
             kept: Vec::new(),
             dirs: Vec::new(),
+            visited: 0,
             stopped: false,
             cap,
         };
@@ -287,11 +155,11 @@ impl Files {
                 if let Ok(canonical) = std::fs::canonicalize(base) {
                     walked.dirs.push(canonical);
                 }
-                descend(base, "", 0, &mut Vec::new(), &mut walked);
+                descend(base, Path::new(""), 0, &mut Ignore::default(), &mut walked);
                 walked.stopped.then(|| {
                     format!(
-                        "[the first {} files kept in name order · cap {cap} · the walk stopped \
-                         there · `git ls-files` in a terminal lists the rest]",
+                        "[the first {} files kept in name order · cap {cap} entries visited · \
+                         the walk stopped there · `git ls-files` in a terminal lists the rest]",
                         walked.kept.len()
                     )
                 })
@@ -300,18 +168,18 @@ impl Files {
         };
         Self {
             root: root.to_owned(),
-            nodes: nodes_of(root, &walked.kept),
+            nodes: nodes_of(base, &walked.kept),
             cursor: 0,
             scroll: 0,
             notice,
         }
     }
 
-    fn current(&self) -> Option<&Node> {
+    pub(crate) fn current(&self) -> Option<&Node> {
         self.nodes.get(self.cursor)
     }
 
-    fn step(&mut self, down: bool) {
+    pub(crate) fn step(&mut self, down: bool) {
         let mut before: Option<usize> = None;
         let mut after: Option<usize> = None;
         for (index, _) in walk(&self.nodes) {
@@ -328,7 +196,7 @@ impl Files {
     }
 
     /// A whole page in one pass over the drawn rows, so a held key is not a page of walks.
-    fn page(&mut self, rows: usize, down: bool) {
+    pub(crate) fn page(&mut self, rows: usize, down: bool) {
         let shown: Vec<usize> = walk(&self.nodes).map(|(index, _)| index).collect();
         let Some(at) = shown.iter().position(|index| *index == self.cursor) else {
             return;
@@ -344,7 +212,7 @@ impl Files {
         }
     }
 
-    fn edge(&mut self, end: bool) {
+    pub(crate) fn edge(&mut self, end: bool) {
         let found = if end {
             walk(&self.nodes).map(|(index, _)| index).last()
         } else {
@@ -356,7 +224,7 @@ impl Files {
     }
 
     /// True when the row is a folder and folded or unfolded; a file is the caller's to open.
-    fn toggle(&mut self) -> bool {
+    pub(crate) fn toggle(&mut self) -> bool {
         let Some(node) = self.nodes.get_mut(self.cursor) else {
             return false;
         };
@@ -367,7 +235,7 @@ impl Files {
         true
     }
 
-    fn expand(&mut self) {
+    pub(crate) fn expand(&mut self) {
         if let Some(node) = self.nodes.get_mut(self.cursor)
             && node.dir
         {
@@ -375,8 +243,16 @@ impl Files {
         }
     }
 
+    pub(crate) fn root(&self) -> &str {
+        &self.root
+    }
+
+    pub(crate) fn select(&mut self, index: usize) {
+        self.cursor = index;
+    }
+
     /// A folder closes; a closed folder and a file both walk out to their parent row.
-    fn collapse(&mut self) {
+    pub(crate) fn collapse(&mut self) {
         let Some(node) = self.nodes.get(self.cursor) else {
             return;
         };
@@ -408,7 +284,7 @@ impl Files {
         walk(&self.nodes).count()
     }
 
-    fn scrolled(&mut self, rows: usize) {
+    pub(crate) fn scrolled(&mut self, rows: usize) {
         let rows = rows.max(1);
         let row = self.row_of_cursor();
         if row < self.scroll {
@@ -420,7 +296,7 @@ impl Files {
     }
 
     /// A wheel notch moves the window, leaving the cursor where the user left it.
-    fn wheel(&mut self, down: bool, rows: usize) {
+    pub(crate) fn wheel(&mut self, down: bool, rows: usize) {
         let most = self.visible_len().saturating_sub(rows.max(1));
         self.scroll = if down {
             self.scroll.saturating_add(WHEEL).min(most)
@@ -439,7 +315,7 @@ impl Files {
             .nth(self.scroll.saturating_add(row))
     }
 
-    fn pointed(&self, popup: Rect, x: u16, y: u16, height: u16) -> Option<usize> {
+    pub(crate) fn pointed(&self, popup: Rect, x: u16, y: u16, height: u16) -> Option<usize> {
         let rows = tree_rows(self, height);
         self.node_at(row_at(popup, x, y, rows)?, rows)
     }
@@ -452,7 +328,7 @@ fn popup(area: Rect) -> Rect {
 }
 
 /// The tree's own rows above the notice row, for a popup `height` cells tall.
-fn tree_rows(files: &Files, height: u16) -> usize {
+pub(crate) fn tree_rows(files: &Files, height: u16) -> usize {
     usize::from(height.saturating_sub(2)).saturating_sub(usize::from(files.notice.is_some()))
 }
 
@@ -519,125 +395,13 @@ fn row_at(popup: Rect, x: u16, y: u16, rows: usize) -> Option<usize> {
     (inside && row < rows).then_some(row)
 }
 
-impl crate::app::App {
-    pub(crate) fn open_files(&mut self) {
-        let root = self.session_dir();
-        self.state.mode = Mode::Files(Files::open(&root));
-        self.dirty = true;
-    }
-
-    fn overlay_height(&self) -> u16 {
-        self.hits
-            .as_ref()
-            .and_then(|hits| hits.overlays.first())
-            .map_or(20, |rect| rect.height)
-    }
-
-    fn close_files(&mut self) {
-        self.state.mode = Mode::Normal;
-        self.dirty = true;
-    }
-
-    /// A folder row folds; a file hands its path to the editor and closes the tree.
-    fn files_activate(&mut self) {
-        let height = self.overlay_height();
-        let mut opening = None;
-        if let Mode::Files(files) = &mut self.state.mode {
-            if files.toggle() {
-                let rows = tree_rows(files, height);
-                files.scrolled(rows);
-                self.dirty = true;
-                return;
-            }
-            opening = files
-                .current()
-                .map(|node| (node.path.clone(), files.root.clone()));
-        }
-        let Some((path, workdir)) = opening else {
-            return;
-        };
-        self.state.mode = Mode::Normal;
-        self.state.zone = Zone::Panes;
-        self.open_editor(&path, workdir);
-    }
-
-    pub(crate) fn files_key(&mut self, key: KeyEvent) {
-        let height = self.overlay_height();
-        let Mode::Files(files) = &mut self.state.mode else {
-            return;
-        };
-        let rows = tree_rows(files, height);
-        match key.code {
-            KeyCode::Esc => return self.close_files(),
-            KeyCode::Up => files.step(false),
-            KeyCode::Down => files.step(true),
-            KeyCode::Left => files.collapse(),
-            KeyCode::Right => files.expand(),
-            KeyCode::PageUp => files.page(rows, false),
-            KeyCode::PageDown => files.page(rows, true),
-            KeyCode::Home => files.edge(false),
-            KeyCode::End => files.edge(true),
-            KeyCode::Char('r') => {
-                let root = files.root.clone();
-                *files = Files::open(&root);
-            }
-            _ => {}
-        }
-        files.scrolled(rows);
-        self.dirty = true;
-    }
-
-    pub(crate) fn files_mouse(&mut self, kind: MouseKind, x: u16, y: u16) {
-        let Some(hits) = &self.hits else { return };
-        let Some(popup) = hits.overlays.first().copied() else {
-            return;
-        };
-        let at = Position::new(x, y);
-        // A popup takes every press: one outside it, or on its close mark, only dismisses it.
-        if !popup.contains(at) || hits.dismiss.is_some_and(|mark| mark.contains(at)) {
-            if matches!(kind, MouseKind::Down | MouseKind::RightDown) {
-                self.close_files();
-            }
-            return;
-        }
-        let height = self.overlay_height();
-        let clicked = match &self.state.mode {
-            Mode::Files(files) if kind == MouseKind::Down => files.pointed(popup, x, y, height),
-            Mode::Normal
-            | Mode::Prefix
-            | Mode::Navigator { .. }
-            | Mode::Files(_)
-            | Mode::Menu(_) => None,
-        };
-        match kind {
-            MouseKind::ScrollUp | MouseKind::ScrollDown => {
-                let down = kind == MouseKind::ScrollDown;
-                if let Mode::Files(files) = &mut self.state.mode {
-                    let rows = tree_rows(files, height);
-                    files.wheel(down, rows);
-                }
-                self.dirty = true;
-            }
-            MouseKind::Down => {
-                let Some(index) = clicked else { return };
-                if let Mode::Files(files) = &mut self.state.mode {
-                    files.cursor = index;
-                }
-                self.dirty = true;
-                self.files_activate();
-            }
-            MouseKind::Moved | MouseKind::Up | MouseKind::Drag | MouseKind::RightDown => {}
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn nodes(paths: &[&str]) -> Vec<Node> {
-        let owned: Vec<String> = paths.iter().map(|path| (*path).to_owned()).collect();
-        nodes_of("/repo", &owned)
+        let owned: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        nodes_of(Path::new("/repo"), &owned)
     }
 
     fn tree(paths: &[&str]) -> Files {
@@ -650,49 +414,40 @@ mod tests {
         }
     }
 
-    fn rule(line: &str) -> Option<Rule> {
-        Rule::parse("", line)
+    fn scratch(tag: &str) -> std::io::Result<PathBuf> {
+        let root = std::env::temp_dir().join(format!("yi-console-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        Ok(root)
     }
 
     #[test]
-    fn a_gitignore_line_judges_the_paths_a_repository_ignores() {
-        let hide = |line: &str, path: &str, dir: bool| -> bool {
-            rule(line).is_some_and(|rule| rule.matches(path, dir, &mut Vec::new()))
-        };
+    fn a_gitignore_hides_what_it_names_and_a_negation_puts_one_back() -> std::io::Result<()> {
+        let root = scratch("ignore")?;
+        for dir in ["build", "a/deep"] {
+            std::fs::create_dir_all(root.join(dir))?;
+        }
+        for name in [
+            "debug.log",
+            "keep.log",
+            "build/x.rs",
+            "a/deep/trace.log",
+            "a/deep/keep.log",
+        ] {
+            std::fs::write(root.join(name), "")?;
+        }
+        std::fs::write(root.join(".gitignore"), "*.log\n!keep.log\nbuild/\n")?;
+        let files = Files::opened(&root.display().to_string(), 100);
+        let listed = |name: &str| files.nodes.iter().any(|node| node.path == root.join(name));
+        assert!(listed("keep.log"), "the negation put nothing back");
         assert!(
-            hide("*.log", "debug.log", false),
-            "a bare glob hides a name"
+            listed("a/deep/keep.log"),
+            "the negation stopped at the root"
         );
-        assert!(hide("*.log", "a/deep/debug.log", false), "at any depth");
-        assert!(hide("target/", "target", true), "a slash hides a folder");
-        assert!(
-            !hide("target/", "target", false),
-            "and never a file of that name"
-        );
-        assert!(
-            hide("src/gen/x.rs", "src/gen/x.rs", false),
-            "a path anchors"
-        );
-        assert!(
-            !hide("src/gen/x.rs", "gen/x.rs", false),
-            "to where it was read"
-        );
-        assert!(
-            hide("**/keep.rs", "a/b/keep.rs", false),
-            "** crosses folders"
-        );
-        assert!(!hide("#*.rs", "a.rs", false), "a comment hides nothing");
-    }
-
-    #[test]
-    fn a_negated_line_puts_back_what_an_earlier_line_hid() {
-        let rules: Vec<Rule> = ["*.log", "!keep.log"]
-            .iter()
-            .filter_map(|line| Rule::parse("", line))
-            .collect();
-        assert!(ignored(&rules, "debug.log", false));
-        assert!(!ignored(&rules, "keep.log", false), "the last line wins");
-        assert!(!ignored(&rules, "keep.rs", false));
+        assert!(!listed("debug.log"), "an ignored file reached the tree");
+        assert!(!listed("a/deep/trace.log"), "the rule stopped at the root");
+        assert!(!listed("build"), "an ignored folder reached the tree");
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]
@@ -714,7 +469,7 @@ mod tests {
                 ("x.md", 1, false),
             ]
         );
-        assert_eq!(nodes[3].path, "/repo/crates/a/src/lib.rs");
+        assert_eq!(nodes[3].path.to_string_lossy(), "/repo/crates/a/src/lib.rs");
     }
 
     #[test]
@@ -823,19 +578,19 @@ mod tests {
 
     #[test]
     fn a_walk_past_the_cap_stops_there_and_says_what_it_kept() -> std::io::Result<()> {
-        let root = std::env::temp_dir().join(format!("yi-console-cap-{}", std::process::id()));
+        let root = scratch("cap")?;
         std::fs::create_dir_all(root.join("src"))?;
         for name in ["src/a.rs", "src/b.rs", "top.rs"] {
             std::fs::write(root.join(name), "")?;
         }
-        let files = Files::opened(&root.display().to_string(), 2);
+        let files = Files::opened(&root.display().to_string(), 3);
         let notice = files.notice.clone().unwrap_or_default();
         assert!(
             notice.contains("the first 2 files kept in name order"),
             "{notice}"
         );
         assert!(
-            notice.contains("cap 2"),
+            notice.contains("cap 3"),
             "the notice names the cap: {notice}"
         );
         assert!(notice.contains("lists the rest"), "{notice}");
@@ -843,6 +598,49 @@ mod tests {
             files.nodes.len(),
             3,
             "two files and the folder that holds them"
+        );
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_tree_of_folders_spends_the_cap_too() -> std::io::Result<()> {
+        let root = scratch("dirs")?;
+        for name in ["d1", "d2", "d3", "d4"] {
+            std::fs::create_dir_all(root.join(name))?;
+        }
+        let files = Files::opened(&root.display().to_string(), 3);
+        let notice = files.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("cap 3"),
+            "a folder-heavy tree walked past the cap: {notice}"
+        );
+        assert!(files.nodes.is_empty(), "nothing under the cap was kept");
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    // APFS refuses a name that is not UTF-8, so this runs where a filesystem carries one.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_name_that_is_not_utf8_is_still_a_path_the_tree_keeps() -> std::io::Result<()> {
+        use std::os::unix::ffi::OsStringExt;
+        let root = scratch("nonutf8")?;
+        let name = OsString::from_vec(b"bad\xffname.rs".to_vec());
+        std::fs::create_dir_all(root.join("d"))?;
+        std::fs::write(root.join(&name), "")?;
+        std::fs::write(root.join("d").join(&name), "")?;
+        let files = Files::opened(&root.display().to_string(), 10);
+        let listed: Vec<&PathBuf> = files
+            .nodes
+            .iter()
+            .filter(|node| !node.dir)
+            .map(|node| &node.path)
+            .collect();
+        assert_eq!(listed.len(), 2, "a non-UTF-8 name vanished: {listed:?}");
+        assert!(
+            listed.iter().all(|path| path.exists()),
+            "a listed path does not exist: {listed:?}"
         );
         std::fs::remove_dir_all(&root)?;
         Ok(())

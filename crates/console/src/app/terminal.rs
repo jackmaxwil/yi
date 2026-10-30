@@ -28,7 +28,7 @@ impl App {
         }
     }
 
-    pub(crate) fn session_dir(&self) -> String {
+    pub(super) fn session_dir(&self) -> String {
         let session = match self.state.focused_pane().map(|pane| &pane.content) {
             Some(
                 PaneContent::Editor(crate::model::Editor { workdir, .. })
