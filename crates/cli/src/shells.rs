@@ -247,6 +247,7 @@ pub fn run_serve_command(args: &Args) -> i32 {
             worker_args,
             agent_version: env!("ARCHITECTURE_VERSION").to_owned(),
             home: crate::home().to_path_buf(),
+            session_dir: crate::default_session_dir(args),
         },
         runtime,
     )

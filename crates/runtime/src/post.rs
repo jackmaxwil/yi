@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use yi_session::{EntryOrder, EntryQuery};
 use yi_types::channel::{MESSAGE_MAX_BYTES, Retention};
 use yi_types::entry::Entry;
-use yi_types::mail::{Delivery, Envelope, Hops, MailId};
+use yi_types::mail::{Delivery, Envelope, Hops, Kind, MailId};
 use yi_types::message::{AgentMessage, Attribution, UserContent};
 use yi_types::url::Url;
 
@@ -36,6 +36,89 @@ static LIMIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
 pub fn configure(hop_limit: Option<u32>) {
     let _first_wins = LIMIT.set(hop_limit.unwrap_or(HOP_LIMIT));
+}
+
+/// Incident: a session held by another process reads its mail within a channel cadence, so a
+/// request unread for longer than that belongs to a session no process holds.
+const HELD_READS_WITHIN_MS: u64 = crate::schedule::channel::DEFAULT_CADENCE_MS + 15_000;
+
+/// A request still unread in the mailbox of `session`.
+#[derive(Debug, Clone)]
+pub struct Waiting {
+    pub session: String,
+    pub request: Envelope,
+}
+
+/// Requests no subscription has read, older than a held session would leave them and not yet
+/// past their deadline, read from `<sessions>/channels/` without touching any session.
+pub fn waiting_requests(channels: &Path, now: u64) -> Vec<Waiting> {
+    let Ok(files) = std::fs::read_dir(channels) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for file in files.flatten() {
+        let name = file.file_name().to_string_lossy().into_owned();
+        let Some(session) = (name.strip_prefix("mail-")).and_then(|n| n.strip_suffix(".jsonl"))
+        else {
+            continue;
+        };
+        let channel = Channel::at(file.path());
+        let Ok(meta) = channel.meta() else { continue };
+        let read = meta.acks.values().max().copied().unwrap_or(0);
+        let letters = (channel.entries().into_iter()).filter(|entry| entry.offset > read);
+        for letter in
+            letters.filter_map(|entry| serde_json::from_value::<Envelope>(entry.data).ok())
+        {
+            let old = letter.sent_at.saturating_add(HELD_READS_WITHIN_MS) <= now;
+            let open = letter.deadline_ms.is_none_or(|deadline| deadline > now);
+            if letter.kind == Kind::Request && old && open {
+                found.push(Waiting {
+                    session: session.to_owned(),
+                    request: letter,
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Answers `request` with a `failure` letter in its sender's mailbox, so the sender is told
+/// instead of waiting on a session that could not do it.
+pub fn refuse(channels: &Path, request: &Envelope, why: &str) -> Result<(), String> {
+    let sender = (request.from.strip_prefix("history://")).ok_or("the request names no sender")?;
+    let channel = open(channels, sender)?;
+    let sent_at = yi_session::now_ms();
+    let short = (request.to.strip_prefix("history://").unwrap_or(&request.to))
+        .chars()
+        .take(8)
+        .collect::<String>();
+    let id = MailId(format!("{short}-{}", crate::subagent::random_suffix()?));
+    let failure = Envelope {
+        id: id.clone(),
+        from: request.to.clone(),
+        from_incarnation: None,
+        to: request.from.clone(),
+        to_incarnation: None,
+        kind: Kind::Failure,
+        conversation: request.conversation.clone(),
+        in_reply_to: Some(request.id.clone()),
+        seq: sent_at,
+        sent_at,
+        deadline_ms: None,
+        body: why.to_owned(),
+        reference: None,
+        answered_by: None,
+        origin: None,
+        intent: request.intent.clone(),
+        hops: Hops(request.hops.0.saturating_add(1)),
+    };
+    let data = serde_json::to_value(&failure).map_err(|error| error.to_string())?;
+    match channel.append(&id.0, sent_at, data)? {
+        Appended::Kept(_) | Appended::Duplicate => {}
+        Appended::Refused(why) => return Err(why),
+    }
+    crate::schedule::shared::poke_now(channel.path());
+    Ok(())
 }
 
 /// A root's own mail channel, which every letter to it is appended to.
@@ -369,6 +452,100 @@ mod tests {
             "<channel job=\"sub-1\" address=\"{address}\">messages arrived</channel>\n```jsonl\n{line}\n```"
         );
         message(id, AgentMessage::host_note("heartbeat_prompt", text, 0))
+    }
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn request_in(
+        channels: &Path,
+        kind: Kind,
+        sent_at: u64,
+        deadline_ms: Option<u64>,
+    ) -> Result<Waiting, Box<dyn std::error::Error>> {
+        let id = MailId(format!("req-{sent_at}-{}", kind.as_str()));
+        let request = Envelope {
+            id: id.clone(),
+            from: "history://asker".to_owned(),
+            from_incarnation: None,
+            to: "history://sleeper".to_owned(),
+            to_incarnation: None,
+            kind,
+            conversation: id.clone(),
+            in_reply_to: None,
+            seq: sent_at,
+            sent_at,
+            deadline_ms,
+            body: "is the gate green?".to_owned(),
+            reference: None,
+            answered_by: None,
+            origin: None,
+            intent: Vec::new(),
+            hops: Hops(0),
+        };
+        let data = serde_json::to_value(&request)?;
+        open(channels, "sleeper")?.append(&id.0, sent_at, data)?;
+        Ok(Waiting {
+            session: "sleeper".to_owned(),
+            request,
+        })
+    }
+
+    fn scratch(name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("yi-post-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    /// Dies with the daemon starting a session a live process still holds (a fresh letter), one
+    /// whose reader already took the letter, an inform, or a request past its deadline.
+    #[test]
+    fn only_an_old_unread_open_request_is_waiting() -> TestResult {
+        let dir = scratch("waiting")?;
+        let old = request_in(&dir, Kind::Request, 1_000, None)?;
+        request_in(&dir, Kind::Inform, 1_001, None)?;
+        request_in(&dir, Kind::Request, 1_002, Some(50_000))?;
+        let now = 1_000 + 75_000;
+        let found = waiting_requests(&dir, now);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].request.id, old.request.id);
+        assert!(
+            waiting_requests(&dir, now - 1).is_empty(),
+            "a held session reads it first"
+        );
+        let channel = open(&dir, "sleeper")?;
+        let mut meta = channel.meta()?;
+        meta.acks.insert("job".to_owned(), 3);
+        std::fs::write(
+            channel.path().with_extension("json"),
+            serde_json::to_string(&meta)?,
+        )?;
+        assert!(
+            waiting_requests(&dir, now).is_empty(),
+            "an acked letter is read"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Dies with a refused request leaving its sender waiting: the failure must land in the
+    /// sender's own mailbox and name the request it answers.
+    #[test]
+    fn a_refusal_reaches_the_sender_as_a_failure_naming_the_request() -> TestResult {
+        let dir = scratch("refuse")?;
+        let asked = request_in(&dir, Kind::Request, 1_000, None)?;
+        refuse(&dir, &asked.request, "refused: nobody to approve")?;
+        let entries = open(&dir, "asker")?.entries();
+        let first = entries.first().ok_or("no letter in the sender's mailbox")?;
+        let letter: Envelope = serde_json::from_value(first.data.clone())?;
+        assert_eq!(letter.kind, Kind::Failure);
+        assert_eq!(letter.in_reply_to, Some(asked.request.id.clone()));
+        assert_eq!(
+            (letter.from.as_str(), letter.to.as_str()),
+            ("history://sleeper", "history://asker")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     /// Dies with a clock-woken turn inheriting the last letter's hop after the chain went quiet,

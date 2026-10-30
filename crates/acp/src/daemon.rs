@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 
@@ -7,9 +7,13 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
+use yi_runtime::post::Waiting;
 use yi_types::acp::{DaemonLedger, DaemonLedgerEntry};
+use yi_types::mail::Envelope;
 
 use crate::negotiate;
+
+mod mail;
 
 pub struct DaemonOptions {
     pub socket: PathBuf,
@@ -19,9 +23,14 @@ pub struct DaemonOptions {
     pub agent_version: String,
     /// Where the `config.json` the settings page reads and saves lives.
     pub home: PathBuf,
+    /// Where the sessions and their `channels/` mailboxes live; the daemon polls the mailboxes.
+    pub session_dir: PathBuf,
 }
 
 type ClientId = u64;
+
+/// The id the daemon itself sends requests under; no client ever holds it.
+const SUPERVISOR: ClientId = 0;
 
 const CLIENT_QUEUE: usize = 4096;
 
@@ -32,6 +41,7 @@ enum Input {
     WorkerLine(String, Value, String),
     WorkerReply(String, Value),
     WorkerClosed(String),
+    Mail(Vec<Waiting>),
     Answer(ClientId, String),
     Shutdown,
 }
@@ -65,6 +75,10 @@ struct SessionEntry {
     /// Invariant: true only for a row the pre-attach path invented so a resume's replay
     /// could route. The worker's result confirms it; an unconfirmed row dies with its client.
     provisional: bool,
+    /// Invariant: true only while the daemon started this session for a mailed request and no
+    /// client has attached since, so its asks are refused instead of parked for nobody.
+    headless: bool,
+    owed: Vec<Envelope>,
 }
 
 impl SessionEntry {
@@ -85,6 +99,8 @@ impl SessionEntry {
             name: None,
             pinned_ms: None,
             provisional: false,
+            headless: false,
+            owed: Vec::new(),
         }
     }
 
@@ -214,6 +230,7 @@ struct Supervisor {
     /// Worker-originated requests that arrived with no attached client, flushed on the next
     /// attach; without this the worker's synchronous asker blocks on an unseen answer.
     parked: HashMap<String, Vec<Value>>,
+    woken: HashSet<String>,
     next_request: u64,
     input: mpsc::UnboundedSender<Input>,
 }
@@ -567,6 +584,10 @@ impl Supervisor {
                 return;
             };
             let answered = frame.get("result").is_some();
+            let viewer = (client != SUPERVISOR).then_some(client);
+            if client == SUPERVISOR && !answered {
+                return self.forget_failed_wake(resumed);
+            }
             if let Some(session_id) = frame
                 .pointer("/result/sessionId")
                 .and_then(Value::as_str)
@@ -580,19 +601,21 @@ impl Supervisor {
                 match self.sessions.get_mut(&session_id) {
                     Some(entry) => {
                         entry.root = request_root;
-                        entry.attached.insert(client);
+                        entry.attached.extend(viewer);
                         entry.provisional = false;
                         entry.name = name.or(entry.name.take());
                     }
                     None => {
-                        let mut entry = SessionEntry::new(request_root, Some(client));
+                        let mut entry = SessionEntry::new(request_root, viewer);
                         entry.name = name;
                         self.sessions.insert(session_id.clone(), entry);
                     }
                 }
                 self.persist();
                 // Anything the worker said between attaching and answering waited for this.
-                self.flush_parked(&session_id, client);
+                if client != SUPERVISOR {
+                    self.flush_parked(&session_id, client);
+                }
             }
             if let Some(map) = frame.as_object_mut() {
                 map.insert("id".to_owned(), original);
@@ -646,12 +669,17 @@ impl Supervisor {
             entry.name = named;
         }
         let detached = entry.attached.is_empty();
+        let owed = mail::owed_by_ask(entry, &method, &frame);
         if transition && detached {
             entry.unseen = entry.unseen.saturating_add(1);
         }
         let watchers: Vec<ClientId> = entry.attached.iter().copied().collect();
         if transition || renamed {
             self.persist();
+        }
+        if let Some(owed) = owed {
+            self.refuse_ask(root, &session_id, &frame, &owed);
+            return;
         }
         if detached {
             // Requests (frames with an id) park for the next attach; a
@@ -683,6 +711,10 @@ impl Supervisor {
     }
 
     fn flush_parked(&mut self, session_id: &str, client: ClientId) {
+        if let Some(entry) = self.sessions.get_mut(session_id) {
+            entry.headless = false;
+            entry.owed.clear();
+        }
         if let Some(queue) = self.parked.remove(session_id) {
             for frame in queue {
                 self.send_client(client, frame.to_string());
@@ -889,9 +921,14 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
             requests: HashMap::new(),
             worker_requests: HashMap::new(),
             parked: HashMap::new(),
+            woken: HashSet::new(),
             next_request: 0,
             input: input_tx.clone(),
         };
+        mail::poll(
+            supervisor.options.session_dir.join("channels"),
+            input_tx.clone(),
+        );
         let accept_input = input_tx.clone();
         tokio::spawn(async move {
             let mut next_client: ClientId = 0;
@@ -933,6 +970,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                     supervisor.forward_response_to_worker(&root, frame).await;
                 }
                 Input::WorkerClosed(root) => supervisor.handle_worker_closed(root),
+                Input::Mail(waiting) => supervisor.wake(waiting).await,
                 Input::Answer(client, line) => supervisor.send_client(client, line),
                 Input::Shutdown => break,
             }
@@ -1002,6 +1040,7 @@ mod tests {
                 worker_args: Vec::new(),
                 agent_version: String::new(),
                 home: PathBuf::new(),
+                session_dir: PathBuf::new(),
             },
             ledger,
             workers: HashMap::new(),
@@ -1010,6 +1049,7 @@ mod tests {
             requests: HashMap::new(),
             worker_requests: HashMap::new(),
             parked: HashMap::new(),
+            woken: HashSet::new(),
             next_request: 0,
             input,
         };
@@ -1054,6 +1094,52 @@ mod tests {
             .get("pinned")
             .ok_or("the pinned row goes")?;
         assert_eq!(row.pinned_ms, Some(1));
+        Ok(())
+    }
+
+    /// Dies with a session the daemon started for a mailed request parking its ask for a client
+    /// that never comes: the worker must be refused at once and the asker told by a failure.
+    #[tokio::test]
+    async fn an_ask_from_a_mail_started_session_is_refused_and_the_asker_told() -> Result<(), String>
+    {
+        let dir = std::env::temp_dir().join(format!("yi-mail-ask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let channels = dir.join("channels");
+        std::fs::create_dir_all(&channels).map_err(|error| error.to_string())?;
+        let mut supervisor = supervisor_with_rows();
+        let (input, mut inputs) = mpsc::unbounded_channel();
+        (supervisor.input, supervisor.options.session_dir) = (input, dir.clone());
+        let request: Envelope = serde_json::from_value(json!({
+            "id": "asker-1", "from": "history://asker", "to": "history://sleeper",
+            "kind": "request", "conversation": "asker-1", "seq": 1, "sentAt": 1, "body": "tidy",
+        }))
+        .map_err(|error| error.to_string())?;
+        let mut sleeper = SessionEntry::new("/repo".to_owned(), None);
+        (sleeper.headless, sleeper.owed) = (true, vec![request]);
+        supervisor.sessions.insert("sleeper".to_owned(), sleeper);
+        let ask = json!({"jsonrpc": "2.0", "id": "perm_1", "method": "session/request_permission",
+            "params": {"sessionId": "sleeper", "title": "Run rm -rf build"}});
+        supervisor.handle_worker_line("/repo".to_owned(), ask.clone(), ask.to_string());
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(5), inputs.recv());
+        let Ok(Some(Input::WorkerReply(_, reply))) = waited.await else {
+            return Err("the worker was left waiting on its ask".to_owned());
+        };
+        assert_eq!(reply["id"], "perm_1");
+        assert_eq!(reply["result"]["outcome"]["outcome"], "cancelled");
+        assert!(supervisor.parked.is_empty(), "nothing waits for a client");
+        let mailbox = yi_runtime::schedule::channel::Channel::at(channels.join("mail-asker.jsonl"));
+        let told = mailbox.entries();
+        let letter = told.first().ok_or("the asker was not told")?;
+        assert_eq!(letter.data["kind"], "failure");
+        assert_eq!(letter.data["inReplyTo"], "asker-1");
+        assert!(
+            letter.data["body"]
+                .as_str()
+                .is_some_and(|body| body.contains("Run rm -rf build")),
+            "{}",
+            letter.data
+        );
+        let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
 
