@@ -78,6 +78,7 @@ mod plan_readers;
 mod plan_recovery;
 mod plan_timer;
 mod plan_trace;
+mod plan_vectors;
 mod plan_verify;
 mod plan_walkthrough;
 mod plan_why;

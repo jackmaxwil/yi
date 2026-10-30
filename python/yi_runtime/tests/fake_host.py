@@ -13,22 +13,17 @@ import collections
 import copy
 import hashlib
 import json
+import pathlib
 
 import rlm
 
 
-# `TodoLabel::new` (`ids.rs`): 80 characters, and a newline is refused.
-LABEL_MAX = 80
-# The engine's step table (`table.rs`), for the ops a shape issues on its own.
-LEGAL = {
-    "done": ("running",),
-    "decompose": ("running",),
-    "fail": ("running",),
-    "block": ("pending", "running"),
-    "unblock": ("blocked",),
-    "retry": ("failed",),
-    "drop": ("pending", "blocked"),
-}
+VECTORS = json.loads((pathlib.Path(__file__).parent / "vectors" / "plan_steps.json").read_text())
+LABEL_MAX = VECTORS["label_max"]
+RETRY_CAP = VECTORS["retry_cap"]
+LEGAL: dict[str, tuple[str, ...]] = {}
+for _step in VECTORS["steps"]:
+    LEGAL[_step["op"]] = (*LEGAL.get(_step["op"], ()), _step["from"])
 
 
 def refusal(kind: str, message: str, code: str = "refused", **extra) -> dict:
@@ -49,7 +44,7 @@ class FakeHost:
         self.files: dict[str, str] = {}
         self.spawns = 0
         self.slots: int | None = None
-        self.retry_cap = 8
+        self.retry_cap = RETRY_CAP
         self.starts: list[str] = []
         self.refused: dict[tuple[str, str, int], str] = {}
         self.finished: set[tuple[str, str, int]] = set()
@@ -265,7 +260,8 @@ class FakeHost:
             return self.view(plan, list(self.notices))
         if expected is not None and expected != plan["touched"]:
             return refusal("stale_revision", "the plan moved", "stale_revision")
-        todo = next((todo for todo in plan["todos"] if todo["label"] == args.get("label")), None)
+        label = args["todo"] if op == "add_edge" else args.get("label")
+        todo = next((todo for todo in plan["todos"] if todo["label"] == label), None)
         refused = self.step(op, args, plan, todo)
         if refused is not None:
             return refused
@@ -273,7 +269,7 @@ class FakeHost:
         return self.view(plan)
 
     def step(self, op: str, args: dict, plan: dict, todo: dict | None) -> dict | None:
-        if op in LEGAL and todo["state"] not in LEGAL[op]:
+        if op in LEGAL and todo is not None and todo["state"] not in LEGAL[op]:
             return refusal("illegal_step", f"{op} is illegal for {todo['label']} while {todo['state']}")
         for spec in args.get("todos") or []:
             if len(spec["label"]) > LABEL_MAX or "\n" in spec["label"]:
