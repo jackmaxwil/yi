@@ -1,7 +1,6 @@
 //! `read` on a file that is not text: the converter's copy, decoded text, or a refusal.
-use std::path::Path;
-
 use serde_json::{Map, Value, json};
+use std::path::Path;
 
 use super::tool::{HashlineReadTool, SKELETON_ROWS, View, documents};
 
@@ -45,13 +44,30 @@ impl HashlineReadTool {
         input: &Map<String, Value>,
         context: &ToolContext,
     ) -> ToolOutput {
-        let bytes = match context.read(path) {
+        let pages = input.get("pages").and_then(Value::as_str);
+        let ceiling = crate::document::ceiling(pages.is_some());
+        let opened = match context.read_gate().open(path, &context.deny_read) {
+            Ok(opened) => opened,
+            Err(error) => {
+                return error_output(format!("failed to read {}: {error}", path.display()));
+            }
+        };
+        let size = opened.metadata().map(|meta| meta.len()).unwrap_or(0);
+        if size > ceiling {
+            let reason = format!(
+                "{size} bytes is past the {} MiB ceiling for converting a document",
+                ceiling / (1024 * 1024)
+            );
+            let mut output = error_output(format!("failed to read {}: {reason}", path.display()));
+            output.result.details = json!({ "refused": reason });
+            return output;
+        }
+        let bytes = match crate::tool::read_capped(opened, path) {
             Ok(bytes) => bytes,
             Err(error) => {
                 return error_output(format!("failed to read {}: {error}", path.display()));
             }
         };
-        let pages = input.get("pages").and_then(Value::as_str);
         let mut hint: Option<String> = None;
         if pages.is_some() && !crate::document::is_pdf(&bytes) {
             return crate::tool::error_output_kind(

@@ -15,6 +15,10 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub fn document_ceiling() -> u64 {
     INPUT_CEILING
 }
+
+pub(crate) fn ceiling(paged: bool) -> u64 {
+    if paged { PAGED_CEILING } else { INPUT_CEILING }
+}
 const STEM_CHARS: usize = 64;
 const HEAD: usize = 8 * 1024;
 const CACHE_CAP: u64 = 256 * 1024 * 1024;
@@ -599,11 +603,7 @@ pub(crate) fn convert(
         Some(Err(message)) => return Converted::Refused(message),
         None => Vec::new(),
     };
-    let ceiling = if pages.is_empty() {
-        INPUT_CEILING
-    } else {
-        PAGED_CEILING
-    };
+    let ceiling = ceiling(!pages.is_empty());
     let size = source.bytes.len() as u64;
     if size > ceiling {
         return Converted::Refused(format!(
