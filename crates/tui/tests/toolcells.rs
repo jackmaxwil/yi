@@ -74,10 +74,10 @@ fn ended_with(
     });
 }
 
-/// Eight rows of looking crowds out the answer that follows it, so the run
-/// groups under one bullet with a verb column.
+/// Eight rows of looking crowds out the answer that follows it, so the sources of a run cost
+/// the transcript one dim row.
 #[test]
-fn a_run_of_read_only_calls_commits_as_one_cell() -> TestResult {
+fn a_run_of_read_only_calls_commits_as_one_row() -> TestResult {
     let mut app = app();
     for (index, (tool, arg)) in [("read", "src/lib.rs"), ("grep", "ToolCell")]
         .into_iter()
@@ -94,12 +94,81 @@ fn a_run_of_read_only_calls_commits_as_one_cell() -> TestResult {
         messages: Vec::new(),
     });
     let committed = flat(&app.take_commits());
-    let joined = committed.join("\n");
+    assert_eq!(
+        committed.first().map(String::as_str),
+        Some("→ src/lib.rs  ✱ ToolCell")
+    );
+    assert!(
+        !committed.iter().any(|row| row.contains("Explored")),
+        "{committed:?}"
+    );
+    Ok(())
+}
+
+/// The head, the rail and the per-call rows are still one key away: verbose mode is the
+/// answer to "which call earned this".
+#[test]
+fn verbose_mode_still_lists_every_call_of_the_run() -> TestResult {
+    let sources = Cell::Explored(two_sources());
+    assert_eq!(
+        flat(&sources.lines(80, &theme(), TranscriptMode::Normal, 0)),
+        ["→ src/lib.rs  ✱ ToolCell"]
+    );
+    let block = flat(&sources.lines(80, &theme(), TranscriptMode::Verbose, 0));
+    let joined = block.join("\n");
     assert!(joined.contains("✱ Explored ×2"), "{joined}");
     assert!(joined.contains("Read   src/lib.rs"), "{joined}");
     assert!(joined.contains("Search"), "{joined}");
-    // One bullet, not three.
-    assert_eq!(committed.iter().filter(|row| row.contains('✱')).count(), 1);
+    Ok(())
+}
+
+fn source(tool: &str, arg: &str) -> ToolCell {
+    ToolCell {
+        name: tool.to_owned(),
+        call_id: format!("{tool}:{arg}"),
+        status: ToolStatus::Done,
+        summary: ToolCell::summary_of(tool, arg),
+        digest: None,
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 0,
+        details: serde_json::Value::Null,
+    }
+}
+
+fn two_sources() -> Vec<ToolCell> {
+    vec![source("read", "src/lib.rs"), source("grep", "ToolCell")]
+}
+
+/// Nine sources with long titles: one row, the ones that fit, and the count it could not, at
+/// both widths the owner named.
+#[test]
+fn nine_sources_are_one_row_cut_with_the_count() -> TestResult {
+    let long = |n: usize| format!("crates/yi-collector-{n}/src/a-rather-long-module-name-{n}.rs");
+    let rows: Vec<ToolCell> = (1..=9).map(|n| source("read", &long(n))).collect();
+    let cell = Cell::Explored(rows);
+    let at = |width: usize| flat(&cell.lines(width, &theme(), TranscriptMode::Normal, 0));
+    let one = ["→ crates/yi-collector-1/src/a-rather-long-module-name-1.rs +8"];
+    let three = [
+        "→ crates/yi-collector-1/src/a-rather-long-module-name-1.rs  → crates/yi-collector-2/src/a-rather-long-module-name-2.rs  → crates/yi-collector-3/src/a-rather-long-module-name-3.rs +6",
+    ];
+    assert_eq!(at(80), one);
+    assert_eq!(at(120), one);
+    assert_eq!(at(200), three);
+    Ok(())
+}
+#[test]
+fn one_source_is_a_row_and_no_source_is_none() -> TestResult {
+    let one = Cell::Explored(vec![source("read", "src/lib.rs")]);
+    assert_eq!(
+        flat(&one.lines(80, &theme(), TranscriptMode::Normal, 0)),
+        ["→ src/lib.rs"]
+    );
+    let none = Cell::Explored(Vec::new());
+    assert!(
+        flat(&none.lines(80, &theme(), TranscriptMode::Normal, 0)).is_empty(),
+        "no source is no row"
+    );
     Ok(())
 }
 
@@ -131,7 +200,7 @@ fn a_writing_call_closes_the_run_in_order() -> TestResult {
     started(&mut app, "w", "bash", "cargo test");
     ended(&mut app, "w", "bash", "ok");
     let committed = flat(&app.take_commits());
-    let explored = committed.iter().position(|row| row.contains("Explored"));
+    let explored = committed.iter().position(|row| row.contains("→ a.rs"));
     let bash = committed
         .iter()
         .position(|row| row.contains("$ cargo test"));
