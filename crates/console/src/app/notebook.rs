@@ -73,6 +73,10 @@ pub(super) fn apply_notebook(
                     .and_then(Value::as_str)
                     .filter(|text| !text.is_empty())
                     .map(|text| clamp_bytes(text, RESULT_CAP));
+                cell.result_mime = details
+                    .get("resultMime")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 cell.stderr = details
                     .get("stderr")
                     .and_then(Value::as_str)
@@ -655,6 +659,23 @@ mod tests {
         assert!(
             out.contains(";bmV3ZXN0"),
             "the newest image was not placed: {out:?}"
+        );
+        Ok(())
+    }
+    /// Dies with the mime dropped between the tool's details and the cell: a declared markdown
+    /// value drew as the text it arrived in.
+    #[test]
+    fn a_cells_details_hand_its_mime_to_the_pane() -> TestResult {
+        let cells = one_cell(json!({"result": "# Tide", "resultMime": "text/markdown"}));
+        assert_eq!(
+            cells.first().and_then(|cell| cell.result_mime.as_deref()),
+            Some("text/markdown")
+        );
+        let drawn = rows(&cells, 72, false);
+        assert!(drawn.iter().any(|row| row.contains("Tide")), "{drawn:#?}");
+        assert!(
+            !drawn.iter().any(|row| row.contains("# Tide")),
+            "{drawn:#?}"
         );
         Ok(())
     }

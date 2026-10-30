@@ -294,3 +294,45 @@ fn stderr_and_a_displayed_value_one_past_the_cap_keep_both_ends() -> std::io::Re
     }
     Ok(())
 }
+
+/// Dies with a value whose markdown or JSON bundle was thrown away for its text/plain repr: the
+/// notebook has nothing but the flat form to draw.
+#[test]
+fn a_displayed_value_keeps_the_richest_bundle_its_data_names() {
+    let cases = [
+        (
+            json!({"text/plain": "{'a': 1}", "application/json": {"a": 1}, "text/markdown": "# Tide"}),
+            "# Tide",
+            Some("text/markdown"),
+        ),
+        (
+            json!({"text/plain": "{'a': 1}", "application/json": {"a": 1}}),
+            "{\"a\":1}",
+            Some("application/json"),
+        ),
+        (json!({"text/plain": "42"}), "42", Some("text/plain")),
+    ];
+    for (data, text, mime) in cases {
+        let mut cell = cell(65_536);
+        reduce(
+            &mut cell,
+            &message("execute_result", "req", json!({"data": data})),
+            None,
+        );
+        assert_eq!(cell.result.as_deref(), Some(text), "{data}");
+        assert_eq!(cell.result_mime.as_deref(), mime, "{data}");
+        assert_eq!(
+            finish(cell, 1, false).result_mime.as_deref(),
+            mime,
+            "{data} lost its mime on the way out"
+        );
+    }
+    let mut empty = cell(65_536);
+    reduce(
+        &mut empty,
+        &message("execute_result", "req", json!({"data": {}})),
+        None,
+    );
+    assert_eq!(empty.result, None);
+    assert_eq!(empty.result_mime, None);
+}

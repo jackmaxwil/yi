@@ -264,6 +264,27 @@ const STREAM_ROWS: usize = 40;
 const RESULT_ROWS: usize = 20;
 const TRACE_ROWS: usize = 12;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Renderer {
+    Markdown,
+    Json,
+    Code(&'static str),
+    Text,
+}
+
+const RESULT_RENDERERS: [(&str, Renderer); 3] = [
+    ("text/markdown", Renderer::Markdown),
+    ("application/json", Renderer::Json),
+    ("text/x-python", Renderer::Code("python")),
+];
+
+fn renderer_for(mime: Option<&str>) -> Renderer {
+    RESULT_RENDERERS
+        .iter()
+        .find(|(known, _)| Some(*known) == mime)
+        .map_or(Renderer::Text, |(_, renderer)| *renderer)
+}
+
 fn cap_row(what: &str, cap: &str, next: &str, theme: &Theme) -> Line<'static> {
     Line::styled(
         format!("  […] {what} · {cap} · {next}"),
@@ -271,25 +292,12 @@ fn cap_row(what: &str, cap: &str, next: &str, theme: &Theme) -> Line<'static> {
     )
 }
 
-fn capped(
-    text: &str,
-    lead: Span<'static>,
-    style: Style,
-    (width, cap, tail, full): (usize, usize, bool, bool),
+fn row_capped(
+    rows: Vec<Line<'static>>,
+    (cap, tail, full): (usize, bool, bool),
     noun: &str,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let indent = " ".repeat(lead.width());
-    let mut rows: Vec<Line<'static>> = text
-        .lines()
-        .flat_map(|line| {
-            let line = Line::from(vec![
-                lead.clone(),
-                Span::styled(yi_tui::transcript::show_controls(line), style),
-            ]);
-            yi_tui::wrap::wrap_line(&line, width, &indent)
-        })
-        .collect();
     let total = rows.len();
     if full || total <= cap {
         return rows;
@@ -304,14 +312,98 @@ fn capped(
         "v shows every row",
         theme,
     );
+    let mut rows = rows;
     if tail {
         let mut kept = rows.split_off(total.saturating_sub(cap));
         kept.insert(0, row);
-        kept
-    } else {
-        rows.truncate(cap);
-        rows.push(row);
-        rows
+        return kept;
+    }
+    rows.truncate(cap);
+    rows.push(row);
+    rows
+}
+
+fn capped(
+    text: &str,
+    lead: &Span<'static>,
+    style: Style,
+    language: Option<&str>,
+    (width, cap, tail, full): (usize, usize, bool, bool),
+    noun: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let indent = " ".repeat(lead.width());
+    let mut lang = language.and_then(yi_tui::highlight::lang_for);
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for line in text.lines() {
+        let clean = yi_tui::transcript::show_controls(line);
+        let spans = match lang.as_mut() {
+            Some(lang) => yi_tui::highlight::spans(&clean, lang, theme, style),
+            None => vec![Span::styled(clean, style)],
+        };
+        for mut row in yi_tui::wrap::wrap_line(&Line::from(spans), width, &indent) {
+            row.spans.insert(0, lead.clone());
+            rows.push(row);
+        }
+    }
+    row_capped(rows, (cap, tail, full), noun, theme)
+}
+
+fn markdown_rows(
+    source: &str,
+    lead: &Span<'static>,
+    (width, cap, tail, full): (usize, usize, bool, bool),
+    noun: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let cleaned = source
+        .lines()
+        .map(yi_tui::transcript::show_controls)
+        .collect::<Vec<String>>()
+        .join("\n");
+    let rendered = yi_tui::markdown::render(&cleaned, width.saturating_sub(lead.width()), theme);
+    let rows = rendered
+        .into_iter()
+        .map(|mut row| {
+            row.spans.insert(0, lead.clone());
+            row
+        })
+        .collect();
+    row_capped(rows, (cap, tail, full), noun, theme)
+}
+
+fn result_rows(
+    result: &str,
+    mime: Option<&str>,
+    lead: Span<'static>,
+    style: Style,
+    shape: (usize, usize, bool, bool),
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    if result.trim().is_empty() {
+        return Vec::new();
+    }
+    match renderer_for(mime) {
+        Renderer::Markdown => markdown_rows(result, &lead, shape, "result", theme),
+        Renderer::Json => match serde_json::from_str::<serde_json::Value>(result) {
+            Ok(value) => {
+                let pretty =
+                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| result.to_owned());
+                capped(&pretty, &lead, style, Some("json"), shape, "result", theme)
+            }
+            Err(_) => {
+                let mut rows = capped(result, &lead, style, None, shape, "result", theme);
+                rows.push(Line::styled(
+                    "  […] application/json result did not parse as JSON · shown as text",
+                    theme.muted_style(),
+                ));
+                rows
+            }
+        },
+        Renderer::Code(language) => {
+            capped(result, &lead, style, Some(language), shape, "result", theme)
+        }
+        Renderer::Text => capped(result, &lead, style, None, shape, "result", theme),
     }
 }
 
@@ -423,30 +515,30 @@ pub fn notebook_lines(
         let warn = Style::default().fg(theme.warning);
         out.extend(capped(
             &cell.stdout,
-            pad.clone(),
+            &pad.clone(),
             text,
+            None,
             shape(STREAM_ROWS, false),
             "stdout",
             theme,
         ));
         out.extend(capped(
             &cell.stderr,
-            pad,
+            &pad,
             warn,
+            None,
             shape(STREAM_ROWS, false),
             "stderr",
             theme,
         ));
         let teal = Style::default().fg(theme.teal);
         if let Some(result) = &cell.result {
-            let lead = Span::styled("↳ ", teal);
-            let bold = teal.add_modifier(Modifier::BOLD);
-            out.extend(capped(
+            out.extend(result_rows(
                 result,
-                lead,
-                bold,
+                cell.result_mime.as_deref(),
+                Span::styled("↳ ", teal),
+                teal.add_modifier(Modifier::BOLD),
                 shape(RESULT_ROWS, false),
-                "result",
                 theme,
             ));
         }
@@ -454,8 +546,9 @@ pub fn notebook_lines(
             let lead = Span::styled("✕ ", error);
             out.extend(capped(
                 trace,
-                lead,
+                &lead,
                 error,
+                None,
                 shape(TRACE_ROWS, true),
                 "traceback",
                 theme,

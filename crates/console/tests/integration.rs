@@ -12,6 +12,7 @@ mod drive;
 mod editor_save;
 mod editor_view;
 mod keys;
+mod notebook_mime;
 mod redraw;
 mod review;
 mod sessions;

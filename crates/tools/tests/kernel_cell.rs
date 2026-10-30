@@ -362,3 +362,31 @@ fn a_shell_cell_reads_the_kernels_head_and_tail_capture() -> TestResult {
     }
     Ok(())
 }
+
+/// Dies with a cell whose details dropped the mime its value arrived as, or grew a `resultMime`
+/// a plain value never had.
+#[test]
+fn a_cells_details_carry_the_mime_its_value_arrived_as() -> TestResult {
+    let details = |value: Value| -> Result<Value, Box<dyn Error>> {
+        let result: yi_types::kernel::ExecuteResult = serde_json::from_value(value)?;
+        let outcome = KernelCellOutcome {
+            result,
+            kernel_restarted: false,
+            notes: Vec::new(),
+        };
+        Ok(yi_tools::cell_output("x", outcome, None).result.details)
+    };
+    let marked = details(serde_json::json!({
+        "stdout": "", "stderr": "", "status": "ok", "durationMs": 1,
+        "result": "# Tide", "resultMime": "text/markdown",
+    }))?;
+    assert_eq!(
+        marked.get("resultMime").and_then(Value::as_str),
+        Some("text/markdown")
+    );
+    let plain = details(serde_json::json!({
+        "stdout": "42", "stderr": "", "status": "ok", "durationMs": 1,
+    }))?;
+    assert_eq!(plain.get("resultMime"), None, "a plain value grew a mime");
+    Ok(())
+}

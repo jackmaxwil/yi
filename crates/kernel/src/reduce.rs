@@ -6,6 +6,10 @@ use yi_types::kernel::{
 
 use crate::{ATTACHMENT_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS};
 
+/// The display bundles a value can arrive as, richest first: a notebook renders the one it kept.
+const RESULT_MIMES: [&str; 3] = ["text/markdown", "application/json", "text/x-python"];
+const PLAIN_MIME: &str = "text/plain";
+
 #[derive(Debug)]
 pub struct CellState {
     pub request_msg_id: String,
@@ -16,6 +20,7 @@ pub struct CellState {
     pub stdout_chars: usize,
     pub stderr_chars: usize,
     pub result: Option<String>,
+    pub result_mime: Option<String>,
     pub attachments: Vec<KernelAttachment>,
     pub status: ExecuteStatus,
     pub error: Option<KernelError>,
@@ -32,6 +37,7 @@ impl CellState {
             stdout_chars: 0,
             stderr_chars: 0,
             result: None,
+            result_mime: None,
             attachments: Vec::new(),
             status: ExecuteStatus::Ok,
             error: None,
@@ -156,17 +162,24 @@ pub fn reduce(
             Reduction::Continue
         }
         "execute_result" => {
-            if let Some(text) = message
-                .content
-                .get("data")
-                .and_then(|data| data.get("text/plain"))
-                .and_then(Value::as_str)
-            {
-                cell.result = Some(text.to_owned());
+            let data = message.content.get("data");
+            let picked = data.and_then(|data| {
+                RESULT_MIMES
+                    .iter()
+                    .find_map(|mime| data.get(*mime).map(|value| (*mime, value)))
+                    .or_else(|| data.get(PLAIN_MIME).map(|value| (PLAIN_MIME, value)))
+            });
+            if let Some((mime, value)) = picked {
+                let text = match value {
+                    Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                };
+                cell.result = Some(text.clone());
+                cell.result_mime = Some(mime.to_owned());
                 if let Some(on_stream) = on_stream.as_mut() {
                     on_stream(StreamChunk {
                         name: "execute_result",
-                        text,
+                        text: &text,
                     });
                 }
             }
@@ -233,6 +246,7 @@ pub fn finish(cell: CellState, duration_ms: u64, aborted: bool) -> ExecuteResult
         stdout,
         stderr,
         result,
+        result_mime: cell.result_mime,
         attachments: cell.attachments,
         status,
         error: cell.error,

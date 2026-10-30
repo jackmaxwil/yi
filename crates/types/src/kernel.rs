@@ -83,6 +83,9 @@ pub struct ExecuteResult {
     pub stderr: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    /// The display-bundle mime `result` came from, absent when the kernel named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_mime: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<KernelAttachment>,
     pub status: ExecuteStatus,
