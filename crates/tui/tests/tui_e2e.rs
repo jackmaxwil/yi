@@ -669,255 +669,6 @@ fn a_streamed_line_is_written_as_an_append() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
-    use std::io::Write;
-    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
-    backend.write_all(&b"\n".repeat(23))?;
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
-    let mut app = app();
-    app.set_rows(24);
-    app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
-    app.set_follow(yi_types::config::FollowMode::Still);
-    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
-    let window = common::viewport_rows;
-    let answer = |rows: &[String]| -> Vec<String> {
-        rows.iter()
-            .filter(|row| row.contains("of the answer"))
-            .cloned()
-            .collect()
-    };
-    let body: String = (0..12)
-        .map(|row| format!("- row {row} of the answer\n"))
-        .collect();
-    app.reduce_agent(streamed(&body));
-    yi_tui::render::draw(&mut app, &mut terminal, None);
-    let fits = window(&terminal);
-    assert!(!fits.join("\n").contains("more rows"), "{fits:#?}");
-    let body: String = (0..30)
-        .map(|row| format!("- row {row} of the answer\n"))
-        .collect();
-    app.reduce_agent(streamed(&body));
-    yi_tui::render::draw(&mut app, &mut terminal, None);
-    let held = window(&terminal);
-    let shown = held.join("\n");
-    assert!(terminal.viewport_area().height > 5, "{shown}");
-    assert!(
-        answer(&held).len() >= 10,
-        "the window holds a screen: {shown}"
-    );
-    assert!(
-        !shown.contains("more rows"),
-        "nothing has landed under it yet: {shown}"
-    );
-    let body: String = (0..44)
-        .map(|row| format!("- row {row} of the answer\n"))
-        .collect();
-    app.reduce_agent(streamed(&body));
-    yi_tui::render::draw(&mut app, &mut terminal, None);
-    let later = window(&terminal);
-    let after = later.join("\n");
-    assert_eq!(answer(&held), answer(&later), "the still window moved");
-    assert!(!after.contains("row 43 of the answer"), "{later:#?}");
-    let counted = common::hidden_rows(&later);
-    let last_shown = later
-        .iter()
-        .rev()
-        .find_map(|row| {
-            let rest = row.trim().strip_prefix("‣ row ")?;
-            rest.split_once(' ')?.0.parse::<usize>().ok()
-        })
-        .ok_or("no answer row in the held window")?;
-    assert_eq!(
-        counted,
-        Some(43 - last_shown),
-        "the marker counts the rows between the last one shown and the newest: {later:#?}"
-    );
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let page_down =
-        ratatui::crossterm::event::Event::Key(ratatui::crossterm::event::KeyEvent::new(
-            ratatui::crossterm::event::KeyCode::PageDown,
-            ratatui::crossterm::event::KeyModifiers::NONE,
-        ));
-    yi_tui::input::handle_terminal_event(&mut app, &tx, page_down);
-    yi_tui::render::draw(&mut app, &mut terminal, None);
-    let paged = window(&terminal);
-    assert_eq!(common::hidden_rows(&paged), None, "{paged:#?}");
-    assert_ne!(
-        answer(&held),
-        answer(&paged),
-        "PgDn left the window where it was"
-    );
-    assert!(
-        answer(&paged)
-            .iter()
-            .any(|row| row.contains("row 43 of the answer")),
-        "PgDn shows the rows the marker counted: {paged:#?}"
-    );
-    let reseeded =
-        |app: &mut App, terminal: &mut yi_tui::terminal::Terminal<VT100Backend>, rows: usize| {
-            let body: String = (0..rows)
-                .map(|row| format!("- row {row} of the answer\n"))
-                .collect();
-            app.reduce_agent(streamed(&body));
-            yi_tui::render::draw(app, terminal, None);
-            window(terminal)
-        };
-    let seeded = reseeded(&mut app, &mut terminal, 70);
-    assert_eq!(common::hidden_rows(&seeded), None, "{seeded:#?}");
-    let again = reseeded(&mut app, &mut terminal, 90);
-    assert_eq!(
-        answer(&seeded),
-        answer(&again),
-        "the hold never returned: {again:#?}"
-    );
-    assert!(
-        common::hidden_rows(&again).is_some_and(|hidden| hidden > 0),
-        "{again:#?}"
-    );
-    Ok(())
-}
-
-/// The inline viewport moves by committing rows, so its level sets how many land in one frame:
-/// one a frame for `slide`, half a pane for `page`.
-#[test]
-fn solo_follow_levels_pace_the_rows_that_land() -> TestResult {
-    use std::io::Write;
-    let answer: String = (0..20).map(|row| format!("- answer row {row}\n")).collect();
-    let mut landed = Vec::new();
-    for mode in [
-        yi_types::config::FollowMode::Slide,
-        yi_types::config::FollowMode::Page,
-    ] {
-        let mut backend = VT100Backend::with_scrollback(80, 24, 400);
-        backend.write_all(&b"\n".repeat(23))?;
-        let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
-        let mut app = app();
-        app.set_rows(24);
-        app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
-        app.set_follow(mode);
-        app.commit_cell(&yi_tui::cell::Cell::Assistant {
-            markdown: answer.clone(),
-        });
-        let queued = app.take_commits().len();
-        assert!(
-            queued > 12 && queued <= 24,
-            "test setup: {queued} rows queued"
-        );
-        app.commit_cell(&yi_tui::cell::Cell::Assistant {
-            markdown: answer.clone(),
-        });
-        yi_tui::render::draw(&mut app, &mut terminal, None);
-        let left = app.take_commits().len();
-        landed.push((mode, queued.saturating_sub(left)));
-    }
-    let slide = landed[0].1;
-    let page = landed[1].1;
-    assert_eq!(slide, 1, "slide landed {slide} rows in one frame");
-    assert_eq!(page, 12, "page landed {page} rows, not half a pane");
-    Ok(())
-}
-
-/// A paced frame asks for its own continuation: with no event between two steps, the rows the
-/// first held still land.
-#[test]
-fn a_slide_frame_lands_what_it_held_without_another_event() -> TestResult {
-    use std::io::Write;
-    let mut backend = VT100Backend::with_scrollback(80, 24, 400);
-    backend.write_all(&b"\n".repeat(23))?;
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
-    let mut app = app();
-    app.set_rows(24);
-    app.set_follow(yi_types::config::FollowMode::Slide);
-    let answer: String = (0..20).map(|row| format!("- answer row {row}\n")).collect();
-    app.commit_cell(&yi_tui::cell::Cell::Assistant {
-        markdown: answer.clone(),
-    });
-    app.commit_cell(&yi_tui::cell::Cell::Assistant { markdown: answer });
-    let mut images = yi_tui::orb::Images::default();
-    yi_tui::render::step_frame(&mut app, &mut terminal, None, &mut images);
-    let first = terminal.backend().transcript().len();
-    // The scheduler gates a frame on the previous draw's cost; nothing else wakes the loop.
-    std::thread::sleep(Duration::from_millis(60));
-    yi_tui::render::step_frame(&mut app, &mut terminal, None, &mut images);
-    let second = terminal.backend().transcript().len();
-    assert!(
-        second > first,
-        "the rows the first frame held never landed: scrollback stayed {first} rows, then {second}"
-    );
-    Ok(())
-}
-
-/// Incident: a paced release split a prompt's own rows, so its OSC 133 zone closed mid-prompt.
-#[test]
-fn a_paced_release_keeps_the_prompt_zone_whole() -> TestResult {
-    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
-    {
-        use std::io::Write;
-        backend.write_all(&b"\n".repeat(23))?;
-    }
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
-    let mut app = app();
-    app.set_rows(24);
-    app.set_follow(yi_types::config::FollowMode::Slide);
-    app.commit_cell(&yi_tui::cell::Cell::User {
-        text: "first prompt line\nsecond prompt line".to_owned(),
-    });
-    yi_tui::render::draw(&mut app, &mut terminal, None);
-    let written = terminal.backend_mut().take_written();
-    let close = written
-        .find("\u{1b}]133;B")
-        .ok_or("no prompt close marker")?;
-    assert!(
-        written[..close].contains("second prompt line"),
-        "the zone closed before the prompt's last row: {written:?}"
-    );
-    Ok(())
-}
-
-/// A submitted prompt ends the inline still hold, so the newest rows are what the next frame paints.
-#[test]
-fn a_submitted_prompt_releases_the_inline_still_hold() -> TestResult {
-    use std::io::Write;
-    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
-    backend.write_all(&b"\n".repeat(23))?;
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
-    let mut app = app();
-    app.set_rows(24);
-    app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
-    app.set_follow(yi_types::config::FollowMode::Still);
-    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
-    let window = common::viewport_rows;
-    let body: String = (0..30)
-        .map(|row| format!("- row {row} of the answer\n"))
-        .collect();
-    app.reduce_agent(streamed(&body));
-    yi_tui::render::draw(&mut app, &mut terminal, None);
-    let body: String = (0..44)
-        .map(|row| format!("- row {row} of the answer\n"))
-        .collect();
-    app.reduce_agent(streamed(&body));
-    yi_tui::render::draw(&mut app, &mut terminal, None);
-    let held = window(&terminal);
-    assert!(
-        common::hidden_rows(&held).is_some_and(|hidden| hidden > 0),
-        "test setup: nothing was held: {held:#?}"
-    );
-    app.follow_bottom();
-    yi_tui::render::draw(&mut app, &mut terminal, None);
-    let after = window(&terminal);
-    assert_eq!(
-        common::hidden_rows(&after),
-        None,
-        "the marker outlived the prompt: {after:#?}"
-    );
-    assert!(
-        after.iter().any(|row| row.contains("row 43 of the answer")),
-        "the window did not return to the newest rows: {after:#?}"
-    );
-    Ok(())
-}
-
 /// A history commit scrolls region `[0, viewport_top)`, and a terminal keeps the rows that
 /// leaves: scrollback is where the reader finds the answer once it is longer than the screen.
 /// Every line must be there once, in order, with none of the live region's chrome in it.
@@ -3161,7 +2912,7 @@ fn the_chat_paints_into_a_rectangle_and_stays_inside_it() -> TestResult {
     }
     let _ = app.take_commits();
     let rect = Rect::new(10, 5, 60, 12);
-    let layout = yi_tui::render::layout_chat(&mut app, None, None);
+    let layout = yi_tui::render::layout_chat(&mut app, None, None, u16::MAX);
     let used = layout.rows().min(rect.height);
     let above = rect.height.saturating_sub(used);
     let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
@@ -3174,7 +2925,6 @@ fn the_chat_paints_into_a_rectangle_and_stays_inside_it() -> TestResult {
         &layout,
         &mut buffer,
         Rect::new(rect.x, rect.y.saturating_add(above), rect.width, used),
-        0,
     );
     let row = |y: u16| text_of(&buffer, y);
     let top = row(rect.y + rect.height - 3);
@@ -3825,11 +3575,11 @@ fn solo_session_verbs_answer_as_the_console_does() -> TestResult {
 
 fn painted(app: &mut App) -> ratatui::buffer::Buffer {
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    let layout = yi_tui::render::layout_chat(app, None, None);
+    let layout = yi_tui::render::layout_chat(app, None, None, u16::MAX);
     let used = layout.rows().min(area.height);
     let mut buffer = ratatui::buffer::Buffer::empty(area);
     let at = ratatui::layout::Rect::new(0, area.height - used, area.width, used);
-    yi_tui::render::paint_chat(app, &layout, &mut buffer, at, 0);
+    yi_tui::render::paint_chat(app, &layout, &mut buffer, at);
     buffer
 }
 

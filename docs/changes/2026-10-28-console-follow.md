@@ -1,11 +1,12 @@
 ---
 issue: Closes #1711
-growth: +540 shared follow paint seams, a held inline window and a macOS-only preference reader; the duplicated per-mode clamps collapsed into one, the card-answer cache stays where main keeps it, the head's subject spans moved into the card, git_root's canonicalize was reverted to main's, the two temp-dir test helpers became one, and a resumed transcript releases its queue in one frame
+growth: +472 console panes keep one follow paint path, a macOS-only preference reader and the bounded collapsed-card reservation; the duplicated per-mode clamps collapsed into one, the card-answer cache stays where main keeps it, the head's subject spans moved into the card, git_root's canonicalize was reverted to main's, the two temp-dir test helpers became one, and the capped-row helper moved into wrap
 decision: "Hybrid page jumps + streaming text" | "reduce visual movement giving user motion sickness" | reversible via tui.follow: slide
 decision: "Yes, use Still" | "No I am only talking about the terminal text stream" | reversible via an explicit tui.follow setting
 decision: "Yes, hold three rows" | "No I am only talking about the terminal text stream" | reversible via removing the bounded collapsed-card reservation
-raise: crate cli +192, crate console +131, crate tools +19, crate tui +186, crate types +12, tests +609
+decision: "Console panes only" | "the inline viewport keeps main's unpaced commits, because a second engine there cost every finding this branch paid for" | reversible by restoring the inline paint path
+raise: crate cli +192, crate console +131, crate tools +19, crate tui +118, crate types +12, tests +310
 ---
-Terminal text keeps its existing character reveal. Solo and console panes share the follow calculation: one-row sliding, half-page jumps, or a stationary view with a hidden-row marker. Ordinary running tool cards reserve bounded collapsed result space, child cards keep their bounded four-row answer window, and notebook updates preserve a reader's scroll position.
+Terminal text keeps its existing character reveal. Console panes choose one-row sliding, half-page jumps, or a stationary view with a hidden-row marker; the inline viewport keeps its unpaced commits. Ordinary running tool cards reserve bounded collapsed result space, child cards keep their bounded four-row answer window, and notebook updates preserve a reader's scroll position.
 
 Fixed-clock frames measured `slide` as 22 one-row moves, `page` as a 15-row jump and a 5-row final step, and `still` as five zero-move frames with its hidden-row marker. The live settings choice reaches visible and parked chats, while macOS Reduce Motion selects `still` only when config is unset; its preference plist is read directly so the launch path spawns no helper process, and the reader is compiled for the macOS arm alone.

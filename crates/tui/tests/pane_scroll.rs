@@ -362,7 +362,7 @@ fn page_clamps_its_jump_when_the_floor_is_over_half_the_pane() -> TestResult {
         CtEvent::Paste("draft\nline".to_owned()),
     );
     app.set_kitty(true);
-    let floor = yi_tui::render::layout_chat(&mut app, None, None).floor;
+    let floor = yi_tui::render::layout_chat(&mut app, None, None, u16::MAX).floor;
     assert!(
         floor > area.height / 2 && floor < area.height,
         "floor {floor}"
@@ -399,7 +399,7 @@ fn a_page_pane_whose_floor_fills_it_stops_asking_for_redraws() -> TestResult {
         CtEvent::Paste("draft\nline\nline\nline".to_owned()),
     );
     app.set_kitty(true);
-    let floor = yi_tui::render::layout_chat(&mut app, None, None).floor;
+    let floor = yi_tui::render::layout_chat(&mut app, None, None, u16::MAX).floor;
     assert!(
         floor >= area.height,
         "test setup: floor {floor} of {}",

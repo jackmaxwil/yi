@@ -399,10 +399,10 @@ fn a_fence_inside_a_list_item_commits_as_it_streams() {
 fn live_rows(app: &mut App) -> Vec<String> {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    let layout = yi_tui::render::layout_chat(app, None, None);
+    let layout = yi_tui::render::layout_chat(app, None, None, u16::MAX);
     let area = Rect::new(0, 0, 80, layout.rows().min(40));
     let mut buffer = Buffer::empty(area);
-    yi_tui::render::paint_chat(app, &layout, &mut buffer, area, 0);
+    yi_tui::render::paint_chat(app, &layout, &mut buffer, area);
     (0..area.height)
         .map(|y| {
             (0..80)

@@ -100,8 +100,6 @@ pub struct App {
     pub selection: crate::model::Selection,
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
-    /// A replay is restoring rows the terminal already showed, not streaming new ones.
-    pub(crate) restoring: bool,
     pub(crate) pane: bool,
     /// §17.3: the `Yi` mark at rest and one looping pose per agent state; one orb, never two.
     pub(crate) orb: yi_orb::Orb,
@@ -201,7 +199,6 @@ pub struct App {
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
     pub(crate) pane_follow: Option<(usize, TranscriptMode, usize, usize)>,
     pub(crate) follow: yi_types::config::FollowMode,
-    pub(crate) still: Option<crate::render::Still>,
     /// The last pane paint's top row and each transcript row's cell, `None` on the live turn.
     pub(crate) pane_rows: (u16, Vec<Option<usize>>),
 }
@@ -251,7 +248,6 @@ impl App {
             selection: crate::model::Selection::new(options.model.clone()),
             pending_repaint: false,
             pending_prompt_mark: false,
-            restoring: false,
             pane: false,
             orb: yi_orb::Orb::default(),
             history: crate::history::History::default(),
@@ -333,7 +329,6 @@ impl App {
             pane_hold: None,
             pane_follow: None,
             follow,
-            still: None,
             pane_rows: (0, Vec::new()),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);

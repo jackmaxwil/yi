@@ -35,7 +35,6 @@ impl App {
 
     pub fn follow_bottom(&mut self) {
         self.pane_follow = None;
-        self.still = None;
     }
 
     pub fn has_pending_commit(&self) -> bool {

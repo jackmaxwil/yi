@@ -190,32 +190,3 @@ fn a_resumed_session_shows_its_stored_spend_and_cache_rate_once() -> TestResult 
     }
     Ok(())
 }
-
-/// A resumed transcript is restored, not streamed: one frame lands all of it.
-#[test]
-fn a_resumed_transcript_lands_in_one_frame() -> TestResult {
-    use std::io::Write;
-    let mut backend = common::VT100Backend::with_scrollback(80, 24, 600);
-    backend.write_all(&b"\n".repeat(23))?;
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
-    let mut app = app();
-    app.set_rows(24);
-    let text: String = (0..60)
-        .map(|row| format!("- row {row} of the answer\n"))
-        .collect();
-    app.apply(Reply::History(vec![entry(
-        2,
-        reply(json!([{"type": "text", "text": text}]), 900, false)?,
-    )]));
-    yi_tui::render::draw(&mut app, &mut terminal, None);
-    assert!(
-        !app.has_pending_commit(),
-        "the resume was paced: rows are still queued after the first frame"
-    );
-    let landed = terminal.backend().transcript().len();
-    assert!(
-        landed >= 60,
-        "the resumed transcript did not land in one frame: {landed} rows"
-    );
-    Ok(())
-}

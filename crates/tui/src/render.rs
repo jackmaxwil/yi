@@ -72,10 +72,6 @@ pub fn step_frame<B>(
         let start = std::time::Instant::now();
         draw_with_images(app, terminal, port, |app, out| images.tick(app, out));
         app.scheduler.mark_drawn(start, std::time::Instant::now());
-        // Invariant: `mark_drawn` clears the request a paced frame made for its own continuation.
-        if app.has_pending_commit() {
-            app.scheduler.request();
-        }
     } else {
         let _ = term::framed(terminal.backend_mut(), |out| images.tick(app, out));
     }
@@ -95,19 +91,10 @@ fn draw_frame<B>(
     if app.take_pending_clear() {
         clear_screen(terminal);
     }
-    let queued = app.pending_commit.len();
     // OSC 133 semantic prompt zones: Ghostty and iTerm2 use these to jump
     // between prompts, so a user turn is navigable in the terminal's own UI.
     let mark = std::mem::take(&mut app.pending_prompt_mark);
-    // Invariant: a paced release never splits a prompt's rows, so its zone closes after all of them.
-    let restored = std::mem::take(&mut app.restoring);
-    let release = if mark || restored {
-        queued
-    } else {
-        follow_step(app.follow(), queued, app.rows, usize::MAX)
-    }
-    .min(queued);
-    let mut commits: Vec<Line<'static>> = app.pending_commit.drain(..release).collect();
+    let mut commits: Vec<Line<'static>> = std::mem::take(&mut app.pending_commit);
     let mode_changed = app.take_pending_repaint();
     schedule_reflow(app);
     if mark {
@@ -132,12 +119,9 @@ fn draw_frame<B>(
         .and_then(|feed| feed.hud());
     app.sync_port(port);
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
-    let mut layout = layout_chat(app, goal, memory);
-    let budget = usize::from(total.saturating_sub(layout.floor.min(total)));
-    let more = solo_follow(app, &mut layout.live, budget, release);
-    let rows = layout.rows().saturating_add(u16::from(more > 0));
+    let layout = layout_chat(app, goal, memory, total);
     let resized = terminal
-        .resize_viewport(rows, layout.floor)
+        .resize_viewport(layout.rows(), layout.floor)
         .unwrap_or(false);
     if resized || mode_changed {
         terminal.invalidate_viewport();
@@ -145,11 +129,8 @@ fn draw_frame<B>(
     let mut placed = Placed::default();
     let _ = terminal.draw(|frame| {
         let area = frame.area();
-        placed = paint_chat(app, &layout, frame.buffer_mut(), area, more);
+        placed = paint_chat(app, &layout, frame.buffer_mut(), area);
     });
-    if let Some(still) = app.still.as_mut() {
-        still.shown = layout.live;
-    }
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
     app.card_at = placed
@@ -290,13 +271,18 @@ fn status_input(app: &App) -> StatusInput {
     }
 }
 
-/// Everything the chat shows for a frame, assembled from the app alone.
-pub fn layout_chat(app: &mut App, goal: Option<GoalView>, memory: Option<String>) -> ChatLayout {
+/// Everything the chat shows for a frame of `total` rows, assembled from the app alone;
+/// the live tail is trimmed to what the rest leaves.
+pub fn layout_chat(
+    app: &mut App,
+    goal: Option<GoalView>,
+    memory: Option<String>,
+    total: u16,
+) -> ChatLayout {
     let spinner = app.spinner_phase();
     let theme = app.theme;
     let width = app.width;
 
-    let live_lines = live_lines(app, spinner, &theme);
     let hud_lines = if app.hud_hidden {
         Vec::new()
     } else {
@@ -306,6 +292,7 @@ pub fn layout_chat(app: &mut App, goal: Option<GoalView>, memory: Option<String>
             .collect()
     };
 
+    let mut live_lines = live_lines(app, spinner, &theme);
     let status_input = status_input(app);
     let bottom_lines: Option<Vec<Line<'static>>> = if let Some(tree) = &app.tree {
         Some(tree.lines(width, &theme, tree_rows(app.rows)))
@@ -404,6 +391,10 @@ pub fn layout_chat(app: &mut App, goal: Option<GoalView>, memory: Option<String>
         })
         .saturating_add(bottom_height)
         .saturating_add(u16::from(!on_rule));
+    let budget = total.saturating_sub(floor);
+    if rows(&live_lines) > budget {
+        live_lines = keep_last(live_lines, usize::from(budget));
+    }
     ChatLayout {
         live: live_lines,
         working,
@@ -432,13 +423,7 @@ fn logo_rows(bottom_at: Option<(u16, u16)>) -> Option<(u16, u16)> {
 
 /// Paints a layout into any rectangle of a buffer; returns where the orb and the bottom
 /// block belong.
-pub fn paint_chat(
-    app: &App,
-    layout: &ChatLayout,
-    buffer: &mut Buffer,
-    area: Rect,
-    follow_more: usize,
-) -> Placed {
+pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rect) -> Placed {
     let mut orb_at = None;
     let mut bottom_at = None;
     let mut y = area.top();
@@ -453,9 +438,6 @@ pub fn paint_chat(
         *y = y.saturating_add(height);
     };
     put(buffer, &layout.live, &mut y);
-    if follow_more > 0 {
-        put(buffer, &[follow_marker(app, follow_more)], &mut y);
-    }
     // Incident (D46): the mark trails the live tail. §17.3 makes the viewport's top row the
     // commit boundary, so a leading mark walked down a paragraph at a time.
     if layout.show_working || layout.kitty {
@@ -507,12 +489,6 @@ struct Followed {
     more: usize,
 }
 
-pub(crate) struct Still {
-    key: (usize, TranscriptMode, usize),
-    shown: Vec<Line<'static>>,
-    hidden: usize,
-}
-
 /// Rows a follower lets through this frame: half the window for a page, never past the cap.
 fn follow_step(
     mode: yi_types::config::FollowMode,
@@ -524,46 +500,6 @@ fn follow_step(
         yi_types::config::FollowMode::Slide => behind.div_ceil(ROLL_ROWS),
         yi_types::config::FollowMode::Page => (height / 2).max(1).min(cap).min(behind),
         yi_types::config::FollowMode::Still => behind,
-    }
-}
-
-/// The inline view's held window, and the rows that landed under it since it was seeded.
-fn solo_follow(
-    app: &mut App,
-    live: &mut Vec<Line<'static>>,
-    budget: usize,
-    arrived: usize,
-) -> usize {
-    let released = app
-        .pane_follow
-        .take()
-        .is_some_and(|(_, _, _, below)| below > 0);
-    let key = (app.content_width(), app.mode, app.rows);
-    let held = app.follow() == yi_types::config::FollowMode::Still
-        && !live.is_empty()
-        && !released
-        && (arrived > 0 || app.still.as_ref().is_some_and(|still| still.key == key));
-    if !held {
-        app.still = None;
-        let keep = live.len().min(budget);
-        *live = keep_last(std::mem::take(live), keep);
-        return 0;
-    }
-    match app.still.as_mut().filter(|still| still.key == key) {
-        Some(still) => {
-            still.hidden = still.hidden.saturating_add(arrived);
-            *live = std::mem::take(&mut still.shown);
-            still.hidden
-        }
-        None => {
-            *live = keep_last(std::mem::take(live), budget.saturating_sub(1));
-            app.still = Some(Still {
-                key,
-                hidden: 0,
-                shown: Vec::new(),
-            });
-            0
-        }
     }
 }
 
@@ -646,7 +582,7 @@ pub fn paint_pane(
     let _ = app.take_pending_repaint();
     app.set_width(usize::from(area.width));
     app.set_rows(usize::from(area.height));
-    let mut layout = layout_chat(app, goal, None);
+    let mut layout = layout_chat(app, goal, None, u16::MAX);
     let top_orb =
         (app.title_idle() && layout.kitty && !layout.show_working && area.height >= ORB_ROWS)
             .then_some((area.left(), area.top()));
@@ -714,7 +650,7 @@ pub fn paint_pane(
         area.width,
         floor,
     );
-    let placed = paint_chat(app, &layout, buffer, chat_area, 0);
+    let placed = paint_chat(app, &layout, buffer, chat_area);
     if follow_more > 0
         && let Some(y) = chat_area.top().checked_sub(1)
     {

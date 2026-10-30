@@ -577,23 +577,3 @@ pub fn rows_sized(
     }
     Ok(rows)
 }
-
-/// The `↓ N more rows` count both the pane and the inline viewport paint into their marker row.
-pub fn hidden_rows(rows: &[String]) -> Option<usize> {
-    rows.iter().find_map(|row| {
-        row.trim()
-            .strip_prefix("↓ ")?
-            .split_once(" more rows")?
-            .0
-            .parse()
-            .ok()
-    })
-}
-
-/// The inline viewport's rows as a real screen shows them.
-pub fn viewport_rows(terminal: &yi_tui::terminal::Terminal<VT100Backend>) -> Vec<String> {
-    let viewport = terminal.viewport_area();
-    (viewport.top()..viewport.bottom())
-        .map(|row| terminal.backend().row_text(row))
-        .collect()
-}

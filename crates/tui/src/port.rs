@@ -401,7 +401,6 @@ impl App {
     /// Invariant: a replayed turn reads as it did live; both settle calls through `settle_tool`.
     pub fn replay_entries(&mut self, entries: &[Entry]) {
         let _span = yi_types::trace::span("tui.replay_entries").arg("entries", entries.len());
-        self.restoring = true;
         let mut calls: HashMap<&str, Value> = HashMap::new();
         for entry in entries {
             if let Entry::Custom {
