@@ -843,8 +843,7 @@ def discard(tree):
 
 def intake_of(repo, pr):
     """The zero-token checks on a PR as it stands: its body's template and its twins."""
-    opened = open_pulls(repo)
-    others = (opened if isinstance(opened, list) else []) + \
+    others = (forge_pr.open_pulls() or []) + \
              (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=50") or [])
     return intake(pr, raw_diff(repo, pr["number"]), others, lambda n: raw_diff(repo, n), repo, stacked,
                   lambda n: forge_pr.fgj_api("GET", f"repos/{repo}/issues/{n}"))
@@ -1043,32 +1042,16 @@ def promote(repo, pr, rounds):
 # A round at thinking high took 19m20s on #1101, so a sweep starts no new one once a round would
 # outrun the job's limit (review.yml), reads at most SWEEP_HEADS, and the next sweep takes the rest.
 ROUND_SECS, SWEEP_HEADS = 20 * 60, 8
-SWEEP_PAGE, SWEEP_PAGES = 50, 8
-
 
 # A twin round still standing: the job stays red as its round was, and a sweep spends no slot on it.
 STANDS = 3
 
 
-
-def open_pulls(repo):
-    """Every open pull request, page by page: the forge serves SWEEP_PAGE at most, and a sweep that
-    read one page never saw the rest. Incident: 52 of 102 open PRs were outside the sweep's reach."""
-    seen = []
-    for page in range(1, SWEEP_PAGES + 1):
-        batch = forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit={SWEEP_PAGE}&page={page}")
-        if not isinstance(batch, list):
-            return batch if not seen else seen
-        seen += batch
-        if len(batch) < SWEEP_PAGE:
-            break
-    return seen
-
 def cmd_sweep(args):
     """One pass over the open drafts: promote one already clean, review a head no round has read
     (a push whose job died, or a draft opened before the job ran); the autofixer answers a blocked one."""
     repo, allowed = forge_pr.repo(), authors()
-    pulls = open_pulls(repo)
+    pulls = forge_pr.open_pulls()
     # Incident: an unsigned fgj answered the list with an error object and the loop died indexing it.
     if not isinstance(pulls, list):
         print(f"sweep: the forge did not list the pull requests: {(pulls or {}).get('message')}")
@@ -1098,7 +1081,7 @@ def sweep_heads(listing, notes=None):
     def served(method, url, body=None):
         if method != "GET":
             return {"number": 1}
-        limit = int(url.split("limit=")[1].split("&")[0]) if "limit=" in url else SWEEP_PAGE
+        limit = int(url.split("limit=")[1].split("&")[0]) if "limit=" in url else 50
         page = int(url.split("page=")[1].split("&")[0]) if "page=" in url else 1
         return listing[(page - 1) * limit:page * limit]
 
