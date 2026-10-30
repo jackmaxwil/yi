@@ -133,3 +133,53 @@ pub fn compose_summary(
         },
     )
 }
+
+/// Invariant: a summary of a summary keeps every Values row of the one it replaces. The model
+/// is asked to, but a dropped value is gone once the messages that showed it have scrolled out.
+pub const VALUES_CARRIED_CAP: usize = 40;
+
+fn value_rows(summary: &str) -> Vec<&str> {
+    let mut rows = Vec::new();
+    let mut inside = false;
+    for line in summary.lines() {
+        if line.starts_with("## ") {
+            inside = line.starts_with("## Values");
+        } else if line.starts_with('<') || line.starts_with('[') {
+            inside = false;
+        } else if inside && line.starts_with("- ") && line.trim() != "- (none)" {
+            rows.push(line.trim_end());
+        }
+    }
+    rows
+}
+
+pub fn keep_values(previous: Option<&str>, summary: &str) -> String {
+    let kept = value_rows(summary);
+    let missing: Vec<&str> = previous
+        .map(value_rows)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| !kept.contains(row))
+        .collect();
+    if missing.is_empty() {
+        return summary.to_owned();
+    }
+    let mut block = String::from("## Values carried from the previous summary");
+    for row in missing.iter().take(VALUES_CARRIED_CAP) {
+        block.push('\n');
+        block.push_str(row);
+    }
+    if missing.len() > VALUES_CARRIED_CAP {
+        block.push_str(&format!(
+            "\n[… {VALUES_CARRIED_CAP} of {} earlier value rows carried (VALUES_CARRIED_CAP); the rest: grep(pattern=\"<value>\", path=\"history://self\")]",
+            missing.len()
+        ));
+    }
+    match summary.find("\n## Dropped") {
+        Some(at) => {
+            let (head, tail) = summary.split_at(at);
+            format!("{}\n\n{block}\n{tail}", head.trim_end())
+        }
+        None => format!("{}\n\n{block}", summary.trim_end()),
+    }
+}

@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use yi_context::{
     Preparation, Settings, Tokens, compose_summary, convert_to_llm, drop_internal,
-    estimate_context, estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
-    serialize_conversation, should_compact,
+    estimate_context, estimate_message, is_cut_point, keep_values, prepare_compaction, prompts,
+    reply_tokens, serialize_conversation, should_compact,
 };
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
@@ -705,6 +705,7 @@ impl Compactor {
         }
         let (composed, details, retained_tail, elision) = match summary {
             Ok(text) => {
+                let text = keep_values(prepared.previous_summary.as_deref(), &text);
                 let (composed, details) =
                     compose_summary(&text, &prepared.file_ops, &prepared.view);
                 (

@@ -26,7 +26,9 @@ pub use cut::{Cut, is_cut_point, select_cut};
 pub use details::{FileOps, nested_calls};
 pub use floor::{RETENTION_FLOOR_BUDGET, retain_floor};
 pub use policy::{Settings, should_compact};
-pub use prepare::{Preparation, compose_summary, prepare_compaction};
+pub use prepare::{
+    Preparation, VALUES_CARRIED_CAP, compose_summary, keep_values, prepare_compaction,
+};
 pub use project::{project, project_attributed};
 pub use serialize::{KEY_HEAD_CHARS, KEY_ROWS, serialize_conversation, user_key};
 pub use view::{

@@ -3,9 +3,10 @@ use std::error::Error;
 use serde_json::json;
 use yi_context::{
     Attributed, BriefLine, Bytes, CompiledView, FileOps, KEY_ROWS, OUTSTANDING_CAP, Settings,
-    Tokens, attribute_child_usage, compile_view, compose_summary, context_tokens, convert_to_llm,
-    drop_internal, estimate_context, fit, internal_source, prepare_compaction, project,
-    retain_floor, select_cut, serialize_conversation, should_compact, user_key, wrap_internal,
+    Tokens, VALUES_CARRIED_CAP, attribute_child_usage, compile_view, compose_summary,
+    context_tokens, convert_to_llm, drop_internal, estimate_context, fit, internal_source,
+    keep_values, prepare_compaction, project, retain_floor, select_cut, serialize_conversation,
+    should_compact, user_key, wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -1063,4 +1064,53 @@ fn a_prompt_stored_before_attribution_still_reads_as_typed() -> TestResult {
         "{shown:?}"
     );
     Ok(())
+}
+
+const FIRST_SUMMARY: &str = "## Goal\n- user://1\n\n## Critical Context\n- the parser lives in the crate\n\n## Values\n- build id 7f3a9c21 from `cargo build` in /tmp/yi-target/run-4\n- port 48213 (config.toml:12)\n- (none)\n\n## Dropped\n- the full cargo log: history://self";
+
+#[test]
+fn a_summary_of_a_summary_keeps_the_values_the_model_dropped() {
+    let second = "## Goal\n- user://1\n\n## Values\n- port 48213 (config.toml:12)\n- ticket 99120\n\n## Dropped\n- nothing";
+    let kept = keep_values(Some(FIRST_SUMMARY), second);
+    assert!(
+        kept.contains("- build id 7f3a9c21 from `cargo build` in /tmp/yi-target/run-4"),
+        "{kept}"
+    );
+    assert!(kept.contains("- ticket 99120"), "{kept}");
+    assert_eq!(kept.matches("port 48213").count(), 1, "{kept}");
+    let carried = kept.find("7f3a9c21");
+    let dropped = kept.find("## Dropped");
+    assert!(carried < dropped, "carried rows sit before Dropped: {kept}");
+}
+
+#[test]
+fn a_summary_that_kept_every_value_is_left_alone() {
+    let same = FIRST_SUMMARY.replace("the parser", "the new parser");
+    assert_eq!(keep_values(Some(FIRST_SUMMARY), &same), same);
+    assert_eq!(keep_values(None, FIRST_SUMMARY), FIRST_SUMMARY);
+    let none = "## Goal\n- user://1\n\n## Values\n- (none)";
+    assert_eq!(
+        keep_values(Some(none), "## Goal\n- user://1"),
+        "## Goal\n- user://1"
+    );
+}
+
+#[test]
+fn carried_values_past_the_cap_say_how_many_were_left_out() {
+    let rows: Vec<String> = (0..VALUES_CARRIED_CAP + 3)
+        .map(|n| format!("- value {n:03}"))
+        .collect();
+    let previous = format!("## Values\n{}", rows.join("\n"));
+    let kept = keep_values(Some(&previous), "## Goal\n- user://1");
+    let total = VALUES_CARRIED_CAP + 3;
+    assert!(
+        kept.contains(&format!(
+            "[… {VALUES_CARRIED_CAP} of {total} earlier value rows carried (VALUES_CARRIED_CAP)"
+        )),
+        "{kept}"
+    );
+    assert!(
+        kept.contains("- value 039") && !kept.contains("- value 040"),
+        "{kept}"
+    );
 }

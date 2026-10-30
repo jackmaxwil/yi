@@ -33,7 +33,13 @@ Use this EXACT format:
 - [Any data, examples, or references needed to continue]
 - [Or "(none)" if not applicable]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages."#;
+## Values
+- [Exact values, identifiers, paths, numbers, hashes, commands and error strings that appeared in tool results and may be needed later, one per line, verbatim. A value still visible in the recent messages belongs here too: those messages will scroll out. Or "(none)"]
+
+## Dropped
+- [What this summary leaves out, one line each, and where to read it back (a user:// address or a path). Or "(none)"]
+
+Keep each section concise, but never shorten a value in Values. Preserve exact file paths, function names, and error messages."#;
 
 pub const UPDATE_SUMMARIZATION_PROMPT: &str = r#"The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
@@ -43,6 +49,7 @@ Update the existing structured summary with new information. RULES:
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
+- PRESERVE every row of Values word for word; a value is removed only when the new messages show it is wrong
 - If something is no longer relevant, you may remove it
 
 Use this EXACT format:
@@ -72,7 +79,13 @@ Use this EXACT format:
 ## Critical Context
 - [Preserve important context, add new if needed]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages."#;
+## Values
+- [Every row of the previous Values, verbatim, plus new values from tool results in the new messages, one per line. A value still visible in the recent messages belongs here too: those messages will scroll out. Or "(none)"]
+
+## Dropped
+- [Keep the previous Dropped rows and add what this summary leaves out, one line each, with where to read it back (a user:// address or a path). Or "(none)"]
+
+Keep each section concise, but never shorten a value in Values. Preserve exact file paths, function names, and error messages."#;
 
 pub const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = r#"This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
