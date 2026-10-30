@@ -187,11 +187,6 @@ def attempts_of(comments, authors, pr=None):
     return sorted(rounds + voided, key=lambda a: a["id"])
 
 
-def lost_attempt(attempt):
-    """An attempt that read only part of the head: a round that lost a lens or refuter, or a void."""
-    return attempt.get("kind") == "void" or (silent(attempt) and attempt.get("verdict") != "override")
-
-
 def override_of(comments, authors, after_id, before_id=None):
     """The owner's `/override <reason>` posted after the round it clears, newest first."""
     for comment in sorted(comments, key=lambda c: -c.get("id", 0)):
@@ -224,7 +219,7 @@ def ready_problems(rounds, head, holds=on_head):
         errs.append(f"{len(read)} review round(s) past intake; a PR needs two — just pr review")
     if rounds and not holds(rounds[-1]["sha"], head):
         errs.append(f"round {rounds[-1]['n']} reviewed {rounds[-1]['sha'][:8]}, not the head {head[:8]} — just pr review")
-    elif rounds and silent(rounds[-1]) and rounds[-1]["verdict"] != "override":
+    elif rounds and lost_attempt(rounds[-1]):
         errs.append(f"round {rounds[-1]['n']} lost {rounds[-1]['skipped']} lens or refuter answer(s) — just pr review --again")
     elif rounds and rounds[-1]["verdict"] == "blocked":
         errs.append(f"round {rounds[-1]['n']} is blocked — the autofixer answers it (just pr autofix), or /override <reason>")
@@ -254,7 +249,7 @@ def blocked_head(rounds, head, holds=on_head):
     read only part, and `--again` is the remedy `ready_problems` prints for it."""
     here = [r for r in rounds if holds(r["sha"], head)]
     last = here[-1] if here else None
-    return last if last and not twin_round(last) and last["verdict"] == "blocked" and not silent(last) else None
+    return last if last and not twin_round(last) and last["verdict"] == "blocked" and not lost_attempt(last) else None
 
 
 def runs_past(why, rounds, head, holds, dry_run, again):
@@ -305,6 +300,11 @@ def carried(rounds, own=None):
 def silent(r):
     """A round that lost a lens or refuter did not read the whole PR, whatever its verdict says."""
     return r.get("skipped", "0") != "0"
+
+
+def lost_attempt(attempt):
+    """An attempt that read only part of the head: a round that lost a lens or refuter, or a void."""
+    return attempt.get("kind") == "void" or (silent(attempt) and attempt.get("verdict") != "override")
 
 
 ROUND_MEMORY = 12
