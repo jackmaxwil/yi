@@ -284,32 +284,39 @@ mod tests {
 
     /// The slow probe prints a valid schema once it wakes, so only the deadline can skip it.
     #[test]
-    fn a_probe_inside_the_deadline_loads_and_one_past_it_is_skipped() -> TestResult {
+    fn exec_tool_probes_stop_at_their_own_deadline() -> TestResult {
         let dir = crate::scratch::Scratch::new("yi-tools-exec-limit")?;
         scripts(
             &dir,
             &[
                 (
                     "fast",
-                    "#!/bin/sh\nprintf '{\"name\":\"fast\",\"input_schema\":{\"type\":\"object\"}}'\n"
+                    "#!/bin/sh\nsleep 0.1\nprintf '{\"name\":\"fast\",\"input_schema\":{\"type\":\"object\"}}'\n"
                         .to_owned(),
                 ),
                 (
                     "slow",
-                    "#!/bin/sh\nsleep 30\nprintf '{\"name\":\"slow\",\"input_schema\":{\"type\":\"object\"}}'\n"
+                    "#!/bin/sh\nsleep 0.6\nprintf '{\"name\":\"slow\",\"input_schema\":{\"type\":\"object\"}}'\n"
                         .to_owned(),
                 ),
             ],
         )?;
-        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(3));
-        assert_eq!(tools.len(), 1, "{skipped:?}");
+        let started = std::time::Instant::now();
+        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_millis(300));
+        let elapsed = started.elapsed();
+        assert_eq!(
+            tools.len(),
+            1,
+            "the 600 ms probe loaded past a 300 ms deadline: {skipped:?}"
+        );
         assert_eq!(tools[0].name(), "fast");
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].path, dir.join("slow"));
         assert!(
-            skipped[0].reason.contains("timed out after 3s"),
+            skipped[0].reason.contains("timed out after 0.3s"),
             "{skipped:?}"
         );
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
         Ok(())
     }
 
