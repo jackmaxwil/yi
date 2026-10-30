@@ -73,7 +73,10 @@ fn response(answer: &str, excerpt: &str) -> SearchResponse {
 
 fn tool_with(result: Result<SearchResponse, SearchError>) -> (WebSearchTool, Arc<FauxSearch>) {
     let provider = Arc::new(FauxSearch::new(result));
-    (WebSearchTool::new(provider.clone()), provider)
+    (
+        WebSearchTool::new(provider.clone(), Default::default()),
+        provider,
+    )
 }
 
 fn args(value: Value) -> Map<String, Value> {
@@ -446,5 +449,31 @@ fn search_usage_reaches_spend_alerts_and_tool_telemetry_once() -> TestResult {
 #[test]
 fn identity_does_not_offer_search_when_registration_is_credential_gated() -> TestResult {
     assert!(!yi_runtime::identity_fragment().contains("web_search"));
+    Ok(())
+}
+
+/// The tool fences behind the session's screen: a flagged result carries the score in its fence
+/// header, so a search result cannot reach the model unmarked while the suite stays green.
+#[test]
+fn a_flagged_search_result_carries_the_screen_mark() -> TestResult {
+    let (screeners, seen, handle) =
+        crate::classifier_e2e::armed(r#"{"answers":{"inject":{"noul":0.9}}}"#)?;
+    let provider = Arc::new(FauxSearch::new(Ok(response("answer", "excerpt"))));
+    let tool = WebSearchTool::new(provider, screeners);
+    let output = tool.execute(
+        args(json!({"query": "latest Rust"})),
+        &ToolContext::new(std::env::temp_dir()),
+    );
+    handle.join().map_err(|_| "sidecar thread")?;
+    let fenced = text(&output);
+    assert!(
+        fenced.contains(r#"trust="untrusted" screen="flagged:0.90""#),
+        "the search result's fence carries the mark: {fenced}"
+    );
+    assert_eq!(
+        crate::classifier_e2e::taken(&seen).len(),
+        1,
+        "the search result was screened once"
+    );
     Ok(())
 }
