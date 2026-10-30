@@ -1,4 +1,6 @@
 ---
+version: 0.765.0
+decisions: D484
 issue: Closes #1498, Refs #1442
 growth: +23 the kernel capture's char counter in place of its truncated flag, the trim that keeps the first and last halves as chunks arrive, the one loud row between them, the displayed value handed to the cell spill under a third name, and a shell cell's view that keeps the kernel's row when it has no file to name; weighed for deletion: a second tail buffer per stream (two more fields and a second char count), a trim on every chunk past the cap (one line shorter, but a full rebuild of 65,536 chars per chunk), and a separate spill for the displayed value (a second file and pointer for one cell)
 raise: crate kernel +17, crate tools +6, tests +167

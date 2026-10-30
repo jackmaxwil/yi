@@ -1,4 +1,5 @@
 ---
+version: 0.651.0
 issue: Closes #1191
 raise: crate kernel +29, crate runtime +69, crate tools +1, comments +2
 ---

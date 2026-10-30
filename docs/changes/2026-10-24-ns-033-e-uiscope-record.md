@@ -1,4 +1,6 @@
 ---
+version: 0.716.0
+decisions: D444
 issue: Closes #1471, Refs #1442
 raise: tests +19
 decision: Keep both UIs, the console and the solo TUI, with the human-only surfaces the haul listed (title scenes, logo masks, syntect, the terminal, browser and editor panes, drive tooling); fix their defects and delete none | owner, answering the plan's question on the decided haul groups: "Fix bugs, keep design" (haul group UISCOPE) | reversible via a later PR that deletes one named surface, each under its own issue

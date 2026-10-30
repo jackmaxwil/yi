@@ -1,4 +1,6 @@
 ---
+version: 0.717.0
+decisions: D445
 issue: Closes #1444, Refs #1442
 raise: crate runtime +131, crate cli +19, tests +334, comments +14
 decision: a clean quit keeps a lane's session while its tree is dirty, and only reap and discard clean a tree | rt-lanes-1: release cleared the session, so the next claim ran checkout -f -B and clean -qfd over uncommitted work, and a resume reset its own unmerged branch; D130's tree rule held for crash orphans only | drop the release-side status read and the claim-side branch check; claim's tree check alone still refuses the wipe

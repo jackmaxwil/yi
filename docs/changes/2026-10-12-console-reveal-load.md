@@ -1,4 +1,5 @@
 ---
+version: 0.679.0
 issue: Closes #1372
 raise: tests +9
 ---

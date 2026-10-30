@@ -1,4 +1,6 @@
 ---
+version: 0.591.0
+decisions: D376, D377, D378
 issue: Closes #1135
 growth: +189 the dollar alarm (Measure, the child cost, attach_configured), the reuse window with its explained-miss exclusion, and the compaction ceiling with its floor and unknown-window case; weighed for deletion: a second alarm type beside the token one (folded into one parameterised SpendAlarm), a partial-stall rule beside the reuse rule (one reads-per-write rule covers both), and threading compaction.at through RuntimeWiring (18 struct literals, an atomic setter instead)
 decision: `spend.alertUsd` shows one `spend_alert` notice per multiple of billed dollars crossed, counting the session's own replies and each child's billed spend, which `ChildUpdate` now carries as an optional `cost`; it warns and never stops work, beside the unchanged `spend.alertTokens` | one Opus session cost $87.34 of the $144.06 billed across 1,096 sessions, and a token budget cannot say dollars when a cached token costs a twentieth of an uncached one; the owner chose "Warn only, per session and per day" | drop the `alertUsd` key and the `Measure::Usd` arm; the `cost` field stays, additive and unread
