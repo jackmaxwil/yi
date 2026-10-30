@@ -59,12 +59,22 @@ pub struct UserConfig {
     pub classifier: Option<ClassifierConfig>,
     pub permissions: Option<PermissionsConfig>,
     pub mail: Option<MailConfig>,
+    /// `memory.importClaude`: import the Claude Code memories of this working directory and
+    /// the user-level one into the stores at session start; on unless set false.
+    pub memory: Option<MemoryConfig>,
     /// `open`: the apps a console message's Open in submenu lists, each a name and a command
     /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
     pub open: Option<Vec<OpenApp>>,
     pub browser: Option<BrowserConfig>,
 }
 
+/// `memory.importClaude`: off stops the start-of-session import and nothing else; the
+/// `yi memory import-claude` verb still runs it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryConfig {
+    pub import_claude: Option<bool>,
+}
 /// `mail.hopLimit`: the longest chain of letters between sessions, each sent by a turn another
 /// letter woke, before a send is refused; unset is 20.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

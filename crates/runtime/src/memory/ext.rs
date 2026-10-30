@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::Activity;
+use super::claude::{self, Sources};
 use super::store::{
     IndexLine, LOAD_BYTES, LOAD_LINES, Store, StoreError, global_dir, loaded, repo_dir,
 };
@@ -89,7 +90,12 @@ struct Scoped {
 
 type Index = fn(&Store) -> Result<Vec<IndexLine>, StoreError>;
 
-fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError> {
+fn scoped(
+    store: &Store,
+    root: &Path,
+    index: Index,
+    sources: &Sources,
+) -> Result<Scoped, StoreError> {
     let index = index(store)?;
     let notes = store.notes();
     let (shown, not_loaded) = loaded(&index, &store.usage());
@@ -98,19 +104,21 @@ fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError
         .into_iter()
         .filter_map(|line| match line {
             IndexLine::Note { text, name } => {
-                let hook = notes
-                    .iter()
-                    .find(|note| &note.name == name)
-                    .map_or("", |note| note.hook.as_str());
-                Some(
-                    match stale_path(text, root).or_else(|| stale_path(hook, root)) {
-                        Some(path) => {
-                            stale = stale.saturating_add(1);
-                            format!("{text} ⚠ {path}")
-                        }
-                        None => text.clone(),
-                    },
-                )
+                let note = notes.iter().find(|note| &note.name == name);
+                let hook = note.map_or("", |note| note.hook.as_str());
+                let mark = match stale_path(text, root).or_else(|| stale_path(hook, root)) {
+                    Some(path) => Some(path),
+                    None => note
+                        .filter(|note| sources.stale(note))
+                        .map(|_| "stale".to_owned()),
+                };
+                Some(match mark {
+                    Some(mark) => {
+                        stale = stale.saturating_add(1);
+                        format!("{text} ⚠ {mark}")
+                    }
+                    None => text.clone(),
+                })
             }
             IndexLine::Other(_) => None,
         })
@@ -123,21 +131,26 @@ fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError
         not_loaded,
     })
 }
-
 /// The start block, reconciling each store first: a session start journals hand edits.
 pub fn block(home: &Path, cwd: &Path) -> (String, Summary) {
-    render(home, cwd, Store::reconcile)
+    let sources = Sources::discover(home, cwd);
+    render(home, cwd, Store::reconcile, &sources)
+}
+
+pub fn block_with(home: &Path, cwd: &Path, sources: &Sources) -> (String, Summary) {
+    render(home, cwd, Store::reconcile, sources)
 }
 
 /// The start block's summary as the stores stand, written nowhere: `yi memory list` reads.
 pub fn listed(home: &Path, cwd: &Path) -> Summary {
-    render(home, cwd, Store::indexed).1
+    let sources = Sources::discover(home, cwd);
+    render(home, cwd, Store::indexed, &sources).1
 }
 
-fn render(home: &Path, cwd: &Path, index: Index) -> (String, Summary) {
+fn render(home: &Path, cwd: &Path, index: Index, sources: &Sources) -> (String, Summary) {
     let root = crate::ext::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let repo = scoped(&Store::new(repo_dir(home, cwd)), &root, index);
-    let global = scoped(&Store::new(global_dir(home)), &root, index);
+    let repo = scoped(&Store::new(repo_dir(home, cwd)), &root, index, sources);
+    let global = scoped(&Store::new(global_dir(home)), &root, index, sources);
     let mut summary = Summary::default();
     let mut body: Vec<String> = Vec::new();
     for (label, result) in [("repo", &repo), ("global", &global)] {
@@ -204,7 +217,11 @@ impl Extension for MemoryExt {
         let Event::SessionStart { cwd, reason } = event else {
             return;
         };
-        let (text, summary) = block(&self.home, cwd);
+        let sources = Sources::discover(&self.home, cwd);
+        for report in claude::run_if_enabled(&self.home, cwd) {
+            self.activity.push(report.line());
+        }
+        let (text, summary) = block_with(&self.home, cwd, &sources);
         if *reason == StartReason::Fresh {
             let counted = Store::new(repo_dir(&self.home, cwd))
                 .record(|usage| usage.sessions = usage.sessions.saturating_add(1));
@@ -249,18 +266,63 @@ mod tests {
     }
 
     #[test]
+    fn a_session_start_imports_the_claude_memories_and_announces_them() {
+        let home = temp("start-home").join("home");
+        let cwd = temp("start-cwd");
+        let dir = crate::memory::claude::project_dir(&home, &cwd);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("alpha.md"),
+            "---\nname: alpha\ndescription: imported at start\nmetadata:\n  type: project\n---\n\nbody\n",
+        )
+        .unwrap();
+        let activity = Arc::new(Activity::default());
+        let mut ext = MemoryExt::new(home.clone(), Arc::clone(&activity));
+        let mut out = Vec::new();
+        let event = Event::SessionStart {
+            cwd: cwd.to_path_buf(),
+            reason: StartReason::Fresh,
+        };
+        ext.on(&event, &mut out);
+        let lines = activity.take_lines();
+        assert!(
+            lines.iter().any(
+                |line| line.starts_with("claude · 1 notes in ~/.claude/projects/")
+                    && line.ends_with("· 1 imported")
+            ),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("memory · 1 repo · 0 global")
+        );
+        assert!(
+            matches!(out.first(), Some(Effect::AttachExternal { .. })),
+            "no start block: {out:?}"
+        );
+        let Some(Effect::AttachExternal { text, trust, .. }) = out.first() else {
+            return;
+        };
+        assert_eq!(*trust, Trust::Untrusted);
+        assert!(
+            text.contains("- [alpha](alpha.md) — imported at start"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn the_claude_fixture_imports_and_renders_the_golden_block() {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/memory");
         let home = temp("golden-home");
         let cwd = temp("golden-cwd");
         let store = Store::new(repo_dir(&home, &cwd));
-        let report = store.import(&fixtures.join("claude")).unwrap();
+        let report = store.import(&fixtures.join("claude"), None).unwrap();
         assert_eq!((report.imported, report.updated, report.skipped), (3, 0, 0));
         let (text, summary) = block(&home, &cwd);
         let golden = fs::read_to_string(fixtures.join("claude.v3.block")).unwrap();
         assert_eq!(text, golden.trim_end());
         assert_eq!(summary.unparsed, 1);
-        let again = store.import(&fixtures.join("claude")).unwrap();
+        let again = store.import(&fixtures.join("claude"), None).unwrap();
         assert_eq!((again.imported, again.updated, again.skipped), (0, 0, 3));
     }
 

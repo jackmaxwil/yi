@@ -1,0 +1,12 @@
+---
+issue: Closes #1859
+growth: +710 the importer is 262 src lines and 448 are the fixtures it can only be trusted with; `Store::import` took the tag as a parameter rather than gaining a second copy, `doc::tagged` is one function, and `yi memory import <dir>` still reaches the same importer
+raise: crate cli +31, crate runtime +669, crate types +10, tests +382, comments +19
+decision: the Claude Code memories of the working directory and of `~/.claude/memory` import into the store that owns their scope at session start, behind `memory.importClaude` (default on) and tagged `source: claude` | the owner's memories were stranded in a shape Yi already reads, with only discovery, provenance and staleness missing, and a session start is the one moment a session reads memory | set `memory.importClaude` false, which stops the import and leaves the imported notes in place
+---
+
+With `memory.importClaude` on, which is the default, every session start imports two directories before the start block is built: the working directory's into the repository store, `~/.claude/memory` into the global one. Each note keeps its own file and gains `source: claude` as its first frontmatter key, so an imported note is told from a note Yi wrote; the index lines carry the Claude `MEMORY.md` wording where the source index had a line, and the store's own hook otherwise. A note that never closed its frontmatter imports too and is counted `unparsed` with the rest of the hand-written notes, and one that names an unreadable file no longer stops the batch: the count comes back as `unreadable` and the others land.
+
+The import is idempotent by content, not by timestamp: each note file is compared byte for byte with the tagged source text, so a second start imports nothing, a changed source note updates its Yi memory, and a note deleted at the source is kept and ends its index line `⚠ stale`. `yi memory import-claude` runs the same import by hand whether the switch is on or not, `yi doctor`'s `claude-memory` row counts found, imported and stale without writing, and an import that leaves a store past the block's load cap appends the load row that names the cap and the call for the rest. `~/.claude` is read only, never written, and no note text reaches a log, a summary or a reply: counts and paths only.
+
+`yi memory import <dir>` keeps its own job and stays untagged, for any directory of notes; the import a session start runs is this one.

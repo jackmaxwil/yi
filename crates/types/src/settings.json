@@ -7,6 +7,7 @@
 {"id": "models.autoReview", "label": "Auto-review model", "tab": "Models", "help": "naming one turns the auto-mode reviewer on", "kind": {"type": "model"}, "applies": "nextSession"},
 {"id": "models.classifier", "label": "Classifier checkpoint", "tab": "Models", "help": "naming one (english) runs the local permission classifier", "kind": {"type": "text"}, "applies": "daemonRestart"},
 {"id": "models.selector", "label": "Selector model", "tab": "Models", "help": "naming one picks the lines that explain a cut bash output", "kind": {"type": "model"}, "applies": "nextSession"},
+{"id": "memory.importClaude", "label": "Import Claude Code memories", "tab": "Agents", "help": "each session start imports the Claude Code memories of this directory and of ~/.claude/memory; false leaves them out", "kind": {"type": "toggle"}, "applies": "nextSession", "default": true},
 {"id": "catalog.enabled", "label": "Fetch model catalog", "tab": "Models", "help": "false never fetches a provider's model list", "kind": {"type": "toggle"}, "applies": "nextSession", "default": true},
 {"id": "catalog.refreshHours", "label": "Catalog refresh hours", "tab": "Models", "help": "age past which a session refetches the list (24)", "kind": {"type": "number", "integer": true, "min": 1, "max": 8760}, "applies": "nextSession"},
 {"id": "routing.order", "label": "OpenRouter provider order", "tab": "Models", "help": "provider names tried first, comma separated (DeepInfra, Together); others still serve if these fail", "kind": {"type": "list"}, "applies": "nextSession"},

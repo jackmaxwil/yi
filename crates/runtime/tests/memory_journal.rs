@@ -18,7 +18,7 @@ fn imported(label: &str) -> Result<(Scratch, Store), Box<dyn Error>> {
     let dir = Scratch::new(&format!("yi-memory-journal-{label}"))?;
     let store = Store::new(dir.join("store"));
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/memory/claude");
-    store.import(&fixture)?;
+    store.import(&fixture, None)?;
     Ok((dir, store))
 }
 

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 use yi_types::plan::canonical::Digest;
 
-use super::doc::{Memory, MemoryName, Note, read_note};
+use super::doc::{Memory, MemoryName, Note, read_note, tagged};
 use super::journal::{self, Journal};
 
 const INDEX: &str = "MEMORY.md";
@@ -171,6 +171,7 @@ pub struct Imported {
     pub imported: usize,
     pub updated: usize,
     pub skipped: usize,
+    pub unreadable: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -539,27 +540,36 @@ impl Store {
         self.replace(USAGE, &render_usage(&usage))
     }
 
-    pub fn import(&self, from: &Path) -> Result<Imported, StoreError> {
-        let source = Self::new(from.to_path_buf());
+    /// Copies a directory of notes in, tagging each with `source` when one is named; a note that
+    /// cannot be read is counted and the others still land.
+    pub fn import(&self, from: &Path, source: Option<&str>) -> Result<Imported, StoreError> {
+        let origin = Self::new(from.to_path_buf());
         let mut report = Imported::default();
         {
             let _lock = self.lock()?;
-            for note in source.notes() {
+            for note in origin.notes() {
                 let file = note.name.file();
-                let bytes = fs::read(from.join(&file)).map_err(io(&file))?;
+                let Ok(bytes) = fs::read(from.join(&file)) else {
+                    report.unreadable = report.unreadable.saturating_add(1);
+                    continue;
+                };
+                let raw = String::from_utf8_lossy(&bytes);
+                let text = match source {
+                    Some(tag) => tagged(&raw, tag),
+                    None => raw.into_owned(),
+                };
                 match fs::read(self.dir.join(&file)) {
-                    Ok(existing) if existing == bytes => {
+                    Ok(existing) if existing == text.as_bytes() => {
                         report.skipped = report.skipped.saturating_add(1);
                         continue;
                     }
                     Ok(_) => report.updated = report.updated.saturating_add(1),
                     Err(_) => report.imported = report.imported.saturating_add(1),
                 }
-                let text = String::from_utf8_lossy(&bytes);
                 self.replace(&file, &text)?;
             }
             let mut lines = self.index()?;
-            for line in source.index()? {
+            for line in origin.index()? {
                 if let IndexLine::Note { name, .. } = &line {
                     let indexed = lines.iter().any(
                         |own| matches!(own, IndexLine::Note { name: have, .. } if have == name),

@@ -2853,6 +2853,49 @@ fn memory_imports_lists_checks_and_forgets() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn yi_memory_import_claude_takes_the_working_directorys_notes() -> TestResult {
+    let workspace = Workspace::new("memory-claude")?;
+    let key: String = workspace
+        .project()
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let dir = workspace
+        .0
+        .join("home/.claude/projects")
+        .join(&key)
+        .join("memory");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("alpha.md"),
+        "---\nname: alpha\ndescription: the probe hook\ntype: project\n---\n\nA body about the alpha probe.\n",
+    )?;
+    let import = workspace.yi(&["memory", "import-claude"])?;
+    assert_eq!(import.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&import.stdout);
+    assert!(
+        text.contains("claude · 1 notes in ~/.claude/projects/"),
+        "{text}"
+    );
+    assert!(text.contains("1 imported"), "{text}");
+    let search = workspace.yi(&["memory", "search", "alpha probe"])?;
+    let hits = String::from_utf8_lossy(&search.stdout);
+    assert!(hits.contains("alpha "), "{hits}");
+    assert!(
+        dir.join("alpha.md").is_file(),
+        "the import wrote into the Claude directory"
+    );
+    let again = workspace.yi(&["memory", "import-claude"])?;
+    let second = String::from_utf8_lossy(&again.stdout);
+    assert!(
+        !second.contains("imported") && !second.contains("updated"),
+        "{second}"
+    );
+    Ok(())
+}
+
 type Stamped = (PathBuf, Vec<u8>, std::time::SystemTime);
 
 fn files_at(dir: &std::path::Path) -> Result<Vec<Stamped>, Box<dyn Error>> {

@@ -552,6 +552,28 @@ impl Memory {
     }
 }
 
+/// The note as a tagged copy: `source: <tag>` opens the frontmatter block, one that parses or
+/// one that never closes alike. A note with no block gains one; the body is untouched.
+pub fn tagged(text: &str, tag: &str) -> String {
+    let opens = text.lines().next().is_some_and(|line| line.trim() == "---");
+    let mut out = format!("---\nsource: {tag}\n");
+    if opens {
+        let start = text
+            .find('\n')
+            .map_or(text.len(), |at| at.saturating_add(1));
+        out.push_str(text.get(start..).unwrap_or_default());
+    } else {
+        out.push_str("---\n\n");
+        out.push_str(text);
+    }
+    out
+}
+
+/// The `source:` a note carries, which is the store's own name for the writer's provenance.
+pub fn source_of(note: &Note) -> Option<&str> {
+    text_of(&note.front, "source")
+}
+
 fn quoted(text: &str) -> String {
     let escaped = text
         .replace('\\', "\\\\")

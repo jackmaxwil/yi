@@ -1,8 +1,9 @@
 use std::path::Path;
 
+use yi_runtime::memory::claude;
 use yi_runtime::memory::{Note, Store, global_dir, listed, ranked, repo_dir};
 
-const USAGE: &str = "usage: yi memory [list | show <name> | search <words> | forget <name> | import <dir> | stats | check | rebuild]";
+const USAGE: &str = "usage: yi memory [list | show <name> | search <words> | forget <name> | import <dir> | import-claude | stats | check | rebuild]";
 
 fn find<'a>(
     stores: &'a [(&'static str, Store)],
@@ -173,12 +174,16 @@ pub fn run(args: &crate::Args) -> i32 {
             let Some((_, repo)) = stores.first() else {
                 return 1;
             };
-            match repo.import(Path::new(dir)) {
+            match repo.import(Path::new(dir), None) {
                 Ok(report) => {
-                    println!(
+                    let mut line = format!(
                         "memory · imported {} · updated {} · skipped {}",
                         report.imported, report.updated, report.skipped
                     );
+                    if report.unreadable > 0 {
+                        line.push_str(&format!(" · unreadable {}", report.unreadable));
+                    }
+                    println!("{line}");
                     0
                 }
                 Err(error) => {
@@ -186,6 +191,20 @@ pub fn run(args: &crate::Args) -> i32 {
                     1
                 }
             }
+        }
+        ("import-claude", "") => {
+            let mut code = 0;
+            let reports = claude::run(home, &cwd);
+            if reports.is_empty() {
+                println!("  claude · none for this directory");
+            }
+            for report in reports {
+                println!("  {}", report.line());
+                if report.error.is_some() {
+                    code = 1;
+                }
+            }
+            code
         }
         _ => {
             eprintln!("{USAGE}");

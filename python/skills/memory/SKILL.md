@@ -24,3 +24,13 @@ await memory.forget("buildhost-tmp-is-ram")    # a wrong note
 Save after a user correction, an incident, or a verified success, never every
 turn; three saves per session, root session only. `scope="global"` keeps a note
 for every repository.
+
+## Notes Claude Code wrote
+
+With `memory.importClaude` on (the default) each session start imports the
+Claude Code memories of the working directory and of `~/.claude/memory`, so a
+fact written there is already a Yi note: `source: claude` in its frontmatter
+says who wrote it. Nothing to do at start, and no need to save it again.
+A note whose source is gone keeps its text and its index line ends `⚠ stale`;
+`yi memory import-claude` re-runs the import by hand, and `yi doctor`'s
+`claude-memory` row counts what was found, imported and stale.

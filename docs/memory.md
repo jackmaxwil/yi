@@ -74,6 +74,30 @@ The kernel imports the `memory` package at startup (§9). Each function is a hos
   `total`; a cut list carries `[5 of N notes · limit 5 · memory.search("…", limit=N) for all]`.
 - `memory.forget(name, scope=None)`: deletes the note, its index line and its usage entry.
 
+## Claude Code
+
+Claude Code keeps its own memories per working directory. `memory.importClaude` (on unless the
+config sets it false) imports them at every session start, fresh or resumed, and
+`yi memory import-claude` runs it by hand whether the switch is on or not.
+- The directory is `~/.claude/projects/<the working directory, every byte but an alphanumeric a
+  dash>/memory`; `~/.claude/memory` is the user-level one. The first lands in the repository
+  store, the second in the global store. A directory that does not exist is not a failure and
+  says nothing.
+- Every note is copied once, its frontmatter tagged `source: claude` as its first key, so an
+  imported note is told from a note Yi wrote. A note that carries no block gains one; a note
+  whose block never closes still imports and is counted `unparsed`, as any other hand-written
+  note. Yi never writes into `~/.claude`.
+- Idempotent by content: the note file is compared byte for byte with the tagged source text, so
+  a second start imports nothing and a changed source note updates its Yi memory. A note deleted
+  at the source is kept and marked: its index line ends `⚠ stale`, and `yi doctor`'s
+  `claude-memory` row counts what was found, imported and stale. The note is stale only when no
+  Claude Code directory of this home still holds it, since one store serves every worktree of a
+  repository.
+- The line a start commits reads `claude · N notes in ~/.claude/projects/…/memory · N imported ·
+  N updated · N stale`, and an import that leaves the store past the block's load cap appends
+  the `[… K of T notes loaded (LOAD_LINES 200); the rest: await memory.search("words")]` row.
+  Counts and paths only: no note text reaches a log, a summary or a reply.
+
 ## Past sessions
 
 `history.search(query, limit=8, offset=0)` (kernel `compact.search`) ranks user messages, assistant
@@ -100,7 +124,8 @@ resumed, it does the following:
    memory.search("words")]` that names `LOAD_BYTES 25000` instead when the bytes cut. With no
    notes, the block reads `No notes yet.`
 4. Marks a line `⚠ <path>` when its text or description names a relative path that is missing
-   under the git root.
+   under the git root, and `⚠ stale` for a note imported from Claude Code whose source note is
+   gone.
 5. Fits the block to the `memory` source budget (32,768 bytes) and emits it as
    `AttachExternal { source: "memory", trust: Untrusted }`, which lands in the yard (§6).
 
@@ -109,9 +134,11 @@ and one line per save or forget as footer cells; the HUD shows `saved N`.
 
 ## CLI
 
-`yi memory [list | show <name> | search <words> | forget <name> | import <dir> | stats | check |
-rebuild]` works on both stores of the cwd; `search` prints every ranked hit. `import` copies a directory of notes into the repo store, skips identical
-files, merges index lines and reconciles. `stats` prints saves and reads per session per store.
+`yi memory [list | show <name> | search <words> | forget <name> | import <dir> | import-claude |
+stats | check | rebuild]` works on both stores of the cwd; `search` prints every ranked hit.
+`import` copies a directory of notes into the repo store untagged, skips identical
+files, merges index lines and reconciles; `import-claude` is the section above, printing one
+line per store. `stats` prints saves and reads per session per store.
 `check` prints `path:line: reason` per unparsed note and exits 1 if there is any. `rebuild`
 restores every note the journal holds and has not forgotten, recounts `usage.json` from the
 journal, names a file that differs from its journal head and a version with no object, and
