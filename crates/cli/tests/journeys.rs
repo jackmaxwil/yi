@@ -471,10 +471,7 @@ fn an_ask_in_a_repository_runs_on_a_lane_and_hands_it_back() -> TestResult {
 #[test]
 fn a_failed_lane_sync_warns_on_stderr_and_the_ask_still_runs() -> TestResult {
     let journey = Journey::new("lane-sync")?;
-    let project = journey.project();
-    git_in(&project, &["init", "-q", "-b", "main"])?;
-    git_in(&project, &["config", "user.email", "lane@journey"])?;
-    git_in(&project, &["config", "user.name", "journey"])?;
+    let project = trunk(&journey)?;
     std::fs::write(project.join("uv.lock"), "not a lockfile\n")?;
     git_in(&project, &["add", "uv.lock"])?;
     git_in(&project, &["commit", "-qm", "lock"])?;

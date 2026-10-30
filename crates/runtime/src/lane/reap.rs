@@ -19,19 +19,27 @@ impl Uncommitted {
         Ok(Self::counted(&git_capture(tree, &STATUS)?))
     }
 
-    /// One status read bounded by [`LIST_BUDGET`], for a notice that is dropped past it.
-    pub(crate) fn read_briefly(tree: &Path) -> Option<Self> {
-        let status = "git status";
+    /// One status read bounded by [`LIST_BUDGET`]; the error names why the paths went uncounted.
+    pub(crate) fn read_briefly(tree: &Path) -> Result<Self, String> {
+        let started = std::time::Instant::now();
         let capture = super::capture_named(
             tree,
-            status,
+            "git status",
             "git",
             &STATUS,
             LIST_BUDGET,
             yi_tools::OUTPUT_CAP,
             None,
         );
-        capture.ok().map(|capture| Self::counted(&capture))
+        capture
+            .map(|capture| Self::counted(&capture))
+            .map_err(|error| {
+                if started.elapsed() >= LIST_BUDGET {
+                    format!("git status past LIST_BUDGET ({} s)", LIST_BUDGET.as_secs())
+                } else {
+                    error.lines().take(2).collect::<Vec<_>>().join(" ")
+                }
+            })
     }
 
     fn counted(status: &yi_tools::CommandCapture) -> Self {

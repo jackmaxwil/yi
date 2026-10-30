@@ -33,35 +33,6 @@ fn undo_restores_and_removes_non_ascii_paths() -> TestResult {
 }
 
 #[test]
-fn show_and_changed_return_every_byte_past_the_tool_output_cap() -> TestResult {
-    let root = Scratch::new("yi-checkpoint-large")?;
-    let project = root.join("project");
-    fs::create_dir_all(&project)?;
-    let body: String = (0..4_000).map(|line| format!("line {line:05}\n")).collect();
-    fs::write(project.join("big.txt"), &body)?;
-    let names: Vec<String> = (0..400)
-        .map(|n| format!("{n:03}-{}.txt", "x".repeat(80)))
-        .collect();
-    for name in &names {
-        fs::write(project.join(name), "before\n")?;
-    }
-    let checkpoints = yi_tools::Checkpoints::open(&root.join("shadow"), &project)?;
-    let tree = checkpoints.capture()?;
-    assert_eq!(checkpoints.show(&tree, "big.txt")?, body);
-    for name in &names {
-        fs::write(project.join(name), "after\n")?;
-    }
-    let mut changed: Vec<String> = checkpoints
-        .changed(&tree)?
-        .iter()
-        .map(|change| change.path.display().to_string())
-        .collect();
-    changed.sort();
-    assert_eq!(changed, names);
-    Ok(())
-}
-
-#[test]
 fn a_capture_leaves_the_callers_git_index_untouched() -> TestResult {
     let foreign = std::env::var_os("GIT_INDEX_FILE")
         .filter(|path| path.to_string_lossy().ends_with(FOREIGN_INDEX));

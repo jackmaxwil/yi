@@ -3502,8 +3502,7 @@ fn a_claim_leaves_a_process_that_is_not_the_warmer_alive() -> TestResult {
     git(&rig.repo, &["commit", "-qm", "lock"])?;
     let pool = rig.pool(1)?;
     let slot = pool.claim("s-first", ClaimBase::Main)?.slot();
-    let cargo = rig.root.join("cargo");
-    std::fs::write(&cargo, "sleep 30\n")?;
+    let (cargo, _) = fake_warmer(&rig)?;
     let stranger = yi_tools::command("/bin/sh")
         .arg("-c")
         .arg(r#"/bin/sh "$1" build >/dev/null 2>&1 & echo $!"#)
@@ -3638,6 +3637,29 @@ async fn a_worktree_spawn_names_the_edits_its_child_starts_without() -> TestResu
     Ok(())
 }
 
+/// Dies with a worktree child whose parent's status read failed and so was told nothing at all.
+#[tokio::test]
+async fn a_worktree_spawn_whose_status_fails_still_names_the_head() -> TestResult {
+    let rig = Rig::new("base-unread")?;
+    std::fs::write(rig.repo.join(".git/index"), "not an index\n")?;
+    let head = git(&rig.repo, &["rev-parse", "--short=8", "HEAD"])?;
+    let (next, _) = spawn_reply(&rig).await?;
+    let row = format!("the child starts at HEAD {head}; uncommitted paths not counted: git status");
+    assert!(next.starts_with(&row), "{next}");
+    Ok(())
+}
+
+fn fake_warmer(rig: &Rig) -> Result<(PathBuf, &'static [&'static str]), Box<dyn Error>> {
+    let cargo = rig.root.join("cargo");
+    std::fs::write(&cargo, "sleep 30\n")?;
+    let warm = yi_runtime::lane::toolchain::TOOLCHAINS
+        .iter()
+        .find(|toolchain| toolchain.lockfile == "Cargo.lock")
+        .ok_or("no Cargo.lock toolchain")?
+        .warm;
+    Ok((cargo, warm.get(1..).unwrap_or_default()))
+}
+
 fn merged_crashed_slot(
     rig: &Rig,
     pool: &Pool,
@@ -3678,11 +3700,10 @@ fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
     git(&rig.repo, &["commit", "-qm", "lock"])?;
     let pool = rig.pool(1)?;
     let (path, state_path, mut state) = merged_crashed_slot(&rig, &pool)?;
-    let cargo = rig.root.join("cargo");
-    std::fs::write(&cargo, "sleep 30\n")?;
+    let (cargo, warm) = fake_warmer(&rig)?;
     let mut warmer = yi_tools::command("/bin/sh")
         .arg(&cargo)
-        .args(["check", "--offline", "--all-targets", "--quiet"])
+        .args(warm)
         .current_dir(&path)
         .spawn()?;
     let warmer_pid = warmer.id();
