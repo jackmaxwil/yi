@@ -339,6 +339,17 @@ pub(crate) fn overwrite(
     path: &Path,
     content: &[u8],
 ) -> std::io::Result<Option<&'static str>> {
+    replace(file, path, content, &mut || ())
+}
+
+/// [`overwrite`] with `held` run where another process could swap the name: the one window a test
+/// can drive, and the reason production passes an empty one.
+fn replace(
+    file: &std::fs::File,
+    path: &Path,
+    content: &[u8],
+    held: &mut dyn FnMut(),
+) -> std::io::Result<Option<&'static str>> {
     use std::io::{Seek, Write};
     let meta = file.metadata()?;
     let in_place = |mut file: &std::fs::File| {
@@ -368,8 +379,7 @@ pub(crate) fn overwrite(
         staged.set_permissions(meta.permissions())?;
         staged.write_all(content)?;
         staged.sync_all()?;
-        #[cfg(test)]
-        tests::HELD.with_borrow_mut(|held| held.as_mut().map(|held| held()));
+        held();
         let named = std::fs::symlink_metadata(path)?;
         let id = yi_permission::file_id;
         if named.file_type().is_symlink() || id(&named) != id(&meta) {
@@ -461,13 +471,6 @@ mod tests {
     use crate::scratch::Scratch;
     use std::fs;
 
-    thread_local! {
-        /// Run inside [`super::overwrite`] after the temp is written and before the name is
-        /// checked, the one window a racing process has.
-        pub(super) static HELD: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
-            const { std::cell::RefCell::new(None) };
-    }
-
     #[cfg(unix)]
     #[test]
     fn a_name_swapped_for_a_symlink_before_the_rename_is_refused()
@@ -478,38 +481,34 @@ mod tests {
         fs::write(&victim, "kept\n")?;
         let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
         let (name, target) = (path.clone(), victim.clone());
-        HELD.set(Some(Box::new(move || {
+        let mut held = move || {
             let _ = fs::remove_file(&name);
             let _ = std::os::unix::fs::symlink(&target, &name);
-        })));
-        let landed = super::overwrite(&file, &path, b"new\n");
-        HELD.set(None);
+        };
+        let landed = super::replace(&file, &path, b"new\n", &mut held);
         assert!(landed.is_err(), "the swapped name was written");
         assert!(fs::symlink_metadata(&path)?.file_type().is_symlink());
         assert_eq!(fs::read_to_string(&victim)?, "kept\n");
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
-    fn a_failed_rename_writes_in_place_and_says_so_beside_the_verdict()
+    fn a_write_into_a_read_only_dir_writes_in_place_and_says_so()
     -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
         let dir = Scratch::new("yi-tools-write-in-place")?;
-        let path = dir.join("a.json");
+        let inner = dir.join("locked");
+        fs::create_dir(&inner)?;
+        let path = inner.join("a.json");
         fs::write(&path, "{}")?;
-        let staged = dir.to_path_buf();
-        HELD.set(Some(Box::new(move || {
-            for entry in fs::read_dir(&staged).into_iter().flatten().flatten() {
-                if entry.file_name().to_string_lossy().ends_with(".tmp") {
-                    let _ = fs::remove_file(entry.path());
-                }
-            }
-        })));
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o555))?;
         let mut input = serde_json::Map::new();
-        input.insert("path".to_owned(), "a.json".into());
+        input.insert("path".to_owned(), "locked/a.json".into());
         input.insert("content".to_owned(), "[1]".into());
         let context = super::ToolContext::new(dir.to_path_buf());
         let output = super::Tool::execute(&crate::builtins::WriteTool::default(), input, &context);
-        HELD.set(None);
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o755))?;
         let text = yi_types::message::join_text(&output.result.content, "");
         assert!(!output.is_error, "{text}");
         assert_eq!(fs::read_to_string(&path)?, "[1]");

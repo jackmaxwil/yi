@@ -441,25 +441,21 @@ fn parallel_first_reads_of_one_document_all_succeed() -> TestResult {
 }
 
 #[test]
-fn a_file_past_the_ceiling_is_refused_before_the_converter_runs() -> TestResult {
+fn a_file_past_the_read_cap_is_refused_before_the_converter_runs() -> TestResult {
     let (scratch, tools) = setup("ceiling")?;
     let path = scratch.cwd.join("huge.docx");
     std::fs::write(&path, b"PK\x03\x04")?;
     std::fs::File::options()
         .write(true)
         .open(&path)?
-        .set_len(yi_tools::document_ceiling() + 1)?;
+        .set_len(yi_tools::READ_FILE_CAP as u64 + 1)?;
     let output = call(
         &tool(&tools, "read")?,
         &scratch.cwd,
         json!({"path": "huge.docx"}),
     )?;
     assert!(output.is_error);
-    assert!(
-        text(&output).contains("past the 256 MiB ceiling"),
-        "{}",
-        text(&output)
-    );
+    assert!(text(&output).contains("READ_FILE_CAP"), "{}", text(&output));
     assert_eq!(copies(&scratch.home), 0);
     Ok(())
 }
