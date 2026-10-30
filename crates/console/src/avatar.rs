@@ -445,6 +445,71 @@ mod tests {
             seeds.len()
         );
     }
+    /// The mark's 28 bits only buy distance if no two rendered marks are near-identical: a pair
+    /// differing in one or two cells was the same blob at rail size.
+    #[test]
+    fn no_two_marks_of_the_real_ledger_sit_within_two_cells() {
+        fn mask(seed: &str) -> u64 {
+            let cells = grid(seed).0;
+            (0..cells.len()).fold(0_u64, |bits, at| {
+                if cells.get(at).copied().unwrap_or(false) {
+                    bits | (1 << u32::try_from(at).unwrap_or(0))
+                } else {
+                    bits
+                }
+            })
+        }
+        let ledger = include_str!("../tests/fixtures/ledger-session-ids.txt");
+        let marks: Vec<u64> = ledger
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(mask)
+            .collect();
+        let (mut one, mut two) = (0_usize, 0_usize);
+        for (at, left) in marks.iter().enumerate() {
+            for right in marks.get(at.saturating_add(1)..).unwrap_or_default() {
+                match (left ^ right).count_ones() {
+                    1 => one = one.saturating_add(1),
+                    2 => two = two.saturating_add(1),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(one, 0, "{one} pairs of marks differ in one cell");
+        assert_eq!(two, 1, "{two} pairs of marks differ in two cells");
+    }
+
+    #[test]
+    fn the_mark_inks_its_on_cells_and_leaves_the_margin_clear() {
+        const MARK: [&str; 7] = [
+            "##...##", "##...##", "..#.#..", "##.#.##", "##...##", "#.....#", ".......",
+        ];
+        let g = grid("s-alpha");
+        for (row, line) in MARK.iter().enumerate() {
+            for (col, cell) in line.chars().enumerate() {
+                assert_eq!(g.on(row, col), cell == '#', "grid cell {row},{col}");
+            }
+        }
+        let image = rgba(&g, (1, 2, 3));
+        let alpha = |x: usize, y: usize| image.get((y * PX + x) * 4 + 3).copied();
+        for (row, line) in MARK.iter().enumerate() {
+            for (col, cell) in line.chars().enumerate() {
+                let want = if cell == '#' { Some(255) } else { Some(0) };
+                for y in 6 + row * 4..6 + (row + 1) * 4 {
+                    for x in 6 + col * 4..6 + (col + 1) * 4 {
+                        assert_eq!(alpha(x, y), want, "cell {row},{col} at {x},{y}");
+                    }
+                }
+            }
+        }
+        assert_eq!(alpha(5, 5), Some(0), "the margin is clear");
+        assert_eq!(alpha(34, 34), Some(0), "past the 28 px field is clear");
+        assert_eq!(
+            image.get((8 * PX + 8) * 4..(8 * PX + 8) * 4 + 3),
+            Some(&[1, 2, 3][..]),
+            "an on cell's ink is the accent"
+        );
+    }
 
     #[test]
     fn the_gear_is_a_thin_outline_with_a_hub_ring_and_tooth_gaps() {

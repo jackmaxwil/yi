@@ -262,7 +262,10 @@ console settings pane | `chat::a_pane_revealing_a_reply_wakes_the_console_every_
 console settings pane | `tests::a_frame_places_its_images_inside_its_own_update` (T0)
 console chat pane images | `app::ids::tests::the_hundredth_pane_draws_below_the_avatar_ids_and_the_next_waits_for_a_close`
 console chat pane images | `app::ids::tests::every_close_frees_its_slot_across_250_opens` (T0)
+console title animation | `console_drive::a_console_start_is_covered_by_the_title_and_any_key_gives_the_screen_back` (T1)
 console session avatars | `avatar::tests::the_real_ledger_never_gives_two_sessions_one_mark` (T0)
+console session avatars | `avatar::tests::no_two_marks_of_the_real_ledger_sit_within_two_cells` (T0)
+console session avatars | `avatar::tests::the_mark_inks_its_on_cells_and_leaves_the_margin_clear` (T0)
 console title animation | `title::the_cover_replaces_every_cell_while_it_holds`
 console title animation | `title::the_name_lands_on_the_small_mark_and_the_screen_comes_back`
 console title animation | `title::the_small_mark_waits_for_the_big_one_to_land`

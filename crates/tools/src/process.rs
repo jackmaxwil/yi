@@ -16,8 +16,15 @@ pub(crate) fn quoted(text: &str) -> String {
 }
 
 /// The repository's top; a worktree never borrows the main checkout's.
+/// Invariant: a `..` in the path is resolved, so `…/checkout/../scratch` never claims `…/checkout`.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    (cwd.ancestors())
+    let start = if cwd.is_absolute() {
+        yi_permission::lexical_normalize(cwd)
+    } else {
+        cwd.to_path_buf()
+    };
+    start
+        .ancestors()
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }
