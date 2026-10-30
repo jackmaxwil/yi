@@ -1,6 +1,6 @@
 ---
 issue: Closes #1738
-growth: +773 the tree's walker and `.gitignore` matcher, weighed against a new `ignore` dependency (§18.3 absent, deny.toml unset), a daemon RPC seam for a listing, and borrowing `yi-tools`' walker (the boundaries allowlist forbids console -> tools); the smallest of the three that keeps the issue's ignore rule
+growth: +773 the tree's walker and `.gitignore` matcher, weighed against a new `ignore` dependency (the design's allowed-dependency table lists no `ignore`, deny.toml bans nothing here), a daemon RPC seam for a listing, and borrowing `yi-tools`' walker (the boundaries allowlist forbids console -> tools); the smallest of the three that keeps the issue's ignore rule
 raise: crate console +773
 raise: comments +22
 raise: tests +267
