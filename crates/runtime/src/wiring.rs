@@ -15,20 +15,20 @@ use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOption
 fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
     Arc::new(move |build: ChildBuild<'_>| {
         let provider = Arc::new(wiring.provider.for_child());
+        let child_cwd = build
+            .cwd
+            .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
         if let Some(reader) = build.reader.clone() {
-            let cwd = build
-                .cwd
-                .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
-            let broker = child_broker(&wiring, &build.wall, &cwd);
+            let broker = child_broker(&wiring, &build.wall, &child_cwd);
             let tools = (wiring.tools)();
-            let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
+            let rules = crate::rules::discover_armed(&child_cwd, &wiring.home).rules;
             let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
             return Ok(crate::subagent::reader::session(
                 provider,
                 build,
                 &reader,
                 tools,
-                (cwd, &wiring.home),
+                (child_cwd, &wiring.home),
                 broker,
                 rules,
             ));
@@ -42,9 +42,6 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             },
             Arc::clone(&provider),
         );
-        let child_cwd = build
-            .cwd
-            .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
         child.install_extensions(crate::ext::install(crate::ext::ExtOptions {
             cwd: child_cwd.clone(),
             home: wiring.home.clone(),
@@ -916,7 +913,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &service,
     );
     let mut tools = (wiring.tools)();
-    crate::fetch::route_urls(&mut tools, &resolver);
+    crate::web_search::wire_search(&wiring, &mut tools, &resolver);
     let ipython = crate::kernel_tools::ipython_tool(Arc::clone(&service), Some(calls));
     tools.push(ipython);
     let annotate = crate::annotate::AnnotateTool::new(session.store_handle(), session.reclaimed());

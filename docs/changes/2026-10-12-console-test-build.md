@@ -1,4 +1,5 @@
 ---
+version: 0.648.0
 issue: Refs #1256
 raise: tests +2
 ---

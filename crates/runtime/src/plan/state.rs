@@ -266,9 +266,9 @@ pub fn op_of(record: &JournalRecord) -> Result<Op, ReduceError> {
         detail: error.to_string(),
     })
 }
-
 /// The whole journal, reduced. Takes no delegate: nothing here can dispatch.
 pub fn reduce(records: &[JournalRecord]) -> Result<RootState, ReduceError> {
+    let _span = yi_types::trace::span("plan.reduce");
     let mut state = RootState::default();
     for record in records {
         apply(&mut state, record)?;

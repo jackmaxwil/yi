@@ -3,6 +3,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::{AssistantMessageEvent, Wait};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::Model;
+use yi_types::telemetry::QUOTA_STAMP;
 
 use crate::retry::{RetryPolicy, is_retryable_status, quota_exhausted, retry_delay};
 use crate::sse::SseEvent;
@@ -150,11 +151,14 @@ pub fn host_of(url: &str) -> &str {
     rest.split_once(':').map_or(rest, |(host, _)| host)
 }
 
-fn agent(url: &str, proxy: Option<&ProxyConfig>) -> ureq::Agent {
+pub const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn agent(url: &str, proxy: Option<&ProxyConfig>, read_timeout: std::time::Duration) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
         .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(std::time::Duration::from_secs(20));
+        .timeout_read(read_timeout)
+        .timeout_write(read_timeout);
     if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
         builder = builder.proxy(proxy.clone());
     }
@@ -180,7 +184,9 @@ pub fn get_json(
     proxy: Option<&ProxyConfig>,
     cap: usize,
 ) -> Result<Value, String> {
-    let mut request = agent(url, proxy).get(url).set("accept", "application/json");
+    let mut request = agent(url, proxy, DEFAULT_READ_TIMEOUT)
+        .get(url)
+        .set("accept", "application/json");
     for (name, value) in headers {
         request = request.set(name, value);
     }
@@ -194,18 +200,47 @@ pub fn post_json(
     body: &str,
     proxy: Option<&ProxyConfig>,
     cap: usize,
-) -> Result<Value, String> {
-    let mut request = agent(url, proxy)
+    read_timeout: std::time::Duration,
+) -> Result<Value, PostJsonError> {
+    let mut request = agent(url, proxy, read_timeout)
         .post(url)
         .set("accept", "application/json")
         .set("content-type", "application/json");
     for (name, value) in headers {
         request = request.set(name, value);
     }
-    let response = request
-        .send_string(body)
-        .map_err(|error| format!("{url}: {error}"))?;
-    read_capped(response, url, cap)
+    let response = request.send_string(body).map_err(|error| match error {
+        ureq::Error::Status(status, _) => PostJsonError::Http { status },
+        ureq::Error::Transport(error) => PostJsonError::Transport(format!("{url}: {error}")),
+    })?;
+    if !(200..300).contains(&response.status()) {
+        return Err(PostJsonError::Http {
+            status: response.status(),
+        });
+    }
+    read_capped(response, url, cap).map_err(PostJsonError::Protocol)
+}
+
+fn http_status_message(status: u16) -> &'static str {
+    match status {
+        401 | 403 => "the key was refused",
+        402 => "out of credits",
+        404 => "the model or engine was not found",
+        408 | 429 => "rate limited or timed out; retry later",
+        400..=499 => "the request was refused",
+        500..=599 => "the provider failed; retry later",
+        _ => "unexpected status",
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PostJsonError {
+    #[error("{0}")]
+    Transport(String),
+    #[error("HTTP {status}: {}", http_status_message(*status))]
+    Http { status: u16 },
+    #[error("{0}")]
+    Protocol(String),
 }
 
 pub fn waiting(sender: &Sender<AssistantMessageEvent>) -> impl Fn(Wait) + '_ {
@@ -287,7 +322,7 @@ pub fn send_with_retry(
                     .and_then(|value| value.parse::<f64>().ok());
                 let text = response.into_string().unwrap_or_default();
                 if quota_exhausted(status, &text, url) {
-                    return Err(format!("HTTP {status} quota exhausted: {text}"));
+                    return Err(format!("HTTP {status} {QUOTA_STAMP} {text}"));
                 }
                 let retryable = is_retryable_status(status)
                     && attempt < policy.max_attempts

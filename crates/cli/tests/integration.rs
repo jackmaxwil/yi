@@ -24,9 +24,11 @@ mod session_files;
 mod usage_record;
 
 mod acp_protocol;
+mod ask_check;
 mod browser;
 mod cli_surfaces;
 mod console_drive;
+mod install_script;
 mod journeys;
 mod kimi_login;
 mod mcp_cli;
