@@ -669,6 +669,56 @@ async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dy
     Ok(())
 }
 
+/// Incident (#1757): a kept tail over `compaction.at` made every request summarize again, 16
+/// compactions in 48 requests. A request has to grow past the ceiling the last one left.
+#[tokio::test]
+async fn a_kept_tail_over_the_ceiling_compacts_once_not_on_every_request()
+-> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-thrash")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-thrash");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-thrash".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        (0..32)
+            .map(|_| reply_with_usage("ok", 2_800, 2_850))
+            .collect(),
+    );
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(100_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.enable_compaction_with(tight_settings());
+    session
+        .compactor()
+        .ok_or("no compactor")?
+        .set_ceiling(Some(2_010));
+    session.attach_store(Arc::clone(&store))?;
+    // The 8,000-character opening survives compaction verbatim: the tail it keeps is over the
+    // 2,010-token ceiling on its own, and each live ask adds a few tokens to it.
+    session.prompt(&"a".repeat(8_000))?;
+    session.wait_idle().await;
+    for ask in [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    ] {
+        session.prompt(ask)?;
+        session.wait_idle().await;
+    }
+    let compactions = compaction_entries(&store).len();
+    assert!(
+        (1..=2).contains(&compactions),
+        "{compactions} compactions in ten requests"
+    );
+    Ok(())
+}
+
 /// Dies with the unknown-window arm of `Compactor::due` dropped: a model whose window is
 /// unknown (0) never passes `should_compact`'s reserve rule, so only the ceiling can compact.
 #[tokio::test]

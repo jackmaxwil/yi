@@ -91,6 +91,15 @@ fn carried(summary: &str) -> &str {
     body.get(..end).unwrap_or(body).trim()
 }
 
+fn prefix_tokens(loop_request: &LoopRequest) -> Tokens {
+    let tools = loop_request
+        .tools
+        .as_ref()
+        .and_then(|tools| serde_json::to_string(tools).ok())
+        .unwrap_or_default();
+    text_tokens(&loop_request.system_prompt).saturating_add(text_tokens(&tools))
+}
+
 /// The earliest cut point from which the rest of `messages` fits `budget`.
 pub(crate) fn fitting_start(messages: &[AgentMessage], budget: Tokens) -> Option<usize> {
     let (mut kept, mut found) = (Tokens(0), None);
@@ -249,6 +258,9 @@ pub struct Compactor {
     /// `compaction.at` in tokens, 0 when unset: due once the request passes it, if that comes
     /// before the window's reserve.
     ceiling: AtomicU64,
+    /// Invariant: the request a compaction left, prefix included, in tokens; 0 before the first.
+    /// Incident: a kept tail over the ceiling made every request summarize again (#1757).
+    settled: AtomicU64,
 }
 
 struct Raised<'a>(&'a AtomicBool);
@@ -499,7 +511,10 @@ impl Compactor {
                 }
             }
         };
-        should_compact(sent, Tokens(window), &self.settings)
+        let settled = self.settled.load(Ordering::Relaxed);
+        let grown = sent.0 > settled.saturating_add(self.settings.reserve_tokens.0);
+        let overflowing = model.context_window != 0 && sent.0 >= model.context_window;
+        (grown || overflowing) && should_compact(sent, Tokens(window), &self.settings)
     }
 
     /// No summary, no room (D337): keep the first user message, the work's opening and the earlier
@@ -527,20 +542,16 @@ impl Compactor {
         let run = opening
             .and_then(|opening| messages.iter().rposition(|message| *message == opening))
             .filter(|run| Some(*run) != first);
-        let tools = loop_request
-            .tools
-            .as_ref()
-            .and_then(|tools| serde_json::to_string(tools).ok())
-            .unwrap_or_default();
         // The marker rides twice: in the summary and where the dropped messages sat.
         let line = format!("[{}]", "#".repeat(96));
         let widest = format!("{earlier}\n\n{line}");
         let (summary_room, _) = compose_summary(&widest, &prepared.file_ops, &prepared.view);
         let cost = |index: usize| wide(estimate_message(&messages[index]));
-        let room = [&loop_request.system_prompt, &tools, &summary_room, &line]
+        let room = [&summary_room, &line]
             .into_iter()
             .map(|text| text_tokens(text))
             .chain(first.map(cost))
+            .chain([prefix_tokens(loop_request)])
             .fold(
                 window.saturating_sub(self.settings.reserve_tokens),
                 Tokens::saturating_sub,
@@ -757,6 +768,14 @@ impl Compactor {
             timestamp,
         });
         replacement.extend(retained_tail);
+        let left = replacement
+            .iter()
+            .map(estimate_message)
+            .fold(Tokens(0), Tokens::saturating_add);
+        self.settled.store(
+            wide(left).saturating_add(prefix_tokens(loop_request)).0,
+            Ordering::Relaxed,
+        );
         Ok(Some(Replacement {
             messages: replacement,
             elision,
