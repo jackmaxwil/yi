@@ -758,6 +758,24 @@ fn resume_alpha(frame: &Value) -> Vec<Value> {
     ]
 }
 
+fn resume_child_rows(frame: &Value) -> Vec<Value> {
+    let mut entries = alpha_branch();
+    entries.extend([
+        json!({"type":"custom","id":"child-spawn","customType":"child","data":{
+            "event":"spawned","name":"scout","id":"sub-5c90b1bb","session":"child-session",
+            "path":"children/sub-5c90b1bb/session.jsonl","brief":"hash","spawnedBy":"call-child",
+            "role":"reader","task":"Inspect replay ordering"},"parentId":null,"seq":3,"timestamp":3}),
+        json!({"type":"custom","id":"child-end","customType":"child","data":{
+            "event":"ended","name":"scout","id":"sub-5c90b1bb","exit":{"kind":"completed"},
+            "tokens":0,"elapsedMs":0,"answerPreview":"The child has two persistent rows."},
+            "parentId":"child-spawn","seq":4,"timestamp":4}),
+    ]);
+    vec![
+        replay("s-alpha", &entries, 0, None),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": entries.len()})),
+    ]
+}
+
 fn resume_alpha_again(frame: &Value) -> Vec<Value> {
     vec![
         replay(
@@ -2230,6 +2248,45 @@ fn subagent_rows_render_under_parent() -> TestResult {
          wait-frame 5000 └GR grep-bot-sub-1a2b3c4 ◐\n\
          quit\n",
     )
+}
+
+#[test]
+fn replayed_child_rows_render_in_the_shared_console_reducer() -> TestResult {
+    let frame = run_frames(
+        "child-rows-replay",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_child_rows),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 · reader · Inspect replay ordering\n\
+         wait-frame 5000 · done · 0ms · 0 tokens · start sub-5c90b1bb\n\
+         quit\n",
+    )?;
+    let start = frame
+        .find("· reader · Inspect replay ordering")
+        .ok_or("no start")?;
+    let end = frame
+        .find("· done · 0ms · 0 tokens · start sub-5c90b1bb")
+        .ok_or("no end")?;
+    assert!(start < end, "{frame}");
+    assert_eq!(
+        frame.matches("· reader · Inspect replay ordering").count(),
+        1,
+        "{frame}"
+    );
+    assert_eq!(
+        frame
+            .matches("· done · 0ms · 0 tokens · start sub-5c90b1bb")
+            .count(),
+        1,
+        "{frame}"
+    );
+    Ok(())
 }
 
 fn editor_file(name: &str) -> PathBuf {
@@ -4124,7 +4181,7 @@ fn the_sidebar_does_not_narrow_when_children_clear() -> TestResult {
          wait-frame 5000 grep-bot-sub-1a2b\n\
          type go\n\
          key enter\n\
-         wait-frame 5000 !grep-bot\n\
+         wait-frame 5000 !└GR\n\
          quit\n",
     )?;
     let top = frame.lines().nth(1).ok_or("no frame")?;
