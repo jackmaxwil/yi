@@ -547,7 +547,11 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(
-            frame(Ok(CompactOutcome::Elided(Elision { messages: 5 })))["elided"],
+            frame(Ok(CompactOutcome::Elided(Elision {
+                messages: 5,
+                total: 9,
+                window: 1000
+            })))["elided"],
             5
         );
         let failed = frame(Err(CompactError::NoSummary("upstream 529".to_owned())));

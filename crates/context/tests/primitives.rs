@@ -2,10 +2,11 @@ use std::error::Error;
 
 use serde_json::json;
 use yi_context::{
-    Attributed, BriefLine, Bytes, CompiledView, FileOps, KEY_ROWS, OUTSTANDING_CAP, Settings,
-    Tokens, attribute_child_usage, compile_view, compose_summary, context_tokens, convert_to_llm,
-    drop_internal, estimate_context, fit, internal_source, prepare_compaction, project,
-    retain_floor, select_cut, serialize_conversation, should_compact, user_key, wrap_internal,
+    Attributed, BriefLine, Bytes, CompiledView, EARLIER_CAP, FileOps, KEY_ROWS, OUTSTANDING_CAP,
+    Settings, Tokens, attribute_child_usage, compile_view, compose_summary, context_tokens,
+    convert_to_llm, drop_internal, estimate_context, fit, internal_source, prepare_compaction,
+    project, retain_floor, select_cut, serialize_conversation, should_compact, user_key,
+    wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -757,7 +758,7 @@ fn compose_summary_persists_the_view_for_the_next_round_to_roll() -> TestResult 
             id: Some("m1".to_owned()),
             text: "tool: read → 4 chars".to_owned(),
         }],
-        earlier: vec!["(#a..#b)".to_owned()],
+        earlier: vec!["(#a..#b, 2 lines)".to_owned()],
         ..CompiledView::default()
     };
     let (_, details) = compose_summary("## Goal\nPort", &FileOps::default(), &view);
@@ -902,8 +903,59 @@ fn earlier_index_names_the_demoted_span() -> TestResult {
     assert_eq!(view.brief.len(), 120);
     assert_eq!(view.earlier.len(), 1);
     assert_eq!(
-        view.earlier[0], "(#t0..#t4)",
-        "demoted lines collapse to one index line with exact ids"
+        view.earlier[0], "(#t0..#t4, 5 lines)",
+        "demoted lines collapse to one index line with exact ids and their count"
+    );
+    Ok(())
+}
+
+/// Dies with the brief cap and the earlier cap demoting lines to an id span with no word of
+/// how many lines went, which cap cut them, or the call that reads them back.
+#[test]
+fn a_demoted_brief_names_what_was_kept_the_cap_and_the_read_that_restores_it() -> TestResult {
+    let ok = |from: usize, to: usize| -> Vec<Attributed> {
+        (from..to)
+            .map(|index| att(&format!("t{index}"), tool_result(&format!("ok {index}"))))
+            .collect()
+    };
+    let first = compile_view(&ok(0, 125), None);
+    let rendered = first.render();
+    assert!(
+        rendered.contains("[\u{2026} 120 of 125 brief lines, the newest (BRIEF_LINE_CAP 120); the rest: id spans below, merged past EARLIER_CAP 24; read(\"history://self/since/0\")]\n(#t0..#t4, 5 lines)"),
+        "{rendered}"
+    );
+    let mut view = first;
+    for round in 0..=EARLIER_CAP {
+        view = compile_view(
+            &ok(1000 * (round + 1), 1000 * (round + 1) + 121),
+            Some(&view),
+        );
+    }
+    assert_eq!(view.earlier.len(), EARLIER_CAP, "{:?}", view.earlier);
+    let demoted: usize = view
+        .earlier
+        .iter()
+        .map(|line| {
+            line.rsplit_once(", ")
+                .map_or("0", |(_, n)| n.trim_end_matches(" lines)"))
+        })
+        .map(|n| n.parse::<usize>().unwrap_or(0))
+        .sum();
+    assert_eq!(
+        demoted,
+        5 + ((EARLIER_CAP + 1) * 121),
+        "merging the oldest spans past EARLIER_CAP keeps every line they counted: {:?}",
+        view.earlier
+    );
+    assert!(
+        view.earlier[0].contains(", 247 lines)"),
+        "the merged line is the sum of the spans it took in: {:?}",
+        view.earlier
+    );
+    assert!(
+        view.earlier[0].starts_with("(#t0..#"),
+        "the merged span still opens at the first demoted id: {:?}",
+        view.earlier
     );
     Ok(())
 }

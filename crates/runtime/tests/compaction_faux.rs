@@ -1559,12 +1559,17 @@ async fn an_over_window_history_sheds_its_oldest_turns_when_no_summary_comes()
         "the request after the failed summaries fits the 2,000-token window: {sent}"
     );
     assert!(
-        sent.contains("[compaction elided 3 earlier messages from the model's view: summary failed; the transcript keeps them]") && sent.contains("next ask"),
+        sent.contains(
+            "[compaction elided 3 earlier messages from the model's view: summary failed; kept "
+        ) && sent.contains("next ask"),
         "{sent}"
     );
     // One text in three places: the summary's line, the marker where they sat, the notice.
     assert_eq!(
-        sent.matches("[compaction elided 3 earlier messages from the model's view: summary failed; the transcript keeps them]").count(),
+        sent.matches(
+            "[compaction elided 3 earlier messages from the model's view: summary failed; kept "
+        )
+        .count(),
         3,
         "the user and the model are told, on the same request: {sent}"
     );
@@ -1578,7 +1583,7 @@ async fn an_over_window_history_sheds_its_oldest_turns_when_no_summary_comes()
             .iter()
             .any(|entry| matches!(entry,
             Entry::Compaction { summary, .. } if summary.starts_with("<yi_compact_view>")
-                && summary.contains("[compaction elided 3 earlier messages from the model's view: summary failed; the transcript keeps them]"))),
+                && summary.contains("[compaction elided 3 earlier messages from the model's view: summary failed; kept "))),
         "the elided range is a compaction entry that keeps D115's recall view"
     );
     Ok(())
@@ -1800,11 +1805,19 @@ async fn a_rescue_keeps_the_prompt_of_a_long_turn_and_whole_tool_steps()
         .await?
         .ok_or("no rescue")?;
     let kept = &replaced.messages;
-    let gone = replaced.elision.ok_or("no elision")?.messages;
+    let elision = replaced.elision.ok_or("no elision")?;
     assert_eq!(text_of(kept.get(1)), Some("THE TASK: fix the parser"));
+    assert_eq!(text_of(kept.get(2)), Some(elision.to_string().as_str()));
     assert_eq!(
-        text_of(kept.get(2)),
-        Some(format!("[compaction elided {gone} earlier messages from the model's view: summary failed; the transcript keeps them]").as_str())
+        elision.to_string(),
+        format!(
+            "[compaction elided {} earlier messages from the model's view: summary failed; kept {} of {} (context_window {} tokens); the transcript keeps them: read(\"history://self/since/0\")]",
+            elision.messages,
+            elision.total - elision.messages,
+            messages.len(),
+            elision.window
+        ),
+        "the marker names kept of total, the window that forced it and the read that restores them"
     );
     assert!(matches!(kept.get(3), Some(AgentMessage::Assistant { .. })));
     assert!(every_result_has_its_call(kept), "{kept:#?}");

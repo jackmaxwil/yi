@@ -40,6 +40,8 @@ pub struct Replacement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Elision {
     pub messages: usize,
+    pub total: usize,
+    pub window: u64,
 }
 
 /// One text for the user's notice, the summary's line and the marker where the messages sat.
@@ -49,8 +51,12 @@ impl std::fmt::Display for Elision {
         write!(
             formatter,
             "[compaction elided {} earlier message{plural} from the model's view: summary failed; \
-             the transcript keeps them]",
-            self.messages
+             kept {} of {} (context_window {} tokens); the transcript keeps them: \
+             read(\"history://self/since/0\")]",
+            self.messages,
+            self.total.saturating_sub(self.messages),
+            self.total,
+            self.window
         )
     }
 }
@@ -559,6 +565,8 @@ impl Compactor {
         let mut pinned: Vec<usize> = first.into_iter().chain(run).collect();
         pinned.sort_unstable();
         let elision = Elision {
+            total: messages.len(),
+            window: window.0,
             messages: (start..cut)
                 .filter(|index| !pinned.contains(index))
                 .filter(|index| !matches!(messages[*index], AgentMessage::Custom { .. }))
