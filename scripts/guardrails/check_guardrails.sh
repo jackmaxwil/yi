@@ -10,8 +10,7 @@ FAST=0 QUIET=0
 for arg in "$@"; do
   case "$arg" in --fast) FAST=1 ;; --quiet) QUIET=1 ;; esac
 done
-PY="${PY:-$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)}"
-"$PY" -c "import tomllib" 2>/dev/null || { echo "FAIL: $PY lacks tomllib (need python >= 3.11)"; exit 1; }
+PY=$(scripts/py.sh) || exit 1
 FAILED=0
 # Every gate reads the tree and none writes it, so they all run at once; `drain` prints each
 # one's output in launch order, so the report still reads most-legible-failure-first.
@@ -87,6 +86,9 @@ run "$PY" skills/yi/session-mining/extract.py --selfcheck
 # a path in the wrong bucket misprices it silently; only this flag exercises the split.
 run "$PY" scripts/pr_body.py --selfcheck
 run "$PY" scripts/test_sign.py
+# A checked-in filter over test names rots silently, so only this flag proves a stale row is
+# refused; it lists no workspace, so the fast lane runs it too.
+run "$PY" scripts/slow_tests.py --selfcheck
 # The snap diff an agent reads is parsed from casts, checked against Yi's own screen dumps.
 run "$PY" scripts/tui_see.py --selfcheck
 # The monkey's seed must replay byte for byte or a failure it reports cannot be reproduced.
