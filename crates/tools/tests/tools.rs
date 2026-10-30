@@ -1621,6 +1621,15 @@ fn a_failed_spawn_leaves_no_running_job() -> TestResult {
     Ok(())
 }
 
+/// Incident: the producer's `ready` file can land before the job's reader drains the pipe,
+/// so a poll right after it saw no output; wait for the live buffer instead.
+fn drained(id: yi_tools::JobId, bytes: u64) -> TestResult {
+    poll_until(|| {
+        let chunk = yi_tools::jobs::registry().output_since(id, 0).ok()?;
+        (chunk.next == bytes).then_some(())
+    })
+}
+
 #[test]
 fn a_running_poll_shows_output_and_kill_ends_the_job() -> TestResult {
     let dir = temp_dir("job-running-poll")?;
@@ -1639,6 +1648,7 @@ fn a_running_poll_shows_output_and_kill_ends_the_job() -> TestResult {
     };
     poll_until(|| dir.join("ready").exists().then_some(()))?;
     assert!(dir.join("ready").exists(), "producer did not print before");
+    drained(id, 6)?;
     let running = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
     let running_text = output_text(&running);
     let killed = BashTool::default().execute(
@@ -1678,11 +1688,8 @@ fn a_running_poll_view_names_its_ceiling_only_one_byte_past_it() -> TestResult {
             return Err("the command did not become a job".into());
         };
         poll_until(|| dir.join("ready").exists().then_some(()))?;
-        assert!(
-            dir.join("ready").exists(),
-            "producer did not finish {bytes} bytes"
-        );
         fs::remove_file(dir.join("ready"))?;
+        drained(id, u64::try_from(bytes)?)?;
         let polled = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
         let text = output_text(&polled);
         let _cleanup = yi_tools::jobs::registry().kill(id);
@@ -1711,21 +1718,7 @@ fn a_running_poll_names_output_dropped_from_its_live_buffer() -> TestResult {
         return Err("the command did not become a job".into());
     };
     poll_until(|| dir.join("ready").exists().then_some(()))?;
-    assert!(
-        dir.join("ready").exists(),
-        "producer did not emit 55,000 bytes"
-    );
-    poll_until(|| {
-        yi_tools::jobs::registry()
-            .output_since(id, 0)
-            .ok()
-            .filter(|chunk| chunk.next == 55_000)
-    })?;
-    assert_eq!(
-        yi_tools::jobs::registry().output_since(id, 0)?.next,
-        55_000,
-        "live reader did not drain 55,000 bytes"
-    );
+    drained(id, 55_000)?;
     let polled = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
     let text = output_text(&polled);
     let _cleanup = yi_tools::jobs::registry().kill(id);

@@ -43,6 +43,8 @@ pub(crate) struct Args {
     pub(crate) deadline: Option<u64>,
     pub(crate) resume: Resume,
     pub(crate) schema: Option<String>,
+    /// `yi ask --check CMD`: probe the command and exit, running neither it nor a turn.
+    pub(crate) check: Option<String>,
     pub(crate) stats: stats::Query,
     pub(crate) prompt: String,
 }
@@ -94,6 +96,7 @@ pub(super) fn parse_from(
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
+    let mut check = None;
     let mut stats_flags = stats::Flags::default();
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_iter(argv);
@@ -137,6 +140,7 @@ pub(super) fn parse_from(
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
+            Long("check") => check = Some(parser.value()?.string()?),
             Long("since") if command == "stats" => {
                 stats_flags.since = Some(parser.value()?.string()?)
             }
@@ -195,6 +199,7 @@ pub(super) fn parse_from(
             (None, false) => Resume::Fresh,
         },
         schema,
+        check,
         stats: stats_flags.typed()?,
         prompt: prompt_parts.join(" "),
     };
@@ -203,6 +208,11 @@ pub(super) fn parse_from(
 }
 
 fn inert_flags(args: &Args) -> Result<(), lexopt::Error> {
+    if args.check.is_some() && args.command != "ask" {
+        return Err(lexopt::Error::Custom(
+            "--check is `yi ask --check <command>`".into(),
+        ));
+    }
     // Drive-only flags are silently inert outside the headless loop, which
     // reads downstream as a capture that produced nothing.
     if !args.headless

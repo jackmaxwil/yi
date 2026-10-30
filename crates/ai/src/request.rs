@@ -3,6 +3,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::{AssistantMessageEvent, Wait};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::Model;
+use yi_types::telemetry::QUOTA_STAMP;
 
 use crate::retry::{RetryPolicy, is_retryable_status, quota_exhausted, retry_delay};
 use crate::sse::SseEvent;
@@ -287,7 +288,7 @@ pub fn send_with_retry(
                     .and_then(|value| value.parse::<f64>().ok());
                 let text = response.into_string().unwrap_or_default();
                 if quota_exhausted(status, &text, url) {
-                    return Err(format!("HTTP {status} quota exhausted: {text}"));
+                    return Err(format!("HTTP {status} {QUOTA_STAMP} {text}"));
                 }
                 let retryable = is_retryable_status(status)
                     && attempt < policy.max_attempts
