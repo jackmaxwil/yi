@@ -310,6 +310,11 @@ fn a_displayed_value_keeps_the_richest_bundle_its_data_names() {
             "{\"a\":1}",
             Some("application/json"),
         ),
+        (
+            json!({"text/plain": "hello", "application/json": "hello"}),
+            "\"hello\"",
+            Some("application/json"),
+        ),
         (json!({"text/plain": "42"}), "42", Some("text/plain")),
     ];
     for (data, text, mime) in cases {

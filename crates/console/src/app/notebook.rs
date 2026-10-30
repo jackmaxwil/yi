@@ -232,10 +232,10 @@ mod tests {
         Ok(cells)
     }
 
+    const RECORDED: &str = include_str!("../../../tui/tests/fixtures/sessions/01a13357.jsonl");
+
     fn recorded() -> Result<Vec<NbCell>, serde_json::Error> {
-        replay(include_str!(
-            "../../../tui/tests/fixtures/sessions/01a13357.jsonl"
-        ))
+        replay(RECORDED)
     }
 
     #[test]
@@ -865,7 +865,7 @@ mod tests {
     /// A recorded kernel result's details, which is the JSON object a notebook renders as a
     /// tree: a real payload, in the shape the tool wrote it.
     fn recorded_json() -> Result<String, serde_json::Error> {
-        let details = session::session_entries(recorded_session())?
+        let details = session::session_entries(RECORDED)?
             .into_iter()
             .find_map(|message| match message {
                 AgentMessage::ToolResult {
@@ -875,10 +875,6 @@ mod tests {
             })
             .unwrap_or_default();
         serde_json::to_string(&details)
-    }
-
-    fn recorded_session() -> &'static str {
-        include_str!("../../../tui/tests/fixtures/sessions/01a13357.jsonl")
     }
 
     fn kind_cell(mime: Option<&str>, result: &str) -> NbCell {
