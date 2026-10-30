@@ -12,9 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/jackmaxwil/yi/main/scripts/install.
 yi --version
 ```
 
-It takes the latest release, checks its sha256 and the owner's key, and installs `yi` to
-`~/.local/bin`, its runtime to `~/.yi`; Apple Silicon only, `| bash -s -- --help` prints the key.
-By hand:
+It checks the release's sha256 and the owner's key, then installs `yi` to `~/.local/bin` and its
+runtime to `~/.yi`; Apple Silicon only, and `| bash -s -- --help` prints that key. By hand:
 
 ```bash
 v=X.Y.Z t=aarch64-apple-darwin; base=https://github.com/jackmaxwil/yi/releases/download/v$v; a=yi-$v-$t.tar.gz
@@ -42,9 +41,8 @@ yi login cursor          # browser sign-in; --no-browser skips opening it
 yi login kimi            # also anthropic, openai-codex: a profile you write first
 ```
 
-The profile providers read `~/.yi/oauth/<provider>.json` ([templates](docs/examples)); the token
-lands in `~/.yi/providers/tokens/<provider>.json` (0600), not the config file, and
-`ANTHROPIC_API_KEY` and its peers win.
+The OAuth three read `~/.yi/oauth/<provider>.json` ([templates](docs/examples)); tokens land in
+`~/.yi/providers/tokens/<provider>.json` (0600), not the config, and `*_API_KEY` wins when set.
 
 ## Plugins and skills
 
@@ -55,8 +53,7 @@ yi plugin sync
 ```
 
 `ripwire` 0.6.5 is a code map (an edit's broken callers, the code a task touches; 16 skills);
-`chrome` 155.0.8059.39 is Chrome for Testing's headless shell for the browser pane. Both pin a
-version by sha256 in `~/.yi/plugins`.
+`chrome` 155.0.8059.39 is a headless shell for the browser pane, both pinned in `~/.yi/plugins`.
 
 A skill is a directory with a `SKILL.md`, read from `.yi/skills`, `.agents/skills`, `.pi/skills` or
 `.claude/skills`, then `~/.yi/skills`; `$name` points the model at one.
@@ -67,7 +64,8 @@ A skill is a directory with a `SKILL.md`, read from `.yi/skills`, `.agents/skill
 yi debug config                       # ~/.yi/config.json, secrets redacted
 ```
 
-Strict: an unknown key is an error that names it. Every key is in [YI_DESIGN.md §17.1](docs/YI_DESIGN.md).
+Strict: an unknown key is an error that names it. Every key is in
+[YI_DESIGN.md §17.1](docs/YI_DESIGN.md).
 
 | key | default | meaning |
 |---|---|---|
@@ -106,8 +104,7 @@ $ yi why crates/cli/src/main.rs:42    # walk a line back to the words that asked
 ```
 
 A plan is a goal and a graph of todos, from the `plan` tool or a cell's `Plan.create`; a todo with a
-contract closes only when its check passes (`/plan` shows what is ready). Design:
-[YI_DESIGN.md §13](docs/YI_DESIGN.md).
+contract closes only when its check passes. Design: [YI_DESIGN.md §13](docs/YI_DESIGN.md).
 
 ## Subagents
 
@@ -117,9 +114,8 @@ h = await rlm.run("Port the parser to the new token type", role="worker", isolat
 result = await h.result(timeout=420)
 ```
 
-A `reader` gets `read`, `grep` and three turns; a `worker` edits too; a `root` is a full session.
-`isolation="worktree"` gives a child a git worktree that `rlm.merge_worktree` merges back. Design:
-[YI_DESIGN.md §11](docs/YI_DESIGN.md).
+A `reader` gets `read`, `grep` and three turns; a `worker` edits too; a `root` is a session.
+`isolation="worktree"` gives a child a worktree. Design: [YI_DESIGN.md §11](docs/YI_DESIGN.md).
 
 ## Use Yi from programs
 
@@ -155,16 +151,16 @@ A full SDK is coming; today build on those, or on `~/.yi/sessions/` (Pi's v4 JSO
 just check                            # fmt, clippy, the guardrails, the tests
 ```
 
-A private forge is the source of truth and this is a read-only mirror of its `main`; contributions
-by invitation ([CONTRIBUTING.md](CONTRIBUTING.md)). A change merges against
-[the template](.github/PULL_REQUEST_TEMPLATE.md); commits carry no attribution.
+A private forge is the source of truth; this is a read-only mirror of its `main`, and contributions
+come by invitation ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Built on
 
 Session, tool, kernel, URL, child, todo, plan, contract and lane compose every feature
-([YI_DESIGN.md §3](docs/YI_DESIGN.md)); every cut of model-facing text names what it kept, the cap
-and the call for the rest. `auto` mode sandboxes commands with Seatbelt, and `.git` and credential
-stores stay denied even in `yolo`.
+([YI_DESIGN.md §3](docs/YI_DESIGN.md)), and every cut of model-facing text names its cap.
+
+`auto` mode sandboxes commands with Seatbelt; `.git` and credential stores stay denied even in
+`yolo`.
 
 ## Develop and license
 
@@ -174,5 +170,4 @@ just build-dist                       # the release build
 ```
 
 [YI_DESIGN.md](docs/YI_DESIGN.md) is the law, [ARCHITECTURE.md](docs/ARCHITECTURE.md) the map.
-Apache License 2.0, in `LICENSE`; the copyright notice (Jack Mazac and AiBridge LLC) is in
-`NOTICE`; `vendor/` keeps its upstream licenses.
+Apache License 2.0 in `LICENSE`; copyright Jack Mazac and AiBridge LLC, in `NOTICE`.
