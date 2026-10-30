@@ -1,9 +1,30 @@
 [
   [
     [
+      "gitleaks",
+      ""
+    ],
+    0
+  ],
+  [
+    [
       "gitleaks-history",
       "generic-api-key"
     ],
     43
+  ],
+  [
+    [
+      "semgrep",
+      ""
+    ],
+    0
+  ],
+  [
+    [
+      "zizmor",
+      ""
+    ],
+    0
   ]
 ]
