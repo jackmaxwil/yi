@@ -354,7 +354,7 @@ fn a_quiet_session_draws_one_row() -> Result<(), String> {
 fn the_sidebars_chrome_is_dimmer_than_a_session_name() -> Result<(), String> {
     use ratatui::style::Modifier;
     use yi_console::app::App;
-    use yi_console::model::SidebarMode;
+    use yi_console::model::{PaneContent, SidebarMode};
     use yi_console::render::Hit;
     use yi_console::sidebar::sidebar_lines;
     use yi_tui::colors::{ColorTier, Theme};
@@ -406,6 +406,42 @@ fn the_sidebars_chrome_is_dimmer_than_a_session_name() -> Result<(), String> {
         !name.style.add_modifier.contains(dim),
         "the session's name reads at full strength: {:?}",
         name.style
+    );
+    app.state.upsert_row(SessionRow {
+        id: SessionId("pinned".to_owned()),
+        root: "/w/yi".to_owned(),
+        status: SessionStatus::Idle,
+        attached: false,
+        name: Some("pinned".to_owned()),
+        created_ms: 0,
+        last_ms: 1_000,
+        pinned: Some(1),
+    });
+    if let Some(pane) = app.state.focused_pane_mut() {
+        pane.content = PaneContent::Session {
+            session: Some(SessionId("quiet".to_owned())),
+            chat: None,
+        };
+    }
+    let lines = sidebar_lines(&app, &theme, 60);
+    let weight = |needle: &str| -> Result<Modifier, String> {
+        lines
+            .iter()
+            .find_map(|row| {
+                let span = row.line.spans.iter().find(|s| s.content.contains(needle))?;
+                Some(row.line.style.patch(span.style).add_modifier)
+            })
+            .ok_or_else(|| format!("no {needle} span"))
+    };
+    let focused = weight("quiet")?;
+    assert!(
+        !focused.intersects(Modifier::BOLD | dim),
+        "the focused name is neither bold nor dim: {focused:?}"
+    );
+    let pinned = weight("PINNED")?;
+    assert!(
+        pinned.contains(dim) && !pinned.contains(Modifier::BOLD),
+        "PINNED is dim, not bold: {pinned:?}"
     );
     Ok(())
 }

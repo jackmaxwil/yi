@@ -116,3 +116,69 @@ fn a_row_the_daemon_no_longer_lists_loses_its_pin() {
         .into();
     assert_eq!(pins, [Some(Some(7)), Some(None)]);
 }
+
+/// Dies with an idle session holding a red gate, a todo list or a claimed question collapsing
+/// to one row, and with its identicon (a kitty image over the rows below) outgrowing its rows.
+#[test]
+fn an_idle_session_with_news_keeps_its_state_line_and_its_avatar_height() {
+    use crate::model::{SessionRow, SessionStatus, SidebarMode};
+    use crate::sidebar::sidebar_lines;
+    use yi_types::plan::doc::{Todo, TodoLabel};
+    use yi_types::todo::{Claim, PhaseName, TodoList, TodoPhase};
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+    let mut app = App::new("/r".to_owned(), theme);
+    app.state.sidebar = SidebarMode::Full;
+    let ids = ["quiet", "red", "todo", "claim", "done-claim"];
+    for id in ids {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: "/r".to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: Some(id.to_owned()),
+            created_ms: 0,
+            last_ms: 1,
+            pinned: None,
+        });
+    }
+    red_gate(&mut app, "red");
+    let claim = |observed: Option<&str>| Claim {
+        label: "is it so".to_owned(),
+        observed: observed.map(str::to_owned),
+    };
+    let mut todo = app.make_chat(&SessionId("todo".to_owned()));
+    let items = TodoLabel::new("write the plan")
+        .map(|label| vec![Todo::pending(label)])
+        .unwrap_or_default();
+    let phases = PhaseName::new("Tasks")
+        .map(|name| {
+            vec![TodoPhase {
+                name,
+                items,
+                extra: serde_json::Map::new(),
+            }]
+        })
+        .unwrap_or_default();
+    todo.port.set_todos(Some(TodoList {
+        phases,
+        ..TodoList::default()
+    }));
+    app.state.parked.insert(SessionId("todo".to_owned()), todo);
+    for (id, observed) in [("claim", None), ("done-claim", Some("yes"))] {
+        let mut chat = app.make_chat(&SessionId(id.to_owned()));
+        chat.port.set_claims(vec![claim(observed)]);
+        app.state.parked.insert(SessionId(id.to_owned()), chat);
+    }
+    let lines = sidebar_lines(&app, &theme, 60);
+    let drawn = |id: &str| -> Option<(usize, u16)> {
+        let index = app.state.order.iter().position(|row| row.0 == id)?;
+        let mine = lines.iter().filter(|row| row.index == Some(index));
+        let height = mine.clone().find_map(|row| row.avatar.as_ref())?.rows;
+        Some((mine.count(), height))
+    };
+    assert_eq!(drawn("quiet"), Some((1, 1)));
+    assert_eq!(drawn("done-claim"), Some((1, 1)));
+    for id in ["red", "todo", "claim"] {
+        assert_eq!(drawn(id), Some((2, 2)), "{id} keeps its state line");
+    }
+}

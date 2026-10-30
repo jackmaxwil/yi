@@ -65,7 +65,9 @@ fn motion_of(app: &App, id: &SessionId, row: &SessionRow) -> Option<OrbState> {
     }
 }
 
-fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> String {
+/// The state line and whether it carries news: a status that is not idle, a red gate, a todo
+/// list or a claimed question. Invariant: an idle row without news is drawn as one row.
+fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> (String, bool) {
     let chat = app.state.chat(id);
     let doing = match row.status {
         SessionStatus::Blocked => "needs your answer".to_owned(),
@@ -75,14 +77,17 @@ fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> String {
             .unwrap_or_else(|| "working".to_owned()),
         SessionStatus::Idle | SessionStatus::Unknown => "idle".to_owned(),
     };
+    let mut news = !matches!(row.status, SessionStatus::Idle | SessionStatus::Unknown);
     let mut parts = vec![doing];
     if chat.is_some_and(|chat| chat.app.gate_red()) {
         parts.insert(0, "gate red".to_owned());
+        news = true;
     }
     if let Some(todos) = chat.and_then(|chat| chat.port.todo_list()) {
         let progress = todos.progress();
         if progress.total > 0 {
             parts.push(format!("{}/{}", progress.done, progress.total));
+            news = true;
         }
     }
     let claimed = chat
@@ -92,6 +97,7 @@ fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> String {
         });
     if claimed > 0 {
         parts.push(format!("{claimed} claimed"));
+        news = true;
     }
     let then = row.recency();
     if then > 0 {
@@ -103,26 +109,7 @@ fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> String {
             _ => format!("{}d", secs / 86_400),
         });
     }
-    parts.join(" · ")
-}
-
-/// Invariant: the second line is drawn only for a row with news, so an idle session's weight
-/// is one row and its state stays one keystroke away on the row the pane behind shows.
-fn state_line(app: &App, id: &SessionId, row: &SessionRow) -> bool {
-    if !matches!(row.status, SessionStatus::Idle | SessionStatus::Unknown) {
-        return true;
-    }
-    app.state.chat(id).is_some_and(|chat| {
-        chat.app.gate_red()
-            || chat
-                .port
-                .todo_list()
-                .is_some_and(|todos| todos.progress().total > 0)
-            || chat
-                .port
-                .claims(false)
-                .is_some_and(|claims| claims.iter().any(|claim| claim.observed.is_none()))
-    })
+    (parts.join(" · "), news)
 }
 
 fn tile_span(app: &App, text: String, hue: usize) -> Span<'static> {
@@ -393,6 +380,8 @@ fn session_rows(
         rows.extend(child_rows(app, id, theme, true, cols));
         return rows;
     }
+    let (state, news) = detail(app, id, row, now);
+    let state_rows = if is_focused || news { 2 } else { 1 };
     let mut spans = vec![
         Span::styled(slot_text, on_row(number)),
         tile_span(app, name_tile(row.seed()), hue),
@@ -418,14 +407,11 @@ fn session_rows(
     rows.push(SidebarRow {
         index: Some(index),
         line: Line::from(spans),
-        avatar: avatar_at(2, (4, 2), &id.0, hue, motion_of(app, id, row)),
+        avatar: avatar_at(2, (4, state_rows), &id.0, hue, motion_of(app, id, row)),
         control: None,
     });
-    if is_focused || state_line(app, id, row) {
-        let text: String = detail(app, id, row, now)
-            .chars()
-            .take(cols.saturating_add(2))
-            .collect();
+    if state_rows == 2 {
+        let text: String = state.chars().take(cols.saturating_add(2)).collect();
         rows.push(SidebarRow::plain(
             Some(index),
             Line::from(vec![
