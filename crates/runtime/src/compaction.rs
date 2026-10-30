@@ -109,6 +109,9 @@ pub(crate) fn fitting_start(messages: &[AgentMessage], budget: Tokens) -> Option
 /// The custom type of every compaction notice and marker: a note, never a turn of its own.
 pub const COMPACTION_NOTICE: &str = "compaction_notice";
 
+/// `compaction.render`: 1 composes the checkpoint from the view and the file lists alone.
+pub const RENDER: u8 = 0;
+
 /// Why a due compaction left the history as it was; the text is the notice the model reads.
 #[derive(Debug, thiserror::Error)]
 pub enum CompactError {
@@ -246,6 +249,9 @@ pub struct Compactor {
     /// The newest reply with a usage that the latest compaction kept: its count is the history
     /// before that compaction, so `due` does not read it (D338).
     stale: Mutex<Option<AgentMessage>>,
+    /// `compaction.render`: 1 spends no summarizer request on a checkpoint, so what it composes
+    /// is the view and the file lists a summary would have been prefixed with anyway.
+    pub render: bool,
     /// `compaction.at` in tokens, 0 when unset: due once the request passes it, if that comes
     /// before the window's reserve.
     ceiling: AtomicU64,
@@ -358,6 +364,16 @@ fn directive_message(
 }
 
 impl Compactor {
+    /// The row a session reads once, before it compacts: `compaction.render`.
+    pub fn new(settings: Settings, summarizer: Option<Model>) -> Self {
+        Self {
+            settings,
+            summarizer,
+            render: crate::levers::get().compaction_render == 1,
+            ..Self::default()
+        }
+    }
+
     /// The reason when `tokens` is under what a compaction keeps and was raised to it.
     pub fn set_ceiling(&self, tokens: Option<u64>) -> Option<String> {
         let tokens = tokens.unwrap_or(0);
@@ -682,27 +698,34 @@ impl Compactor {
                 outcome => outcome,
             }
         };
-        // Past the window the warm request cannot go out: two cold tries, a quarter then half
-        // trimmed. Else warm, then a cold quarter-trimmed retry (no tools, so it must be text).
-        let over = estimate_context(messages).tokens >= Tokens(model.context_window);
-        let len = messages.len();
-        let attempts = if over {
-            [(len / 4, false), (len / 2, false)]
+        let summary = if self.render {
+            // Invariant: a render compaction is the view and the file lists alone, so it opens no
+            // summarizer stream and spends no side call.
+            Ok(String::new())
         } else {
-            [(0, warm), (len / 4, false)]
-        };
-        let mut summary = Err(String::new());
-        for (skip, warm) in attempts {
-            // Never open on a tool result, which no provider takes without its call.
-            let skip = messages[skip..]
-                .iter()
-                .position(is_cut_point)
-                .map_or(len, |offset| skip.saturating_add(offset));
-            summary = summarize(request(&messages[skip..], warm), warm).await;
-            if summary.is_ok() {
-                break;
+            // Past the window the warm request cannot go out: two cold tries, a quarter then half
+            // trimmed. Else warm, then a cold quarter-trimmed retry (no tools, so it must be text).
+            let over = estimate_context(messages).tokens >= Tokens(model.context_window);
+            let len = messages.len();
+            let attempts = if over {
+                [(len / 4, false), (len / 2, false)]
+            } else {
+                [(0, warm), (len / 4, false)]
+            };
+            let mut summary = Err(String::new());
+            for (skip, warm) in attempts {
+                // Never open on a tool result, which no provider takes without its call.
+                let skip = messages[skip..]
+                    .iter()
+                    .position(is_cut_point)
+                    .map_or(len, |offset| skip.saturating_add(offset));
+                summary = summarize(request(&messages[skip..], warm), warm).await;
+                if summary.is_ok() {
+                    break;
+                }
             }
-        }
+            summary
+        };
         let (composed, details, retained_tail, elision) = match summary {
             Ok(text) => {
                 let (composed, details) =

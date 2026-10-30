@@ -568,10 +568,9 @@ impl AgentSession {
         settings: yi_context::Settings,
         summarizer: Option<Model>,
     ) {
-        let mut compactor = crate::compaction::Compactor::default();
-        compactor.settings = settings;
-        compactor.summarizer = summarizer;
-        self.compactor = Some(Arc::new(compactor));
+        self.compactor = Some(Arc::new(crate::compaction::Compactor::new(
+            settings, summarizer,
+        )));
     }
 
     pub fn compactor(&self) -> Option<Arc<crate::compaction::Compactor>> {
