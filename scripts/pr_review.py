@@ -177,6 +177,27 @@ def rounds_of(comments, authors, pr=None):
     return rounds
 
 
+VOID_META = re.compile(r"^<!-- yi-round-void-meta (.*) -->$")
+
+
+def voids_of(comments, authors, pr=None):
+    """The head shas a round was voided on: a loss that took every lens posts a void comment and no
+    round, so only this says the head was attempted."""
+    out = []
+    for comment in comments:
+        if (comment.get("user") or {}).get("login") not in authors:
+            continue
+        lines = (comment.get("body") or "").splitlines()
+        meta = VOID_META.match(lines[1]) if len(lines) > 1 and lines[0].strip() == "<!-- yi-round-void -->" else None
+        if not meta:
+            continue
+        fields = dict(part.split("=", 1) for part in meta.group(1).split() if "=" in part)
+        if not re.fullmatch(r"[0-9a-f]{7,40}", fields.get("sha", "")) or (pr is not None and fields.get("pr") != str(pr)):
+            continue
+        out.append(fields["sha"])
+    return out
+
+
 def override_of(comments, authors, after_id, before_id=None):
     """The owner's `/override <reason>` posted after the round it clears, newest first."""
     for comment in sorted(comments, key=lambda c: -c.get("id", 0)):
@@ -248,7 +269,7 @@ def runs_past(why, rounds, head, holds, dry_run, again):
     return not why or dry_run or (again and not blocked_head(rounds, head, holds))
 
 
-def skip_reason(rounds, head, wanted=2, holds=on_head):
+def skip_reason(rounds, head, wanted=2, holds=on_head, voids=()):
     """Why a new round on this head would repeat one: a redelivered message, or a sweep racing
     another, must not post again. A head is read once; a second read is only for a PR whose one
     round found nothing, since leaving draft takes two. Incident: a second read of a head was a
@@ -261,11 +282,12 @@ def skip_reason(rounds, head, wanted=2, holds=on_head):
     # A round that lost a lens or refuter answers covered part of the head: the loss is retried once
     # where it stands, since `ready_problems` owes the same answer and nobody is at the keyboard.
     # Incident: #1897, an unbounded retry re-read a head whose lens failed for good every sweep.
-    lost = [r for r in here if silent(r)]
-    if here and silent(here[-1]) and here[-1]["verdict"] != "override":
-        if len(lost) == 1:
+    lost, voided = [r for r in here if silent(r)], [v for v in voids if holds(v, head)]
+    if voided or (here and silent(here[-1]) and here[-1]["verdict"] != "override"):
+        if len(lost) + len(voided) == 1:
             return None
-        return f"round {here[-1]['n']} lost an answer too, after round {lost[0]['n']} did; the fixer or a push is next"
+        return f"round {here[-1]['n']} lost an answer too, after round {lost[0]['n']} did; the fixer or a push is next" \
+            if lost else f"{len(voided)} voided read(s) of this head and no round posted; a push or the fixer is next"
     if here and here[-1]["verdict"] == "blocked":
         return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
     if here and (len([r for r in rounds if not twin_round(r)]) >= wanted or any(f.get("severity") in REPORTED for f in here[-1].get("findings", []))):
@@ -924,8 +946,9 @@ def cmd_review(args):
             return 0
         allowed = authors()
         pr = forge_pr.pull(number)
-        rounds, holds = rounds_of(comments(repo, number), allowed, number), holds_for(number, pr["base"]["ref"])
-        why = skip_reason(rounds, pr["head"]["sha"], holds=holds)
+        listed = comments(repo, number)
+        rounds, holds = rounds_of(listed, allowed, number), holds_for(number, pr["base"]["ref"])
+        why = skip_reason(rounds, pr["head"]["sha"], holds=holds, voids=voids_of(listed, allowed, number))
         if not runs_past(why, rounds, pr["head"]["sha"], holds, args.dry_run, getattr(args, "again", False)):
             print(f"#{number}: no round — {why}")
             return 0
@@ -1067,8 +1090,9 @@ def cmd_sweep(args):
     # A settled draft takes no slot, so the queue the notice reports is the targets, not the listing.
     targets = []
     for pr in drafts:
-        rounds = rounds_of(comments(repo, pr["number"]), allowed, pr["number"])
-        if not promote(repo, pr, rounds) and skip_reason(rounds, pr["head"]["sha"]) is None:
+        listed = comments(repo, pr["number"])
+        rounds, voids = rounds_of(listed, allowed, pr["number"]), voids_of(listed, allowed, pr["number"])
+        if not promote(repo, pr, rounds) and skip_reason(rounds, pr["head"]["sha"], voids=voids) is None:
             targets.append(pr)
     for pr in targets:
         if read >= SWEEP_HEADS or JOB_ENDS - time.monotonic() < ROUND_SECS:
@@ -1681,8 +1705,8 @@ def selfcheck():
         forge_pr.fgj_api, forge_pr.jobs_of = saved[0], saved[1]
         globals().update(holds_for=saved[2])
     assert not red and patched == ["repos/o/r/pulls/1"], "a clean draft whose test lane is red stays a draft"
-    # A sweep reaches every open pull request, not the first 50 the forge serves, and reads the
-    # oldest head first. Incident: 52 of 102 open pull requests sat outside a one-page sweep.
+    # Locks the paged listing #1899 landed: the sweep consumes `open_pulls` and reads the oldest
+    # head first. Incident: 52 of 102 open pull requests sat outside a one-page sweep.
     many = lambda top: [{"number": n, "title": (DRAFT if n > top else "") + "t", "head": {"sha": f"{n:07d}", "repo": {"full_name": "o/r"}},
                         "base": {"ref": "main"}} for n in range(1, 103)]
     assert sweep_heads(many(100)) == [101, 102], "a draft on the third page is swept"
@@ -1716,6 +1740,13 @@ def selfcheck():
                          {"n": 12, "sha": "bbbbbbb2", "verdict": "clean", "skipped": "1"},
                          {"n": 13, "sha": "bbbbbbb2", "verdict": "clean", "skipped": "1"}], "bbbbbbb2ff")
     assert "lost an answer too" in str(spent) and "round 12" in spent, spent
+    # A loss that took every lens posts a void comment and no round, so the attempt is counted
+    # beside the rounds: the retry is still one. Incident: a voided head was re-read every sweep.
+    void = lambda n: {"user": {"login": BOT}, "id": n, "body": void_body(7, "bbbbbbb2", "a lens did not answer", 0.1, 0.1)}
+    assert sweep_heads(lost_head, notes={7: [clean_7, void(23)]}) == [7], "a voided read is retried by the sweep"
+    assert sweep_heads(lost_head, notes={7: [clean_7, void(23), void(24)]}) == [], "a void spent the retry"
+    assert sweep_heads(lost_head, notes={7: [clean_7, lost_round, void(23)]}) == [], "a void is a second loss beside a silent round"
+    assert "voided" in str(skip_reason([], "bbbbbbb2ff", voids=["bbbbbbb2", "bbbbbbb2"])), "a head no round read says its voids"
     flaky = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-ask-"))
     try:
         (flaky / "yi").write_text(f'#!/bin/sh\ncat >/dev/null\nif [ -e {flaky}/tried ]; then echo \'{{"ok": true}}\'; exit 0; fi\n'
