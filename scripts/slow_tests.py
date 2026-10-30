@@ -99,31 +99,32 @@ def validate_recipe(text):
         raise CheckFailure("just test selects the quick filterset")
 
 
-def crate_dir(package, root=ROOT):
-    for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
-        if re.search(rf'^name = "{re.escape(package)}"$', manifest.read_text(), re.M):
-            return manifest.parent
-    return None
-
-
-def defined_in_source(binary, name, root=ROOT):
-    """A row missing here is explainable only by a cfg gate on that very function: a name that
-    survives as an ungated helper, or in another crate, still reads as stale."""
-    crate = crate_dir(binary.split("::", 1)[0], root)
-    if crate is None:
-        return False
+def source_hits(binary, name, root=ROOT):
+    crate = root / "crates" / binary.split("::", 1)[0].removeprefix("yi-")
+    if not (crate / "Cargo.toml").is_file():
+        return []
     leaf = name.rsplit("::", 1)[-1]
     found = subprocess.run(
         ["git", "grep", "-n", "-F", f"fn {leaf}(", "--", crate.relative_to(root).as_posix()],
         cwd=root, capture_output=True, text=True,
     )
+    hits = []
     for hit in found.stdout.splitlines():
         path, _, location = hit.partition(":")
-        lines = (root / path).read_text().splitlines()
-        line = int(location.split(":", 1)[0])
-        if cfg_gated(lines, line - 1):
-            return True
-    return False
+        hits.append(((root / path).read_text().splitlines(), int(location.split(":", 1)[0]) - 1))
+    return hits
+
+
+def defined_in_source(binary, name, root=ROOT):
+    """A row missing here is explainable only by a cfg gate on that very function: a name that
+    survives as an ungated helper, or in another crate, still reads as stale."""
+    return any(cfg_gated(lines, index) for lines, index in source_hits(binary, name, root))
+
+
+def validate_defined(rows, root=ROOT):
+    missing = [row for row in sorted(rows) if not source_hits(*row, root)]
+    if missing:
+        raise CheckFailure("\n".join(f"stale slow test: {binary} {name}" for binary, name in missing))
 
 
 def cfg_gated(lines, index):
@@ -242,12 +243,19 @@ def selfcheck_predicate():
         assert defined_in_source("yi-demo::integration", "sandbox::gated_file", root), "a file-level cfg gate read as stale"
         assert not defined_in_source("yi-demo::integration", "mod::ungated_here", root), "an ungated helper excused a stale row"
         assert not defined_in_source("yi-demo::integration", "mod::only_elsewhere", root), "another crate's function excused a stale row"
+        validate_defined({("yi-demo::integration", "mod::gated_here"), ("yi-demo::integration", "mod::ungated_here")}, root)
+        expect_failure(
+            "a listed row no crate defines",
+            lambda: validate_defined({("yi-demo::integration", "mod::gated_here"), ("yi-demo::integration", "mod::gone")}, root),
+            "stale slow test: yi-demo::integration mod::gone",
+        )
 
 
 def selfcheck():
     selfcheck_generator()
     selfcheck_predicate()
     _, rows = config_rows()
+    validate_defined(rows)
     recipe = dry_run("test")
     validate_recipe(recipe)
     known = {("yi-x::integration", "mod::a"), ("yi-x::integration", "mod::b")}
