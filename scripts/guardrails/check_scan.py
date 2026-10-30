@@ -28,6 +28,7 @@ GITLEAKS = (ROOT / "scripts/scan/gitleaks.version").read_text().strip()
 ZIZMOR = "zizmor==1.31.1"
 SEMGREP = "semgrep==1.182.1"
 INSTALL_SECS = 300
+GITLEAKS_DIR = pathlib.Path("/usr/local/bin")
 FIXTURES = ROOT / "scripts/scan/fixtures"
 RULES = ROOT / "scripts/scan/rules"
 SCAN_ROOTS = ("evals", "scripts", "python", "crates")
@@ -102,16 +103,17 @@ def require_gitleaks():
         raise Unavailable(f"gitleaks {GITLEAKS} is required, found {proc.stdout.strip() or 'none'}")
     return executable
 
-def gitleaks_ready():
-    executable = shutil.which("gitleaks")
-    return executable is not None and run([executable, "version"]).stdout.strip() == GITLEAKS
 
+def on_path(directory):
+    entries = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry]
+    if str(directory) not in entries:
+        os.environ["PATH"] = os.pathsep.join([str(directory), *entries])
 
-def provision_gitleaks(strict):
+def provision_gitleaks(strict, script=None):
     """Incident: the CI lanes installed the pinned gitleaks from a workflow step, so the autofix clone
     ran the lane without it and the CI-strict skip failed every pass (#1733). One gate provisions it."""
-    script = ROOT / "scripts/scan/install_gitleaks.sh"
-    if not strict or not script.is_file() or gitleaks_ready():
+    script = script or ROOT / "scripts/scan/install_gitleaks.sh"
+    if not strict or not script.is_file():
         return
     try:
         proc = subprocess.run([str(script)], capture_output=True, text=True, check=False,
@@ -386,6 +388,28 @@ def selfcheck(off="", fixtures=None):
             errors.append(f"a missing scanner with CI {'set did not abort' if strict else 'unset aborted the run'}")
         if not strict and "skip scan (probe)" not in printed.getvalue():
             errors.append("the announced skip row was not printed")
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = pathlib.Path(tmp) / "bin"
+        dest.mkdir()
+        marker = dest / "ran"
+        installer = pathlib.Path(tmp) / "install.sh"
+        installer.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+        installer.chmod(0o755)
+        (dest / "gitleaks").write_text(f"#!/bin/sh\necho {GITLEAKS}\n")
+        (dest / "gitleaks").chmod(0o755)
+        provision_gitleaks(False, installer)
+        if marker.exists():
+            errors.append("the scan gate provisioned gitleaks outside CI")
+        provision_gitleaks(True, installer if off != "provision" else pathlib.Path(tmp) / "absent.sh")
+        if not marker.exists():
+            errors.append("a gitleaks at PATH that prints the pinned version kept the installer from running")
+        path = os.environ.get("PATH", "")
+        try:
+            on_path(dest)
+            if shutil.which("gitleaks") != str(dest / "gitleaks"):
+                errors.append("the gate does not search the directory its installer writes to")
+        finally:
+            os.environ["PATH"] = path
     original = BASELINE
     with tempfile.TemporaryDirectory() as tmp:
         try:
@@ -493,6 +517,7 @@ def main(argv):
     parser.add_argument("--history", action="store_true")
     args = parser.parse_args(argv)
     strict = bool(os.environ.get("CI"))
+    on_path(GITLEAKS_DIR)
     provision_gitleaks(strict)
     if args.selfcheck:
         findings, tools = gather(fixture_tasks(), strict)
@@ -506,7 +531,7 @@ def main(argv):
         errors = selfcheck(fixtures=fixtures)
         checks = {rule for tool, (cases, _) in FAMILIES.items() if tool in fixtures
                   for rules in cases.values() for rule in rules}
-        checks |= {"baseline", "ignores", "update", "credentials"}
+        checks |= {"baseline", "ignores", "update", "credentials", "provision"}
         if "gitleaks" in fixtures:
             checks |= {"history", "diff"}
         for off in sorted(checks):

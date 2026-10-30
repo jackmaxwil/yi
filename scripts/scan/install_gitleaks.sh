@@ -19,12 +19,14 @@ if [ -x "$dest/gitleaks" ] && [ "$(sha256 "$dest/gitleaks")" = "$binary" ]; then
   exit 0
 fi
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+staged="$dest/.gitleaks.$$"
+trap 'rm -rf "$work" "$staged"' EXIT
 url="https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_${asset}.tar.gz"
 curl -fsSL -o "$work/gitleaks.tar.gz" "$url"
 [ "$(sha256 "$work/gitleaks.tar.gz")" = "$hash" ] || { echo "gitleaks: SHA-256 mismatch"; exit 1; }
 tar -xzf "$work/gitleaks.tar.gz" -C "$work" gitleaks
 chmod +x "$work/gitleaks"
 [ "$(sha256 "$work/gitleaks")" = "$binary" ] || { echo "gitleaks: extracted binary is not the pinned artifact"; exit 1; }
-mv "$work/gitleaks" "$dest/gitleaks"
+cp "$work/gitleaks" "$staged"
+mv -f "$staged" "$dest/gitleaks"
 "$dest/gitleaks" version
