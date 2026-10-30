@@ -25,3 +25,6 @@ is closed rather than marked merged. Rebase the topic branch onto the new
 mirror main with `git fetch https://github.com/jackmaxwil/yi.git main && git
 rebase FETCH_HEAD`. Your forge squash commit has a new id and does not claim
 to carry the original commit signatures.
+
+A contribution is accepted under the Apache License 2.0 in `LICENSE`
+(section 5).
