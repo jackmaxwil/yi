@@ -104,6 +104,32 @@ resumed, it does the following:
 5. Fits the block to the `memory` source budget (32,768 bytes) and emits it as
    `AttachExternal { source: "memory", trust: Untrusted }`, which lands in the yard (§6).
 
+
+## The first prompt
+
+The start block is the index, and the first typed prompt decides which of it earns bodies. The
+prompt reaches the host before the first request, so `MemoryExt` renders the block a second time
+then (`focused`) and the yard keeps that text; every later prompt leaves the frozen prefix alone.
+The pass is a composition of what the store already had:
+
+1. Every note is scored by `memory::rank`'s BM25 over its name, hook and body, weighted by type:
+   `feedback` 1.5, `project` 1.4, `user` 1.25, `reference` 1.0, untyped 1.1.
+2. A note whose hook restates a higher-ranked note's hook (token Jaccard ≥ 0.7) is dropped and
+   counted in the cut row as `N restating another`, so near-identical saves earn one body.
+3. The bodies of at most 3 scored notes, each cut at 1,200 bytes, come first; the notes left
+   over print as index lines in rank order, the unscored ones after them, at most 8.
+4. The block never costs more bytes than the index it replaces: the budget is the start block's
+   own row bytes (never past 6,000), and rows are dropped until the text fits it.
+5. A cut names what it dropped and how to get it: `[… K of T notes (the index budget N, or FOCUS_ROWS 8); the rest: await
+   memory.search("words")]`, a `[… body cut at 1200 B of N · the rest: await memory.read("name")]`
+   row per truncated body, and `[no note shares a word with this request · …]` when nothing
+   matched.
+
+The eval that holds it is `evals/memory_inject.py` over `evals/fixtures/memory-inject`: eleven
+real first messages, hand-labelled against a sixteen-note fixture store, scored on both arms
+(`crates/runtime/tests/memory_inject.rs` renders this build's blocks and `replay` scores them
+against `before/block.txt`, what the pre-change build rendered). The paid judge run is
+`label --model openrouter/… --cap-usd 10` and its row is the owner's to write.
 A fresh start also increments the repo store's `sessions`. The TUI commits the start summary
 and one line per save or forget as footer cells; the HUD shows `saved N`.
 

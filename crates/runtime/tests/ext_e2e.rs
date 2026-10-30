@@ -1142,6 +1142,55 @@ fn the_memory_block_is_present_at_zero_notes() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn the_first_prompt_replaces_the_index_with_the_notes_it_earns() -> TestResult {
+    let cwd = Scratch::new("yi-ext-focus-cwd")?;
+    let home = Scratch::new("yi-ext-focus-home")?;
+    let store = home.join(".yi/memory");
+    std::fs::create_dir_all(&store)?;
+    for (name, kind, hook) in [
+        (
+            "lane-pool",
+            "project",
+            "a no free lane error means orphaned worktrees hold the pool",
+        ),
+        (
+            "streaming",
+            "feedback",
+            "streaming renders commit by byte cursor over standalone slices",
+        ),
+    ] {
+        std::fs::write(
+            store.join(format!("{name}.md")),
+            format!("---\nname: {name}\ndescription: {hook}\ntype: {kind}\n---\n{name} body\n"),
+        )?;
+    }
+    let mut host = install(ExtOptions {
+        cwd: cwd.to_path_buf(),
+        home: home.to_path_buf(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+        global_skills: Vec::new(),
+        can_delegate: true,
+    });
+    host.register(Box::new(yi_runtime::memory::MemoryExt::new(
+        home.to_path_buf(),
+        std::sync::Arc::new(yi_runtime::memory::Activity::default()),
+    )));
+    host.start(None, false);
+    let event = host.prompt_event("I am getting lane: no free lane, 2 orphaned of 3");
+    host.dispatch(&event, None);
+    let prompt = host.system_prompt();
+    assert!(prompt.contains("lane-pool body"), "{prompt}");
+    assert!(!prompt.contains("streaming body"), "{prompt}");
+    assert!(prompt.contains("- [streaming](streaming.md)"), "{prompt}");
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
 /// D310: a compaction drops every internal message, so each slot attached after the first
 /// request goes out again with its current text, in rank order; a slot whose text the frozen
 /// prompt already carries (a mode that flipped back) is not repeated.

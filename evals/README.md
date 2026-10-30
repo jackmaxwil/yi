@@ -25,6 +25,7 @@ orient_census.py             read-only census of route telemetry and get_context
 judge_replay.py              stage 0 judge replay over recorded sessions, read-only (D259); replay/ holds its prompts and schemas
 rule_fires.py                labelled haystack lanes against what the rule matcher can see
 stops_on_fail.py             stops a run took while its last ipython cell printed FAIL, per root session (EXP-B3c)
+memory_inject.py             which stored memories a first message earns: the fixture eval, its labels and the capped judge run (#1860)
 skill_labels.py              typed messages -> teacher labels -> a frozen sample: the skill classifier's training data (#779)
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 search_gate.py               paired history-search gate (#1184): a fact printed only in a tool result, graded on the actor

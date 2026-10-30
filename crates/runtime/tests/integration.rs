@@ -60,6 +60,7 @@ mod kernel_sandbox;
 mod kernel_tools;
 mod lanes;
 mod levers;
+mod memory_inject;
 mod memory_journal;
 mod node;
 mod permission_scope;
