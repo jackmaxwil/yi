@@ -1330,6 +1330,7 @@ mod accept {
     use std::sync::{Arc, Mutex};
 
     use serde_json::json;
+    use yi_runtime::journal::{Journal, RealFs};
     use yi_runtime::lane::settle::Candidate;
     use yi_runtime::plan::acceptance::{
         Candidate as Proven, KIND_ACCEPTED, KIND_CANDIDATE_SUBMITTED, KIND_DISPOSITION,
@@ -1337,7 +1338,6 @@ mod accept {
         KIND_INTEGRATION_VERIFIED, Phase, Quiescence, Verified, phase_of,
     };
     use yi_runtime::plan::capacity::Purpose;
-    use yi_runtime::plan::journal::{Journal, RealFs};
     use yi_runtime::plan::ops::{
         Actor, Delegate, Op, OpRequest, Outcome, OutputResolve, PlanEngine, PlanOpError,
     };
@@ -3308,5 +3308,327 @@ async fn a_check_past_the_deadline_is_cut_while_the_executor_serves() -> TestRes
         git(&rig.repo, &["show", &format!("{branch}:draft.txt")])?,
         "x"
     );
+    Ok(())
+}
+
+/// Dies with `judge` or `remove` deleted: a dry run removes nothing, `--fix` takes only the
+/// merged clean tree and its `target/`, and each kept tree says why.
+#[test]
+fn gc_removes_only_the_merged_clean_worktree_and_says_why_it_kept_the_rest() -> TestResult {
+    let rig = Rig::new("gc")?;
+    let root = rig.root.canonicalize()?;
+    let tree = |name: &str| root.join(format!("wt-{name}"));
+    std::fs::write(rig.repo.join(".gitignore"), "target/\n")?;
+    git(&rig.repo, &["add", ".gitignore"])?;
+    git(&rig.repo, &["commit", "-qm", "ignore target"])?;
+    for name in ["merged", "dirty", "unmerged", "locked"] {
+        let path = tree(name);
+        git(
+            &rig.repo,
+            &["worktree", "add", "-q", "-b", name, &path.to_string_lossy()],
+        )?;
+        std::fs::write(path.join(format!("{name}.txt")), "work\n")?;
+        git(&path, &["add", "."])?;
+        git(&path, &["commit", "-qm", name])?;
+    }
+    for name in ["merged", "dirty", "locked"] {
+        git(&rig.repo, &["merge", "-q", "--no-ff", "-m", name, name])?;
+    }
+    git(&rig.repo, &["branch", "atbase"])?;
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            &tree("atbase").to_string_lossy(),
+            "atbase",
+        ],
+    )?;
+    git(
+        &rig.repo,
+        &["worktree", "lock", &tree("locked").to_string_lossy()],
+    )?;
+    std::fs::write(tree("dirty").join("scratch.txt"), "unsaved\n")?;
+    std::fs::create_dir_all(tree("merged").join("target"))?;
+    std::fs::write(tree("merged").join("target/big"), "x")?;
+    let pool = rig.pool(2)?;
+
+    let preview = pool.gc(&rig.repo, true)?.join("\n");
+    assert!(preview.contains("would remove"), "{preview}");
+    assert!(tree("merged").is_dir(), "a dry run removes nothing");
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(!tree("merged").exists(), "{report}");
+    assert!(
+        tree("dirty").is_dir() && tree("unmerged").is_dir(),
+        "{report}"
+    );
+    let kept = |name: &str| format!("kept {}", tree(name).display());
+    assert!(
+        report.contains(&format!("{}: 1 uncommitted path", kept("dirty"))),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!(
+            "{}: unmerged is not merged into",
+            kept("unmerged")
+        )),
+        "{report}"
+    );
+    let base = git(&rig.repo, &["rev-parse", "main"])?;
+    for (name, why) in [
+        ("locked", "locked, a session holds it".to_owned()),
+        (
+            "atbase",
+            format!("atbase is at {base}, no commits of its own"),
+        ),
+    ] {
+        assert!(tree(name).is_dir(), "{report}");
+        assert!(
+            report.contains(&format!("{}: {why}", kept(name))),
+            "{report}"
+        );
+    }
+    assert!(git(&rig.repo, &["rev-parse", "--verify", "-q", "merged"]).is_ok());
+    Ok(())
+}
+
+/// Dies with the `.held` probe removed from `gc`: a resumed lane is unlocked in git, merged
+/// and clean, and only the live session's flock keeps `--fix` from deleting its directory.
+#[test]
+fn gc_keeps_a_slot_a_live_session_holds_even_when_git_sees_it_merged() -> TestResult {
+    let rig = Rig::new("gc-held")?;
+    let pool = rig.pool(2)?;
+    let lane = pool.claim("s-held", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("w.txt"), "work\n")?;
+    git(lane.path(), &["add", "."])?;
+    git(lane.path(), &["commit", "-qm", "w"])?;
+    git(
+        &rig.repo,
+        &["merge", "-q", "--no-ff", "-m", "m", lane.branch().as_str()],
+    )?;
+    git(
+        &rig.repo,
+        &["worktree", "unlock", &lane.path().to_string_lossy()],
+    )?;
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(lane.path().is_dir(), "{report}");
+    assert!(report.contains("a live session holds the slot"), "{report}");
+    Ok(())
+}
+
+/// Dies when `judge` refuses a detached HEAD: release leaves merged and unmerged lanes alike
+/// detached, and only the commit's ancestry says which tree still holds work.
+#[test]
+fn gc_judges_a_released_lane_by_its_detached_head() -> TestResult {
+    let rig = Rig::new("gc-detached")?;
+    let pool = rig.pool(2)?;
+    let merged = pool.claim("s-merged", ClaimBase::Main)?;
+    let unmerged = pool.claim("s-unmerged", ClaimBase::Main)?;
+    for (lane, name) in [(&merged, "merged"), (&unmerged, "unmerged")] {
+        std::fs::write(lane.path().join(format!("{name}.txt")), "work\n")?;
+        git(lane.path(), &["add", "."])?;
+        git(lane.path(), &["commit", "-qm", name])?;
+    }
+    git(
+        &rig.repo,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            "merged",
+            merged.branch().as_str(),
+        ],
+    )?;
+    let merged_path = merged.path().to_path_buf();
+    let unmerged_path = unmerged.path().to_path_buf();
+    merged.release()?;
+    unmerged.release()?;
+    assert!(matches!(head(&merged_path)?, Head::Detached(_)));
+    assert!(matches!(head(&unmerged_path)?, Head::Detached(_)));
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(!merged_path.exists(), "{report}");
+    assert!(unmerged_path.is_dir(), "{report}");
+    assert!(
+        report.contains("detached HEAD is not merged into"),
+        "{report}"
+    );
+    Ok(())
+}
+
+fn merged_crashed_slot(
+    rig: &Rig,
+    pool: &Pool,
+) -> Result<(PathBuf, PathBuf, yi_types::lane::SlotState), Box<dyn Error>> {
+    let lane = pool.claim("s-crashed", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("work.txt"), "work\n")?;
+    git(lane.path(), &["add", "."])?;
+    git(lane.path(), &["commit", "-qm", "work"])?;
+    git(
+        &rig.repo,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            "merged",
+            lane.branch().as_str(),
+        ],
+    )?;
+    let path = lane.path().canonicalize()?;
+    let slot = lane.slot();
+    drop(lane);
+    let state_path = pool.dir().join(format!("{slot}.json"));
+    let mut state: yi_types::lane::SlotState =
+        serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    state.session = Some("s-crashed".to_owned());
+    std::fs::write(&state_path, serde_json::to_vec(&state)?)?;
+    Ok((path, state_path, state))
+}
+
+/// Dies when a stale git lock outranks the free `.held` flock: a crashed session leaves no
+/// live holder, so its merged lane can be unlocked and removed.
+#[test]
+fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
+    let rig = Rig::new("gc-stale-lock")?;
+    let pool = rig.pool(1)?;
+    let (path, state_path, mut state) = merged_crashed_slot(&rig, &pool)?;
+    let mut warmer = yi_tools::command("sleep")
+        .arg("30")
+        .current_dir(&path)
+        .spawn()?;
+    let warmer_pid = warmer.id();
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = stopped_tx.send(warmer.wait());
+    });
+    state.warm = Some(yi_types::lane::WarmReceipt {
+        pid: Some(warmer_pid),
+        ..Default::default()
+    });
+    std::fs::write(&state_path, serde_json::to_vec(&state)?)?;
+    git(&rig.repo, &["worktree", "lock", &path.to_string_lossy()])?;
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    let stopped = stopped_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .is_ok();
+    if !stopped {
+        yi_tools::command("kill")
+            .arg(warmer_pid.to_string())
+            .output()?;
+    }
+    let state: yi_types::lane::SlotState = serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    assert!(!path.exists(), "{report}");
+    assert!(stopped, "gc removed the tree under its live warmer");
+    assert!(state.session.is_none(), "gc left a session on a gone slot");
+    assert!(state.warm.is_some_and(|warm| warm.pid.is_none()));
+    assert!(
+        report.contains(&format!("removed {}", path.display())),
+        "{report}"
+    );
+    Ok(())
+}
+
+/// Dies with slot cleanup before `git worktree remove`: a refused removal keeps the tree and
+/// the session record that a later claim or reap uses to identify its orphan.
+#[test]
+fn gc_keeps_slot_state_when_worktree_removal_fails() -> TestResult {
+    let rig = Rig::new("gc-remove-fails")?;
+    let pool = rig.pool(1)?;
+    let (path, state_path, _) = merged_crashed_slot(&rig, &pool)?;
+
+    let shim = Scratch::new("gc-remove-failure-shim")?;
+    let path_env = std::env::var_os("PATH").ok_or("no PATH")?;
+    let real_git = std::env::split_paths(&path_env)
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .ok_or("no git on PATH")?;
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = remove ]; then\n  echo forced-remove-failure >&2\n  exit 1\nfi\nexec '{}' \"$@\"\n",
+        real_git.display()
+    );
+    std::fs::write(shim.join("git"), script)?;
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(shim.join("git"), std::fs::Permissions::from_mode(0o755))?;
+    let joined = std::env::join_paths(
+        std::iter::once(shim.to_path_buf()).chain(std::env::split_paths(&path_env)),
+    )?;
+    // nextest isolates this test process, so its failing git reaches no other test.
+    unsafe { std::env::set_var("PATH", joined) };
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    let state: yi_types::lane::SlotState = serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    assert!(path.is_dir(), "{report}");
+    assert!(report.contains("forced-remove-failure"), "{report}");
+    assert_eq!(state.session.as_deref(), Some("s-crashed"), "{report}");
+    Ok(())
+}
+
+/// Dies when gc judges against HEAD after both main names vanish: a feature checkout is not
+/// evidence that another worktree merged, so the tree stays with the base refusal named.
+#[test]
+fn gc_without_a_main_ref_keeps_a_tree_its_head_contains() -> TestResult {
+    let rig = Rig::new("gc-no-main")?;
+    let tree = rig.root.join("tree");
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "merged",
+            &tree.to_string_lossy(),
+        ],
+    )?;
+    std::fs::write(tree.join("work.txt"), "work\n")?;
+    git(&tree, &["add", "."])?;
+    git(&tree, &["commit", "-qm", "work"])?;
+    git(
+        &rig.repo,
+        &["merge", "-q", "--no-ff", "-m", "merged", "merged"],
+    )?;
+    git(&rig.repo, &["branch", "-m", "feature"])?;
+
+    let report = rig.pool(1)?.gc(&rig.repo, false)?.join("\n");
+    assert!(tree.is_dir(), "{report}");
+    assert!(report.contains("no main or origin/main"), "{report}");
+    Ok(())
+}
+
+/// Dies when gc refreshes its base: even a dry run with no linked worktrees must leave
+/// the aged FETCH_HEAD untouched instead of dialing origin before it prints a report.
+#[test]
+fn gc_never_fetches_the_remote_main() -> TestResult {
+    let rig = Rig::new("gc-no-fetch")?;
+    let remote = rig.root.join("remote");
+    git(
+        &rig.repo,
+        &[
+            "clone",
+            "-q",
+            &rig.repo.to_string_lossy(),
+            &remote.to_string_lossy(),
+        ],
+    )?;
+    git(
+        &rig.repo,
+        &["remote", "add", "origin", &remote.to_string_lossy()],
+    )?;
+    git(&rig.repo, &["fetch", "-q", "origin"])?;
+    let fetch_head = rig.repo.join(".git/FETCH_HEAD");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture ages FETCH_HEAD so a gc fetch is observable"
+    )]
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    std::fs::File::open(&fetch_head)?.set_modified(old)?;
+
+    rig.pool(1)?.gc(&rig.repo, true)?;
+    assert_eq!(std::fs::metadata(fetch_head)?.modified()?, old);
     Ok(())
 }
