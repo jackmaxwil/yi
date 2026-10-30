@@ -239,7 +239,7 @@ impl Tool for WebSearchTool {
                 body.push_str(&cut);
             }
         }
-        let mut output = text_output(crate::fetch::fence_untrusted("web_search", &body));
+        let mut output = text_output(crate::fetch::fence_screened("search", "web_search", &body));
         output.result.details = json!({
             "provider": response.route.provider(),
             "model": response.route.model(),

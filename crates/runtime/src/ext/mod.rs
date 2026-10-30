@@ -76,6 +76,8 @@ pub enum Effect {
     /// the yard behind a fence named by its hash, labeled with source and trust.
     AttachExternal {
         source: String,
+        /// The kind the screen journals beside its score: project, memory, fetch, search, review.
+        kind: &'static str,
         trust: Trust,
         text: String,
     },
@@ -324,6 +326,7 @@ impl Host {
                 }
                 Effect::AttachExternal {
                     source,
+                    kind,
                     trust,
                     text,
                 } => {
@@ -333,7 +336,10 @@ impl Host {
                         self.frozen.get().is_none(),
                         "an external attach after the first request reaches no request"
                     );
-                    changed |= self.state.attach_external(&source, trust, &text);
+                    let screened = crate::classifier::screen(kind, &text);
+                    changed |=
+                        self.state
+                            .attach_external(&source, trust, &screened.body, screened.mark);
                 }
                 Effect::Remind { text } => self.send(crate::rules::reminder(text)),
                 Effect::Record { key, value } => record(store, key, &value),

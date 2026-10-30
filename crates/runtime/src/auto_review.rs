@@ -34,20 +34,26 @@ impl ReviewRequest {
     /// The reviewed text is fenced and labeled so the reviewer can tell the
     /// action from the instructions about judging it.
     fn render(&self) -> String {
-        let mut out = format!("Working directory: {}\n", self.cwd);
-        out.push_str(&format!("Deterministic policy said: {}\n", self.reason));
-        out.push_str("\n<action trust=\"untrusted\">\n");
-        out.push_str(&format!("tool: {}\n", self.tool));
-        out.push_str(&format!("summary: {}\n", self.display));
+        let mut action = format!("tool: {}\n", self.tool);
+        action.push_str(&format!("summary: {}\n", self.display));
         if let Some(command) = &self.command {
-            out.push_str(&format!("command: {command}\n"));
+            action.push_str(&format!("command: {command}\n"));
         }
         for target in &self.targets {
-            out.push_str(&format!("touches: {target}\n"));
+            action.push_str(&format!("touches: {target}\n"));
         }
         if let Some(patch) = &self.patch {
-            out.push_str(&format!("patch:\n{patch}\n"));
+            action.push_str(&format!("patch:\n{patch}\n"));
         }
+        let screened = crate::classifier::screen("review", &action);
+        let mark = match screened.mark {
+            Some(score) => format!(" screen=\"flagged:{score:.2}\""),
+            None => String::new(),
+        };
+        let mut out = format!("Working directory: {}\n", self.cwd);
+        out.push_str(&format!("Deterministic policy said: {}\n", self.reason));
+        out.push_str(&format!("\n<action trust=\"untrusted\"{mark}>\n"));
+        out.push_str(&screened.body);
         out.push_str("</action>\n");
         out
     }
