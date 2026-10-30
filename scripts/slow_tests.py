@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Generate and validate the opt-in quick-test filter from nextest JUnit timings."""
+import contextlib
+import io
 import json
 import re
 import subprocess
@@ -224,7 +226,7 @@ def selfcheck_generator():
         assert parse_rows(filterset(escaped)) == set(escaped)
 
 
-def selfcheck_predicate():
+def selfcheck_predicate(recipe):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         for crate, name, body in (
@@ -249,14 +251,20 @@ def selfcheck_predicate():
             lambda: validate_defined({("yi-demo::integration", "mod::gated_here"), ("yi-demo::integration", "mod::gone")}, root),
             "stale slow test: yi-demo::integration mod::gone",
         )
+        known = {("yi-x::integration", "mod::a")}
+        gated_row = ("yi-demo::integration", "mod::gated_here")
+        announced = io.StringIO()
+        with contextlib.redirect_stdout(announced):
+            validate(known | {gated_row}, known, set(), recipe, defined=lambda binary, name: defined_in_source(binary, name, root))
+        assert "not compiled on this platform: mod::gated_here" in announced.getvalue(), "a cfg-gated listed row was not announced"
 
 
 def selfcheck():
+    recipe = dry_run("test")
     selfcheck_generator()
-    selfcheck_predicate()
+    selfcheck_predicate(recipe)
     _, rows = config_rows()
     validate_defined(rows)
-    recipe = dry_run("test")
     validate_recipe(recipe)
     known = {("yi-x::integration", "mod::a"), ("yi-x::integration", "mod::b")}
     validate(known, known, set(), recipe)
