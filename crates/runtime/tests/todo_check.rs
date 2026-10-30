@@ -243,3 +243,26 @@ fn a_unchanged_red_keeps_the_fingerprint_and_a_moved_one_changes_it() -> TestRes
     assert_ne!(first.fingerprint(), moved.fingerprint());
     Ok(())
 }
+
+#[test]
+fn a_start_whose_check_is_not_a_string_is_refused_not_dropped() -> TestResult {
+    let (root, session) = session("blank")?;
+    let tool = TodoTool::new(store_for(&session));
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd)?;
+    call(&tool, &cwd, json!({"op": "set", "list": "- [ ] ship it"}));
+    for bad in [json!(5), json!(["true"]), json!({"cmd": "true"})] {
+        let (error, text) = call(
+            &tool,
+            &cwd,
+            json!({"op": "start", "label": "ship it", "check": bad}),
+        );
+        assert!(error, "check {bad} was accepted: {text}");
+        assert!(text.contains("check"), "{text}");
+        assert!(
+            yi_types::todo::RowCheck::of(&row(&session, "ship it")?).is_none(),
+            "{bad}"
+        );
+    }
+    Ok(())
+}

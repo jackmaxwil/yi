@@ -102,6 +102,17 @@ fn string(args: &Map<String, Value>, field: &'static str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn check(args: &Map<String, Value>) -> Result<Option<String>, ArgError> {
+    match args.get("check") {
+        None | Some(Value::Null | Value::String(_)) => Ok(string(args, "check")),
+        Some(value) => Err(ArgError::Malformed {
+            op: "start",
+            field: "check",
+            cause: format!("{value} is not a command; give a non-empty string or leave check out"),
+        }),
+    }
+}
+
 fn need_string(
     args: &Map<String, Value>,
     op: &'static str,
@@ -293,7 +304,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         "start" => Op::Start {
             label: label(args, "start")?,
-            check: string(args, "check"),
+            check: check(args)?,
         },
         "done" => Op::Done {
             target: target(args, "done")?,

@@ -1,10 +1,10 @@
 ---
 issue: Closes #1543
-growth: +529 a row carries a check whose command is set once, probed at start, handed to the same rules and wall as any other command, and run by done: the red path, the two refusals, the answer sweep and the label-resolution module moved out of the over-cap todo/mod.rs are the new code, and the digest the check stores in the fingerprint is the only new wire field on a todo row
+growth: +540 a row carries a check whose command is set once, probed at start, handed to the same rules and wall as any other command, and run by done: the red path, the two refusals, the answer sweep and the label-resolution module moved out of the over-cap todo/mod.rs are the new code, and the digest the check stores in the fingerprint is the only new wire field on a todo row
 raise: comments +25
-raise: crate runtime +458
+raise: crate runtime +469
 raise: crate types +71
-raise: tests +314
+raise: tests +337
 ---
 
 A todo row now carries a check. `start` takes `check=`, stores it once and never replaces it;
