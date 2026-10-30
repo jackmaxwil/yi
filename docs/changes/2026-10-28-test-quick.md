@@ -1,4 +1,6 @@
 ---
+version: 0.818.0
+decisions: D511
 issue: Closes #1724
 decision: `just test-quick` is an opt-in local loop that excludes tests measured at 5 seconds or more, while `just check`, prepush and CI keep the complete suite; `just slow-tests` regenerates the exact binary-and-test filter from a fresh nextest JUnit report | the owner approved skipping the measured slow tests for the inner loop: "Yes (Recommended)" | remove the quick profiles and recipes; the full suite is unchanged
 raise: tests +1
