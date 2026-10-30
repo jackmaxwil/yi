@@ -993,7 +993,7 @@ impl AgentSession {
             )
             .await;
         match replaced {
-            Ok(Some(replaced)) => {
+            Ok(crate::compaction::Compacted::Applied(replaced)) => {
                 if let Ok(mut slot) = self.shared.messages.lock() {
                     *slot = replaced.messages;
                 }
@@ -1010,7 +1010,7 @@ impl AgentSession {
                     .elision
                     .map_or(CompactOutcome::Summarized, CompactOutcome::Elided))
             }
-            Ok(None) => Ok(CompactOutcome::NotApplied),
+            Ok(compacted) => Ok(compacted.outcome()),
             Err(error) => {
                 run::failed_compaction(&self.parts(), &error);
                 Err(error)

@@ -55,17 +55,39 @@ impl std::fmt::Display for Elision {
     }
 }
 
+/// What `Compactor::maybe_compact` did: the history was replaced, nothing was due, or another
+/// compaction already held the session's one slot.
+pub enum Compacted {
+    Applied(Replacement),
+    NotDue,
+    Busy,
+}
+
+impl Compacted {
+    /// The outcome of a call that replaced nothing: a refusal names itself, so `/compact` does
+    /// not read as nothing to do.
+    pub fn outcome(&self) -> CompactOutcome {
+        if matches!(self, Self::Busy) {
+            CompactOutcome::Busy
+        } else {
+            CompactOutcome::NotApplied
+        }
+    }
+}
+
 /// What `AgentSession::compact_now` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactOutcome {
     NotApplied,
     Summarized,
     Elided(Elision),
+    /// Another compaction was in flight and this request left the history to it.
+    Busy,
 }
 
 impl CompactOutcome {
     pub fn applied(&self) -> bool {
-        *self != Self::NotApplied
+        matches!(self, Self::Summarized | Self::Elided(_))
     }
 }
 
@@ -202,14 +224,14 @@ pub fn loop_hook(
                 .await;
             drop(closing);
             match replaced {
-                Ok(Some(replaced)) => {
+                Ok(Compacted::Applied(replaced)) => {
                     if let Some(elision) = &replaced.elision {
                         elided(elision);
                     }
                     compacted();
                     Some(replaced.messages)
                 }
-                Ok(None) => None,
+                Ok(Compacted::NotDue | Compacted::Busy) => None,
                 Err(error) => {
                     gave_up.store(true, Ordering::Relaxed);
                     failed(&error);
@@ -254,15 +276,18 @@ pub struct Compactor {
 struct Raised<'a>(&'a AtomicBool);
 
 impl<'a> Raised<'a> {
-    fn new(flag: &'a AtomicBool) -> Self {
-        flag.store(true, Ordering::Relaxed);
-        Self(flag)
+    /// Invariant: one compaction in flight per session. The caller that loses the guard gets
+    /// `None` and has spent neither the pending request nor a summarizer call.
+    fn new(flag: &'a AtomicBool) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self(flag))
     }
 }
 
 impl Drop for Raised<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Relaxed);
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -597,12 +622,14 @@ impl Compactor {
         provider: &ProviderStream,
         store: Option<&yi_session::SharedSession>,
         signal: &InterruptSignal,
-    ) -> Result<Option<Replacement>, CompactError> {
+    ) -> Result<Compacted, CompactError> {
         if !self.wanted(messages, model) {
-            return Ok(None);
+            return Ok(Compacted::NotDue);
         }
+        let Some(_in_flight) = Raised::new(&self.running) else {
+            return Ok(Compacted::Busy);
+        };
         let scheduled = self.pending.swap(false, Ordering::Relaxed);
-        let _running = Raised::new(&self.running);
         let once = self
             .instructions
             .lock()
@@ -628,7 +655,7 @@ impl Compactor {
             .unwrap_or_default();
         let prepared = entries.and_then(|entries| prepare_compaction(&entries, &self.settings));
         let Some(mut prepared) = prepared else {
-            return Ok(None);
+            return Ok(Compacted::NotDue);
         };
         prepared.view.findings = findings;
         let inputs = store.and_then(|store| crate::fetch::user_inputs(store).ok());
@@ -757,7 +784,7 @@ impl Compactor {
             timestamp,
         });
         replacement.extend(retained_tail);
-        Ok(Some(Replacement {
+        Ok(Compacted::Applied(Replacement {
             messages: replacement,
             elision,
         }))
