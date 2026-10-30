@@ -73,7 +73,13 @@ jobs:
             echo "review: skipped, the REVIEW_BOT_TOKEN or OPENROUTER_API_KEY secret is not set"
             exit 0
           fi
-          login=$(fgj api --hostname git.example.invalid user | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login", ""))')
+          login=""
+          for attempt in 1 2 3; do
+            login=$(fgj api --hostname git.example.invalid user | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login", ""))' 2>/dev/null) || login=""
+            [ -n "$login" ] && break
+            echo "review: the login check answered nothing (try $attempt of 3)"
+            sleep 5
+          done
           [ "$login" = yi-bot ] || { echo "review: fgj is signed in as '$login', not yi-bot"; exit 1; }
           if [ "${{ github.event_name }}" != pull_request_target ]; then
             just pr sweep

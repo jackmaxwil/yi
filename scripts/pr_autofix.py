@@ -106,19 +106,21 @@ def verdict_of(err, notes):
     return "failed"
 
 
-def decide(labels, conflicted, quiet_for, asked=False, blocked=False, red=False):
+def decide(labels, conflicted, quiet_for, asked=False, blocked=False, red=False, stale=False):
     """The one table: what a pass does with a PR, from its labels, its conflict, the round on its
-    head, its red gate lanes and its quiet. A conflict goes first, since a round on a head that cannot
-    merge is moot, and findings before a red gate, since their fix moves the code the gate judges."""
+    head, its red gate lanes, its quiet and a workflow lane main moved under it. A conflict goes
+    first, since a round on a head that cannot merge is moot, and findings before a red gate, since
+    their fix moves the code the gate judges. A stale lane merges at once: a person's two quiet hours
+    do not apply to a runner queue the branch's old workflow keeps filling."""
     if "autofix:hold" in labels:
         return "hold"
     if "autofix:failed" in labels:
         return "stopped"
-    if not conflicted and not blocked and not red:
+    if not conflicted and not blocked and not red and not stale:
         return "clean"
-    if not (asked or "autofix" in labels or quiet_for >= QUIET):
+    if not (asked or stale or "autofix" in labels or quiet_for >= QUIET):
         return "wait"
-    return "fix" if conflicted else "findings" if blocked else "gate"
+    return "fix" if conflicted or stale else "findings" if blocked else "gate"
 
 
 def points(heavy, light):
@@ -180,6 +182,22 @@ def conflicts_of(base_ref, sha, repo=ROOT):
     finally:
         shutil.rmtree(trial, ignore_errors=True)
 
+
+WORKFLOWS = ".forgejo/workflows"
+RUNS_ON = re.compile(r"^\s*runs-on:.*$", re.M)
+
+def stale_lanes(base_ref, sha, repo=ROOT):
+    """Workflow files whose `runs-on` the base changed since the branch left it and the branch left
+    alone. Incident: review.yml moved to the `llm` runner and ten branches that never merged main
+    kept running their own copy on `ubuntu-latest`, holding five of six general runners (2026-10-12)."""
+    base = f"origin/{base_ref}"
+    fork = sh(repo, "git", "merge-base", base, sha, check=False).stdout.strip()
+    if not fork:
+        return []
+    changed = lambda rev: sh(repo, "git", "diff", "--name-only", fork, rev, "--", WORKFLOWS).stdout.split()
+    lane = lambda rev, path: RUNS_ON.findall(sh(repo, "git", "show", f"{rev}:{path}", check=False).stdout)
+    mine = set(changed(sha))
+    return [path for path in changed(base) if path not in mine and lane(fork, path) != lane(base, path)]
 
 def make_clone(repo, into, sha):
     """A clone sharing `repo`'s objects, at `sha`, with its remote-tracking refs and the baseline driver."""
@@ -948,6 +966,7 @@ def attempt(repo, pr, ids, asked=False):
     if blocked and not pr.get("title", "").startswith(forge_pr.DRAFT):
         blocked = False
     conflicted = conflicts_of(pr["base"]["ref"], pr["head"]["sha"])
+    stale = stale_lanes(pr["base"]["ref"], pr["head"]["sha"])
     # A round the fixer declined whole on this head waits for a person, a new round, a new head or
     # an explicit `just pr autofix N`.
     if blocked and not conflicted and not asked and any(
@@ -955,7 +974,7 @@ def attempt(repo, pr, ids, asked=False):
             and row.get("round") == str(rnd["n"]) for row in bot_meter.rows(notes)):
         return "waiting"
     lanes = [] if conflicted or blocked else red_lanes(repo, pr["head"]["sha"])
-    said = decide(labels, conflicted, quiet_for(pr, notes, time.time()), asked, blocked, bool(lanes))
+    said = decide(labels, conflicted, quiet_for(pr, notes, time.time()), asked, blocked, bool(lanes), bool(stale))
     if said == "clean" and "autofix" in labels:
         set_label(repo, number, ids, "autofix", False)
     if said not in ("fix", "findings", "gate"):
@@ -1216,6 +1235,30 @@ def selfcheck():
         errs.append("the model and the hooks would see the forge token")
     os.environ.pop("FGJ_TOKEN") if before is None else os.environ.update(FGJ_TOKEN=before)
 
+    lanes_repo = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-lanes-"))
+    try:
+        lgit = lambda *a: sh(lanes_repo, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        lgit("init", "-q", "-b", "main")
+        (lanes_repo / WORKFLOWS).mkdir(parents=True)
+        for name in ("review", "other"):
+            (lanes_repo / WORKFLOWS / f"{name}.yml").write_text("jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps: []\n")
+        lgit("add", "-A"); lgit("commit", "-qm", "seed")
+        for branch in ("stale", "moved", "same"):
+            lgit("branch", branch)
+        (lanes_repo / WORKFLOWS / "review.yml").write_text("jobs:\n  j:\n    runs-on: llm\n    steps: []\n")
+        (lanes_repo / WORKFLOWS / "other.yml").write_text("jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps: [x]\n")
+        lgit("commit", "-qam", "llm"); lgit("update-ref", "refs/remotes/origin/main", "main")
+        lgit("checkout", "-q", "moved"); (lanes_repo / WORKFLOWS / "review.yml").write_text("jobs:\n  j:\n    runs-on: llm\n    steps: [y]\n")
+        lgit("commit", "-qam", "own lane")
+        lgit("checkout", "-q", "same"); (lanes_repo / "a.txt").write_text("a\n"); lgit("add", "a.txt"); lgit("commit", "-qm", "work")
+        got = {b: stale_lanes("main", sh(lanes_repo, "git", "rev-parse", b).stdout.strip(), lanes_repo) for b in ("stale", "moved", "same", "main")}
+        want = {"stale": [f"{WORKFLOWS}/review.yml"], "moved": [], "same": [f"{WORKFLOWS}/review.yml"], "main": []}
+        if got != want:
+            errs.append(f"a branch on a retired runner lane read {got}, not {want}")
+    finally:
+        shutil.rmtree(lanes_repo, ignore_errors=True)
+    if decide(set(), [], 60, stale=True) != "fix" or decide({"autofix:hold"}, [], 60, stale=True) != "hold" or decide(set(), [], 60) != "clean":
+        errs.append("a stale runner lane waits out the quiet hours, outranks a hold, or a current branch is fixed")
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-check-"))
     try:
         git = lambda *a: sh(tmp, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
