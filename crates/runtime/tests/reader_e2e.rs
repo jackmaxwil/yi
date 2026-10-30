@@ -216,16 +216,14 @@ pub(crate) async fn transcript(
     family: &Family,
     name: &str,
 ) -> Result<Vec<(String, String)>, Box<dyn Error>> {
-    for _ in 0..400 {
-        let states = family.host.states();
-        let settled = states
+    crate::support::wait_until(12_000, || {
+        family
+            .host
+            .states()
             .iter()
-            .any(|view| view.name == name && matches!(view.state.as_str(), "finished" | "failed"));
-        if settled {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    }
+            .any(|view| view.name == name && matches!(view.state.as_str(), "finished" | "failed"))
+    })
+    .await;
     let dir = family.root.join("family");
     let mut rows = Vec::new();
     for entry in std::fs::read_dir(&dir)? {

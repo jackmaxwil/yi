@@ -1,4 +1,5 @@
 ---
+version: 0.686.0
 issue: Closes #1367
 raise: crate console +113, crate runtime +18, crate types +14, tests +1
 ---

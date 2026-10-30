@@ -64,6 +64,7 @@ pub mod todo;
 pub mod tools;
 pub mod trace_sink;
 pub mod wall;
+pub mod web_search;
 pub mod wiring;
 
 pub use checkpoint::{
@@ -100,6 +101,7 @@ pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
 pub use yi_ai::request::ProxyConfig;
 pub use yi_ai::roots;
+pub use yi_ai::search;
 pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
 pub use yi_kernel::tarball;
 
