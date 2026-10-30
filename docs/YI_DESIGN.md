@@ -568,8 +568,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   the tree must name only paths a glob names, itself or by a directory above it, else it is denied in
   every mode, yolo too, naming scope and path. Judged: `write`, `edit` (`MV` destinations too),
   `grep` with `apply`, and the unquoted redirects of a shell command. A relative redirect after a
-  `cd`, `pushd` or `popd` is refused, the shell's directory never interpreted; an absolute one is
-  judged as written. Not judged: what a program writes (`sed -i`, `tee`, `cp`, `cargo`, a kernel
+  `cd`, `pushd` or `popd` is refused, the shell's directory never interpreted, and the word counts
+  behind a keyword or an escape as much as at a command's start; an absolute one is judged as written.
+  Not judged: what a program writes (`sed -i`, `tee`, `cp`, `cargo`, a kernel
   cell), one in quotes or built by expansion, and paths outside the tree, which the sandbox bounds.
 - A contained failure is remembered by the path the sandbox denied, and a later write under its
   directory asks (in home, any mention); with no path, `refused_scopes` remembers the program and

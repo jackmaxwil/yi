@@ -53,7 +53,7 @@ pub(crate) fn outside(
     let set = builder.build().unwrap_or_else(|_| GlobSet::empty());
     let root = resolve_links(&lexical_normalize(context.working_dir.as_deref()?));
     let redirected: Vec<_> = (call.command.into_iter())
-        .flat_map(|command| crate::safety::redirect_targets(command, true))
+        .flat_map(crate::safety::redirect_targets)
         .collect();
     let unreadable = (redirected.iter())
         .find(|target| !target.directory_known)
