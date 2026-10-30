@@ -162,12 +162,8 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
     let mut live_lines: Vec<Line<'static>> = Vec::new();
     // Invariant: a held run of reads ended before any live thought began, so it renders first.
     if !app.explored.is_empty() {
-        live_lines.extend(Cell::Explored(app.explored.clone()).lines(
-            content_width,
-            theme,
-            app.mode,
-            spinner,
-        ));
+        let live = crate::cell::explored_cell(app.explored.clone());
+        live_lines.extend(live.lines(content_width, theme, app.mode, spinner));
     }
     if app.live_thought.len() > app.live_thought_cut {
         // Reasoning-heavy models stream thought long before prose, so show its dim tail and

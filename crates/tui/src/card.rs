@@ -105,32 +105,6 @@ fn line_width(line: &Line<'_>) -> usize {
         .sum()
 }
 
-pub(crate) fn subject_spans(
-    tool: &str,
-    subject: &str,
-    theme: &Theme,
-    style: Style,
-) -> Vec<Span<'static>> {
-    let plain = style.fg == Some(theme.text);
-    let hue = match tool {
-        "grep" if plain => Some(theme.orange),
-        _ => None,
-    };
-    if let Some(hue) = hue {
-        return vec![Span::styled(subject.to_owned(), style.fg(hue))];
-    }
-    if !subject.contains(' ')
-        && let Some((dir, base)) = subject.rsplit_once('/')
-        && !base.is_empty()
-    {
-        return vec![
-            Span::styled(format!("{dir}/"), theme.dim_style()),
-            Span::styled(base.to_owned(), style),
-        ];
-    }
-    vec![Span::styled(subject.to_owned(), style)]
-}
-
 fn chip_spans(chips: &[Chip], theme: &Theme) -> (Vec<Span<'static>>, usize) {
     let mut spans = Vec::new();
     let mut used = 0;

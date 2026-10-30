@@ -2525,7 +2525,10 @@ fn a_run_of_reads_commits_above_the_reasoning_that_follows_it() -> TestResult {
     app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message });
     let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
     let at = |needle: &str| committed.iter().position(|line| line.contains(needle));
-    let explored = at("Explored").ok_or(format!("no run: {committed:?}"))?;
+    let explored = committed
+        .iter()
+        .position(|line| line.starts_with("→"))
+        .ok_or(format!("no run: {committed:?}"))?;
     let thought = at("Pondering").ok_or(format!("no thought: {committed:?}"))?;
     assert!(explored < thought, "{committed:?}");
     Ok(())

@@ -533,10 +533,7 @@ impl App {
             return;
         }
         let rows = std::mem::take(&mut self.explored);
-        let cell = match <[ToolCell; 1]>::try_from(rows) {
-            Ok([single]) => Cell::Tool(single),
-            Err(rows) => Cell::Explored(rows),
-        };
+        let cell = crate::cell::explored_cell(rows);
         self.write_cell(&cell);
     }
 
