@@ -260,17 +260,29 @@ pub(crate) fn subject_of<'a>(name: &str, summary: &'a str) -> &'a str {
 }
 
 const PREVIEW_ROWS: usize = 3;
+const ELIDED_ROWS: usize = 2;
+const REVEAL_ROWS: usize = 24;
 
-/// A row past three screen lines is generated, not written: two lines and its size.
-fn capped(line: &Line<'static>, width: usize, indent: &str, theme: &Theme) -> Vec<Line<'static>> {
+/// A row past the kept screen lines is generated, not written: the elision names kept of total.
+fn capped(
+    line: &Line<'static>,
+    width: usize,
+    indent: &str,
+    theme: &Theme,
+    keep: usize,
+) -> Vec<Line<'static>> {
     let mut rows = wrap_line(line, width, indent);
-    if rows.len() <= 3 {
+    if rows.len() <= keep {
         return rows;
     }
+    let total = rows.len();
     let bytes: usize = line.spans.iter().map(|s| s.content.len()).sum();
-    let size = format!("{indent}… {} KB", bytes.div_ceil(1024));
-    rows.truncate(2);
-    rows.push(Line::styled(size, theme.dim_style()));
+    rows.truncate(keep);
+    let elided = format!(
+        "{indent}… {keep} of {total} rows, {} KB",
+        bytes.div_ceil(1024)
+    );
+    rows.push(Line::styled(elided, theme.dim_style()));
     rows
 }
 
@@ -372,6 +384,11 @@ impl ToolCell {
         spans.extend(self.summary_spans(theme, style));
         let (chips, digest) = self.chips(theme);
         let inner = crate::card::body_width(width);
+        let keep = if expanded || failed {
+            REVEAL_ROWS
+        } else {
+            ELIDED_ROWS
+        };
         let mut body = Vec::new();
         // `normal` folds every body away and `verbose` opens them all; the default view
         // between them shows the first rows of the result and how many follow.
@@ -401,7 +418,13 @@ impl ToolCell {
             } else {
                 theme.muted_style()
             };
-            body.extend(capped(&Line::styled(digest, detail), inner, "  ", theme));
+            body.extend(capped(
+                &Line::styled(digest, detail),
+                inner,
+                "  ",
+                theme,
+                keep,
+            ));
         }
         if let Some(patch) = self.patch() {
             let budget = if expanded {
@@ -417,17 +440,17 @@ impl ToolCell {
                     theme.muted_style()
                 };
                 let row = Line::from(vec![Span::styled(row.clone(), style)]);
-                body.extend(capped(&row, inner, "  ", theme));
+                body.extend(capped(&row, inner, "  ", theme, keep));
             }
         } else if expanded {
             for line in self.body(theme) {
-                body.extend(capped(&line, inner, "     ", theme));
+                body.extend(capped(&line, inner, "     ", theme, keep));
             }
         } else {
             let hidden = self.lines_total().saturating_sub(preview.len());
             let shown = !preview.is_empty();
             for line in preview {
-                body.extend(capped(&line, inner, "     ", theme));
+                body.extend(capped(&line, inner, "     ", theme, keep));
             }
             if shown && hidden > 0 {
                 body.push(Line::from(Span::styled(
