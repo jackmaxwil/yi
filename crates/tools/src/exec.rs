@@ -106,8 +106,8 @@ pub fn discover_exec_tools(dir: &Path) -> (Vec<ExecTool>, Vec<SkippedExecTool>) 
     discover_within(dir, PROBE_DEADLINE)
 }
 
-/// Invariant: probes run side by side, each with its own deadline, so a slow sibling enumerated
-/// first can neither skip a later tool nor stretch discovery past one deadline.
+/// Invariant: probes run side by side under a fixed pool, each with its own deadline, so a slow
+/// sibling enumerated first can neither skip a later tool nor stretch discovery past one deadline.
 fn discover_within(
     dir: &Path,
     deadline: std::time::Duration,
@@ -120,26 +120,73 @@ fn discover_within(
         .map(|entry| entry.path())
         .filter(|path| is_executable_file(path))
         .collect();
-    let probed: Vec<Result<ExecTool, SkippedExecTool>> = std::thread::scope(|scope| {
-        let probes: Vec<_> = paths
-            .into_iter()
-            .map(|path| scope.spawn(move || probe(path, deadline)))
-            .collect();
-        probes
-            .into_iter()
-            .filter_map(|probe| probe.join().ok())
-            .collect()
-    });
+    let outcomes = probe_all(&paths, deadline);
+    collect(paths, outcomes)
+}
+
+fn collect(
+    paths: Vec<PathBuf>,
+    outcomes: Vec<ProbeOutcome>,
+) -> (Vec<ExecTool>, Vec<SkippedExecTool>) {
     let (mut tools, mut skipped) = (Vec::new(), Vec::new());
-    for outcome in probed {
+    for (path, outcome) in paths.into_iter().zip(outcomes) {
         match outcome {
-            Ok(tool) => tools.push(tool),
-            Err(skip) => skipped.push(skip),
+            Some(Ok(tool)) => tools.push(tool),
+            Some(Err(skip)) => skipped.push(skip),
+            None => skipped.push(SkippedExecTool {
+                path,
+                reason: "schema probe panicked".to_owned(),
+            }),
         }
     }
     tools.sort_by(|left, right| left.name.cmp(&right.name));
     skipped.sort_by(|left, right| left.path.cmp(&right.path));
     (tools, skipped)
+}
+
+const PROBE_WORKERS: usize = 4;
+
+/// A slot stays `None` only when its probe thread panicked; `collect` names that path as skipped.
+type ProbeOutcome = Option<Result<ExecTool, SkippedExecTool>>;
+
+fn probe_all(paths: &[PathBuf], deadline: std::time::Duration) -> Vec<ProbeOutcome> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let outcomes = std::sync::Mutex::new(paths.iter().map(|_| None).collect::<Vec<_>>());
+    let drain = || loop {
+        let index = next.fetch_add(1, Ordering::SeqCst);
+        let Some(path) = paths.get(index) else {
+            return;
+        };
+        let outcome = probe(path.clone(), deadline);
+        let mut slots = match outcomes.lock() {
+            Ok(slots) => slots,
+            Err(poison) => poison.into_inner(),
+        };
+        if let Some(slot) = slots.get_mut(index) {
+            *slot = Some(outcome);
+        }
+    };
+    std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for _ in 0..PROBE_WORKERS {
+            match std::thread::Builder::new()
+                .name("yi-exec-probe".to_owned())
+                .spawn_scoped(scope, drain)
+            {
+                Ok(worker) => workers.push(worker),
+                Err(_) => break,
+            }
+        }
+        drain();
+        for worker in workers {
+            let _ = worker.join();
+        }
+    });
+    match outcomes.into_inner() {
+        Ok(slots) => slots,
+        Err(poison) => poison.into_inner(),
+    }
 }
 
 fn probe(path: PathBuf, deadline: std::time::Duration) -> Result<ExecTool, SkippedExecTool> {
@@ -184,58 +231,130 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::discover_within;
+    use super::{PROBE_WORKERS, collect, discover_within};
     use crate::Tool;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    #[test]
-    fn exec_tool_probes_share_one_deadline() -> TestResult {
-        let dir = crate::scratch::Scratch::new("yi-tools-exec-shared-deadline")?;
-        for name in ["hang-a", "hang-b"] {
+    fn scripts(dir: &std::path::Path, bodies: &[(&str, String)]) -> TestResult {
+        for (name, body) in bodies {
             let script = dir.join(name);
-            fs::write(&script, "#!/bin/sh\nsleep 30\n")?;
+            fs::write(&script, body)?;
             fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
         }
-        let started = std::time::Instant::now();
-        let (_tools, skipped) = discover_within(&dir, std::time::Duration::from_millis(300));
-        assert!(started.elapsed() < std::time::Duration::from_millis(500));
-        assert_eq!(skipped.len(), 2);
         Ok(())
     }
 
     #[test]
-    fn exec_tool_probes_stop_at_the_deadline() -> TestResult {
-        let dir = crate::scratch::Scratch::new("yi-tools-exec-deadline")?;
-        let script = dir.join("fast");
-        fs::write(
-            &script,
-            "#!/bin/sh\nsleep 0.1\nprintf '{\"name\":\"fast\",\"input_schema\":{\"type\":\"object\"}}'\n",
+    fn four_hung_probes_cost_one_deadline_between_them() -> TestResult {
+        let dir = crate::scratch::Scratch::new("yi-tools-exec-hung")?;
+        let bodies: Vec<(&str, String)> = ["hang-a", "hang-b", "hang-c", "hang-d"]
+            .into_iter()
+            .map(|name| (name, "#!/bin/sh\nsleep 30\n".to_owned()))
+            .collect();
+        scripts(&dir, &bodies)?;
+        let started = std::time::Instant::now();
+        let (_tools, skipped) = discover_within(&dir, std::time::Duration::from_millis(500));
+        assert_eq!(skipped.len(), 4, "{skipped:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_probe_inside_the_deadline_loads_and_one_past_it_is_skipped() -> TestResult {
+        let dir = crate::scratch::Scratch::new("yi-tools-exec-limit")?;
+        scripts(
+            &dir,
+            &[
+                (
+                    "fast",
+                    "#!/bin/sh\nprintf '{\"name\":\"fast\",\"input_schema\":{\"type\":\"object\"}}'\n"
+                        .to_owned(),
+                ),
+                ("slow", "#!/bin/sh\nsleep 30\n".to_owned()),
+            ],
         )?;
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
-        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_millis(300));
-        assert!(skipped.is_empty(), "{skipped:?}");
-        assert_eq!(tools.len(), 1);
+        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(2));
+        assert_eq!(tools.len(), 1, "{skipped:?}");
         assert_eq!(tools[0].name(), "fast");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].path, dir.join("slow"));
         Ok(())
     }
 
     #[test]
     fn a_slow_sibling_cannot_skip_a_later_tool() -> TestResult {
         let dir = crate::scratch::Scratch::new("yi-tools-exec-slow-siblings")?;
-        for name in ["slow-a", "slow-b"] {
-            let script = dir.join(name);
-            fs::write(
-                &script,
-                format!("#!/bin/sh\nsleep 0.2\nprintf '{{\"name\":\"{name}\"}}'\n"),
-            )?;
-            fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
-        }
-        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_millis(300));
+        let names = [
+            "slow-a", "slow-b", "slow-c", "slow-d", "slow-e", "slow-f", "slow-g", "slow-h",
+        ];
+        let bodies: Vec<(&str, String)> = names
+            .into_iter()
+            .map(|name| {
+                (
+                    name,
+                    format!("#!/bin/sh\nsleep 0.5\nprintf '{{\"name\":\"{name}\"}}'\n"),
+                )
+            })
+            .collect();
+        scripts(&dir, &bodies)?;
+        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(4));
         assert!(skipped.is_empty(), "{skipped:?}");
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), names.len());
         Ok(())
+    }
+
+    /// The bound the pool holds is what keeps a large tools directory from forking it whole; each
+    /// probe counts its own siblings from `ps` while it hangs, so the peak is observed, not timed.
+    #[test]
+    fn exec_tool_probes_run_under_a_fixed_pool() -> TestResult {
+        let dir = crate::scratch::Scratch::new("yi-tools-exec-pool")?;
+        let counts = dir.join("counts");
+        let total = 8;
+        for index in 0..total {
+            let name = format!("tool-{index:02}");
+            scripts(
+                &dir,
+                &[(
+                    &name,
+                    format!(
+                        "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  parent=$PPID\n  \
+                         ps -eo ppid= | grep -cw \"$parent\" >> '{counts}'\n  sleep 30\n  \
+                         printf '{{\"name\":\"{name}\",\"input_schema\":{{\"type\":\"object\"}}}}'\nfi\n",
+                        counts = counts.display(),
+                    ),
+                )],
+            )?;
+        }
+        let (_tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(2));
+        assert_eq!(skipped.len(), total, "{skipped:?}");
+        let seen = fs::read_to_string(&counts)?;
+        let peak = seen
+            .lines()
+            .filter_map(|line| line.trim().parse::<usize>().ok())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            (2..=PROBE_WORKERS + 1).contains(&peak),
+            "peak {peak} probes ran at once: {seen}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_probe_that_panics_is_named_as_skipped() {
+        let path = PathBuf::from("/virtual/panicked-tool");
+        let (tools, skipped) = collect(vec![path.clone()], vec![None]);
+        assert!(tools.is_empty());
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert_eq!(skipped[0].path, path);
+        assert!(skipped[0].reason.contains("panicked"), "{skipped:?}");
     }
 }

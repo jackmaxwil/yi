@@ -185,13 +185,22 @@ fn kernel_boot(site: &Site) -> Finding {
     }
 }
 
+/// Invariant: `--socket` names the file this row removes, so the row judges what it is before it
+/// unlinks it; a path that is not a socket is reported and left alone.
 fn socket_alive_or_absent(site: &Site) -> Finding {
+    use std::os::unix::fs::FileTypeExt;
     let path = &site.socket;
     if !path.exists() {
         return ok("no daemon");
     }
     if std::os::unix::net::UnixStream::connect(path).is_ok() {
         return ok("daemon answers");
+    }
+    let is_socket = std::fs::metadata(path)
+        .map(|meta| meta.file_type().is_socket())
+        .unwrap_or(false);
+    if !is_socket {
+        return fail("not a socket; left alone");
     }
     if site.fix {
         return match std::fs::remove_file(path) {

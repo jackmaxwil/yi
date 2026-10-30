@@ -2075,6 +2075,13 @@ fn doctor_lines(output: &Output) -> Vec<String> {
     stdout(output).lines().map(str::to_owned).collect()
 }
 
+/// Incident: SUN_LEN is 104 here, and a nextest temp dir can push a socket path past it.
+fn short_socket(name: &str) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(format!("/tmp/yi-{name}-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
 /// A dead socket file is the one repair `doctor --fix` makes without asking; a ledger row
 /// whose root is gone is reported and left to the daemon that owns the file.
 #[test]
@@ -2082,17 +2089,19 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
     let workspace = Workspace::new("doctor")?;
     let yi_dir = workspace.0.join("home/.yi");
     std::fs::create_dir_all(&yi_dir)?;
-    std::fs::write(yi_dir.join("daemon.sock"), b"")?;
+    let socket = short_socket("doctor");
+    drop(std::os::unix::net::UnixListener::bind(&socket)?);
     std::fs::write(
-        yi_dir.join("daemon.ledger.json"),
+        socket.with_extension("ledger.json"),
         r#"{"sessions":{"s-gone":{"cwd":"/nonexistent/yi-gone-root","unseen":0,"lastEventMs":1}}}"#,
     )?;
+    let named = socket.display().to_string();
     std::fs::create_dir_all(yi_dir.join("catalog"))?;
     std::fs::write(
         yi_dir.join("catalog/openrouter.json"),
         r#"{"openai-completions":{"x/hand-edited":{"id":"x/hand-edited"}}}"#,
     )?;
-    let seen = workspace.yi_env(&["doctor"], NO_KERNEL)?;
+    let seen = workspace.yi_env(&["doctor", "--socket", &named], NO_KERNEL)?;
     assert_eq!(seen.status.code(), Some(1), "{}", stdout(&seen));
     let lines = doctor_lines(&seen);
     assert!(
@@ -2124,16 +2133,13 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             .any(|l| l.starts_with("ok    host") && l.len() > "ok    host".len() + 2),
         "the doctor names the host environment: {lines:?}"
     );
-    let fixed = workspace.yi_env(&["doctor", "--fix"], NO_KERNEL)?;
+    let fixed = workspace.yi_env(&["doctor", "--fix", "--socket", &named], NO_KERNEL)?;
     let lines = doctor_lines(&fixed);
     assert!(
         lines.iter().any(|l| l.starts_with("fixed daemon-socket")),
         "{lines:?}"
     );
-    assert!(
-        !yi_dir.join("daemon.sock").exists(),
-        "the dead socket file is gone"
-    );
+    assert!(!socket.exists(), "the dead socket file is gone");
     assert!(
         lines.iter().any(|l| l.starts_with("FAIL  daemon-ledger")),
         "a gone root is not doctor's to prune: {lines:?}"
@@ -2229,7 +2235,7 @@ fn doctor_without_fix_reports_the_uv_fetch_instead_of_running_it() -> TestResult
 #[test]
 fn doctor_judges_the_socket_named_on_the_command_line() -> TestResult {
     let workspace = Workspace::new("doctor-socket")?;
-    let socket = workspace.0.join("home/.yi/chosen.sock");
+    let socket = short_socket("doctor-host");
     let listener = std::os::unix::net::UnixListener::bind(&socket)?;
     std::fs::write(
         socket.with_extension("ledger.json"),
@@ -2266,6 +2272,36 @@ fn doctor_judges_the_socket_named_on_the_command_line() -> TestResult {
             .is_some_and(|row| row.contains("dead socket file")),
         "{rows}"
     );
+    let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(socket.with_extension("ledger.json"));
+    Ok(())
+}
+
+/// `--fix` repairs a socket, not whatever file the flag happens to name.
+#[test]
+fn doctor_fix_leaves_a_named_path_that_is_not_a_socket() -> TestResult {
+    let workspace = Workspace::new("doctor-socket-file")?;
+    let path = workspace.0.join("home/.yi/chosen.txt");
+    std::fs::write(&path, "not a socket\n")?;
+    let named = path.display().to_string();
+    let fixed = workspace.yi_env(
+        &["doctor", "--json", "--fix", "--socket", &named],
+        NO_KERNEL,
+    )?;
+    let rows: Value = serde_json::from_str(&stdout(&fixed))?;
+    let row = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "daemon-socket"))
+        .cloned()
+        .ok_or_else(|| format!("no daemon-socket row: {rows}"))?;
+    assert_eq!(row["status"], "fail", "{row}");
+    assert!(
+        row["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("not a socket")),
+        "{row}"
+    );
+    assert!(path.exists(), "the file `--socket` named was removed");
     Ok(())
 }
 
