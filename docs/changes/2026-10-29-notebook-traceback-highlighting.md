@@ -1,4 +1,5 @@
 ---
+version: 0.825.0
 issue: Closes #1739
 raise: crate console +207, crate tui +161, tests +175, comments +9
 growth: +368 one traceback classifier and the pane's cap helpers, with the three tests that fail without it; weighed folding the pane's own cap copy, the `chip` export and the bash-cell test, and kept them because a copy is what this removes and the tests are the red proof
