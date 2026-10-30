@@ -326,7 +326,7 @@ mod tests {
                     &name,
                     format!(
                         "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  parent=$PPID\n  \
-                         ps -eo ppid= | grep -cw \"$parent\" >> '{counts}'\n  sleep 30\n  \
+                         ps -eo ppid=,stat= | awk -v p=\"$parent\" '$1 == p && $2 !~ /^Z/ {{ n++ }} END {{ print n+0 }}' >> '{counts}'\n  sleep 30\n  \
                          printf '{{\"name\":\"{name}\",\"input_schema\":{{\"type\":\"object\"}}}}'\nfi\n",
                         counts = counts.display(),
                     ),

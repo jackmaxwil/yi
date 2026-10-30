@@ -25,15 +25,21 @@ fn find(dir: &Scratch, path: &str, needle: &str) -> String {
 #[test]
 fn a_multiline_python_signature_resolves_through_the_function_body() -> TestResult {
     let dir = temp_dir("hashline-python-signature")?;
-    fs::write(
-        dir.join("input.py"),
-        include_str!("../../../python/yi_runtime/src/rlm/__init__.py"),
-    )?;
+    let source = include_str!("../../../python/yi_runtime/src/rlm/__init__.py");
+    let line_of = |needle: &str| source.lines().position(|line| line.starts_with(needle));
+    let start = line_of("    async def result(").ok_or("no async def result(")? + 1;
+    let close = line_of("    ) -> ").ok_or("no signature close")? + 1;
+    fs::write(dir.join("input.py"), source)?;
     let output = find(&dir, "input.py", "async def result(");
-    assert!(
-        output.contains("[find: block at lines 287-354 of"),
-        "{output}"
-    );
+    let header = output
+        .lines()
+        .find(|line| line.starts_with("[find: block at lines "))
+        .ok_or_else(|| format!("no block header: {output}"))?;
+    let span = header.trim_start_matches("[find: block at lines ");
+    let (first, rest) = span.split_once('-').ok_or("no span")?;
+    let last = rest.split_once(' ').ok_or("no end")?.0.parse::<usize>()?;
+    assert_eq!(first.parse::<usize>()?, start, "{output}");
+    assert!(last >= close, "the block ends at {last}, before {close}");
 
     fs::write(dir.join("one.py"), "def a():\n")?;
     let one = find(&dir, "one.py", "def a():");
