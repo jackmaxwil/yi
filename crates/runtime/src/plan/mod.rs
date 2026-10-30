@@ -32,6 +32,8 @@ pub mod program;
 pub mod recovery;
 pub(crate) mod render;
 pub mod request;
+#[cfg(test)]
+pub(crate) mod rig;
 pub mod schedule;
 pub mod snapshot;
 mod spawn;

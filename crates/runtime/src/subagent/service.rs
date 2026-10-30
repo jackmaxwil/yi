@@ -165,7 +165,7 @@ impl SubagentHost {
         );
         let cause = error.clone().unwrap_or_default();
         let refused = |why: String| Some((exit, Some(format!("{cause}; not respawned: {why}"))));
-        let (name, prompt, kwargs, dir, store, lease, next, settled) = {
+        let (name, kwargs, dir, store, lease, next, settled) = {
             let Ok(mut children) = self.children.lock() else {
                 return Some((exit, error));
             };
@@ -180,7 +180,7 @@ impl SubagentHost {
             if let Err(spent) = spend_restart(&mut service.restarts, service.max, now) {
                 return refused(spent);
             }
-            let (prompt, kwargs) = (service.prompt.clone(), service.kwargs.clone());
+            let kwargs = service.kwargs.clone();
             let next = service.incarnation.saturating_add(1);
             let (name, dir) = (record.session_name.clone(), record.session_dir.clone());
             let store = record.session.store();
@@ -199,7 +199,7 @@ impl SubagentHost {
             if let Some(record) = children.get_mut(key) {
                 record.lease = lease.clone();
             }
-            (name, prompt, kwargs, dir, store, lease, next, settled)
+            (name, kwargs, dir, store, lease, next, settled)
         };
         self.journal_settled(settled);
         let built = self
@@ -248,7 +248,7 @@ impl SubagentHost {
             desk.drop_respondent(&name, "respawned");
         }
         let brief = format!(
-            "[incarnation {next} of service \"{name}\": the run before this one ended on \"{cause}\". Your transcript and inbox were kept; a message in it addressed to an earlier incarnation was your predecessor's conversation, not yours]\n\n{prompt}"
+            "[incarnation {next} of service \"{name}\": the run before this one ended on \"{cause}\". Your transcript and inbox were kept; a message in it addressed to an earlier incarnation was your predecessor's conversation, not yours]"
         );
         let context = crate::mailbox::context_block(&kwargs).ok().flatten();
         self.watch(key.to_owned(), &session);

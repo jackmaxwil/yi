@@ -481,13 +481,25 @@ pub(crate) fn result_answer(messages: &[AgentMessage], schema: Option<&Value>) -
     let answer = schema.and_then(|_| crate::subagent::schema_answer(messages));
     match answer {
         Some(answer) => crate::subagent::answer_text(answer),
-        None => crate::subagent::last_assistant_text(messages),
+        None => crate::subagent::answer_text(messages),
     }
     .unwrap_or_default()
 }
-fn pickled(text: &str) -> Vec<u8> {
-    let length = u32::try_from(text.len()).unwrap_or(u32::MAX).to_le_bytes();
-    [&[0x80, 2, b'X'][..], &length, text.as_bytes(), b"."].concat()
+
+fn last_assistant_entry(store: &yi_session::SharedSession) -> Option<String> {
+    let query = yi_session::EntryQuery {
+        entry_type: Some("message"),
+        ..yi_session::EntryQuery::default()
+    };
+    let entries = yi_session::lock_session(store).find_entries(&query).ok()?;
+    entries.into_iter().find_map(|entry| match entry {
+        yi_types::entry::Entry::Message {
+            id,
+            message: AgentMessage::Assistant { .. },
+            ..
+        } => Some(id),
+        _ => None,
+    })
 }
 
 /// Retires a waiter on every way out: a reply, a timeout, a refused send or a cancelled cell.
@@ -676,7 +688,7 @@ impl SubagentHost {
             }
             let text = crate::subagent::last_assistant_text(messages)
                 .unwrap_or_else(|| "(the turn ended with no text)".to_owned());
-            let (text, reference) = self.kept_whole(name, &id, text);
+            let (text, reference) = self.kept_whole(name, text);
             let draft = Draft {
                 kind: Kind::Reply,
                 reply_to: Some(id),
@@ -689,35 +701,11 @@ impl SubagentHost {
         steered
     }
 
-    /// Incident: a final text over the body cap was dropped; it is kept whole, its head sent.
-    fn kept_whole(
-        &self,
-        owner: &str,
-        id: &MailId,
-        text: String,
-    ) -> (String, Option<yi_types::url::Url>) {
+    /// Incident: a final text over the body cap was dropped; its head names its transcript entry.
+    fn kept_whole(&self, owner: &str, text: String) -> (String, Option<yi_types::url::Url>) {
         if text.len() <= BODY_CAP {
             return (text, None);
         }
-        let name = format!("reply-{id}");
-        let dir = self.board();
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "rlm.put's `at` is float seconds"
-        )]
-        let at = yi_session::now_ms() as f64 / 1000.0;
-        let sidecar = serde_json::json!({"name": name, "owner": owner, "at": at,
-            "bytes": text.len(), "type": "str", "serializer": "pickle", "text": text});
-        let kept = std::fs::create_dir_all(&dir)
-            .and_then(|()| {
-                crate::wiring::write_board(&dir.join(format!("{name}.dill")), &pickled(&text))
-            })
-            .and_then(|()| {
-                crate::wiring::write_board(
-                    &dir.join(format!("{name}.json")),
-                    sidecar.to_string().as_bytes(),
-                )
-            });
         let cut = text
             .char_indices()
             .map(|(at, _)| at)
@@ -725,22 +713,18 @@ impl SubagentHost {
             .last()
             .unwrap_or(0);
         let head = text.get(..cut).unwrap_or_default();
-        match kept {
-            Ok(()) => (
-                format!(
-                    "{head}\n[... {} bytes in all: rlm.get({name:?}) or fetch family://{name}]",
-                    text.len()
-                ),
-                format!("family://{name}").parse().ok(),
-            ),
-            Err(error) => (
-                format!(
-                    "{head}\n[... {} bytes in all; the rest could not be kept: {error}]",
-                    text.len()
-                ),
-                None,
-            ),
-        }
+        let entry = self
+            .transcript(owner)
+            .and_then(|store| last_assistant_entry(&store));
+        let address = format!(
+            "history://{owner}{}",
+            entry.map(|id| format!("/{id}")).unwrap_or_default()
+        );
+        let row = format!(
+            "[{cut} of {} bytes kept: BODY_CAP is {BODY_CAP}; the whole reply: read {address}]",
+            text.len()
+        );
+        (format!("{head}\n{row}"), address.parse().ok())
     }
 
     /// A plain send answers a child's one open question once its sender was shown it.

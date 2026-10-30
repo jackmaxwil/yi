@@ -163,13 +163,18 @@ async fn a_request_left_open_is_chased_once_then_taken_from_the_final_text() -> 
         })
         .count();
     assert_eq!(steers, 1, "one steer came before the final text was taken");
+    let answered = host.result("tally", None)?;
+    assert_ne!(
+        answered["text"], "Still nothing to add.",
+        "a chase turn's reply is never taken as the answer: {answered:?}"
+    );
     Ok(())
 }
 
 /// Dies with a final text over the body cap refused and dropped: the requester waited out its
-/// timeout. The whole text is kept on the blackboard and its head travels with the ref.
+/// timeout. Its head travels with a row naming kept/total, BODY_CAP and the transcript entry.
 #[tokio::test]
-async fn a_final_text_over_the_body_cap_is_kept_whole_and_sent_by_ref() -> TestResult {
+async fn a_final_text_over_the_body_cap_points_at_the_childs_transcript() -> TestResult {
     let parent = Arc::new(session((0..6).map(|_| said("noted")).collect()));
     let long: &'static str = Box::leak("tally ".repeat(4_000).into_boxed_str());
     let lines: &'static [&'static str] =
@@ -188,19 +193,33 @@ async fn a_final_text_over_the_body_cap_is_kept_whole_and_sent_by_ref() -> TestR
     );
     let envelope = &reply["envelope"];
     let id = envelope["inReplyTo"].as_str().ok_or("no id")?;
-    assert_eq!(
-        envelope["ref"],
-        format!("family://reply-{id}"),
-        "{envelope:?}"
-    );
+    let _ = id;
+    let address = envelope["ref"].as_str().ok_or("no ref")?;
+    assert!(address.starts_with("history://tally/"), "{envelope:?}");
     let body = envelope["body"].as_str().unwrap_or_default();
     assert!(
-        body.starts_with("tally tally") && body.contains("24000 bytes in all"),
+        body.starts_with("tally tally")
+            && body.contains("of 24000 bytes kept: BODY_CAP is 16384")
+            && body.contains(&format!("read {address}]")),
         "{body}"
     );
-    let kept = std::fs::read_to_string(root.join(format!("family/reply-{id}.json")))?;
-    let kept: Value = serde_json::from_str(&kept)?;
-    assert_eq!(kept["text"], long);
+    assert!(
+        !root.join("family").exists(),
+        "nothing is written to the board"
+    );
+    let entry = address.rsplit('/').next().ok_or("no entry id")?;
+    let store = host.transcript("tally").ok_or("no transcript")?;
+    let whole = yi_session::lock_session(&store)
+        .find_entries(&yi_session::EntryQuery::default())?
+        .into_iter()
+        .find_map(|kept| match kept {
+            yi_types::entry::Entry::Message { id, message, .. } if id == entry => {
+                Some(message.plain_text())
+            }
+            _ => None,
+        })
+        .ok_or("the address names no entry")?;
+    assert_eq!(whole, long, "the named entry holds the whole reply");
     Ok(())
 }
 

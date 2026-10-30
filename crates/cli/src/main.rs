@@ -37,32 +37,9 @@ use user_config::{
 
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
-use yi_types::model::{Model, ModelCost};
+use yi_types::model::Model;
 
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
+use yi_runtime::faux::faux_model;
 
 fn resolve(spec: &str) -> Option<Model> {
     let (provider, id) = spec.split_once('/')?;

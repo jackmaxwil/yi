@@ -165,22 +165,25 @@ pub type DeliverFn = Arc<dyn Fn(AgentMessage, DeliveryMode) + Send + Sync>;
 /// and per completion attempt, so it gets a per-row budget, not [`DEFAULT_CHECK_TIMEOUT_MS`].
 pub(crate) const DISCOVERY_CHECK_TIMEOUT_MS: u64 = 60_000;
 
-/// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it
-/// survives compaction and resume and is still there to block completion.
-pub fn record_discovery(store: &StoreHandle, row: &Discovery) -> Result<(), String> {
+/// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it survives compaction
+/// and resume to block completion. `false` means no goal exists, so no completion gate holds.
+pub fn record_discovery(store: &StoreHandle, row: &Discovery) -> Result<bool, String> {
     let handle = store().ok_or("no session store is attached")?;
     let mut session = yi_session::lock_session(&handle);
-    let mut goal = session.goal().ok_or(NO_GOAL_ERROR)?;
+    let Some(mut goal) = session.goal() else {
+        return Ok(false);
+    };
     if goal
         .discoveries
         .iter()
         .any(|kept| kept.fingerprint == row.fingerprint)
     {
-        return Ok(());
+        return Ok(true);
     }
     goal.discoveries.push(row.clone());
     goal.updated = yi_session::now_ms();
-    session.set_goal(goal).map_err(|error| error.to_string())
+    session.set_goal(goal).map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 fn drained_message(row: &Discovery, mut details: Value) -> AgentMessage {

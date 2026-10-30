@@ -720,7 +720,7 @@ fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, promp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::dispatch::tests::faux_model;
+    use crate::plan::rig::faux_model;
     use crate::provider::ProviderStream;
     use crate::session::{AgentSession, SessionConfig, user_input};
     use yi_ai::faux::{faux_assistant_message, faux_text};

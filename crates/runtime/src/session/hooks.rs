@@ -529,7 +529,7 @@ mod tests {
     fn settle_test_config() -> crate::session::SessionConfig {
         crate::session::SessionConfig {
             system_prompt: String::new(),
-            model: crate::plan::dispatch::tests::faux_model(),
+            model: crate::plan::rig::faux_model(),
             thinking_level: None,
             tool_execution: yi_loop::ExecutionMode::Sequential,
         }
