@@ -250,38 +250,6 @@ mod tests {
         Ok(())
     }
 
-    /// A hung probe spends its own deadline and nothing more: with eight hung tools and a pool of
-    /// four, discovery costs two rounds, which no single shared budget can produce.
-    #[test]
-    fn hung_probes_spend_one_deadline_per_pool_round() -> TestResult {
-        let dir = crate::scratch::Scratch::new("yi-tools-exec-hung")?;
-        let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
-        let bodies: Vec<(&str, String)> =
-            ["hang-a", "hang-b", "hang-c", "hang-d", "hang-e", "hang-f"]
-                .into_iter()
-                .chain(["hang-g", "hang-h"])
-                .map(|name| (name, "#!/bin/sh\nsleep 30\n".to_owned()))
-                .collect();
-        scripts(&dir, &bodies)?;
-        let deadline = std::time::Duration::from_secs(1);
-        let started = std::time::Instant::now();
-        let (_tools, skipped) = discover_within(&dir, deadline);
-        let elapsed = started.elapsed();
-        assert_eq!(skipped.len(), names.len(), "{skipped:?}");
-        assert!(
-            skipped
-                .iter()
-                .all(|skip| skip.reason == "schema probe timed out after 1s"),
-            "{skipped:?}"
-        );
-        assert!(
-            elapsed >= deadline.saturating_mul(2),
-            "eight hung probes at {deadline:?} finished in {elapsed:?}, so one budget covered them"
-        );
-        assert!(elapsed < deadline.saturating_mul(5), "{elapsed:?}");
-        Ok(())
-    }
-
     /// The slow probe prints a valid schema once it wakes, so only the deadline can skip it.
     #[test]
     fn exec_tool_probes_stop_at_their_own_deadline() -> TestResult {
@@ -356,7 +324,7 @@ mod tests {
                     &name,
                     format!(
                         "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  \
-                         pgrep -f '{dir}/tool-' | wc -l > '{dir}/seen-{name}'\n  \
+                         pgrep -f '{dir}/tool-[0-9]' | wc -l > '{dir}/seen-{name}'\n  \
                          sleep 30\n  \
                          printf '{{\"name\":\"{name}\",\"input_schema\":{{\"type\":\"object\"}}}}'\nfi\n",
                         dir = dir.display(),
@@ -364,7 +332,10 @@ mod tests {
                 )],
             )?;
         }
-        let (_tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(1));
+        let deadline = std::time::Duration::from_secs(1);
+        let started = std::time::Instant::now();
+        let (_tools, skipped) = discover_within(&dir, deadline);
+        let elapsed = started.elapsed();
         assert_eq!(skipped.len(), total, "{skipped:?}");
         let mut seen: Vec<usize> = Vec::new();
         for entry in fs::read_dir(&dir)? {
@@ -383,6 +354,8 @@ mod tests {
             (2..=PROBE_WORKERS).contains(&peak),
             "peak {peak} probes ran at once: {seen:?}"
         );
+        assert!(elapsed >= deadline.saturating_mul(2), "{elapsed:?}");
+        assert!(elapsed < deadline.saturating_mul(5), "{elapsed:?}");
         Ok(())
     }
 
