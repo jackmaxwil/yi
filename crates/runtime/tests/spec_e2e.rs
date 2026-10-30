@@ -420,6 +420,83 @@ fn the_environment_line_names_an_expected_spec_and_nothing_otherwise() -> TestRe
     Ok(())
 }
 
+fn session_in(rig: &Rig, id: &str) -> Result<SharedSession, Box<dyn Error>> {
+    let mut repo = JsonlRepo::new(rig.root.join("sessions"), rig.root.display().to_string());
+    Ok(repo.create(CreateOptions {
+        id: Some(id.to_owned()),
+        parent_session_id: None,
+        metadata: None,
+    })?)
+}
+
+fn store_in(session: SharedSession, cwd: &Path, spec_dir: &Path) -> Arc<SpecStore> {
+    SpecStore::new(
+        Arc::new(move || Some(session.clone())),
+        cwd.to_path_buf(),
+        spec_dir.to_path_buf(),
+        true,
+        None,
+    )
+}
+
+fn hello_reqs() -> Vec<(String, Kind)> {
+    reqs(&[
+        ("out.txt is not empty", Kind::F2p),
+        ("says hello", Kind::F2p),
+    ])
+}
+
+fn write_content_check(cwd: &Path) -> Result<(), Box<dyn Error>> {
+    std::fs::write(
+        cwd.join("check.sh"),
+        "if [ -s out.txt ]; then echo \"ok 1 - R1 not empty\"; else echo \"not ok 1 - R1 not empty\"; fi\n\
+         if grep -q hello out.txt 2>/dev/null; then echo \"ok 2 - R2 hello\"; else echo \"not ok 2 - R2 hello\"; fi\n",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_refrozen_spec_refutes_against_its_own_baseline_not_a_refused_one() -> TestResult {
+    let rig = rig("refreeze")?;
+    write_content_check(&rig.cwd)?;
+    let store = store_for(&rig);
+    std::fs::write(rig.cwd.join("out.txt"), "hello\n")?;
+    let refused = store.freeze(hello_reqs(), &["out.txt".to_owned()], "sh check.sh");
+    assert!(matches!(refused, Err(FreezeError::Refused(_))));
+    std::fs::remove_file(rig.cwd.join("out.txt"))?;
+    let frozen = store
+        .freeze(hello_reqs(), &["out.txt".to_owned()], "sh check.sh")
+        .map_err(|error| format!("{error:?}"))?;
+    std::fs::write(rig.cwd.join("out.txt"), "hello\n")?;
+    store.run(RunKind::Run)?;
+    let record = store.ensure_refute(&frozen)?;
+    assert!(record.passed(), "{record:?}");
+    Ok(())
+}
+
+#[test]
+fn two_sessions_on_one_home_keep_their_own_baselines() -> TestResult {
+    let rig = rig("two-sessions")?;
+    let spec_dir = rig.root.join("spec");
+    let other_cwd = rig.root.join("other");
+    std::fs::create_dir_all(&other_cwd)?;
+    write_content_check(&rig.cwd)?;
+    write_content_check(&other_cwd)?;
+    let first = store_in(session_in(&rig, "first")?, &rig.cwd, &spec_dir);
+    let frozen = first
+        .freeze(hello_reqs(), &["out.txt".to_owned()], "sh check.sh")
+        .map_err(|error| format!("{error:?}"))?;
+    std::fs::write(other_cwd.join("out.txt"), "hello\n")?;
+    let second = store_in(session_in(&rig, "second")?, &other_cwd, &spec_dir);
+    let refused = second.freeze(hello_reqs(), &["out.txt".to_owned()], "sh check.sh");
+    assert!(matches!(refused, Err(FreezeError::Refused(_))));
+    std::fs::write(rig.cwd.join("out.txt"), "hello\n")?;
+    first.run(RunKind::Run)?;
+    let record = first.ensure_refute(&frozen)?;
+    assert!(record.passed(), "{record:?}");
+    Ok(())
+}
+
 #[test]
 fn the_enumerated_count_reads_lines_and_phrases() {
     assert_eq!(enumerated_count("do this:\n1. a\n2. b\n3) c\n- d\n"), 4);

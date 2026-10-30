@@ -214,9 +214,14 @@ impl SpecStore {
         &self.cwd
     }
 
-    /// Where the baseline snapshot and the refute's aside copies live, outside the workspace.
-    pub fn dir(&self) -> &Path {
-        &self.dir
+    /// The baseline snapshot and the refute's aside copies, per session, outside the workspace.
+    pub fn dir(&self) -> PathBuf {
+        match (self.store)() {
+            Some(session) => self
+                .dir
+                .join(&yi_session::lock_session(&session).metadata().id),
+            None => self.dir.clone(),
+        }
     }
 
     fn turn(&self) -> u32 {
@@ -509,11 +514,15 @@ impl SpecStore {
     }
 
     fn snapshot(&self, artifacts: &[Artifact]) -> Result<PathBuf, SpecError> {
-        let dir = self.dir.join("baseline");
-        std::fs::create_dir_all(&dir).map_err(|source| SpecError::Io {
+        let dir = self.dir().join("baseline");
+        let io = |source| SpecError::Io {
             path: dir.clone(),
             source,
-        })?;
+        };
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(io)?;
+        }
+        std::fs::create_dir_all(&dir).map_err(io)?;
         for (index, artifact) in artifacts.iter().enumerate() {
             let target = dir.join(index.to_string());
             if artifact.path().exists() {
