@@ -1,4 +1,5 @@
 ---
+version: 0.807.0
 issue: Refs #1675
 growth: +217 live-HEAD revalidation and slot cleanup; cached HEAD/branch state, duplicate status walks and slot-clearing copies were removed
 raise: crate cli +10, crate runtime +207, tests +394, comments +5

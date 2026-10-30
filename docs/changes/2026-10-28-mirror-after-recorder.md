@@ -1,4 +1,6 @@
 ---
+version: 0.811.0
+decisions: D505
 issue: Closes #1771
 decision: a newer push to main cancels the mirror run an older one started, instead of leaving both runs to race the tip guard | the recorder's commit now starts a mirror run of its own, so one merge can have two runs, and the older finishing last would force older history over the newer push | delete the concurrency block from mirror.yml
 ---

@@ -1,4 +1,5 @@
 ---
+version: 0.810.0
 issue: Closes #1536
 raise: crate cli +20, crate runtime +73, tests +228, comments +5
 ---
