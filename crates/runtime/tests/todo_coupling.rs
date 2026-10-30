@@ -1066,6 +1066,7 @@ fn spec_store(
         work.join(".yi-spec"),
         true,
         None,
+        None,
     );
     r.session.set_spec(Arc::clone(&store));
     Ok(store)

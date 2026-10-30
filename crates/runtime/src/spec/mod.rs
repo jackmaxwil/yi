@@ -20,21 +20,20 @@ pub fn wire(
         wiring.home.join(DIR),
         wiring.depth == 0,
         wiring.family_dir.clone(),
+        wiring.session_sandbox(),
     );
     session.set_spec(Arc::clone(&store));
     tools.push(Arc::new(tool::SpecTool::new(store)));
 }
-pub mod literal;
 pub mod refute;
 pub mod run;
 pub mod tap;
 pub mod tool;
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use serde_json::{Map, Value};
+use serde_json::Map;
 use yi_types::spec::{
     ARTIFACT_MAX_BYTES, Artifact, ArtifactRefused, CHECK_TIMEOUT_MAX, CheckCommand, Draft,
     FreezeFact, FreezeRefusal, Frozen, Kind, RefuteRecord, ReqId, Requirement, Run, RunKind,
@@ -42,23 +41,22 @@ use yi_types::spec::{
     Status,
 };
 
+use crate::goal::StoreHandle;
+
 pub const SPEC_PRELUDE_TYPE: &str = "spec_prelude";
 pub const OP_FREEZE: &str = "freeze";
 pub const OP_FREEZE_REFUSED: &str = "freeze_refused";
 pub const OP_ADD: &str = "add";
-
-pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
-/// Called after every freeze, run and add with the document and the run that changed it.
-pub type ChangeHook = Arc<dyn Fn(&Spec, Option<&Run>) + Send + Sync>;
 pub const FAMILY_SPEC_FILE: &str = "spec.json";
+
+/// The store as a late-bound handle: `spec_handle` fills the slot once the runtime is wired.
 pub type SpecHandle = Arc<dyn Fn() -> Option<Arc<SpecStore>> + Send + Sync>;
 
 /// What the prompt named before any spec existed: the enumerated count the freeze checks
-/// the requirements against, and the artifact paths the request names.
+/// the requirements against.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Expectation {
     pub enumerated: usize,
-    pub artifacts: Vec<PathBuf>,
     pub expected: bool,
 }
 
@@ -89,7 +87,6 @@ struct State {
     last: Option<Run>,
     refute: Option<RefuteRecord>,
     runs: u32,
-    turn: u32,
     writes_since_run: u32,
     expectation: Expectation,
 }
@@ -102,7 +99,9 @@ pub struct SpecStore {
     root: bool,
     /// The family dir (D164): the root writes `spec.json` there, a child reads it.
     family: Option<PathBuf>,
-    hooks: Mutex<Vec<ChangeHook>>,
+    family_cache: crate::file_cache::Slot<Spec>,
+    /// What a model-written check runs under: the same profile `bash` gets.
+    sandbox: Option<yi_tools::Sandbox>,
 }
 
 impl SpecStore {
@@ -114,6 +113,7 @@ impl SpecStore {
         dir: PathBuf,
         root: bool,
         family: Option<PathBuf>,
+        sandbox: Option<yi_tools::Sandbox>,
     ) -> Arc<Self> {
         let this = Arc::new(Self {
             state: Mutex::new(State::default()),
@@ -122,7 +122,8 @@ impl SpecStore {
             dir,
             root,
             family,
-            hooks: Mutex::new(Vec::new()),
+            family_cache: crate::file_cache::Slot::default(),
+            sandbox,
         });
         this.rehydrate();
         this
@@ -142,31 +143,34 @@ impl SpecStore {
         }
     }
 
-    /// The session's own document, or in a child the family's (read-only).
+    /// The session's own document, or in a child the family's (read-only), re-read only when
+    /// the root's file changed.
     pub fn spec(&self) -> Option<Spec> {
         let own = self.state.lock().ok().and_then(|state| state.spec.clone());
         if own.is_some() || self.root {
             return own;
         }
-        self.family.as_deref().and_then(read_family_spec)
+        let family = self.family.as_deref()?;
+        let path = family.join(FAMILY_SPEC_FILE);
+        let stamp = crate::file_cache::Stamp::of(&path, None)?;
+        self.family_cache
+            .load(stamp, || {
+                read_family_spec(family).ok_or(SpecError::NotFrozen)
+            })
+            .ok()
+            .map(|spec| spec.as_ref().clone())
     }
 
     pub fn is_root(&self) -> bool {
         self.root
     }
 
-    pub fn on_change(&self, hook: ChangeHook) {
-        if let Ok(mut hooks) = self.hooks.lock() {
-            hooks.push(hook);
-        }
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
     }
 
-    fn changed(&self, spec: &Spec, run: Option<&Run>) {
-        if let Ok(hooks) = self.hooks.lock() {
-            for hook in hooks.iter() {
-                hook(spec, run);
-            }
-        }
+    pub(crate) fn sandbox(&self) -> Option<&yi_tools::Sandbox> {
+        self.sandbox.as_ref()
     }
 
     pub fn last_run(&self) -> Option<Run> {
@@ -180,20 +184,13 @@ impl SpecStore {
             .unwrap_or_default()
     }
 
-    /// The prompt hook's fact: how many items the request enumerates and which paths it names.
-    pub fn note_request(&self, enumerated: usize, artifacts: Vec<PathBuf>) {
+    /// The prompt hook's fact: how many items the request enumerates.
+    pub fn note_request(&self, enumerated: usize) {
         if let Ok(mut state) = self.state.lock() {
             state.expectation = Expectation {
                 enumerated,
-                artifacts,
                 expected: true,
             };
-        }
-    }
-
-    pub fn note_turn(&self, turn: u32) {
-        if let Ok(mut state) = self.state.lock() {
-            state.turn = turn;
         }
     }
 
@@ -210,10 +207,6 @@ impl SpecStore {
             .unwrap_or(0)
     }
 
-    pub fn cwd(&self) -> &Path {
-        &self.cwd
-    }
-
     /// The baseline snapshot and the refute's aside copies, per session, outside the workspace.
     pub fn dir(&self) -> PathBuf {
         match (self.store)() {
@@ -222,10 +215,6 @@ impl SpecStore {
                 .join(&yi_session::lock_session(&session).metadata().id),
             None => self.dir.clone(),
         }
-    }
-
-    fn turn(&self) -> u32 {
-        self.state.lock().map(|state| state.turn).unwrap_or(0)
     }
 
     /// Validate, snapshot, run the baseline, then type every requirement by it. Every
@@ -305,7 +294,7 @@ impl SpecStore {
             &self.cwd,
             CHECK_TIMEOUT_MAX,
             RunKind::Baseline,
-            self.turn(),
+            self.sandbox.as_ref(),
         );
         self.record_run(&baseline);
         let mut facts = Vec::new();
@@ -371,7 +360,6 @@ impl SpecStore {
             state.runs = state.runs.saturating_add(1);
             state.writes_since_run = 0;
         }
-        self.changed(&spec, Some(&baseline));
         Ok(frozen)
     }
 
@@ -381,16 +369,12 @@ impl SpecStore {
             .spec()
             .and_then(|spec| spec.frozen().cloned())
             .ok_or(SpecError::NotFrozen)?;
-        let mut run = run::run_check(
+        let run = run::run_check(
             &frozen.draft.check,
             &self.cwd,
             frozen.timeout,
             kind,
-            self.turn(),
-        );
-        run.literal_overlaps = literal::overlaps(
-            refute::check_file(&self.cwd, frozen.draft.check.as_str()).as_deref(),
-            &frozen.draft.artifacts,
+            self.sandbox.as_ref(),
         );
         self.record_run(&run);
         {
@@ -399,7 +383,6 @@ impl SpecStore {
             state.runs = state.runs.saturating_add(1);
             state.writes_since_run = 0;
         }
-        self.changed(&Spec::Frozen(Box::new(frozen)), Some(&run));
         Ok(run)
     }
 
@@ -417,7 +400,7 @@ impl SpecStore {
         if let Some(record) = cached {
             return Ok(record);
         }
-        let record = refute::refute(self, frozen, self.turn())?;
+        let record = refute::refute(self, frozen)?;
         self.record_refute(&record);
         let mut state = self.state.lock().map_err(|_| SpecError::Poisoned)?;
         state.refute = Some(record.clone());
@@ -445,16 +428,18 @@ impl SpecStore {
             kind,
         });
         let spec = Spec::Frozen(frozen.clone());
-        let last = state.last.clone();
         drop(state);
         self.record_spec(OP_ADD, &spec, None);
-        self.changed(&spec, last.as_ref());
         Ok(id)
     }
 
     /// Green over total for the non-metric requirements, and the ids that are not green.
     pub fn summary(&self) -> Option<Summary> {
         let spec = self.spec()?;
+        self.summary_of(&spec)
+    }
+
+    fn summary_of(&self, spec: &Spec) -> Option<Summary> {
         let frozen = spec.frozen()?;
         let last = self.last_run()?;
         let mut summary = Summary::default();
@@ -483,7 +468,7 @@ impl SpecStore {
         let Some(frozen) = spec.frozen() else {
             return Some("spec: unfrozen".to_owned());
         };
-        let summary = self.summary()?;
+        let summary = self.summary_of(&spec)?;
         let mut line = format!("spec: {}/{} green", summary.green, summary.total);
         if !summary.red.is_empty() {
             line.push_str(&format!(" · red {}", ids_text(&summary.red)));
@@ -592,6 +577,12 @@ impl SpecStore {
     }
 }
 
+/// A session event that wrote the workspace: the last run no longer covers the tree.
+pub fn note_event(store: &SpecStore, event: &yi_types::event::AgentEvent) {
+    if crate::environment::GitSummary::wrote(event) {
+        store.note_write();
+    }
+}
 pub fn ids_text(ids: &[ReqId]) -> String {
     ids.iter().map(ReqId::as_str).collect::<Vec<_>>().join(" ")
 }
@@ -766,19 +757,4 @@ pub fn prelude_text(text: &str, checker: Option<&str>) -> String {
         ));
     }
     out
-}
-
-/// A metrics view for callers that render the last run.
-pub fn metrics_of(run: &Run) -> BTreeMap<String, f64> {
-    match &run.outcome {
-        yi_types::spec::Outcome::Ran { metrics, .. } => metrics
-            .iter()
-            .map(|(name, value)| (name.clone(), value.get()))
-            .collect(),
-        yi_types::spec::Outcome::NotRun(_) => BTreeMap::new(),
-    }
-}
-
-pub fn value_of(spec: &Spec) -> Value {
-    serde_json::to_value(spec).unwrap_or(Value::Null)
 }

@@ -403,9 +403,7 @@ impl AgentSession {
         fill(&self.shared.spec, spec);
     }
 
-    pub fn spec_handle(
-        &self,
-    ) -> Arc<dyn Fn() -> Option<Arc<crate::spec::SpecStore>> + Send + Sync> {
+    pub fn spec_handle(&self) -> crate::spec::SpecHandle {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {
             shared

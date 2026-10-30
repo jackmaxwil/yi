@@ -9,6 +9,7 @@ use super::{TodoStore, text, tool};
 use crate::goal::StoreHandle;
 use crate::plan::loop_coupling::gate::eager_init;
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
+use crate::spec::SpecHandle;
 
 type EnvironmentHandle = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
@@ -531,9 +532,6 @@ pub struct Options {
     pub deadline: Option<std::time::Duration>,
 }
 
-/// The spec the stop rule judges, absent in a session that has none.
-pub type SpecHandle = Arc<dyn Fn() -> Option<Arc<crate::spec::SpecStore>> + Send + Sync>;
-
 /// The ladder's last rung: the family reads its typed signal as `stuck`.
 const LET_GO: &str = "let go";
 
@@ -642,7 +640,7 @@ fn spec_prelude(spec: &SpecHandle, text: &str, deliver: &Arc<dyn Fn(AgentMessage
     if enumerated < crate::plan::loop_coupling::gate::ENUMERATED_ITEMS_MIN {
         return;
     }
-    store.note_request(enumerated, Vec::new());
+    store.note_request(enumerated);
     deliver(custom(
         crate::spec::SPEC_PRELUDE_TYPE,
         crate::spec::prelude_text(text, None),

@@ -49,7 +49,7 @@ pub struct Aside {
 
 impl Aside {
     pub fn take(artifacts: &[Artifact], dir: &Path) -> Result<Self, SpecError> {
-        remove_path(dir)?;
+        recover(artifacts, dir)?;
         std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
         let mut aside = Self {
             moves: Vec::new(),
@@ -100,6 +100,22 @@ impl Drop for Aside {
     fn drop(&mut self) {
         let _a_drop_restores_as_the_last_resort = self.restore_all();
     }
+}
+
+/// Invariant: a copy an interrupted refute left goes back over the path it came from before the
+/// directory is reused; deleting it there deletes the only copy of the user's product.
+fn recover(artifacts: &[Artifact], dir: &Path) -> Result<(), SpecError> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for (index, artifact) in artifacts.iter().enumerate() {
+        let aside = dir.join(index.to_string());
+        if aside.exists() {
+            remove_path(artifact.path())?;
+            move_path(&aside, artifact.path())?;
+        }
+    }
+    remove_path(dir)
 }
 
 /// Install one mutant at an artifact's path: the baseline copy (or absence), or an empty
@@ -157,7 +173,7 @@ pub fn key_of(cwd: &Path, frozen: &Frozen) -> RefuteKey {
 
 /// Run both mutants and record the `f2p` ids that stayed green under each. A check that
 /// cannot run without the artifact proved its dependence: not green.
-pub fn refute(store: &SpecStore, frozen: &Frozen, turn: u32) -> Result<RefuteRecord, SpecError> {
+pub fn refute(store: &SpecStore, frozen: &Frozen) -> Result<RefuteRecord, SpecError> {
     let key = key_of(store.cwd(), frozen);
     let aside_dir = store.dir().join("aside");
     let mut record = RefuteRecord {
@@ -184,12 +200,11 @@ pub fn refute(store: &SpecStore, frozen: &Frozen, turn: u32) -> Result<RefuteRec
                 store.cwd(),
                 frozen.timeout,
                 RunKind::Refute(mutant),
-                turn,
+                store.sandbox(),
             )
         });
         aside.restore()?;
         let run = run?;
-        store.record_run(&run);
         let green: Vec<ReqId> = frozen
             .draft
             .requirements

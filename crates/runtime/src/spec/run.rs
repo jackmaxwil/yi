@@ -45,11 +45,11 @@ pub fn run_check(
     cwd: &Path,
     timeout: Duration,
     kind: RunKind,
-    turn: u32,
+    sandbox: Option<&yi_tools::Sandbox>,
 ) -> Run {
     let started = Instant::now();
-    let mut command = yi_tools::command("sh");
-    command.arg("-c").arg(check.as_str()).current_dir(cwd);
+    let mut command = check_command(check, sandbox);
+    command.current_dir(cwd);
     let deadline = started.checked_add(timeout).unwrap_or(started);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
     let at = yi_session::now_ms();
@@ -81,11 +81,26 @@ pub fn run_check(
     };
     Run {
         at,
-        turn,
         kind,
         duration: started.elapsed(),
         tail: outcome.1,
         outcome: outcome.0,
-        literal_overlaps: Vec::new(),
     }
+}
+
+/// The check as the model's own command: keyless always, and contained when the session is.
+fn check_command(
+    check: &CheckCommand,
+    sandbox: Option<&yi_tools::Sandbox>,
+) -> std::process::Command {
+    let (program, args) = match sandbox {
+        Some(sandbox) => sandbox.wrap("sh", &["-c", check.as_str()]),
+        None => (
+            "sh".to_owned(),
+            vec!["-c".to_owned(), check.as_str().to_owned()],
+        ),
+    };
+    let mut command = yi_tools::keyless_command(program);
+    command.args(args);
+    command
 }

@@ -241,7 +241,7 @@ impl RuntimeWiring {
 
     /// The kernel's and its `bash()` jobs' profile holds the wall and a contained call's walled
     /// roots (#889), since a cell opens files past the tool seam; the board reads again.
-    fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
+    pub(crate) fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
         let private = self.writable_kernel_dir();
         let mut sandbox = crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())?;
         sandbox.host_owned.extend(self.sessions_dir.clone());

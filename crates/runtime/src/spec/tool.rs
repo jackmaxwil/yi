@@ -235,6 +235,10 @@ fn why_text(why: &yi_types::spec::ArtifactRefused) -> String {
             "the working directory or an ancestor of it".to_owned()
         }
         yi_types::spec::ArtifactRefused::Home => "a home directory".to_owned(),
+        yi_types::spec::ArtifactRefused::Outside => {
+            "outside the workspace; the refute moves it, so it must be a path under the cwd"
+                .to_owned()
+        }
         yi_types::spec::ArtifactRefused::TooLarge { bytes, max } => {
             format!("{bytes} bytes, over the {max} byte cap; declare the files, not the tree")
         }

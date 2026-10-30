@@ -126,10 +126,16 @@ pub enum ArtifactRefused {
     Root,
     CwdOrAncestor,
     Home,
-    TooLarge { bytes: u64, max: u64 },
+    /// Outside the workspace the session may write: the refute moves the path it names.
+    Outside,
+    TooLarge {
+        bytes: u64,
+        max: u64,
+    },
 }
 
 impl Artifact {
+    /// Invariant: the path is inside `cwd` after links resolve, because the refute moves it.
     pub fn declare(raw: &str, cwd: &Path, home: Option<&Path>) -> Result<Self, ArtifactRefused> {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -148,12 +154,24 @@ impl Artifact {
         {
             return Err(ArtifactRefused::Home);
         }
+        if !path.starts_with(&cwd) || resolves_outside(&path, &cwd) {
+            return Err(ArtifactRefused::Outside);
+        }
         Ok(Self(path))
     }
 
     pub fn path(&self) -> &Path {
         &self.0
     }
+}
+
+/// A path inside the workspace whose link chain leaves it: the refute would move another tree.
+fn resolves_outside(path: &Path, cwd: &Path) -> bool {
+    let Ok(real) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    !real.starts_with(&root)
 }
 
 /// Lexical `.` and `..` removal: the path may not exist yet, so `canonicalize` cannot.
@@ -352,14 +370,10 @@ pub enum Outcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Run {
     pub at: u64,
-    pub turn: u32,
     pub kind: RunKind,
     pub duration: Duration,
     pub tail: String,
     pub outcome: Outcome,
-    /// Check literals found verbatim in an artifact: typed, not computed (D170).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub literal_overlaps: Vec<String>,
 }
 
 impl Run {

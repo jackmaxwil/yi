@@ -3,11 +3,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use yi_runtime::environment::GitSummary;
 use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, SharedSession};
+use yi_runtime::spec::gate::{self, Reason, Verdict};
+use yi_runtime::spec::refute::Aside;
 use yi_runtime::spec::tool::SpecTool;
 use yi_runtime::spec::{FreezeError, SpecStore, enumerated_count, latest_record, latest_run};
 use yi_tools::{Tool, ToolContext};
-use yi_types::spec::{FreezeFact, Kind, ReqId, RunKind, Status};
+use yi_types::event::{AgentEvent, ToolResult};
+use yi_types::spec::{
+    Artifact, ArtifactRefused, FreezeFact, Kind, ReqId, Requirement, RunKind, Spec, Status,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -38,6 +44,7 @@ fn store_for(rig: &Rig) -> Arc<SpecStore> {
         rig.cwd.clone(),
         rig.root.join("spec"),
         true,
+        None,
         None,
     )
 }
@@ -78,7 +85,7 @@ fn a_frozen_spec_types_every_requirement_by_the_baseline_run() -> TestResult {
     let rig = rig("freeze")?;
     write_check(&rig.cwd)?;
     let store = store_for(&rig);
-    store.note_request(2, vec![rig.cwd.join("out.txt")]);
+    store.note_request(2);
     let frozen = store
         .freeze(
             reqs(&[
@@ -148,7 +155,7 @@ fn freeze_refuses_every_failing_fact_at_once() -> TestResult {
     let rig = rig("facts")?;
     write_check(&rig.cwd)?;
     let store = store_for(&rig);
-    store.note_request(5, Vec::new());
+    store.note_request(5);
     let result = store.freeze(
         reqs(&[
             ("out.txt exists", Kind::P2p),
@@ -323,6 +330,7 @@ fn a_child_store_runs_but_never_freezes() -> TestResult {
         rig.root.join("spec"),
         false,
         None,
+        None,
     );
     assert!(matches!(
         child.freeze(reqs(&[("x", Kind::F2p)]), &[], "true"),
@@ -388,7 +396,7 @@ fn a_refused_freeze_renders_every_fact() -> TestResult {
     let rig = rig("refusal")?;
     write_check(&rig.cwd)?;
     let store = store_for(&rig);
-    store.note_request(4, Vec::new());
+    store.note_request(4);
     let tool = SpecTool::new(store);
     let (error, text) = call(
         &tool,
@@ -412,7 +420,7 @@ fn the_environment_line_names_an_expected_spec_and_nothing_otherwise() -> TestRe
     let rig = rig("line")?;
     let store = store_for(&rig);
     assert_eq!(store.line(), None, "a chat with no product expects no spec");
-    store.note_request(3, vec![rig.cwd.join("out.txt")]);
+    store.note_request(3);
     assert_eq!(
         store.line().as_deref(),
         Some("spec: none (expected: write check.py, then `spec freeze`)")
@@ -435,6 +443,7 @@ fn store_in(session: SharedSession, cwd: &Path, spec_dir: &Path) -> Arc<SpecStor
         cwd.to_path_buf(),
         spec_dir.to_path_buf(),
         true,
+        None,
         None,
     )
 }
@@ -503,4 +512,165 @@ fn the_enumerated_count_reads_lines_and_phrases() {
     assert_eq!(enumerated_count("the following 27 constraints hold"), 27);
     assert_eq!(enumerated_count("fix the bug"), 0);
     assert_eq!(enumerated_count("1. a\n2. b\nall 5 tests must pass"), 5);
+}
+
+fn store_handle(session: SharedSession) -> Arc<dyn Fn() -> Option<SharedSession> + Send + Sync> {
+    Arc::new(move || Some(session.clone()))
+}
+
+fn tool_end(tool_name: &str) -> AgentEvent {
+    AgentEvent::ToolExecutionEnd {
+        tool_call_id: "call-1".to_owned(),
+        tool_name: tool_name.to_owned(),
+        result: ToolResult {
+            content: Vec::new(),
+            details: Value::Null,
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error: false,
+    }
+}
+
+#[test]
+fn a_write_after_the_last_run_makes_the_next_stop_rerun_the_check() -> TestResult {
+    let rig = rig("write")?;
+    write_content_check(&rig.cwd)?;
+    let store = store_for(&rig);
+    store
+        .freeze(hello_reqs(), &["out.txt".to_owned()], "sh check.sh")
+        .map_err(|error| format!("{error:?}"))?;
+    std::fs::write(rig.cwd.join("out.txt"), "hello\n")?;
+    store.run(RunKind::Run)?;
+    assert!(matches!(gate::judge(&store, None), Verdict::Pass));
+    // The model deletes what the check reads, and the stop must not reuse the green run.
+    std::fs::remove_file(rig.cwd.join("out.txt"))?;
+    assert!(GitSummary::wrote(&tool_end("write")), "a write tool counts");
+    assert!(
+        !GitSummary::wrote(&tool_end("read")),
+        "a read changes nothing"
+    );
+    yi_runtime::spec::note_event(&store, &tool_end("write"));
+    yi_runtime::spec::note_event(&store, &tool_end("read"));
+    match gate::judge(&store, None) {
+        Verdict::Refuse { reason, text } => {
+            assert_eq!(reason, Reason::Red);
+            assert!(text.contains("R1"), "{text}");
+        }
+        Verdict::Pass => return Err("a stop passed over a tree the last run did not see".into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn an_artifact_the_refute_would_move_outside_the_workspace_is_refused() -> TestResult {
+    let rig = rig("outside")?;
+    let home = rig.root.join("home");
+    std::fs::create_dir_all(&home)?;
+    let outside = rig.root.join("secret.txt");
+    std::fs::write(&outside, "mine")?;
+    std::os::unix::fs::symlink(&outside, rig.cwd.join("planted"))?;
+    let absolute = outside.to_str().unwrap_or_default().to_owned();
+    for (raw, why) in [
+        ("../secret.txt", ArtifactRefused::Outside),
+        (absolute.as_str(), ArtifactRefused::Outside),
+        ("planted", ArtifactRefused::Outside),
+    ] {
+        let refused = Artifact::declare(raw, &rig.cwd, Some(&home));
+        assert_eq!(refused.err(), Some(why), "{raw}");
+    }
+    let inside =
+        Artifact::declare("out.txt", &rig.cwd, Some(&home)).map_err(|why| format!("{why:?}"))?;
+    assert_eq!(inside.path(), rig.cwd.join("out.txt"));
+    Ok(())
+}
+
+#[test]
+fn an_interrupted_refute_puts_its_aside_copy_back_before_reusing_the_directory() -> TestResult {
+    let rig = rig("aside")?;
+    let artifact =
+        Artifact::declare("out.txt", &rig.cwd, None).map_err(|why| format!("{why:?}"))?;
+    let dir = rig.root.join("aside");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("0"), "the user's product")?;
+    std::fs::write(rig.cwd.join("out.txt"), "")?;
+    let aside = Aside::take(std::slice::from_ref(&artifact), &dir)?;
+    assert_eq!(
+        std::fs::read_to_string(dir.join("0"))?,
+        "the user's product",
+        "the aside copy survived"
+    );
+    drop(aside);
+    assert_eq!(
+        std::fs::read_to_string(rig.cwd.join("out.txt"))?,
+        "the user's product"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_refute_leaves_the_last_run_the_one_the_model_can_read() -> TestResult {
+    let rig = rig("refute-run")?;
+    write_content_check(&rig.cwd)?;
+    let store = store_for(&rig);
+    let frozen = store
+        .freeze(hello_reqs(), &["out.txt".to_owned()], "sh check.sh")
+        .map_err(|error| format!("{error:?}"))?;
+    std::fs::write(rig.cwd.join("out.txt"), "hello\n")?;
+    store.run(RunKind::Run)?;
+    assert!(store.ensure_refute(&frozen)?.passed());
+    let last = latest_run(&rig.session).ok_or("no run record")?;
+    assert_eq!(
+        last.kind,
+        RunKind::Run,
+        "a mutant run is not the session's run"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_child_reads_the_family_spec_again_when_the_root_rewrites_it() -> TestResult {
+    let rig = rig("family")?;
+    write_content_check(&rig.cwd)?;
+    let family = rig.root.join("family");
+    let root = SpecStore::new(
+        store_handle(rig.session.clone()),
+        rig.cwd.clone(),
+        rig.root.join("spec"),
+        true,
+        Some(family.clone()),
+        None,
+    );
+    root.freeze(hello_reqs(), &["out.txt".to_owned()], "sh check.sh")
+        .map_err(|error| format!("{error:?}"))?;
+    let child = SpecStore::new(
+        store_handle(session_in(&rig, "child")?),
+        rig.cwd.clone(),
+        rig.root.join("child-spec"),
+        false,
+        Some(family.clone()),
+        None,
+    );
+    let seen = child.spec().ok_or("no family spec")?;
+    assert_eq!(seen.draft().requirements.len(), 2);
+    let mut spec = root.spec().ok_or("no root spec")?;
+    match &mut spec {
+        Spec::Frozen(frozen) => frozen.draft.requirements.push(Requirement {
+            id: ReqId::numbered(3),
+            text: "the third".to_owned(),
+            kind: Kind::P2p,
+        }),
+        Spec::Draft(_) => return Err("the root froze a draft".into()),
+    }
+    std::fs::write(family.join("spec.json"), serde_json::to_string(&spec)?)?;
+    let written = std::fs::read_to_string(family.join("spec.json"))?;
+    assert!(
+        written.contains("the third"),
+        "{}",
+        &written[..200.min(written.len())]
+    );
+    let again = child.spec().ok_or("no family spec")?;
+    assert_eq!(again.draft().requirements.len(), 3, "the cache went stale");
+    Ok(())
 }

@@ -156,13 +156,16 @@ impl GitSummary {
     }
 
     pub fn note_event(generation: &AtomicU64, event: &AgentEvent) {
-        let changed = matches!(event, AgentEvent::AgentStart)
-            || matches!(event, AgentEvent::ToolExecutionEnd { tool_name, result, .. }
-                if WRITERS.contains(&tool_name.as_str())
-                    || result.details.get("applied").and_then(serde_json::Value::as_u64) > Some(0));
-        if changed {
+        if matches!(event, AgentEvent::AgentStart) || Self::wrote(event) {
             generation.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    /// Whether this event's tool call changed the workspace, which a spec run no longer covers.
+    pub fn wrote(event: &AgentEvent) -> bool {
+        matches!(event, AgentEvent::ToolExecutionEnd { tool_name, result, .. }
+            if WRITERS.contains(&tool_name.as_str())
+                || result.details.get("applied").and_then(serde_json::Value::as_u64) > Some(0))
     }
 
     /// Invariant: the lock is held across the read, so callers at once run `git status` once.

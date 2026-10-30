@@ -147,12 +147,6 @@ pub fn judge(store: &SpecStore, left: Option<Duration>) -> Verdict {
             "; ran {ago}s ago, after your last write.{} Fix them and `spec run`; a clean stop is accepted only when every requirement is green.",
             clock(left)
         ));
-        if !run.literal_overlaps.is_empty() {
-            text.push_str(&format!(
-                "\nTyped values: {}; expected values are computed from the inputs, never typed.",
-                run.literal_overlaps.join(", ")
-            ));
-        }
         return refuse(Reason::Red, text);
     }
     match store.ensure_refute(&frozen) {
