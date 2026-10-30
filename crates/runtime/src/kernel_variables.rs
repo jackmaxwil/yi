@@ -51,7 +51,7 @@ pub enum VariableReadError {
     #[error("the kernel could not be read: {detail}")]
     Cell { detail: String },
     #[error(
-        "the agent is running a cell; nothing was read within {} s. A live read needs an idle agent: it can rlm.put(name, value) before it awaits, then read family://<name> or call rlm.get(name)",
+        "the agent is running a cell; nothing was read within {} s. A live read needs an idle agent: let it rlm.put(name, value) before it awaits, and a member with a kernel reads it back with rlm.get(name); a reader has no kernel, so give it the value through context_keys. family://<name> is the put's sidecar, not the object",
         yi_kernel::KERNEL_STATE_LISTING_TIMEOUT_MS / 1000
     )]
     Busy,
