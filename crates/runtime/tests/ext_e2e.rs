@@ -1230,79 +1230,8 @@ impl yi_runtime::ext::Extension for TwoAttaches {
     }
 }
 
-/// The Host arm is where attached project and memory text is screened: an untrusted block is
-/// marked and journaled, a granted one is never argued with, and one text costs one call.
-#[test]
-fn the_host_screens_an_untrusted_attach_and_never_a_granted_one() -> TestResult {
-    let (screeners, seen, handle) =
-        crate::classifier_e2e::armed(r#"{"answers":{"inject":{"noul":0.93}}}"#)?;
-    let mut host = Host::new(std::env::temp_dir());
-    host.register(Box::new(TwoAttaches));
-    host.set_screen(screeners);
-    host.start(None, false);
-    host.screen_pending(None);
-    let prompt = host.system_prompt();
-    handle.join().map_err(|_| "sidecar thread")?;
-    assert!(
-        prompt.contains(r#"source="page" trust="untrusted" screen="flagged:0.93""#),
-        "the untrusted attach is marked: {prompt}"
-    );
-    assert!(
-        prompt.contains(r#"source="AGENTS.md" trust="granted""#),
-        "the granted attach keeps its own label: {prompt}"
-    );
-    assert_eq!(
-        prompt.matches("screen=").count(),
-        1,
-        "the granted fence carries no mark: {prompt}"
-    );
-    let records = crate::classifier_e2e::taken(&seen);
-    assert_eq!(
-        records.len(),
-        1,
-        "the granted block is never sent to the screen: {records:?}"
-    );
-    assert_eq!(
-        records
-            .first()
-            .and_then(|record| record.extra.get("sourceKind"))
-            .and_then(|kind| kind.as_str()),
-        Some("fetch")
-    );
-    Ok(())
-}
-
-/// The screen is the session's work, not the dispatch's: the host parks untrusted text, so the
-/// sidecar call is never made on the thread that dispatches the event or under the host lock.
-#[test]
-fn an_untrusted_attach_is_parked_until_the_caller_drains_it() -> TestResult {
-    let (screeners, seen, handle) =
-        crate::classifier_e2e::armed(r#"{"answers":{"inject":{"noul":0.93}}}"#)?;
-    let mut host = Host::new(std::env::temp_dir());
-    host.register(Box::new(TwoAttaches));
-    host.set_screen(screeners);
-    host.start(None, false);
-    assert!(
-        crate::classifier_e2e::taken(&seen).is_empty(),
-        "the dispatch path asks the sidecar nothing"
-    );
-    host.screen_pending(None);
-    handle.join().map_err(|_| "sidecar thread")?;
-    let prompt = host.system_prompt();
-    assert!(
-        prompt.contains(r#"source="page" trust="untrusted" screen="flagged:0.93""#),
-        "the drained attach is marked: {prompt}"
-    );
-    assert_eq!(
-        crate::classifier_e2e::taken(&seen).len(),
-        1,
-        "one untrusted attach, one call"
-    );
-    Ok(())
-}
-
-/// The sidecar's answer is held until `prompt` returns, so only a screen the run task awaits can
-/// carry the mark: on the prompting thread the call times out and journals `unscreened`.
+/// The sidecar's answer is held until `prompt` returns: only the run task's own drain can carry
+/// the mark, and it makes the one call, for untrusted text alone.
 #[tokio::test]
 async fn a_session_marks_the_attach_its_host_parked_before_the_first_request() -> TestResult {
     let provider = std::sync::Arc::new(yi_runtime::ProviderStream::new(None));
@@ -1327,6 +1256,10 @@ async fn a_session_marks_the_attach_its_host_parked_before_the_first_request() -
     host.register(Box::new(TwoAttaches));
     session.install_extensions(host);
     session.prompt("go")?;
+    assert!(
+        crate::classifier_e2e::taken(&seen).is_empty(),
+        "the dispatch path asks the sidecar nothing"
+    );
     release
         .send(())
         .map_err(|_| "the held answer outlived the prompt")?;
@@ -1335,14 +1268,35 @@ async fn a_session_marks_the_attach_its_host_parked_before_the_first_request() -
     let prompt = session.system_prompt();
     assert!(
         prompt.contains(r#"source="page" trust="untrusted" screen="flagged:0.93""#),
-        "the session's first request carries the mark: {prompt}"
+        "the untrusted attach is marked: {prompt}"
+    );
+    assert!(
+        prompt.contains(r#"source="AGENTS.md" trust="granted""#),
+        "the granted attach keeps its own label: {prompt}"
+    );
+    assert_eq!(
+        prompt.matches("screen=").count(),
+        1,
+        "the granted fence carries no mark: {prompt}"
     );
     let records = crate::classifier_e2e::taken(&seen);
-    assert_eq!(records.len(), 1, "the parked attach was screened once");
     assert_eq!(
-        records.first().and_then(|record| record.answer.as_deref()),
+        records.len(),
+        1,
+        "the granted block is never sent to the screen: {records:?}"
+    );
+    let record = records.first().ok_or("no classify row")?;
+    assert_eq!(
+        record
+            .extra
+            .get("sourceKind")
+            .and_then(|kind| kind.as_str()),
+        Some("fetch")
+    );
+    assert_eq!(
+        record.answer.as_deref(),
         Some("flagged"),
-        "the answer is journaled as the mark, not as unscreened: {records:?}"
+        "the answer is journaled as the mark, not as unscreened: {record:?}"
     );
     Ok(())
 }

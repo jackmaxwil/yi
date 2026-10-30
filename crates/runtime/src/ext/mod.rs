@@ -162,22 +162,21 @@ pub struct Host {
 }
 
 /// Outside text parked for the screen, with the source its fence carries.
-pub struct Pending {
+pub(crate) struct Pending {
     source: String,
     kind: &'static str,
     text: String,
 }
 
 impl Pending {
-    pub fn kind(&self) -> &'static str {
+    pub(crate) fn kind(&self) -> &'static str {
         self.kind
     }
 
-    pub fn text(&self) -> &str {
+    pub(crate) fn text(&self) -> &str {
         &self.text
     }
 }
-
 fn named_paths(prompt: &str) -> u32 {
     let count = prompt
         .split_whitespace()
@@ -222,27 +221,13 @@ impl Host {
         self.screen.clone()
     }
 
-    /// Takes the text parked since the last drain: the caller screens it, on a blocking thread
-    /// when it has one, and hands the result back to [`Self::attach_screened`].
-    pub fn take_pending(&mut self) -> Vec<Pending> {
+    /// Takes the text parked since the last drain: the session screens it off its worker and
+    /// hands the result back to [`Self::attach_screened`].
+    pub(crate) fn take_pending(&mut self) -> Vec<Pending> {
         std::mem::take(&mut self.pending)
     }
 
-    /// The synchronous drain a host outside a session uses: the sidecar call runs on this thread.
-    pub fn screen_pending(&mut self, store: Option<&yi_session::SharedSession>) {
-        let screen = self.screen.clone();
-        let screened = self
-            .take_pending()
-            .into_iter()
-            .map(|pending| {
-                let screened = screen.screen(pending.kind, &pending.text);
-                (pending, screened)
-            })
-            .collect();
-        self.attach_screened(screened, store);
-    }
-
-    pub fn attach_screened(
+    pub(crate) fn attach_screened(
         &mut self,
         screened: Vec<(Pending, crate::classifier::Screened)>,
         store: Option<&yi_session::SharedSession>,
