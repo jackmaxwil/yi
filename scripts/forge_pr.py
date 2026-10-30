@@ -34,6 +34,7 @@ def job_secs(workflow):
     return int(found.group(1)) * 60
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+import forge_tracking  # noqa: E402
 import merge_baseline  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
 
@@ -101,9 +102,25 @@ def pull(number):
     return pr
 
 
+def open_pulls():
+    """Every open pull request, page by page: the forge returns 50 a page, and a reader of page one
+    alone never sees the oldest. Incident: 102 were open and a pass saw #1830..#1891 only."""
+    bad = []
+
+    def transport(method, path, body):
+        batch = fgj_api(method, path, body)
+        if not isinstance(batch, list) and not bad:
+            bad.append(batch)
+        return batch
+
+    found = list(forge_tracking.paged(transport, f"repos/{repo()}/pulls?state=open"))
+    # Incident: an unsigned fgj answered the listing with an error object the loop then indexed, so
+    # every page's reply is judged, and a 404 (None) is a failed page, not an empty one.
+    return bad[0] if bad else found
+
+
 def pull_for_branch(name):
-    pulls = fgj_api("GET", f"repos/{repo()}/pulls?state=open&limit=50") or []
-    for pr in pulls:
+    for pr in open_pulls() or []:
         if pr.get("head", {}).get("ref") == name:
             return pr
     return None
@@ -327,7 +344,7 @@ def cmd_check(args):
         title, body = pr["title"], pr.get("body") or ""
     else:
         title = args.title or ""
-        body = pathlib.Path(args.body).read_text() if args.body else ""
+        body = compose_body(args)
     errs = check_problems(title, body)
     for err in errs:
         print(err)
@@ -457,11 +474,17 @@ def is_behind(pr):
 
 
 def required():
+    """Invariant: a merge waits on the three gates whatever the protection rule lists, because the
+    rule is a setting someone can shorten and the merge verb is where red must stop."""
+    import pr_review
+
     protections = fgj_api("GET", f"repos/{repo()}/branch_protections") or []
+    protected = ["size-report", "title"]
     for protection in protections:
         if protection.get("branch_name") == "main":
-            return required_jobs(protection.get("status_check_contexts") or [])
-    return ["gate (guardrails)", "gate (lint)", "gate (test)", "size-report", "title"]
+            protected = required_jobs(protection.get("status_check_contexts") or [])
+    return list(dict.fromkeys([*pr_review.GATE_LANES, *protected]))
+
 
 def jobs_of(pr):
     tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
@@ -551,7 +574,9 @@ def cmd_merge(args):
                     print(f"  {err}")
                 print(f"merge: refused — #{number} needs two review rounds clean on its head")
                 return 1
-            answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/merge", {"Do": "merge"})
+            # The head the gates were read on: the forge refuses a head that moved since.
+            answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/merge",
+                             {"Do": "merge", "head_commit_id": pr["head"]["sha"]})
             if answer and answer.get("message"):
                 print(f"merge refused: {answer['message']}")
                 if "behind" not in answer["message"]:
@@ -613,6 +638,45 @@ def selfcheck():
         raise AssertionError("a missing workflow read as a limit")
     except FileNotFoundError:
         pass
+    # The listing pages: 102 open pulls are three pages, and a reader of page one never sees the oldest.
+    served = [{"number": n, "head": {"ref": f"b{n}"}} for n in range(102)]
+
+    def listing(method, path, payload=None):
+        if "pulls?state=open" not in path:
+            return {"message": "not this one"}
+        page = int(re.search(r"page=(\d+)", path).group(1))
+        return served[(page - 1) * 50:page * 50]
+
+    real = globals()["fgj_api"], globals()["repo"]
+    globals()["fgj_api"], globals()["repo"] = listing, lambda: "o/r"
+    try:
+        assert [pr["number"] for pr in open_pulls()] == list(range(102)), "the open listing skipped a page's worth"
+        assert pull_for_branch("b101")["number"] == 101, "a pull request past the first page is not found by branch"
+    finally:
+        globals()["fgj_api"], globals()["repo"] = real
+    globals()["fgj_api"] = lambda *a, **k: {"message": "no token"}
+    try:
+        assert open_pulls()["message"] == "no token", "an error object read as a page"
+    finally:
+        globals()["fgj_api"] = real[0]
+    # A page after the first answering with an error object is returned, never spliced into the list.
+    globals()["fgj_api"] = lambda m, path, payload=None: served[:50] if path.endswith("page=1") else {"message": "no token"}
+    try:
+        late = open_pulls()
+        assert not isinstance(late, list) and late["message"] == "no token", f"a later page's error object read as {late[50:]!r}"
+    finally:
+        globals()["fgj_api"] = real[0]
+    for gone, where in ((lambda *a, **k: None, "first"), (lambda m, path, payload=None: served[:50] if path.endswith("page=1") else None, "later")):
+        globals()["fgj_api"] = gone
+        try:
+            assert open_pulls() is None, f"a 404 on the {where} page read as a listing"
+        finally:
+            globals()["fgj_api"] = real[0]
+    globals()["fgj_api"] = lambda *a, **k: served[:50]
+    try:
+        assert len(open_pulls()) == 50, "a forge that ignores `page` served its first page forever"
+    finally:
+        globals()["fgj_api"] = real[0]
     assert repo_of("ssh://git@forge.example.invalid:2222/apex/yi.git") == "apex/yi"
     assert repo_of("https://git.example.invalid/apex/yi") == "apex/yi"
     assert repo_of("git@github.com:jackmaxwil/yi.git") == "jackmaxwil/yi"
@@ -657,21 +721,26 @@ def selfcheck():
     # Incident: measure() grew the surface delta and this unpack still took three, so
     # `just pr open`, `pr check` and `land` died on a ValueError before asking anything.
     import check_pr_metadata as gate
+    def fake_measure(measured):
+        """Replaces check_pr_metadata.measure with one returning `measured`; returns (the saved measure, the body with every REQUIRED section)."""
+        saved = gate.measure
+        gate.measure = lambda: (measured, None)
+        return saved, "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED)
 
-    real = gate.measure, globals()["repo"]
-    gate.measure = lambda: (([], [], 0, ([], ["tool:bash"])), None)
+
+    real_repo = globals()["repo"]
+    real_measure, filled = fake_measure(([], [], 0, ([], ["tool:bash"])))
     globals()["repo"] = lambda: "apex/yi"
-    filled = "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED)
     try:
         errs = check_problems("Lock the tool surface", filled)
         drafted = check_problems(DRAFT + "Lock the tool surface", "## Summary\n\nwords\n")
     finally:
-        gate.measure, globals()["repo"] = real
+        gate.measure, globals()["repo"] = real_measure, real_repo
     assert len(errs) == 1 and "## Claims ledger" in errs[0] and "tool:bash" in errs[0], errs
     assert not [e for e in drafted if e.startswith("title:")], "a draft title passes the title rule"
     assert any("no `## Why needed`" in e for e in drafted), "`just pr open` runs the template check"
     # Incident: the D249 hard-cap line missed the ratchet regex, so `just push` went on.
-    import contextlib, io, check_binary_size
+    import contextlib, io, types, check_binary_size
 
     over = check_binary_size.problems(9_500_000, check_binary_size.HARD_CAP_BYTES)[0]
     assert over == "dist binary 9500000 > hard cap 9437184 bytes", over
@@ -729,9 +798,45 @@ def selfcheck():
     finally:
         globals().update(fakes)
     assert refused == 1 and "refused to update" in conflicted.getvalue(), "a refused update stops the merge loop"
+
+    def merge_on_fake_forge(protected, statuses):
+        """cmd_merge for #7 against a forge whose rule lists `protected` and whose head `abc1234` ran
+        `statuses`: (exit code, the bodies posted to /merge)."""
+        posts = []
+        tasks = [{"name": job, "status": status, "run_number": 1, "head_sha": "abc1234", "updated_at": "1"}
+                 for job, status in statuses.items()]
+
+        def forge(method, path, payload=None):
+            if path.endswith("/merge"):
+                posts.append(payload)
+                return {}
+            if path.endswith("/branch_protections"):
+                return [{"branch_name": "main", "status_check_contexts": protected}]
+            if "/actions/tasks" in path:
+                return {"workflow_runs": tasks}
+            return {"number": 7, "title": "Keep the gate", "state": "closed" if posts else "open", "merged": bool(posts),
+                    "head": {"sha": "abc1234", "ref": "x"}, "base": {"ref": "main"}}
+
+        saved = {name: globals()[name] for name in ("fgj_api", "repo", "is_behind", "unreviewed", "POLL")}
+        globals().update(fgj_api=forge, repo=lambda: "apex/yi", is_behind=lambda pr: False,
+                         unreviewed=lambda n, pr: [], POLL=0)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = cmd_merge(argparse.Namespace(number=7, timeout=1, wait=False))
+        finally:
+            globals().update(saved)
+        return code, posts
+
+    green = {"gate (guardrails)": "success", "gate (lint)": "success", "gate (test)": "success", "title": "success"}
+    listed = ["pr / title (pull_request)"]
+    code, posts = merge_on_fake_forge(listed, green)
+    assert code == 0 and posts == [{"Do": "merge", "head_commit_id": "abc1234"}], ("the merge names the head the gates ran on", posts)
+    code, posts = merge_on_fake_forge(listed, dict(green, **{"gate (test)": "failure"}))
+    assert code == 1 and not posts, "a red gate (test) on the head is not merged even when the rule does not list it"
+    code, posts = merge_on_fake_forge(listed, {job: s for job, s in green.items() if job != "gate (lint)"})
+    assert code == 2 and not posts, "a gate that has not run on the head is not merged"
     assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
-    real_measure = gate.measure
-    gate.measure = lambda: (([], [], 0, ([], [])), None)
+    real_measure, _ = fake_measure(([], [], 0, ([], [])))
     body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_body.md"
     body_file.write_text("## Summary\n\nwords\n")
     globals()["pull"] = lambda n: {"number": n, "title": "Keep the gate"}
@@ -751,10 +856,33 @@ def selfcheck():
         globals()["fgj_api"] = real_fgj
     assert stopped == 1, "a refused PATCH is not reported as an edit"
     assert any("no `## Why needed`" in line for line in seen.getvalue().splitlines()), seen.getvalue()
-    # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green,
-    # because nothing here built the verbs; a name the parser wires that no longer exists
-    # now fails this flag instead of the next `just commit`.
-    build_parser()
+    gate.measure = lambda: (([], [], 200, ([], [])), None)
+    prefill = "## UI changes\n\nNone.\n"
+    unlisted = "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED if title != "UI changes")
+    body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_check.md"
+    body_file.write_text(unlisted)
+    issue_ok, judged, real_check, real_run = gate.issue_problems, [], check_problems, subprocess.run
+    gate.issue_problems = lambda *a: []
+    globals()["check_problems"] = lambda title, body: judged.append(body) or real_check(title, body)
+    subprocess.run = lambda cmd, *a, **k: types.SimpleNamespace(stdout=prefill) if "pr_body.py" in str(cmd) else real_run(cmd, *a, **k)
+    try:
+        for closes, want in (([1], 0), ([], 1)):
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = cmd_check(argparse.Namespace(number=None, title="Keep the gate", body=str(body_file), closes=closes, refs=[]))
+            assert code == want, ("pr check judges the body as pr open composes it", closes, code)
+    finally:
+        gate.measure, gate.issue_problems, subprocess.run = real_measure, issue_ok, real_run
+        globals()["check_problems"] = real_check
+        body_file.unlink()
+    assert judged[0] == "Closes #1\n\n" + unlisted.strip() + "\n\n" + prefill.strip(), ("pr check judges the body pr open submits", judged[0])
+    # Incident: a merge resolution dropped the check verb's flags and every gate stayed green;
+    # the parser is built and every wired name resolved here, so neither repeats.
+    flags = {}
+    try:
+        flags = vars(build_parser().parse_args(["pr", "check", "--closes", "1", "--refs", "2"]))
+    except SystemExit:
+        pass
+    assert flags.get("closes") == ["1"] and flags.get("refs") == ["2"], ("pr check takes the flags pr open takes", flags)
     print("ok   forge_pr selfcheck")
 
 
@@ -788,6 +916,8 @@ def build_parser():
     check.add_argument("number", nargs="?")
     check.add_argument("--title")
     check.add_argument("--body")
+    check.add_argument("--closes", action="append", default=[])
+    check.add_argument("--refs", action="append", default=[])
     check.set_defaults(run=cmd_check)
     edit = pr.add_parser("edit")
     edit.add_argument("number", type=int)

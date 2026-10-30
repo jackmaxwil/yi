@@ -8,7 +8,7 @@ use std::sync::Arc;
 use common::test_model;
 use serde_json::{Map, json};
 use yi_runtime::mailbox::CUT_ROW;
-use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
+use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost};
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::keymap::default_keymap;
@@ -58,6 +58,10 @@ fn update(status: ChildStatus, flag: Option<ChildFlag>) -> ChildUpdate {
         error: None,
         exit: None,
         flag,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
 /// Dies with the card reading only the child's status: a child blocked on a question drew as a
@@ -102,7 +106,9 @@ fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
     app.reduce_child_update(&update(ChildStatus::Completed, None));
     let first = flat(&app.take_commits());
     assert!(
-        first.iter().any(|line| line.contains("↳ Writer")),
+        first
+            .iter()
+            .any(|line| line.contains("subagent writer (sub-writer) · done")),
         "{first:?}"
     );
     app.reduce_child_update(&update(ChildStatus::Running, None));
@@ -115,8 +121,10 @@ fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
     app.reduce_child_update(&update(ChildStatus::Completed, None));
     let second = flat(&app.take_commits());
     assert!(
-        second.iter().any(|line| line.contains("↳ Writer")),
-        "its second answer commits a second card: {second:?}"
+        second
+            .iter()
+            .any(|line| line.contains("subagent writer (sub-writer) · done")),
+        "its second run commits a second end row: {second:?}"
     );
     Ok(())
 }
@@ -300,17 +308,11 @@ fn said(text: &str) -> AgentMessage {
 
 /// A family whose one child asks its parent a question through `ask_user`.
 fn asking_host(dir: &Scratch, parent: &Arc<AgentSession>) -> Arc<SubagentHost> {
-    Arc::new(SubagentHost::new(SubagentHostOptions {
-        provider: Arc::new(ProviderStream::new(None)),
-        depth: 0,
-        max_depth: 1,
-        max_children: 4,
-        parent_session_dir: dir.to_path_buf(),
-        cwd: dir.to_path_buf(),
-        home: dir.join("home"),
-        lane_slots: 1,
-        defaults: Arc::new(|| (test_model("faux-1"), yi_types::model::Effort::Medium)),
-        factory: Arc::new(|build: yi_runtime::ChildBuild<'_>| {
+    let mut options = common::child_host_options(
+        dir,
+        4,
+        Arc::new(|| None),
+        Arc::new(|build: yi_runtime::ChildBuild<'_>| {
             let question =
                 json!({"question": "Which file name?", "options": ["notes.md", "hello.txt"]});
             let question = question.as_object().cloned().unwrap_or_default();
@@ -323,15 +325,11 @@ fn asking_host(dir: &Scratch, parent: &Arc<AgentSession>) -> Arc<SubagentHost> {
             child.use_tools(vec![Arc::new(ask)], std::env::temp_dir(), None);
             Ok(child)
         }),
-        notice: yi_runtime::wiring::lifecycle_notice(parent),
-        events: parent.events_sender(),
-        parent_messages: Arc::new(Vec::new),
-        report: parent.deliver_hook(),
-        attribute: Arc::new(|_usage| {}),
-        store: Arc::new(|| None),
-        plans_dir: dir.join(".yi/plans"),
-        family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }))
+    );
+    options.notice = yi_runtime::wiring::lifecycle_notice(parent);
+    options.events = parent.events_sender();
+    options.report = parent.deliver_hook();
+    Arc::new(SubagentHost::new(options))
 }
 
 /// Dies with no road from the human to a child's question: the card said nothing, and Enter

@@ -19,17 +19,25 @@ fn status_state_and_notice_derive_from_one_exit() -> TestResult {
         class: FailClass::Provider,
     };
     let rows = [
-        (None, ChildStatus::Running, MemberState::Running, "running"),
+        (
+            None,
+            ChildStatus::Running,
+            MemberState::Running,
+            "running",
+            "running",
+        ),
         (
             Some(ChildExit::Completed),
             ChildStatus::Completed,
             MemberState::Finished,
             "finished",
+            "done",
         ),
         (
             Some(provider),
             ChildStatus::Error,
             MemberState::Failed,
+            "failed",
             "failed",
         ),
         (
@@ -37,11 +45,13 @@ fn status_state_and_notice_derive_from_one_exit() -> TestResult {
             ChildStatus::Error,
             MemberState::Failed,
             "interrupted",
+            "cancelled",
         ),
         (
             Some(ChildExit::Reaped),
             ChildStatus::Error,
             MemberState::Failed,
+            "reaped",
             "reaped",
         ),
         (
@@ -49,13 +59,21 @@ fn status_state_and_notice_derive_from_one_exit() -> TestResult {
             ChildStatus::Error,
             MemberState::Failed,
             "repossessed",
+            "revoked",
+        ),
+        (
+            Some(ChildExit::Other),
+            ChildStatus::Error,
+            MemberState::Failed,
+            "ended",
+            "failed",
         ),
     ];
-    for (exit, status, state, verb) in rows {
+    for (exit, status, state, verb, row) in rows {
         let reading = read_exit(exit);
         assert_eq!(
-            (reading.status, reading.state, reading.verb),
-            (status, state, verb)
+            (reading.status, reading.state, reading.verb, reading.row),
+            (status, state, verb, row)
         );
     }
     // The wire keeps its three status words; the exit rides beside them and may be absent.
