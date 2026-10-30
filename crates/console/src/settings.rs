@@ -1,6 +1,7 @@
 //! The settings pane: the focused session's live options, every config default the daemon
 //! serves, and the key table, a tab each.
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -98,6 +99,10 @@ fn count(settings: &Settings, options: &[AcpConfigOption]) -> usize {
     }
 }
 
+fn waiting(settings: &Settings) -> bool {
+    settings.tab != SESSION && settings.tab != KEYS && settings.rows.is_none()
+}
+
 fn typed(kind: &SettingKind, text: &str) -> Result<Value, String> {
     match kind {
         SettingKind::Number { .. } => serde_json::from_str::<serde_json::Number>(text.trim())
@@ -113,6 +118,26 @@ fn typed(kind: &SettingKind, text: &str) -> Result<Value, String> {
         }
         _ => Ok(Value::String(text.to_owned())),
     }
+}
+
+/// The control a press works: a key opens a choice's picker, a click steps to the next value and
+/// saves it, so no setting on the page needs a key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum How {
+    Key,
+    Click,
+}
+
+/// The value a press moves a choice to: the one after the current, wrapping.
+fn stepped(picks: &[String], current: &str) -> Option<String> {
+    if picks.len() < 2 {
+        return None;
+    }
+    let at = picks
+        .iter()
+        .position(|pick| pick == current)
+        .map_or(0, |at| at.saturating_add(1) % picks.len());
+    picks.get(at).cloned()
 }
 
 pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) -> Intent {
@@ -180,7 +205,7 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
                 .min(rows.saturating_sub(1));
             Intent::None
         }
-        KeyCode::Enter => begin(settings, options),
+        KeyCode::Enter => begin(settings, options, How::Key),
         KeyCode::Char('u') if settings.tab != SESSION && settings.tab != KEYS => {
             match settings
                 .tab_rows()
@@ -210,7 +235,14 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
     }
 }
 
-fn begin(settings: &mut Settings, options: &[AcpConfigOption]) -> Intent {
+/// A press on row `row`: the pane focuses it and works its control, so no setting needs a key.
+pub fn click(settings: &mut Settings, row: usize, options: &[AcpConfigOption]) -> Intent {
+    settings.cursor = row;
+    (settings.edit, settings.status) = (None, None);
+    begin(settings, options, How::Click)
+}
+
+fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Intent {
     if settings.tab == KEYS {
         return Intent::None;
     }
@@ -223,6 +255,14 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption]) -> Intent {
             .iter()
             .map(|choice| choice.value.clone())
             .collect();
+        if how == How::Click {
+            return stepped(&picks, &option.current_value).map_or(Intent::None, |value| {
+                Intent::SetSession {
+                    config_id: option.config_id.clone(),
+                    value,
+                }
+            });
+        }
         let cursor = picks
             .iter()
             .position(|value| *value == option.current_value)
@@ -251,6 +291,11 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption]) -> Intent {
         }
         SettingKind::Choice { options: picks } => {
             let current = row.value.as_str().unwrap_or_default();
+            if how == How::Click {
+                return stepped(picks, current).map_or(Intent::None, |value| {
+                    commit(settings, options, Value::String(value))
+                });
+            }
             let cursor = picks.iter().position(|pick| pick == current).unwrap_or(0);
             settings.edit = Some(Edit::Pick {
                 options: picks.clone(),
@@ -421,15 +466,62 @@ fn tab_bar(settings: &Settings, width: usize, theme: &Theme) -> Line<'static> {
     Line::from(spans.collect::<Vec<_>>())
 }
 
-pub(crate) fn tab_targets(settings: &Settings, width: usize) -> Vec<(u16, u16, usize)> {
+/// A click target of the pane: a tab, or a row, so the drawing and the hit table are one table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Tab(usize),
+    Row(usize),
+}
+
+/// (rect, pane, target) of every click target of every settings pane on screen.
+pub(crate) fn hits(
+    app: &crate::app::App,
+    panes: &[crate::render::PaneView],
+) -> Vec<(Rect, crate::layout::PaneId, Target)> {
+    let mut hits = Vec::new();
+    for view in panes {
+        let Some(crate::model::PaneContent::Settings(settings)) =
+            app.state.panes.get(&view.id).map(|pane| &pane.content)
+        else {
+            continue;
+        };
+        let options = settings
+            .session
+            .as_ref()
+            .and_then(|id| app.state.session_options.get(id));
+        let picks = options.map_or(&[][..], Vec::as_slice);
+        for (rect, target) in targets(settings, picks, view.rect.inner(view.margin)) {
+            hits.push((rect, view.id, target));
+        }
+    }
+    hits
+}
+
+/// Where every target sits inside the pane: the strip's tabs, then every row the frame draws.
+pub(crate) fn targets(
+    settings: &Settings,
+    options: &[AcpConfigOption],
+    inner: Rect,
+) -> Vec<(Rect, Target)> {
+    let mut out = Vec::new();
     let mut x = 0_u16;
-    let mut targets = Vec::new();
-    for (text, tab) in strip(settings, width) {
+    for (text, tab) in strip(settings, usize::from(inner.width)) {
         let cells = u16::try_from(Line::raw(text).width()).unwrap_or(u16::MAX);
-        targets.extend(tab.map(|tab| (x, cells, tab)));
+        out.extend(tab.map(|tab| {
+            let rect = Rect::new(inner.x.saturating_add(x), inner.y, cells, 1);
+            (rect, Target::Tab(tab))
+        }));
         x = x.saturating_add(cells);
     }
-    targets
+    out.extend(
+        row_targets(settings, options, usize::from(inner.height))
+            .into_iter()
+            .map(|(offset, row)| {
+                let rect = Rect::new(inner.x, inner.y.saturating_add(offset), inner.width, 1);
+                (rect, Target::Row(row))
+            }),
+    );
+    out
 }
 
 /// (label, value, when it applies, help) of every row on the current tab.
@@ -498,8 +590,8 @@ pub fn view(
 ) -> Vec<Line<'static>> {
     let mut lines = vec![tab_bar(settings, width, theme), Line::default()];
     let rows = shown_rows(settings, options, cmd);
-    let waiting = settings.tab != SESSION && settings.tab != KEYS && settings.rows.is_none();
-    if waiting {
+    let (first, room, _) = window(settings, rows.len(), visible);
+    if waiting(settings) {
         lines.push(Line::styled(
             " asking the daemon for the config…",
             theme.dim_style(),
@@ -519,8 +611,6 @@ pub fn view(
         width.saturating_sub(4) / 3
     };
     let label = width.saturating_sub(value.saturating_add(tail).saturating_add(1));
-    let room = visible.saturating_sub(8).max(1);
-    let first = settings.cursor.saturating_sub(room.saturating_sub(1));
     for (index, (name, shown, applies, _)) in rows.iter().enumerate().skip(first).take(room) {
         let chosen = index == settings.cursor;
         let marker = if chosen { "▸ " } else { "  " };
@@ -582,6 +672,32 @@ pub fn view(
     };
     lines.push(Line::styled(hint, theme.dim_style()));
     lines
+}
+
+/// The row window `view` draws and a press resolves against: the first row, how many fit, and
+/// the one notice line above them.
+fn window(settings: &Settings, total: usize, visible: usize) -> (usize, usize, usize) {
+    let room = visible.saturating_sub(8).max(1);
+    let first = settings.cursor.saturating_sub(room.saturating_sub(1));
+    (first, room, usize::from(total == 0 || waiting(settings)))
+}
+
+/// The y inside the pane of every row `view` draws, and the row it names.
+pub(crate) fn row_targets(
+    settings: &Settings,
+    options: &[AcpConfigOption],
+    visible: usize,
+) -> Vec<(u16, usize)> {
+    let total = count(settings, options);
+    let (first, room, notice) = window(settings, total, visible);
+    let top = u16::try_from(2usize.saturating_add(notice)).unwrap_or(0);
+    (first..total.min(first.saturating_add(room)))
+        .enumerate()
+        .filter_map(|(offset, row)| {
+            let at = u16::try_from(offset).ok()?;
+            Some((top.saturating_add(at), row))
+        })
+        .collect()
 }
 
 #[cfg(test)]

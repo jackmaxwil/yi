@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use crate::client::Outbound;
 use crate::layout::PaneId;
 use crate::model::PaneContent;
-use crate::settings::{Intent, Settings};
+use crate::settings::{Intent, Settings, Target};
 
 use super::{App, RequestKind};
 
@@ -86,6 +86,49 @@ impl App {
         settings.status = None;
         let intent = crate::settings::key(settings, key, &options);
         self.dirty = true;
+        self.settings_intent(outbound, pane, session, intent);
+    }
+
+    /// A press on a tab opens it; a press on a row focuses it and works its control.
+    pub(super) fn settings_press(&mut self, outbound: &Outbound, pane: PaneId, target: Target) {
+        self.focus_pane(pane);
+        self.dirty = true;
+        match target {
+            Target::Tab(tab) => {
+                if let Some(settings) = self.settings_pane(pane) {
+                    (settings.tab, settings.cursor) = (tab, 0);
+                    (settings.edit, settings.status) = (None, None);
+                }
+            }
+            Target::Row(row) => self.settings_click(outbound, pane, row),
+        }
+    }
+
+    /// A press on a row works its control, so a setting is changed without a key.
+    pub(super) fn settings_click(&mut self, outbound: &Outbound, pane: PaneId, row: usize) {
+        let session = self
+            .settings_pane(pane)
+            .and_then(|settings| settings.session.clone());
+        let options = session
+            .as_ref()
+            .and_then(|id| self.state.session_options.get(id))
+            .cloned()
+            .unwrap_or_default();
+        let Some(settings) = self.settings_pane(pane) else {
+            return;
+        };
+        let intent = crate::settings::click(settings, row, &options);
+        self.dirty = true;
+        self.settings_intent(outbound, pane, session, intent);
+    }
+
+    fn settings_intent(
+        &mut self,
+        outbound: &Outbound,
+        pane: PaneId,
+        session: Option<crate::model::SessionId>,
+        intent: Intent,
+    ) {
         match intent {
             Intent::None => {}
             Intent::Note(text) => {

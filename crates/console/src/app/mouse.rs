@@ -137,14 +137,8 @@ impl App {
                 self.dirty = true;
                 return;
             }
-            Some((_, crate::render::Hit::Settings(pane, tab))) => {
-                self.focus_pane(pane);
-                if let Some(settings) = self.settings_pane(pane) {
-                    (settings.tab, settings.cursor) = (tab, 0);
-                    (settings.edit, settings.status) = (None, None);
-                }
-                self.dirty = true;
-                return;
+            Some((_, crate::render::Hit::Settings(pane, target))) => {
+                return self.settings_press(outbound, pane, target);
             }
             Some((_, crate::render::Hit::Button(action))) => {
                 return self.apply_action(outbound, action);

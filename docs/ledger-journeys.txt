@@ -550,3 +550,4 @@ TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
 web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
 web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)
+console settings pane | `drive::a_press_on_a_settings_row_saves_the_control_it_names`
