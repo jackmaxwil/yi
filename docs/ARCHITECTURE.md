@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.813.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.814.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -221,6 +221,9 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D508 | Live test spend: "Yes, up to $1" | six recorded OpenRouter calls cost $0.049 and supply the parser fixtures | keep future live smoke tests opt-in and outside every gate |
+| D507 | Web search permission: "Never ask" | the tool is a read in every permission mode, with irreversible left false | make the tool irreversible and restore permission prompts |
+| D506 | Web search uses a provider-generic side completion, with models.webSearch defaulting to openrouter/deepseek/deepseek-v4-flash and webSearch.engine defaulting to exa | the recorded DeepSeek calls were faster and cheaper than GPT-5 Nano with the same five citations, and a side completion works with every primary provider | set models.webSearch to another OpenRouter model, or remove the built-in search default |
 | D505 | a newer push to main cancels the mirror run an older one started, instead of leaving both runs to race the tip guard | the recorder's commit now starts a mirror run of its own, so one merge can have two runs, and the older finishing last would force older history over the newer push | delete the concurrency block from mirror.yml |
 | D504 | A note is refused for a key-shaped token that starts at a token edge and carries a digit in its run, and for the <<<yi-external fence only; a <memory mention is allowed (amends docs/memory.md) | disk-backed-storage-layer was refused as an API key, and the only <memory producer, D170's anchors, was struck by D278 | restore key_run's anywhere-in-token find and loops' second clause |
 | D503 | A memory journal append reads only its last record and takes the full replay when the file does not end in one whole record; a broken chain is named by yi memory rebuild, which replays it whole (amends D277 'replay per append') | every memory.read appended a record after replaying and re-verifying the whole chain, so a read cost grew with every read ever made | restore append's replay |

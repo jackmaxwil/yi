@@ -1,4 +1,6 @@
 ---
+version: 0.814.0
+decisions: D506, D507, D508
 issue: Closes #1706
 growth: +994 provider transport and typed DTOs, validation and bounded untrusted rendering, credential-gated configuration refusal, once-only accounting including malformed paid responses, and small TUI/ACP mappings; the shared HTTP path, usage parsing, routing, fencing and cut helpers were reused, while caching, recency, a second provider and custom UI states were weighed and omitted
 decision: Web search uses a provider-generic side completion, with models.webSearch defaulting to openrouter/deepseek/deepseek-v4-flash and webSearch.engine defaulting to exa | the recorded DeepSeek calls were faster and cheaper than GPT-5 Nano with the same five citations, and a side completion works with every primary provider | set models.webSearch to another OpenRouter model, or remove the built-in search default
