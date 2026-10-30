@@ -27,20 +27,37 @@ clippy-no-tui:
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Incident: one suite run left 23 checkpoint repos in the real ~/.yi, 11,633 of them by
-    # 2026-10-07. The suite's HOME is the worktree's target/yi-home, deleted with the worktree.
-    [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just test
+    scripts/suite_home.sh test
     if command -v cargo-nextest >/dev/null; then
       # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
       profile=local
       [ -z "${CI:-}" ] || profile=default
-      cargo nextest run --workspace --profile "$profile"
+      cargo nextest run --workspace --profile "$profile" -- --skip linked_tables
     else
-      cargo test --workspace -- --test-threads=1
+      cargo test --workspace -- --test-threads=1 --skip linked_tables
     fi
     # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
     cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
+py := `scripts/py.sh`
+
+# A local inner loop, never a gate: the generated quick profiles omit tests measured at 5 s or more.
+test-quick:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scripts/suite_home.sh test-quick
+    {{py}} scripts/slow_tests.py --check
+    profile=quick
+    [ -z "${CI:-}" ] || profile=quick-ci
+    cargo nextest run --workspace --profile "$profile"
+
+# Record fresh JUnit timings, then regenerate the checked-in quick filter; this runs every test once.
+slow-tests:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scripts/suite_home.sh slow-tests
+    cargo nextest run --workspace --profile timing
+    {{py}} scripts/slow_tests.py target/nextest/timing/timing.xml
 
 # Frees what an edit loop leaves behind in target/: artifacts of superseded units and
 # incremental caches beyond the newest each live unit needs. Builds the gate resolutions first, so run it idle.

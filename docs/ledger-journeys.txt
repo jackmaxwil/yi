@@ -176,6 +176,9 @@ skills: catalog ladder, `$name`, Yi's triggered skills | `journeys::the_agents_o
 skill classifier | `classifier_e2e::below_the_threshold_a_decision_is_recorded_and_nothing_fires`
 skill classifier | `session_faux::an_unset_classifier_threshold_points_at_0_9_through_attach`
 skill classifier | `classifier_e2e::a_dead_sidecar_trips_the_breaker_and_says_so_once` (T1)
+skill classifier | `classifier_e2e::a_page_at_the_cut_is_flagged_and_a_clean_one_journals_nothing` (T1)
+skill classifier | `classifier_e2e::a_flagged_page_reaches_the_prompt_marked_and_keeps_its_line` (T1)
+skill classifier | `web_search::a_child_spawned_by_a_screened_root_marks_and_journals_its_own_page` (T1)
 runtime facts on the tools: bash contract, chain-stop note, reducer ranges, `ask_user` where someone answers | `tools::a_stopped_chain_says_so_beside_the_exit_code`
 runtime facts on the tools: bash contract, chain-stop note, reducer ranges, `ask_user` where someone answers | `auto_review::a_question_ends_the_turn_and_lists_its_options` (T0)
 session mining: deterministic signals + the prompt drift gate | `extract.py --selfcheck` (run by `check_guardrails.sh`)
@@ -236,6 +239,15 @@ TUI child cards | `tui_e2e::a_new_session_and_a_rewind_drop_the_old_cards` (T0)
 TUI child cards | `tui_e2e::the_thirty_third_finished_card_drops_the_oldest_and_says_so` (T0)
 TUI child cards | `recursion_e2e::rlm_run_round_trips_through_a_real_kernel` (T0)
 TUI child cards | `lease::a_spawn_line_names_its_cell_and_an_older_line_still_decodes` (T0)
+TUI child cards | `child_rows::an_early_end_waits_for_its_cell_then_follows_its_start` (T0)
+TUI child cards | `child_rows::a_running_update_rearms_only_the_end_and_a_new_session_gets_a_new_start` (T0)
+TUI child cards | `child_rows::eviction_and_roster_ticks_never_duplicate_committed_rows` (T0)
+TUI child cards | `child_rows::replay_builds_enriched_and_reduced_legacy_rows` (T0)
+TUI child cards | `child_rows::replayed_rows_match_live_bytes_in_every_mode_and_after_resize` (T0)
+TUI child cards | `child_rows::replayed_rows_reach_a_nonzero_vt100_offset_once` (T0)
+TUI child cards | `child_rows::replay_flushes_an_unresolved_antecedent_at_eof` (T0)
+TUI child cards | `drive::replayed_child_rows_render_in_the_shared_console_reducer` (T0)
+TUI child cards | `child_trail::a_repossession_after_parent_close_journals_that_cause` (T0)
 console right-click menu and pane close mark | `drive::a_right_click_on_a_reply_copies_that_reply`
 console right-click menu and pane close mark | `drive::copy_as_plain_text_drops_the_markdown`
 console right-click menu and pane close mark | `drive::quote_puts_the_message_in_the_composer`
@@ -537,3 +549,5 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
+web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)
