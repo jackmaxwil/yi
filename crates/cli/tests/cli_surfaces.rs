@@ -692,7 +692,9 @@ fn undo_restores_the_files_a_turn_changed() -> TestResult {
     assert_eq!(std::fs::read_to_string(&kept)?, "after\n");
 
     let undone = workspace.yi(&["undo"])?;
-    git_present(&undone)?;
+    if git_missing(&undone) {
+        return Ok(());
+    }
     assert_eq!(undone.status.code(), Some(0), "{}", stdout(&undone));
     assert_eq!(std::fs::read_to_string(&kept)?, "before\n");
     assert!(!created.exists());
@@ -747,7 +749,9 @@ fn undo_moves_only_what_the_turn_wrote() -> TestResult {
     std::fs::write(project.join("d.txt"), "hand\n")?;
 
     let undone = workspace.yi(&["undo"])?;
-    git_present(&undone)?;
+    if git_missing(&undone) {
+        return Ok(());
+    }
     let said = stdout(&undone);
     assert_eq!(undone.status.code(), Some(0), "{said}");
     assert!(!project.join("a.txt").exists(), "{said}");
@@ -787,7 +791,9 @@ fn undo_without_a_turn_end_restores_unscoped_and_says_so() -> TestResult {
     std::fs::write(&file, format!("{kept}\n"))?;
 
     let undone = workspace.yi(&["undo"])?;
-    git_present(&undone)?;
+    if git_missing(&undone) {
+        return Ok(());
+    }
     let said = stdout(&undone);
     assert_eq!(undone.status.code(), Some(0), "{said}");
     assert!(
@@ -816,11 +822,8 @@ fn undo_without_a_session_fails_loudly() -> TestResult {
 }
 
 /// Checkpoints are a no-op without git (design §7.7), and so is this test.
-fn git_present(output: &Output) -> TestResult {
-    match String::from_utf8_lossy(&output.stderr).contains("git is unavailable") {
-        true => Err("git is missing; undo needs it".into()),
-        false => Ok(()),
-    }
+fn git_missing(output: &Output) -> bool {
+    String::from_utf8_lossy(&output.stderr).contains("git is unavailable")
 }
 
 #[test]

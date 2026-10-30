@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 use crate::scratch::Scratch;
 
+#[path = "../../tools/tests/support/seatbelt.rs"]
+mod seatbelt;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct McpHome {
@@ -474,9 +477,7 @@ mod sealed_store {
 
     #[tokio::test]
     async fn a_cell_cannot_plant_a_session_the_host_runs_on_a_fetch() -> TestResult {
-        if !Sandbox::available() {
-            return Ok(());
-        }
+        crate::seatbelt::seatbelt()?;
         let root = Scratch::new("yi-584")?;
         let project = root.join("project");
         std::fs::create_dir_all(&project)?;

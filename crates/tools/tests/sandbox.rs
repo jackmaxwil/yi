@@ -12,13 +12,7 @@ use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// Seatbelt ships with every supported macOS, so a missing one fails the suite instead of passing it.
-fn seatbelt() -> TestResult {
-    match Sandbox::available() {
-        true => Ok(()),
-        false => Err("Seatbelt is missing on macOS: no command can be contained".into()),
-    }
-}
+use crate::seatbelt::seatbelt;
 fn d_bindings(args: &[String]) -> Vec<(&str, &str)> {
     args.iter()
         .filter_map(|arg| arg.strip_prefix("-D")?.split_once('='))

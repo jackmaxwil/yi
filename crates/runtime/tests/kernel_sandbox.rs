@@ -12,13 +12,7 @@ use yi_tools::{CancelFlag, KernelBridge, Sandbox};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// Seatbelt ships with every supported macOS, so a missing one fails the suite instead of passing it.
-pub(crate) fn seatbelt() -> TestResult {
-    match Sandbox::available() {
-        true => Ok(()),
-        false => Err("Seatbelt is missing on macOS: no command can be contained".into()),
-    }
-}
+pub(crate) use crate::seatbelt_support::seatbelt;
 
 async fn cell(
     service: &Arc<KernelService>,

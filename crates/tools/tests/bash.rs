@@ -18,6 +18,9 @@ fn a_command_that_writes_behind_a_read_verb_is_not_a_read() {
         "git branch -D x",
         "env rm -rf x",
         "ls & rm -rf x",
+        "find . -delete>/dev/null",
+        "find . -name '*.tmp' -delete>/dev/null",
+        "git branch -Dx>/dev/null",
     ] {
         let input = input(command);
         assert_eq!(bash.kind_for(&input), ToolKind::Exec, "{command:?}");
@@ -26,11 +29,17 @@ fn a_command_that_writes_behind_a_read_verb_is_not_a_read() {
 }
 
 /// Two searches are reads the loop runs side by side, so the classifier must keep calling them
-/// reads.
+/// reads, and so is a command that only prints the environment.
 #[test]
 fn read_only_searches_stay_reads() {
     let bash = BashTool::default();
-    for command in ["rg -n parse crates", "rg -l Tool crates/tools 2>/dev/null"] {
+    for command in [
+        "rg -n parse crates",
+        "rg -l Tool crates/tools 2>/dev/null",
+        "ag -n parse crates",
+        "printenv PATH",
+        "env | grep PATH",
+    ] {
         let input = input(command);
         assert_eq!(bash.kind_for(&input), ToolKind::Read, "{command:?}");
         assert!(!bash.irreversible(&input), "{command:?}");

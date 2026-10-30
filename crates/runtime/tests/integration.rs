@@ -12,6 +12,8 @@ mod recorded;
 mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+#[path = "../../tools/tests/support/seatbelt.rs"]
+mod seatbelt_support;
 #[path = "support/family.rs"]
 mod support;
 #[path = "support/upstream.rs"]

@@ -20,7 +20,8 @@ pub enum Verdict {
     },
 }
 
-const SAFE: [&str; 42] = [
+const SAFE: [&str; 44] = [
+    "ag",
     "base64",
     "basename",
     "cat",
@@ -45,6 +46,7 @@ const SAFE: [&str; 42] = [
     "md5sum",
     "nl",
     "od",
+    "printenv",
     "printf",
     "pwd",
     "readlink",
@@ -479,6 +481,13 @@ pub fn classify(argv: &[String]) -> Class {
             false => worst_reading(argv.get(1..).unwrap_or_default()),
         };
     }
+    // `env` with only assignments prints the environment; with a program it launders one.
+    if name == "env" {
+        return match argv.iter().skip(1).all(|word| word.contains('=')) {
+            true => Class::Safe,
+            false => Class::Destructive,
+        };
+    }
     if LAUNDERING.binary_search(&name).is_ok() {
         return Class::Destructive;
     }
@@ -596,13 +605,18 @@ fn sed_script_acts(script: &str) -> bool {
 /// The ladder: any destructive segment asks, any unknown segment is contained,
 /// and allow needs positive proof from every segment.
 pub fn verdict(command: &str) -> Verdict {
-    let Parsed::Segments(segments) = parse(command) else {
-        return Verdict::Contain {
+    match parse(command) {
+        Parsed::Segments(segments) => verdict_of(&segments),
+        Parsed::Unparsed => Verdict::Contain {
             reason: "the command uses shell expansion, redirection, or control flow that Yi does not read statically".to_owned(),
-        };
-    };
+        },
+    }
+}
+
+/// The ladder over segments a caller already parsed, so a caller needing both parses once.
+pub fn verdict_of(segments: &[Vec<String>]) -> Verdict {
     let mut unknown: Option<String> = None;
-    for argv in &segments {
+    for argv in segments {
         let shown = (argv.iter().find(|word| !word.contains('=')))
             .or(argv.first())
             .map_or("", String::as_str);

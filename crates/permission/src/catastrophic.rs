@@ -232,16 +232,19 @@ pub(crate) fn absolute(path: &Path, context: &CatastrophicContext) -> PathBuf {
 /// decide() and denied in every mode including yolo (design §8, D15).
 pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
     let folded_path = folded(&lexical_normalize(path));
-    write_is_catastrophic(path, context)
-        || SYSTEM_PATHS_PROTECTED_RECURSIVELY
+    write_folded_is_catastrophic(&folded_path, context)
+        || (SYSTEM_PATHS_PROTECTED_RECURSIVELY
             .iter()
-            .any(|protected| folded_path.starts_with(folded(Path::new(protected))))
+            .any(|protected| folded_path.starts_with(folded(Path::new(protected)))))
 }
 
 /// Whether writing a file here is categorically unacceptable: a file under a system path is
 /// overwritten as `tee` would, so only destroying one stays denied there.
 pub fn write_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
-    let path = folded(&lexical_normalize(path));
+    write_folded_is_catastrophic(&folded(&lexical_normalize(path)), context)
+}
+
+fn write_folded_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
     if PROTECTED_SYSTEM_PATHS
         .iter()
         .any(|protected| path == folded(Path::new(protected)))

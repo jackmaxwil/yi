@@ -66,9 +66,7 @@ fn auto_asks_before_an_uncontained_python_cell() -> TestResult {
 #[cfg(target_os = "macos")]
 #[test]
 fn auto_runs_a_contained_python_cell() -> TestResult {
-    if !yi_tools::Sandbox::available() {
-        return Err("Seatbelt is missing on macOS; no cell can be contained".into());
-    }
+    crate::kernel_sandbox::seatbelt()?;
     let cwd = PathBuf::from("/home/user/project");
     let home = cwd.join("home");
     let contained = tool(
