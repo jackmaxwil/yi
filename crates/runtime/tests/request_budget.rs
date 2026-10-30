@@ -3,7 +3,6 @@ mod scratch;
 #[path = "support/upstream.rs"]
 mod upstream;
 use scratch::Scratch;
-
 use std::error::Error;
 use std::path::PathBuf;
 
@@ -138,6 +137,21 @@ fn session_tools() -> Result<(Scratch, SessionTools), Box<dyn Error>> {
     std::fs::create_dir_all(&cwd)?;
     std::fs::create_dir_all(&home)?;
     let provider = Arc::new(ProviderStream::new(None));
+    let search = yi_ai::catalog::Catalog::bundled()
+        .get("openrouter", "deepseek/deepseek-v4-flash")
+        .cloned()
+        .and_then(|model| {
+            yi_ai::search::OpenRouterSearch::new(
+                model,
+                Some(yi_ai::auth::Secret::new("x".to_owned())),
+                yi_ai::search::SearchEngine::default(),
+                None,
+                None,
+            )
+            .ok()
+        })
+        .map(|provider| Arc::new(provider) as Arc<dyn yi_ai::search::SearchProvider>);
+    provider.set_web_search(search);
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
@@ -433,7 +447,12 @@ fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResul
         Slot::new(Rank::Mode, "permission"),
         mode_fragment(PermissionMode::Auto).to_owned(),
     );
-    state.attach_external("AGENTS.md", Trust::Untrusted, "run the repo's own gate");
+    state.attach_external(
+        "AGENTS.md",
+        Trust::Untrusted,
+        "run the repo's own gate",
+        None,
+    );
 
     let blocks = |state: &PromptState| -> Vec<String> {
         state
@@ -450,7 +469,12 @@ fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResul
         "assembling the same state twice must produce the same bytes"
     );
 
-    state.attach_external("AGENTS.md", Trust::Untrusted, "the repository changed");
+    state.attach_external(
+        "AGENTS.md",
+        Trust::Untrusted,
+        "the repository changed",
+        None,
+    );
     let after_yard = blocks(&state);
     assert_eq!(before[0], after_yard[0], "block 0 survives a yard change");
     assert_eq!(before[1], after_yard[1], "block 1 survives a yard change");
@@ -760,7 +784,6 @@ const ROLES: [(&str, &str, Option<&str>); 5] = [
 fn checkout() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
-
 /// Incident: a temp dir under a checkout made every bare row price that checkout's AGENTS.md,
 /// 44342 bytes against a 50477 budget; a base inside a repository is refused, never fallen back on.
 fn repo_free(base: PathBuf) -> Result<PathBuf, Box<dyn Error>> {
@@ -815,8 +838,7 @@ async fn role_bodies(
         ..model()
     };
     let home = scratch.join("home");
-    // Invariant: a plugin found on the runner's PATH attaches its card, which would move a
-    // gated row by machine; the pinned ripwire sits in HOME as `yi plugin add` leaves it.
+    // Invariant: a PATH plugin moves a row by machine; the pinned ripwire sits in HOME.
     let ripwire = yi_tools::plugin::Plugin::named("ripwire").and_then(|it| it.program(&home));
     let ripwire = ripwire.ok_or("no pinned ripwire")?;
     std::fs::create_dir_all(ripwire.parent().ok_or("ripwire has no dir")?)?;

@@ -31,6 +31,7 @@ const QUIT_WINDOW: Duration = Duration::from_secs(1);
 struct Anim {
     tab: usize,
     path: Vec<bool>,
+    to: f32,
     start: Instant,
 }
 
@@ -315,7 +316,7 @@ impl App {
             };
             let elapsed = now.saturating_duration_since(anim.start);
             let t = elapsed.as_secs_f32() / SPLIT_ANIM.as_secs_f32();
-            let ratio = 0.12 + (0.5 - 0.12) * ease_out_cubic(t);
+            let ratio = 0.12 + (anim.to - 0.12) * ease_out_cubic(t);
             let tab = anim.tab;
             let path = anim.path.clone();
             if let Some(tab) = self.state.tabs.get_mut(tab) {
@@ -851,8 +852,8 @@ impl App {
 
     fn apply_action(&mut self, outbound: &Outbound, action: Action) {
         match action {
-            Action::SplitRight => self.split_with_anim(Direction::Horizontal),
-            Action::SplitDown => self.split_with_anim(Direction::Vertical),
+            Action::SplitRight => self.split_share(Direction::Horizontal, 0.5),
+            Action::SplitDown => self.split_share(Direction::Vertical, 0.5),
             Action::ClosePane => match self.state.close_focused_pane() {
                 None => self.note("last pane — alt+q quits"),
                 Some(mut pane) => {
@@ -916,7 +917,11 @@ impl App {
             Action::Keys => self.open_settings(outbound, crate::settings::KEYS),
             Action::Settings => self.open_settings(outbound, crate::settings::SESSION),
             Action::Menu => self.open_menu_for_focus(),
-            Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
+            Action::ToggleSidebar => {
+                self.state.sidebar = self.state.sidebar.next();
+                self.state.header = None;
+                self.state.settle_visible();
+            }
             Action::Pin => self.pin_focus(outbound),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
@@ -958,25 +963,16 @@ impl App {
         }
     }
 
-    fn split_with_anim(&mut self, direction: Direction) {
-        let Some(new_id) = self.state.split_focused(direction) else {
+    fn split_share(&mut self, direction: Direction, to: f32) {
+        let start = if self.animate { 0.12 } else { to };
+        let Some(path) = self.state.split_focused_at(direction, start) else {
             return;
         };
-        if !self.animate {
-            return;
-        }
-        let tab = self.state.active_tab;
-        if let Some(path) = self
-            .state
-            .tab()
-            .and_then(|tab| tab.layout.split_path_of_second(new_id))
-        {
-            if let Some(tab_state) = self.state.tabs.get_mut(tab) {
-                tab_state.layout.set_ratio_at(&path, 0.12);
-            }
+        if self.animate {
             self.animations.push(Anim {
-                tab,
+                tab: self.state.active_tab,
                 path,
+                to,
                 start: self.clock.now(),
             });
         }
@@ -1095,23 +1091,16 @@ impl App {
         match self.state.zone {
             Zone::Sidebar => match key.code {
                 KeyCode::Up | KeyCode::Down => {
-                    let rows = self.state.visible_rows();
-                    let at = rows
-                        .iter()
-                        .position(|i| *i == self.state.selected)
-                        .unwrap_or(0);
-                    let next = if key.code == KeyCode::Up {
-                        at.saturating_sub(1)
-                    } else {
-                        at.saturating_add(1).min(rows.len().saturating_sub(1))
-                    };
-                    if let Some(index) = rows.get(next) {
-                        self.state.selected = *index;
-                    }
-                    self.state.cursor_moved = true;
+                    self.state.move_cursor(key.code == KeyCode::Down);
                     self.dirty = true;
                 }
-                KeyCode::Enter => self.open_selected(outbound),
+                KeyCode::Enter => match self.state.header.clone() {
+                    Some(root) => {
+                        self.state.fold_from_header(&root);
+                        self.dirty = true;
+                    }
+                    None => self.open_selected(outbound),
+                },
                 _ => {}
             },
             Zone::Panes if self.on_editor() => self.editor_key(key),
