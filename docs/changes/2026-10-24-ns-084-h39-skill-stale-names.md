@@ -1,4 +1,5 @@
 ---
+version: 0.817.0
 issue: Closes #1518, Refs #1442
 growth: +0 no production source changes; only shipped skill prose, its test and this change file
 raise: tests +51
