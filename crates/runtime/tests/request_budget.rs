@@ -811,8 +811,7 @@ async fn role_bodies(
         ..model()
     };
     let home = scratch.join("home");
-    // Invariant: a plugin found on the runner's PATH attaches its card, which would move a
-    // gated row by machine; the pinned ripwire sits in HOME as `yi plugin add` leaves it.
+    // Invariant: a PATH plugin moves a row by machine; the pinned ripwire sits in HOME.
     let ripwire = yi_tools::plugin::Plugin::named("ripwire").and_then(|it| it.program(&home));
     let ripwire = ripwire.ok_or("no pinned ripwire")?;
     std::fs::create_dir_all(ripwire.parent().ok_or("ripwire has no dir")?)?;
@@ -828,6 +827,7 @@ async fn role_bodies(
         tools,
         max_depth,
     )?;
+    std::fs::create_dir_all(ws.join(".git"))?;
     if !matches!(workspace, Workspace::Bare) {
         std::fs::copy(checkout().join("AGENTS.md"), ws.join("AGENTS.md"))?;
         std::fs::write(ws.join("Cargo.toml"), "[workspace]\n")?;
