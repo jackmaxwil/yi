@@ -332,6 +332,10 @@ console notebook pane | `tests::v_on_the_notebook_shows_the_code_rows_its_cap_cu
 console notebook pane | `drive::notebook_pane_shows_cells_and_image_placeholder` (T2)
 console notebook pane | `app::notebook::tests::a_recorded_traceback_dims_its_frames_and_lexes_what_each_ran`
 console notebook pane | `pycell::a_tracebacks_frames_dim_and_the_rows_they_ran_keep_their_colour`
+console sidebar | `sessions::a_quiet_session_draws_one_row` (T0)
+console sidebar | `sessions::the_sidebars_chrome_is_dimmer_than_a_session_name` (T0)
+console sidebar | `sessions::the_sidebar_lists_pins_then_each_workspace_need_first` (T0)
+console sidebar | `drive::sidebar_rows_show_names_and_ages_newest_first` (T2)
 console notebook pane | `app::diffs::tests::a_new_notebook_takes_two_fifths_of_the_pane_area`
 MCP CLI | `mcp_cli::disabled_config_hides_the_subcommand`
 MCP CLI | `mcp_cli::sessions_persist_states_and_survive_close_restart`
