@@ -1,4 +1,6 @@
 ---
+version: 0.815.0
+decisions: D509
 issue: Closes #1896
 decision: the autofix pass reads every open pull request page by page, and its limits delay a fix instead of parking the PR: $16 of spend on a PR's last 24 hours, $60 a day, 6 review fixes and 3 gate fixes in a row, 5 fixes a pass, a 90-minute job, a label that clears itself after 12 hours twice, and a git lock read as a transient one | on 2026-10-30 102 pull requests were open and a pass read page one's 50, so the oldest 52 were never fixed; seven PRs sat on `autofix:failed` from those limits (four review fixes in a row, a per-PR cap, a git index.lock) with nothing saying when they would move again, and the owner is not the person those limits named; the numbers replace the owner's 2026-09-30 set ($8, $25, 4 review fixes, 2 gate fixes, 3 fixes a pass, 45 minutes) | restore the constants in scripts/pr_autofix.py, the single page in forge_pr.open_pulls and `timeout-minutes: 45` in autofix.yml
 ---

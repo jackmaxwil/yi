@@ -140,6 +140,8 @@ fn leaves() -> Vec<String> {
                 allow_destructive_at,
                 ask_at,
                 ask_timeout_secs,
+                screen_at,
+                screen_max_chars,
             }),
         ),
         (
