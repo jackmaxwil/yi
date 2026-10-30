@@ -98,13 +98,11 @@ struct OpenContainer {
 
 fn close_partial(json: &str) -> Option<String> {
     let mut stack: Vec<OpenContainer> = Vec::new();
-    let mut closed = String::with_capacity(json.len().saturating_add(8));
     let mut in_string = false;
     let mut escaped = false;
     let mut dangling_key = false;
-    for character in json.chars() {
+    for (offset, character) in json.char_indices() {
         if in_string {
-            closed.push(character);
             if escaped {
                 escaped = false;
             } else if character == '\\' {
@@ -126,14 +124,14 @@ fn close_partial(json: &str) -> Option<String> {
                 let closer = if character == '{' { '}' } else { ']' };
                 stack.push(OpenContainer {
                     closer,
-                    member_start: closed.len().saturating_add(1),
+                    member_start: offset.saturating_add(1),
                     colon: false,
                 });
                 dangling_key = false;
             }
             ',' => {
                 if let Some(open) = stack.last_mut() {
-                    open.member_start = closed.len().saturating_add(1);
+                    open.member_start = offset.saturating_add(1);
                     open.colon = false;
                 }
                 dangling_key = false;
@@ -154,26 +152,26 @@ fn close_partial(json: &str) -> Option<String> {
                 }
             }
         }
-        closed.push(character);
     }
+    let mut close_string = in_string;
+    let mut end = json.len();
     if in_string {
-        if escaped {
-            closed.pop();
-        }
-        closed.push('"');
         dangling_key = stack
             .last()
             .is_some_and(|open| open.closer == '}' && !open.colon);
-    }
-    let mut closed = closed.trim_end().to_owned();
-    if dangling_key && let Some(open) = stack.last() {
-        let dropped = closed.split_off(open.member_start);
-        drop(dropped);
-        closed = closed.trim_end().to_owned();
-        if closed.ends_with(',') {
-            closed.pop();
+        if escaped {
+            end = end.saturating_sub(1);
         }
+    } else {
+        end = json.trim_end().len();
     }
+    if dangling_key && let Some(open) = stack.last() {
+        end = open.member_start.min(end);
+        close_string = false;
+    }
+    let mut closed = String::with_capacity(end.saturating_add(9));
+    closed.push_str(json.get(..end)?);
+    closed.extend(close_string.then_some('"'));
     if closed.ends_with(',') {
         closed.pop();
     } else if closed.ends_with(':') {
@@ -252,5 +250,16 @@ mod tests {
     #[test]
     fn garbage_yields_empty_object() {
         assert!(parse_streaming_json("not json").is_empty());
+    }
+
+    #[test]
+    fn whitespace_past_a_member_and_a_cut_escape_keep_the_call_readable() {
+        let spaced = parse_streaming_json(r#"{"path":"a.rs",  "pat"#);
+        assert_eq!(spaced.get("path"), Some(&Value::from("a.rs")));
+        assert_eq!(spaced.len(), 1);
+        let colon = parse_streaming_json(r#"{"path":"a.rs",  "patch": "#);
+        assert_eq!(colon.get("patch"), Some(&Value::Null));
+        let cut_escape = parse_streaming_json(r#"{"cmd":"a\"#);
+        assert_eq!(cut_escape.get("cmd"), Some(&Value::from("a")));
     }
 }
