@@ -9,6 +9,7 @@ use yi_runtime::plan::ops::{Actor, PlanEngine};
 use yi_runtime::plan::store::PlanStore;
 use yi_types::plan::doc::PlanId;
 
+use crate::repo::{git, init_repo};
 use crate::scratch::Scratch;
 
 use crate::prompt_slots_support::prompt_slots;
@@ -936,6 +937,31 @@ fn gc_fix_takes_the_checkpoints_of_a_deleted_project() -> TestResult {
         );
     }
     assert!(!shadow.exists(), "the deleted project's repo was kept");
+    Ok(())
+}
+
+/// The binary's bare `gc` previews a merged worktree and only `gc --fix` removes it.
+#[test]
+fn gc_fix_removes_the_merged_worktree_the_preview_kept() -> TestResult {
+    let workspace = Workspace::new("gc-worktree")?;
+    init_repo(&workspace.project())?;
+    let tree = workspace.0.join("merged-worktree");
+    let repo = workspace.project();
+    let path = tree.to_string_lossy().into_owned();
+    git(&repo, &["worktree", "add", "-q", "-b", "merged", &path])?;
+    std::fs::write(tree.join("work.txt"), "work\n")?;
+    git(&repo, &["-C", &path, "add", "work.txt"])?;
+    git(&repo, &["-C", &path, "commit", "-qm", "work"])?;
+    git(&repo, &["merge", "-q", "--no-ff", "-m", "merged", "merged"])?;
+
+    let preview = workspace.yi(&["gc"])?;
+    assert!(preview.status.success(), "{preview:?}");
+    assert!(tree.is_dir(), "{}", stdout(&preview));
+    assert!(stdout(&preview).contains("would remove"), "{preview:?}");
+    let swept = workspace.yi(&["gc", "--fix"])?;
+    assert!(swept.status.success(), "{swept:?}");
+    assert!(!tree.exists(), "{}", stdout(&swept));
+    assert!(stdout(&swept).contains("removed"), "{swept:?}");
     Ok(())
 }
 

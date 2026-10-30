@@ -25,6 +25,9 @@ Claude Code tool hooks | `claude_hooks::a_hook_allow_never_widens_an_in_process_
 Claude Code tool hooks | `mcp_cli::a_cells_mcp_call_runs_claude_code_hooks_under_its_mcp_name` (T2)
 permission modes/rules/holds, deterministic auto | `gate_battery::the_battery_lands_where_the_table_says`
 permission modes/rules/holds, deterministic auto | `safety::an_unknown_command_is_contained_not_allowed`
+check probe | `ask_check::a_check_that_cannot_run_exits_2_before_any_request`
+check probe | `goal_e2e::a_declared_check_that_cannot_start_is_refused_not_run`
+check probe | `check_probe::a_check_whose_program_is_absent_is_refused_by_name`
 permission modes/rules/holds, deterministic auto | `decide::auto_reads_a_command_segment_by_segment`
 permission modes/rules/holds, deterministic auto | `safety::a_flag_that_runs_or_writes_is_not_read_only`
 model auto-review M7/M8 | `auto_review::a_reviewer_denial_carries_its_evidence_and_a_request_number`
@@ -538,3 +541,5 @@ custom OpenAI-compatible providers | `custom_providers::a_declared_provider_with
 custom OpenAI-compatible providers | `custom_providers::a_custom_provider_named_like_a_built_in_one_is_refused_at_load` (T2)
 custom OpenAI-compatible providers | `custom_providers::a_catalog_cache_leaves_the_declared_models_in_place` (T2)
 custom OpenAI-compatible providers | `custom_providers::a_literal_api_key_is_the_bearer` (T2)
+web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
+web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)

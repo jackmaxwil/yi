@@ -500,9 +500,12 @@ fn map_finish_reason(reason: &str) -> (StopReason, Option<String>) {
     }
 }
 
-fn parse_chunk_usage(raw: &Value, model: &Model) -> Usage {
-    let get = |value: &Value, key: &str| value.get(key).and_then(Value::as_i64).unwrap_or(0);
-    let prompt = get(raw, "prompt_tokens");
+pub(crate) fn parse_chunk_usage(raw: &Value, model: &Model) -> Usage {
+    let prompt = raw
+        .get("prompt_tokens")
+        .or_else(|| raw.get("input_tokens"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     let details = raw.get("prompt_tokens_details");
     let cache_read = details
         .and_then(|value| value.get("cached_tokens"))
@@ -517,7 +520,11 @@ fn parse_chunk_usage(raw: &Value, model: &Model) -> Usage {
     let input = prompt
         .saturating_sub(cache_read)
         .saturating_sub(cache_write);
-    let output = get(raw, "completion_tokens");
+    let output = raw
+        .get("completion_tokens")
+        .or_else(|| raw.get("output_tokens"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     let mut usage = Usage::zero();
     usage.input = input;
     usage.output = output;

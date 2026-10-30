@@ -258,6 +258,9 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   derived from the route. Any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`, then the `providers` the config
   declares. Model: `--model`, else `models.primary`, else `model`; none is built in.
+- Web search is a separate non-streaming completion: `models.webSearch`, else the built-in
+  `openrouter/deepseek/deepseek-v4-flash`, calls OpenRouter's server-side search with Exa by
+  default. This default does not select a primary model.
 - Custom providers: `providers.<id>{baseUrl,apiKeyEnv,apiKey,models[{id,name,reasoning,input,
   contextWindow,maxTokens,cost}]}` in `~/.yi/config.json`, addressed `<id>/<model>`, each speaking
   OpenAI chat completions; an id a built-in provider, `laya` or `faux` holds refuses at load. They
@@ -285,8 +288,9 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   when the file is absent. A profile file at the same id still wins.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
-- State: `models { primary, summarizer, advisor, autoReview, classifier }` in `~/.yi/config.json`
-  ([`config.rs`](../crates/types/src/config.rs)), advisor, autoReview and classifier off until named;
+- State: `models { primary, summarizer, advisor, autoReview, classifier, webSearch }` and
+  `webSearch { engine }` in `~/.yi/config.json`
+  ([`config.rs`](../crates/types/src/config.rs)); advisor, autoReview and classifier off until named;
   [`RetryPolicy`](../crates/ai/src/retry.rs). Shapes: [`model.rs`](../crates/types/src/model.rs).
 - Settled by: D34, D57, D128, D191, D197, D231
 
@@ -359,12 +363,14 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
 ### 7.1 Table and trait
 | Read | Write | Exec | Ledger |
 |---|---|---|---|
-| `read`, `grep`, `get_context`, `ask_user`, `annotate` | `edit`, `write` | `bash`, `ipython` | `plan`, `todo` |
+| `read`, `grep`, `get_context`, `ask_user`, `annotate`, `web_search` | `edit`, `write` | `bash`, `ipython` | `plan`, `todo` |
 
 - `builtin_tools_with` builds `read edit write grep bash get_context`; `session_tools` adds exec
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
-  `ipython`, `annotate`, `plan`, `todo`, and `ask_user`. `check_request_budget.py` prices system block plus tool
-  table against a shrink-only baseline and locks each tool's text and sha256 in `tool_surface.json`;
+  `ipython`, `annotate`, `plan`, `todo`, and `ask_user`, and `wire_search` adds `web_search` when
+  its provider is registered and gates its skill catalog entry on the same availability.
+  `check_request_budget.py` prices system block plus tool table against a shrink-only baseline
+  and locks each tool's text and sha256 in `tool_surface.json`;
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
@@ -561,6 +567,35 @@ names it, as Claude's does; a hook's output streams at `HOOK_OUTPUT_CAP` (1 MiB)
 bytes written. Each cut is loud.
 
 - Owner: [`claude_hooks`](../crates/runtime/src/claude_hooks/mod.rs), [`tools.rs`](../crates/runtime/src/tools.rs), [`mcp_hooks.rs`](../crates/cli/src/mcp_hooks.rs).
+
+### 7.10 Web search
+`web_search` answers current public questions through a synchronous `SearchProvider` in yi-ai.
+`OpenRouterSearch` makes one non-streaming chat completion with a 120 s read and write timeout,
+one `openrouter:web_search` server call and Exa as the default engine. A credential from
+`OPENROUTER_API_KEY` or the OpenRouter token store registers the tool; without one, its schema is
+absent. Root and full-child sessions inherit the provider; readers and workers keep their tool
+filters. `models.webSearch` defaults to `openrouter/deepseek/deepseek-v4-flash`. Credential and
+role resolution come first: no credential leaves search off, and an unknown role warns and leaves
+it off. Only then does an explicitly configured role outside OpenRouter or an empty
+`webSearch.engine` refuse session construction with exit 2, naming the setting and its fix.
+Proxy and `routing` config reaches the search request, with the provider object omitted on a
+custom base URL just as for a streaming request.
+
+Arguments are `query` (non-empty), `count` (1–25, default 5), optional domain allowlist and `mode`
+(`instant|fast|auto|deep-lite|deep|deep-reasoning`, default `auto`). There is no `recency` argument.
+The result is one untrusted fence with the answer and numbered citations. Each excerpt is capped
+at 4,000 characters and the whole result at 12,000 characters, each with a loud kept/total row and
+a narrower-query continuation. Details name provider, model, engine, mode, citation count, dollar
+cost, duration, search count and upstream host. Token and dollar usage reaches the tool result and
+is booked once in the ledger, live total, alerts, telemetry and rollups, including an HTTP 200 whose
+citations or counters are malformed. HTTP failures keep only status and reason, never the remote
+body. Missing credentials, malformed bodies and zero citations remain distinct tool errors; the key
+never enters arguments, output, details or errors.
+The tool is `Read` with `irreversible` false, so Ask, Auto and Yolo never prompt. The offline
+journey is `web_search_offline_citations_and_cost`.
+
+- Owner: [`search.rs`](../crates/ai/src/search.rs), [`web_search.rs`](../crates/runtime/src/web_search.rs).
+  Settled by: D34.
 
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
@@ -1099,8 +1134,8 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 - `~/.yi/config.json` is the only config file, parsed strictly before dispatch and read again as each
   session starts, since the console's settings page saves it while workers run; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
-  `models{primary,summarizer,advisor,autoReview,classifier}`, `bash{autoBackgroundMs}`, `plans{dir}`,
-  `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
+  `models{primary,summarizer,advisor,autoReview,classifier,selector,webSearch}`, `webSearch{engine}`,
+  `bash{autoBackgroundMs}`, `plans{dir}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
   `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode,allowWrite,allow}`,
@@ -1293,8 +1328,8 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `xxhash-rust` | `xxh32` | tools | hashline tags | — |
 | `globset` | — | permission, tools, runtime | permission patterns, file tools | `glob`: no brace sets |
 | `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools, runtime | the `grep` tool and Claude Code hook matchers; the Age and break-property tables stay out | — |
+| `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime, ai | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
-| `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |

@@ -3,7 +3,7 @@ use yi_types::config::{
     BashConfig, BrowserConfig, CatalogConfig, ClassifierConfig, CompactionConfig, ConsoleConfig,
     EditConfig, KernelConfig, MailConfig, McpConfig, ModelRoles, NodeConfig, PermissionsConfig,
     PlanConfig, PlansConfig, RlmConfig, SkillsConfig, SpendConfig, TelemetryConfig, TuiConfig,
-    UserConfig,
+    UserConfig, WebSearchConfig,
 };
 use yi_types::lane::LanesConfig;
 use yi_types::settings::{SettingKind, SettingRow, refusal, rows};
@@ -58,6 +58,7 @@ fn leaves() -> Vec<String> {
         open,
         browser,
         providers,
+        web_search,
     });
     let nested = [
         (
@@ -68,9 +69,11 @@ fn leaves() -> Vec<String> {
                 advisor,
                 auto_review,
                 classifier,
-                selector
+                selector,
+                web_search
             }),
         ),
+        ("web_search", fields!(WebSearchConfig { engine })),
         ("bash", fields!(BashConfig { auto_background_ms })),
         (
             "plan",
@@ -156,7 +159,7 @@ fn leaves() -> Vec<String> {
             |field| match nested.iter().find(|(section, _)| *section == field) {
                 Some((section, inner)) => inner
                     .iter()
-                    .map(|leaf| format!("{section}.{}", camel(leaf)))
+                    .map(|leaf| format!("{}.{}", camel(section), camel(leaf)))
                     .collect(),
                 None => vec![camel(field)],
             },
@@ -250,5 +253,20 @@ fn a_value_past_a_bound_or_of_the_wrong_type_is_refused_with_the_rule() -> Resul
         Some("permissions.mode takes one of auto, ask, yolo")
     );
     assert_eq!(refusal(mode, &Value::Null), None, "unset is always allowed");
+    Ok(())
+}
+
+#[test]
+fn web_search_role_and_engine_load_from_config() -> Result<(), Box<dyn std::error::Error>> {
+    let (config, _) = yi_types::config::parse(
+        r#"{"models":{"webSearch":"openrouter/deepseek/deepseek-v4-flash"},"webSearch":{"engine":"exa"}}"#,
+    )?;
+    let roles = config.models.ok_or("missing model roles")?;
+    assert_eq!(
+        roles.web_search.as_deref(),
+        Some("openrouter/deepseek/deepseek-v4-flash")
+    );
+    let search = config.web_search.ok_or("missing web search config")?;
+    assert_eq!(search.engine.as_deref(), Some("exa"));
     Ok(())
 }

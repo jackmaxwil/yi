@@ -29,3 +29,11 @@ pub fn reply(status: &str, kind: &str, body: &str) -> String {
         body.len()
     )
 }
+
+#[allow(dead_code, reason = "not every loopback consumer parses JSON")]
+pub fn json_body(request: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let (_, body) = request
+        .split_once("\r\n{")
+        .ok_or("request has no JSON body")?;
+    Ok(serde_json::from_str(&format!("{{{body}"))?)
+}
