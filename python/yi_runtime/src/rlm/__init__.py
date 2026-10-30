@@ -204,6 +204,51 @@ async def _watch(timeout: float, cursor: int | None) -> "Reply | None":
     return None
 
 
+async def _await_child(name: str, target: str, schema: Any, timeout: float) -> dict[str, Any]:
+    """The one child wait: ``RLMSpawnHandle.result`` and ``rlm.result(timeout=)`` both run it."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    # Invariant: a bare wait resumes from the model's last bare wait, which may already
+    # have seen this child finish; cursor 0 reads the family as it stands now.
+    cursor, state, note = 0, None, None
+    while True:
+        # Float rounding can put `(now + timeout) - now` an ulp past `timeout`.
+        remaining = min(timeout, deadline - loop.time())
+        if remaining <= 0:
+            break
+        reply = await _watch(remaining, cursor)
+        if reply is None:
+            continue
+        next_cursor = reply.get("cursor")
+        if isinstance(next_cursor, int):
+            cursor = next_cursor
+        try:
+            state, note = await _digest_child(reply, name)
+        except NoSuchChild as error:
+            raise RuntimeError(
+                f"child {name} ({target}) is no longer registered with "
+                "the parent; rlm.delete_subagent reaps a child and its answer with it"
+            ) from error
+        if state == "stuck":
+            raise RuntimeError(
+                f"child {name} is stuck ({note or 'no progress in its records'}); "
+                "rlm.send it a nudge, rlm.interrupt it, or call result() again to keep waiting"
+            )
+        if state in ("finished", "failed", "needs_you"):
+            try:
+                return await result(target, schema=schema)
+            except RuntimeError as error:
+                # Another run can start between the wait and the read; it is waited on.
+                if "still running" not in str(error):
+                    raise
+                if isinstance(note, str) and note.startswith("asks "):
+                    raise RuntimeError(
+                        f"child {name} {note}; answer it with rlm.send({name!r}, "
+                        "text, reply_to=<that id>), then call result() again"
+                    ) from error
+    raise TimeoutError(f"child {name} did not finish within {timeout}s")
+
+
 def _merge_digest(reply: dict[str, Any], states: dict, notes: dict) -> tuple[dict, dict]:
     if "counts" not in reply:
         return reply.get("states") or {}, reply.get("notes") or {}
@@ -335,47 +380,7 @@ class RLMSpawnHandle:
         so does a child the host reports ``stuck``.
         """
         _check_schema(schema)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        # Invariant: a bare wait resumes from the model's last bare wait, which may already
-        # have seen this child finish; cursor 0 reads the family as it stands now.
-        cursor, state, note = 0, None, None
-        while True:
-            # Float rounding can put `(now + timeout) - now` an ulp past `timeout`.
-            remaining = min(timeout, deadline - loop.time())
-            if remaining <= 0:
-                break
-            reply = await _watch(remaining, cursor)
-            if reply is None:
-                continue
-            next_cursor = reply.get("cursor")
-            if isinstance(next_cursor, int):
-                cursor = next_cursor
-            try:
-                state, note = await _digest_child(reply, self.name)
-            except NoSuchChild as error:
-                raise RuntimeError(
-                    f"child {self.name} ({self.rlm_child_id}) is no longer registered with "
-                    "the parent; rlm.delete_subagent reaps a child and its answer with it"
-                ) from error
-            if state == "stuck":
-                raise RuntimeError(
-                    f"child {self.name} is stuck ({note or 'no progress in its records'}); "
-                    "rlm.send it a nudge, rlm.interrupt it, or call result() again to keep waiting"
-                )
-            if state in ("finished", "failed", "needs_you"):
-                try:
-                    return await result(self.rlm_child_id, schema=schema)
-                except RuntimeError as error:
-                    # Another run can start between the wait and the read; it is waited on.
-                    if "still running" not in str(error):
-                        raise
-                    if isinstance(note, str) and note.startswith("asks "):
-                        raise RuntimeError(
-                            f"child {self.name} {note}; answer it with rlm.send({self.name!r}, "
-                            "text, reply_to=<that id>), then call result() again"
-                        ) from error
-        raise TimeoutError(f"child {self.name} did not finish within {timeout}s")
+        return await _await_child(self.name, self.rlm_child_id, schema, timeout)
 
     @_handed_out
     async def send(self, message: str, followup: bool = False) -> dict[str, Any]:
@@ -542,9 +547,14 @@ def _host_request_blocking(
     raise RuntimeError(str(reply.get("error") or f"host request {request_type} failed"))
 
 
-# The host's per-value cap; the kernel sends one char past it so the host's clamp, the one
-# place that writes the truncation marker, fires.
+# The host's per-value cap (its `mail.context_value` lever, passed in the kernel env); the
+# kernel sends one char past it so the host's clamp, the one place that writes the marker, fires.
 CONTEXT_VALUE_CAP = 4096
+
+
+def _context_value_cap() -> int:
+    raw = os.environ.get("RLM_CONTEXT_VALUE_CAP", "")
+    return int(raw) if raw.isdigit() else CONTEXT_VALUE_CAP
 
 
 def _resolve_context(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -570,7 +580,7 @@ def _resolve_context(kwargs: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             text = repr(namespace[key])
         context_chars[key] = len(text)
-        context[key] = text[: CONTEXT_VALUE_CAP + 1]
+        context[key] = text[: _context_value_cap() + 1]
     kwargs["context"] = context
     kwargs["context_chars"] = context_chars
     return kwargs
@@ -731,6 +741,10 @@ async def find_models(query: str = "", limit: int = 8) -> list[RLMModel]:
     return [_model_from_payload(model) for model in models]
 
 
+# The host's exit words, read as the roster words ``status()`` and ``wait`` use.
+_ROSTER_STATES = {"running": "running", "completed": "finished", "error": "failed"}
+
+
 def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") -> RLMSubagent:
     if not isinstance(payload, dict):
         raise RuntimeError(f"{operation} returned an invalid subagent entry")
@@ -750,7 +764,8 @@ def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") 
         raise RuntimeError(f"{operation} entry is missing session_name")
     if not isinstance(session_dir, str) or not session_dir:
         raise RuntimeError(f"{operation} entry is missing session_dir")
-    if status not in {"running", "completed", "error"}:
+    status = _ROSTER_STATES.get(status, status)
+    if status not in _ROSTER_STATES.values():
         raise RuntimeError(f"{operation} entry has invalid status")
     return RLMSubagent(
         rlm_child_id=child_id,
@@ -764,7 +779,10 @@ def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") 
 
 @_public
 async def list_subagents() -> list[RLMSubagent]:
-    """List direct RLM children retained by the current parent session."""
+    """List direct RLM children retained by the current parent session.
+
+    Each entry's ``status`` is a ``status()`` state: ``running``, ``finished`` or ``failed``.
+    """
     payload = await host_request("rlm.list_subagents")
     entries = payload.get("subagents")
     if not isinstance(entries, list):
@@ -1062,8 +1080,8 @@ async def result(
 ) -> dict[str, Any]:
     """A finished child's answer as data, checked against ``schema`` host-side.
 
-    ``timeout`` waits that many seconds for a child that is still running, as
-    ``RLMSpawnHandle.result`` does; omitted, a running child raises at once.
+    ``timeout`` waits that many seconds for a child that is still running, by the same wait
+    ``RLMSpawnHandle.result`` runs (a ``stuck`` child raises); omitted, a running child raises.
     """
     _check_schema(schema)
     payload: dict[str, Any] = {"target": _worktree_target(target)}
@@ -1071,16 +1089,8 @@ async def result(
         payload["schema"] = schema
     if timeout is None:
         return await host_request("rlm.result", payload)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        try:
-            return await host_request("rlm.result", payload)
-        except RuntimeError as error:
-            remaining = min(timeout, deadline - loop.time())
-            if remaining <= 0 or "still running" not in str(error):
-                raise
-        await _watch(remaining, None)
+    name = target.name if isinstance(target, RLMSubagent) else payload["target"]
+    return await _await_child(name, payload["target"], schema, timeout)
 
 
 def _worktree_target(target: "str | RLMSubagent") -> str:

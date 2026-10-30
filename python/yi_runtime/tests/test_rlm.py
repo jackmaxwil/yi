@@ -924,3 +924,42 @@ class MergeWorktreeTests(unittest.IsolatedAsyncioTestCase):
                 ("rlm.merge_worktree", {"target": "child"}),
             ],
         )
+
+
+class OneChildWaitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_stuck_child_raises_the_same_error_from_either_result_then_returns(self) -> None:
+        """Dies with two wait loops: rlm.result(timeout=) kept waiting past a stuck child."""
+        for call in (lambda: _handle().result(timeout=5), lambda: rlm.result("n", timeout=5)):
+            replies = [_wait_reply("stuck"), _wait_reply("finished", cursor=2)]
+
+            async def fake_wait(timeout: float, cursor: int | None = None) -> dict:
+                return replies.pop(0)
+
+            async def fake_host(kind: str, payload: dict) -> dict:
+                if replies:
+                    raise RuntimeError("child sub-1 is still running")
+                return {"text": "ok"}
+
+            async def fake_status(name):
+                return {"name": name, "state": "stuck", "note": "five idle minutes"}
+
+            with mock.patch.object(rlm, "wait", fake_wait), mock.patch.object(
+                rlm, "host_request", fake_host
+            ), mock.patch.object(rlm, "status", fake_status):
+                with self.assertRaisesRegex(RuntimeError, "is stuck"):
+                    await call()
+                self.assertEqual(await call(), {"text": "ok"})
+
+    def test_the_hosts_context_lever_sets_how_much_of_a_value_is_sent(self) -> None:
+        shell = mock.Mock(user_ns={"blob": "x" * 9_998})
+        with mock.patch.object(rlm, "get_ipython", lambda: shell), mock.patch.dict(
+            os.environ, {"RLM_CONTEXT_VALUE_CAP": "16384"}
+        ):
+            resolved = rlm._resolve_context({"context_keys": ["blob"]})
+        self.assertEqual(len(resolved["context"]["blob"]), 10_000)
+
+    def test_a_listing_reads_in_the_roster_words_status_uses(self) -> None:
+        roster = {"queued", "running", "finished", "failed", "needs_you", "stuck", "repossession_pending"}
+        for host_word in ("running", "completed", "error"):
+            entry = {"rlm_child_id": "sub-1", "session_name": "n", "session_dir": "/tmp", "status": host_word}
+            self.assertIn(rlm._subagent_from_payload(entry).status, roster)

@@ -368,6 +368,10 @@ impl KernelService {
                 family_dir.to_string_lossy().into_owned(),
             ));
         }
+        env.push((
+            "RLM_CONTEXT_VALUE_CAP".to_owned(),
+            crate::levers::get().mail_context_value.to_string(),
+        ));
         if let Some(path) = yi_tools::plugin::search_path(&self.options.home) {
             env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
         }
