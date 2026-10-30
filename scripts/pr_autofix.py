@@ -84,7 +84,7 @@ LANE_SECS = 900
 # though a busy provider says nothing about the PR; such an attempt waits for the next pass.
 # Incident: #1111's pass met a full /tmp, and #1779's was labelled for a git `index.lock` a dead
 # pass left behind: a disk or a lock that frees itself is a blip, never the PR's fault.
-TRANSIENT = re.compile(r"\b(429|502|503|rate.limit\w*|overloaded|temporarily)\b|No space left|Out of diskspace|Unable to create .*\.lock", re.I)
+TRANSIENT = re.compile(pr_review.THROTTLED.pattern + r"|No space left|Out of diskspace|Unable to create .*\.lock", re.I)
 
 
 class Missed(RuntimeError):
