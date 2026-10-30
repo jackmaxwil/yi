@@ -801,7 +801,37 @@ pub fn write_targets(command: &str) -> Vec<String> {
     out
 }
 
+fn redirect_word(token: &str) -> &str {
+    if token.starts_with('<') {
+        return "";
+    }
+    let Some((word, redirect)) = token.split_once('>') else {
+        return token;
+    };
+    let bare = word.is_empty() || word == "&" || word.chars().all(|c| c.is_ascii_digit());
+    match bare {
+        false => word,
+        true if redirect.trim_start_matches('>') == "/dev/null" => "",
+        true => token,
+    }
+}
+
+/// The command with each token's redirect read down to its word: `2>/dev/null` names none,
+/// `-delete>/dev/null` spells `-delete`, and a redirect to a file stays whole and unproven.
+pub fn without_redirects(command: &str) -> std::borrow::Cow<'_, str> {
+    let tokens: Vec<&str> = command.split(' ').collect();
+    let kept: Vec<&str> = (tokens.iter().copied())
+        .map(redirect_word)
+        .filter(|word| !word.is_empty())
+        .collect();
+    match kept == tokens {
+        true => std::borrow::Cow::Borrowed(command),
+        false => std::borrow::Cow::Owned(kept.join(" ")),
+    }
+}
+
 fn lenient_segments(command: &str) -> Vec<Vec<String>> {
+    let command = without_redirects(command);
     let mut segments = vec![Vec::new()];
     let mut tokens = command.split_whitespace();
     while let Some(token) = tokens.next() {
@@ -809,7 +839,7 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
             segments.push(Vec::new());
         } else if matches!(token, ">" | ">>" | "<") {
             tokens.next();
-        } else if !token.contains('>') && !token.starts_with('<') {
+        } else {
             let word = token.trim_matches(['(', ')', '$', '`', ';']);
             if let Some(argv) = segments.last_mut().filter(|_| !word.is_empty()) {
                 argv.push(word.to_owned());

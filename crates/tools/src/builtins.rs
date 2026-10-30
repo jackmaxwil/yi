@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -297,7 +296,7 @@ fn walk_capped(
 /// Incident: a hand-split verb list called `find . -delete` a read. A read is what the permission
 /// classifier proves, less cargo, whose proven verbs write `target/` and the source.
 fn read_only_command(command: &str) -> bool {
-    let command = bare_redirects_stripped(command);
+    let command = yi_permission::without_redirects(command);
     let yi_permission::Parsed::Segments(segments) = yi_permission::parse(&command) else {
         return false;
     };
@@ -307,25 +306,6 @@ fn read_only_command(command: &str) -> bool {
                 .find(|word| !yi_permission::wraps(word))
                 .is_none_or(|word| word.rsplit('/').next() != Some("cargo"))
         })
-}
-
-/// `2>/dev/null` overwrites nothing. A word carrying anything before the `>` is a word, not a
-/// redirection, and dropping it would classify a different command than the one that runs.
-fn bare_redirects_stripped(command: &str) -> Cow<'_, str> {
-    let bare = |token: &str| {
-        (token.ends_with("/dev/null"))
-            && token.split_once('>').is_some_and(|(head, _)| {
-                head.is_empty() || head == "&" || head.chars().all(|c| c.is_ascii_digit())
-            })
-    };
-    let tokens: Vec<&str> = command.split(' ').collect();
-    let kept: Vec<&str> = (tokens.iter().copied())
-        .filter(|token| !bare(token))
-        .collect();
-    match kept.len() == tokens.len() {
-        true => Cow::Borrowed(command),
-        false => Cow::Owned(kept.join(" ")),
-    }
 }
 
 const BROAD_ROOTS: [&str; 10] = [

@@ -441,6 +441,30 @@ fn write_targets_keep_what_the_splitter_skips() {
     }
 }
 
+/// A word carrying a redirect is that word plus a redirect, so the lenient splitter must keep it:
+/// dropping the whole token read `find . -delete>/dev/null` as `find .`, a search that deletes.
+#[test]
+fn a_word_carrying_a_redirect_keeps_its_word() {
+    let segments = command_segments("find . -delete>/dev/null");
+    assert_eq!(
+        segments,
+        [vec![
+            "find".to_owned(),
+            ".".to_owned(),
+            "-delete".to_owned()
+        ]]
+    );
+    assert_eq!(classify(&segments[0]), Class::Destructive);
+    assert_eq!(
+        command_segments("git branch -Dx 2>/dev/null"),
+        [vec![
+            "git".to_owned(),
+            "branch".to_owned(),
+            "-Dx".to_owned()
+        ]]
+    );
+}
+
 /// A contained run has no network past loopback, so these approvals leave the sandbox; `git add` and a local
 /// `rm` stay inside it.
 #[test]
