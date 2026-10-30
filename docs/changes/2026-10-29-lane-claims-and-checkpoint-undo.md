@@ -1,5 +1,5 @@
 ---
 issue: Closes #1510
-raise: crate cli +4, crate runtime +116, crate tools +29, tests +318, comments +12
+raise: crate cli +4, crate runtime +116, crate tools +25, tests +347, comments +12
 ---
 Lane claims and checkpoint undo stop failing in the field. A pool claim holds the pool lock only while it picks a slot, so parallel `isolation='worktree'` children check out side by side instead of one `git worktree add` at a time, and a slot's own guard keeps two claimers off one fresh slot. Stopping a slot's warmer signals the receipt's pid only while that process still runs a warm command, so a reused pid is never killed; `seen.json` is written under the pool lock by atomic replace, a tree with several lockfiles syncs every one of them, and a failed sync starts the session with a one-line `warning: lane N: toolchain sync failed, the session starts unsynced: …` instead of refusing it. A worktree child's spawn reply and the parent's notice say which HEAD the child starts at and how many uncommitted paths in the parent's checkout it starts without. Checkpoint undo runs its shadow git through one constructor that clears the caller's `GIT_*` variables and turns off path quoting, reads `-z` diffs, and restores every path in one literal-pathspec checkout, so a non-ASCII file name undoes and a caller's `GIT_INDEX_FILE` is left alone.

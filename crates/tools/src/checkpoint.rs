@@ -267,13 +267,9 @@ impl Checkpoints {
             .args(args)
             .current_dir(&self.work_tree);
         let never: crate::tool::CancelFlag = Arc::new(|| false);
-        let capture = crate::process::run_captured(
-            process,
-            stdin.map(<[u8]>::to_vec),
-            &never,
-            crate::process::OUTPUT_CAP,
-        )
-        .map_err(CheckpointError::GitMissing)?;
+        let capture =
+            crate::process::run_captured(process, stdin.map(<[u8]>::to_vec), &never, usize::MAX)
+                .map_err(CheckpointError::GitMissing)?;
         if capture.exit_code != Some(0) {
             return Err(CheckpointError::Git {
                 command: verb.to_owned(),
