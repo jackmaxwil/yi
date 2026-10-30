@@ -45,24 +45,11 @@ impl HashlineReadTool {
         context: &ToolContext,
     ) -> ToolOutput {
         let pages = input.get("pages").and_then(Value::as_str);
-        let ceiling = crate::document::ceiling(pages.is_some());
-        let opened = match context.read_gate().open(path, &context.deny_read) {
-            Ok(opened) => opened,
-            Err(error) => {
-                return error_output(format!("failed to read {}: {error}", path.display()));
-            }
+        let read = match pages {
+            Some(_) => context.read_paged(path),
+            None => context.read(path),
         };
-        let size = opened.metadata().map(|meta| meta.len()).unwrap_or(0);
-        if size > ceiling {
-            let reason = format!(
-                "{size} bytes is past the {} MiB ceiling for converting a document",
-                ceiling / (1024 * 1024)
-            );
-            let mut output = error_output(format!("failed to read {}: {reason}", path.display()));
-            output.result.details = json!({ "refused": reason });
-            return output;
-        }
-        let bytes = match crate::tool::read_capped(opened, path) {
+        let bytes = match read {
             Ok(bytes) => bytes,
             Err(error) => {
                 return error_output(format!("failed to read {}: {error}", path.display()));

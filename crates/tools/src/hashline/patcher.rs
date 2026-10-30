@@ -104,7 +104,7 @@ impl<'a> Patcher<'a> {
         }
     }
 
-    fn write(&self, path: &Path, content: &str) -> std::io::Result<()> {
+    fn write(&self, path: &Path, content: &str) -> std::io::Result<Option<&'static str>> {
         let file = self.gate.open_write(path, &self.walls)?;
         crate::tool::overwrite(&file, path, content.as_bytes())
     }
@@ -197,7 +197,13 @@ impl<'a> Patcher<'a> {
 
         let target = section.clone();
         let canonical_path = self.canonical_path(&target.path);
-        let read = self.try_read(&target.path)?;
+        let removed = matches!(file_op, Some(FileOp::Rem));
+        let read = match self.try_read(&target.path) {
+            Err(_) if removed && self.resolve_path(&target.path).is_file() => None,
+            read => Some(read?),
+        };
+        let unread = read.is_none();
+        let read = read.unwrap_or_else(|| Some(String::new()));
         // No tag names the version this session last showed for the path.
         let expected = match section.file_hash.as_deref() {
             Some(text) => FileTag::parse(text).ok_or_else(|| {
@@ -275,14 +281,23 @@ impl<'a> Patcher<'a> {
         } else {
             parsed.edits
         };
-        let apply_result = self.apply_with_validation(
-            &target,
-            &canonical_path,
-            &normalized,
-            edits,
-            clipboard,
-            (expected, file_op.as_ref()),
-        )?;
+        let apply_result = if unread {
+            ApplyResult {
+                text: String::new(),
+                origins: Vec::new(),
+                first_changed_line: None,
+                warnings: Vec::new(),
+            }
+        } else {
+            self.apply_with_validation(
+                &target,
+                &canonical_path,
+                &normalized,
+                edits,
+                clipboard,
+                (expected, file_op.as_ref()),
+            )?
+        };
 
         Ok(PreparedSection {
             section: target,
@@ -362,8 +377,10 @@ impl<'a> Patcher<'a> {
             if let Some(parent) = dest_resolved.parent() {
                 let _best_effort = std::fs::create_dir_all(parent);
             }
-            self.write(&dest_resolved, &persisted)
+            let note = self
+                .write(&dest_resolved, &persisted)
                 .map_err(|error| format!("failed to write {dest}: {error}"))?;
+            warnings.extend(note.map(str::to_owned));
             (self
                 .gate
                 .remove(&self.resolve_path(&section.path), &self.walls))
@@ -384,8 +401,10 @@ impl<'a> Patcher<'a> {
         }
 
         self.refuse_symlink(&section.path)?;
-        self.write(&self.resolve_path(&section.path), &persisted)
+        let note = self
+            .write(&self.resolve_path(&section.path), &persisted)
             .map_err(|error| format!("failed to write {}: {error}", section.path))?;
+        warnings.extend(note.map(str::to_owned));
         let file_hash = self
             .snapshots
             .record(&prepared.canonical_path, &after, None);
@@ -427,7 +446,9 @@ impl<'a> Patcher<'a> {
     fn try_read(&self, path: &str) -> Result<Option<String>, String> {
         let resolved = self.resolve_path(path);
         let opened = self.gate.open(&resolved, &self.walls);
-        match opened.and_then(|file| crate::tool::read_capped(file, &resolved)) {
+        match opened
+            .and_then(|file| crate::tool::read_capped(file, &resolved, crate::tool::READ_FILE_CAP))
+        {
             Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
             Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
                 Err(format!("{path} is too large to edit: {error}"))

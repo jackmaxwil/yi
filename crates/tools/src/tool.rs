@@ -71,7 +71,18 @@ impl ToolContext {
     /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`, at
     /// most [`READ_FILE_CAP`] of them.
     pub(crate) fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-        read_capped(self.read_gate().open(path, &self.deny_read)?, path)
+        read_capped(
+            self.read_gate().open(path, &self.deny_read)?,
+            path,
+            READ_FILE_CAP,
+        )
+    }
+
+    /// [`Self::read`] for a page selection, which parses only those pages: capped at
+    /// [`crate::document::PAGED_CEILING`] instead.
+    pub(crate) fn read_paged(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        let cap = usize::try_from(crate::document::PAGED_CEILING).unwrap_or(usize::MAX);
+        read_capped(self.read_gate().open(path, &self.deny_read)?, path, cap)
     }
 
     /// What a write may not land on: both lists of the wall.
@@ -275,16 +286,20 @@ pub(crate) fn read_all(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
 /// The most of one file `read` shows or `edit` takes whole; past it grep searches the file.
 pub const READ_FILE_CAP: usize = 16 * 1024 * 1024;
 
-/// [`read_all`] up to [`READ_FILE_CAP`]; past it a `FileTooLarge` error whose text is the cut row.
-pub(crate) fn read_capped(file: std::fs::File, path: &Path) -> std::io::Result<Vec<u8>> {
-    let cap = u64::try_from(READ_FILE_CAP).unwrap_or(u64::MAX);
+/// [`read_all`] up to `limit` bytes; past it a `FileTooLarge` error whose text is the cut row.
+pub(crate) fn read_capped(
+    file: std::fs::File,
+    path: &Path,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
+    let cap = u64::try_from(limit).unwrap_or(u64::MAX);
     let size = file.metadata().map_or(0, |meta| meta.len());
     let mut bytes = Vec::new();
     if size <= cap {
         let mut limited = std::io::Read::take(&file, cap.saturating_add(1));
         std::io::Read::read_to_end(&mut limited, &mut bytes)?;
     }
-    if size <= cap && bytes.len() <= READ_FILE_CAP {
+    if size <= cap && bytes.len() <= limit {
         return Ok(bytes);
     }
     let size = size.max(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
@@ -295,16 +310,28 @@ pub(crate) fn read_capped(file: std::fs::File, path: &Path) -> std::io::Result<V
         0,
         total,
         "bytes read",
-        "READ_FILE_CAP",
-        READ_FILE_CAP,
+        if limit == READ_FILE_CAP {
+            "READ_FILE_CAP"
+        } else {
+            "PAGED_CEILING"
+        },
+        limit,
         &next,
     );
     Err(std::io::Error::new(std::io::ErrorKind::FileTooLarge, row))
 }
 
+/// Said when [`overwrite`] could not stage a sibling and wrote the file in place instead.
+pub(crate) const IN_PLACE: &str = "the file was written in place (no sibling could replace its name), so a reader during the write could see it short";
+
 /// Replaces the file the gate judged: a sibling temp renamed over its name once that name still
 /// names `file`, so no reader or crash ever sees it short; a hard-linked file is written in place.
-pub(crate) fn overwrite(file: &std::fs::File, path: &Path, content: &[u8]) -> std::io::Result<()> {
+/// Returns [`IN_PLACE`] when the sibling could not be made or renamed and the write fell back.
+pub(crate) fn overwrite(
+    file: &std::fs::File,
+    path: &Path,
+    content: &[u8],
+) -> std::io::Result<Option<&'static str>> {
     replace_after(file, path, content, &mut || ())
 }
 
@@ -315,7 +342,7 @@ pub fn replace_after(
     path: &Path,
     content: &[u8],
     held: &mut dyn FnMut(),
-) -> std::io::Result<()> {
+) -> std::io::Result<Option<&'static str>> {
     use std::io::{Seek, Write};
     let meta = file.metadata()?;
     let in_place = |mut file: &std::fs::File| {
@@ -323,11 +350,12 @@ pub fn replace_after(
         file.rewind()?;
         file.write_all(content)
     };
+    let fell_back = |file: &std::fs::File| in_place(file).map(|()| Some(IN_PLACE));
     if links(&meta) > 1 {
-        return in_place(file);
+        return in_place(file).map(|()| None);
     }
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
-        return in_place(file);
+        return fell_back(file);
     };
     static TEMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let serial = TEMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -338,15 +366,16 @@ pub fn replace_after(
     ));
     let mut options = std::fs::OpenOptions::new();
     let Ok(mut staged) = options.write(true).create_new(true).open(&temp) else {
-        return in_place(file);
+        return fell_back(file);
     };
-    let landed = (|| {
+    let staged_ok = (|| {
         staged.set_permissions(meta.permissions())?;
         staged.write_all(content)?;
         staged.sync_all()?;
         held();
         let named = std::fs::symlink_metadata(path)?;
-        if named.file_type().is_symlink() || identity(&named) != identity(&meta) {
+        let id = yi_permission::file_id;
+        if named.file_type().is_symlink() || id(&named) != id(&meta) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 format!(
@@ -355,9 +384,16 @@ pub fn replace_after(
                 ),
             ));
         }
-        std::fs::rename(&temp, path)
+        Ok(())
     })();
-    if landed.is_err() {
+    let landed = match staged_ok {
+        Ok(()) => match std::fs::rename(&temp, path) {
+            Ok(()) => Ok(None),
+            Err(_) => fell_back(file),
+        },
+        Err(error) => Err(error),
+    };
+    if !matches!(landed, Ok(None)) {
         let _already_gone = std::fs::remove_file(&temp);
     }
     landed
@@ -371,17 +407,6 @@ fn links(meta: &std::fs::Metadata) -> u64 {
 #[cfg(not(unix))]
 fn links(_meta: &std::fs::Metadata) -> u64 {
     1
-}
-
-#[cfg(unix)]
-fn identity(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    Some((meta.dev(), meta.ino()))
-}
-
-#[cfg(not(unix))]
-fn identity(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
-    None
 }
 
 pub fn resolve_path(context: &ToolContext, path: &str) -> PathBuf {

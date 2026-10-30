@@ -459,7 +459,15 @@ impl HashlineReadTool {
                 .to_string_lossy()
                 .into_owned();
             let opened = gate.open(path, &context.deny_read);
-            let bytes = opened.and_then(crate::tool::read_all).unwrap_or_default();
+            let cap = crate::tool::READ_FILE_CAP;
+            let bytes = match opened.and_then(|file| crate::tool::read_capped(file, path, cap)) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                    sections.push(format!("{display}  (not read: {error})"));
+                    continue;
+                }
+                Err(_) => Vec::new(),
+            };
             let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);
             let size = match &document {
                 Some(super::documents::Listed::Copy(copy)) => std::fs::metadata(&copy.path)
@@ -568,7 +576,6 @@ impl HashlineReadTool {
                 .max(limit.saturating_mul(256))
                 .min(READ_BYTE_CEIL)
         });
-
         let mut rows: Vec<String> = Vec::new();
         let mut seen: Vec<u64> = Vec::new();
         let mut spent = 0_usize;
@@ -741,16 +748,12 @@ impl HashlineReadTool {
 }
 
 fn output_text_of(output: &ToolOutput) -> String {
-    output
-        .result
-        .content
-        .iter()
-        .map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => text.as_str(),
-            _ => "",
+    (output.result.content.iter())
+        .filter_map(|content| match content {
+            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
         })
-        .collect::<Vec<_>>()
-        .join("")
+        .collect()
 }
 
 /// The requested line windows, 1-based inclusive, merged and clamped. `ranges` and
@@ -850,15 +853,17 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         // Invariant: an unchanged line the model saw is still a line it saw, so the prior
         // seen set rebases onto the new tag rather than shrinking to the hunk windows (#473).
-        let map = super::rebase::LineMap::between(&result.before, &result.after);
         let prior = snapshots.by_lines(&result.canonical_path, &result.before);
-        let rebased = |lines: &mut dyn Iterator<Item = &u64>| -> Vec<u64> {
-            lines.filter_map(|line| map.line(*line)).collect()
-        };
-        let carried = prior.map_or_else(Vec::new, |prior| {
-            rebased(&mut prior.seen_lines.iter().flatten())
+        let (carried, program) = prior.map_or_else(Default::default, |prior| {
+            let map = super::rebase::LineMap::between(&result.before, &result.after);
+            let rebased = |lines: &mut dyn Iterator<Item = &u64>| -> Vec<u64> {
+                lines.filter_map(|line| map.line(*line)).collect()
+            };
+            (
+                rebased(&mut prior.seen_lines.iter().flatten()),
+                rebased(&mut prior.program_lines.iter()),
+            )
         });
-        let program = prior.map_or_else(Vec::new, |prior| rebased(&mut prior.program_lines.iter()));
         let mut seen: Vec<u64> = Vec::new();
         // Every hunk gets a window, not just the first: a window the model cannot see is a
         // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
@@ -1015,7 +1020,6 @@ impl Tool for HashlineEditTool {
                 return crate::tool::error_output_kind(format!("{message}{pointer}"), kind);
             }
         };
-
         let hash = input_hash(&patch_text);
         let mut rendered: Vec<String> = Vec::new();
         let mut diff = String::new();
@@ -1147,11 +1151,7 @@ fn post_edit_checks(
     })
 }
 
-pub fn record_write_snapshot(
-    state: &SharedHashline,
-    path: &Path,
-    content: &str,
-) -> super::format::FileTag {
+pub fn record_write_snapshot(state: &SharedHashline, path: &Path, content: &str) -> FileTag {
     let line_count = u64::try_from(content.split('\n').count()).unwrap_or(u64::MAX);
     let seen: Vec<u64> = (1..=line_count).collect();
     record_view_snapshot(state, path, content, &seen)

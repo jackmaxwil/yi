@@ -88,10 +88,10 @@ impl SnapshotStore {
         fn trimmed(text: &str) -> Vec<&str> {
             text.split('\n').map(str::trim_end).collect()
         }
-        let wanted = trimmed(full_text);
-        let hash = compute_file_hash(full_text);
         (self.by_content(path, full_text)).or_else(|| {
             let (_, history) = self.paths.iter().find(|(name, _)| name == path)?;
+            let wanted = trimmed(full_text);
+            let hash = compute_file_hash(full_text);
             (history.iter())
                 .find(|version| version.hash == hash && trimmed(&version.text) == wanted)
         })
