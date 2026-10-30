@@ -716,3 +716,40 @@ async fn a_request_asked_twice_at_once_is_put_to_the_user_once() -> TestResult {
     assert_eq!(asked(), 1);
     Ok(())
 }
+
+/// The reviewed action is screened before it is fenced: the prompt the reviewer is asked with
+/// carries the mark, so a destructive command cannot reach the reviewer unmarked.
+#[tokio::test]
+async fn the_reviewers_prompt_carries_the_screen_mark() -> TestResult {
+    let flagged = r#"{"answers":{"inject":{"noul":0.93}}}"#;
+    let (port, handle) = crate::classifier_e2e::sidecar(vec![flagged])?;
+    let (screener, seen) = crate::classifier_e2e::screener(port, 0.8, 96_000);
+    let screeners = yi_runtime::classifier::Screeners::default();
+    screeners.set(screener);
+    let reviewer = Reviewer::new(Arc::new(ProviderStream::new(None)), faux_model(), screeners);
+    let request = yi_runtime::auto_review::ReviewRequest {
+        tool: "bash".to_owned(),
+        display: "rm -rf build".to_owned(),
+        command: Some("rm -rf build".to_owned()),
+        cwd: "/tmp".to_owned(),
+        targets: Vec::new(),
+        patch: None,
+        reason: "the command is destructive".to_owned(),
+    };
+    let prompt = reviewer.prompt_for(&request).await;
+    handle.join().map_err(|_| "sidecar thread")?;
+    assert!(
+        prompt.contains(r#"<action trust="untrusted" screen="flagged:0.93">"#),
+        "the reviewer's action fence carries the mark: {prompt}"
+    );
+    assert!(
+        prompt.contains("command: rm -rf build"),
+        "the action itself is unchanged: {prompt}"
+    );
+    assert_eq!(
+        crate::classifier_e2e::taken(&seen).len(),
+        1,
+        "the reviewed action was screened once"
+    );
+    Ok(())
+}

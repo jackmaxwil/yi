@@ -342,7 +342,12 @@ impl Host {
                         self.frozen.get().is_none(),
                         "an external attach after the first request reaches no request"
                     );
-                    let screened = self.screen.screen(kind, &text);
+                    // Invariant: a granted fence is the user's own instruction file, so the
+                    // screen never argues with it; only text read as data is screened.
+                    let screened = match trust {
+                        crate::ext::Trust::Granted => crate::classifier::Screened::clean(&text),
+                        crate::ext::Trust::Untrusted => self.screen.screen(kind, &text),
+                    };
                     changed |=
                         self.state
                             .attach_external(&source, trust, &screened.body, screened.mark);

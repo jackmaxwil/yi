@@ -31,9 +31,8 @@ pub struct ReviewRequest {
 }
 
 impl ReviewRequest {
-    /// The reviewed text is fenced and labeled so the reviewer can tell the
-    /// action from the instructions about judging it.
-    fn render(&self, screen: &crate::classifier::Screeners) -> String {
+    /// The reviewed text as the reviewer reads it, before it is fenced and marked.
+    fn action(&self) -> String {
         let mut action = format!("tool: {}\n", self.tool);
         action.push_str(&format!("summary: {}\n", self.display));
         if let Some(command) = &self.command {
@@ -45,11 +44,13 @@ impl ReviewRequest {
         if let Some(patch) = &self.patch {
             action.push_str(&format!("patch:\n{patch}\n"));
         }
-        let screened = screen.screen("review", &action);
-        let mark = match screened.mark {
-            Some(score) => format!(" screen=\"flagged:{score:.2}\""),
-            None => String::new(),
-        };
+        action
+    }
+
+    /// The reviewed text is fenced and labeled so the reviewer can tell the
+    /// action from the instructions about judging it.
+    fn render(&self, screened: &crate::classifier::Screened) -> String {
+        let mark = crate::classifier::screen_attr(screened.mark);
         let mut out = format!("Working directory: {}\n", self.cwd);
         out.push_str(&format!("Deterministic policy said: {}\n", self.reason));
         out.push_str(&format!("\n<action trust=\"untrusted\"{mark}>\n"));
@@ -110,6 +111,15 @@ impl Reviewer {
         }
     }
 
+    /// The prompt the reviewer is asked with, screened and fenced: the review's one render.
+    pub async fn prompt_for(&self, request: &ReviewRequest) -> String {
+        let screened = self
+            .screen
+            .screen_off_reactor("review", &request.action())
+            .await;
+        request.render(&screened)
+    }
+
     pub async fn review(&self, request: &ReviewRequest) -> ReviewOutcome {
         let session = AgentSession::new(
             SessionConfig {
@@ -122,7 +132,7 @@ impl Reviewer {
         );
         session.set_tools(Vec::new());
         session.set_reuse(yi_types::model::Reuse::OneShot);
-        if session.prompt(&request.render(&self.screen)).is_err() {
+        if session.prompt(&self.prompt_for(request).await).is_err() {
             return ReviewOutcome::Deny {
                 reason: "the reviewer session refused the prompt".to_owned(),
             };

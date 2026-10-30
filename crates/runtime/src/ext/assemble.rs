@@ -299,10 +299,7 @@ pub(crate) fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
 pub(crate) fn fence(source: &str, trust: &str, text: &str, screen: Option<f64>) -> String {
     let digest = crate::fetch::content_hash(text);
     let id = digest.get(..16).unwrap_or(&digest);
-    let mark = match screen {
-        Some(score) => format!(" screen=\"flagged:{score:.2}\""),
-        None => String::new(),
-    };
+    let mark = crate::classifier::screen_attr(screen);
     format!(
         "{FENCE_SENTINEL}yi-external {id} source=\"{}\" trust=\"{trust}\"{mark}>>>\n{text}\n{FENCE_SENTINEL}end-yi-external {id}>>>",
         sanitize(source),

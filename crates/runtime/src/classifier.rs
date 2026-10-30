@@ -44,7 +44,11 @@ impl Sidecar {
 #[derive(Default)]
 struct Breaker {
     failures: u32,
+    /// How many failures pause the endpoint; zero reads as the shared three.
+    trips_at: u32,
     paused_until: Option<Instant>,
+    /// The failure that paused it, so a skipped call can journal why nothing was screened.
+    cause: Option<String>,
 }
 
 fn paused(breaker: &Mutex<Breaker>) -> bool {
@@ -55,22 +59,39 @@ fn paused(breaker: &Mutex<Breaker>) -> bool {
         Some(until) if Instant::now() < until => true,
         Some(_) => {
             breaker.paused_until = None;
+            breaker.cause = None;
             false
         }
         None => false,
     }
 }
 
-fn fail(breaker: &Mutex<Breaker>) -> bool {
+fn pause_cause(breaker: &Mutex<Breaker>) -> Option<String> {
+    let Ok(mut breaker) = breaker.lock() else {
+        return None;
+    };
+    match breaker.paused_until {
+        Some(until) if Instant::now() < until => breaker.cause.clone(),
+        Some(_) => {
+            breaker.paused_until = None;
+            breaker.cause = None;
+            None
+        }
+        None => None,
+    }
+}
+
+fn fail(breaker: &Mutex<Breaker>, cause: &str) -> bool {
     let Ok(mut breaker) = breaker.lock() else {
         return false;
     };
     breaker.failures = breaker.failures.saturating_add(1);
-    if breaker.failures < TRIP_AFTER {
+    if breaker.failures < breaker.trips_at.max(1) {
         return false;
     }
     breaker.failures = 0;
     breaker.paused_until = Instant::now().checked_add(PAUSE);
+    breaker.cause = Some(cause.to_owned());
     true
 }
 
@@ -199,7 +220,7 @@ impl SkillClassifier {
         let response = match outcome {
             Ok(response) => response,
             Err(error) => {
-                if fail(&self.breaker) {
+                if fail(&self.breaker, &self.sidecar.named(&error)) {
                     (self.deliver)(self.notice(&error));
                 }
                 record.error = Some(self.sidecar.named(&error));
@@ -359,7 +380,7 @@ impl Approver {
                 response.answers.get(SAFE).and_then(|answer| answer.noul)
             }
             Err(error) => {
-                fail(&self.breaker);
+                fail(&self.breaker, &self.sidecar.named(&error));
                 record.error = Some(self.sidecar.named(&error));
                 None
             }
@@ -429,9 +450,14 @@ impl Screened {
     }
 }
 
-/// Named for the incident: a dead endpoint cost one full timeout per attachment, so session
-/// start with five project blocks waited five timeouts for an answer none of them got.
-pub const SCREEN_COOLDOWN: Duration = Duration::from_secs(60);
+/// The fence attribute the screen's score rides, spelled once for the three fences that carry one.
+pub fn screen_attr(screen: Option<f64>) -> String {
+    match screen {
+        Some(score) => format!(" screen=\"flagged:{score:.2}\""),
+        None => String::new(),
+    }
+}
+
 /// Invariant: one call per distinct text per session, so an unchanged AGENTS.md is never re-billed.
 const SCREEN_CACHE: usize = 512;
 
@@ -440,7 +466,7 @@ pub struct Screener {
     cut: f64,
     cap: usize,
     record: Record,
-    down: Mutex<Option<(Instant, String)>>,
+    breaker: Mutex<Breaker>,
     seen: Mutex<BTreeMap<(String, String), Option<f64>>>,
 }
 
@@ -463,16 +489,39 @@ impl Screeners {
             None => Screened::clean(text),
         }
     }
+
+    /// The blocking sidecar call handed to a blocking thread: the reviewer reaches the screen
+    /// from a tokio task, and a reactor worker waiting out the timeout stalls every other task.
+    pub async fn screen_off_reactor(&self, kind: &str, text: &str) -> Screened {
+        let screener = self.0.lock().ok().and_then(|slot| slot.clone());
+        let Some(screener) = screener else {
+            return Screened::clean(text);
+        };
+        if tokio::runtime::Handle::try_current().is_err() {
+            return screener.check(kind, text);
+        }
+        let kept = text.to_owned();
+        let (kind, sent) = (kind.to_owned(), text.to_owned());
+        tokio::task::spawn_blocking(move || screener.check(&kind, &sent))
+            .await
+            .unwrap_or_else(|_| Screened::clean(&kept))
+    }
 }
 
 impl Screener {
     pub fn new(sidecar: Sidecar, cut: f64, cap: usize, record: Record) -> Self {
+        // Incident: a dead endpoint cost one full timeout per attachment, so the screen pauses
+        // on the first failure where the classifier's other callers allow three.
+        let breaker = Breaker {
+            trips_at: 1,
+            ..Breaker::default()
+        };
         Self {
             sidecar,
             cut,
             cap,
             record,
-            down: Mutex::new(None),
+            breaker: Mutex::new(breaker),
             seen: Mutex::new(BTreeMap::new()),
         }
     }
@@ -486,7 +535,7 @@ impl Screener {
         if let Some(mark) = self.recall(kind, &hash) {
             return Screened { mark, body };
         }
-        if let Some(cause) = self.cooling() {
+        if let Some(cause) = pause_cause(&self.breaker) {
             (self.record)(unscreened(kind, &hash, total, cause, 0));
             return Screened { mark: None, body };
         }
@@ -520,16 +569,23 @@ impl Screener {
             Ok(response) => response,
             Err(error) => {
                 let cause = self.sidecar.named(&error);
-                self.cool(&cause);
+                fail(&self.breaker, &cause);
                 (self.record)(unscreened(kind, &hash, total, cause, latency_ms));
                 return Screened { mark: None, body };
             }
         };
-        let score = response
+        succeed(&self.breaker);
+        let Some(score) = response
             .answers
             .get(SCREEN_QUESTION)
-            .and_then(|answer| answer.noul);
-        let mark = score.filter(|score| *score >= self.cut);
+            .and_then(|answer| answer.noul)
+        else {
+            let cause = self.sidecar.named("the answer carried no inject score");
+            fail(&self.breaker, &cause);
+            (self.record)(unscreened(kind, &hash, total, cause, latency_ms));
+            return Screened { mark: None, body };
+        };
+        let mark = (score >= self.cut).then_some(score);
         self.keep(kind, &hash, mark);
         let Some(score) = mark else {
             return Screened { mark: None, body };
@@ -584,31 +640,6 @@ impl Screener {
                 seen.clear();
             }
             seen.insert((kind.to_owned(), hash.to_owned()), mark);
-        }
-    }
-
-    fn cooling(&self) -> Option<String> {
-        let Ok(mut down) = self.down.lock() else {
-            return None;
-        };
-        match &*down {
-            Some((until, cause)) if Instant::now() < *until => Some(cause.clone()),
-            Some(_) => {
-                *down = None;
-                None
-            }
-            None => None,
-        }
-    }
-
-    fn cool(&self, cause: &str) {
-        if let Ok(mut down) = self.down.lock() {
-            *down = Some((
-                Instant::now()
-                    .checked_add(SCREEN_COOLDOWN)
-                    .unwrap_or_else(Instant::now),
-                cause.to_owned(),
-            ));
         }
     }
 }

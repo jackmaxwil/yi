@@ -766,10 +766,7 @@ pub fn fence_untrusted(source: &str, text: &str, screen: Option<f64>) -> String 
     let clean = sanitize(text);
     let digest = content_hash(&clean);
     let nonce = digest.get(..12).unwrap_or(&digest);
-    let mark = match screen {
-        Some(score) => format!(" screen=\"flagged:{score:.2}\""),
-        None => String::new(),
-    };
+    let mark = crate::classifier::screen_attr(screen);
     format!(
         "<<<yi-external {nonce} source=\"{}\" trust=\"untrusted\"{mark}>>>\n{clean}\n<<<end-yi-external {nonce}>>>",
         sanitize(source)
