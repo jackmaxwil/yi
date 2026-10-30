@@ -11,7 +11,7 @@ use crate::app::App;
 use crate::avatar::Placement;
 use crate::keys::{self, Action};
 use crate::model::{
-    Mode, Painted, SessionId, SessionRow, SessionStatus, SidebarMode, Slot, Zone, now_ms,
+    Group, Mode, Painted, SessionId, SessionRow, SessionStatus, SidebarMode, Slot, Zone, now_ms,
 };
 use crate::render::Hit;
 use crate::render::{NAME_WIDTH, status_style};
@@ -277,9 +277,8 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         rows.push(control_row(search, text, Hit::Search));
     }
     let groups = app.state.groups();
-    let pinned = groups.first().map_or(0, |group| group.rows.len());
     let mut pinned_head = false;
-    let mut last_group: Option<Option<String>> = None;
+    let mut last_group: Option<&Group> = None;
     for entry in app.state.painted(&groups) {
         match entry {
             Painted::Header(root, group) => {
@@ -296,7 +295,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
                 );
                 rows.push(header);
             }
-            Painted::Row(index) => {
+            Painted::Row(group, index) => {
                 let Some(id) = app.state.order.get(index) else {
                     continue;
                 };
@@ -310,15 +309,14 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
                         beyond = beyond.saturating_add(1);
                         continue;
                     }
-                    let group = row.pinned.is_none().then(|| row.root.clone());
-                    if slot > 0 && last_group.as_ref() != Some(&group) {
+                    if slot > 0 && !last_group.is_some_and(|last| std::ptr::eq(last, group)) {
                         rows.push(SidebarRow::plain(None, Line::raw("")));
                     }
-                    last_group = Some(group);
-                } else if row.pinned.is_some() && !pinned_head {
+                } else if group.root.is_none() && !pinned_head {
                     pinned_head = true;
-                    rows.push(pinned_header(pinned, theme));
+                    rows.push(pinned_header(group.rows.len(), theme));
                 }
+                last_group = Some(group);
                 slot = slot.saturating_add(1);
                 rows.extend(session_rows(
                     app,

@@ -1,6 +1,6 @@
 ---
 issue: Closes #1715
-raise: crate console +123, tests +261, comments +11
+raise: crate console +114, tests +261, comments +11
 ---
 The console's full sidebar already grouped sessions by workspace, but a header said nothing about
 how many sessions its group held, and a folded group could only be opened again with a mouse:

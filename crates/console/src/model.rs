@@ -122,11 +122,11 @@ pub enum Slot {
     Row(usize),
 }
 
-/// A slot of the painted order, carrying the group a header is drawn from so the painter needs
-/// no second traversal to find it again.
+/// One entry of the painted order: a header carries the group it heads, a row the group it is
+/// drawn under, so the painter reads both without a second traversal.
 pub(crate) enum Painted<'a> {
     Header(&'a str, &'a Group),
-    Row(usize),
+    Row(&'a Group, usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -679,7 +679,7 @@ impl ConsoleState {
                 painted.push(Painted::Header(root, group));
             }
             if !group.folded {
-                painted.extend(group.rows.iter().copied().map(Painted::Row));
+                painted.extend(group.rows.iter().map(|index| Painted::Row(group, *index)));
             }
         }
         painted
@@ -687,15 +687,11 @@ impl ConsoleState {
 
     /// The slots in the order the sidebar paints them.
     pub fn slots(&self) -> Vec<Slot> {
-        self.slots_of(&self.groups())
-    }
-
-    pub fn slots_of(&self, groups: &[Group]) -> Vec<Slot> {
-        self.painted(groups)
+        self.painted(&self.groups())
             .into_iter()
             .map(|painted| match painted {
                 Painted::Header(root, _) => Slot::Group(root.to_owned()),
-                Painted::Row(index) => Slot::Row(index),
+                Painted::Row(_, index) => Slot::Row(index),
             })
             .collect()
     }
@@ -731,26 +727,23 @@ impl ConsoleState {
         self.header = Some(root.to_owned());
     }
 
-    pub fn settle_visible(&mut self) {
-        if self.header.is_some() {
+    pub(crate) fn settle_visible(&mut self) {
+        let slots = self.slots();
+        if slots.contains(&self.cursor()) {
             return;
         }
-        let groups = self.groups();
-        let rows: Vec<usize> = groups
+        match slots
             .iter()
-            .filter(|group| !group.folded)
-            .flat_map(|group| group.rows.iter().copied())
-            .collect();
-        if let Some(first) = rows.first() {
-            if !rows.contains(&self.selected) {
-                self.selected = *first;
+            .find(|slot| matches!(slot, Slot::Row(_)))
+            .or_else(|| slots.first())
+        {
+            Some(Slot::Row(index)) => {
+                self.header = None;
+                self.selected = *index;
             }
-            return;
+            Some(Slot::Group(root)) => self.header = Some(root.clone()),
+            None => self.header = None,
         }
-        self.header = match self.painted(&groups).first() {
-            Some(Painted::Header(root, _)) => Some((*root).to_owned()),
-            Some(Painted::Row(_)) | None => None,
-        };
     }
 
     pub fn set_session_status(&mut self, id: &SessionId, status: SessionStatus) {
