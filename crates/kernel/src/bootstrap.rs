@@ -4,7 +4,9 @@ use sha2::{Digest, Sha256};
 use yi_types::kernel::BootstrapVersion;
 
 pub(crate) use crate::lock::acquire_bootstrap_lock;
-pub use crate::lock::{process_is_running, remove_stale_venvs};
+pub use crate::lock::process_is_running;
+pub use crate::venv::{kernel_venv_dir, remove_stale_venvs};
+use crate::venv::{overlay_dir, resolve_writable_venv_dir, restart_sweep_clock, site_packages};
 
 pub const BOOTSTRAP_SCHEMA: u64 = 1;
 const PYTHON_VERSION: &str = "3.11";
@@ -261,81 +263,15 @@ pub fn default_skills_source_dir() -> PathBuf {
     python_root().join("skills")
 }
 
-fn env_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
 
-/// Incident: one `~/.yi/kernel-venv` served every commit, so two sessions whose ready checks
-/// differed rebuilt it back and forth. The check and the extras the venv carries name it now.
-fn venv_name(check: &str, extras: &[&str]) -> String {
-    let mut hash = Sha256::new();
-    hash.update(check.as_bytes());
-    for extra in extras {
-        hash.update(b"\0");
-        hash.update(extra.as_bytes());
-    }
-    let digest = hash.finalize();
-    let slot: String = digest
-        .iter()
-        .take(4)
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!("kernel-venv-{slot}")
-}
-
-fn default_kernel_venv_dir(home: &Path, check: &str) -> PathBuf {
-    home.join(".yi")
-        .join(venv_name(check, &DEFAULT_RLM_EXTRA_UV_ARGS))
-}
-
-pub fn kernel_venv_dir(home: &Path) -> PathBuf {
-    match env_path("YI_KERNEL_VENV") {
-        Some(dir) => dir,
-        None => default_kernel_venv_dir(home, RUNTIME_READY_CHECK),
-    }
-}
-
-fn xdg_kernel_venv_dir(home: &Path) -> PathBuf {
-    let data_home = match env_path("XDG_DATA_HOME") {
-        Some(dir) => dir,
-        None => home.join(".local").join("share"),
-    };
-    data_home
-        .join("yi")
-        .join(venv_name(RUNTIME_READY_CHECK, &DEFAULT_RLM_EXTRA_UV_ARGS))
-}
-
-fn resolve_writable_venv_dir(options: &BootstrapOptions) -> Result<PathBuf, String> {
-    let home = &options.home;
-    let primary = options
-        .venv_dir
-        .clone()
-        .unwrap_or_else(|| kernel_venv_dir(home));
-    let parent = primary.parent().unwrap_or(&primary);
-    match std::fs::create_dir_all(parent) {
-        Ok(()) => Ok(primary),
-        Err(primary_error) => {
-            if options.venv_dir.is_some() || env_path("YI_KERNEL_VENV").is_some() {
-                return Err(format!(
-                    "couldn't create kernel venv parent directory for {}: {primary_error}",
-                    primary.display()
-                ));
-            }
-            let fallback = xdg_kernel_venv_dir(home);
-            let fallback_parent = fallback.parent().unwrap_or(&fallback);
-            std::fs::create_dir_all(fallback_parent).map_err(|fallback_error| {
-                format!(
-                    "couldn't create kernel venv directory at {} or {}; set YI_KERNEL_PYTHON to a python with ipykernel installed. {fallback_error}",
-                    primary.display(),
-                    fallback.display()
-                )
-            })?;
-            Ok(fallback)
-        }
-    }
-}
+/// The `runtime` a dependency venv records: the package it carries is shadowed by an overlay.
+const DEPENDENCY_RUNTIME: &str = "dependencies";
+const OVERLAY_PTH: &str = "_yi_dependencies.pth";
 
 #[expect(
     clippy::disallowed_methods,
@@ -636,7 +572,12 @@ pub fn document_converter(home: &Path) -> (PathBuf, Vec<String>) {
         return (python, formats);
     }
     let primary = kernel_venv_dir(home);
-    let venv = [primary.clone(), xdg_kernel_venv_dir(home)]
+    let fallback = crate::venv::xdg_kernel_venv_dir(
+        home,
+        &default_runtime_source_dir(),
+        &default_skills_source_dir(),
+    );
+    let venv = [primary.clone(), fallback]
         .into_iter()
         .find(|venv| kernel_python(venv).is_file())
         .unwrap_or(primary);
@@ -708,16 +649,12 @@ pub(crate) fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -
             write_bootstrap_version(venv, runtime_identity, document_formats_of(python));
     }
     if live {
-        crate::lock::restart_sweep_clock(venv);
+        restart_sweep_clock(venv);
     }
     live
 }
 
-fn bootstrap_venv(
-    venv: &Path,
-    options: &BootstrapOptions,
-    runtime_identity: &str,
-) -> Result<(), String> {
+fn bootstrap_venv(venv: &Path, options: &BootstrapOptions) -> Result<(), String> {
     if let Some(parent) = venv.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -778,50 +715,148 @@ fn bootstrap_venv(
             "Warning: anydoc reports no formats; read will not list documents until it does",
         );
     }
-    write_bootstrap_version(venv, runtime_identity, document_formats)
+    write_bootstrap_version(venv, DEPENDENCY_RUNTIME, document_formats)
+}
+
+fn create_overlay(toolchain: &Toolchain, deps: &Path, overlay: &Path) -> Result<(), String> {
+    let base = kernel_python(deps).to_string_lossy().into_owned();
+    let target = overlay.to_string_lossy().into_owned();
+    match toolchain {
+        Toolchain::Uv(uv) => output(
+            uv,
+            &["venv", &target, "--python", &base, "--system-site-packages"],
+        ),
+        Toolchain::System(_) => output(
+            Path::new(&base),
+            &[
+                "-m",
+                "venv",
+                "--without-pip",
+                "--system-site-packages",
+                &target,
+            ],
+        ),
+    }?;
+    let deps_site = site_packages(deps)?;
+    let pth = site_packages(overlay)?.join(OVERLAY_PTH);
+    std::fs::write(&pth, format!("{}\n", deps_site.display()))
+        .map_err(|error| format!("{}: {error}", pth.display()))
+}
+
+/// Invariant: the overlay holds only `yi_runtime` and the skills, `--no-deps`; every import
+/// they need resolves through the `.pth` line naming the dependency venv's site-packages.
+fn bootstrap_overlay(
+    deps: &Path,
+    overlay: &Path,
+    options: &BootstrapOptions,
+    runtime_identity: &str,
+) -> Result<(), String> {
+    let toolchain = match &options.toolchain {
+        Some(toolchain) => toolchain.clone(),
+        None => find_toolchain(options)?,
+    };
+    create_overlay(&toolchain, deps, overlay)?;
+    let python = kernel_python(overlay);
+    let runtime_dir = options.runtime_source_dir.to_string_lossy().into_owned();
+    pip_install(&toolchain, &python, &["--no-deps", &runtime_dir])?;
+    let skills: Vec<String> = PYTHON_SKILLS
+        .iter()
+        .map(|(_, subdir)| options.skills_source_dir.join(subdir))
+        .filter(|dir| dir.is_dir())
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .collect();
+    let mut args = vec!["--no-deps"];
+    args.extend(skills.iter().map(String::as_str));
+    if !skills.is_empty()
+        && let Err(error) = pip_install(&toolchain, &python, &args)
+    {
+        options.progress(&format!(
+            "Warning: Python skills failed to install and will be unavailable: {error}"
+        ));
+    }
+    write_bootstrap_version(overlay, runtime_identity, Vec::new())
 }
 
 pub fn kernel_python(venv: &Path) -> PathBuf {
     venv.join("bin").join("python")
 }
 
-/// The kernel python when nothing has to be built: `YI_KERNEL_PYTHON`, or a venv whose
-/// version file and import probe both agree.
+fn dependencies_ready(deps: &Path) -> bool {
+    let version = read_bootstrap_version(deps);
+    let ready = bootstrap_version_current(version.as_ref(), DEPENDENCY_RUNTIME)
+        && kernel_python(deps).is_file();
+    if !ready {
+        return false;
+    }
+    let probe = serde_json::Value::from(document_probe_hash());
+    if version.is_some_and(|version| version.extra.get(DOCUMENT_PROBE_KEY) != Some(&probe)) {
+        let formats = document_formats_of(&kernel_python(deps));
+        let _record_refreshed = write_bootstrap_version(deps, DEPENDENCY_RUNTIME, formats);
+    }
+    restart_sweep_clock(deps);
+    true
+}
+
+fn external_stamp(home: &Path, python: &Path) -> PathBuf {
+    let key = fnv1a(python.to_string_lossy().as_bytes());
+    home.join(".yi")
+        .join(format!("kernel-python-{key:016x}.ready-stamp"))
+}
+
+/// What a `YI_KERNEL_PYTHON` lacks, by name; a stamp of the files the last passing probe saw
+/// stands in for the three interpreter probes, as it does for the default venv.
+pub(crate) fn external_python_missing(home: &Path, python: &Path) -> Vec<String> {
+    let root = python.parent().and_then(Path::parent).unwrap_or(python);
+    let stamp = external_stamp(home, python);
+    if crate::probe::stamped_at(python, root, &stamp) {
+        return Vec::new();
+    }
+    let mut missing = Vec::new();
+    if !python_imports(python, "ipykernel") {
+        missing.push("ipykernel".to_owned());
+    }
+    if !has_runtime(python) {
+        missing.push("a current yi-runtime with callable rlm.run and rlm.host_request".to_owned());
+    }
+    if missing.is_empty() {
+        let missing_extras = missing_extra_imports(python);
+        if !missing_extras.is_empty() {
+            missing.push(format!(
+                "default Python packages ({})",
+                missing_extras.join(", ")
+            ));
+        }
+    }
+    if missing.is_empty() {
+        let _best_effort = std::fs::create_dir_all(home.join(".yi"));
+        crate::probe::stamp_at(python, root, &stamp);
+    }
+    missing
+}
+
+/// The kernel python when nothing has to be built: `YI_KERNEL_PYTHON`, or an overlay whose
+/// version file and import probe both agree over a current dependency venv.
 pub fn ready_kernel_python(options: &BootstrapOptions) -> Option<PathBuf> {
     if let Some(python) = env_path("YI_KERNEL_PYTHON") {
-        return (python_imports(&python, "ipykernel") && has_runtime(&python)).then_some(python);
+        return external_python_missing(&options.home, &python)
+            .is_empty()
+            .then_some(python);
     }
-    let venv = resolve_writable_venv_dir(options).ok()?;
-    let python = venv.join("bin").join("python");
+    let deps = resolve_writable_venv_dir(options).ok()?;
     let identity = resolve_python_identity(
         &options.runtime_source_dir,
         Some(&options.skills_source_dir),
     )
     .ok()?;
-    kernel_ready(&python, &venv, &identity).then_some(python)
+    let overlay = overlay_dir(&deps, &identity);
+    let python = kernel_python(&overlay);
+    (dependencies_ready(&deps) && kernel_ready(&python, &overlay, &identity)).then_some(python)
 }
 
 pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, String> {
     let _span = yi_types::trace::span("kernel.ensure_python");
     if let Some(python) = env_path("YI_KERNEL_PYTHON") {
-        let mut missing = Vec::new();
-        if !python_imports(&python, "ipykernel") {
-            missing.push("ipykernel".to_owned());
-        }
-        if !has_runtime(&python) {
-            missing.push(
-                "a current yi-runtime with callable rlm.run, rlm.host_request, and explicit harness CRUD methods".to_owned(),
-            );
-        }
-        if missing.is_empty() {
-            let missing_extras = missing_extra_imports(&python);
-            if !missing_extras.is_empty() {
-                missing.push(format!(
-                    "default Python packages ({})",
-                    missing_extras.join(", ")
-                ));
-            }
-        }
+        let missing = external_python_missing(&options.home, &python);
         if missing.is_empty() {
             return Ok(python);
         }
@@ -832,38 +867,52 @@ pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, Strin
         ));
     }
 
-    let venv = resolve_writable_venv_dir(options)?;
-    let python = venv.join("bin").join("python");
+    let deps = resolve_writable_venv_dir(options)?;
     let runtime_identity = resolve_python_identity(
         &options.runtime_source_dir,
         Some(&options.skills_source_dir),
     )?;
+    let overlay = overlay_dir(&deps, &runtime_identity);
+    let python = kernel_python(&overlay);
     let sweep = options.venv_dir.is_none() && env_path("YI_KERNEL_VENV").is_none();
     if sweep {
-        let current = venv.clone();
-        std::thread::spawn(move || remove_stale_venvs(&current));
+        let (current, overlay) = (deps.clone(), overlay.clone());
+        std::thread::spawn(move || {
+            remove_stale_venvs(&current);
+            crate::venv::remove_stale_overlays(&overlay);
+        });
     }
-    if kernel_ready(&python, &venv, &runtime_identity) {
+    let ready = || dependencies_ready(&deps) && kernel_ready(&python, &overlay, &runtime_identity);
+    if ready() {
         return Ok(python);
     }
 
-    let lock = acquire_bootstrap_lock(&venv)?;
+    let deps_lock = acquire_bootstrap_lock(&deps)?;
     let result = (|| {
-        if kernel_ready(&python, &venv, &runtime_identity) {
+        if !dependencies_ready(&deps) {
+            options.progress("› setting up python kernel (one-time, ~30s)…");
+            if deps.exists() {
+                options.progress("rebuilding kernel venv");
+                std::fs::remove_dir_all(&deps).map_err(|error| error.to_string())?;
+            }
+            let building = yi_types::trace::span("kernel.venv_build");
+            bootstrap_venv(&deps, options)?;
+            drop(building);
+        }
+        let _overlay_lock = acquire_bootstrap_lock(&overlay)?;
+        if kernel_ready(&python, &overlay, &runtime_identity) {
             return Ok(python.clone());
         }
-        options.progress("› setting up python kernel (one-time, ~30s)…");
-        if venv.exists() {
-            options.progress("rebuilding kernel venv");
-            std::fs::remove_dir_all(&venv).map_err(|error| error.to_string())?;
+        if overlay.exists() {
+            std::fs::remove_dir_all(&overlay).map_err(|error| error.to_string())?;
         }
-        let building = yi_types::trace::span("kernel.venv_build");
-        bootstrap_venv(&venv, options, &runtime_identity)?;
+        let building = yi_types::trace::span("kernel.overlay_build");
+        bootstrap_overlay(&deps, &overlay, options, &runtime_identity)?;
         drop(building);
         options.progress("✓ ready");
         Ok(python.clone())
     })();
-    drop(lock);
+    drop(deps_lock);
     result
 }
 
@@ -913,24 +962,101 @@ mod tests {
         assert!(!bootstrap_version_current(None, "sha256:abc"));
     }
 
+    #[cfg(unix)]
+    fn fake_uv(root: &Path) -> Result<(PathBuf, PathBuf), String> {
+        let log = root.join("uv.log");
+        let uv = root.join("uv");
+        let script = format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\nif [ \"$1\" = venv ]; then mkdir -p \"$2/bin\" \"$2/lib/python3.13/site-packages\"; printf '#!/bin/sh\\nexit 0\\n' > \"$2/bin/python\"; chmod +x \"$2/bin/python\"; fi\n",
+            log.display()
+        );
+        std::fs::write(&uv, script).map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&uv, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+        Ok((uv, log))
+    }
+
+    #[cfg(unix)]
+    fn runtime_tree(root: &Path, line: &str) -> Result<PathBuf, String> {
+        let tree = root.join("yi_runtime");
+        let rlm = tree.join("src").join("rlm");
+        std::fs::create_dir_all(&rlm).map_err(|error| error.to_string())?;
+        std::fs::write(
+            tree.join("pyproject.toml"),
+            "[project]\ndependencies = []\n",
+        )
+        .map_err(|error| error.to_string())?;
+        std::fs::write(rlm.join("__init__.py"), line).map_err(|error| error.to_string())?;
+        Ok(tree)
+    }
+
+    /// Incident: a one-line .py change rebuilt the whole venv in place, under a session still
+    /// importing from it, and paid the ~30 s dependency install again.
+    #[cfg(unix)]
     #[test]
-    fn the_default_venv_is_keyed_by_the_ready_check() {
-        let home = Path::new("/nonexistent/home");
-        assert_ne!(
-            default_kernel_venv_dir(home, "check-a"),
-            default_kernel_venv_dir(home, "check-b"),
-            "two commits whose ready check differs must not share one venv"
+    fn a_new_runtime_identity_leaves_the_running_one_and_the_dependencies_alone()
+    -> Result<(), String> {
+        let root = Scratch::new("yi-kernel-overlay").map_err(|error| error.to_string())?;
+        let (uv, log) = fake_uv(&root)?;
+        let boot = |line: &str| -> Result<PathBuf, String> {
+            ensure_kernel_python(&BootstrapOptions {
+                on_progress: Some(Box::new(|_| {})),
+                home: root.to_path_buf(),
+                runtime_source_dir: runtime_tree(&root, line)?,
+                skills_source_dir: root.join("no-skills"),
+                toolchain: Some(Toolchain::Uv(uv.clone())),
+                venv_dir: Some(root.join(".yi").join("kernel-venv-test")),
+            })
+        };
+        let first = boot("x = 1\n")?;
+        let marker = first.with_file_name("session-a-imports-here");
+        std::fs::write(&marker, "").map_err(|error| error.to_string())?;
+        let installs = std::fs::read_to_string(&log).map_err(|error| error.to_string())?;
+        let second = boot("x = 2\n")?;
+        let after = std::fs::read_to_string(&log).map_err(|error| error.to_string())?;
+        assert_ne!(first, second, "two identities booted one python");
+        assert!(
+            marker.exists(),
+            "the second identity rebuilt the first's environment"
         );
+        let rebuilt = after
+            .get(installs.len()..)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains(IPYKERNEL_REQUIREMENT) || line.contains("pandas"))
+            .count();
         assert_eq!(
-            default_kernel_venv_dir(home, RUNTIME_READY_CHECK),
-            home.join(".yi")
-                .join(venv_name(RUNTIME_READY_CHECK, &DEFAULT_RLM_EXTRA_UV_ARGS))
+            rebuilt, 0,
+            "a package-only change reinstalled the dependencies: {after}"
         );
-        assert_ne!(
-            venv_name("check", &["pandas"]),
-            venv_name("check", &["pandas", "firecrawl-anydoc"]),
-            "two commits whose extras differ must not share one venv"
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_named_kernel_python_is_probed_once_until_it_changes() -> Result<(), String> {
+        let root = Scratch::new("yi-kernel-external").map_err(|error| error.to_string())?;
+        let venv = root.join("env");
+        std::fs::create_dir_all(venv.join("lib").join("python3.13").join("site-packages"))
+            .map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(venv.join("bin")).map_err(|error| error.to_string())?;
+        let log = root.join("runs");
+        let python = kernel_python(&venv);
+        let script = format!("#!/bin/sh\necho run >> '{}'\necho '[]'\n", log.display());
+        std::fs::write(&python, script).map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&python, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+        let runs = || std::fs::read_to_string(&log).map_or(0, |text| text.lines().count());
+        assert!(external_python_missing(&root, &python).is_empty());
+        let probed = runs();
+        assert!(probed > 0, "the first boot proved nothing");
+        assert!(external_python_missing(&root, &python).is_empty());
+        assert_eq!(
+            runs(),
+            probed,
+            "a second boot ran the interpreter probes again"
         );
+        Ok(())
     }
 
     #[test]
@@ -950,7 +1076,7 @@ mod tests {
     #[test]
     fn the_converter_reads_back_the_formats_its_venv_recorded() -> Result<(), String> {
         let home = Scratch::new("yi-formats").map_err(|error| error.to_string())?;
-        let venv = default_kernel_venv_dir(&home, RUNTIME_READY_CHECK);
+        let venv = kernel_venv_dir(&home);
         std::fs::create_dir_all(venv.join("bin")).map_err(|error| error.to_string())?;
         std::fs::write(kernel_python(&venv), "").map_err(|error| error.to_string())?;
         let formats = vec!["docx".to_owned(), "pdf".to_owned()];

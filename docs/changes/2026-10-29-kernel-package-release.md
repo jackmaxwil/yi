@@ -1,0 +1,5 @@
+---
+issue: Closes #1546
+raise: crate kernel +321, tests +117, comments +10
+---
+The kernel venv is now two layers. The dependency venv (`~/.yi/kernel-venv-<hash>`) is named by the ready check, the default extras and the dependency arrays of the yi_runtime and skill pyprojects; it holds ipykernel, dill and the extras. The yi_runtime package and the Python skills install `--no-deps` into an overlay, `<venv>/overlays/rt-<identity>`, which reads the dependency venv's site-packages through a `.pth` line, and the kernel runs the overlay's python. A change to a `.py` file therefore installs one new overlay in about a second instead of deleting and rebuilding the whole venv, and it never deletes the environment a running session imports from. Old overlays and old dependency venvs are swept only once they are a day settled, hold no bootstrap lock and no running process names them. A `YI_KERNEL_PYTHON` keeps a ready stamp under `~/.yi`, so a second boot over an unchanged interpreter runs no probes. Naming and the sweep live in `crates/kernel/src/venv.rs`.

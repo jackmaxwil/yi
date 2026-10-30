@@ -41,14 +41,21 @@ fn fingerprint(python: &Path, venv: &Path) -> Option<String> {
 }
 
 pub(crate) fn stamped(python: &Path, venv: &Path) -> bool {
-    fingerprint(python, venv).is_some_and(|now| {
-        std::fs::read_to_string(venv.join(READY_STAMP_FILE)).is_ok_and(|then| then == now)
-    })
+    stamped_at(python, venv, &venv.join(READY_STAMP_FILE))
 }
 
 pub(crate) fn stamp(python: &Path, venv: &Path) {
+    stamp_at(python, venv, &venv.join(READY_STAMP_FILE));
+}
+
+pub(crate) fn stamped_at(python: &Path, venv: &Path, file: &Path) -> bool {
+    fingerprint(python, venv)
+        .is_some_and(|now| std::fs::read_to_string(file).is_ok_and(|then| then == now))
+}
+
+pub(crate) fn stamp_at(python: &Path, venv: &Path, file: &Path) {
     if let Some(now) = fingerprint(python, venv) {
-        let _best_effort = std::fs::write(venv.join(READY_STAMP_FILE), now);
+        let _best_effort = std::fs::write(file, now);
     }
 }
 
