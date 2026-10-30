@@ -1,7 +1,7 @@
 use crate::{
     Args, catalog, debug, doctor, fetch, lanes, memory, run_acp, run_ask, run_console_command,
     run_gate, run_gc, run_plan, run_rpc, run_serve_command, run_sessions, run_stats, run_trust,
-    run_tui, run_undo, run_version, run_why, todo,
+    run_tui, run_undo, run_version, run_why, todo, worker,
 };
 
 pub(crate) enum Route {
@@ -52,6 +52,7 @@ const VERBS: &[Verb] = &[
     Verb { name: "sessions", route: Run(run_sessions), words: Any, summary: "list, show, or remove stored sessions" },
     Verb { name: "stats", route: Run(run_stats), words: Any, summary: "tools and tokens of a session, or a rollup" },
     Verb { name: "serve", route: Run(run_serve_command), words: Only(&[]), summary: "run the session daemon" },
+    Verb { name: "worker", route: Run(worker::run), words: Only(&["replace"]), summary: "swap a running worker for a fresh binary" },
     Verb { name: "console", route: Run(run_console_command), words: Only(&[]), summary: "open the workspace shell" },
     Verb { name: "tui", route: Run(run_tui), words: Any, summary: "open the solo terminal UI" },
     Verb { name: "version", route: Run(run_version), words: Only(&[]), summary: "print the version" },
@@ -79,6 +80,8 @@ const FLAGS: &[Flag] = &[
     Flag { name: "session-dir", value: Some("dir"), summary: "session storage root" },
     Flag { name: "cwd", value: Some("dir"), summary: "working directory" },
     Flag { name: "here", value: None, summary: "work in this directory and claim no lane" },
+    Flag { name: "binary", value: Some("path"), summary: "with worker replace: the built yi to serve from now on" },
+    Flag { name: "if-running", value: None, summary: "with worker replace: no daemon is a success" },
     Flag { name: "fix", value: None, summary: "let doctor or gc change what it reports" },
     Flag { name: "socket", value: Some("path"), summary: "daemon socket path" },
     Flag { name: "headless", value: None, summary: "drive the tui or console without a terminal" },

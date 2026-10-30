@@ -380,6 +380,11 @@ impl KernelManager {
         self.is_running() && (checkpoints.behind() || checkpoints.lossy.load(Ordering::SeqCst))
     }
 
+    /// A namespace the snapshot could not hold whole: disposing this kernel drops names.
+    pub fn lossy(&self) -> bool {
+        self.is_running() && self.inner.checkpoints.lossy.load(Ordering::SeqCst)
+    }
+
     /// A cell that ran at all may have bound names, failed or not; a clean one checkpoints.
     pub(crate) fn after_user_cell(&self, result: &Result<ExecuteResult, ExecuteError>) {
         let Ok(result) = result else { return };

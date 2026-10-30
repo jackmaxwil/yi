@@ -358,6 +358,18 @@ impl Jobs {
         running.into_iter().map(|(_, command)| command).collect()
     }
 
+    /// The commands still running under `owner`: a worker cannot be replaced while one runs.
+    pub fn running_for(&self, owner: JobOwner) -> Vec<String> {
+        let jobs = self.lock();
+        let mut running: Vec<(u64, String)> = jobs
+            .iter()
+            .filter(|(_, job)| owned_by(job, Some(owner)) && state(job) == JobState::Running)
+            .map(|(id, job)| (*id, job.command.clone()))
+            .collect();
+        running.sort_by_key(|(id, _)| *id);
+        running.into_iter().map(|(_, command)| command).collect()
+    }
+
     /// The unannounced finished jobs `owner` started, marked so none repeats.
     pub fn take_finished(&self, owner: JobOwner) -> Vec<JobReport> {
         let mut jobs = self.lock();

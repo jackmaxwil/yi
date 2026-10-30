@@ -142,6 +142,11 @@ pub use yi_tools::{
     discover_exec_tools, edit_file, list_files,
 };
 
+/// The commands still running for this session's jobs: a worker cannot be replaced across one.
+pub fn running_jobs(owner: yi_tools::jobs::JobOwner) -> Vec<String> {
+    yi_tools::jobs::registry().running_for(owner)
+}
+
 pub fn documents(home: &std::path::Path) -> Documents {
     let venv_home = home.to_path_buf();
     Documents {

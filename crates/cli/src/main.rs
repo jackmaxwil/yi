@@ -24,6 +24,7 @@ mod tty;
 mod update;
 mod user_config;
 mod why;
+mod worker;
 
 use std::sync::Arc;
 use yi_types::config::{DEFAULT_MAX_DEPTH, RlmConfig};

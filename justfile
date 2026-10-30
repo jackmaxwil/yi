@@ -50,11 +50,12 @@ sweep:
 # The lanes `check` runs, named so CI can run them as separate jobs.
 lint: fmt-check clippy clippy-no-tui
 
-# The one line for a dev loop: rebuild, stop the daemon the last build left running,
-# open the workspace. ctrl+c twice inside yi does the stop for you; ⌥q keeps it running.
+# The dev loop: rebuild, then swap the running worker for that build while the daemon and an
+# open console stay up; the sessions resume from the ledger. A daemon older than the verb says
+# so in its own refusal, which stays on screen.
 dev:
     cargo build -p yi-cli
-    pkill -f 'yi serve' || true
+    ./target/debug/yi worker replace --binary ./target/debug/yi --if-running || true
     ./target/debug/yi
 
 build-dist:
