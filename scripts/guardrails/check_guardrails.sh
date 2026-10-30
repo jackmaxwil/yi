@@ -80,6 +80,10 @@ run "$PY" scripts/guardrails/check_prompt_examples.py
 run env PYTHONPATH=python/yi_runtime/src "$PY" -m unittest discover -q -s python/yi_runtime/tests
 run "$PY" -m unittest discover -q -s adapters
 run "$PY" evals/selftest.py
+# A prompt's rules are text, so a rewording that drops one passes every other gate; the
+# scorer's cases are hand-counted, which is where it is proved to judge anything at all (#1862).
+run "$PY" evals/prose.py --gate
+run "$PY" evals/prose.py --selfcheck
 # The mined artifacts carry session text, so §10's planted-fake redaction proof is a
 # gate, not a habit: its only executable check is this flag.
 run "$PY" skills/yi/session-mining/extract.py --selfcheck
