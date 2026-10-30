@@ -13,7 +13,7 @@ const PYTHON_VERSION: &str = "3.11";
 /// Incident: host replies ride ipykernel internals (`kernel.control_handlers`), unpinned.
 const IPYKERNEL_REQUIREMENT: &str = "ipykernel>=7,<8";
 const STATE_SNAPSHOT_REQUIREMENT: &str = "dill";
-pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 15] = [
+pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 14] = [
     "requests",
     "httpx",
     "pyyaml",
@@ -25,12 +25,11 @@ pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 15] = [
     "beautifulsoup4",
     "lxml",
     "pydantic",
-    "tyro",
     "firecrawl-anydoc>=0.2.4,<0.3",
     "pdf-inspector>=1.19,<2",
     "openpyxl",
 ];
-const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 15] = [
+const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 14] = [
     "requests",
     "httpx",
     "yaml",
@@ -42,7 +41,6 @@ const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 15] = [
     "bs4",
     "lxml",
     "pydantic",
-    "tyro",
     "anydoc",
     "pdf_inspector",
     "openpyxl",
