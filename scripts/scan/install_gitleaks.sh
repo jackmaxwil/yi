@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 version=$(cat "$(dirname "$0")/gitleaks.version")
-dest=${GITLEAKS_DEST:-/usr/local/bin}
+dest=/usr/local/bin
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) asset=linux_x64
     hash=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -11,14 +11,8 @@ case "$(uname -s)-$(uname -m)" in
     binary=ba52fb1bfabbcde42f032afad3d6e0b19dff8ed105229a16e7caa338bbc0e84f ;;
   *) echo "gitleaks: unsupported platform $(uname -s)-$(uname -m)"; exit 1 ;;
 esac
-if command -v shasum >/dev/null 2>&1; then
-  sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
-elif command -v sha256sum >/dev/null 2>&1; then
-  sha256() { sha256sum "$1" | cut -d' ' -f1; }
-else
-  echo "gitleaks: shasum or sha256sum is required to verify SHA-256"
-  exit 1
-fi
+eval "$(sed -n '/^sha256() {$/,/^}$/p' "$(dirname "$0")/../install.sh")"
+declare -F sha256 >/dev/null || { echo "gitleaks: scripts/install.sh defines no sha256()"; exit 1; }
 # The installed file is trusted by content alone: a binary that answers the pinned `version` proves nothing.
 if [ -x "$dest/gitleaks" ] && [ "$(sha256 "$dest/gitleaks")" = "$binary" ]; then
   echo "gitleaks: $version already installed at $dest/gitleaks"
