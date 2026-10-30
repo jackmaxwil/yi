@@ -232,6 +232,27 @@ pub(crate) fn kernel_profile(
     profile
 }
 
+/// The cell that re-leads the kernel's PATH with `wanted`, drops `stale`, and keeps every other
+/// entry a cell put there; `PATH` itself is preserved when both are empty.
+fn path_cell(wanted: &[PathBuf], stale: &[PathBuf]) -> String {
+    let listing = |dirs: &[PathBuf]| -> String {
+        let rows: Vec<String> = dirs
+            .iter()
+            .map(|dir| py_literal(&dir.to_string_lossy()))
+            .collect();
+        format!("[{}]", rows.join(", "))
+    };
+    format!(
+        "import os as _os\n_want = {}\n_stale = {}\n\
+         _parts = [p for p in _os.environ.get('PATH', '').split(_os.pathsep) \
+         if p not in _stale and p not in _want]\n\
+         _os.environ['PATH'] = _os.pathsep.join(_want + _parts)\n\
+         del _os, _want, _stale, _parts",
+        listing(wanted),
+        listing(stale)
+    )
+}
+
 /// Boots on first cell, memoizes the manager, retries a failed start, owns busy recovery.
 pub struct KernelService {
     options: KernelServiceOptions,
@@ -247,7 +268,8 @@ pub struct KernelService {
     surface_shown: std::sync::atomic::AtomicBool,
     snapshot_lock: Mutex<Option<(PathBuf, Option<std::fs::File>)>>,
     waited: Mutex<Option<String>>,
-    kernel_path: Mutex<Option<std::ffi::OsString>>,
+    /// The plugin directories the live kernel's PATH currently leads with.
+    kernel_path: Mutex<Vec<PathBuf>>,
     own_paths: Option<crate::wiring::OwnPathsFn>,
     user_cells: std::sync::atomic::AtomicUsize,
     pub(crate) cell_calls: std::sync::OnceLock<Arc<dyn yi_tools::CellCalls>>,
@@ -272,7 +294,7 @@ impl KernelService {
             surface_shown: std::sync::atomic::AtomicBool::new(false),
             snapshot_lock: Mutex::new(None),
             waited: Mutex::new(None),
-            kernel_path: Mutex::new(None),
+            kernel_path: Mutex::new(Vec::new()),
             own_paths: None,
             user_cells: std::sync::atomic::AtomicUsize::new(0),
             cell_calls: std::sync::OnceLock::new(),
@@ -380,33 +402,31 @@ impl KernelService {
                 .into_owned(),
         ));
         env.push(("RLM_GLOBAL_HARNESS_HOST".to_owned(), "1".to_owned()));
-        let path = yi_tools::plugin::search_path(&self.options.home);
-        if let Some(path) = &path {
+        if let Some(path) = yi_tools::plugin::path_with(self.plugin_dirs()) {
             env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
         }
-        if let Ok(mut applied) = self.kernel_path.lock() {
-            *applied = path;
-        }
         env
+    }
+
+    /// The plugin directories a booted kernel's PATH leads with, as [`yi_tools::plugin::search_path`]
+    /// builds it for a spawn.
+    fn plugin_dirs(&self) -> Vec<PathBuf> {
+        yi_tools::plugin::installed_dirs(&self.options.home)
     }
 
     /// Incident: the kernel's PATH was fixed at boot, so a plugin added by `yi plugin add`
     /// mid-session stayed invisible to `!`, `%%bash` and `subprocess` until a restart.
     async fn refresh_path(&self, manager: &KernelManager) {
-        let Some(path) = yi_tools::plugin::search_path(&self.options.home) else {
-            return;
-        };
-        if self
+        let wanted = self.plugin_dirs();
+        let applied = self
             .kernel_path
             .lock()
-            .is_ok_and(|applied| applied.as_ref() == Some(&path))
-        {
+            .map(|dirs| dirs.clone())
+            .unwrap_or_default();
+        if applied == wanted {
             return;
         }
-        let code = format!(
-            "import os as _os\n_os.environ['PATH'] = {}\ndel _os",
-            py_literal(&path.to_string_lossy())
-        );
+        let code = path_cell(&wanted, &applied);
         let options = ExecuteOptions {
             internal: true,
             ..ExecuteOptions::default()
@@ -415,8 +435,8 @@ impl KernelService {
             .execute(&code, options)
             .await
             .is_ok_and(|result| result.status == yi_types::kernel::ExecuteStatus::Ok);
-        if let (true, Ok(mut applied)) = (done, self.kernel_path.lock()) {
-            *applied = Some(path);
+        if let (true, Ok(mut slot)) = (done, self.kernel_path.lock()) {
+            *slot = wanted;
         }
     }
 
@@ -933,6 +953,56 @@ mod tests {
         let path = path_of(&home).ok_or("no PATH for the kernel")?;
         let first = std::env::split_paths(&path).next();
         assert_eq!(first, Some(ripwire.dir(&home)));
+        Ok(())
+    }
+
+    /// A cell that adds its own PATH entry keeps it across a refresh, and a plugin removed
+    /// mid-session leaves the kernel's PATH; run as the kernel runs it, through python3.
+    #[test]
+    fn a_refresh_keeps_a_cells_path_and_drops_a_removed_plugin() -> TestResult {
+        let python = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|dir| dir.join("python3"))
+            .find(|candidate| candidate.is_file())
+            .ok_or("no python3 to run the refresh cell")?;
+        let dir = |name: &str| PathBuf::from(format!("/plugins/{name}"));
+        let run = |wanted: &[PathBuf], stale: &[PathBuf], cell: &str| -> Result<String, String> {
+            let code = format!(
+                "{}\nimport os as _probe\nprint(_probe.environ['PATH'])",
+                path_cell(wanted, stale)
+            );
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the cell's own interpreter runs the script the kernel would"
+            )]
+            let output = std::process::Command::new(&python)
+                .arg("-c")
+                .arg(code)
+                .env("PATH", cell)
+                .output()
+                .map_err(|error| error.to_string())?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+            }
+            Ok(String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_owned())
+        };
+        let path = |entries: &[&str]| -> Result<String, String> {
+            std::env::join_paths(entries.iter())
+                .map_err(|error| error.to_string())?
+                .into_string()
+                .map_err(|_| "a PATH entry is not UTF-8".to_owned())
+        };
+        // The cell set /cell/bin itself after boot, so only the plugin entries are the host's.
+        let cell = path(&["/cell/bin", "/plugins/a", "/usr/bin", "/bin"])?;
+        let refresh = run(&[dir("b")], &[dir("a")], &cell)?;
+        assert_eq!(
+            refresh,
+            path(&["/plugins/b", "/cell/bin", "/usr/bin", "/bin"])?
+        );
+        // `yi plugin remove`: nothing installed, so every plugin directory goes and the rest stays.
+        let removed = run(&[], &[dir("b")], &refresh)?;
+        assert_eq!(removed, path(&["/cell/bin", "/usr/bin", "/bin"])?);
         Ok(())
     }
 

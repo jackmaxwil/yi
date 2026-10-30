@@ -15,9 +15,19 @@ pub(crate) fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// The repository's top; a worktree never borrows the main checkout's.
+/// Incident: a `..` in the path let `ancestors` walk into the checkout next door, whose
+/// AGENTS.md then rode every request; the walk starts from a path with the `..` resolved.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    (cwd.ancestors())
+    let mut root = std::path::PathBuf::new();
+    for part in cwd.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                root.pop();
+            }
+            part => root.push(part),
+        }
+    }
+    root.ancestors()
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }

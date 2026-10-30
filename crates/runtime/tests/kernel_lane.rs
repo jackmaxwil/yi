@@ -20,13 +20,18 @@ type TestResult = Result<(), Box<dyn Error>>;
 type Changed = (String, u64, u64);
 
 fn service() -> Arc<KernelService> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    service_in(&home)
+}
+
+fn service_in(home: &Path) -> Arc<KernelService> {
     let mut registry = HostRegistry::default();
     registry.register_mcp_stubs();
     Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
+        home: home.to_path_buf(),
         session_dir: None,
         family_dir: None,
         host: Arc::new(registry),
@@ -178,25 +183,19 @@ async fn a_plugin_added_after_the_kernel_booted_is_on_the_next_cells_path() -> T
             yi_kernel::bootstrap::kernel_venv_dir(&real_home),
         )
     };
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
-    let service = Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: std::env::temp_dir(),
-        home: home.clone(),
-        session_dir: None,
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }));
+    let service = service_in(&home);
     let warm = service
         .execute_user_cell("print('warm')", &never_cancelled())
         .await;
     assert!(!warm.is_error, "the kernel never booted: {warm:?}");
+
+    let seeded = service
+        .execute_user_cell(
+            "import os\nos.environ['PATH'] = '/cell/bin' + os.pathsep + os.environ['PATH']",
+            &never_cancelled(),
+        )
+        .await;
+    assert!(!seeded.is_error, "{seeded:?}");
 
     let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
     std::fs::create_dir_all(ripwire.dir(&home))?;
@@ -209,14 +208,35 @@ async fn a_plugin_added_after_the_kernel_booted_is_on_the_next_cells_path() -> T
         .await;
     let sub = service
         .execute_user_cell(
-            "import subprocess\nprint(subprocess.run('which ripwire', shell=True, capture_output=True, text=True).stdout)",
+            "import os, subprocess\nprint(subprocess.run('which ripwire', shell=True, capture_output=True, text=True).stdout)\nprint(os.environ['PATH'])",
             &never_cancelled(),
         )
         .await;
+    // `yi plugin remove` mid-session: the directory leaves the kernel's PATH too.
+    std::fs::remove_dir_all(ripwire.dir(&home))?;
+    let removed = service
+        .execute_user_cell("import os\nprint(os.environ['PATH'])", &never_cancelled())
+        .await;
     service.dispose().await;
     let want = program.to_string_lossy().into_owned();
+    let dir = ripwire.dir(&home).to_string_lossy().into_owned();
     assert!(stdout_of(&bang).contains(&want), "{}", text_of(&bang));
     assert!(stdout_of(&sub).contains(&want), "{}", text_of(&sub));
+    assert!(
+        stdout_of(&sub).contains("/cell/bin"),
+        "the cell's own PATH entry was dropped: {}",
+        text_of(&sub)
+    );
+    assert!(
+        !stdout_of(&removed).contains(&dir),
+        "a removed plugin stayed on the PATH: {}",
+        text_of(&removed)
+    );
+    assert!(
+        stdout_of(&removed).contains("/cell/bin"),
+        "the cell's own PATH entry was dropped: {}",
+        text_of(&removed)
+    );
     Ok(())
 }
 
