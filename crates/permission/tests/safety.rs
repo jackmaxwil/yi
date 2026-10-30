@@ -2,7 +2,7 @@ use std::error::Error;
 
 use yi_permission::{
     Class, Parsed, Verdict, classify, command_segments, host_need, parse, refused_scopes, verdict,
-    write_targets,
+    without_redirects, write_targets,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -463,6 +463,35 @@ fn a_word_carrying_a_redirect_keeps_its_word() {
             "-Dx".to_owned()
         ]]
     );
+    // Input redirection stays the splitter's: its operand is the redirect's target, never argv.
+    assert_eq!(command_segments("cat < in"), [vec!["cat".to_owned()]]);
+    assert_eq!(
+        command_segments("< /dev/null ssh host"),
+        [vec!["ssh".to_owned(), "host".to_owned()]]
+    );
+}
+
+/// Only a redirect to `/dev/null` is read down to its word: a redirect to a file names a write, so
+/// it must reach [`parse`], whose `>` bail leaves the command unproven.
+#[test]
+fn a_redirect_to_a_file_stays_whole() {
+    for command in [
+        "echo hi>/etc/hosts",
+        "cat a>b",
+        "rg needle src>/tmp/out",
+        "echo x>>~/.bashrc",
+        "cat <(rm${IFS}-rf${IFS}src)",
+    ] {
+        assert_eq!(
+            without_redirects(command),
+            command,
+            "{command:?} lost its redirect"
+        );
+        assert!(matches!(
+            verdict(command),
+            Verdict::Ask { .. } | Verdict::Contain { .. }
+        ));
+    }
 }
 
 /// A contained run has no network past loopback, so these approvals leave the sandbox; `git add` and a local

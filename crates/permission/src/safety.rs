@@ -802,17 +802,16 @@ pub fn write_targets(command: &str) -> Vec<String> {
 }
 
 fn redirect_word(token: &str) -> &str {
-    if token.starts_with('<') {
-        return "";
-    }
     let Some((word, redirect)) = token.split_once('>') else {
         return token;
     };
+    if redirect.trim_start_matches('>') != "/dev/null" {
+        return token;
+    }
     let bare = word.is_empty() || word == "&" || word.chars().all(|c| c.is_ascii_digit());
     match bare {
+        true => "",
         false => word,
-        true if redirect.trim_start_matches('>') == "/dev/null" => "",
-        true => token,
     }
 }
 

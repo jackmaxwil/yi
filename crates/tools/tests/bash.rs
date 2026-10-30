@@ -21,6 +21,10 @@ fn a_command_that_writes_behind_a_read_verb_is_not_a_read() {
         "find . -delete>/dev/null",
         "find . -name '*.tmp' -delete>/dev/null",
         "git branch -Dx>/dev/null",
+        "echo hi>/etc/hosts",
+        "rg x src>/etc/hosts",
+        "rg -l Tool crates>/tmp/x",
+        "cat <(rm${IFS}-rf${IFS}src)",
     ] {
         let input = input(command);
         assert_eq!(bash.kind_for(&input), ToolKind::Exec, "{command:?}");
