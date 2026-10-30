@@ -85,6 +85,13 @@ impl ToolContext {
         read_capped(self.read_gate().open(path, &self.deny_read)?, path, cap)
     }
 
+    pub(crate) fn read_head(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        let file = self.read_gate().open(path, &self.deny_read)?;
+        let mut head = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(file, 1024), &mut head)?;
+        Ok(head)
+    }
+
     /// What a write may not land on: both lists of the wall.
     pub(crate) fn write_walls(&self) -> Vec<PathBuf> {
         [self.deny_write.as_slice(), self.deny_read.as_slice()].concat()
@@ -480,6 +487,38 @@ mod tests {
         assert!(landed.is_err(), "the swapped name was written");
         assert!(fs::symlink_metadata(&path)?.file_type().is_symlink());
         assert_eq!(fs::read_to_string(&victim)?, "kept\n");
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_rename_writes_in_place_and_says_so_beside_the_verdict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-tools-write-in-place")?;
+        let path = dir.join("a.json");
+        fs::write(&path, "{}")?;
+        let staged = dir.to_path_buf();
+        HELD.set(Some(Box::new(move || {
+            for entry in fs::read_dir(&staged).into_iter().flatten().flatten() {
+                if entry.file_name().to_string_lossy().ends_with(".tmp") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        })));
+        let mut input = serde_json::Map::new();
+        input.insert("path".to_owned(), "a.json".into());
+        input.insert("content".to_owned(), "[1]".into());
+        let context = super::ToolContext::new(dir.to_path_buf());
+        let output = super::Tool::execute(&crate::builtins::WriteTool::default(), input, &context);
+        HELD.set(None);
+        let text = yi_types::message::join_text(&output.result.content, "");
+        assert!(!output.is_error, "{text}");
+        assert_eq!(fs::read_to_string(&path)?, "[1]");
+        let rows: Vec<&str> = text.lines().skip(1).collect();
+        assert_eq!(
+            rows,
+            ["syntax: ok", &format!("warning: {}", super::IN_PLACE)]
+        );
+        assert_eq!(output.result.details["syntax"], "syntax: ok");
         Ok(())
     }
 }

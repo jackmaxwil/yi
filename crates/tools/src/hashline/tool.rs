@@ -479,7 +479,7 @@ impl HashlineReadTool {
                 let output = self.read_file(&display, path, &Map::new(), context);
                 spent = spent.saturating_add(size);
                 whole = whole.saturating_add(1);
-                sections.push(output_text_of(&output));
+                sections.push(yi_types::message::join_text(&output.result.content, ""));
                 continue;
             }
             if !budget_named {
@@ -745,15 +745,6 @@ impl HashlineReadTool {
         });
         output
     }
-}
-
-fn output_text_of(output: &ToolOutput) -> String {
-    (output.result.content.iter())
-        .filter_map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The requested line windows, 1-based inclusive, merged and clamped. `ranges` and

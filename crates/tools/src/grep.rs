@@ -692,15 +692,10 @@ impl GrepTool {
                 continue;
             }
             let persisted = file.endings.restore(&after, &origins);
-            match crate::builtins::land(
-                home.as_deref(),
-                Path::new(&file.canonical),
-                &persisted,
-                context,
-            ) {
-                Ok((_, verdict)) => {
+            let canonical = Path::new(&file.canonical);
+            match crate::builtins::land(home.as_deref(), canonical, &persisted, context) {
+                Ok((_, verdict, note)) => {
                     written = written.saturating_add(1);
-                    let canonical = Path::new(&file.canonical);
                     let absolute = crate::diff::patch(&file.normalized, &after, canonical);
                     patches.push_str(absolute.as_str());
                     if let Some(line) = verdict {
@@ -709,10 +704,11 @@ impl GrepTool {
                         }
                         syntax = Some(crate::syntax::worst(syntax, line));
                     }
+                    rows.extend(note.map(|note| format!("{}: {note}", file.display)));
                     if let Some(state) = &self.hashline {
                         crate::hashline::tool::record_view_snapshot(
                             state,
-                            Path::new(&file.canonical),
+                            canonical,
                             &after,
                             &crate::diff::shown_after_lines(&file.normalized, &after),
                         );

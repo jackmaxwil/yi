@@ -81,7 +81,7 @@ impl Tool for WriteTool {
             .as_ref()
             .and_then(crate::hashline::tool::documents)
             .map(|documents| documents.home);
-        let (before, syntax) = match land(home.as_deref(), &path, content, context) {
+        let (before, syntax, note) = match land(home.as_deref(), &path, content, context) {
             Ok(landed) => landed,
             Err(message) => return error_output(message),
         };
@@ -101,7 +101,7 @@ impl Tool for WriteTool {
             content.len(),
             path.display()
         ));
-        if let Some(line) = &syntax {
+        for line in syntax.iter().chain(&note) {
             text.push('\n');
             text.push_str(line);
         }
@@ -134,14 +134,16 @@ pub(crate) fn symlink_refusal(path: &Path, shown: &str) -> Option<String> {
         })
 }
 
+type Landed = (Option<String>, Option<String>, Option<String>);
+
 /// Invariant: the one write of a named file outside `edit`'s patcher. Returns the ground it
-/// replaced (none past [`DETAIL_CAP`], since a missing base reads as an add) and the syntax verdict.
+/// replaced (none past [`DETAIL_CAP`]: a missing base reads as an add), syntax verdict, fallback row.
 pub(crate) fn land(
     home: Option<&Path>,
     path: &Path,
     content: &str,
     context: &ToolContext,
-) -> Result<(Option<String>, Option<String>), String> {
+) -> Result<Landed, String> {
     if let Some(refusal) = crate::document::write_refusal(home, path)
         .or_else(|| symlink_refusal(path, &path.display().to_string()))
     {
@@ -163,13 +165,8 @@ pub(crate) fn land(
         Err(_) => Some(String::new()),
     };
     let note = crate::tool::overwrite(&file, path, content.as_bytes()).map_err(failed)?;
-    let verdict = crate::syntax::verdict(path);
-    let verdict = match (verdict, note) {
-        (verdict, None) => verdict,
-        (None, Some(note)) => Some(format!("warning: {note}")),
-        (Some(verdict), Some(note)) => Some(format!("{verdict}\nwarning: {note}")),
-    };
-    Ok((before, verdict))
+    let note = note.map(|note| format!("warning: {note}"));
+    Ok((before, crate::syntax::verdict(path), note))
 }
 
 pub fn wall_refusal(tool_name: &str, path: &str, list: &str) -> String {

@@ -45,9 +45,15 @@ impl HashlineReadTool {
         context: &ToolContext,
     ) -> ToolOutput {
         let pages = input.get("pages").and_then(Value::as_str);
-        let read = match pages {
-            Some(_) => context.read_paged(path),
-            None => context.read(path),
+        let parsed = pages.and_then(|spec| crate::document::parse_pages(spec).ok());
+        let paged = parsed.is_some_and(|parsed| {
+            crate::document::ceiling(&parsed) == crate::document::PAGED_CEILING
+        }) && context
+            .read_head(path)
+            .is_ok_and(|head| crate::document::is_pdf(&head));
+        let read = match paged {
+            true => context.read_paged(path),
+            false => context.read(path),
         };
         let bytes = match read {
             Ok(bytes) => bytes,

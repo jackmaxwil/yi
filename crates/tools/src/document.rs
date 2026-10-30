@@ -12,6 +12,14 @@ pub const INPUT_CEILING: u64 = 256 * 1024 * 1024;
 pub(crate) const PAGED_CEILING: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+pub(crate) fn ceiling(pages: &[u64]) -> u64 {
+    if pages.is_empty() {
+        INPUT_CEILING
+    } else {
+        PAGED_CEILING
+    }
+}
+
 pub fn document_ceiling() -> u64 {
     INPUT_CEILING
 }
@@ -531,7 +539,7 @@ fn sweep(dir: &Path) {
     }
 }
 
-fn parse_pages(spec: &str) -> Result<Vec<u64>, String> {
+pub(crate) fn parse_pages(spec: &str) -> Result<Vec<u64>, String> {
     let mut pages = Vec::new();
     for part in spec
         .split(',')
@@ -599,11 +607,7 @@ pub(crate) fn convert(
         Some(Err(message)) => return Converted::Refused(message),
         None => Vec::new(),
     };
-    let ceiling = if pages.is_empty() {
-        INPUT_CEILING
-    } else {
-        PAGED_CEILING
-    };
+    let ceiling = ceiling(&pages);
     let size = source.bytes.len() as u64;
     if size > ceiling {
         return Converted::Refused(format!(
