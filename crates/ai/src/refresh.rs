@@ -181,11 +181,37 @@ pub fn is_stale(dir: &Path, provider: &str, hours: u64, now: SystemTime) -> bool
         || !current()
 }
 
+/// Incident: a refresh replaced the whole provider file, so a `readTimeoutSecs` an author set by
+/// hand vanished within a day and the model fell back to 60 s.
+fn keep_read_timeouts(path: &Path, fresh: &Value) -> Value {
+    let mut merged = fresh.clone();
+    let Some(old) = std::fs::read(path)
+        .ok()
+        .and_then(|data| serde_json::from_slice::<Value>(&data).ok())
+    else {
+        return merged;
+    };
+    for (api, models) in merged.as_object_mut().into_iter().flatten() {
+        for (id, entry) in models.as_object_mut().into_iter().flatten() {
+            let kept = old.get(api).and_then(|group| group.get(id));
+            if let (Some(entry), Some(secs)) = (
+                entry.as_object_mut(),
+                kept.and_then(|old| old.get("readTimeoutSecs")),
+            ) {
+                entry
+                    .entry("readTimeoutSecs")
+                    .or_insert_with(|| secs.clone());
+            }
+        }
+    }
+    merged
+}
+
 pub(crate) fn write_atomic(path: &Path, value: &Value) -> Result<(), String> {
     let parent = path.parent().ok_or("cache path has no parent")?;
     std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, value.to_string())
+    std::fs::write(&tmp, keep_read_timeouts(path, value).to_string())
         .map_err(|error| format!("{}: {error}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|error| format!("{}: {error}", path.display()))
 }
@@ -312,4 +338,32 @@ pub fn refresh(
     }
     write_atomic(&cache_path(dir, provider), &catalog)?;
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refresh_keeps_a_deadline_an_author_set_by_hand() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = std::env::temp_dir().join(format!("yi-keep-timeout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("openai.json");
+        let hand = json!({"openai-chat": {"slow": {"id": "slow", "readTimeoutSecs": 600},
+                                          "other": {"id": "other"}}});
+        std::fs::write(&path, hand.to_string())?;
+        let fresh = json!({"openai-chat": {"slow": {"id": "slow"}, "other": {"id": "other"}},
+                           "schema": 1});
+        write_atomic(&path, &fresh)?;
+        let written: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(written["openai-chat"]["slow"]["readTimeoutSecs"], 600);
+        assert!(
+            written["openai-chat"]["other"]
+                .get("readTimeoutSecs")
+                .is_none()
+        );
+        Ok(())
+    }
 }

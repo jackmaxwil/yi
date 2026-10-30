@@ -494,9 +494,9 @@ fn nothing_delivered(message: &AgentMessage) -> bool {
         return false;
     };
     let generating = usage.output > 0 || usage.reasoning.unwrap_or(0) > 0;
-    let wire = error_message.as_deref().is_some_and(|text| {
-        yi_types::telemetry::ErrorClass::from_provider_text(text).is_transport()
-    });
+    let wire = error_message
+        .as_deref()
+        .is_some_and(yi_types::telemetry::ErrorClass::resendable);
     // Incident: Wafer's in-band 502 had no usage and no transport class; yi exited 0 (D175)
     let in_band = raw_stop_reason.as_deref() == Some(yi_types::message::RAW_STOP_IN_BAND_ERROR);
     (generating || wire || in_band)

@@ -1,25 +1,10 @@
 //! The smallest model and context several mapper suites were each spelling out, now in one place.
 use serde_json::json;
 use yi_types::message::{AgentMessage, UserContent};
-use yi_types::model::{LlmContext, Model, ModelCost, ToolDef};
+use yi_types::model::{LlmContext, Model, ToolDef};
 
 pub fn plain() -> Model {
-    Model {
-        id: "m".to_owned(),
-        name: "m".to_owned(),
-        api: "a".to_owned(),
-        provider: "p".to_owned(),
-        base_url: "https://example.invalid".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost::free(),
-        context_window: 1_000,
-        max_tokens: 100,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-        read_timeout_secs: None,
-    }
+    crate::common::model("m", "a", "p", "https://example.invalid", None)
 }
 
 pub fn plain_context() -> LlmContext {

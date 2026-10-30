@@ -112,6 +112,10 @@ pub enum ErrorClass {
 /// plain 429 stays transport. One constant so a wording change cannot drift the scan.
 pub const QUOTA_STAMP: &str = "quota exhausted:";
 
+/// Incident: the request layer's spent-deadline refusal read as transport and the loop re-ran the
+/// turn, so one stall cost two deadlines; this spelling is final.
+pub const READ_DEADLINE_SPENT: &str = "timed out reading response after";
+
 impl ErrorClass {
     /// A provider's error text names its transport class when it can; the rest is the provider.
     pub fn from_provider_text(text: &str) -> Self {
@@ -167,6 +171,11 @@ impl ErrorClass {
 }
 
 impl ErrorClass {
+    /// A transport failure the loop may run again; a spent read deadline is final.
+    pub fn resendable(text: &str) -> bool {
+        !text.contains(READ_DEADLINE_SPENT) && Self::from_provider_text(text).is_transport()
+    }
+
     /// The wire failed, not the provider's answer: a rerun cannot duplicate anything.
     pub fn is_transport(&self) -> bool {
         matches!(

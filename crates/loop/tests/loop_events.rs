@@ -1449,6 +1449,32 @@ async fn a_read_timeout_that_showed_nothing_continues_the_run() {
     ));
 }
 
+/// Dies with a spent read deadline re-run as a dropped stream: the silent gateway then costs a
+/// second full deadline, and the refusal says "not retried".
+#[tokio::test]
+async fn a_spent_read_deadline_ends_the_run_without_a_second_wait() {
+    let mut timeout = faux_assistant_message(Vec::new(), StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut timeout {
+        *error_message = Some("timed out reading response after 60 s (the model's readTimeoutSecs, default 60); raise readTimeoutSecs on the model in the catalog entry; 1 attempt ran, not retried".to_owned());
+    }
+    let stream = Scripted::new(vec![
+        timeout,
+        faux_assistant_message(vec![faux_text("second wait")], StopReason::Stop),
+    ]);
+    let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
+    assert!(
+        matches!(
+            collected.last(),
+            Some(AgentMessage::Assistant {
+                stop_reason: StopReason::Error,
+                ..
+            })
+        ),
+        "{collected:?}"
+    );
+    assert_eq!(stream.choices().len(), 1, "the turn ran again");
+}
+
 #[tokio::test]
 async fn a_dropped_stream_that_showed_nothing_is_retried_once() {
     let stream = Scripted::new(vec![

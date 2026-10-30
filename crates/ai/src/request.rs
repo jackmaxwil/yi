@@ -164,13 +164,13 @@ fn agent(url: &str, proxy: Option<&ProxyConfig>) -> ureq::Agent {
 
 /// The short calls' deadline: a catalog refresh or a usage read can wait for the next session,
 /// and no model's own `readTimeoutSecs` bounds them.
-pub const SHORT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const SHORT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Invariant: both retry layers count into one place, so the notice names the requests that ran.
 pub struct Retry<'a> {
-    pub deadline: std::time::Duration,
+    deadline: std::time::Duration,
     attempts: std::sync::atomic::AtomicU32,
-    pub on_wait: &'a dyn Fn(Wait),
+    on_wait: &'a dyn Fn(Wait),
 }
 
 impl<'a> Retry<'a> {
@@ -200,14 +200,15 @@ fn read_timed_out(text: &str) -> bool {
 
 /// Invariant: a stall names the field that fixes it and the wait that ran, because the retry
 /// layers used to spend the deadline twice on a gateway that had already proved silent.
-pub fn read_timeout_notice(read_timeout: std::time::Duration, attempts: u32) -> String {
+fn read_timeout_notice(read_timeout: std::time::Duration, attempts: u32) -> String {
     let ran = match attempts {
         1 => "1 attempt ran".to_owned(),
         other => format!("{other} attempts ran"),
     };
     format!(
-        "timed out reading response after {} s (the model's readTimeoutSecs, default {}); \
+        "{} {} s (the model's readTimeoutSecs, default {}); \
          raise readTimeoutSecs on the model in the catalog entry; {ran}, not retried",
+        yi_types::telemetry::READ_DEADLINE_SPENT,
         read_timeout.as_secs(),
         yi_types::model::DEFAULT_READ_TIMEOUT_SECS
     )

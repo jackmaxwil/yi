@@ -187,3 +187,58 @@ fn the_deadline_bounds_the_gap_between_chunks_not_the_whole_body() -> TestResult
     drop(server);
     Ok(())
 }
+
+/// Dies with an adapter that hands the request a constant instead of the model's own field: an
+/// author's `readTimeoutSecs` would be ignored and the catalog entry could never raise it.
+#[test]
+fn every_streaming_adapter_reads_the_deadline_from_the_model() -> TestResult {
+    use yi_types::event::AssistantMessageEvent;
+    use yi_types::message::AgentMessage;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    for api in ["anthropic", "chat", "responses"] {
+        let (port, _, server) = silent_at_first(Duration::from_secs(30), 1)?;
+        let mut model = deadline(1);
+        model.base_url = format!("http://127.0.0.1:{port}");
+        let context = yi_types::model::LlmContext {
+            cache_ttl: yi_types::model::Ttl::Min5,
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            transient: Vec::new(),
+            schema: None,
+            shared_through: None,
+            reuse: yi_types::model::Reuse::Loop,
+            tools: None,
+            tool_choice: None,
+        };
+        let options = yi_ai::openai::OpenAiOptions::default();
+        let failed = runtime.block_on(async {
+            let mut receiver = match api {
+                "anthropic" => yi_ai::anthropic::stream(
+                    &model,
+                    &context,
+                    &yi_ai::anthropic::AnthropicOptions::default(),
+                    "k",
+                ),
+                "chat" => yi_ai::openai::stream(&model, &context, &options, "k"),
+                _ => yi_ai::openai_responses::stream(&model, &context, &options, "k"),
+            };
+            let mut failed = None;
+            while let Some(event) = receiver.recv().await {
+                if let AssistantMessageEvent::Error {
+                    error: AgentMessage::Assistant { error_message, .. },
+                    ..
+                } = event
+                {
+                    failed = error_message;
+                }
+            }
+            failed
+        });
+        let failed = failed.ok_or("a silent gateway did not fail the stream")?;
+        assert!(failed.contains("after 1 s"), "{api}: {failed}");
+        drop(server);
+    }
+    Ok(())
+}
