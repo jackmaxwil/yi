@@ -367,7 +367,7 @@ impl App {
     /// A pane opened to the right of `pane` and focused; `None` when the split made none.
     fn beside(&mut self, pane: PaneId, content: PaneContent) -> Option<PaneId> {
         self.focus_pane(pane);
-        self.split_with_anim(ratatui::layout::Direction::Horizontal);
+        self.split_share(ratatui::layout::Direction::Horizontal, 0.5);
         let new = self.state.focused_pane_id().filter(|id| *id != pane)?;
         if let Some(slot) = self.state.panes.get_mut(&new) {
             slot.content = content;

@@ -108,7 +108,7 @@ impl App {
             .panes
             .iter()
             .find(|(id, _)| *id == pane_id)?;
-        let inner = rect.inner(crate::render::pane_margin(true));
+        let inner = rect.inner(crate::layout::pane_margin(true, false));
         let PaneContent::Editor(editor) = &self.state.panes.get(&pane_id)?.content else {
             return None;
         };
