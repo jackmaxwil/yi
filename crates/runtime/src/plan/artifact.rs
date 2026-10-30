@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use yi_types::plan::canonical::{ArtifactRef, Digest};
 
-use super::journal::{Fs, RealFs};
+use crate::journal::{Fs, RealFs};
 
 pub const ARTIFACTS_DIR: &str = "artifacts";
 
