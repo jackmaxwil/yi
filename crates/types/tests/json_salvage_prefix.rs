@@ -49,7 +49,7 @@ fn consistent(partial: &Value, complete: &Value) -> bool {
 fn completed_keys(partial: &Map<String, Value>, complete: &Value) -> usize {
     partial
         .iter()
-        .filter(|(key, value)| complete.get(*key) == Some(value))
+        .filter(|(key, value)| complete.get(key.as_str()) == Some(*value))
         .count()
 }
 
