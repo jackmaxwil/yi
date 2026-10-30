@@ -3,15 +3,14 @@
 # nothing). Ordered most-legible-failure-first. Prints one debt total at the end.
 # `--fast` drops the gates that need a build (dist binary, startup, rustdoc, the two
 # cargo tools) so pre-commit stays quick; pre-push runs the whole thing. `--quiet` prints only
-# the failing gates' output and the summary line, so an agent reads one line, not sixty.
+# the failing gates' output, the `skip` rows (a skip is announced, never silent) and the summary line.
 set -u
 cd "$(dirname "$0")/../.."
 FAST=0 QUIET=0
 for arg in "$@"; do
   case "$arg" in --fast) FAST=1 ;; --quiet) QUIET=1 ;; esac
 done
-PY="${PY:-$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)}"
-"$PY" -c "import tomllib" 2>/dev/null || { echo "FAIL: $PY lacks tomllib (need python >= 3.11)"; exit 1; }
+PY=$(scripts/py.sh) || exit 1
 FAILED=0
 # Every gate reads the tree and none writes it, so they all run at once; `drain` prints each
 # one's output in launch order, so the report still reads most-legible-failure-first.
@@ -23,7 +22,7 @@ drain() {
   wait
   for i in $(seq 1 "$N"); do
     if [ "$(cat "$OUT/$i.rc")" = 0 ]; then
-      [ "$QUIET" = 1 ] || cat "$OUT/$i.out"
+      if [ "$QUIET" = 1 ]; then grep '^skip ' "$OUT/$i.out"; else cat "$OUT/$i.out"; fi
     else
       cat "$OUT/$i.out"
       FAILED=$((FAILED + 1))
@@ -39,6 +38,16 @@ after() {
   [ "$rc" = 0 ] || printf '%s\n' "$out"
   return "$rc"
 }
+
+# Only this flag proves --quiet keeps a green gate's skip row while dropping the rest of its output.
+if [ "${1:-}" = --selfcheck ]; then
+  N=3 QUIET=1
+  printf 'skip deny (advisory database unreachable)\nnoise\n' > "$OUT/1.out"; echo 0 > "$OUT/1.rc"
+  printf 'only noise\n' > "$OUT/2.out"; echo 0 > "$OUT/2.rc"
+  printf 'FAIL x\nwhy\n' > "$OUT/3.out"; echo 1 > "$OUT/3.rc"
+  [ "$(drain)" = "$(printf 'skip deny (advisory database unreachable)\nFAIL x\nwhy')" ] || { echo "FAIL quiet drain keeps skip rows and failures only"; exit 1; }
+  echo "ok guardrails quiet selfcheck"; exit 0
+fi
 
 run "$PY" scripts/guardrails/check_manifests.py
 run "$PY" scripts/guardrails/check_boundaries.py
@@ -84,12 +93,18 @@ run "$PY" skills/yi/session-mining/extract.py --selfcheck
 # a path in the wrong bucket misprices it silently; only this flag exercises the split.
 run "$PY" scripts/pr_body.py --selfcheck
 run "$PY" scripts/test_sign.py
+# A checked-in filter over test names rots silently, so only this flag proves a stale row is
+# refused; it lists no workspace, so the fast lane runs it too.
+run "$PY" scripts/slow_tests.py --selfcheck
 # The snap diff an agent reads is parsed from casts, checked against Yi's own screen dumps.
 run "$PY" scripts/tui_see.py --selfcheck
 # The monkey's seed must replay byte for byte or a failure it reports cannot be reproduced.
 run "$PY" scripts/tui_monkey.py --selfcheck
 # The frame audit is only evidence if each of its checks can fail; only this flag trips them.
 run "$PY" scripts/tui_pty.py --selfcheck
+# Only this flag proves the skip row cannot swallow a real advisory.
+run "$PY" scripts/guardrails/check_deny.py --selfcheck
+run bash "$0" --selfcheck
 # The tool-surface lock is equality over hashes, so a comparison that drifted would
 # pass every change or refuse every run; only this flag walks the delta cases.
 run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
@@ -194,7 +209,7 @@ if [ "$FAST" -eq 0 ]; then
   run cargo doc --workspace --no-deps --document-private-items -q
 
   if command -v cargo-machete >/dev/null; then run cargo machete crates; else run sh -c 'echo "FAIL machete (cargo install cargo-machete)"; exit 1'; fi
-  if command -v cargo-deny >/dev/null; then run cargo deny check -s; else run sh -c 'echo "FAIL deny (cargo install cargo-deny)"; exit 1'; fi
+  if command -v cargo-deny >/dev/null; then run "$PY" scripts/guardrails/check_deny.py; else run sh -c 'echo "FAIL deny (cargo install cargo-deny)"; exit 1'; fi
 else
   run echo "skip doc/machete/deny (--fast)"
 fi
