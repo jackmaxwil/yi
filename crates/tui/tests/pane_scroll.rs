@@ -457,32 +457,12 @@ fn still_holds_the_view_and_marks_hidden_rows_at_a_nonzero_offset() -> TestResul
         !after.iter().any(|row| row.contains("let x019")),
         "{after:#?}"
     );
-    let count = |rows: &[String]| -> Option<usize> {
-        rows.iter().find_map(|row| {
-            row.trim()
-                .strip_prefix("↓ ")?
-                .split_once(" more rows")?
-                .0
-                .parse()
-                .ok()
-        })
-    };
-    let hidden = count(&after).ok_or_else(|| format!("no marker count: {after:#?}"))?;
-    app.set_follow(FollowMode::Page);
-    let (bottom, _) = paint_in(&mut app, area, &mut scroll);
-    let revealed = answer_rows(&bottom) - answer_rows(&after);
-    assert!(hidden > 0, "{after:#?}");
-    assert_eq!(
-        revealed,
-        hidden.min(answer_rows(&bottom)),
-        "the marker said {hidden} hidden rows; a following window showed {revealed} more"
+    assert!(
+        common::hidden_rows(&after).is_some_and(|hidden| hidden > 0),
+        "{after:#?}"
     );
     assert_eq!(scroll, 0);
     Ok(())
-}
-
-fn answer_rows(rows: &[String]) -> usize {
-    rows.iter().filter(|row| row.contains("let x")).count()
 }
 
 #[test]

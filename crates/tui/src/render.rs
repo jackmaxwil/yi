@@ -72,6 +72,10 @@ pub fn step_frame<B>(
         let start = std::time::Instant::now();
         draw_with_images(app, terminal, port, |app, out| images.tick(app, out));
         app.scheduler.mark_drawn(start, std::time::Instant::now());
+        // Invariant: `mark_drawn` clears the request a paced frame made for its own continuation.
+        if app.has_pending_commit() {
+            app.scheduler.request();
+        }
     } else {
         let _ = term::framed(terminal.backend_mut(), |out| images.tick(app, out));
     }
@@ -93,14 +97,18 @@ fn draw_frame<B>(
     }
     let mut commits = std::mem::take(&mut app.pending_commit);
     let queued = commits.len();
-    let release = inline_release(app, queued);
-    if release < queued {
-        app.pending_commit = commits.split_off(release);
-        app.scheduler.request();
-    }
     // OSC 133 semantic prompt zones: Ghostty and iTerm2 use these to jump
     // between prompts, so a user turn is navigable in the terminal's own UI.
     let mark = std::mem::take(&mut app.pending_prompt_mark);
+    // Invariant: a paced release never splits a prompt's rows, so its zone closes after all of them.
+    let release = if mark {
+        queued
+    } else {
+        follow_step(app.follow(), queued, app.rows, usize::MAX)
+    };
+    if release < queued {
+        app.pending_commit = commits.split_off(release);
+    }
     let mode_changed = app.take_pending_repaint();
     schedule_reflow(app);
     if mark {
@@ -510,22 +518,18 @@ pub(crate) struct Still {
     hidden: usize,
 }
 
-/// Rows a follower lets through this frame: one row at a time, or half a page when the reader
-/// asked for jumps. Both catch up proportionally when far behind, so 200 rows land in 70 frames.
-fn follow_step(mode: yi_types::config::FollowMode, behind: usize, page: usize) -> usize {
+/// Rows a follower lets through this frame: one a frame, or half a window when the reader asked
+/// for jumps; both catch up proportionally when far behind, so 200 rows land in under 70 frames.
+fn follow_step(
+    mode: yi_types::config::FollowMode,
+    behind: usize,
+    height: usize,
+    cap: usize,
+) -> usize {
     match mode {
         yi_types::config::FollowMode::Slide => behind.div_ceil(ROLL_ROWS),
-        yi_types::config::FollowMode::Page => page.min(behind).max(usize::from(behind > 0)),
-        yi_types::config::FollowMode::Still => 0,
-    }
-}
-
-/// The inline viewport scrolls by committing rows, so its mode paces that queue: the pane's
-/// window arithmetic cannot move a viewport whose finished rows are already scrollback.
-fn inline_release(app: &mut App, queued: usize) -> usize {
-    match app.follow() {
-        yi_types::config::FollowMode::Still => queued,
-        mode => follow_step(mode, queued, (app.rows / 2).max(1)),
+        yi_types::config::FollowMode::Page => (height / 2).max(1).min(cap).min(behind),
+        yi_types::config::FollowMode::Still => behind,
     }
 }
 
@@ -590,13 +594,14 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
             let at = owners.iter().position(|&cell| cell == pinned)?;
             let behind = column.len().saturating_sub(at).saturating_sub(below);
             let base = at.saturating_add(below);
-            let page = (height / 2).max(1).min(above.max(1));
             match follow_mode {
                 yi_types::config::FollowMode::Still if base < above => {
                     Some(column.len().min(above))
                 }
                 yi_types::config::FollowMode::Still => Some(base),
-                paced => Some(base.saturating_add(follow_step(paced, behind, page))),
+                paced => {
+                    Some(base.saturating_add(follow_step(paced, behind, height, above.max(1))))
+                }
             }
         })
         .map_or(column.len(), |end| end.min(column.len()));

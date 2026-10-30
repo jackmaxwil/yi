@@ -724,17 +724,7 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
     let after = later.join("\n");
     assert_eq!(answer(&held), answer(&later), "the still window moved");
     assert!(!after.contains("row 43 of the answer"), "{later:#?}");
-    let marker = |rows: &[String]| -> Option<usize> {
-        rows.iter().find_map(|row| {
-            row.trim()
-                .strip_prefix("↓ ")?
-                .split_once(" more rows")?
-                .0
-                .parse()
-                .ok()
-        })
-    };
-    let counted = marker(&later);
+    let counted = common::hidden_rows(&later);
     assert_eq!(counted, Some(14), "{later:#?}");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let page_down =
@@ -745,7 +735,7 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
     yi_tui::input::handle_terminal_event(&mut app, &tx, page_down);
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let paged = window(&terminal);
-    assert_eq!(marker(&paged), None, "{paged:#?}");
+    assert_eq!(common::hidden_rows(&paged), None, "{paged:#?}");
     assert_ne!(
         answer(&held),
         answer(&paged),
@@ -761,7 +751,7 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
             window(terminal)
         };
     let seeded = reseeded(&mut app, &mut terminal, 70);
-    assert_eq!(marker(&seeded), None, "{seeded:#?}");
+    assert_eq!(common::hidden_rows(&seeded), None, "{seeded:#?}");
     let again = reseeded(&mut app, &mut terminal, 90);
     assert_eq!(
         answer(&seeded),
@@ -769,7 +759,7 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
         "the hold never returned: {again:#?}"
     );
     assert!(
-        marker(&again).is_some_and(|hidden| hidden > 0),
+        common::hidden_rows(&again).is_some_and(|hidden| hidden > 0),
         "{again:#?}"
     );
     Ok(())
@@ -812,6 +802,111 @@ fn solo_follow_levels_pace_the_rows_that_land() -> TestResult {
     let page = landed[1].1;
     assert_eq!(slide, 1, "slide landed {slide} rows in one frame");
     assert_eq!(page, 12, "page landed {page} rows, not half a pane");
+    Ok(())
+}
+
+/// A paced frame asks for its own continuation: with no event between two steps, the rows the
+/// first held still land.
+#[test]
+fn a_slide_frame_lands_what_it_held_without_another_event() -> TestResult {
+    use std::io::Write;
+    let mut backend = VT100Backend::with_scrollback(80, 24, 400);
+    backend.write_all(&b"\n".repeat(23))?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    let mut app = app();
+    app.set_rows(24);
+    app.set_follow(yi_types::config::FollowMode::Slide);
+    let answer: String = (0..20).map(|row| format!("- answer row {row}\n")).collect();
+    app.commit_cell(&yi_tui::cell::Cell::Assistant {
+        markdown: answer.clone(),
+    });
+    app.commit_cell(&yi_tui::cell::Cell::Assistant { markdown: answer });
+    let mut images = yi_tui::orb::Images::default();
+    yi_tui::render::step_frame(&mut app, &mut terminal, None, &mut images);
+    let first = terminal.backend().transcript().len();
+    // The scheduler gates a frame on the previous draw's cost; nothing else wakes the loop.
+    std::thread::sleep(Duration::from_millis(60));
+    yi_tui::render::step_frame(&mut app, &mut terminal, None, &mut images);
+    let second = terminal.backend().transcript().len();
+    assert!(
+        second > first,
+        "the rows the first frame held never landed: scrollback stayed {first} rows, then {second}"
+    );
+    Ok(())
+}
+
+/// Incident: a paced release split a prompt's own rows, so its OSC 133 zone closed mid-prompt.
+#[test]
+fn a_paced_release_keeps_the_prompt_zone_whole() -> TestResult {
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    {
+        use std::io::Write;
+        backend.write_all(&b"\n".repeat(23))?;
+    }
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    let mut app = app();
+    app.set_rows(24);
+    app.set_follow(yi_types::config::FollowMode::Slide);
+    app.commit_cell(&yi_tui::cell::Cell::User {
+        text: "first prompt line\nsecond prompt line".to_owned(),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let written = terminal.backend_mut().take_written();
+    let close = written
+        .find("\u{1b}]133;B")
+        .ok_or("no prompt close marker")?;
+    assert!(
+        written[..close].contains("second prompt line"),
+        "the zone closed before the prompt's last row: {written:?}"
+    );
+    Ok(())
+}
+
+/// A submitted prompt ends the inline still hold, so the newest rows are what the next frame paints.
+#[test]
+fn a_submitted_prompt_releases_the_inline_still_hold() -> TestResult {
+    use std::io::Write;
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    backend.write_all(&b"\n".repeat(23))?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    let mut app = app();
+    app.set_rows(24);
+    app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
+    app.set_follow(yi_types::config::FollowMode::Still);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let window = |terminal: &yi_tui::terminal::Terminal<VT100Backend>| -> Vec<String> {
+        let viewport = terminal.viewport_area();
+        (viewport.top()..viewport.bottom())
+            .map(|row| terminal.backend().row_text(row))
+            .collect()
+    };
+    let body: String = (0..30)
+        .map(|row| format!("- row {row} of the answer\n"))
+        .collect();
+    app.reduce_agent(streamed(&body));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let body: String = (0..44)
+        .map(|row| format!("- row {row} of the answer\n"))
+        .collect();
+    app.reduce_agent(streamed(&body));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let held = window(&terminal);
+    assert!(
+        common::hidden_rows(&held).is_some_and(|hidden| hidden > 0),
+        "test setup: nothing was held: {held:#?}"
+    );
+    app.follow_bottom();
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let after = window(&terminal);
+    assert_eq!(
+        common::hidden_rows(&after),
+        None,
+        "the marker outlived the prompt: {after:#?}"
+    );
+    assert!(
+        after.iter().any(|row| row.contains("row 43 of the answer")),
+        "the window did not return to the newest rows: {after:#?}"
+    );
     Ok(())
 }
 

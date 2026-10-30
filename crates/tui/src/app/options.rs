@@ -37,4 +37,8 @@ impl App {
         self.pane_follow = None;
         self.still = None;
     }
+
+    pub fn has_pending_commit(&self) -> bool {
+        !self.pending_commit.is_empty()
+    }
 }

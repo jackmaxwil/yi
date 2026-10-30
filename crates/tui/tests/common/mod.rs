@@ -550,6 +550,8 @@ pub fn rows_at(
     rows_sized(app, 80, height)
 }
 
+const SETTLE_DRAWS: usize = 32;
+
 pub fn rows_sized(
     app: &mut yi_tui::app::App,
     width: u16,
@@ -557,16 +559,33 @@ pub fn rows_sized(
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut terminal = yi_tui::terminal::Terminal::new(VT100Backend::new(width, height), 4)?;
     let mut rows = vec![String::new(); usize::from(height)];
-    for _ in 0..6 {
+    for _ in 0..SETTLE_DRAWS {
         yi_tui::render::draw(app, &mut terminal, None);
         let backend = terminal.backend();
         let now: Vec<String> = (0..height)
             .map(|row| backend.row_text(row).trim_end().to_owned())
             .collect();
         if now == rows {
-            break;
+            return Ok(rows);
         }
         rows = now;
     }
+    if app.has_pending_commit() {
+        return Err(
+            format!("the paced queue never drained in {SETTLE_DRAWS} draws: {rows:#?}").into(),
+        );
+    }
     Ok(rows)
+}
+
+/// The `↓ N more rows` count both the pane and the inline viewport paint into their marker row.
+pub fn hidden_rows(rows: &[String]) -> Option<usize> {
+    rows.iter().find_map(|row| {
+        row.trim()
+            .strip_prefix("↓ ")?
+            .split_once(" more rows")?
+            .0
+            .parse()
+            .ok()
+    })
 }
