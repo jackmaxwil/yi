@@ -608,15 +608,28 @@ fn a_capture_leaves_out_a_home_that_lives_inside_the_project() -> TestResult {
     Ok(())
 }
 
-/// Dies with the exclusion widened to the whole tree: `yi` started in `~` still captures `~`'s
-/// own files, and only its state dir is spared.
+/// Dies with the exclusion narrowed back to the store: `yi` in `~` jumps to its shadow and back,
+/// and a venv rebuilt under `~/.cache` is stored again on every turn.
 #[test]
 fn a_capture_keeps_the_project_when_the_project_is_the_home() -> TestResult {
     let home = temp_dir("checkpoint-project-is-home")?;
     fs::write(home.join("notes.txt"), "alpha\n")?;
-    fs::create_dir_all(home.join(".yi"))?;
+    fs::create_dir_all(home.join(".yi/sessions"))?;
+    fs::create_dir_all(home.join(".cache/uv"))?;
     let checkpoints = yi_tools::Checkpoints::open(&home.join(".yi/checkpoints"), &home)?;
     let first = checkpoints.capture()?;
+    fs::write(home.join(".yi/sessions/churn.jsonl"), "{}\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a change under the state dir of a home that is the tree moved the tree"
+    );
+    fs::write(home.join(".cache/uv/wheel.bin"), "churn\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a venv rebuilt under the caches of a home that is the tree moved the tree"
+    );
     fs::write(home.join("notes.txt"), "beta\n")?;
     assert_ne!(
         checkpoints.capture()?,
