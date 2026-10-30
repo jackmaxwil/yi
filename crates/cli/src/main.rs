@@ -310,6 +310,12 @@ fn build_session(
     let selector = roles::selector_model()
         .map(|model| yi_runtime::select::Selector::new(std::sync::Arc::clone(&provider), model));
     session.set_selector(selector);
+    let search = roles::web_search_provider(proxy.clone()).map_err(|reason| Refused {
+        code: 2,
+        reason,
+        class: yi_types::telemetry::ErrorClass::RefusalConfig,
+    })?;
+    provider.set_web_search(search);
     let wiring = yi_types::trace::span("build_session.attach_runtime");
     let host = yi_runtime::attach_runtime(
         &mut session,
