@@ -1,0 +1,10 @@
+{"kind":"header","version":4,"id":"pi-unknown","createdAt":1787544431469,"cwd":"/tmp/yi-fixture"}
+{"kind":"entry","lane":"main","type":"message","id":"d1d7fe1a","message":{"role":"user","content":"hello","timestamp":1765000000001},"parentId":null,"seq":1,"timestamp":1787544431471}
+{"kind":"entry","lane":"main","type":"message","id":"134b717b","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"api":"anthropic-messages","provider":"anthropic","model":"m","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1765000000002},"parentId":"d1d7fe1a","seq":2,"timestamp":1787544431472}
+{"kind":"entry","lane":"main","type":"session_info","id":"fc9df9a4","parentId":"134b717b","timestamp":"2026-10-29T07:23:51.314Z","name":"Pi named this","seq":3}
+{"kind":"entry","lane":"main","type":"custom_message","customType":"pi/note","content":"a note for the model","display":true,"details":{"k":1},"id":"fc0879c2","parentId":"fc9df9a4","timestamp":"2026-10-29T07:23:51.315Z","seq":4}
+{"kind":"entry","lane":"main","type":"label","id":"784adc66","parentId":"fc0879c2","timestamp":"2026-10-29T07:23:51.315Z","targetId":"d1d7fe1a","label":"start","seq":5}
+{"kind":"entry","lane":"main","type":"context_edit","id":"5ba6454f","parentId":"784adc66","timestamp":"2026-10-29T07:23:51.315Z","targetId":"d1d7fe1a","replacement":null,"seq":6}
+{"kind":"value","op":"set","seq":7,"namespace":"pi.session.name","key":"","value":"Pi named this"}
+{"kind":"fact","seq":8,"fact":"title","title":"named by a newer Yi","source":"model"}
+{"kind":"entry","lane":"main","type":"message","id":"yi-after","message":{"role":"user","content":"a reply after the lines Yi cannot read","timestamp":1765000000003},"parentId":"5ba6454f","seq":9,"timestamp":1787544431480}

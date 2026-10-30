@@ -273,8 +273,10 @@ impl Pool {
             return Ok(());
         }
         // Incident: a receipt outlives its warmer, and its pid can name an unrelated process.
+        let tree = self.slot_path(slot);
         let argv = process_argv(&self.dir, pid);
-        if !argv.is_some_and(|argv| is_warmer(&self.slot_path(slot), &argv)) {
+        let in_tree = process_cwd(pid).is_some_and(|cwd| Some(cwd) == tree.canonicalize().ok());
+        if !(argv.is_some_and(|argv| is_warmer(&tree, &argv)) || in_tree) {
             if let Some(warm) = state.warm.as_mut() {
                 warm.pid = None;
             }
@@ -324,6 +326,10 @@ fn process_argv(cwd: &Path, pid: u32) -> Option<Vec<String>> {
     )
     .ok()?;
     Some(args.split_whitespace().map(str::to_owned).collect())
+}
+
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 #[cfg(test)]

@@ -619,20 +619,7 @@ impl Pool {
             .checked_add(LIST_BUDGET)
             .unwrap_or_else(std::time::Instant::now);
         // Invariant: a listing never fetches; `behind` counts against the `main` last seen.
-        let base = probe_git(
-            &self.repo,
-            &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
-            deadline,
-        )
-        .or_else(|_| {
-            probe_git(
-                &self.repo,
-                &["rev-parse", "--verify", "-q", "main^{commit}"],
-                deadline,
-            )
-        })
-        .ok()
-        .and_then(|text| Sha::parse(&text));
+        let base = self.local_main(deadline);
         let mut views = Vec::new();
         for n in 0..self.slots {
             let slot = SlotIndex(n);
@@ -721,38 +708,53 @@ impl Pool {
         });
     }
 
+    fn resolve_commit(&self, candidate: &str) -> Result<String, LaneError> {
+        let spec = format!("{candidate}^{{commit}}");
+        git(&self.repo, &["rev-parse", "--verify", "-q", &spec]).map(|sha| sha.trim().to_owned())
+    }
+
+    fn local_main(&self, deadline: std::time::Instant) -> Option<Sha> {
+        probe_git(
+            &self.repo,
+            &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
+            deadline,
+        )
+        .or_else(|_| {
+            probe_git(
+                &self.repo,
+                &["rev-parse", "--verify", "-q", "main^{commit}"],
+                deadline,
+            )
+        })
+        .ok()
+        .and_then(|text| Sha::parse(&text))
+    }
+
     fn resolve(&self, base: &ClaimBase, background: bool) -> Result<String, LaneError> {
-        let candidates: Vec<String> = match base {
-            ClaimBase::Main => {
-                let known = background.then(|| {
-                    git(
-                        &self.repo,
-                        &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
-                    )
-                });
-                if let Some(Ok(sha)) = &known {
-                    self.refresh_in_background();
-                    return Ok(sha.trim().to_owned());
-                }
-                let fetched = self.fetch_if_stale();
-                let missing = known.is_some() && !fetched;
-                ["origin/main", "main", "HEAD"]
-                    .into_iter()
-                    .filter(|name| !missing || *name != "origin/main")
-                    .map(str::to_owned)
-                    .collect()
+        match base {
+            ClaimBase::Commit(sha) => return self.resolve_commit(sha),
+            ClaimBase::Main => {}
+        }
+        let known = background.then(|| self.resolve_commit("origin/main"));
+        if let Some(Ok(sha)) = &known {
+            self.refresh_in_background();
+            return Ok(sha.clone());
+        }
+        let fetched = self.fetch_if_stale();
+        let missing = known.is_some() && !fetched;
+        if missing {
+            if let Ok(sha) = self.resolve_commit("main") {
+                return Ok(sha);
             }
-            ClaimBase::Commit(sha) => vec![sha.clone()],
-        };
-        let mut last = None;
-        for candidate in candidates {
-            let spec = format!("{candidate}^{{commit}}");
-            match git(&self.repo, &["rev-parse", "--verify", "-q", &spec]) {
-                Ok(sha) => return Ok(sha.trim().to_owned()),
-                Err(error) => last = Some(error),
+        } else {
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(GIT_TIMEOUT_MS))
+                .unwrap_or_else(std::time::Instant::now);
+            if let Some(sha) = self.local_main(deadline) {
+                return Ok(sha.as_str().to_owned());
             }
         }
-        Err(last.unwrap_or(LaneError::NotARepo(self.repo.clone())))
+        self.resolve_commit("HEAD")
     }
 
     /// How many lanes this pool holds, so a caller can size its own share of them.
@@ -810,9 +812,7 @@ impl Pool {
             match self.read_state(slot)?.session {
                 Some(_) if self.abandoned(slot)? => {
                     self.detach(slot, self.branch_of(slot).as_deref())?;
-                    let mut state = self.read_state(slot)?;
-                    state.session = None;
-                    self.write_state(slot, &state)?;
+                    self.clear_session(slot)?;
                     free = Some((slot, guard, false));
                     break;
                 }
@@ -960,9 +960,7 @@ impl Drop for Lane {
                 return Ok(());
             }
             self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-            let mut state = self.pool.read_state(self.slot)?;
-            state.session = None;
-            self.pool.write_state(self.slot, &state)
+            self.pool.clear_session(self.slot)
         });
     }
 }
@@ -1045,9 +1043,7 @@ impl Lane {
         } else {
             self.pool.wipe(self.slot)?
         };
-        let mut state = self.pool.read_state(self.slot)?;
-        state.session = None;
-        self.pool.write_state(self.slot, &state)?;
+        self.pool.clear_session(self.slot)?;
         if quit {
             // Invariant: an unseen lockfile stays cold; that is not a failure.
             match toolchain::warm(&self.pool, self.slot) {

@@ -22,9 +22,8 @@ mod record;
 mod runs;
 pub(crate) mod service;
 pub(crate) mod trail;
-pub use record::ChildFeed;
-pub(crate) use record::Step;
-use record::preview;
+pub(crate) use record::{AMBIGUOUS, INTERRUPTED, Step, preview};
+pub use record::{ChildFeed, PARENT_CLOSED, PARENT_NAME};
 pub(crate) use runs::schema_answer;
 pub(crate) use service::Standing;
 
@@ -33,15 +32,11 @@ pub(crate) use service::Standing;
 pub const DEFAULT_MAX_CHILDREN: usize = 8;
 /// live sessions across the whole family, so a deeper fan-out cannot multiply (D165).
 pub const FAMILY_CAP: usize = 16;
-pub const PARENT_NAME: &str = "parent";
-/// The cause a cut-short run carries on its terminal update and in the parent's notice.
-pub(crate) const INTERRUPTED: &str = "interrupted";
-pub(crate) const AMBIGUOUS: &str = "names more than one child, so give its full name:";
 
 pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
     session_dir: PathBuf,
-    trail: Option<PathBuf>,
+    pub(crate) trail: Option<PathBuf>,
     spawned_by: Option<String>,
     pub(crate) worktree: Option<crate::lane::Lane>,
     /// The worker share of the lane pool this child's checkout was taken from; dropped with
@@ -69,6 +64,7 @@ pub(crate) struct ChildRecord {
     token_count: u64,
     cost: f64,
     answer_preview: Option<String>,
+    pub(crate) rows: record::ChildRows,
     pub(crate) error: Option<String>,
     /// L3: set makes this a protocol child — its answer must decode as a
     /// [`yi_types::subagent::ChildResult`] and this check must be green.
@@ -641,7 +637,8 @@ impl SubagentHost {
         };
         cast.2.container = container.as_ref().map(|held| held.name().to_owned());
         let child = self.build(cast, &session_name, &session_dir, cwd, &lease, None)?;
-        let trail = self.trail_spawned(&session_name, &child_id, &child, &prompt);
+        let (trail, rows) =
+            self.trail_admission(&session_name, &child_id, &child, &prompt, role, &standing);
         let window = child.model().context_window;
         let forked = reader::seed_for_fork(&*self.options.parent_messages, fork, window);
         reader::seed(&child, forked, seed);
@@ -681,6 +678,7 @@ impl SubagentHost {
                     tool_use_count: 0,
                     token_count: 0,
                     cost: 0.0,
+                    rows,
                     answer_preview: None,
                     error: None,
                     check,
