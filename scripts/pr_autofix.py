@@ -11,9 +11,11 @@ environment, since the merged tree's hooks run the PR's own code; the push is ma
 trusted checkout. Verbs: `just pr autofix` (one pass, oldest PR first), `just pr autofix N`.
 """
 import argparse
+import contextlib
 import datetime
 import itertools
 from collections import Counter
+import io
 import json
 import os
 import pathlib
@@ -45,7 +47,8 @@ QUIET = 2 * 3600
 PER_RUN = 3
 # Incident: the runner killed a 45-minute pass ("exceeds the maximum run time") mid-fix. A fix's
 # model gets 20 minutes and its hook repair 10; a new PR starts only while both fit the job's limit
-# (autofix.yml), less the checkout, build and catalog refresh before the pass.
+# (autofix.yml), less the checkout before the pass and the build and catalog refresh that the first
+# model call of a pass with work makes (pr_review.yi_bin).
 FIX_SECS, REPAIR_SECS, SETUP_SECS = 1200, 600, 5 * 60
 PASS_SECS = forge_pr.job_secs("autofix") - SETUP_SECS
 CAP_DAY, CAP_PR = 25.0, 8.0
@@ -1152,8 +1155,58 @@ def gate_selfcheck():
     return errs
 
 
+def lazy_selfcheck():
+    """yi is built and the catalog refreshed once, by the first model call of a pass that has a PR to fix."""
+    calls = []
+    real = {"run": subprocess.run, "which": shutil.which, "root": pr_review.ROOT, "attempt": attempt,
+            "repo": forge_pr.repo, "fgj": forge_pr.fgj_api, "labels": label_ids, "spent": spent_today, "tidy": tidy,
+            "refreshed": list(pr_review._REFRESHED), "bin": os.environ.pop("YI_BIN", None)}
+    root = pathlib.Path(tempfile.mkdtemp(prefix="yi-lazy-check-"))
+    pulls = []
+
+    class Quiet(io.StringIO):
+        def reconfigure(self, **_):
+            pass
+
+    def run(argv, **_):
+        calls.append(argv[1:3] if argv[0] != "cargo" else argv[:2])
+        (root / "target/debug").mkdir(parents=True, exist_ok=True)
+        (root / "target/debug/yi").write_text("")
+        return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+    def answer(repo, pr, ids, asked=False):
+        pr_review.ask("p", {}, root, sessions=root / "sessions", meter=bot_meter.Meter())
+        return "pushed"
+
+    pr = {"number": 1, "head": {"repo": {"full_name": "apex/yi"}}, "labels": []}
+    subprocess.run, shutil.which, pr_review.ROOT = run, (lambda name: None), root
+    forge_pr.repo, forge_pr.fgj_api = (lambda: "apex/yi"), (lambda method, path, payload=None: pulls)
+    globals().update(attempt=answer, label_ids=lambda repo: {}, spent_today=lambda repo: 0.0, tidy=lambda repo, pr: None)
+    errs = []
+    try:
+        pr_review._REFRESHED.clear()
+        with contextlib.redirect_stdout(Quiet()):
+            cmd_autofix(argparse.Namespace(number=None))
+        if calls:
+            errs.append(f"a pass with no PR to fix ran {calls}")
+        pulls.extend([pr, dict(pr, number=2)])
+        with contextlib.redirect_stdout(Quiet()):
+            cmd_autofix(argparse.Namespace(number=None))
+        if calls != [["cargo", "build"], ["catalog", "refresh"], ["ask", "--here"], ["ask", "--here"]]:
+            errs.append(f"a pass with two PRs to fix built and refreshed {calls}, not once before its first model call")
+    finally:
+        subprocess.run, shutil.which, pr_review.ROOT = real["run"], real["which"], real["root"]
+        forge_pr.repo, forge_pr.fgj_api = real["repo"], real["fgj"]
+        globals().update(attempt=real["attempt"], label_ids=real["labels"], spent_today=real["spent"], tidy=real["tidy"])
+        pr_review._REFRESHED[:] = real["refreshed"]
+        if real["bin"] is not None:
+            os.environ["YI_BIN"] = real["bin"]
+        shutil.rmtree(root)
+    return errs
+
+
 def selfcheck():
-    errs = gate_selfcheck()
+    errs = gate_selfcheck() + lazy_selfcheck()
     states = {1072: "closed", 1076: "open", 1077: "open"}.get
     body = "Closes #1076. Refs #1072. Stacked on #1098.\nRefs #1077."
     if tidied(body, states) != "Closes #1076. Stacked on #1098.\nRefs #1077.":

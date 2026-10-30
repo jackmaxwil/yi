@@ -1,0 +1,4 @@
+---
+issue: Closes #1512
+---
+`just commit <subject> [<path>...]` stages the paths it is given by name instead of running `git add -A`, the one command `.ruler/090-workflow.md` forbids in a shared tree. With no path it commits what is already staged; with nothing staged it refuses and prints the dirty paths so the caller names them. The ratchet commit it makes first still takes only the baselines. `forge_pr.py --selfcheck` now commits in a scratch repository holding one named and one unnamed untracked file and requires the unnamed one to stay out. The autofixer no longer builds yi or refreshes the OpenRouter catalog on every 15-minute pass: `.forgejo/workflows/autofix.yml` drops both steps, `scripts/pr_autofix.py` takes its binary from `pr_review.yi_bin`, which builds and refreshes once at the first model call, and `pr_autofix.py --selfcheck` requires a pass with no PR to fix to run neither (Refs #1310).

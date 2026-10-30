@@ -231,10 +231,13 @@ def cmd_commit(args):
     if dirty(baseline_paths()):
         print("commit: baselines moved — ratcheting them into their own commit first")
         cmd_ratchet(argparse.Namespace(topic=args.topic or "", no_binary=True))
-    git("add", "-A", check=True)
+    if args.paths:
+        git("add", "--", *args.paths, check=True)
     if not git("diff", "--cached", "--name-only"):
-        print("commit: nothing to commit")
-        return 0
+        left = git("status", "--porcelain")
+        print("commit: nothing staged; name the paths to commit:" if left else "commit: nothing to commit")
+        print(left)
+        return 1 if left else 0
     message = ["-m", args.subject.strip()]
     if args.body:
         message += ["-m", pathlib.Path(args.body).read_text().strip()]
@@ -804,7 +807,39 @@ def selfcheck():
     # because nothing here built the verbs; a name the parser wires that no longer exists
     # now fails this flag instead of the next `just commit`.
     build_parser()
+    commit_selfcheck()
     print("ok   forge_pr selfcheck")
+
+
+def commit_selfcheck():
+    """`commit` in a scratch repository holding one named and one unnamed untracked file."""
+    import contextlib, io, os
+
+    names = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths", "binary_ratchet")}
+    with tempfile.TemporaryDirectory() as scratch:
+        os.environ.update(names)
+        subprocess.run(("git", "-C", scratch, "init", "-q"), check=True)
+        globals().update(ROOT=pathlib.Path(scratch), baseline_paths=lambda: [], binary_ratchet=lambda topic: 0)
+        parse = build_parser().parse_args
+        try:
+            (pathlib.Path(scratch) / "a.txt").write_text("a\n")
+            (pathlib.Path(scratch) / "b.txt").write_text("b\n")
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                refused = cmd_commit(parse(["commit", "Add the files"]))
+            assert refused == 1 and "b.txt" in said.getvalue() and not git("log", "--oneline"), ("nothing named, nothing staged", said.getvalue())
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add the named file", "a.txt"]))
+            assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "a.txt", git("show", "--name-only", "--format=", "HEAD")
+            assert git("status", "--porcelain") == "?? b.txt", "a path the caller did not name stays out of the commit"
+            git("add", "--", "b.txt", check=True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add the staged file"]))
+            assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "b.txt", "no paths named commits what is staged"
+        finally:
+            globals().update(saved)
+            for name in names:
+                del os.environ[name]
 
 
 def build_parser():
@@ -816,6 +851,7 @@ def build_parser():
     ratchet.set_defaults(run=cmd_ratchet)
     commit = verbs.add_parser("commit")
     commit.add_argument("subject")
+    commit.add_argument("paths", nargs="*")
     commit.add_argument("--body")
     commit.add_argument("--topic", default="")
     commit.set_defaults(run=cmd_commit)
