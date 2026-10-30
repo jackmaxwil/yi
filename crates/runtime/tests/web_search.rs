@@ -2,6 +2,7 @@ use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::scratch::Scratch;
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_ai::search::{
@@ -9,7 +10,9 @@ use yi_ai::search::{
     SearchRequest, SearchResponse, SearchRoute, SearchUrl,
 };
 use yi_runtime::web_search::{EXCERPT_CAP_CHARS, RESULT_CAP_CHARS, WebSearchTool};
-use yi_runtime::{PermissionBroker, PermissionMode, ProviderStream};
+use yi_runtime::{
+    AgentSession, PermissionBroker, PermissionMode, ProviderStream, SessionConfig, SubagentHost,
+};
 use yi_tools::{Tool, ToolContext};
 use yi_types::message::{AgentMessage, StopReason, Usage};
 use yi_types::record::LaneRecord;
@@ -73,7 +76,10 @@ fn response(answer: &str, excerpt: &str) -> SearchResponse {
 
 fn tool_with(result: Result<SearchResponse, SearchError>) -> (WebSearchTool, Arc<FauxSearch>) {
     let provider = Arc::new(FauxSearch::new(result));
-    (WebSearchTool::new(provider.clone()), provider)
+    (
+        WebSearchTool::new(provider.clone(), Default::default()),
+        provider,
+    )
 }
 
 fn args(value: Value) -> Map<String, Value> {
@@ -446,5 +452,164 @@ fn search_usage_reaches_spend_alerts_and_tool_telemetry_once() -> TestResult {
 #[test]
 fn identity_does_not_offer_search_when_registration_is_credential_gated() -> TestResult {
     assert!(!yi_runtime::identity_fragment().contains("web_search"));
+    Ok(())
+}
+
+/// The tool fences behind the session's screen: a flagged result carries the score in its fence
+/// header, so a search result cannot reach the model unmarked while the suite stays green.
+#[test]
+fn a_flagged_search_result_carries_the_screen_mark() -> TestResult {
+    let (screeners, seen, handle) =
+        crate::classifier_e2e::armed(r#"{"answers":{"inject":{"noul":0.9}}}"#)?;
+    let provider = Arc::new(FauxSearch::new(Ok(response("answer", "excerpt"))));
+    let tool = WebSearchTool::new(provider, screeners);
+    let output = tool.execute(
+        args(json!({"query": "latest Rust"})),
+        &ToolContext::new(std::env::temp_dir()),
+    );
+    handle.join().map_err(|_| "sidecar thread")?;
+    let fenced = text(&output);
+    assert!(
+        fenced.contains(r#"trust="untrusted" screen="flagged:0.90""#),
+        "the search result's fence carries the mark: {fenced}"
+    );
+    assert_eq!(
+        crate::classifier_e2e::taken(&seen).len(),
+        1,
+        "the search result was screened once"
+    );
+    Ok(())
+}
+
+/// A root wired as `yi` wires one: its children come from the real child factory, so what the
+/// root hands them is what a spawn actually gives a child.
+struct Family {
+    root: Scratch,
+    session: AgentSession,
+    provider: Arc<ProviderStream>,
+    host: Arc<SubagentHost>,
+}
+
+fn family(context: &str) -> Result<Family, Box<dyn Error>> {
+    let root = Scratch::new(context)?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.set_web_search(Some(Arc::new(FauxSearch::new(Ok(response(
+        "answer",
+        crate::classifier_e2e::INJECTED,
+    ))))));
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: String::new(),
+            model: crate::support::faux_model(),
+            thinking_level: None,
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    let host = crate::session_faux::attach_like_yi_ask(&mut session, &root, None);
+    Ok(Family {
+        root,
+        session,
+        provider,
+        host,
+    })
+}
+
+fn spawn_searching_child(family: &Family) -> Result<(), Box<dyn Error>> {
+    family.provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call(
+                "search-1",
+                "web_search",
+                args(json!({"query": "Rust release notes"})),
+            )],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("read it")], StopReason::Stop),
+    ]);
+    let mut kwargs = Map::new();
+    kwargs.insert("role".to_owned(), json!("root"));
+    family
+        .host
+        .spawn("find the release notes".to_owned(), kwargs)?;
+    Ok(())
+}
+
+/// Polls the host's own status, never a duration: a settled child is one the host reports done.
+async fn until_finished(host: &Arc<SubagentHost>) -> Result<(), Box<dyn Error>> {
+    for _ in 0..400 {
+        if host.status()["members"][0]["state"] == "finished" {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Err(format!("the child never settled: {:?}", host.status()).into())
+}
+
+/// Every journal line the family wrote under the rlm directory, child sessions included.
+fn journals(dir: &std::path::Path) -> std::io::Result<String> {
+    let mut out = String::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+            {
+                out.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A child's outside text is the root's screen's to judge: the same cut and cap mark its search
+/// result, and the row lands in the child's journal, where the child will be read.
+#[tokio::test]
+async fn a_child_spawned_by_a_screened_root_marks_and_journals_its_own_page() -> TestResult {
+    let family = family("yi-child-screen")?;
+    let (seen, sidecar) = crate::classifier_e2e::armed_into(
+        r#"{"answers":{"inject":{"noul":0.93}}}"#,
+        &family.session.screeners(),
+    )?;
+    spawn_searching_child(&family)?;
+    until_finished(&family.host).await?;
+    let log = journals(&family.root.join("rlm"))?;
+    assert!(
+        log.contains("flagged:0.93"),
+        "the child's search result carries the root's mark: {log}"
+    );
+    assert!(
+        log.contains(r#""consumer":"inject""#),
+        "the child's journal holds the screen's row: {log}"
+    );
+    assert!(
+        crate::classifier_e2e::taken(&seen).is_empty(),
+        "the root journals nothing the child screened"
+    );
+    sidecar.join().map_err(|_| "sidecar thread")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_root_with_no_screen_hands_its_child_none() -> TestResult {
+    let family = family("yi-child-unscreened")?;
+    spawn_searching_child(&family)?;
+    until_finished(&family.host).await?;
+    let log = journals(&family.root.join("rlm"))?;
+    assert!(
+        !log.contains("screen="),
+        "a root with no screen marks nothing in its child: {log}"
+    );
+    assert!(
+        !log.contains(r#""consumer":"inject""#),
+        "and journals no row: {log}"
+    );
     Ok(())
 }
