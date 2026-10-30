@@ -2,7 +2,7 @@
 issue: Closes #334
 decision: the spec is the harness's object, not the model's | a stop judged by prose passed 3/18 on the six-task slice while the checks failed on one numbered requirement, and the one object that can say which id is red is a check the harness runs | delete the `spec` tool and its store; the stop rule then has no verdict to consult and the prompt's prelude has nothing to announce
 growth: +2535 the spec object, its TAP parse and the freeze that types it, the harness-run stop rule with its refute, the environment line and the skill, and a per-session baseline directory cleared before each freeze; weighed: no artifact or closure gate rebuilt beside it (the config's `gates` key went with D182), no dependency added (the TAP parse is one function over a string), and the first attempt's `bind`, `fanout` and `obligation` stages are left out so the change is the primitive and its stop rule
-raise: crate runtime +1920, crate types +520, tests +904, comments +79
+raise: crate runtime +1920, crate types +520, tests +939, comments +79
 ---
 
 A stop is judged by a check the harness runs, not by the model's prose. The

@@ -674,3 +674,38 @@ fn a_child_reads_the_family_spec_again_when_the_root_rewrites_it() -> TestResult
     assert_eq!(again.draft().requirements.len(), 3, "the cache went stale");
     Ok(())
 }
+
+#[test]
+fn a_check_never_sees_a_provider_key() -> TestResult {
+    // Incident: a command the model wrote and whose output it reads never sees Yi's keys (#906).
+    unsafe { std::env::set_var("OPENAI_API_KEY", "ENV-906-OPENAI") };
+    let rig = rig("keyless")?;
+    std::fs::write(
+        rig.cwd.join("check.sh"),
+        "#!/bin/sh\n\
+         printf 'not ok 1 - R1 the artifact is missing\\n'\n\
+         printf 'ok 2 - R2 the key is %s\\n' \"${OPENAI_API_KEY:-absent}\"\n",
+    )?;
+    let store = store_for(&rig);
+    let frozen = store
+        .freeze(
+            reqs(&[
+                ("the artifact is missing", Kind::F2p),
+                ("the key is absent", Kind::P2p),
+            ]),
+            &[],
+            "sh check.sh",
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    assert!(
+        !frozen.baseline.tail.contains("ENV-906-OPENAI"),
+        "the check read the provider key: {}",
+        frozen.baseline.tail
+    );
+    assert!(
+        frozen.baseline.tail.contains("the key is absent"),
+        "{}",
+        frozen.baseline.tail
+    );
+    Ok(())
+}
