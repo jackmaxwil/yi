@@ -170,46 +170,6 @@ fn only_the_nearest_repository_binds_a_walk_and_its_inner_rules_win() -> TestRes
     Ok(())
 }
 
-/// `.` and a relative cwd name the tree they are in: the process runs inside this checkout.
-#[test]
-fn a_relative_cwd_names_the_repository_it_sits_in() -> TestResult {
-    let cwd = std::env::current_dir()?;
-    let named = yi_tools::git_root(Path::new("."));
-    assert!(named.is_some(), "`.` inside the checkout found no top");
-    assert_eq!(named, yi_tools::git_root(&cwd), "`.` is the process cwd");
-    assert_eq!(
-        yi_tools::git_root(Path::new("src")),
-        named,
-        "a relative subdirectory names the same top"
-    );
-    Ok(())
-}
-
-/// A checkout reached through a link names its top in the caller's spelling, so a walk below it
-/// still finds the repository top among its own ancestors and inherits the rules above.
-#[cfg(unix)]
-#[test]
-fn a_linked_checkout_still_binds_the_ignore_files_above_the_walk() -> TestResult {
-    let scratch = Scratch::new("yi-paths-linked-ignore")?;
-    let demo = demo(&scratch)?;
-    fs::write(demo.join(".gitignore"), "/target\ngen/\n")?;
-    fs::create_dir_all(demo.join("src/gen"))?;
-    fs::write(demo.join("src/gen/x.rs"), "pub fn generated_marker() {}\n")?;
-    let linked = scratch.join("linked");
-    std::os::unix::fs::symlink(&demo, &linked)?;
-    assert_eq!(
-        yi_tools::git_root(&linked.join("src")),
-        Some(linked.clone()),
-        "the top comes back as the link the walk was started through"
-    );
-    let listed = read(&linked.join("src"), &[("path", "**/*.rs")]);
-    assert!(
-        listed.contains("lib.rs") && !listed.contains("generated_marker"),
-        "src/gen is ignored from the linked top's .gitignore: {listed}"
-    );
-    Ok(())
-}
-
 /// A glob from outside the home walks into it; its key store stays out of every walk, however
 /// the walk's root is spelled: another letter case, a link, `/private`, or a firmlink.
 #[cfg(unix)]

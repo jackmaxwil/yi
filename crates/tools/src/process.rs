@@ -15,24 +15,11 @@ pub(crate) fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// The repository's top; a worktree never borrows the main checkout's. Links, `..` and a
-/// relative cwd resolve first, and the top comes back in the caller's spelling when that reaches it.
+/// The repository's top; a worktree never borrows the main checkout's.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    let real = real_path(cwd);
-    let top = real
-        .ancestors()
+    (cwd.ancestors())
         .find(|dir| dir.join(".git").exists())
-        .map(real_path)?;
-    Some(
-        cwd.ancestors()
-            .find(|dir| real_path(dir) == top)
-            .unwrap_or(top.as_path())
-            .to_path_buf(),
-    )
-}
-
-pub(crate) fn real_path(path: &std::path::Path) -> std::path::PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| yi_permission::lexical_normalize(path))
+        .map(std::path::Path::to_path_buf)
 }
 
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
