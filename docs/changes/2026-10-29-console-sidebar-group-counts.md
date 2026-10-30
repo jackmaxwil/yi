@@ -1,4 +1,5 @@
 ---
+version: 0.828.0
 issue: Closes #1715
 raise: crate console +114, tests +261, comments +11
 ---
