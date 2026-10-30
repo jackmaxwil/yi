@@ -1,11 +1,11 @@
 ---
 issue: Closes #1711
-growth: +472 console panes keep one follow paint path, a macOS-only preference reader and the bounded collapsed-card reservation; the duplicated per-mode clamps collapsed into one, the card-answer cache stays where main keeps it, the head's subject spans moved into the card, git_root's canonicalize was reverted to main's, the two temp-dir test helpers became one, and the capped-row helper moved into wrap
+growth: +472 console panes keep one follow paint path, a macOS-only preference reader and the bounded collapsed-card reservation; the duplicated per-mode clamps collapsed into one, the card-answer cache stays where main keeps it, the head's subject spans moved into the card, git_root's canonicalize was reverted to main's, the two temp-dir test helpers became one, and cell.rs keeps its own capped-row elision with the row parsers it reads split out to rows.rs,
 decision: "Hybrid page jumps + streaming text" | "reduce visual movement giving user motion sickness" | reversible via tui.follow: slide
 decision: "Yes, use Still" | "No I am only talking about the terminal text stream" | reversible via an explicit tui.follow setting
 decision: "Yes, hold three rows" | "No I am only talking about the terminal text stream" | reversible via removing the bounded collapsed-card reservation
-decision: "Console panes only" | "the inline viewport keeps main's unpaced commits, because a second engine there cost every finding this branch paid for" | reversible by restoring the inline paint path
-raise: crate cli +192, crate console +131, crate tools +19, crate tui +118, crate types +12, tests +310
+decision: "Console panes only" | "the owner's console-first direction puts the solo inline view out of #1711, and a second follow engine there cost every finding this branch paid for" | reversible by painting the inline viewport through the same follow path
+raise: crate cli +192, crate console +131, crate tools +19, crate tui +111, crate types +12, tests +310
 ---
 Terminal text keeps its existing character reveal. Console panes choose one-row sliding, half-page jumps, or a stationary view with a hidden-row marker; the inline viewport keeps its unpaced commits, and the six tests that defended its held window went with it (`solo_still_marks_rows_hidden_from_the_inline_viewport`, `solo_follow_levels_pace_the_rows_that_land`, `a_slide_frame_lands_what_it_held_without_another_event`, `a_paced_release_keeps_the_prompt_zone_whole`, `a_submitted_prompt_releases_the_inline_still_hold`, `a_resumed_transcript_lands_in_one_frame`); `still_holds_the_view_and_marks_hidden_rows_at_a_nonzero_offset` keeps the marker's reveal in the pane. Ordinary running tool cards reserve bounded collapsed result space, child cards keep their bounded four-row answer window, and notebook updates preserve a reader's scroll position.
 

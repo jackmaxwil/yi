@@ -2,8 +2,6 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::colors::Theme;
-
 #[derive(Clone, Copy)]
 pub(crate) struct Cell {
     pub(crate) ch: char,
@@ -219,22 +217,4 @@ pub fn hard_wrap(line: &Line<'_>, width: usize, indent: &Span<'static>) -> Vec<L
             row
         })
         .collect()
-}
-
-/// A row past three screen lines is generated, not written: two lines and its size.
-pub(crate) fn capped(
-    line: &Line<'static>,
-    width: usize,
-    indent: &str,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let rows = wrap_line(line, width, indent);
-    if rows.len() <= 3 {
-        return rows;
-    }
-    let bytes: usize = line.spans.iter().map(|s| s.content.len()).sum();
-    let mut out: Vec<Line<'static>> = rows.into_iter().take(2).collect();
-    let size = format!("{indent}… {} KB", bytes.div_ceil(1024));
-    out.push(Line::from(Span::styled(size, theme.dim_style())));
-    out
 }
