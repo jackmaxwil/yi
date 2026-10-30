@@ -11,11 +11,11 @@ const STOP: [&str; 61] = [
 ];
 
 fn word(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
+    c.is_alphanumeric() || c == '_'
 }
 
 pub fn tokens(text: &str) -> Vec<String> {
-    let lower: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let lower: Vec<char> = text.to_lowercase().chars().collect();
     let mut out = Vec::new();
     let mut at = 0usize;
     while at < lower.len() {
@@ -129,8 +129,25 @@ mod tests {
                 "reset",
                 "hard",
                 "yi/daemon.sock",
-                "scripts/forge_pr.py"
+                "scripts/forge_pr.py",
+                "é"
             ]
+        );
+    }
+
+    #[test]
+    fn an_accented_query_ranks_the_note_that_has_the_word_and_not_the_one_that_has_a_fragment() {
+        let bm = Bm25::new([
+            "Le Résumé du démarrage tient en une page",
+            "the sum of the inputs",
+        ]);
+        assert_eq!(tokens("RÉSUMÉ démarrage"), vec!["résumé", "démarrage"]);
+        assert_eq!(
+            bm.rank("résumé")
+                .iter()
+                .map(|hit| hit.0)
+                .collect::<Vec<_>>(),
+            vec![0]
         );
     }
 
