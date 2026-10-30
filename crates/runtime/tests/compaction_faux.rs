@@ -1806,7 +1806,10 @@ async fn a_rescue_keeps_the_prompt_of_a_long_turn_and_whole_tool_steps()
         text_of(kept.get(2)),
         Some(format!("[compaction elided {gone} earlier messages from the model's view: summary failed; the transcript keeps them]").as_str())
     );
-    assert!(matches!(kept.get(3), Some(AgentMessage::Assistant { .. })));
+    assert_eq!(
+        gone, 24,
+        "every step left the view, and the summary's view names them"
+    );
     assert!(every_result_has_its_call(kept), "{kept:#?}");
     let sent = sent_tokens(kept, &system);
     let step = sent_tokens(&tool_step("c0"), "");
