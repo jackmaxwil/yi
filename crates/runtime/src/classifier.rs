@@ -41,37 +41,33 @@ impl Sidecar {
     }
 }
 
-#[derive(Default)]
 struct Breaker {
     failures: u32,
-    /// How many failures pause the endpoint; zero reads as the shared three.
     trips_at: u32,
     paused_until: Option<Instant>,
-    /// The failure that paused it, so a skipped call can journal why nothing was screened.
+    /// The failure that paused it, for the one caller that journals why nothing was screened.
     cause: Option<String>,
 }
 
-fn paused(breaker: &Mutex<Breaker>) -> bool {
-    let Ok(mut breaker) = breaker.lock() else {
-        return true;
-    };
-    match breaker.paused_until {
-        Some(until) if Instant::now() < until => true,
-        Some(_) => {
-            breaker.paused_until = None;
-            breaker.cause = None;
-            false
+impl Breaker {
+    const fn new(trips_at: u32) -> Self {
+        Self {
+            failures: 0,
+            trips_at,
+            paused_until: None,
+            cause: None,
         }
-        None => false,
     }
 }
 
-fn pause_cause(breaker: &Mutex<Breaker>) -> Option<String> {
+/// `None` while the endpoint is open; `Some(cause)` while it is paused, the cause recorded only
+/// for a caller that journals it. A poisoned lock answers paused, so the endpoint is not asked.
+fn paused(breaker: &Mutex<Breaker>) -> Option<Option<String>> {
     let Ok(mut breaker) = breaker.lock() else {
-        return None;
+        return Some(None);
     };
     match breaker.paused_until {
-        Some(until) if Instant::now() < until => breaker.cause.clone(),
+        Some(until) if Instant::now() < until => Some(breaker.cause.clone()),
         Some(_) => {
             breaker.paused_until = None;
             breaker.cause = None;
@@ -81,22 +77,17 @@ fn pause_cause(breaker: &Mutex<Breaker>) -> Option<String> {
     }
 }
 
-fn fail(breaker: &Mutex<Breaker>, cause: &str) -> bool {
+fn fail(breaker: &Mutex<Breaker>, cause: Option<&str>) -> bool {
     let Ok(mut breaker) = breaker.lock() else {
         return false;
     };
     breaker.failures = breaker.failures.saturating_add(1);
-    let trips = if breaker.trips_at == 0 {
-        TRIP_AFTER
-    } else {
-        breaker.trips_at
-    };
-    if breaker.failures < trips {
+    if breaker.failures < breaker.trips_at {
         return false;
     }
     breaker.failures = 0;
     breaker.paused_until = Instant::now().checked_add(PAUSE);
-    breaker.cause = Some(cause.to_owned());
+    breaker.cause = cause.map(str::to_owned);
     true
 }
 
@@ -135,7 +126,7 @@ impl SkillClassifier {
         Ok(Self {
             sidecar,
             candidates,
-            breaker: Mutex::new(Breaker::default()),
+            breaker: Mutex::new(Breaker::new(TRIP_AFTER)),
             record,
             deliver,
             pointed: Mutex::new(BTreeMap::new()),
@@ -164,7 +155,7 @@ impl SkillClassifier {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        if self.candidates.is_empty() || paused(&self.breaker) {
+        if self.candidates.is_empty() || paused(&self.breaker).is_some() {
             return;
         }
         let this = Arc::clone(self);
@@ -225,7 +216,7 @@ impl SkillClassifier {
         let response = match outcome {
             Ok(response) => response,
             Err(error) => {
-                if fail(&self.breaker, &self.sidecar.named(&error)) {
+                if fail(&self.breaker, None) {
                     (self.deliver)(self.notice(&error));
                 }
                 record.error = Some(self.sidecar.named(&error));
@@ -320,7 +311,7 @@ impl Approver {
             sidecar,
             thresholds,
             timing,
-            breaker: Mutex::new(Breaker::default()),
+            breaker: Mutex::new(Breaker::new(TRIP_AFTER)),
             record,
         }
     }
@@ -330,7 +321,7 @@ impl Approver {
     }
 
     pub fn judge(&self, call: &Call<'_>) -> Judgement {
-        if paused(&self.breaker) {
+        if paused(&self.breaker).is_some() {
             return Judgement::Undecided;
         }
         let class = class(call.command);
@@ -385,7 +376,7 @@ impl Approver {
                 response.answers.get(SAFE).and_then(|answer| answer.noul)
             }
             Err(error) => {
-                fail(&self.breaker, &self.sidecar.named(&error));
+                fail(&self.breaker, None);
                 record.error = Some(self.sidecar.named(&error));
                 None
             }
@@ -487,6 +478,10 @@ impl Screeners {
         }
     }
 
+    /// Whether a screener is attached: a host with none has nothing to park for the screen.
+    pub fn armed(&self) -> bool {
+        self.0.lock().is_ok_and(|slot| slot.is_some())
+    }
     pub fn screen(&self, kind: &str, text: &str) -> Screened {
         let screener = self.0.lock().ok().and_then(|slot| slot.clone());
         match screener {
@@ -517,10 +512,7 @@ impl Screener {
     pub fn new(sidecar: Sidecar, cut: f64, cap: usize, record: Record) -> Self {
         // Incident: a dead endpoint cost one full timeout per attachment, so the screen pauses
         // on the first failure where the classifier's other callers allow three.
-        let breaker = Breaker {
-            trips_at: 1,
-            ..Breaker::default()
-        };
+        let breaker = Breaker::new(1);
         Self {
             sidecar,
             cut,
@@ -540,7 +532,8 @@ impl Screener {
         if let Some(mark) = self.recall(kind, &hash) {
             return Screened { mark, body };
         }
-        if let Some(cause) = pause_cause(&self.breaker) {
+        if let Some(cause) = paused(&self.breaker) {
+            let cause = cause.unwrap_or_else(|| "the breaker's lock is poisoned".to_owned());
             (self.record)(unscreened(kind, &hash, total, cause, 0));
             return Screened { mark: None, body };
         }
@@ -574,7 +567,7 @@ impl Screener {
             Ok(response) => response,
             Err(error) => {
                 let cause = self.sidecar.named(&error);
-                fail(&self.breaker, &cause);
+                fail(&self.breaker, Some(&cause));
                 (self.record)(unscreened(kind, &hash, total, cause, latency_ms));
                 return Screened { mark: None, body };
             }
@@ -586,7 +579,7 @@ impl Screener {
             .and_then(|answer| answer.noul)
         else {
             let cause = self.sidecar.named("the answer carried no inject score");
-            fail(&self.breaker, &cause);
+            fail(&self.breaker, Some(&cause));
             (self.record)(unscreened(kind, &hash, total, cause, latency_ms));
             return Screened { mark: None, body };
         };

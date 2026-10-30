@@ -456,11 +456,8 @@ fn identity_does_not_offer_search_when_registration_is_credential_gated() -> Tes
 /// header, so a search result cannot reach the model unmarked while the suite stays green.
 #[test]
 fn a_flagged_search_result_carries_the_screen_mark() -> TestResult {
-    let flagged = r#"{"answers":{"inject":{"noul":0.9}}}"#;
-    let (port, handle) = crate::classifier_e2e::sidecar(vec![flagged])?;
-    let (screener, seen) = crate::classifier_e2e::screener(port, 0.8, 96_000);
-    let screeners = yi_runtime::classifier::Screeners::default();
-    screeners.set(screener);
+    let (screeners, seen, handle) =
+        crate::classifier_e2e::armed(r#"{"answers":{"inject":{"noul":0.9}}}"#)?;
     let provider = Arc::new(FauxSearch::new(Ok(response("answer", "excerpt"))));
     let tool = WebSearchTool::new(provider, screeners);
     let output = tool.execute(

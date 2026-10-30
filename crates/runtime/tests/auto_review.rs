@@ -721,11 +721,8 @@ async fn a_request_asked_twice_at_once_is_put_to_the_user_once() -> TestResult {
 /// carries the mark, so a destructive command cannot reach the reviewer unmarked.
 #[tokio::test]
 async fn the_reviewers_prompt_carries_the_screen_mark() -> TestResult {
-    let flagged = r#"{"answers":{"inject":{"noul":0.93}}}"#;
-    let (port, handle) = crate::classifier_e2e::sidecar(vec![flagged])?;
-    let (screener, seen) = crate::classifier_e2e::screener(port, 0.8, 96_000);
-    let screeners = yi_runtime::classifier::Screeners::default();
-    screeners.set(screener);
+    let (screeners, seen, handle) =
+        crate::classifier_e2e::armed(r#"{"answers":{"inject":{"noul":0.93}}}"#)?;
     let reviewer = Reviewer::new(Arc::new(ProviderStream::new(None)), faux_model(), screeners);
     let request = yi_runtime::auto_review::ReviewRequest {
         tool: "bash".to_owned(),

@@ -155,7 +155,27 @@ pub struct Host {
     deliver: Option<Deliver>,
     /// The holding session's screen; a host with none attached passes outside text unmarked.
     screen: crate::classifier::Screeners,
+    /// Untrusted attaches waiting for the screen: [`Self::take_pending`] hands them to the
+    /// session, which screens them off its worker and outside this host's lock.
+    pending: Vec<Pending>,
     cwd: PathBuf,
+}
+
+/// Outside text parked for the screen, with the source its fence carries.
+pub struct Pending {
+    source: String,
+    kind: &'static str,
+    text: String,
+}
+
+impl Pending {
+    pub fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
 }
 
 fn named_paths(prompt: &str) -> u32 {
@@ -182,6 +202,7 @@ impl Host {
             mutated: false,
             deliver: None,
             screen: crate::classifier::Screeners::default(),
+            pending: Vec::new(),
             cwd,
         }
     }
@@ -195,6 +216,49 @@ impl Host {
     }
     pub fn set_screen(&mut self, screen: crate::classifier::Screeners) {
         self.screen = screen;
+    }
+
+    pub fn screeners(&self) -> crate::classifier::Screeners {
+        self.screen.clone()
+    }
+
+    /// Takes the text parked since the last drain: the caller screens it, on a blocking thread
+    /// when it has one, and hands the result back to [`Self::attach_screened`].
+    pub fn take_pending(&mut self) -> Vec<Pending> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// The synchronous drain a host outside a session uses: the sidecar call runs on this thread.
+    pub fn screen_pending(&mut self, store: Option<&yi_session::SharedSession>) {
+        let screen = self.screen.clone();
+        let screened = self
+            .take_pending()
+            .into_iter()
+            .map(|pending| {
+                let screened = screen.screen(pending.kind, &pending.text);
+                (pending, screened)
+            })
+            .collect();
+        self.attach_screened(screened, store);
+    }
+
+    pub fn attach_screened(
+        &mut self,
+        screened: Vec<(Pending, crate::classifier::Screened)>,
+        store: Option<&yi_session::SharedSession>,
+    ) {
+        let mut changed = false;
+        for (pending, outcome) in screened {
+            changed |= self.state.attach_external(
+                &pending.source,
+                Trust::Untrusted,
+                &outcome.body,
+                outcome.mark,
+            );
+        }
+        if changed && let Some(store) = store {
+            persist_state(store, self.state.snapshot(&self.late));
+        }
     }
 
     /// Before the first request the slot joins the prompt. After it, the text is delivered once
@@ -246,6 +310,10 @@ impl Host {
     /// The first rendering is the conversation's system prompt (D310): every request sends
     /// these bytes, and whatever attaches later goes out as a message instead.
     pub fn system_prompt(&self) -> String {
+        debug_assert!(
+            self.pending.is_empty(),
+            "an untrusted attach reached the freeze unscreened: drain it first"
+        );
         let assemble = || self.state.assemble_except(&self.late);
         self.frozen.get_or_init(assemble).clone()
     }
@@ -338,19 +406,14 @@ impl Host {
                 } => {
                     // Every external attach fires at session start; a late one has no delivery
                     // (the yard's fence would be lost), so a debug build refuses it.
-                    debug_assert!(
-                        self.frozen.get().is_none(),
-                        "an external attach after the first request reaches no request"
-                    );
                     // Invariant: a granted fence is the user's own instruction file, so the
-                    // screen never argues with it; only text read as data is screened.
-                    let screened = match trust {
-                        crate::ext::Trust::Granted => crate::classifier::Screened::clean(&text),
-                        crate::ext::Trust::Untrusted => self.screen.screen(kind, &text),
-                    };
-                    changed |=
-                        self.state
-                            .attach_external(&source, trust, &screened.body, screened.mark);
+                    // screen never argues with it; only text read as data is screened, and with
+                    // no screen attached there is nothing to wait for.
+                    if trust == Trust::Granted || !self.screen.armed() {
+                        changed |= self.state.attach_external(&source, trust, &text, None);
+                        continue;
+                    }
+                    self.pending.push(Pending { source, kind, text });
                 }
                 Effect::Remind { text } => self.send(crate::rules::reminder(text)),
                 Effect::Record { key, value } => record(store, key, &value),
