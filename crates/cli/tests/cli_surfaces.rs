@@ -1867,6 +1867,42 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
     Ok(())
 }
 
+/// Every `yi <verb>` a fenced README block tells a reader to copy is a verb `yi --help` prints:
+/// the README's commands are the first thing anyone runs.
+#[test]
+fn readme_fenced_commands_name_verbs_help_prints() -> TestResult {
+    let workspace = Workspace::new("readme")?;
+    let (verbs, _) = help_table(&stdout(&workspace.yi(&["--help"])?));
+    let readme =
+        std::fs::read_to_string(format!("{}/../../README.md", env!("CARGO_MANIFEST_DIR")))?;
+    let (mut fenced, mut wrong) = (false, Vec::new());
+    for line in readme.lines() {
+        let row = line.trim();
+        if row.starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        let row = row
+            .strip_prefix("$ ")
+            .or_else(|| row.strip_prefix("if "))
+            .unwrap_or(row);
+        let mut words = row.split_whitespace();
+        if !fenced || words.next() != Some("yi") {
+            continue;
+        }
+        let Some(verb) = words.next() else { continue };
+        let bare = verb.starts_with('-') || verb.starts_with('"') || verb.starts_with('#');
+        if !bare && !verbs.iter().any(|known| known.as_str() == verb) {
+            wrong.push(verb.to_owned());
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "README fenced commands: no such verb in yi --help: {wrong:?}"
+    );
+    Ok(())
+}
+
 /// Every axis `yi stats --by` accepts, read from its own refusal, is named by `yi --help` and by
 /// the zsh and fish descriptions; the name check above passes when both sides omit one.
 #[test]

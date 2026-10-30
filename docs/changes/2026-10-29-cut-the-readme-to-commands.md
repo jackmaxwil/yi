@@ -1,0 +1,5 @@
+---
+issue: Closes #1861
+raise: tests +36
+---
+The README is commands first: every section opens with the block a reader copies, and the prose under it is one to three lines (Closes #1861). It is 7547 characters where it was 10802, 69.9 percent, with the same thirteen sections and the same capabilities. A new contract test, `readme_fenced_commands_name_verbs_help_prints`, reads every fenced `yi <verb>` in the README and fails when `yi --help` prints no such verb, so a renamed verb cannot leave a command a reader copies into an error.
