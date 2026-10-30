@@ -556,6 +556,14 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+file checkpoints + /undo | `checkpoint::undo_restores_and_removes_non_ascii_paths`
+file checkpoints + /undo | `checkpoint::a_capture_leaves_the_callers_git_index_untouched`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::parallel_claims_check_out_side_by_side`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_claim_leaves_a_process_that_is_not_the_warmer_alive`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::concurrent_syncs_keep_every_seen_lockfile`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_tree_with_two_lockfiles_syncs_both`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_failed_sync_starts_the_session_with_a_notice`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_worktree_spawn_names_the_edits_its_child_starts_without`
 web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
 web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)
 console settings pane | `drive::a_press_on_a_settings_row_saves_the_control_it_names`

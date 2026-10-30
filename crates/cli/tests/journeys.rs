@@ -467,6 +467,29 @@ fn an_ask_in_a_repository_runs_on_a_lane_and_hands_it_back() -> TestResult {
     Ok(())
 }
 
+/// A lockfile whose sync fails starts the session anyway and says so in one stderr warning.
+#[test]
+fn a_failed_lane_sync_warns_on_stderr_and_the_ask_still_runs() -> TestResult {
+    let journey = Journey::new("lane-sync")?;
+    let project = trunk(&journey)?;
+    std::fs::write(project.join("uv.lock"), "not a lockfile\n")?;
+    git_in(&project, &["add", "uv.lock"])?;
+    git_in(&project, &["commit", "-qm", "lock"])?;
+    let output = journey
+        .command(&["ask", "hello"])
+        .stderr(Stdio::piped())
+        .output()?;
+    let said = String::from_utf8_lossy(&output.stderr).into_owned();
+    succeeded(&output, "ask on an unsynced lane")?;
+    assert!(
+        said.lines()
+            .any(|line| line.starts_with("warning: lane 0: toolchain sync failed")),
+        "{said}"
+    );
+    journey.reclaim();
+    Ok(())
+}
+
 /// An orphaned lane with nothing to keep is what `doctor --fix` reaps; the pool reads idle after.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
