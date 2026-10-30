@@ -2,7 +2,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_tui::colors::Theme;
 use yi_tui::diffview::{self, DiffBudget};
-use yi_types::kernel::RESULT_MIMES;
+use yi_types::kernel::{JSON_MIME, RESULT_MIMES};
 
 /// An edit's patch names its file absolutely, while git and a model's read may name it from
 /// the repository root: one file either way.
@@ -275,7 +275,7 @@ enum Renderer {
 
 const RESULT_RENDERERS: [(&str, Renderer); RESULT_MIMES.len()] = [
     (RESULT_MIMES[0], Renderer::Markdown),
-    (RESULT_MIMES[1], Renderer::Json),
+    (JSON_MIME, Renderer::Json),
     (RESULT_MIMES[2], Renderer::Code("python")),
 ];
 

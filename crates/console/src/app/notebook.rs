@@ -1021,7 +1021,7 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with any kind panicking on an empty value, or drawing a tab or an escape raw.
+    /// Dies with a markdown value keeping its `##`, or a tab or an escape drawn raw.
     #[test]
     fn every_result_kind_survives_an_empty_and_a_control_ridden_value() -> TestResult {
         let theme = Theme::new(ColorTier::TrueColor, true);
@@ -1040,7 +1040,7 @@ mod tests {
                     .any(|span| span.content.contains('…')),
                 "{mime:?} drew a cut row for an empty value"
             );
-            let cell = kind_cell(mime, "a\tb\x1b[2J\rc € {\"k\": ");
+            let cell = kind_cell(mime, "## a\tb\x1b[2J\rc € {\"k\": ");
             let lines = notebook_lines(&[cell], 72, false, &theme, "⌘W");
             for span in lines.iter().flat_map(|line| line.spans.iter()) {
                 assert_eq!(
@@ -1050,6 +1050,16 @@ mod tests {
                     span.content
                 );
             }
+            let drawn: String = lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(
+                drawn.contains("##"),
+                mime != Some("text/markdown"),
+                "{mime:?} was not drawn by its mime: {drawn}"
+            );
         }
         Ok(())
     }

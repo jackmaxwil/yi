@@ -1,13 +1,13 @@
 use serde_json::Value;
 use yi_types::image::{has_magic_number, strict_base64_head};
 use yi_types::kernel::{
-    ExecuteResult, ExecuteStatus, JupyterMessage, KernelAttachment, KernelError, RESULT_MIMES,
+    ExecuteResult, ExecuteStatus, JSON_MIME, JupyterMessage, KernelAttachment, KernelError,
+    RESULT_MIMES,
 };
 
 use crate::{ATTACHMENT_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS};
 
 const PLAIN_MIME: &str = "text/plain";
-const JSON_MIME: &str = "application/json";
 
 #[derive(Debug)]
 pub struct CellState {
@@ -153,24 +153,17 @@ struct Capped {
     text: String,
     limit: usize,
 }
-
 impl std::io::Write for Capped {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let room = self.limit.saturating_sub(self.text.len());
-        if bytes.len() <= room {
-            self.text
-                .push_str(std::str::from_utf8(bytes).unwrap_or_default());
-            return Ok(bytes.len());
+        let written = std::str::from_utf8(bytes).unwrap_or_default();
+        let keep = written.floor_char_boundary(room.min(written.len()));
+        self.text.push_str(written.get(..keep).unwrap_or_default());
+        if keep == bytes.len() {
+            Ok(bytes.len())
+        } else {
+            Err(std::io::Error::other("past the cell's character cap"))
         }
-        let mut keep = room.min(bytes.len());
-        while keep > 0 && bytes.get(keep).is_some_and(|byte| byte & 0xC0 == 0x80) {
-            keep = keep.saturating_sub(1);
-        }
-        if let Some(head) = bytes.get(..keep) {
-            self.text
-                .push_str(std::str::from_utf8(head).unwrap_or_default());
-        }
-        Err(std::io::Error::other("past the cell's character cap"))
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

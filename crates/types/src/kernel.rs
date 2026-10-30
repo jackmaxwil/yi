@@ -76,9 +76,12 @@ pub enum ExecuteStatus {
     Other(String),
 }
 
+/// The display-bundle member a JSON value travels under, whichever shape the kernel picks.
+pub const JSON_MIME: &str = "application/json";
+
 /// The display-bundle members a notebook draws, richest first: the rank the kernel picks a
 /// value's mime by and the renderers the console keys off, so neither list can drift alone.
-pub const RESULT_MIMES: [&str; 3] = ["text/markdown", "application/json", "text/x-python"];
+pub const RESULT_MIMES: [&str; 3] = ["text/markdown", JSON_MIME, "text/x-python"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
