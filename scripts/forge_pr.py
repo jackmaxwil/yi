@@ -819,10 +819,14 @@ def selfcheck():
         globals()["check_problems"] = real_check
         body_file.unlink()
     assert judged[0] == "Closes #1\n\n" + unlisted.strip() + "\n\n" + prefill.strip(), ("pr check judges the body pr open submits", judged[0])
-    # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green,
-    # because nothing here built the verbs; a name the parser wires that no longer exists
-    # now fails this flag instead of the next `just commit`.
-    build_parser()
+    # Incident: a merge resolution dropped the check verb's flags and every gate stayed green;
+    # the parser is built and every wired name resolved here, so neither repeats.
+    flags = {}
+    try:
+        flags = vars(build_parser().parse_args(["pr", "check", "--closes", "1", "--refs", "2"]))
+    except SystemExit:
+        pass
+    assert flags.get("closes") == ["1"] and flags.get("refs") == ["2"], ("pr check takes the flags pr open takes", flags)
     print("ok   forge_pr selfcheck")
 
 
@@ -856,6 +860,8 @@ def build_parser():
     check.add_argument("number", nargs="?")
     check.add_argument("--title")
     check.add_argument("--body")
+    check.add_argument("--closes", action="append", default=[])
+    check.add_argument("--refs", action="append", default=[])
     check.set_defaults(run=cmd_check)
     edit = pr.add_parser("edit")
     edit.add_argument("number", type=int)
