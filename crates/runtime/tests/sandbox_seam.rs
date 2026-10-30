@@ -1008,6 +1008,9 @@ type SharedStore = yi_session::SharedSession;
 /// claims nor refuses the own transcript; an unwalled one reads them as before.
 #[tokio::test]
 async fn a_walled_command_reads_its_own_transcript_and_no_other() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
     let root = Scratch::new("yi-seam-transcript")?;
     let project = root.join("project");
     let (home, [author, grandchild, elsewhere], store) = plant_store(&root, &project)?;

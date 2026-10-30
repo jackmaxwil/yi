@@ -1165,3 +1165,44 @@ fn a_network_refusal_behind_a_zero_exit_is_a_note_and_never_recorded() -> TestRe
     }
     Ok(())
 }
+
+/// What the test binary itself reports; the next test runs it under another sandbox.
+#[test]
+fn availability_reports_to_stdout() {
+    println!("available={}", Sandbox::available());
+}
+
+fn reported_availability(outer: Option<&str>) -> Result<String, Box<dyn Error>> {
+    let exe = std::env::current_exe()?;
+    let args = [
+        "--exact",
+        "sandbox::availability_reports_to_stdout",
+        "--nocapture",
+    ];
+    let mut command = match outer {
+        Some(profile) => {
+            let mut command = yi_tools::command(yi_tools::sandbox::SEATBELT);
+            command.args(["-p", profile]).arg(&exe);
+            command
+        }
+        None => yi_tools::command(&exe),
+    };
+    let out = command.args(args).output()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("available=").map(str::to_owned))
+        .ok_or_else(|| format!("no report: {}", String::from_utf8_lossy(&out.stderr)).into())
+}
+
+/// Incident: a process an outer sandbox contains read as sandbox-capable, so its bash and kernel
+/// died on `sandbox_apply: Operation not permitted`.
+#[test]
+fn a_process_inside_a_sandbox_is_not_sandbox_capable() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let outer = "(version 1)(allow default)(deny file-write* (subpath \"/yi-no-such-root\"))";
+    assert_eq!(reported_availability(None)?, "true");
+    assert_eq!(reported_availability(Some(outer))?, "false");
+    Ok(())
+}
