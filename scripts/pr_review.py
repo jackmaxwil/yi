@@ -258,6 +258,10 @@ def skip_reason(rounds, head, wanted=2, holds=on_head):
     # lens, so its head is read again, and cmd_review posts nothing while the twin still stands.
     if here and twin_round(here[-1]) and here[-1]["verdict"] != "override":
         return None
+    # A round that lost a lens or refuter answers covered part of the head: the loss is retried
+    # where it stands, since `ready_problems` owes the same answer and nobody is at the keyboard.
+    if here and silent(here[-1]) and here[-1]["verdict"] != "override":
+        return None
     if here and here[-1]["verdict"] == "blocked":
         return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
     if here and (len([r for r in rounds if not twin_round(r)]) >= wanted or any(f.get("severity") in REPORTED for f in here[-1].get("findings", []))):
@@ -631,6 +635,11 @@ REFUTERS = 16
 JOB_SPENT = max(0.0, time.time() - float(os.environ.get("REVIEW_JOB_STARTED") or time.time()))
 JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS - JOB_SPENT
 
+# Incident: rounds lost a lens or refuter answer to a provider 429 or an overload and posted the
+# loss, leaving the head on a red check until a person ran `--again`.
+THROTTLE_RETRIES, THROTTLE_DELAY = 2, 20
+THROTTLED = re.compile(r"http (?:429|5\d\d)|overloaded|rate.?limit|too many requests", re.IGNORECASE)
+
 
 class Unanswered(Exception):
     """A model call that did not answer. A round missing a lens is not a clean round."""
@@ -689,7 +698,7 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
         except ValueError:
             return False
 
-    for _ in range(3):
+    for tries in range(THROTTLE_RETRIES + 1):
         out = run([], prompt)
         # Incident: all 9 voided review jobs of 2026-10-01 were a refuter that read the code and
         # answered in prose; asking the same session for the JSON keeps its reading.
@@ -702,6 +711,11 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
             out.returncode, out.stderr = 3, f"answer is not valid JSON: {out.stdout[-200:]!r}"
         if out.returncode not in (1, 3, 124):
             break
+        # A rate limit or an overload is waited out before the next attempt; the loss is recorded
+        # only once the retries are spent. A writer's attempts already share one budget.
+        if (not write and tries < THROTTLE_RETRIES and THROTTLED.search(out.stderr or "")
+                and time.monotonic() + THROTTLE_DELAY <= ends):
+            time.sleep(THROTTLE_DELAY)
     (meter or METER).add_sessions(sessions)
     raise Unanswered(f"yi ask exited {out.returncode}: {out.stderr.strip()[-600:]}")
 
@@ -829,7 +843,8 @@ def discard(tree):
 
 def intake_of(repo, pr):
     """The zero-token checks on a PR as it stands: its body's template and its twins."""
-    others = (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50") or []) + \
+    opened = open_pulls(repo)
+    others = (opened if isinstance(opened, list) else []) + \
              (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=50") or [])
     return intake(pr, raw_diff(repo, pr["number"]), others, lambda n: raw_diff(repo, n), repo, stacked,
                   lambda n: forge_pr.fgj_api("GET", f"repos/{repo}/issues/{n}"))
@@ -1026,37 +1041,77 @@ def promote(repo, pr, rounds):
 
 
 # A round at thinking high took 19m20s on #1101, so a sweep starts no new one once a round would
-# outrun the job's limit (review.yml), reads at most three heads, and the next sweep takes the rest.
-ROUND_SECS, SWEEP_HEADS = 20 * 60, 3
+# outrun the job's limit (review.yml), reads at most SWEEP_HEADS, and the next sweep takes the rest.
+ROUND_SECS, SWEEP_HEADS = 20 * 60, 8
+SWEEP_PAGE, SWEEP_PAGES = 50, 8
 
 
 # A twin round still standing: the job stays red as its round was, and a sweep spends no slot on it.
 STANDS = 3
 
 
+
+def open_pulls(repo):
+    """Every open pull request, page by page: the forge serves SWEEP_PAGE at most, and a sweep that
+    read one page never saw the rest. Incident: 52 of 102 open PRs were outside the sweep's reach."""
+    seen = []
+    for page in range(1, SWEEP_PAGES + 1):
+        batch = forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit={SWEEP_PAGE}&page={page}")
+        if not isinstance(batch, list):
+            return batch if not seen else seen
+        seen += batch
+        if len(batch) < SWEEP_PAGE:
+            break
+    return seen
+
 def cmd_sweep(args):
     """One pass over the open drafts: promote one already clean, review a head no round has read
     (a push whose job died, or a draft opened before the job ran); the autofixer answers a blocked one."""
     repo, allowed = forge_pr.repo(), authors()
-    pulls = forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50")
+    pulls = open_pulls(repo)
     # Incident: an unsigned fgj answered the list with an error object and the loop died indexing it.
     if not isinstance(pulls, list):
         print(f"sweep: the forge did not list the pull requests: {(pulls or {}).get('message')}")
         return 1
     started, read = time.monotonic(), 0
-    for pr in sorted(pulls, key=lambda p: p["number"]):
-        if not pr["title"].startswith(DRAFT) or pr["head"]["repo"]["full_name"] != repo:
-            continue
+    drafts = [pr for pr in sorted(pulls, key=lambda p: p["number"])
+              if pr["title"].startswith(DRAFT) and pr["head"]["repo"]["full_name"] == repo]
+    for pr in drafts:
         rounds = rounds_of(comments(repo, pr["number"]), allowed, pr["number"])
         if promote(repo, pr, rounds):
             continue
         if skip_reason(rounds, pr["head"]["sha"]) is None:
             if read >= SWEEP_HEADS or JOB_ENDS - time.monotonic() < ROUND_SECS:
-                print(f"sweep: {read} head(s) read in {int(time.monotonic() - started)}s; the rest wait for the next sweep")
+                print(f"sweep: read {read} of {len(drafts)} draft head(s) waiting in {int(time.monotonic() - started)}s "
+                      f"(SWEEP_HEADS {SWEEP_HEADS}); the rest wait for the next sweep")
                 break
             if cmd_review(argparse.Namespace(number=pr["number"], dry_run=False, again=False)) != STANDS:
                 read += 1
     return 0
+
+
+def sweep_heads(listing, notes=None):
+    """The PR numbers `cmd_sweep` reads off `listing`, served page by page as the forge serves it."""
+    got, saved = [], (forge_pr.fgj_api, forge_pr.repo, forge_pr.jobs_of, comments, holds_for, cmd_review, authors)
+    notes = notes or {}
+
+    def served(method, url, body=None):
+        if method != "GET":
+            return {"number": 1}
+        limit = int(url.split("limit=")[1].split("&")[0]) if "limit=" in url else SWEEP_PAGE
+        page = int(url.split("page=")[1].split("&")[0]) if "page=" in url else 1
+        return listing[(page - 1) * limit:page * limit]
+
+    try:
+        forge_pr.fgj_api, forge_pr.repo = served, (lambda: "o/r")
+        forge_pr.jobs_of = lambda pr: dict.fromkeys(GATE_LANES, "success")
+        globals().update(comments=lambda repo, n: notes.get(n, []), holds_for=lambda n, base: on_head,
+                         cmd_review=lambda a: got.append(a.number), authors=lambda: {BOT})
+        assert cmd_sweep(None) == 0
+    finally:
+        forge_pr.fgj_api, forge_pr.repo, forge_pr.jobs_of = saved[0], saved[1], saved[2]
+        globals().update(comments=saved[3], holds_for=saved[4], cmd_review=saved[5], authors=saved[6])
+    return got
 
 
 def selfcheck():
@@ -1642,13 +1697,28 @@ def selfcheck():
         forge_pr.fgj_api, forge_pr.jobs_of = saved[0], saved[1]
         globals().update(holds_for=saved[2])
     assert not red and patched == ["repos/o/r/pulls/1"], "a clean draft whose test lane is red stays a draft"
-    assert reviewed == [2, 4, 5], f"heads with no round are read, the fork skipped, three at most: {reviewed}"
+    assert reviewed == [2, 4, 5, 6], f"heads with no round are read, the fork skipped, eight at most: {reviewed}"
+    # A sweep reaches every open pull request, not the first 50 the forge serves, and reads the
+    # oldest head first. Incident: 52 of 102 open pull requests sat outside a one-page sweep.
+    many = lambda top: [{"number": n, "title": (DRAFT if n > top else "") + "t", "head": {"sha": f"{n:07d}", "repo": {"full_name": "o/r"}},
+                        "base": {"ref": "main"}} for n in range(1, 103)]
+    assert sweep_heads(many(100)) == [101, 102], "a draft on the third page is swept"
+    assert sweep_heads(many(0)) == list(range(1, 9)), "eight heads a sweep, oldest first"
+    # A head whose last round lost a lens answer is a sweep target: nobody has to run `--again`.
+    lost_round = {"id": 21, "user": {"login": BOT},
+                  "body": render(12, 7, "bbbbbbb2", "base000", [], 0, None, "clean", 0, ["correctness lens"])}
+    lost_head = [{"number": 7, "title": DRAFT + "t", "head": {"sha": "bbbbbbb2", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}]
+    clean_7 = {"user": {"login": BOT}, "id": 31, "body": render(11, 7, "bbbbbbb2", "base000", [], 0, None, "blocking")}
+    assert sweep_heads(lost_head, notes={7: [clean_7, lost_round]}) == [7], "a lost answer is retried by the sweep"
     flaky = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-ask-"))
     try:
         (flaky / "yi").write_text(f'#!/bin/sh\ncat >/dev/null\nif [ -e {flaky}/tried ]; then echo \'{{"ok": true}}\'; exit 0; fi\n'
                                   f'touch {flaky}/tried\necho "Upstream error (code 503, provider_overloaded)" >&2\nexit 1\n')
         (flaky / "yi").chmod(0o755)
         before, os.environ["YI_BIN"] = os.environ.get("YI_BIN"), str(flaky / "yi")
+        # A real THROTTLE_DELAY would put a minute of sleep in the gate; the count is what is tested.
+        delay = THROTTLE_DELAY
+        globals()["THROTTLE_DELAY"] = 0
         try:
             assert ask("p", {"type": "object"}, flaky) == {"ok": True}, "a host that dropped mid-answer is asked again"
             # A session that answers in prose is asked once for the JSON, on the same session.
@@ -1665,7 +1735,37 @@ def selfcheck():
             (flaky / "calls").unlink()
             ask("fix this", REFUTE_SCHEMA, flaky, write=True)
             assert "--yolo" in (flaky / "calls").read_text(), "the fixer runs with no permission prompt"
+            # A rate limit or an overload is waited out twice before the round records the loss.
+            counter = flaky / "calls-429"
+
+            def scripted(fails):
+                (flaky / "yi").write_text(
+                    '#!/bin/sh\ncat >/dev/null\n'
+                    f'tries=$(cat {counter} 2>/dev/null || echo 0)\n'
+                    f'echo $((tries + 1)) > {counter}\n'
+                    f'if [ "$tries" -lt {fails} ]; then echo "error: HTTP 429: rate limit reached" >&2; exit 1; fi\n'
+                    'echo \'{"ok": true}\'\n')
+                (flaky / "yi").chmod(0o755)
+
+            wait = globals()["THROTTLE_DELAY"] = 0.5
+            scripted(THROTTLE_RETRIES)
+            started = time.monotonic()
+            assert ask("lens", {"type": "object"}, flaky) == {"ok": True}, "two 429s and then an answer is a complete call"
+            assert time.monotonic() - started >= THROTTLE_RETRIES * wait, "each retry waited the delay out"
+            assert counter.read_text().strip() == "3", counter.read_text()
+            counter.unlink()
+            scripted(THROTTLE_RETRIES + 1)
+            started = time.monotonic()
+            try:
+                ask("lens", {"type": "object"}, flaky)
+                raise AssertionError("a third 429 must record the loss")
+            except Unanswered as err:
+                assert "429" in str(err), err
+            assert time.monotonic() - started >= THROTTLE_RETRIES * wait, "a spent retry waited it out too"
+            assert counter.read_text().strip() == "3", "two retries and no more"
+
         finally:
+            globals()["THROTTLE_DELAY"] = delay
             os.environ.pop("YI_BIN") if before is None else os.environ.update(YI_BIN=before)
     finally:
         shutil.rmtree(flaky)
