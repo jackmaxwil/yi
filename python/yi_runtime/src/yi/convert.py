@@ -1,10 +1,13 @@
-"""The document converter the read tool runs: ``python -I -m yi.convert <source> <staging> <pages>``.
+"""The document converter the read tool runs: ``python -I -c <this file> <source> <staging> <pages>``.
 
-The document arrives on stdin, the Markdown is written to ``<staging>``, and the last stdout
-line is one JSON object: ``ok``, ``unsupported``, ``missing``, ``ocr`` with ``page_count``, or
-``error``. ``anydoc`` and ``pdf_inspector`` are imported by ``main`` only, so everything else
-is plain Python the stdlib test lane runs. ``ocr="reject"`` is the only mode ever passed:
-anydoc's hosted OCR uploads the document, and no argument, setting or message leads there.
+The binary carries these bytes and hands them over with ``-c``, so a conversion never depends on
+the ``yi`` package installed in the kernel venv; ``python -m yi.convert`` runs the same program.
+The document arrives on stdin, the Markdown is written to ``<staging>``, and the last stdout line
+is one JSON object: ``ok``, ``unsupported``, ``missing``, ``ocr`` with ``page_count``, or
+``error``. ``anydoc`` and ``pdf_inspector`` are imported by the function that uses them, so
+importing this module needs neither and the stdlib test lane runs everything else.
+``ocr="reject"`` is the only mode ever passed: anydoc's hosted OCR uploads the document, and no
+argument, setting or message leads there.
 """
 from __future__ import annotations
 
@@ -78,7 +81,9 @@ def tidy_sheets(markdown, names, pandas_reads):
     return result
 
 
-def pptx_slides(data, anydoc):
+def pptx_slides(data):
+    import anydoc
+
     archive = zipfile.ZipFile(io.BytesIO(data))
     presentation = archive.read("ppt/presentation.xml").decode("utf-8")
     listing = re.search(r"<p:sldIdLst>(.*?)</p:sldIdLst>", presentation, re.S)
@@ -99,9 +104,11 @@ def pptx_slides(data, anydoc):
     return "\n\n".join(parts) + "\n"
 
 
-def page_regions(data, pdf_inspector, indices, columned):
+def page_regions(data, indices, columned):
     """A table page keeps its full width, so a row reads left to right; a columned page is read
     left column then right, split at the gutter the fewest text runs cross."""
+    import pdf_inspector
+
     spans = {}
     wanted = [index + 1 for index in indices if index + 1 in columned]
     for item in pdf_inspector.extract_text_with_positions_bytes(data, pages=wanted) if wanted else []:
@@ -159,7 +166,9 @@ def with_headings(markdown, text):
     return "\n".join(f"{levels[line.strip()]} {line.strip()}" if line.strip() in levels else line for line in text.splitlines())
 
 
-def pdf_markdown(data, pages, pdf_inspector):
+def pdf_markdown(data, pages):
+    import pdf_inspector
+
     count = pdf_inspector.detect_pdf_bytes(data).page_count
     wanted = [page for page in pages if 1 <= page <= count] if pages else list(range(1, count + 1))
     if pages and not wanted:
@@ -172,7 +181,7 @@ def pdf_markdown(data, pages, pdf_inspector):
         return max((len(cells_of(line)) for line in markdown.splitlines() if line.startswith("|")), default=0)
 
     split = {page.page + 1 for page in result.pages if page.page + 1 in columns and (page.page + 1 not in tables or widest(page.markdown) <= 2)}
-    plain = page_regions(data, pdf_inspector, flat, split) if flat else {}
+    plain = page_regions(data, flat, split) if flat else {}
     chunks, notes, blank = {}, {}, 0
     for page in result.pages:
         number = page.page + 1
@@ -202,21 +211,25 @@ def pdf_markdown(data, pages, pdf_inspector):
     return "\n\n".join(parts) + "\n"
 
 
-def convert(source, pages, data, anydoc, pdf_inspector):
-    kind = anydoc.format_from_bytes(data) or anydoc.format_from_path(source)
-    if kind in (None, "csv"):
-        raise Reply(unsupported=True)
+def convert(source, pages, data):
     try:
+        import anydoc
+
+        kind = anydoc.format_from_bytes(data) or anydoc.format_from_path(source)
+        if kind in (None, "csv"):
+            raise Reply(unsupported=True)
         if kind == "pdf":
-            markdown = pdf_markdown(data, pages, pdf_inspector)
+            markdown = pdf_markdown(data, pages)
         elif kind == "pptx":
-            markdown = pptx_slides(data, anydoc) or anydoc.to_markdown_bytes(data, kind, ocr="reject")
+            markdown = pptx_slides(data) or anydoc.to_markdown_bytes(data, kind, ocr="reject")
         else:
             markdown = anydoc.to_markdown_bytes(data, kind, ocr="reject")
             if kind in ("xlsx", "ods"):
                 markdown = tidy_sheets(markdown, sheet_names(data), zipped_workbook(data, source))
     except Reply:
         raise
+    except ImportError as error:
+        raise Reply(missing=str(error))
     except anydoc.UnsupportedError:
         raise Reply(unsupported=True)
     except anydoc.EncryptedError:
@@ -233,12 +246,7 @@ def convert(source, pages, data, anydoc, pdf_inspector):
 def main(argv):
     source, out, pages = argv[0], argv[1], json.loads(argv[2])
     try:
-        try:
-            import anydoc
-            import pdf_inspector
-        except ImportError as error:
-            raise Reply(missing=str(error))
-        kind, markdown = convert(source, pages, sys.stdin.buffer.read(), anydoc, pdf_inspector)
+        kind, markdown = convert(source, pages, sys.stdin.buffer.read())
         with open(out, "w", encoding="utf-8") as handle:
             handle.write(markdown)
         raise Reply(ok=True, kind=kind)

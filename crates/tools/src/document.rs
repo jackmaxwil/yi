@@ -20,6 +20,9 @@ const HEAD: usize = 8 * 1024;
 const CACHE_CAP: u64 = 256 * 1024 * 1024;
 const CACHE_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 const STAGING_AGE: Duration = Duration::from_secs(3600);
+/// Invariant: the converter rides in the binary, so a venv whose `yi` package predates this
+/// binary still converts; resolving it as `-m yi.convert` there would fail on a missing module.
+const CONVERT: &str = include_str!("../../../python/yi_runtime/src/yi/convert.py");
 
 /// The venv python and the formats its wheel reported when it was built.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -502,7 +505,7 @@ fn command_for(
         plain_command(converter)
     };
     command.current_dir(dir);
-    command.args(["-I", "-m", "yi.convert"]);
+    command.args(["-I", "-c", CONVERT]);
     command.arg(source.as_os_str()).arg(staging.as_os_str());
     command.arg(serde_json::Value::from(pages).to_string());
     command
@@ -583,12 +586,13 @@ fn run(
     Err(Converted::Refused(reason))
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
     /// Review of #925 (F2): the converter parses untrusted files, so its profile keeps no network,
     /// not even the loopback every other contained spawn has.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_converter_runs_with_no_network() {
         if !super::Sandbox::available() {
@@ -609,5 +613,55 @@ mod tests {
             policy.is_some_and(|policy| !policy.contains("network")),
             "{args:?}"
         );
+    }
+
+    #[test]
+    fn the_converter_program_is_the_one_the_binary_carries() {
+        let converter = super::Converter {
+            python: PathBuf::from("/usr/bin/python3"),
+            formats: Vec::new(),
+        };
+        let documents = super::Documents::fixed(PathBuf::from("/home/u"), converter.clone());
+        let dir = Path::new("/work/cache");
+        let command = super::command_for(&documents, &converter, dir, dir, dir, &[]);
+        let args: Vec<String> = (command.get_args())
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|arg| arg.as_str() == super::CONVERT),
+            "{args:?}"
+        );
+        assert!(!args.iter().any(|arg| arg == "yi.convert"), "{args:?}");
+    }
+
+    /// A venv still carrying an older `yi` package is the state this program must survive, so it
+    /// is run by an interpreter that has neither the package nor its extras.
+    #[test]
+    fn the_carried_converter_program_answers_without_the_kernel_package()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let output = match crate::process::command("python3")
+            .args([
+                "-I",
+                "-c",
+                super::CONVERT,
+                "missing.docx",
+                "/dev/null",
+                "[]",
+            ])
+            .stdin(std::process::Stdio::null())
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let reply: serde_json::Value =
+            serde_json::from_str(stdout.lines().last().unwrap_or_default())?;
+        assert!(
+            reply.get("missing").is_some() || reply.get("unsupported").is_some(),
+            "{stdout}"
+        );
+        Ok(())
     }
 }
