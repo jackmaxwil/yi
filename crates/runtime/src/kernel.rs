@@ -377,6 +377,9 @@ impl KernelService {
 
     fn kernel_env(&self, state: Option<&std::path::Path>) -> Vec<(String, String)> {
         let mut env = Vec::new();
+        if let Ok(mut slot) = self.kernel_path.lock() {
+            *slot = self.plugin_dirs();
+        }
         if let Ok(bin) = std::env::current_exe() {
             env.push(("YI_BIN".to_owned(), bin.to_string_lossy().into_owned()));
         }
@@ -402,7 +405,7 @@ impl KernelService {
                 .into_owned(),
         ));
         env.push(("RLM_GLOBAL_HARNESS_HOST".to_owned(), "1".to_owned()));
-        if let Some(path) = yi_tools::plugin::path_with(self.plugin_dirs()) {
+        if let Some(path) = yi_tools::plugin::search_path(&self.options.home) {
             env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
         }
         env
@@ -950,6 +953,17 @@ mod tests {
         let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
         std::fs::create_dir_all(ripwire.dir(&home))?;
         std::fs::write(ripwire.dir(&home).join("ripwire"), "#!/bin/sh\n")?;
+        let service = KernelService::new(options(&home));
+        service.kernel_env(None);
+        assert_eq!(
+            service
+                .kernel_path
+                .lock()
+                .map_err(|error| error.to_string())?
+                .as_slice(),
+            &[ripwire.dir(&home)],
+            "the boot PATH is already applied"
+        );
         let path = path_of(&home).ok_or("no PATH for the kernel")?;
         let first = std::env::split_paths(&path).next();
         assert_eq!(first, Some(ripwire.dir(&home)));

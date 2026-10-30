@@ -194,11 +194,7 @@ pub fn installed_dirs(home: &Path) -> Vec<PathBuf> {
 /// PATH with every installed program plugin's directory first, so a spawn and the model's bash
 /// both find it by name; None when none is installed, which leaves a child's PATH untouched.
 pub fn search_path(home: &Path) -> Option<OsString> {
-    path_with(installed_dirs(home))
-}
-
-/// `dirs` over the process's own PATH; None when there are none, which leaves it untouched.
-pub fn path_with(dirs: Vec<PathBuf>) -> Option<OsString> {
+    let dirs = installed_dirs(home);
     if dirs.is_empty() {
         return None;
     }
