@@ -1,6 +1,6 @@
 //! The Files button's tree: the workspace's files, folded by folder.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -11,37 +11,38 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use yi_tui::colors::Theme;
 
 use crate::app::MouseKind;
-use crate::client::Outbound;
 use crate::model::{Mode, Zone};
 
-/// Invariant: the notice names this cap and the total, so a tree cut here says what cut it.
-pub const CAP: usize = 20_000;
+/// Invariant: the notice names this cap, so a tree cut here says what cut it.
+const CAP: usize = 20_000;
 
-pub struct Node {
-    pub name: String,
-    pub path: String,
-    pub dir: bool,
-    pub depth: usize,
-    pub open: bool,
+struct Node {
+    name: String,
+    path: String,
+    dir: bool,
+    depth: usize,
+    open: bool,
 }
 
 pub struct Files {
-    pub root: String,
-    pub nodes: Vec<Node>,
+    root: String,
+    nodes: Vec<Node>,
     /// An index into `nodes` that [`walk`] shows.
-    pub cursor: usize,
-    pub scroll: usize,
-    pub notice: Option<String>,
+    cursor: usize,
+    scroll: usize,
+    notice: Option<String>,
 }
 
 /// A hidden path the tree never shows: git's own object store would drown everything else.
 const NEVER: &str = ".git";
 const MAX_DEPTH: usize = 32;
+/// Rows one wheel notch moves, matching a pane's scroll step.
+const WHEEL: usize = 3;
 
-/// One `.gitignore` line, kept with the folder it was read from.
+/// One `.gitignore` line, its globs split once, kept with the folder it was read from.
 struct Rule {
     base: String,
-    pattern: String,
+    segments: Vec<Vec<char>>,
     negate: bool,
     dir_only: bool,
     anchored: bool,
@@ -64,7 +65,10 @@ impl Rule {
         let pattern = line.strip_prefix('/').unwrap_or(line);
         (!pattern.is_empty()).then(|| Self {
             base: base.to_owned(),
-            pattern: pattern.to_owned(),
+            segments: pattern
+                .split('/')
+                .map(|part| part.chars().collect())
+                .collect(),
             negate,
             dir_only,
             anchored: line.contains('/'),
@@ -72,7 +76,7 @@ impl Rule {
     }
 
     /// A rule only judges paths under the folder that declared it.
-    fn matches(&self, path: &str, is_dir: bool) -> bool {
+    fn matches(&self, path: &str, is_dir: bool, globbed: &mut Vec<char>) -> bool {
         if self.dir_only && !is_dir {
             return false;
         }
@@ -88,18 +92,22 @@ impl Rule {
             rest
         };
         if self.anchored {
-            let pattern: Vec<&str> = self.pattern.split('/').collect();
             let parts: Vec<&str> = relative.split('/').collect();
-            components(&pattern, &parts)
+            components(&self.segments, &parts, globbed)
         } else {
-            relative.split('/').any(|name| glob(&self.pattern, name))
+            let Some(segment) = self.segments.first() else {
+                return false;
+            };
+            relative.split('/').any(|name| {
+                globbed.clear();
+                globbed.extend(name.chars());
+                glob(segment, globbed)
+            })
         }
     }
 }
 
-fn glob(pattern: &str, name: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().collect();
-    let name: Vec<char> = name.chars().collect();
+fn glob(pattern: &[char], name: &[char]) -> bool {
     let (mut at, mut from) = (0usize, 0usize);
     let mut star: Option<usize> = None;
     let mut mark = 0usize;
@@ -135,25 +143,28 @@ fn glob(pattern: &str, name: &str) -> bool {
 }
 
 /// `**` stands for any run of folders, the other segments for one name each.
-fn components(pattern: &[&str], path: &[&str]) -> bool {
+fn components(pattern: &[Vec<char>], path: &[&str], globbed: &mut Vec<char>) -> bool {
     let Some((head, rest)) = pattern.split_first() else {
         return path.is_empty();
     };
-    if *head == "**" {
+    if head.as_slice() == ['*', '*'] {
         return (0..=path.len()).any(|skip| match path.get(skip..) {
-            Some(tail) => components(rest, tail),
+            Some(tail) => components(rest, tail, globbed),
             None => false,
         });
     }
     let Some((name, tail)) = path.split_first() else {
         return false;
     };
-    glob(head, name) && components(rest, tail)
+    globbed.clear();
+    globbed.extend(name.chars());
+    glob(head, globbed) && components(rest, tail, globbed)
 }
 
 fn ignored(rules: &[Rule], path: &str, is_dir: bool) -> bool {
+    let mut globbed: Vec<char> = Vec::new();
     rules.iter().fold(false, |verdict, rule| {
-        if rule.matches(path, is_dir) {
+        if rule.matches(path, is_dir, &mut globbed) {
             !rule.negate
         } else {
             verdict
@@ -163,13 +174,15 @@ fn ignored(rules: &[Rule], path: &str, is_dir: bool) -> bool {
 
 struct Walk {
     kept: Vec<String>,
-    seen: usize,
+    /// Canonical folders already entered, so a link back up a tree cannot walk forever.
+    dirs: Vec<PathBuf>,
+    stopped: bool,
     cap: usize,
 }
 
 /// Paths in the order a folded tree draws them: each folder's entries sorted, its subtree after.
 fn descend(root: &Path, rel: &str, depth: usize, rules: &mut Vec<Rule>, walk: &mut Walk) {
-    if depth > MAX_DEPTH {
+    if depth > MAX_DEPTH || walk.kept.len() >= walk.cap {
         return;
     }
     let Ok(entries) = std::fs::read_dir(root.join(rel)) else {
@@ -177,9 +190,12 @@ fn descend(root: &Path, rel: &str, depth: usize, rules: &mut Vec<Rule>, walk: &m
     };
     let mut names: Vec<(String, bool)> = entries
         .filter_map(|entry| entry.ok())
-        .map(|entry| {
-            let dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
-            (entry.file_name().to_string_lossy().into_owned(), dir)
+        .filter_map(|entry| {
+            let meta = std::fs::metadata(entry.path()).ok()?;
+            Some((
+                entry.file_name().to_string_lossy().into_owned(),
+                meta.is_dir(),
+            ))
         })
         .collect();
     names.sort();
@@ -188,6 +204,10 @@ fn descend(root: &Path, rel: &str, depth: usize, rules: &mut Vec<Rule>, walk: &m
         rules.extend(text.lines().filter_map(|line| Rule::parse(rel, line)));
     }
     for (name, dir) in names {
+        if walk.kept.len() >= walk.cap {
+            walk.stopped = true;
+            break;
+        }
         let child = if rel.is_empty() {
             name.clone()
         } else {
@@ -196,14 +216,18 @@ fn descend(root: &Path, rel: &str, depth: usize, rules: &mut Vec<Rule>, walk: &m
         if name == NEVER || ignored(rules, &child, dir) {
             continue;
         }
-        if dir {
-            descend(root, &child, depth.saturating_add(1), rules, walk);
-        } else {
-            walk.seen = walk.seen.saturating_add(1);
-            if walk.kept.len() < walk.cap {
-                walk.kept.push(child);
-            }
+        if !dir {
+            walk.kept.push(child);
+            continue;
         }
+        let Ok(canonical) = std::fs::canonicalize(root.join(&child)) else {
+            continue;
+        };
+        if walk.dirs.contains(&canonical) {
+            continue;
+        }
+        walk.dirs.push(canonical);
+        descend(root, &child, depth.saturating_add(1), rules, walk);
     }
     rules.truncate(mark);
 }
@@ -245,27 +269,30 @@ fn walk(nodes: &[Node]) -> impl Iterator<Item = (usize, &Node)> {
 }
 
 impl Files {
-    pub fn open(root: &str) -> Self {
+    fn open(root: &str) -> Self {
         Self::opened(root, CAP)
     }
 
     fn opened(root: &str, cap: usize) -> Self {
         let base = Path::new(root);
-        let mut walk = Walk {
+        let mut walked = Walk {
             kept: Vec::new(),
-            seen: 0,
+            dirs: Vec::new(),
+            stopped: false,
             cap,
         };
         let reachable = std::fs::read_dir(base);
         let notice = match reachable {
             Ok(_) => {
-                descend(base, "", 0, &mut Vec::new(), &mut walk);
-                (walk.seen > cap).then(|| {
+                if let Ok(canonical) = std::fs::canonicalize(base) {
+                    walked.dirs.push(canonical);
+                }
+                descend(base, "", 0, &mut Vec::new(), &mut walked);
+                walked.stopped.then(|| {
                     format!(
-                        "[{} of {} files kept · cap {cap} · `git ls-files` in a terminal lists \
-                         the rest]",
-                        walk.kept.len(),
-                        walk.seen
+                        "[the first {} files kept in name order · cap {cap} · the walk stopped \
+                         there · `git ls-files` in a terminal lists the rest]",
+                        walked.kept.len()
                     )
                 })
             }
@@ -273,18 +300,18 @@ impl Files {
         };
         Self {
             root: root.to_owned(),
-            nodes: nodes_of(root, &walk.kept),
+            nodes: nodes_of(root, &walked.kept),
             cursor: 0,
             scroll: 0,
             notice,
         }
     }
 
-    pub fn current(&self) -> Option<&Node> {
+    fn current(&self) -> Option<&Node> {
         self.nodes.get(self.cursor)
     }
 
-    pub fn step(&mut self, down: bool) {
+    fn step(&mut self, down: bool) {
         let mut before: Option<usize> = None;
         let mut after: Option<usize> = None;
         for (index, _) in walk(&self.nodes) {
@@ -300,7 +327,24 @@ impl Files {
         }
     }
 
-    pub fn to_edge(&mut self, end: bool) {
+    /// A whole page in one pass over the drawn rows, so a held key is not a page of walks.
+    fn page(&mut self, rows: usize, down: bool) {
+        let shown: Vec<usize> = walk(&self.nodes).map(|(index, _)| index).collect();
+        let Some(at) = shown.iter().position(|index| *index == self.cursor) else {
+            return;
+        };
+        let last = shown.len().saturating_sub(1);
+        let to = if down {
+            at.saturating_add(rows).min(last)
+        } else {
+            at.saturating_sub(rows)
+        };
+        if let Some(index) = shown.get(to) {
+            self.cursor = *index;
+        }
+    }
+
+    fn edge(&mut self, end: bool) {
         let found = if end {
             walk(&self.nodes).map(|(index, _)| index).last()
         } else {
@@ -312,7 +356,7 @@ impl Files {
     }
 
     /// True when the row is a folder and folded or unfolded; a file is the caller's to open.
-    pub fn toggle(&mut self) -> bool {
+    fn toggle(&mut self) -> bool {
         let Some(node) = self.nodes.get_mut(self.cursor) else {
             return false;
         };
@@ -323,7 +367,7 @@ impl Files {
         true
     }
 
-    pub fn expand(&mut self) {
+    fn expand(&mut self) {
         if let Some(node) = self.nodes.get_mut(self.cursor)
             && node.dir
         {
@@ -332,7 +376,7 @@ impl Files {
     }
 
     /// A folder closes; a closed folder and a file both walk out to their parent row.
-    pub fn collapse(&mut self) {
+    fn collapse(&mut self) {
         let Some(node) = self.nodes.get(self.cursor) else {
             return;
         };
@@ -354,13 +398,17 @@ impl Files {
     }
 
     /// The drawn row of the cursor, counting from the tree's first visible row.
-    pub fn row_of_cursor(&self) -> usize {
+    fn row_of_cursor(&self) -> usize {
         walk(&self.nodes)
             .take_while(|(index, _)| *index != self.cursor)
             .count()
     }
 
-    pub fn scrolled(&mut self, rows: usize) {
+    fn visible_len(&self) -> usize {
+        walk(&self.nodes).count()
+    }
+
+    fn scrolled(&mut self, rows: usize) {
         let rows = rows.max(1);
         let row = self.row_of_cursor();
         if row < self.scroll {
@@ -368,10 +416,21 @@ impl Files {
         } else if row >= self.scroll.saturating_add(rows) {
             self.scroll = row.saturating_add(1).saturating_sub(rows);
         }
+        self.scroll = self.scroll.min(self.visible_len().saturating_sub(rows));
+    }
+
+    /// A wheel notch moves the window, leaving the cursor where the user left it.
+    fn wheel(&mut self, down: bool, rows: usize) {
+        let most = self.visible_len().saturating_sub(rows.max(1));
+        self.scroll = if down {
+            self.scroll.saturating_add(WHEEL).min(most)
+        } else {
+            self.scroll.saturating_sub(WHEEL)
+        };
     }
 
     /// The node drawn at `row` of the tree's own rows, below the popup's border.
-    pub fn node_at(&self, row: usize, rows: usize) -> Option<usize> {
+    fn node_at(&self, row: usize, rows: usize) -> Option<usize> {
         if row >= rows {
             return None;
         }
@@ -379,25 +438,25 @@ impl Files {
             .map(|(index, _)| index)
             .nth(self.scroll.saturating_add(row))
     }
-}
 
-pub fn popup(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(8).clamp(40, 64).min(area.width);
-    let height = area.height.saturating_sub(4).clamp(5, 30).min(area.height);
-    Rect {
-        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
-        y: area.y.saturating_add(1),
-        width,
-        height,
+    fn pointed(&self, popup: Rect, x: u16, y: u16, height: u16) -> Option<usize> {
+        let rows = tree_rows(self, height);
+        self.node_at(row_at(popup, x, y, rows)?, rows)
     }
 }
 
+fn popup(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(8).clamp(40, 64).min(area.width);
+    let height = area.height.saturating_sub(4).clamp(5, 30).min(area.height);
+    crate::palette::popup_in(area, width, height)
+}
+
 /// The tree's own rows above the notice row, for a popup `height` cells tall.
-pub fn tree_rows(files: &Files, height: u16) -> usize {
+fn tree_rows(files: &Files, height: u16) -> usize {
     usize::from(height.saturating_sub(2)).saturating_sub(usize::from(files.notice.is_some()))
 }
 
-pub fn render(files: &Files, frame: &mut Frame<'_>, area: Rect, theme: &Theme) -> Rect {
+pub(crate) fn render(files: &Files, frame: &mut Frame<'_>, area: Rect, theme: &Theme) -> Rect {
     let popup = popup(area);
     frame.render_widget(Clear, popup);
     let block = Block::bordered()
@@ -454,7 +513,7 @@ pub fn render(files: &Files, frame: &mut Frame<'_>, area: Rect, theme: &Theme) -
 }
 
 /// Invariant: a drawn row is the node under it, so a click and the frame agree.
-pub fn row_at(popup: Rect, x: u16, y: u16, rows: usize) -> Option<usize> {
+fn row_at(popup: Rect, x: u16, y: u16, rows: usize) -> Option<usize> {
     let inside = popup.contains(Position::new(x, y));
     let row = y.checked_sub(popup.y.saturating_add(1)).map(usize::from)?;
     (inside && row < rows).then_some(row)
@@ -462,32 +521,16 @@ pub fn row_at(popup: Rect, x: u16, y: u16, rows: usize) -> Option<usize> {
 
 impl crate::app::App {
     pub(crate) fn open_files(&mut self) {
-        let root = self.state.root.clone();
+        let root = self.session_dir();
         self.state.mode = Mode::Files(Files::open(&root));
         self.dirty = true;
     }
 
-    /// The two popups that take typed keys; the tree's rows are not a query.
-    pub(crate) fn navigator_key(&mut self, outbound: &Outbound, key: KeyEvent) {
-        if matches!(self.state.mode, Mode::Files(_)) {
-            return self.files_key(key);
-        }
-        self.handle_navigator_key(outbound, key);
-    }
-
-    /// The tree's own rows in the last drawn popup, or what a fresh one would draw.
-    fn files_rows(&self) -> usize {
-        let height = self
-            .hits
+    fn overlay_height(&self) -> u16 {
+        self.hits
             .as_ref()
             .and_then(|hits| hits.overlays.first())
-            .map_or(20, |rect| rect.height);
-        match &self.state.mode {
-            Mode::Files(files) => tree_rows(files, height),
-            Mode::Normal | Mode::Prefix | Mode::Navigator { .. } | Mode::Menu(_) => {
-                usize::from(height)
-            }
-        }
+            .map_or(20, |rect| rect.height)
     }
 
     fn close_files(&mut self) {
@@ -497,48 +540,47 @@ impl crate::app::App {
 
     /// A folder row folds; a file hands its path to the editor and closes the tree.
     fn files_activate(&mut self) {
-        let rows = self.files_rows();
+        let height = self.overlay_height();
         let mut opening = None;
-        let mut folded = false;
         if let Mode::Files(files) = &mut self.state.mode {
             if files.toggle() {
+                let rows = tree_rows(files, height);
                 files.scrolled(rows);
-                folded = true;
-            } else {
-                opening = files.current().map(|node| node.path.clone());
+                self.dirty = true;
+                return;
             }
+            opening = files
+                .current()
+                .map(|node| (node.path.clone(), files.root.clone()));
         }
-        if folded {
-            self.dirty = true;
+        let Some((path, workdir)) = opening else {
             return;
-        }
-        let Some(path) = opening else { return };
-        let workdir = self.state.root.clone();
+        };
         self.state.mode = Mode::Normal;
         self.state.zone = Zone::Panes;
         self.open_editor(&path, workdir);
     }
 
     pub(crate) fn files_key(&mut self, key: KeyEvent) {
-        let rows = self.files_rows();
+        let height = self.overlay_height();
         let Mode::Files(files) = &mut self.state.mode else {
             return;
         };
+        let rows = tree_rows(files, height);
         match key.code {
             KeyCode::Esc => return self.close_files(),
             KeyCode::Up => files.step(false),
             KeyCode::Down => files.step(true),
             KeyCode::Left => files.collapse(),
             KeyCode::Right => files.expand(),
-            KeyCode::PageUp => (0..rows).for_each(|_| files.step(false)),
-            KeyCode::PageDown => (0..rows).for_each(|_| files.step(true)),
-            KeyCode::Home => files.to_edge(false),
-            KeyCode::End => files.to_edge(true),
+            KeyCode::PageUp => files.page(rows, false),
+            KeyCode::PageDown => files.page(rows, true),
+            KeyCode::Home => files.edge(false),
+            KeyCode::End => files.edge(true),
             KeyCode::Char('r') => {
                 let root = files.root.clone();
                 *files = Files::open(&root);
             }
-            KeyCode::Enter | KeyCode::Char(' ') => return self.files_activate(),
             _ => {}
         }
         files.scrolled(rows);
@@ -558,20 +600,33 @@ impl crate::app::App {
             }
             return;
         }
-        let rows = self.files_rows();
-        let Some(row) = row_at(popup, x, y, rows) else {
-            return;
+        let height = self.overlay_height();
+        let clicked = match &self.state.mode {
+            Mode::Files(files) if kind == MouseKind::Down => files.pointed(popup, x, y, height),
+            Mode::Normal
+            | Mode::Prefix
+            | Mode::Navigator { .. }
+            | Mode::Files(_)
+            | Mode::Menu(_) => None,
         };
-        let mut pointed = false;
-        if let Mode::Files(files) = &mut self.state.mode
-            && let Some(index) = files.node_at(row, rows)
-        {
-            files.cursor = index;
-            pointed = true;
-        }
-        self.dirty |= pointed;
-        if pointed && matches!(kind, MouseKind::Down) {
-            self.files_activate();
+        match kind {
+            MouseKind::ScrollUp | MouseKind::ScrollDown => {
+                let down = kind == MouseKind::ScrollDown;
+                if let Mode::Files(files) = &mut self.state.mode {
+                    let rows = tree_rows(files, height);
+                    files.wheel(down, rows);
+                }
+                self.dirty = true;
+            }
+            MouseKind::Down => {
+                let Some(index) = clicked else { return };
+                if let Mode::Files(files) = &mut self.state.mode {
+                    files.cursor = index;
+                }
+                self.dirty = true;
+                self.files_activate();
+            }
+            MouseKind::Moved | MouseKind::Up | MouseKind::Drag | MouseKind::RightDown => {}
         }
     }
 }
@@ -585,6 +640,16 @@ mod tests {
         nodes_of("/repo", &owned)
     }
 
+    fn tree(paths: &[&str]) -> Files {
+        Files {
+            root: "/repo".to_owned(),
+            nodes: nodes(paths),
+            cursor: 0,
+            scroll: 0,
+            notice: None,
+        }
+    }
+
     fn rule(line: &str) -> Option<Rule> {
         Rule::parse("", line)
     }
@@ -592,7 +657,7 @@ mod tests {
     #[test]
     fn a_gitignore_line_judges_the_paths_a_repository_ignores() {
         let hide = |line: &str, path: &str, dir: bool| -> bool {
-            rule(line).is_some_and(|rule| rule.matches(path, dir))
+            rule(line).is_some_and(|rule| rule.matches(path, dir, &mut Vec::new()))
         };
         assert!(
             hide("*.log", "debug.log", false),
@@ -654,13 +719,7 @@ mod tests {
 
     #[test]
     fn a_folded_folder_hides_every_row_below_it() {
-        let mut files = Files {
-            root: "/repo".to_owned(),
-            nodes: nodes(&["src/lib.rs", "src/tool.rs", "top.rs"]),
-            cursor: 0,
-            scroll: 0,
-            notice: None,
-        };
+        let mut files = tree(&["src/lib.rs", "src/tool.rs", "top.rs"]);
         let shown = |files: &Files| -> Vec<String> {
             walk(&files.nodes)
                 .map(|(_, node)| node.name.clone())
@@ -677,13 +736,7 @@ mod tests {
 
     #[test]
     fn the_cursor_steps_over_rows_folded_away() {
-        let mut files = Files {
-            root: "/repo".to_owned(),
-            nodes: nodes(&["src/lib.rs", "top.rs"]),
-            cursor: 0,
-            scroll: 0,
-            notice: None,
-        };
+        let mut files = tree(&["src/lib.rs", "top.rs"]);
         assert!(files.toggle(), "the folder row folded");
         files.step(true);
         assert_eq!(
@@ -697,13 +750,8 @@ mod tests {
 
     #[test]
     fn a_file_row_walks_out_to_the_folder_that_holds_it() {
-        let mut files = Files {
-            root: "/repo".to_owned(),
-            nodes: nodes(&["src/deep/lib.rs"]),
-            cursor: 1,
-            scroll: 0,
-            notice: None,
-        };
+        let mut files = tree(&["src/deep/lib.rs"]);
+        files.cursor = 1;
         files.expand();
         files.cursor = 2;
         files.collapse();
@@ -727,7 +775,54 @@ mod tests {
     }
 
     #[test]
-    fn a_walk_past_the_cap_keeps_the_cap_and_names_the_total() -> std::io::Result<()> {
+    fn a_page_moves_the_cursor_a_window_at_a_time_and_stops_at_the_edges() {
+        let names: Vec<String> = (0..40).map(|index| format!("f{index:02}.rs")).collect();
+        let mut files = tree(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        files.page(10, true);
+        assert_eq!(
+            files.current().map(|node| node.name.as_str()),
+            Some("f10.rs"),
+            "one page down is one window of rows"
+        );
+        files.page(10, true);
+        files.page(10, true);
+        files.page(10, true);
+        assert_eq!(
+            files.current().map(|node| node.name.as_str()),
+            Some("f39.rs"),
+            "the last page lands on the last row, not past it"
+        );
+        files.page(10, false);
+        assert_eq!(
+            files.current().map(|node| node.name.as_str()),
+            Some("f29.rs")
+        );
+    }
+
+    #[test]
+    fn a_wheel_notch_moves_the_window_and_leaves_the_cursor() {
+        let names: Vec<String> = (0..40).map(|index| format!("f{index:02}.rs")).collect();
+        let mut files = tree(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        files.wheel(true, 10);
+        assert_eq!(files.scroll, WHEEL, "a notch moves the window");
+        assert_eq!(
+            files.current().map(|node| node.name.as_str()),
+            Some("f00.rs"),
+            "the wheel moved the cursor"
+        );
+        for _ in 0..20 {
+            files.wheel(true, 10);
+        }
+        assert_eq!(
+            files.scroll, 30,
+            "the window stops at the last full page of rows"
+        );
+        files.wheel(false, 10);
+        assert_eq!(files.scroll, 30 - WHEEL);
+    }
+
+    #[test]
+    fn a_walk_past_the_cap_stops_there_and_says_what_it_kept() -> std::io::Result<()> {
         let root = std::env::temp_dir().join(format!("yi-console-cap-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src"))?;
         for name in ["src/a.rs", "src/b.rs", "top.rs"] {
@@ -735,7 +830,10 @@ mod tests {
         }
         let files = Files::opened(&root.display().to_string(), 2);
         let notice = files.notice.clone().unwrap_or_default();
-        assert!(notice.contains("2 of 3 files kept"), "{notice}");
+        assert!(
+            notice.contains("the first 2 files kept in name order"),
+            "{notice}"
+        );
         assert!(
             notice.contains("cap 2"),
             "the notice names the cap: {notice}"
@@ -746,6 +844,29 @@ mod tests {
             3,
             "two files and the folder that holds them"
         );
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_folder_is_a_folder_the_tree_can_unfold() -> std::io::Result<()> {
+        let root = std::env::temp_dir().join(format!("yi-console-link-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("real"))?;
+        std::fs::write(root.join("real/leaf.rs"), "")?;
+        std::os::unix::fs::symlink(root.join("real"), root.join("link"))?;
+        let files = Files::opened(&root.display().to_string(), 10);
+        let link = files
+            .nodes
+            .iter()
+            .find(|node| node.name == "link")
+            .ok_or_else(|| std::io::Error::other("no link row"))?;
+        assert!(link.dir, "a link to a folder drew as a file row");
+        let leaf = files
+            .nodes
+            .iter()
+            .any(|node| node.path.ends_with("link/leaf.rs"));
+        assert!(leaf, "the linked folder's subtree is missing the tree");
         std::fs::remove_dir_all(&root)?;
         Ok(())
     }

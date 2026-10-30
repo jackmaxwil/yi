@@ -1034,11 +1034,11 @@ impl App {
         if key.modifiers.contains(KeyModifiers::SUPER) {
             self.cmd_hints = true;
         }
-        if matches!(self.state.mode, Mode::Navigator { .. } | Mode::Files(_)) {
-            return self.navigator_key(outbound, key);
-        }
-        if matches!(self.state.mode, Mode::Menu(_)) {
-            return self.menu_key(outbound, key);
+        match self.state.mode {
+            Mode::Navigator { .. } => return self.handle_navigator_key(outbound, key),
+            Mode::Files(_) => return self.files_key(key),
+            Mode::Menu(_) => return self.menu_key(outbound, key),
+            Mode::Normal | Mode::Prefix => {}
         }
         if matches!(self.state.mode, Mode::Prefix) {
             self.state.mode = Mode::Normal;
