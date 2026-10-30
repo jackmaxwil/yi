@@ -3030,8 +3030,11 @@ fn a_headless_edit_denial_does_not_offer_an_allow_everything_entry() -> TestResu
     )?;
     assert_eq!(run.status.code(), Some(4), "{run:?}");
     let out = stdout(&run);
-    let last: Value = serde_json::from_str(out.lines().last().ok_or("no output")?)?;
-    let reason = last["reason"].as_str().ok_or("no reason")?;
+    let mut lines = out.lines().rev();
+    let last: Value = serde_json::from_str(lines.next().ok_or("no output")?)?;
+    assert_eq!(last["type"], "final", "{out}");
+    let denied: Value = serde_json::from_str(lines.next().ok_or("no denial")?)?;
+    let reason = denied["reason"].as_str().ok_or("no reason")?;
     assert!(!reason.contains("Allow exactly this call"), "{reason}");
     assert!(reason.contains("interactive"), "{reason}");
     Ok(())

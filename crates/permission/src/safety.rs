@@ -721,14 +721,11 @@ pub(crate) struct RedirectTarget {
     pub(crate) directory_known: bool,
 }
 /// The files a command redirects into, read as the shell reads them: quotes, comments and heredoc
-/// bodies name nothing. A scope resolves static `cd` commands and fails closed on a dynamic one.
+/// bodies name nothing. A directory change leaves every later relative target unknown.
 pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectTarget> {
     let (mut files, mut quote, mut ends) = (Vec::new(), None, Vec::<String>::new());
-    let (mut depth, mut command_start) = (0_u8, true);
-    let (mut directory, mut pipeline_tail) = (Some(std::path::PathBuf::new()), false);
-    let (mut command_directory, mut continued) = (directory.clone(), false);
-    let (mut cd_applies, mut moved, mut chained) = (true, false, false);
-    let mut entered: Option<Option<std::path::PathBuf>> = None;
+    let (mut command_start, mut continued) = (true, false);
+    let mut moved = false;
     for line in command.split('\n') {
         let continuing = std::mem::take(&mut continued);
         if let Some(end) = ends.first() {
@@ -737,11 +734,8 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
             }
             continue;
         }
-        if quote.is_none() && depth == 0 && !continuing {
+        if quote.is_none() && !continuing {
             command_start = true;
-            cd_applies = !pipeline_tail;
-            command_directory = directory.clone();
-            moved &= chained;
         }
         let (mut chars, mut prev) = (line.chars().peekable(), ' ');
         while let Some(c) = chars.next() {
@@ -776,43 +770,22 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                         && (!combined
                             || (target != "-" && !target.chars().all(|c| c.is_ascii_digit())))
                     {
-                        let path = match (resolve_cd, directory.as_ref()) {
-                            (true, Some(base)) if !base.as_os_str().is_empty() => {
-                                base.join(&target).to_string_lossy().into_owned()
-                            }
-                            _ => target,
-                        };
+                        let relative = !std::path::Path::new(&target).is_absolute();
                         files.push(RedirectTarget {
-                            path,
-                            directory_known: !resolve_cd || directory.is_some(),
+                            path: target,
+                            directory_known: !(resolve_cd && moved && relative),
                         });
                     }
                     command_start = false;
                 }
-                (None, '(') => {
-                    depth = depth.saturating_add(1);
-                    command_start = false;
-                }
-                (None, ')') => {
-                    depth = depth.saturating_sub(1);
-                    command_start = false;
-                }
-                (None, ';' | '|' | '&') => {
-                    if let Some(next) = entered.take() {
-                        directory = next;
+                (None, '(') => command_start = true,
+                (None, ')' | ';' | '|' | '&') => {
+                    if matches!(c, ';' | '|' | '&') {
+                        chars.next_if_eq(&c);
                     }
-                    let doubled = chars.next_if_eq(&c).is_some();
-                    cd_applies = c != '|' || doubled;
-                    if c == '|' && doubled {
-                        directory = directory.filter(|_| !moved || depth > 0);
-                    } else if c == '|' || (c == '&' && !doubled) {
-                        directory = command_directory.clone();
-                    }
-                    moved &= (doubled && c != ';') || depth > 0;
-                    command_start = depth == 0;
-                    command_directory = directory.clone();
+                    command_start = true;
                 }
-                (None, 'c' | 'p') if depth == 0 && command_start => {
+                (None, 'c' | 'p') if command_start => {
                     let mut name = c.to_string();
                     while let Some(next) = chars.next_if(|next| next.is_alphabetic()) {
                         name.push(next);
@@ -821,16 +794,8 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
                         && chars
                             .peek()
                             .is_none_or(|next| next.is_whitespace() || ";&|<>()".contains(*next))
-                        && resolve_cd
-                        && cd_applies
-                        && let Some(next) = crate::catastrophic::cd_directory(
-                            &name,
-                            &mut chars,
-                            directory.as_deref(),
-                        )
                     {
                         moved = true;
-                        entered = Some(next);
                     }
                     command_start = false;
                 }
@@ -839,11 +804,6 @@ pub(crate) fn redirect_targets(command: &str, resolve_cd: bool) -> Vec<RedirectT
             }
             prev = c;
         }
-        if let Some(next) = entered.take_if(|_| !continued) {
-            directory = next;
-        }
-        pipeline_tail = !cd_applies && line.trim_end().ends_with('|');
-        chained = line.trim_end().ends_with("&&") || line.trim_end().ends_with("||");
     }
     files
 }

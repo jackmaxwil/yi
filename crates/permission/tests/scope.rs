@@ -270,61 +270,14 @@ fn a_redirect_into_the_tree_is_judged_like_a_write() -> TestResult {
     Ok(())
 }
 
-/// Dies with `cd` hiding a redirect from the scope, or a redirect in `evals` judged against the
-/// old directory: static directory changes are resolved, and an unreadable one fails closed.
+/// Dies with a directory change hiding a redirect from the scope: the shell's directory is never
+/// interpreted, so a relative target after a `cd`/`pushd`/`popd` is refused and an absolute one
+/// is still judged as written.
 #[test]
-fn a_redirect_after_cd_is_judged_from_the_directory_the_shell_uses() -> TestResult {
+fn a_relative_redirect_after_a_directory_change_is_refused() -> TestResult {
     let scoped = tree(&["evals/**"])?;
-    for (command, path) in [
-        ("cd crates && echo x > lock.rs", "crates/lock.rs"),
-        ("cd evals\necho hi > ../crates/lock.rs", "crates/lock.rs"),
-        ("ls | cd /tmp; echo hi > crates/lock.rs", "crates/lock.rs"),
-        ("ls |\ncd /tmp; echo hi > crates/lock.rs", "crates/lock.rs"),
-        ("cd \"$dir\" && echo hi > crates/lock.rs", "crates/lock.rs"),
-        ("cd evals | cat; echo hi > crates/lock.rs", "crates/lock.rs"),
-        ("cd evals & echo hi > crates/lock.rs", "crates/lock.rs"),
-        (
-            "echo x \\\ncd /tmp && echo hi > crates/lock.rs",
-            "crates/lock.rs",
-        ),
-        (
-            "echo a && \\\ncd crates && echo hi > evals/probe.py",
-            "crates/evals/probe.py",
-        ),
-        ("cd -P crates && echo hi > lock.rs", "crates/lock.rs"),
-        ("cd -- crates && echo hi > lock.rs", "crates/lock.rs"),
-        ("pushd crates && echo hi > lock.rs", "crates/lock.rs"),
-        (
-            "pushd -n evals && echo hi > crates/lock.rs",
-            "crates/lock.rs",
-        ),
-        ("pushd evals && popd && echo hi > probe.py", "probe.py"),
-        (
-            "cmd & cd crates && echo hi > evals/probe.py",
-            "crates/evals/probe.py",
-        ),
-        (
-            "cat <<EOF \\\nbody\nEOF\ncd crates && echo hi > evals/probe.py",
-            "crates/evals/probe.py",
-        ),
-        ("cd evals extra; echo hi > crates/lock.rs", "crates/lock.rs"),
-        (
-            "cd /nonexistent || echo hi > crates/lock.rs",
-            "crates/lock.rs",
-        ),
-        ("cd crates || true; echo hi > evals", "evals"),
-        ("cd evals 2>crates/lock.rs", "crates/lock.rs"),
-        ("cd evals >crates/lock.rs && echo hi", "crates/lock.rs"),
-        ("cd evals && make || echo failed > log", "log"),
-    ] {
-        let decision = scoped.bash(command);
-        let reason = refusal(&decision).ok_or_else(|| format!("{command:?} was allowed"))?;
-        assert!(
-            reason.contains(path) && reason.contains("evals/**"),
-            "{command:?}: {reason}"
-        );
-    }
     for command in [
+        "cd crates && echo x > lock.rs",
         "cd evals && python3 gen.py > probe.py",
         "cd evals && cd nested && echo hi > probe.py",
         "cd evals\necho hi > probe.py",
@@ -332,24 +285,41 @@ fn a_redirect_after_cd_is_judged_from_the_directory_the_shell_uses() -> TestResu
         "cd -- evals && echo hi > probe.py",
         "echo a && \\\ncd evals && echo hi > probe.py",
         "pushd evals && echo hi > probe.py",
-        "echo hi | cat; echo hi > evals/probe.py",
-        "cd /tmp && echo hi > probe.py",
-        "foo &\ncd evals; echo hi > probe.py",
+        "pushd -n evals && echo hi > crates/lock.rs",
+        "cd evals extra; echo hi > crates/lock.rs",
+        "cd /nonexistent; echo hi > crates/lock.rs",
+        "cd /nonexistent || echo hi > crates/lock.rs",
+        "cd evals | cat; echo hi > crates/lock.rs",
+        "cd evals & echo hi > crates/lock.rs",
+        "cmd & cd crates && echo hi > evals/probe.py",
+        "false && cd evals; echo hi > crates/lib.rs",
+        "ls | cd /tmp; echo hi > crates/lock.rs",
+        "cd \"$dir\" && echo hi > crates/lock.rs",
+        "cd evals && make || echo failed > log",
+        "cd crates || true; echo hi > evals",
+        "(cd crates && make) > evals/log",
+        "cat <<EOF \\\nbody\nEOF\ncd crates && echo hi > evals/probe.py",
         "cd evals 2>/dev/null && python3 gen.py > probe.py",
-        "cd evals # note\necho hi > probe.py",
-        "cd evals && pushd -n /tmp && echo hi > probe.py",
-        "false || cd evals; echo hi > probe.py",
-        "cd evals && (make || echo failed > log)",
-        "cd evals &&\n(make || echo failed > log)",
+    ] {
+        let reason = refusal(&scoped.bash(command))
+            .ok_or_else(|| format!("{command:?} was allowed"))?
+            .to_owned();
+        assert!(reason.contains("evals/**"), "{command:?}: {reason}");
+        assert!(reason.contains("absolute path"), "{command:?}: {reason}");
+    }
+    for command in [
+        "cd evals && python3 gen.py > /dev/null",
+        "cd crates && cargo test 2>/dev/null",
+        "cd evals && echo hi && cat evals/probe.py",
+        "pushd evals && popd",
+        "cd evals && python3 gen.py 2>&1",
+        "echo hi | cat; echo hi > evals/probe.py",
+        "echo hi > evals/out.txt",
+        "cd /tmp && echo hi > /tmp/outside.txt",
     ] {
         let decision = scoped.bash(command);
         assert!(refusal(&decision).is_none(), "{command:?}: {decision:?}");
     }
-    let absolute = format!(
-        "cd - && cd {}/evals && echo hi > probe.py",
-        scoped.root.display()
-    );
-    assert!(refusal(&scoped.bash(&absolute)).is_none());
     let before = scoped.bash("echo hi > crates/before.rs && cd evals && echo hi > probe.py");
     let reason = refusal(&before).ok_or("the redirect before cd was missed")?;
     assert!(reason.contains("crates/before.rs"), "{reason}");

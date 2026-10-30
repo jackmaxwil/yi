@@ -55,16 +55,12 @@ pub(crate) fn outside(
     let redirected: Vec<_> = (call.command.into_iter())
         .flat_map(|command| crate::safety::redirect_targets(command, true))
         .collect();
-    if let Some(target) = redirected.iter().find(|target| !target.directory_known) {
-        return Some(format!(
-            "{} follows a `cd` whose directory cannot be read statically, so it cannot be shown \
-             to be inside this run's write scope ({}). This is denied in every mode.",
-            target.path,
-            patterns.join(", ")
-        ));
-    }
+    let unreadable = (redirected.iter())
+        .find(|target| !target.directory_known)
+        .map(|target| target.path.clone());
     let redirected = redirected
         .into_iter()
+        .filter(|target| target.directory_known)
         .map(|target| absolute(Path::new(&target.path), context));
     // A `grep` that applies a rewrite and names no path walks from the working directory.
     let walks = call.tool_name == "grep" && call.targets.is_empty();
@@ -93,6 +89,15 @@ pub(crate) fn outside(
                 patterns.join(", ")
             ));
         }
+    }
+    if let Some(unreadable) = unreadable {
+        return Some(format!(
+            "{unreadable} is redirected after a command that changes directory, so its path \
+             cannot be read statically and cannot be shown to be inside this run's write scope \
+             ({}). This is denied in every mode; give the redirect an absolute path, or take the \
+             `cd` out of the command.",
+            patterns.join(", ")
+        ));
     }
     None
 }
