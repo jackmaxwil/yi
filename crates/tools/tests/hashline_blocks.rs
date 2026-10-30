@@ -255,16 +255,10 @@ fn block_comments_stay_out_of_depth_for_brace_languages_beyond_the_named_ones() 
         "app.dart",
         "match.mts",
         "Jenkinsfile",
+        ".eslintrc",
+        ".babelrc",
+        ".swcrc",
     ] {
-        fs::write(dir.join(name), "resource {\n  /* } */\n  name = 1\n}\n")?;
-        let output = find(&dir, name, "resource {");
-        assert!(
-            output.contains("[find: block at lines 1-4 of"),
-            "{name}: {output}"
-        );
-    }
-
-    for name in [".eslintrc", ".babelrc", ".swcrc"] {
         fs::write(dir.join(name), "resource {\n  /* } */\n  name = 1\n}\n")?;
         let output = find(&dir, name, "resource {");
         assert!(
