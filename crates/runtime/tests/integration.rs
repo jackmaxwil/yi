@@ -114,6 +114,7 @@ mod todo_e2e;
 mod todo_mirror;
 mod undo_to;
 mod wall_e2e;
+mod web_search;
 mod worker_prompt;
 
 /// A real `pytest -v` run (#1153): 32,955 B, its FAILED row at line 223 of 419 and the verdict

@@ -20,3 +20,11 @@ pub fn read_request(reader: &mut BufReader<TcpStream>) -> String {
     let _ = reader.read_exact(&mut body);
     request + &String::from_utf8_lossy(&body)
 }
+
+#[allow(dead_code, reason = "not every loopback consumer parses JSON")]
+pub fn json_body(request: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let (_, body) = request
+        .split_once("\r\n{")
+        .ok_or("request has no JSON body")?;
+    Ok(serde_json::from_str(&format!("{{{body}"))?)
+}

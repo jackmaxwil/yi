@@ -301,3 +301,30 @@ fn a_cursor_account_list_becomes_one_catalog_entry() -> TestResult {
     assert!(cursor_catalog(&json!({})).is_err());
     Ok(())
 }
+
+#[test]
+fn a_cursor_refresh_http_error_keeps_its_cause() -> TestResult {
+    let body = r#"{"error":{"message":"the model or engine was not found; out of credits"}}"#;
+    let reply = crate::kimi_wire::json_reply("404 remote instructions", body);
+    let (port, _, served) = crate::loopback_server::serve([reply])?;
+    let result = yi_ai::request::post_json(
+        &format!("http://127.0.0.1:{port}/aiserver.v1.AiService/AvailableModels"),
+        &[
+            ("authorization", "Bearer sekrit".to_owned()),
+            ("connect-protocol-version", "1".to_owned()),
+        ],
+        "{}",
+        None,
+        yi_ai::refresh::CAP_BYTES,
+        yi_ai::request::DEFAULT_READ_TIMEOUT,
+    );
+    served.join().map_err(|_| "server thread panicked")?;
+    let error = result
+        .err()
+        .ok_or("Cursor refresh unexpectedly succeeded")?;
+    assert_eq!(
+        error.to_string(),
+        "HTTP 404: the model or engine was not found"
+    );
+    Ok(())
+}
