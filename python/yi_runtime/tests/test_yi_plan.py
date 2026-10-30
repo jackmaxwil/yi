@@ -1,4 +1,4 @@
-"""F1a: create, the source record, the scheduler and its lease (plan sections 8.2 and 8.3)."""
+"""F1a: create, the scheduler and its lease (plan sections 8.2 and 8.3)."""
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +27,8 @@ class Plans(unittest.IsolatedAsyncioTestCase):
             await Plan.create("ship logrotate-lite")
         self.assertEqual(guessed.exception.kind, "plan_exists", "create never adopts a plan by its text")
 
-    async def test_a_cell_is_recorded_once_before_its_first_effect(self) -> None:
+    async def test_a_cell_changes_a_plan_without_storing_its_source(self) -> None:
+        """Dies with the program record: every plan op first froze and journaled its cell."""
         host = FakeHost()
 
         class Cell:
@@ -35,18 +36,11 @@ class Plans(unittest.IsolatedAsyncioTestCase):
 
         yi.plan._on_cell(Cell)
         plan = await Plan.create("ship it")
-        self.assertEqual(host.ops(), ["init", "program"], "a cell that only creates is recorded too")
         await plan.todo(key="a")
         await plan.todo(key="a")
-        self.assertEqual(host.ops(), ["init", "program", "append"])
-        digest = host.journal[1][1]["source_ref"]["digest"]
-        self.assertEqual(host.blobs[digest], Cell.raw_cell)
-
-        yi.plan._on_cell(Cell)
-        await (await Plan.attach(plan.id)).refresh()
-        self.assertEqual(host.ops().count("program"), 1, "a cell that only reads records nothing")
         await plan["a"].start()
-        self.assertEqual(host.ops()[-2:], ["program", "start"], "the record precedes the effect")
+        self.assertEqual(host.ops(), ["init", "append", "start"], host.ops())
+        self.assertNotIn("program", host.ops(), "a plan op froze its cell's source")
 
     async def test_a_child_records_no_cell_and_still_submits_its_product(self) -> None:
         """The submitting agent is a child by construction, so the library road must be its own."""

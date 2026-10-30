@@ -16,7 +16,6 @@ from .contract import JSON_TYPE, Contract, canonical, freeze
 from .roles import Role, _lanes
 
 KEY = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-SOURCE_TYPE = "text/x-python"
 READ_ONLY = ("view", "repair")
 WAIT_SECONDS = 300.0
 REAPED_POLL = 0.5
@@ -129,22 +128,6 @@ async def _send(op: str, args: dict | None, **kwargs: Any) -> dict[str, Any]:
     if not reply.get("ok"):
         _raise(reply)
     return reply
-
-
-async def _record(plan_id: str) -> None:
-    """Invariant: the cell's source is in the journal before the cell's first effect on a plan."""
-    cell = _CELL
-    if cell is None or plan_id in cell["plans"] or not cell["source"].strip():
-        return
-    ref, blob = freeze(cell["source"], SOURCE_TYPE)
-    try:
-        await _send("program", {"cell_id": cell["id"], "source_ref": ref}, plan=plan_id, artifacts=[blob])
-    except PlanError as refusal:
-        # A child's cells are its own session's, never the plan's program: the host takes the
-        # record from the owner alone, so a submitting child records nothing and stops asking.
-        if refusal.code != "not_owner":
-            raise
-    cell["plans"].add(plan_id)
 
 
 def _pruned(value: Any) -> Any:
@@ -429,9 +412,7 @@ class Plan:
             plan = await Plan.create("ship logrotate-lite", request_id="create-01")
         """
         reply = await _send("init", {"goal": goal, "todos": []}, request_id=request_id)
-        plan = cls(reply["plan"])
-        await _record(plan.id)
-        return plan
+        return cls(reply["plan"])
 
     @classmethod
     async def attach(cls, plan_id: str) -> "Plan":
@@ -464,8 +445,6 @@ class Plan:
         return self
 
     async def _op(self, op: str, args: dict | None = None, **kwargs: Any) -> dict[str, Any]:
-        if op not in READ_ONLY:
-            await _record(self.id)
         reply = await _send(op, args, plan=self.id, **kwargs)
         self._doc = reply["plan"] if reply["plan"].get("plan") == self.id else self._doc
         return reply
