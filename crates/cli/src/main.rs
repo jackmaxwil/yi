@@ -879,7 +879,7 @@ fn run_version(_: &Args) -> i32 {
 
 fn run_ask(args: &Args) -> i32 {
     if let Some(check) = args.check.as_deref() {
-        return match yi_runtime::goal::probe(check) {
+        return match yi_runtime::goal::probe(check, &effective_cwd(args)) {
             None => 0,
             Some(refusal) => {
                 eprintln!("{refusal}");

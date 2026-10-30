@@ -91,6 +91,9 @@ pub(crate) fn run_check(
     hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> Result<(), String> {
     crate::claude_hooks::guard_shell(hooks, check, cwd)?;
+    if let Some(refusal) = probe(check, cwd) {
+        return Err(refusal);
+    }
     let mut command = yi_tools::keyless_command("sh");
     command.arg("-c").arg(check).current_dir(cwd);
     let deadline = Instant::now()
@@ -115,10 +118,10 @@ pub(crate) fn run_check(
 }
 
 /// Invariant: a check is refused before it runs when the shell cannot parse it or a segment's
-/// first word is not a program here, so an exit 127 is never read as the check's verdict.
-pub fn probe(command: &str) -> Option<String> {
+/// first word is not a program in `cwd`, so an exit 127 is never read as the check's verdict.
+pub fn probe(command: &str, cwd: &std::path::Path) -> Option<String> {
     let mut syntax = yi_tools::keyless_command("sh");
-    syntax.arg("-n").arg("-c").arg(command);
+    syntax.arg("-n").arg("-c").arg(command).current_dir(cwd);
     let parsed = probe_capture(syntax)?;
     if parsed.exit_code != Some(0) {
         let first = parsed.stderr.lines().next().unwrap_or("no diagnostic");
@@ -135,7 +138,11 @@ The ways out: fix the syntax, or declare no check."
         return None;
     }
     let mut scan = yi_tools::keyless_command("sh");
-    scan.arg("-c").arg(PROBE_WORDS).arg("_").args(&words);
+    scan.arg("-c")
+        .arg(PROBE_WORDS)
+        .arg("_")
+        .args(&words)
+        .current_dir(cwd);
     let found = probe_capture(scan)?;
     let (word, code) = found.stdout.lines().next()?.split_once('\t')?;
     let code: i32 = code.parse().ok()?;
@@ -158,13 +165,17 @@ fn probe_capture(command: std::process::Command) -> Option<yi_tools::CommandCapt
 }
 
 /// The first word of each segment an assignment prefix does not name: `FOO=1 true` starts `true`.
+/// A word the shell expands is not probed, and an expansion the splitter cannot read skips them all.
 fn probe_words(command: &str) -> Vec<String> {
-    yi_permission::command_segments(command)
+    let segments = match yi_permission::parse(command) {
+        yi_permission::Parsed::Segments(segments) => segments,
+        yi_permission::Parsed::Unparsed if command.contains(['$', '`']) => Vec::new(),
+        yi_permission::Parsed::Unparsed => yi_permission::command_segments(command),
+    };
+    segments
         .into_iter()
-        .filter_map(|argv| {
-            argv.into_iter()
-                .find(|token| !probe_assignment(token) && !token.contains(['$', '`', '*']))
-        })
+        .filter_map(|argv| argv.into_iter().find(|token| !probe_assignment(token)))
+        .filter(|word| !word.contains(['$', '`', '*']))
         .collect()
 }
 
