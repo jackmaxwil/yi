@@ -41,8 +41,8 @@ import forge_pr  # noqa: E402
 from check_commit_style import subject_errors  # noqa: E402
 from check_pr_metadata import CITE, DRAFT, section, template_problems  # noqa: E402
 
-# Shadow posts every round and blocks nothing; blocking makes `just pr ready` refuse a
-# draft whose rounds are not clean. The flip waits for the replay on the labelled set.
+# Shadow posts every round and blocks nothing; blocking makes `just pr ready` and `just pr merge`
+# refuse a draft whose rounds are not clean. `just pr calibrate` reads the replay on the labelled set.
 MODE = "blocking"
 SEVERITIES = ("high", "medium", "low")
 # Measured over 194 rounds to 2026-10-01: half of 1,520 findings were low, and none of them blocked
@@ -946,6 +946,35 @@ def cmd_replay(args):
     return 0
 
 
+def calibration(rows):
+    """Precision and recall of a high finding on the labelled replay rows, as (hits, of) pairs. The
+    newest row of a PR wins; only `bad` and `kept` are judged, and a PR whose reading went
+    unanswered is listed, never counted. The 2026-09-28 file names the counts `lens`."""
+    latest = {r["pr"]: dict(r, severity=r.get("severity") or r["lens"]) if "severity" in r or isinstance(r.get("lens"), dict) else r for r in rows}
+    judged = [r for r in latest.values() if r["label"] in ("bad", "kept")]
+    answered = [r for r in judged if "severity" in r]
+    flagged = [r for r in answered if r["severity"]["high"]]
+    bad = [r for r in answered if r["label"] == "bad"]
+    kept = [r for r in answered if r["label"] == "kept"]
+    return {"precision": (sum(r["label"] == "bad" for r in flagged), len(flagged)),
+            "recall": (sum(bool(r["severity"]["high"]) for r in bad), len(bad)),
+            "kept_clean": (sum(not r["severity"]["high"] for r in kept), len(kept)),
+            "unanswered": sorted(r["pr"] for r in judged if "severity" not in r),
+            "ignored": len(latest) - len(judged)}
+
+
+def cmd_calibrate(args):
+    """The numbers the shadow-to-blocking decision reads: precision and recall of a high finding on
+    the `just pr replay` rows. No threshold lives here; the owner reads the pairs."""
+    rows = [json.loads(line) for path in args.files for line in pathlib.Path(path).read_text().splitlines() if line.strip()]
+    got = calibration(rows)
+    for name, label in (("precision", "flagged PRs that are bad"), ("recall", "bad PRs flagged"), ("kept_clean", "kept PRs with no high")):
+        hit, of = got[name]
+        print(f"{name:<11} {hit}/{of} {f'{100 * hit // of}%' if of else '-'}  {label}")
+    print(f"unanswered {got['unanswered']}  ignored {got['ignored']} (labels other than bad and kept)")
+    return 0
+
+
 def answered(message, n, number):
     """The fixer signs its commit, so a redelivered sweep does not fix one round twice."""
     return f"review round {n} on #{number}." in message
@@ -1448,6 +1477,21 @@ def selfcheck():
             "kept": [finding, dict(finding, severity="low")], "dropped": 2}
     row = replay_row(read, "bad")
     assert row["severity"] == {"high": 1, "medium": 0, "low": 1} and row["intake"] == ["template"], row
+
+    rows = [{"pr": 1, "label": "bad", "severity": {"high": 2, "medium": 0, "low": 0}},
+            {"pr": 2, "label": "bad", "severity": {"high": 0, "medium": 3, "low": 0}},
+            {"pr": 3, "label": "bad", "unanswered": "yi ask exited 3"},
+            {"pr": 8, "label": "bad", "lens": {"high": 1, "medium": 0, "low": 0}},
+            {"pr": 4, "label": "kept", "severity": {"high": 1, "medium": 0, "low": 0}},
+            {"pr": 5, "label": "kept", "severity": {"high": 0, "medium": 0, "low": 4}},
+            {"pr": 6, "label": "kept", "severity": {"high": 0, "medium": 1, "low": 0}},
+            {"pr": 7, "label": "closed", "severity": {"high": 1, "medium": 0, "low": 0}},
+            {"pr": 1, "label": "bad", "severity": {"high": 0, "medium": 0, "low": 0}}]
+    got = calibration(rows[:-1])
+    assert (got["precision"], got["recall"], got["kept_clean"]) == ((2, 3), (2, 3), (2, 3)), got
+    assert got["unanswered"] == [3] and got["ignored"] == 1, got
+    assert calibration(rows)["recall"] == (1, 3), "a later reading of a PR replaces the earlier one"
+    assert calibration([])["precision"] == (0, 0), "no flagged PR is no precision, not a division"
 
     repo_dir = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-wall-"))
     try:
