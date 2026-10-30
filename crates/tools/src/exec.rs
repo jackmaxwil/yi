@@ -349,7 +349,7 @@ mod tests {
                     &name,
                     format!(
                         "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  \
-                         ps -eo command= | grep -F '{dir}/tool-' | grep -vc 'grep -F' > '{dir}/seen-{name}'\n  \
+                         pgrep -f '{dir}/tool-' | wc -l > '{dir}/seen-{name}'\n  \
                          sleep 30\n  \
                          printf '{{\"name\":\"{name}\",\"input_schema\":{{\"type\":\"object\"}}}}'\nfi\n",
                         dir = dir.display(),
