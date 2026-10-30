@@ -37,7 +37,7 @@ keywords = ["sk-"]
 id = "yi-github-pat"
 description = "GitHub personal access token"
 regex = '''\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{30,}'''
-keywords = ["ghp_"]
+keywords = ["ghp_", "gho_", "ghs_", "ghu_", "ghr_"]
 
 [[rules]]
 id = "yi-aws-access-key"
@@ -55,14 +55,4 @@ regexes = [
   '''SECRET=hunter2''',
   '''consecutive-401''',
   '''gpt-5\.6-sol\.md''',
-]
-
-[[allowlists]]
-description = "The redaction tests' own fake values in crates/runtime/src/memory/doc.rs, matched by tail so a different key on the same line still reports"
-regexTarget = "line"
-regexes = [
-  '''Qz7rT2mW9xK4vB1nL6pD3s''',
-  '''4fJ9kL2mN7pQ1rS8tV3wX6yZ0aB5cD9eF2gH7iJ4kL1mN8oP3qR6''',
-  '''8Hk2Lm9Np4Qr7St1Uv6Wx3Yz0Ab5Cd2Ef9Gh''',
-  '''IOSFODNN7EXAMPLE''',
 ]

@@ -1,5 +1,5 @@
 ---
 issue: Closes #1720, Refs #1722
-raise: crate tools +19, crate tui +1, tests +18, comments +1
+raise: crate tools +19, crate tui +1, tests +15, comments +1
 ---
 Add pinned static security scans to the shared guardrails. Zizmor audits every Forgejo workflow with hostile fixtures, reasoned suppressions and a shrink-only baseline. Workflow permission and checkout-credential findings are fixed; action tags whose mirror commit cannot be verified offline and two deliberate review behaviors carry inline reasons (Closes #1720). Gitleaks scans the working tree and PR diff, and scans rewritten mirror history before any push. Seven provider fixtures prove its fake-key rules; `.gitguardian.yaml` remains the one path-ignore list and gitleaks derives only its planted-fake entries, so a real source path on that list is still scanned, and archived generic examples sit in a separate shrink-only history baseline (Refs #1722). Vendored Semgrep rules cover the trial's Python findings plus Yi subprocess and production-Rust laws. MD5/SHA1 uses and a shell pipeline are fixed; direct argv calls and two temporary-directory uses carry reasons. Every scanner family has hostile and clean fixtures and a disabled-rule selfcheck.
