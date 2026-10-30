@@ -239,6 +239,15 @@ TUI child cards | `tui_e2e::a_new_session_and_a_rewind_drop_the_old_cards` (T0)
 TUI child cards | `tui_e2e::the_thirty_third_finished_card_drops_the_oldest_and_says_so` (T0)
 TUI child cards | `recursion_e2e::rlm_run_round_trips_through_a_real_kernel` (T0)
 TUI child cards | `lease::a_spawn_line_names_its_cell_and_an_older_line_still_decodes` (T0)
+TUI child cards | `child_rows::an_early_end_waits_for_its_cell_then_follows_its_start` (T0)
+TUI child cards | `child_rows::a_running_update_rearms_only_the_end_and_a_new_session_gets_a_new_start` (T0)
+TUI child cards | `child_rows::eviction_and_roster_ticks_never_duplicate_committed_rows` (T0)
+TUI child cards | `child_rows::replay_builds_enriched_and_reduced_legacy_rows` (T0)
+TUI child cards | `child_rows::replayed_rows_match_live_bytes_in_every_mode_and_after_resize` (T0)
+TUI child cards | `child_rows::replayed_rows_reach_a_nonzero_vt100_offset_once` (T0)
+TUI child cards | `child_rows::replay_flushes_an_unresolved_antecedent_at_eof` (T0)
+TUI child cards | `drive::replayed_child_rows_render_in_the_shared_console_reducer` (T0)
+TUI child cards | `child_trail::a_repossession_after_parent_close_journals_that_cause` (T0)
 console right-click menu and pane close mark | `drive::a_right_click_on_a_reply_copies_that_reply`
 console right-click menu and pane close mark | `drive::copy_as_plain_text_drops_the_markdown`
 console right-click menu and pane close mark | `drive::quote_puts_the_message_in_the_composer`

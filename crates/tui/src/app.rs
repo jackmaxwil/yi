@@ -11,7 +11,7 @@ use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Attribution, StopReason};
 
 use crate::approval::{ApprovalView, AskChoice, AskRequest};
-use crate::cell::{Cell, TaskCell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
+use crate::cell::{Cell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
 use crate::colors::{Theme, detect_dark, detect_tier};
 use crate::composer::Composer;
 use crate::focus::set_focus;
@@ -70,17 +70,6 @@ pub(crate) const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 10;
 pub(crate) const ORB_ROWS: u16 = 5;
 pub(crate) const ORB_PX: usize = 320;
-pub struct TaskState {
-    pub(crate) cell: TaskCell,
-    pub(crate) streaming: Option<AgentMessage>,
-    pub(crate) started: Instant,
-    /// When the child reached a terminal state, so the strike can sweep.
-    pub(crate) finished: Option<Instant>,
-    /// The call id of the kernel cell that spawned the child, the one a finished card waits on.
-    pub(crate) born_under: Option<String>,
-    pub(crate) session: Option<yi_runtime::ChildFeed>,
-    pub(crate) rows: crate::cell::AnswerRows,
-}
 
 pub struct App {
     pub(crate) theme: Theme,
@@ -146,6 +135,7 @@ pub struct App {
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
     pub(crate) committed_tasks: HashSet<String>,
+    pub(crate) projection: crate::app::children::ChildProjection,
     /// Cards dropped by a reset or the finished-card cap: their late mail stays quiet, and the
     /// roster brings one back only running.
     pub(crate) retired_tasks: HashSet<String>,
@@ -217,6 +207,7 @@ pub struct App {
 mod asks;
 mod bridge;
 mod children;
+pub use children::TaskState;
 mod clock;
 mod options;
 mod stream;
@@ -284,6 +275,7 @@ impl App {
             tasks: HashMap::new(),
             task_order: Vec::new(),
             committed_tasks: HashSet::new(),
+            projection: crate::app::children::ChildProjection::default(),
             retired_tasks: HashSet::new(),
             dropped_tasks: 0,
             steering: Vec::new(),
@@ -630,7 +622,7 @@ impl App {
                 self.steering.clear();
                 self.live_tools.clear();
                 self.flush_explored();
-                self.commit_finished_tasks();
+                self.release_child_rows();
                 self.commit_turn_footer();
                 self.open_questions();
                 self.scheduler.request();

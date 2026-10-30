@@ -288,20 +288,18 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
     })?;
     let committed = flat_lines(&app.take_commits());
     assert!(
-        committed
-            .iter()
-            .any(|l| l.contains("╭─ ↳ Trace the render path sub ·") && l.contains(" done ")),
-        "finished child commits a card titled with its humanized name: {committed:?}"
+        committed.iter().any(|line| {
+            line.contains("── subagent trace-the-render-path") && line.contains("· reader ·")
+        }),
+        "the child's start row names its task: {committed:?}"
     );
     assert!(
-        committed.iter().any(|l| l.contains("0 tool calls")),
-        "the card title carries the tool-call counter: {committed:?}"
-    );
-    assert!(
-        committed
-            .iter()
-            .any(|l| l.starts_with("  │ ") && l.contains("child answer")),
-        "the child's answer sits inside the card: {committed:?}"
+        committed.iter().any(|line| {
+            line.contains("── subagent trace-the-render-path")
+                && line.contains("· done ·")
+                && line.contains("child answer")
+        }),
+        "the child's end row names its answer: {committed:?}"
     );
 
     let child_id = host
@@ -1995,7 +1993,7 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
     })?;
     let early = flat_lines(&app.take_commits());
     assert!(
-        !early.iter().any(|line| line.contains("↳ Trace sub")),
+        !early.iter().any(|line| line.contains("── subagent trace")),
         "nothing commits while the spawning cell is still live: {early:?}"
     );
     yi_tui::render::draw(&mut app, &mut terminal, None);
@@ -2026,7 +2024,7 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
         .ok_or_else(|| format!("no kernel cell row: {committed:?}"))?;
     let task = committed
         .iter()
-        .position(|line| line.contains("╭─ ↳ Trace sub"))
+        .position(|line| line.contains("── subagent trace") && line.contains("· done ·"))
         .ok_or_else(|| format!("no task row: {committed:?}"))?;
     assert!(
         cell < task,
@@ -2035,7 +2033,7 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
     assert_eq!(
         committed
             .iter()
-            .filter(|line| line.contains("╭─ ↳ Trace sub"))
+            .filter(|line| line.contains("── subagent trace") && line.contains("· done ·"))
             .count(),
         1,
         "one task row: {committed:?}"
@@ -2056,6 +2054,10 @@ fn reader(id: &str, status: yi_runtime::ChildStatus, calls: u64) -> yi_runtime::
         error: None,
         exit: None,
         flag: None,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
 
@@ -2077,6 +2079,14 @@ fn gaps_between_boxes(rows: impl IntoIterator<Item = String>) -> Vec<usize> {
         }
     }
     gaps
+}
+
+fn blank_rows_before_sibling(rows: &[String], sibling: &str) -> Option<usize> {
+    let end = rows.iter().position(|row| row.contains("· done ·"))?;
+    let top = rows
+        .iter()
+        .position(|row| row.contains("╭─") && row.contains(sibling))?;
+    top.checked_sub(end.saturating_add(1))
 }
 
 /// The rows a console pane of `height` paints, top to bottom.
@@ -2191,7 +2201,11 @@ fn a_pane_keeps_one_blank_between_a_finished_box_and_its_running_sibling() -> Te
     }
     app.reduce_child_update(&reader("reader-g1", ChildStatus::Completed, 1));
     let rows = pane_rows(&mut app, 30);
-    assert_eq!(gaps_between_boxes(rows.clone()), vec![1], "{rows:#?}");
+    assert_eq!(
+        blank_rows_before_sibling(&rows, "Reader g2"),
+        Some(1),
+        "{rows:#?}"
+    );
     assert!(ends_on_status(&rows), "{rows:#?}");
     Ok(())
 }
@@ -2245,8 +2259,11 @@ fn a_reader_that_finishes_first_stays_one_blank_above_its_running_sibling() -> T
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let handed = terminal.backend().contents();
     assert_eq!(
-        gaps_between_boxes((0..ROWS).map(|row| terminal.backend().row_text(row))),
-        vec![1],
+        blank_rows_before_sibling(
+            &handed.lines().map(str::to_owned).collect::<Vec<_>>(),
+            "Reader g2"
+        ),
+        Some(1),
         "{handed}"
     );
     let top = (0..ROWS)
@@ -2323,7 +2340,7 @@ fn eight_running_readers_stack_one_blank_apart_with_their_previous_step() -> Tes
 /// A box's bottom border is never flush with a one-row cell committed under it (a footer, a
 /// one-row card): the box keeps one blank row below it, in scrollback and in a console pane.
 #[test]
-fn a_committed_box_keeps_one_blank_row_above_a_one_row_cell() -> TestResult {
+fn a_committed_child_end_has_no_box_before_a_one_row_cell() -> TestResult {
     use yi_runtime::ChildStatus;
     for pane in [false, true] {
         let mut app = app();
@@ -2346,21 +2363,23 @@ fn a_committed_box_keeps_one_blank_row_above_a_one_row_cell() -> TestResult {
                 .map(|row| terminal.backend().row_text(row))
                 .collect()
         };
-        let bottom = rows
+        let end = rows
             .iter()
-            .position(|row| row.starts_with("  ╰"))
-            .ok_or_else(|| format!("no box (pane {pane}): {rows:#?}"))?;
+            .position(|row| row.contains("· done ·"))
+            .ok_or_else(|| format!("no end row (pane {pane}): {rows:#?}"))?;
         let below: Vec<&str> = rows
             .iter()
-            .skip(bottom + 1)
+            .skip(end + 1)
             .take(2)
             .map(String::as_str)
             .collect();
         assert!(
-            below.first().is_some_and(|r| r.trim().is_empty())
-                && below.get(1).is_some_and(|r| r.contains("↳ computed 1")),
-            "one blank row, then the footer (pane {pane}): {rows:#?}"
+            below
+                .first()
+                .is_some_and(|row| row.contains("↳ computed 1")),
+            "the footer follows the concise end row (pane {pane}): {rows:#?}"
         );
+        assert!(!rows.iter().any(|row| row.starts_with("  ╰")), "{rows:#?}");
     }
     Ok(())
 }
@@ -3132,26 +3151,12 @@ fn child_host(dir: &Scratch, reply: &'static str) -> Arc<SubagentHost> {
 }
 
 fn child_host_options(dir: &Scratch, reply: &'static str) -> SubagentHostOptions {
-    SubagentHostOptions {
-        provider: Arc::new(ProviderStream::new(None)),
-        depth: 0,
-        max_depth: 1,
-        max_children: 4,
-        parent_session_dir: dir.to_path_buf(),
-        cwd: dir.to_path_buf(),
-        home: dir.join("home"),
-        lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
-        factory: Arc::new(move |_build| Ok(faux_session(reply))),
-        notice: Arc::new(|_notice, _| {}),
-        events: tokio::sync::broadcast::channel(64).0,
-        parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message, _| {}),
-        attribute: Arc::new(|_usage| {}),
-        store: Arc::new(|| None),
-        plans_dir: dir.join(".yi/plans"),
-        family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }
+    common::child_host_options(
+        dir,
+        4,
+        Arc::new(|| None),
+        Arc::new(move |_build| Ok(faux_session(reply))),
+    )
 }
 
 fn kernel_cell(id: &str, code: &str) -> yi_types::event::AgentEvent {
@@ -3271,6 +3276,10 @@ fn a_card_adopted_after_the_first_tool_event_names_it() -> TestResult {
             error: None,
             exit: None,
             flag: None,
+            session: None,
+            role: None,
+            task: None,
+            elapsed_ms: None,
         },
         session: yi_runtime::ChildFeed::of(session),
         spawned_by: None,
@@ -3322,7 +3331,9 @@ fn a_finished_card_commits_under_a_live_cell() -> TestResult {
     })?;
     let committed = flat_lines(&app.take_commits());
     assert!(
-        committed.iter().any(|line| line.contains("╭─ ↳ Trace sub")),
+        committed
+            .iter()
+            .any(|line| line.contains("── subagent trace") && line.contains("· done ·")),
         "the finished card commits though a cell is still live: {committed:?}"
     );
     Ok(())
@@ -3364,7 +3375,7 @@ fn a_card_lands_under_the_cell_its_record_names() -> TestResult {
     app.reduce_agent(kernel_cell_end("c2", second));
     let committed = flat_lines(&app.take_commits());
     let at = |needle: &str| committed.iter().position(|line| line.contains(needle));
-    let (cell1, card, cell2) = (at(first), at("╭─ ↳ Trace"), at(second));
+    let (cell1, card, cell2) = (at(first), at("── subagent trace"), at(second));
     assert!(
         cell1 < card && card < cell2 && cell1.is_some(),
         "the card sits between its own cell and the next: {committed:?}"
@@ -3387,7 +3398,9 @@ fn a_card_whose_record_names_no_cell_waits_on_none() -> TestResult {
     }]);
     let committed = flat_lines(&app.take_commits());
     assert!(
-        committed.iter().any(|line| line.contains("╭─ ↳ Plan")),
+        committed
+            .iter()
+            .any(|line| line.contains("── subagent plan") && line.contains("· done ·")),
         "the card commits while the unrelated cell still runs: {committed:?}"
     );
     Ok(())
@@ -3555,7 +3568,9 @@ fn a_card_the_roster_stopped_listing_ends_as_gone() -> TestResult {
     app.sync_children(&host.children_view());
     let committed = flat_lines(&app.take_commits());
     assert!(
-        committed.iter().any(|line| line.contains("✕ Trace sub")),
+        committed
+            .iter()
+            .any(|line| line.contains("── subagent trace") && line.contains("· failed ·")),
         "the orphan card is finished and committed: {committed:?}"
     );
     assert!(
@@ -3614,7 +3629,9 @@ fn a_kernel_cell_that_spawns_and_deletes_leaves_no_live_card() -> TestResult {
     });
     let committed = flat_lines(&app.take_commits());
     assert!(
-        committed.iter().any(|line| line.contains("✕ Trace sub")),
+        committed
+            .iter()
+            .any(|line| line.contains("── subagent trace") && line.contains("· reaped ·")),
         "the deleted child's card is finished and committed: {committed:?}"
     );
     assert!(
