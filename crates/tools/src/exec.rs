@@ -264,27 +264,51 @@ mod tests {
                 ),
                 (
                     "slow",
-                    "#!/bin/sh\nsleep 0.6\nprintf '{\"name\":\"slow\",\"input_schema\":{\"type\":\"object\"}}'\n"
+                    "#!/bin/sh\nsleep 3\nprintf '{\"name\":\"slow\",\"input_schema\":{\"type\":\"object\"}}'\n"
                         .to_owned(),
                 ),
             ],
         )?;
         let started = std::time::Instant::now();
-        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_millis(300));
+        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(1));
         let elapsed = started.elapsed();
         assert_eq!(
             tools.len(),
             1,
-            "the 600 ms probe loaded past a 300 ms deadline: {skipped:?}"
+            "the 3 s probe loaded past a 1 s deadline: {skipped:?}"
         );
         assert_eq!(tools[0].name(), "fast");
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].path, dir.join("slow"));
         assert!(
-            skipped[0].reason.contains("timed out after 0.3s"),
+            skipped[0].reason.contains("timed out after 1s"),
             "{skipped:?}"
         );
         assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+        Ok(())
+    }
+
+    /// The fifth probe waits for a free worker until its siblings are done, so it finishes past
+    /// one shared deadline counted from discovery start but inside its own.
+    #[test]
+    fn a_probe_that_waited_for_a_worker_keeps_its_whole_deadline() -> TestResult {
+        let dir = crate::scratch::Scratch::new("yi-tools-exec-queued")?;
+        let names = ["queued-a", "queued-b", "queued-c", "queued-d", "queued-e"];
+        assert_eq!(names.len(), PROBE_WORKERS + 1);
+        let bodies: Vec<(&str, String)> = names
+            .into_iter()
+            .map(|name| {
+                let schema = format!("{{\"name\":\"{name}\"}}");
+                (name, format!("#!/bin/sh\nsleep 1.2\nprintf '{schema}'\n"))
+            })
+            .collect();
+        scripts(&dir, &bodies)?;
+        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(2));
+        assert!(
+            skipped.is_empty(),
+            "a queued probe lost its deadline: {skipped:?}"
+        );
+        assert_eq!(tools.len(), names.len());
         Ok(())
     }
 

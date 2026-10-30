@@ -420,7 +420,7 @@ catastrophic-path denylist M10 | `decide::a_catastrophic_target_in_any_segment_i
 `yi doctor` | `cli_surfaces::doctor_judges_only_the_configured_lane_slots`
 `yi doctor` | `cli_surfaces::doctor_names_each_skipped_exec_tool_and_its_reason`
 `yi doctor` | `tools::a_hung_exec_tool_is_skipped_and_the_others_load`
-`yi doctor` | `exec::tests::a_probe_inside_the_deadline_loads_and_one_past_it_is_skipped`
+`yi doctor` | `exec::tests::exec_tool_probes_stop_at_their_own_deadline`
 `yi gc` and the retention sweep | `cli_surfaces::gc_fix_takes_the_checkpoints_of_a_deleted_project`
 `yi gc` and the retention sweep | `retention::only_an_orphan_past_seven_days_is_removed`
 `yi gc` and the retention sweep | `retention::a_trim_keeps_every_capture_inside_the_window`
