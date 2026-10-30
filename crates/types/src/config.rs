@@ -101,24 +101,12 @@ impl Providers {
     pub fn iter(&self) -> impl Iterator<Item = (&str, &CustomProvider)> {
         self.0.iter().map(|(id, provider)| (id.as_str(), provider))
     }
-
-    pub fn get(&self, id: &str) -> Option<&CustomProvider> {
-        self.0.get(id)
-    }
 }
 
-/// The one wire a custom provider speaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub enum CustomApi {
-    #[serde(rename = "openai-completions")]
-    OpenAiCompletions,
-}
-
-/// The key is `apiKeyEnv`'s variable, else the literal `apiKey`, else `yi login`'s store.
+/// Speaks OpenAI chat completions; the key is `apiKeyEnv`'s variable, else the literal `apiKey`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CustomProvider {
-    pub api: CustomApi,
     pub base_url: String,
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
@@ -185,7 +173,7 @@ impl CustomProvider {
                     },
                     context_window: model.context_window.unwrap_or(128_000),
                     max_tokens: model.max_tokens.unwrap_or(16_384),
-                    compat: Some(serde_json::json!({"maxTokensField": "max_tokens"})),
+                    compat: Some(serde_json::json!({"plainMaxTokens": true})),
                     thinking_level_map: None,
                     headers: None,
                 }

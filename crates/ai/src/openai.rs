@@ -363,11 +363,11 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         params["response_format"] = crate::schema::chat(schema);
     }
     if let Some(max_tokens) = options.max_tokens {
-        let field = (model.compat.as_ref())
-            .and_then(|compat| compat.get("maxTokensField"))
-            .and_then(Value::as_str)
-            .filter(|field| *field == "max_tokens")
-            .unwrap_or("max_completion_tokens");
+        let field = if compat_bool(model, "plainMaxTokens", false) {
+            "max_tokens"
+        } else {
+            "max_completion_tokens"
+        };
         params[field] = json!(max_tokens);
     }
     if let Some(tools) = &context.tools

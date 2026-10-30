@@ -210,7 +210,16 @@ pub fn key_in(home: &std::path::Path, provider: &str) -> Result<Secret, String> 
 }
 
 pub fn missing_message(provider: &str) -> String {
-    let env = env_var(provider)
+    let env = env_var(provider);
+    if custom_key(provider).is_some() {
+        let env = env
+            .map(|name| format!("export {name} or "))
+            .unwrap_or_default();
+        return format!(
+            "no credential for provider {provider} ({env}set providers.{provider}.apiKey in config.json)"
+        );
+    }
+    let env = env
         .map(|name| format!(" or export {name}"))
         .unwrap_or_default();
     format!("no credential for provider {provider} (run: yi login {provider}{env})")

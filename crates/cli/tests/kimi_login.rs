@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use crate::loopback::read_request;
+use crate::loopback::{read_request, reply};
 use crate::plan_ops::streams as text;
 use crate::scratch::Scratch;
 
@@ -22,13 +22,6 @@ const BASH_TURN: &str = include_str!("../../ai/tests/fixtures/kimi-chat-2026-10-
 const ANSWER_TURN: &str = include_str!("../../ai/tests/fixtures/kimi-chat-2026-10-24-answer.sse");
 
 type Seen = Arc<Mutex<Vec<(String, String)>>>;
-
-fn reply(status: &str, kind: &str, body: &str) -> String {
-    format!(
-        "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
-    )
-}
 
 /// The account's endpoints on 127.0.0.1; `denied` answers the token poll with `access_denied`.
 /// Every request is kept as (request line, headers and body).

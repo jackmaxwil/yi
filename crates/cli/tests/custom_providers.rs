@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use crate::loopback::read_request;
+use crate::loopback::{read_request, reply};
 use crate::plan_ops::streams as text;
 use crate::scratch::Scratch;
 
@@ -34,10 +34,7 @@ fn fake_gateway() -> std::io::Result<(u16, Seen)> {
         for stream in listener.incoming().flatten() {
             let mut reader = BufReader::new(stream);
             let request = read_request(&mut reader);
-            let answer = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{ANSWER}",
-                ANSWER.len()
-            );
+            let answer = reply("200 OK", "text/event-stream", ANSWER);
             let _ = reader.get_mut().write_all(answer.as_bytes());
             if let Ok(mut all) = kept.lock() {
                 all.push(request);
@@ -81,7 +78,6 @@ impl Home {
 
 fn localgw(port: u16, key: Value) -> Value {
     let mut provider = json!({
-        "api": "openai-completions",
         "baseUrl": format!("http://127.0.0.1:{port}/v1"),
         "models": [{"id": "m1", "name": "Model One", "contextWindow": 200000, "maxTokens": 32000}],
     });
@@ -89,6 +85,18 @@ fn localgw(port: u16, key: Value) -> Value {
         provider.extend(key.clone());
     }
     json!({ "localgw": provider })
+}
+
+/// The `providers` row of `yi doctor --json` run with `env`.
+fn providers_row(home: &Home, env: &[(&str, &str)]) -> Result<Value, Box<dyn Error>> {
+    let mut env = env.to_vec();
+    env.push(("YI_KERNEL_PYTHON", "/nonexistent/python3"));
+    let doctor = home.yi(&["doctor", "--json"], &env)?;
+    let rows: Value = serde_json::from_slice(&doctor.stdout)?;
+    let row = (rows.as_array().into_iter().flatten())
+        .find(|row| row["name"] == "providers")
+        .ok_or_else(|| format!("no providers row: {rows}"))?;
+    Ok(row.clone())
 }
 
 /// The request reaches the declared base URL's `/chat/completions` with the env key as the
@@ -130,6 +138,10 @@ fn a_declared_provider_streams_through_its_own_base_url_and_key() -> TestResult 
     assert!(body["max_tokens"].is_u64(), "{body}");
     assert!(body.get("max_completion_tokens").is_none(), "{body}");
     assert!(body.get("store").is_none(), "{body}");
+    let row = providers_row(&home, &[("LOCALGW_API_KEY", "sk-localgw-test")])?;
+    assert_eq!(row["status"], "ok", "{row}");
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(detail.ends_with("key from LOCALGW_API_KEY"), "{row}");
     Ok(())
 }
 
@@ -151,14 +163,7 @@ fn a_literal_api_key_is_the_bearer() -> TestResult {
             .any(|line| line.eq_ignore_ascii_case("authorization: Bearer sk-placeholder")),
         "{first}"
     );
-    let doctor = home.yi(
-        &["doctor", "--json"],
-        &[("YI_KERNEL_PYTHON", "/nonexistent/python3")],
-    )?;
-    let rows: Value = serde_json::from_slice(&doctor.stdout)?;
-    let row = (rows.as_array().into_iter().flatten())
-        .find(|row| row["name"] == "providers")
-        .ok_or_else(|| format!("no providers row: {rows}"))?;
+    let row = providers_row(&home, &[])?;
     assert_eq!(row["status"], "ok", "{row}");
     let detail = row["detail"].as_str().unwrap_or_default();
     assert!(detail.starts_with("localgw 1 model(s)"), "{row}");
@@ -166,7 +171,8 @@ fn a_literal_api_key_is_the_bearer() -> TestResult {
     Ok(())
 }
 
-/// No key anywhere is the built-in providers' refusal, naming the variable, and sends nothing.
+/// No key anywhere is refused before any request, naming the two routes a custom id has; `yi
+/// login` has no profile for one, so it is not offered.
 #[test]
 fn a_declared_provider_with_no_key_is_refused_before_any_request() -> TestResult {
     let (port, seen) = fake_gateway()?;
@@ -176,18 +182,20 @@ fn a_declared_provider_with_no_key_is_refused_before_any_request() -> TestResult
     )?;
     let ask = home.yi(&["ask", "--here", "--model", "localgw/m1", "hi"], &[])?;
     assert_eq!(ask.status.code(), Some(4), "{}", text(&ask));
-    assert!(
-        text(&ask).contains(
-            "no credential for provider localgw (run: yi login localgw or export LOCALGW_API_KEY)"
-        ),
-        "{}",
-        text(&ask)
-    );
+    let refusal = "no credential for provider localgw (export LOCALGW_API_KEY or set providers.localgw.apiKey in config.json)";
+    assert!(text(&ask).contains(refusal), "{}", text(&ask));
     assert!(seen.lock().map_err(|_| "fake lock")?.is_empty());
+    let row = providers_row(&home, &[])?;
+    assert_eq!(row["status"], "fail", "{row}");
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.ends_with("no key (export LOCALGW_API_KEY or set apiKey)"),
+        "{row}"
+    );
     Ok(())
 }
 
-/// A provider id a built-in one already holds is refused when the config loads, by name.
+/// An id a catalog provider or a reserved one (`faux`, the script) holds is refused at load.
 #[test]
 fn a_custom_provider_named_like_a_built_in_one_is_refused_at_load() -> TestResult {
     let mut providers = localgw(1, json!({"apiKey": "x"}));
@@ -195,15 +203,17 @@ fn a_custom_provider_named_like_a_built_in_one_is_refused_at_load() -> TestResul
         .as_object_mut()
         .and_then(|map| map.remove("localgw"))
         .ok_or("no localgw")?;
-    providers = json!({ "openai": declared });
-    let home = Home::new("collide", &providers)?;
-    let ask = home.yi(&["ask", "--here", "--model", "openai/m1", "hi"], &[])?;
-    assert_eq!(ask.status.code(), Some(2), "{}", text(&ask));
-    assert!(
-        text(&ask).contains("providers: `openai` is a built-in provider id"),
-        "{}",
-        text(&ask)
-    );
+    for taken in ["openai", "faux"] {
+        let home = Home::new(&format!("collide-{taken}"), &json!({ taken: declared }))?;
+        let model = format!("{taken}/m1");
+        let ask = home.yi(&["ask", "--here", "--model", &model, "hi"], &[])?;
+        assert_eq!(ask.status.code(), Some(2), "{taken}: {}", text(&ask));
+        assert!(
+            text(&ask).contains(&format!("providers: `{taken}` is a built-in provider id")),
+            "{}",
+            text(&ask)
+        );
+    }
     Ok(())
 }
 

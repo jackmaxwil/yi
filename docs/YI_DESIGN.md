@@ -258,15 +258,15 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   derived from the route. Any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`, then the `providers` the config
   declares. Model: `--model`, else `models.primary`, else `model`; none is built in.
-- Custom providers: `providers.<id>{api,baseUrl,apiKeyEnv,apiKey,models[{id,name,reasoning,input,
-  contextWindow,maxTokens,cost}]}` in `~/.yi/config.json`, addressed `<id>/<model>`. `api` takes
-  only `openai-completions`; an id a built-in provider, `laya` or `faux` holds refuses at load. They
+- Custom providers: `providers.<id>{baseUrl,apiKeyEnv,apiKey,models[{id,name,reasoning,input,
+  contextWindow,maxTokens,cost}]}` in `~/.yi/config.json`, addressed `<id>/<model>`, each speaking
+  OpenAI chat completions; an id a built-in provider, `laya` or `faux` holds refuses at load. They
   merge after the cache, so no refresh rewrites or drops them, and no refresh ever fetches one.
-  Requests go through the OpenAI completions adapter at `baseUrl` with plain `max_tokens` and none
-  of OpenAI's own fields. Key: `apiKeyEnv`'s variable, else `apiKey` (a literal, for a gateway
-  placeholder that is not a secret; a real key belongs in the variable or `yi login <id>`), else
-  the yi-oauth store; none is the built-in missing-credential refusal. `yi doctor` has a
-  `providers` row naming each and where its key resolved.
+  Requests go through the OpenAI completions adapter at `baseUrl` with plain `max_tokens`
+  (`compat.plainMaxTokens`) and none of OpenAI's own fields. Key: `apiKeyEnv`'s variable, else
+  `apiKey` (a literal, for a gateway placeholder that is not a secret); none is a missing-credential
+  refusal naming both. The block is read once per process: an edit takes hold on restart.
+  `yi doctor` has a `providers` row naming each and where its key resolved.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
@@ -1104,7 +1104,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
   `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode,allowWrite,allow}`,
-  `mail{hopLimit}`, `open[{name,command}]`, `providers{<id>:{api,baseUrl,apiKeyEnv,apiKey,models}}`.
+  `mail{hopLimit}`, `open[{name,command}]`, `providers{<id>:{baseUrl,apiKeyEnv,apiKey,models}}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)

@@ -20,3 +20,12 @@ pub fn read_request(reader: &mut BufReader<TcpStream>) -> String {
     let _ = reader.read_exact(&mut body);
     request + &String::from_utf8_lossy(&body)
 }
+
+/// One whole HTTP/1.1 response with its `content-length`, closing the connection after it.
+#[allow(dead_code, reason = "the shared harness serves several test binaries")]
+pub fn reply(status: &str, kind: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
