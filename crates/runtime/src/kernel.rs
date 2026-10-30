@@ -368,16 +368,6 @@ impl KernelService {
                 family_dir.to_string_lossy().into_owned(),
             ));
         }
-        env.push((
-            "RLM_GLOBAL_HARNESS_STATE_DIR".to_owned(),
-            self.options
-                .home
-                .join(".yi")
-                .join("harness")
-                .to_string_lossy()
-                .into_owned(),
-        ));
-        env.push(("RLM_GLOBAL_HARNESS_HOST".to_owned(), "1".to_owned()));
         if let Some(path) = yi_tools::plugin::search_path(&self.options.home) {
             env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
         }
