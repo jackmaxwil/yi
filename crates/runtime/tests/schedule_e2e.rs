@@ -1029,6 +1029,10 @@ fn child_named(id: &str, tokens: u64) -> yi_types::event::AgentEvent {
             error: None,
             exit: None,
             flag: None,
+            session: None,
+            role: None,
+            task: None,
+            elapsed_ms: None,
         },
     }
 }

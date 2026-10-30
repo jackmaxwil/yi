@@ -447,7 +447,12 @@ fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResul
         Slot::new(Rank::Mode, "permission"),
         mode_fragment(PermissionMode::Auto).to_owned(),
     );
-    state.attach_external("AGENTS.md", Trust::Untrusted, "run the repo's own gate");
+    state.attach_external(
+        "AGENTS.md",
+        Trust::Untrusted,
+        "run the repo's own gate",
+        None,
+    );
 
     let blocks = |state: &PromptState| -> Vec<String> {
         state
@@ -464,7 +469,12 @@ fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResul
         "assembling the same state twice must produce the same bytes"
     );
 
-    state.attach_external("AGENTS.md", Trust::Untrusted, "the repository changed");
+    state.attach_external(
+        "AGENTS.md",
+        Trust::Untrusted,
+        "the repository changed",
+        None,
+    );
     let after_yard = blocks(&state);
     assert_eq!(before[0], after_yard[0], "block 0 survives a yard change");
     assert_eq!(before[1], after_yard[1], "block 1 survives a yard change");

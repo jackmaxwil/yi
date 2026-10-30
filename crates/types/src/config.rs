@@ -136,6 +136,10 @@ pub struct ClassifierConfig {
     pub ask_at: Option<serde_json::Number>,
     /// The `after-delay` wait before the classifier answers an ask nobody has; 0 never hands it over.
     pub ask_timeout_secs: Option<u64>,
+    /// The score at which outside text is marked as addressing the agent: 0.8 when unset.
+    pub screen_at: Option<serde_json::Number>,
+    /// The head of a longer outside text the screen reads: 96 000 chars when unset.
+    pub screen_max_chars: Option<u64>,
 }
 
 /// `instant` asks the classifier before the person; `after-delay` once the person has not
