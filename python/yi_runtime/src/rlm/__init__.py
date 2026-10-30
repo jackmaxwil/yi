@@ -1261,7 +1261,18 @@ def put(name: str, obj: Any) -> dict[str, Any]:
     if not isinstance(name, str) or not FAMILY_NAME.match(name):
         raise ValueError("a blackboard name is a plain file-safe token, e.g. 'shard_auth'")
     directory = _family_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        return _put(directory, name, obj)
+    except PermissionError as error:
+        raise PermissionError(
+            f"rlm.put({name!r}) cannot write the family board here ({error.strerror or error}): "
+            "this kernel is contained. Write the value as JSON to a file in the workspace and pass "
+            "local://<path> to the member that needs it; it reads it with rlm.fetch."
+        ) from error
+
+
+def _put(directory: Path, name: str, obj: Any) -> dict[str, Any]:
     serializer = _serializer()
     target = directory / f"{name}.dill"
     # Invariant: both files are staged before either is renamed, so a put that fails while

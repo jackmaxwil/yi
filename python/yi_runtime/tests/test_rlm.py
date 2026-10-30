@@ -985,3 +985,26 @@ class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
                 ("rlm_heartbeat.delete", {"id": "j1"}),
             ],
         )
+
+
+class ContainedPutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_read_only_board_refusal_names_a_remedy_that_works(self) -> None:
+        """Dies with the bare EPERM text: a contained child's put named nothing it could do."""
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: (os.chmod(root / "board", 0o755), shutil.rmtree(root)))
+        (root / "board").mkdir()
+        os.chmod(root / "board", 0o555)
+        with mock.patch.dict(os.environ, {"RLM_FAMILY_DIR": str(root / "board")}):
+            with self.assertRaises(PermissionError) as refused:
+                rlm.put("shard_auth", {"findings": [1, 2]})
+        self.assertIn("local://", str(refused.exception))
+        path = root / "shard_auth.json"
+        path.write_text(json.dumps({"findings": [1, 2]}))
+
+        async def fake_host_request(kind, payload):
+            self.assertEqual(payload["url"], f"local://{path}")
+            return {"text": path.read_text()}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            page = await rlm.fetch(f"local://{path}", as_text=True)
+        self.assertEqual(json.loads(page), {"findings": [1, 2]})
