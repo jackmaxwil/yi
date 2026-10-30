@@ -282,12 +282,13 @@ pub(crate) fn newest_reads<M: std::borrow::Borrow<AgentMessage>>(
         match call.map(|(name, _)| name) {
             Some("read") => latest.extend(shown(index).into_iter().map(|path| (path, index))),
             Some("edit" | "write") => edited.extend(shown(index)),
-            Some("ipython") => edited.extend(
-                (yi_context::nested_calls(result(index).and_then(|(_, details)| details.as_ref())))
-                    .into_iter()
-                    .filter(|row| row.ok && matches!(row.tool.as_str(), "edit" | "write"))
-                    .flat_map(|row| row.paths),
-            ),
+            Some("ipython") => {
+                let mut ops = yi_context::FileOps::default();
+                if let Some(message) = messages.get(index).map(|message| message.borrow()) {
+                    yi_context::details::extract_file_ops_kept(message, &mut ops, |row| row.ok);
+                }
+                edited.extend(ops.edited.into_iter().chain(ops.written));
+            }
             _ => {}
         }
     }
