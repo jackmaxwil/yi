@@ -127,6 +127,12 @@ def defined_in_source(binary, name, root=ROOT):
 
 
 def cfg_gated(lines, index):
+    for context in lines:
+        stripped = context.strip()
+        if stripped.startswith("#![cfg("):
+            return True
+        if not (stripped.startswith("#!") or stripped.startswith("//") or not stripped):
+            break
     for context in reversed(lines[:index]):
         stripped = context.strip()
         if stripped.startswith("#[cfg("):
@@ -227,9 +233,13 @@ def selfcheck_predicate():
             (root / "crates" / crate).mkdir(parents=True)
             (root / "crates" / crate / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n')
             (root / "crates" / crate / "lib.rs").write_text(body)
+        (root / "crates/demo/sandbox.rs").write_text(
+            '#![cfg(target_os = "macos")]\n\nfn helper() {\n}\n\n#[test]\nfn gated_file() {}\n'
+        )
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
         subprocess.run(["git", "add", "crates"], cwd=root, check=True)
         assert defined_in_source("yi-demo::integration", "mod::gated_here", root)
+        assert defined_in_source("yi-demo::integration", "sandbox::gated_file", root), "a file-level cfg gate read as stale"
         assert not defined_in_source("yi-demo::integration", "mod::ungated_here", root), "an ungated helper excused a stale row"
         assert not defined_in_source("yi-demo::integration", "mod::only_elsewhere", root), "another crate's function excused a stale row"
 
