@@ -963,3 +963,25 @@ class OneChildWaitTests(unittest.IsolatedAsyncioTestCase):
         for host_word in ("running", "completed", "error"):
             entry = {"rlm_child_id": "sub-1", "session_name": "n", "session_dir": "/tmp", "status": host_word}
             self.assertIn(rlm._subagent_from_payload(entry).status, roster)
+
+
+class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_paused_notices_remedy_resumes_and_unsubscribe_stops(self) -> None:
+        """Dies with no rlm.resume: the paused adapter's notice named a call a cell could not make."""
+        sent = []
+
+        async def fake_host_request(kind, payload):
+            sent.append((kind, payload))
+            return {"jobs": [{"id": "j1", "status": "paused"}]}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            self.assertEqual((await rlm.subscriptions())[0]["id"], "j1")
+            await rlm.resume("j1")
+            await rlm.unsubscribe("j1")
+        self.assertEqual(
+            sent[1:],
+            [
+                ("rlm_heartbeat.update", {"id": "j1", "status": "resume"}),
+                ("rlm_heartbeat.delete", {"id": "j1"}),
+            ],
+        )

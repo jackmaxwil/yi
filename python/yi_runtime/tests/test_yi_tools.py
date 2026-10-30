@@ -133,5 +133,20 @@ class Tools(unittest.TestCase):
         self.assertEqual([row["name"] for row in tools.search("file")["tools"]], ["grep", "write"])
 
 
+    def test_a_value_reads_a_camel_case_field_by_its_snake_case_name(self) -> None:
+        value = tools.Value({"totalLines": 40})
+        self.assertEqual(value.total_lines, value.totalLines)
+
+    def test_every_search_row_is_short_and_help_keeps_the_whole_description(self) -> None:
+        long = {"name": "fetch", "description": "Read a URL. " + "x" * 2_000,
+                "parameters": {"type": "object", "properties": {f"p{i}": {"type": "string"} for i in range(30)}}}
+        catalog = copy.deepcopy(CATALOG)
+        catalog["tools"].append(long)
+        tools._catalog = catalog
+        rows = tools.search("")["tools"]
+        self.assertTrue(rows and all(len(json.dumps(row).encode()) < 200 for row in rows), rows)
+        self.assertIn("x" * 2_000, yi.tools.fetch.__doc__)
+
+
 if __name__ == "__main__":
     unittest.main()

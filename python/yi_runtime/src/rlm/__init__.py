@@ -912,6 +912,24 @@ async def subscribe(
 
 
 @_public
+async def subscriptions() -> list[dict[str, Any]]:
+    """This session's subscriptions and heartbeats, each ``{id, status, ...}`` as the host stores it."""
+    return (await host_request("rlm_heartbeat.list", {})).get("jobs") or []
+
+
+@_public
+async def resume(job: str) -> dict[str, Any]:
+    """Resume a paused subscription by ``id``: the remedy a paused adapter's notice names."""
+    return await host_request("rlm_heartbeat.update", {"id": job, "status": "resume"})
+
+
+@_public
+async def unsubscribe(job: str) -> dict[str, Any]:
+    """Cancel a subscription by ``id``; it stops ticking."""
+    return await host_request("rlm_heartbeat.delete", {"id": job})
+
+
+@_public
 async def receive(timeout: float = 300.0) -> list[dict[str, Any]]:
     """Block until mail for you arrives; returns every envelope not yet shown to you.
 
