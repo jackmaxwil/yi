@@ -34,6 +34,7 @@ def job_secs(workflow):
     return int(found.group(1)) * 60
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+import forge_tracking  # noqa: E402
 import merge_baseline  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
 
@@ -101,9 +102,25 @@ def pull(number):
     return pr
 
 
+def open_pulls():
+    """Every open pull request, page by page: the forge returns 50 a page, and a reader of page one
+    alone never sees the oldest. Incident: 102 were open and a pass saw #1830..#1891 only."""
+    bad = []
+
+    def transport(method, path, body):
+        batch = fgj_api(method, path, body)
+        if not isinstance(batch, list) and not bad:
+            bad.append(batch)
+        return batch
+
+    found = list(forge_tracking.paged(transport, f"repos/{repo()}/pulls?state=open"))
+    # Incident: an unsigned fgj answered the listing with an error object the loop then indexed, so
+    # every page's reply is judged, and a 404 (None) is a failed page, not an empty one.
+    return bad[0] if bad else found
+
+
 def pull_for_branch(name):
-    pulls = fgj_api("GET", f"repos/{repo()}/pulls?state=open&limit=50") or []
-    for pr in pulls:
+    for pr in open_pulls() or []:
         if pr.get("head", {}).get("ref") == name:
             return pr
     return None
@@ -621,6 +638,45 @@ def selfcheck():
         raise AssertionError("a missing workflow read as a limit")
     except FileNotFoundError:
         pass
+    # The listing pages: 102 open pulls are three pages, and a reader of page one never sees the oldest.
+    served = [{"number": n, "head": {"ref": f"b{n}"}} for n in range(102)]
+
+    def listing(method, path, payload=None):
+        if "pulls?state=open" not in path:
+            return {"message": "not this one"}
+        page = int(re.search(r"page=(\d+)", path).group(1))
+        return served[(page - 1) * 50:page * 50]
+
+    real = globals()["fgj_api"], globals()["repo"]
+    globals()["fgj_api"], globals()["repo"] = listing, lambda: "o/r"
+    try:
+        assert [pr["number"] for pr in open_pulls()] == list(range(102)), "the open listing skipped a page's worth"
+        assert pull_for_branch("b101")["number"] == 101, "a pull request past the first page is not found by branch"
+    finally:
+        globals()["fgj_api"], globals()["repo"] = real
+    globals()["fgj_api"] = lambda *a, **k: {"message": "no token"}
+    try:
+        assert open_pulls()["message"] == "no token", "an error object read as a page"
+    finally:
+        globals()["fgj_api"] = real[0]
+    # A page after the first answering with an error object is returned, never spliced into the list.
+    globals()["fgj_api"] = lambda m, path, payload=None: served[:50] if path.endswith("page=1") else {"message": "no token"}
+    try:
+        late = open_pulls()
+        assert not isinstance(late, list) and late["message"] == "no token", f"a later page's error object read as {late[50:]!r}"
+    finally:
+        globals()["fgj_api"] = real[0]
+    for gone, where in ((lambda *a, **k: None, "first"), (lambda m, path, payload=None: served[:50] if path.endswith("page=1") else None, "later")):
+        globals()["fgj_api"] = gone
+        try:
+            assert open_pulls() is None, f"a 404 on the {where} page read as a listing"
+        finally:
+            globals()["fgj_api"] = real[0]
+    globals()["fgj_api"] = lambda *a, **k: served[:50]
+    try:
+        assert len(open_pulls()) == 50, "a forge that ignores `page` served its first page forever"
+    finally:
+        globals()["fgj_api"] = real[0]
     assert repo_of("ssh://git@forge.example.invalid:2222/apex/yi.git") == "apex/yi"
     assert repo_of("https://git.example.invalid/apex/yi") == "apex/yi"
     assert repo_of("git@github.com:jackmaxwil/yi.git") == "jackmaxwil/yi"
