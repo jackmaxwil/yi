@@ -7,6 +7,7 @@ mod poll;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 
+mod checkpoint;
 mod documents;
 mod endings;
 mod hashline_parser;
