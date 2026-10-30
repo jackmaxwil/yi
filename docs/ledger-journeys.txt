@@ -8,6 +8,7 @@ entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_type
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
+context P1–P19; prefix-aligned P7 | `compaction_faux::the_retention_floor_keeps_the_users_typed_words_and_drops_host_text` (T1)
 hashline edit (+ registers, instrumented) | `hashline_patcher::read_edit_round_trip_replaces_lines_and_mints_a_new_tag`
 hashline edit (+ registers, instrumented) | `hashline_patcher::named_register_moves_content_across_files`
 hashline edit (+ registers, instrumented) | `tools::a_grep_apply_carries_the_syntax_verdict_and_its_patch`

@@ -2292,3 +2292,71 @@ async fn a_recorded_finding_is_listed_in_the_compaction_view() -> Result<(), Box
     );
     Ok(())
 }
+
+/// Dies with a host notice or a wrapped reminder carried into the kept tail as the user's words.
+#[tokio::test]
+async fn the_retention_floor_keeps_the_users_typed_words_and_drops_host_text()
+-> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-floor")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-floor");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-floor".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let summary = faux_assistant_message(vec![faux_text("## Goal\nSummarized")], StopReason::Stop);
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        summary,
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("first requirement: keep the guardrails green")?;
+    session.wait_idle().await;
+    {
+        let mut writer = yi_session::lock_session(&store);
+        writer.append_message(
+            "main",
+            AgentMessage::host_text(
+                yi_types::message::HostSource::Notice,
+                "[host] job 7 finished",
+                0,
+            ),
+        )?;
+        writer.append_message(
+            "main",
+            yi_context::wrap_internal(
+                "reminder",
+                "keep going",
+                yi_types::message::ATTRIBUTED_SINCE_MS,
+            ),
+        )?;
+    }
+    session.prompt("second ask with enough characters to keep recent")?;
+    session.wait_idle().await;
+    assert_eq!(session.store_error(), None);
+    let compactions = compaction_entries(&store);
+    let Some(Entry::Compaction { retained_tail, .. }) = compactions.first() else {
+        return Err("expected a compaction entry".into());
+    };
+    let kept: Vec<&str> = retained_tail
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            "first requirement: keep the guardrails green",
+            "second ask with enough characters to keep recent"
+        ],
+        "the kept tail is the user's typed words only"
+    );
+    Ok(())
+}
