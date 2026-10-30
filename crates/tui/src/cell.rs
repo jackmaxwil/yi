@@ -251,9 +251,17 @@ pub fn label(tool: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The summary opens with the tool's own glyph and label; what is left is the source.
+pub(crate) fn subject_of<'a>(name: &str, summary: &'a str) -> &'a str {
+    summary
+        .split_once(label(name).as_str())
+        .map(|(_, rest)| rest.trim())
+        .unwrap_or(summary)
+}
+
 const PREVIEW_ROWS: usize = 3;
 
-fn glyph(tool: &str) -> char {
+pub(crate) fn glyph(tool: &str) -> char {
     match tool {
         "bash" => '$',
         "read" | "get_context" => '→',
@@ -336,7 +344,12 @@ fn counted(digest: &str) -> Option<(&str, &str)> {
     (numeric && !noun.is_empty() && !noun.contains(' ')).then_some((count, noun))
 }
 
-fn subject_spans(tool: &str, subject: &str, theme: &Theme, style: Style) -> Vec<Span<'static>> {
+pub(crate) fn subject_spans(
+    tool: &str,
+    subject: &str,
+    theme: &Theme,
+    style: Style,
+) -> Vec<Span<'static>> {
     let plain = style.fg == Some(theme.text);
     let hue = match tool {
         "grep" if plain => Some(theme.orange),
@@ -568,11 +581,8 @@ impl ToolCell {
         let anchored = matches!(self.name.as_str(), "read" | "edit");
         // A patch routes to `diffview`, which colours from its own header; this is the plain
         // numbered dump a read prints, its path in the summary since `details` lacks it.
-        let label = label(&self.name);
         let subject = anchored
-            .then(|| self.summary.split_once(label.as_str()))
-            .flatten()
-            .map(|(_, rest)| rest.trim())
+            .then(|| subject_of(&self.name, &self.summary))
             .filter(|subject| !subject.is_empty());
         let mut lang = subject.and_then(crate::highlight::lang_for);
         let mut expect = 1_u64;
@@ -971,6 +981,15 @@ fn boxed(title: &str, body: Vec<Line<'static>>, width: usize, style: Style) -> V
     out
 }
 
+/// Invariant: a run closes into the cell it commits as whatever its length, so the live region
+/// and the transcript draw one shape and a lone read does not shrink then grow.
+pub(crate) fn explored_cell(rows: Vec<ToolCell>) -> Cell {
+    match <[ToolCell; 1]>::try_from(rows) {
+        Ok([single]) => Cell::Tool(single),
+        Err(rows) => Cell::Explored(rows),
+    }
+}
+
 impl Cell {
     pub fn lines(
         &self,
@@ -1024,7 +1043,7 @@ impl Cell {
             }
             Cell::Thought { markdown } => thought_lines(markdown, width, theme, mode, true),
             Cell::Tool(tool) => tool.lines(width, theme, mode, spinner_phase),
-            Cell::Explored(rows) => explored_lines(rows, width, theme),
+            Cell::Explored(rows) => crate::citations::lines(rows, width, theme, mode),
             Cell::Task(task) => task.lines(width, theme, mode, spinner_phase),
             Cell::Advisory { source, text } => {
                 callout(Some(source), text, theme.muted_style(), width, theme)
@@ -1100,59 +1119,6 @@ fn is_element_row(row: &str) -> bool {
     row.strip_prefix('<')
         .and_then(|rest| rest.strip_suffix('>'))
         .is_some_and(|inner| !inner.contains(['<', '>']))
-}
-
-const EXPLORED_CAP: usize = 32;
-/// Fixed, not measured: a width read off one run would leave two adjacent
-/// Explored blocks with their subjects in different columns.
-const VERB_WIDTH: usize = 6;
-
-/// A run of read-only calls, one row each under a single bullet: the verb in
-/// accent, its subject, and the digest the call earned.
-fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let head = Line::from(vec![
-        Span::styled(
-            "✱ Explored",
-            Style::default()
-                .fg(crate::card::tool_hue(theme, "read"))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!(" ×{}", rows.len()), theme.muted_style()),
-    ]);
-    let inner = crate::card::body_width(width);
-    let mut out = Vec::new();
-    for row in rows.iter().take(EXPLORED_CAP) {
-        let verb = explore_verb(&row.name).unwrap_or("Ran");
-        // The summary opens with the tool's own glyph and name, which the verb
-        // column now says; what is left is the subject.
-        let subject = row
-            .summary
-            .split_once(label(&row.name).as_str())
-            .map(|(_, rest)| rest.trim())
-            .unwrap_or(row.summary.as_str())
-            .to_owned();
-        let mut spans = vec![Span::styled(
-            format!("{verb:<VERB_WIDTH$} "),
-            Style::default().fg(theme.accent),
-        )];
-        spans.extend(subject_spans(
-            &row.name,
-            &subject,
-            theme,
-            Style::default().fg(theme.text),
-        ));
-        if let Some(digest) = &row.digest {
-            spans.push(Span::styled(format!("  {digest}"), theme.dim_style()));
-        }
-        out.extend(wrap_line(&Line::from(spans), inner, "        "));
-    }
-    if let Some(extra) = rows.len().checked_sub(EXPLORED_CAP).filter(|n| *n > 0) {
-        out.push(Line::from(Span::styled(
-            format!("… {extra} more"),
-            theme.dim_style(),
-        )));
-    }
-    crate::card::card(head, &[], out, width, theme, ToolStatus::Done)
 }
 
 /// Advisories arrive as `<advisory …>text</advisory>` markup; the tags are
