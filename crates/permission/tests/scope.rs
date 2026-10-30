@@ -309,6 +309,9 @@ fn a_relative_redirect_after_a_directory_change_is_refused() -> TestResult {
         "command cd crates && echo hi > evals/probe.py",
         "time cd crates && echo hi > evals/probe.py",
         "\\cd crates && echo hi > evals/probe.py",
+        "'cd' crates && echo hi > evals/probe.py",
+        "c\"d\" crates && echo hi > evals/probe.py",
+        "c\\d crates && echo hi > evals/probe.py",
     ] {
         let reason = refusal(&scoped.bash(command))
             .ok_or_else(|| format!("{command:?} was allowed"))?
@@ -325,6 +328,12 @@ fn a_relative_redirect_after_a_directory_change_is_refused() -> TestResult {
         "echo hi | cat; echo hi > evals/probe.py",
         "echo hi > evals/out.txt",
         "cd /tmp && echo hi > /tmp/outside.txt",
+        "git log --format=%cd > evals/log",
+        "grep -rn cd crates/ > evals/found.txt",
+        "man cd > evals/man.txt",
+        "command -v cd > evals/probe.txt",
+        "ls evals/cd > evals/x",
+        "just check-cd > evals/log",
     ] {
         let decision = scoped.bash(command);
         assert!(refusal(&decision).is_none(), "{command:?}: {decision:?}");
