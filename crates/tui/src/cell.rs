@@ -259,6 +259,7 @@ fn glyph(tool: &str) -> char {
         "read" | "get_context" => '→',
         "edit" | "write" => '←',
         "grep" => '✱',
+        "web_search" => '⌕',
         "ipython" => '⊙',
         "todo" | "plan" => '≡',
         "answer" => '»',
@@ -356,14 +357,11 @@ fn subject_spans(tool: &str, subject: &str, theme: &Theme, style: Style) -> Vec<
     vec![Span::styled(subject.to_owned(), style)]
 }
 
-/// Read-only calls group under one bullet: a run of eight is one act of
-/// looking, and eight rows of it crowds out the answer.
+/// Read-only calls group under one bullet: a run of eight is one act of looking, and eight rows of it crowds out the answer.
 pub fn explore_verb(tool: &str) -> Option<&'static str> {
-    match tool {
-        "read" => Some("Read"),
-        "grep" => Some("Search"),
-        _ => None,
-    }
+    (tool == "read")
+        .then_some("Read")
+        .or_else(|| matches!(tool, "grep" | "web_search").then_some("Search"))
 }
 
 impl ToolCell {
@@ -705,6 +703,7 @@ impl ToolCell {
                     "hit",
                 ),
             },
+            "web_search" => crate::transcript::search_digest(details)?,
             _ => first()?.to_owned(),
         };
         let digest = crate::transcript::show_controls(digest.trim());

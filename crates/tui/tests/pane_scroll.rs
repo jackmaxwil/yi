@@ -292,11 +292,7 @@ fn shift(before: &[String], now: &[String]) -> Option<usize> {
 /// Commits a `lines`-row fence at the bottom of a full pane and paints until its last line is
 /// on screen; returns each frame's move and whether every lagging frame asked for the next.
 fn roll_in(lines: usize) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
-    roll_in_sized(lines, AREA.height)
-}
-
-fn roll_in_sized(lines: usize, height: u16) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
-    roll_in_mode(lines, height, FollowMode::Slide)
+    roll_in_mode(lines, AREA.height, FollowMode::Slide)
 }
 
 fn roll_in_mode(
@@ -335,7 +331,7 @@ fn roll_in_mode(
 
 #[test]
 fn slide_keeps_the_pre_change_frame_sequence() -> TestResult {
-    let (moves, _) = roll_in_sized(20, 30)?;
+    let (moves, _) = roll_in_mode(20, 30, FollowMode::Slide)?;
     assert_eq!(moves, vec![1; 22]);
     Ok(())
 }

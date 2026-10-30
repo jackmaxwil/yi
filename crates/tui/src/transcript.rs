@@ -139,6 +139,7 @@ pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
         "bash" => args.get("command"),
         "read" | "edit" | "write" => args.get("path"),
         "grep" => args.get("pattern"),
+        "web_search" => args.get("query"),
         "ipython" => args.get("code"),
         _ => None,
     };
@@ -152,6 +153,19 @@ pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
             text
         }
         None => String::new(),
+    }
+}
+
+pub(crate) fn search_digest(details: &Value) -> Option<String> {
+    let count = details.get("citationCount")?.as_u64()?;
+    let count = usize::try_from(count).unwrap_or(usize::MAX);
+    let citations = crate::cell::count_label(count, "citation");
+    match details.get("costUsd").and_then(Value::as_f64) {
+        Some(cost) => Some(format!(
+            "{citations} · {}",
+            yi_types::message::fmt_cost(cost, false)
+        )),
+        None => Some(citations),
     }
 }
 

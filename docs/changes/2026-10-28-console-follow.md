@@ -1,6 +1,6 @@
 ---
 issue: Closes #1711
-growth: +525 shared follow paint seams, a held inline window and a macOS-only preference reader; the duplicated per-mode clamps collapsed into one, git_root's canonicalize was reverted to main's, and the two temp-dir test helpers became one
+growth: +505 shared follow paint seams, a held inline window and a macOS-only preference reader; the duplicated per-mode clamps collapsed into one, git_root's canonicalize was reverted to main's, and the two temp-dir test helpers became one
 decision: "Hybrid page jumps + streaming text" | "reduce visual movement giving user motion sickness" | reversible via tui.follow: slide
 decision: "Yes, use Still" | "No I am only talking about the terminal text stream" | reversible via an explicit tui.follow setting
 decision: "Yes, hold three rows" | "No I am only talking about the terminal text stream" | reversible via removing the bounded collapsed-card reservation

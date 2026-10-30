@@ -932,20 +932,20 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
     )
 }
 
-fn lane_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("yi-console-lane-{}", std::process::id()))
+fn lane_dir(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("yi-console-lane-{}-{name}", std::process::id()))
 }
 
-fn resume_alpha_in_a_lane_dir(frame: &Value) -> Vec<Value> {
+fn resume_alpha_in_a_lane_dir(name: &str, frame: &Value) -> Vec<Value> {
     let mut frames = resume_alpha(frame);
-    let cwd = lane_dir().display().to_string();
+    let cwd = lane_dir(name).display().to_string();
     let workdir = json!({"sessionUpdate": "_yi/workdir", "cwd": cwd, "lane": "yi"});
     frames.insert(0, update("s-alpha", workdir));
     frames
 }
 
-fn agent_rewrites_the_lane_file() -> Vec<Value> {
-    let path = lane_dir().join("a.txt");
+fn agent_rewrites_the_lane_file(name: &str) -> Vec<Value> {
+    let path = lane_dir(name).join("a.txt");
     let _write = std::fs::write(&path, "rewritten in the lane\n");
     vec![update(
         "s-alpha",
@@ -960,17 +960,19 @@ fn agent_rewrites_the_lane_file() -> Vec<Value> {
 /// the agent's patch, which names the lane's file, never refreshed the open editor either.
 #[test]
 fn e_opens_a_relative_path_in_the_sessions_lane() -> TestResult {
-    let lane = lane_dir();
+    let lane = lane_dir("editor");
     std::fs::create_dir_all(&lane)?;
     std::fs::write(lane.join("a.txt"), "lane copy\n")?;
     let fixture = vec![
         Step::Expect("initialize", init_reply),
         Step::Expect("session/list", two_session_list),
         Step::Expect("session/list", empty_list),
-        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("session/resume", |frame| {
+            resume_alpha_in_a_lane_dir("editor", frame)
+        }),
         Step::Expect("_yi/seen", seen_ok),
         Step::Expect("session/list", empty_list),
-        Step::Push(agent_rewrites_the_lane_file),
+        Step::Push(|| agent_rewrites_the_lane_file("editor")),
         Step::Expect("_yi/tracked", tracked_no_then_answer),
     ];
     let ran = run(
@@ -988,7 +990,7 @@ fn e_opens_a_relative_path_in_the_sessions_lane() -> TestResult {
 /// first one opened holds no session, so the next relative path fell back to the root.
 #[test]
 fn each_path_opened_from_a_file_pane_stays_in_the_sessions_lane() -> TestResult {
-    let lane = lane_dir();
+    let lane = lane_dir("panes");
     std::fs::create_dir_all(&lane)?;
     std::fs::write(lane.join("a.txt"), "lane copy a\n")?;
     std::fs::write(lane.join("b.txt"), "lane copy b\n")?;
@@ -997,7 +999,9 @@ fn each_path_opened_from_a_file_pane_stays_in_the_sessions_lane() -> TestResult 
         Step::Expect("initialize", init_reply),
         Step::Expect("session/list", two_session_list),
         Step::Expect("session/list", empty_list),
-        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("session/resume", |frame| {
+            resume_alpha_in_a_lane_dir("panes", frame)
+        }),
         Step::Expect("_yi/seen", seen_ok),
     ];
     let ran = run(

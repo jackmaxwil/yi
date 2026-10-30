@@ -684,7 +684,12 @@ fn a_turn_receipt_names_its_kinds_of_work_and_the_model_time() -> TestResult {
     app.reduce_agent(AgentEvent::MessageStart { message: reply() });
     std::thread::sleep(std::time::Duration::from_millis(20));
     app.reduce_agent(AgentEvent::MessageEnd { message: reply() });
-    for (id, name) in [("c1", "read"), ("c2", "todo"), ("c3", "edit")] {
+    for (id, name) in [
+        ("c1", "read"),
+        ("c2", "todo"),
+        ("c3", "edit"),
+        ("c5", "web_search"),
+    ] {
         app.reduce_agent(AgentEvent::ToolExecutionStart {
             tool_call_id: id.to_owned(),
             tool_name: name.to_owned(),
@@ -713,7 +718,7 @@ fn a_turn_receipt_names_its_kinds_of_work_and_the_model_time() -> TestResult {
         .find(|r| r.starts_with("  ↳ "))
         .ok_or_else(|| format!("no footer: {rows:?}"))?;
     assert!(
-        footer.starts_with("  ↳ read 1 · edited 1 · ran 1 · "),
+        footer.starts_with("  ↳ read 1 · edited 1 · searched 1 · ran 1 · "),
         "{footer}"
     );
     assert!(footer.contains(" (model "), "{footer}");

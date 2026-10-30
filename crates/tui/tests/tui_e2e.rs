@@ -934,6 +934,7 @@ fn each_kind_of_work_puts_its_own_state_on_the_orb() -> TestResult {
     let cases = [
         ("read", OrbState::Reading),
         ("grep", OrbState::Searching),
+        ("web_search", OrbState::Searching),
         ("get_context", OrbState::Reading),
         ("edit", OrbState::Editing),
         ("bash", OrbState::Executing),
