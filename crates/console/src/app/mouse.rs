@@ -79,10 +79,13 @@ impl App {
     }
 
     fn scroll_pane_under(&mut self, x: u16, y: u16, delta: isize) {
-        let target = self.hits.as_ref().and_then(|hits| hits.pane_at(x, y));
-        if let Some(pane_id) = target
-            && let Some(pane) = self.state.panes.get_mut(&pane_id)
-        {
+        let Some(pane_id) = self.hits.as_ref().and_then(|hits| hits.pane_at(x, y)) else {
+            return;
+        };
+        if self.settings_wheel(pane_id, delta) {
+            return;
+        }
+        if let Some(pane) = self.state.panes.get_mut(&pane_id) {
             if let PaneContent::Editor(editor) = &mut pane.content {
                 editor.scroll_top = if delta >= 0 {
                     editor.scroll_top.saturating_sub(delta.unsigned_abs())

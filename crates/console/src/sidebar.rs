@@ -566,7 +566,7 @@ fn window_rows(
         .iter()
         .position(|row| row.index == Some(selected))
         .unwrap_or(0);
-    let start = cursor.saturating_add(1).saturating_sub(visible);
+    let start = crate::panes::first_row(cursor, visible);
     let end = start.saturating_add(visible).min(rows.len());
     let below = end < rows.len();
     let mut rows = rows;

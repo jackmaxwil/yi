@@ -91,7 +91,7 @@ fn primary_over<'a>(settings: &Settings, id: &'a str) -> &'a str {
     }
 }
 
-fn count(settings: &Settings, options: &[AcpConfigOption]) -> usize {
+pub(crate) fn count(settings: &Settings, options: &[AcpConfigOption]) -> usize {
     match settings.tab {
         SESSION => options.len(),
         KEYS => crate::keys::CHORDS.len(),
@@ -236,7 +236,7 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
 }
 
 /// A press on row `row`: the pane focuses it and works its control, so no setting needs a key.
-pub fn click(settings: &mut Settings, row: usize, options: &[AcpConfigOption]) -> Intent {
+pub(crate) fn click(settings: &mut Settings, row: usize, options: &[AcpConfigOption]) -> Intent {
     settings.cursor = row;
     (settings.edit, settings.status) = (None, None);
     begin(settings, options, How::Click)
@@ -508,19 +508,21 @@ pub(crate) fn targets(
     for (text, tab) in strip(settings, usize::from(inner.width)) {
         let cells = u16::try_from(Line::raw(text).width()).unwrap_or(u16::MAX);
         out.extend(tab.map(|tab| {
-            let rect = Rect::new(inner.x.saturating_add(x), inner.y, cells, 1);
+            let rect = Rect::new(inner.x.saturating_add(x), inner.y, cells, 1).intersection(inner);
             (rect, Target::Tab(tab))
         }));
         x = x.saturating_add(cells);
     }
-    out.extend(
-        row_targets(settings, options, usize::from(inner.height))
-            .into_iter()
-            .map(|(offset, row)| {
-                let rect = Rect::new(inner.x, inner.y.saturating_add(offset), inner.width, 1);
-                (rect, Target::Row(row))
-            }),
-    );
+    let total = count(settings, options);
+    let (first, room) = window(settings, usize::from(inner.height));
+    let top = inner.y.saturating_add(2);
+    for row in first..total.min(first.saturating_add(room)) {
+        let offset = u16::try_from(row.saturating_sub(first)).unwrap_or(0);
+        out.push((
+            Rect::new(inner.x, top.saturating_add(offset), inner.width, 1),
+            Target::Row(row),
+        ));
+    }
     out
 }
 
@@ -590,7 +592,7 @@ pub fn view(
 ) -> Vec<Line<'static>> {
     let mut lines = vec![tab_bar(settings, width, theme), Line::default()];
     let rows = shown_rows(settings, options, cmd);
-    let (first, room, _) = window(settings, rows.len(), visible);
+    let (first, room) = window(settings, visible);
     if waiting(settings) {
         lines.push(Line::styled(
             " asking the daemon for the config…",
@@ -674,30 +676,10 @@ pub fn view(
     lines
 }
 
-/// The row window `view` draws and a press resolves against: the first row, how many fit, and
-/// the one notice line above them.
-fn window(settings: &Settings, total: usize, visible: usize) -> (usize, usize, usize) {
+/// The row window `view` draws and a press resolves against: the first row and how many fit.
+fn window(settings: &Settings, visible: usize) -> (usize, usize) {
     let room = visible.saturating_sub(8).max(1);
-    let first = settings.cursor.saturating_sub(room.saturating_sub(1));
-    (first, room, usize::from(total == 0 || waiting(settings)))
-}
-
-/// The y inside the pane of every row `view` draws, and the row it names.
-pub(crate) fn row_targets(
-    settings: &Settings,
-    options: &[AcpConfigOption],
-    visible: usize,
-) -> Vec<(u16, usize)> {
-    let total = count(settings, options);
-    let (first, room, notice) = window(settings, total, visible);
-    let top = u16::try_from(2usize.saturating_add(notice)).unwrap_or(0);
-    (first..total.min(first.saturating_add(room)))
-        .enumerate()
-        .filter_map(|(offset, row)| {
-            let at = u16::try_from(offset).ok()?;
-            Some((top.saturating_add(at), row))
-        })
-        .collect()
+    (crate::panes::first_row(settings.cursor, room), room)
 }
 
 #[cfg(test)]
@@ -712,6 +694,21 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    /// A pane narrower than the current tab's name keeps that tab whole in the drawing; its
+    /// target must stop at the pane's own edge rather than reach the split and the neighbour.
+    #[test]
+    fn a_tab_target_never_reaches_past_its_pane() {
+        let inner = Rect::new(5, 0, 6, 10);
+        let hits = targets(&Settings::new(None, 2), &[], inner);
+        assert!(!hits.is_empty(), "the narrow pane lost its tab targets");
+        for (rect, _) in hits {
+            assert!(
+                rect.x.saturating_add(rect.width) <= inner.x.saturating_add(inner.width),
+                "{rect:?} reaches past the pane {inner:?}"
+            );
+        }
     }
 
     #[test]
