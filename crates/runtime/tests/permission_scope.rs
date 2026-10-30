@@ -799,9 +799,9 @@ fn a_url_that_serves_a_host_file_meets_the_read_gate() -> TestResult {
 }
 
 /// A link swapped between the check and the open (#890): the broker judges the name, then the
-/// real tool opens it while a thread flips `x` between an ordinary file and a link to a key
-/// (`Swap::File`), or `d` between a directory and a link to the key store (`Swap::Parent`). The
-/// reviews of #885 and #903 read a key 40 times in 20,000 tries; `reached` names a hit.
+/// real tool opens it while a thread flips `x` from an ordinary file to a link to a key
+/// (`Swap::File`), or `d` from a directory to a link to the key store (`Swap::Parent`), at an
+/// offset swept across the call so some round lands in each window; `reached` names a hit.
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 enum Swap {
@@ -810,6 +810,48 @@ enum Swap {
 }
 
 #[cfg(unix)]
+impl Swap {
+    fn arm(self, workspace: &std::path::Path, home: &std::path::Path) {
+        let at = |name: &str| workspace.join(name);
+        match self {
+            Swap::File => {
+                let _ = std::os::unix::fs::symlink(home.join(".ssh/id_rsa"), at("l.tmp"));
+                let _ = std::fs::rename(at("l.tmp"), at("x"));
+            }
+            Swap::Parent => {
+                let _ = std::fs::rename(at("d"), at("dir.tmp"));
+                let _ = std::os::unix::fs::symlink(home.join(".ssh"), at("d"));
+            }
+        }
+    }
+
+    fn disarm(self, workspace: &std::path::Path, benign: &str) -> std::io::Result<()> {
+        let at = |name: &str| workspace.join(name);
+        match self {
+            Swap::File => {
+                std::fs::write(at("plain.tmp"), benign)?;
+                std::fs::rename(at("plain.tmp"), at("x"))
+            }
+            Swap::Parent => {
+                if at("d").is_symlink() {
+                    std::fs::remove_file(at("d"))?;
+                    std::fs::rename(at("dir.tmp"), at("d"))?;
+                }
+                std::fs::write(at("d/id_rsa"), benign)
+            }
+        }
+    }
+}
+
+/// Swaps that must land inside a checked call, and the calls allowed to get them.
+#[cfg(unix)]
+const INSIDE: usize = 200;
+#[cfg(unix)]
+const ROUNDS: usize = 4_000;
+
+/// Runs checked calls, each with the swap timed to land at a different point of the call, until
+/// [`INSIDE`] swaps landed inside one; returns that count and how many calls reached the key.
+#[cfg(unix)]
 fn race(
     tool: &str,
     swap: Swap,
@@ -817,7 +859,6 @@ fn race(
     args: &dyn Fn(&dyn yi_tools::Tool, &yi_tools::ToolContext) -> Map<String, Value>,
     reached: &dyn Fn(&yi_tools::ToolOutput, &std::path::Path) -> bool,
 ) -> Result<(usize, usize), Box<dyn Error>> {
-    use std::sync::atomic::{AtomicBool, Ordering};
     let scratch = Scratch::new("yi-scope-swap")?;
     let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
     std::fs::create_dir_all(home.join(".ssh"))?;
@@ -844,62 +885,62 @@ fn race(
         .find(|candidate| candidate.name() == "read")
         .ok_or("no read tool")?;
     let args = args(read.as_ref(), &context);
-    let stop = Arc::new(AtomicBool::new(false));
+    let (kind, irreversible) = (tool_impl.kind_for(&args), tool_impl.irreversible(&args));
+    let mut span = std::time::Duration::MAX;
+    for _ in 0..5 {
+        swap.disarm(&workspace, benign)?;
+        let timed = std::time::Instant::now();
+        tool_impl.execute(args.clone(), &context);
+        span = span.min(timed.elapsed());
+    }
+    let (arm, armed) = std::sync::mpsc::channel::<std::time::Instant>();
+    let (land, landed) = std::sync::mpsc::channel::<std::time::Instant>();
     let swapper = {
-        let (stop, workspace, home) = (Arc::clone(&stop), workspace.clone(), home.clone());
-        let benign = benign.to_owned();
+        let (workspace, home) = (workspace.clone(), home.clone());
         std::thread::spawn(move || {
-            let at = |name: &str| workspace.join(name);
-            // Each state is held a while, a different while each round, so some round's hold
-            // straddles the gap between a tool's check and its open, however wide.
-            let mut round = 0_u32;
-            let hold = |round: u32| {
-                let until = std::time::Instant::now()
-                    + std::time::Duration::from_micros(u64::from(round % 16) * 125);
-                while std::time::Instant::now() < until {}
-            };
-            while !stop.load(Ordering::Relaxed) {
-                round = round.wrapping_add(1);
-                match swap {
-                    Swap::File => {
-                        let _ = std::fs::write(at("plain.tmp"), &benign);
-                        let _ = std::fs::rename(at("plain.tmp"), at("x"));
-                        let _ = std::os::unix::fs::symlink(home.join(".ssh/id_rsa"), at("l.tmp"));
-                        let _ = std::fs::rename(at("l.tmp"), at("x"));
+            let spin = std::time::Duration::from_micros(200);
+            for at in armed {
+                loop {
+                    let left = at.saturating_duration_since(std::time::Instant::now());
+                    if left <= spin {
+                        break;
                     }
-                    Swap::Parent => {
-                        let _ = std::fs::write(at("d/id_rsa"), &benign);
-                        hold(round / 16);
-                        let _ = std::fs::rename(at("d"), at("dir.tmp"));
-                        let _ = std::os::unix::fs::symlink(home.join(".ssh"), at("d"));
-                        hold(round);
-                        let _ = std::fs::remove_file(at("d"));
-                        let _ = std::fs::rename(at("dir.tmp"), at("d"));
-                    }
+                    std::thread::park_timeout(left - spin);
+                }
+                while std::time::Instant::now() < at {
+                    std::hint::spin_loop();
+                }
+                swap.arm(&workspace, &home);
+                if land.send(std::time::Instant::now()).is_err() {
+                    break;
                 }
             }
         })
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-    let (mut allowed, mut leaks) = (0_usize, 0_usize);
-    for _ in 0..20_000 {
-        if std::time::Instant::now() > deadline {
+    let (mut inside, mut leaks) = (0_usize, 0_usize);
+    for round in 0..ROUNDS {
+        if inside >= INSIDE {
             break;
         }
-        let (kind, irreversible) = (tool_impl.kind_for(&args), tool_impl.irreversible(&args));
+        swap.disarm(&workspace, benign)?;
         if !(broker.decide_call(tool, kind, irreversible, "c1", &args, None)).allowed {
             continue;
         }
-        allowed += 1;
+        let step = u32::try_from(round.wrapping_mul(61) % 64).unwrap_or(0);
+        arm.send(std::time::Instant::now() + span * step / 64)?;
         let output = tool_impl.execute(args.clone(), &context);
+        let ended = std::time::Instant::now();
+        if landed.recv_timeout(std::time::Duration::from_secs(10))? <= ended {
+            inside += 1;
+        }
         if reached(&output, &key) {
             leaks += 1;
             std::fs::write(&key, "FAKE KEY MARKER\n")?;
         }
     }
-    stop.store(true, Ordering::Relaxed);
+    drop(arm);
     swapper.join().map_err(|_| "the swapper panicked")?;
-    Ok((allowed, leaks))
+    Ok((inside, leaks))
 }
 
 #[cfg(unix)]
@@ -926,18 +967,18 @@ fn path_arg(
 }
 
 #[cfg(unix)]
-fn assert_no_leak(tool: &str, swap: Swap, (allowed, leaks): (usize, usize)) {
+fn assert_no_leak(tool: &str, swap: Swap, (inside, leaks): (usize, usize)) {
     let swapped = match swap {
         Swap::File => "file",
         Swap::Parent => "parent",
     };
     assert!(
-        allowed > 20,
-        "{tool}: the check passed only {allowed} times"
+        inside >= INSIDE,
+        "{tool}: only {inside} of {ROUNDS} swaps landed inside a checked call"
     );
     assert_eq!(
         leaks, 0,
-        "{tool}, {swapped} swap: {leaks} of {allowed} calls reached the key"
+        "{tool}, {swapped} swap: {leaks} of {inside} swaps inside a call reached the key"
     );
 }
 
@@ -1007,9 +1048,7 @@ fn a_parent_swapped_after_the_check_edits_no_key() -> TestResult {
         args.insert("patch".to_owned(), json!(patch));
         args
     };
-    // A long file widens the gap between the edit's read and its write.
-    let benign = format!("ordinary\n{}", "filler\n".repeat(20_000));
-    let tried = race("edit", Swap::Parent, &benign, &args, &changes_key)?;
+    let tried = race("edit", Swap::Parent, "ordinary\n", &args, &changes_key)?;
     assert_no_leak("edit", Swap::Parent, tried);
     Ok(())
 }
