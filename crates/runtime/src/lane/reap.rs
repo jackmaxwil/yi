@@ -1,5 +1,5 @@
-//! The only two wipes of a slot's tree, a reap and a discard, the count of what each drops, and
-//! `yi gc`, which removes linked worktrees `main` already holds.
+//! The only two wipes of a slot's tree, a reap and a discard, the count of what each drops,
+//! `yi gc`, and registrations of lanes trees a deleted lanes directory took.
 
 use std::path::{Path, PathBuf};
 
@@ -132,14 +132,17 @@ impl Pool {
         }
         Ok(lost)
     }
-}
-impl Pool {
-    /// Incident: a deleted lanes directory left the slot registered, and `worktree add` refused
-    /// the path this pool owns for a lock no session holds.
-    pub(super) fn add_fresh(&self, slot: SlotIndex, add: &[&str]) -> Result<(), LaneError> {
-        let path = self.slot_path(slot);
-        let text = path.to_string_lossy();
-        let _ = git(&self.repo, &["worktree", "remove", "-f", "-f", &text]);
+
+    /// Incident: a deleted lanes directory left its slots registered, and `worktree add` refused
+    /// a branch no live tree holds.
+    pub(super) fn rebuild(&self, add: &[&str]) -> Result<(), LaneError> {
+        let listing = git_capture(&self.repo, &["worktree", "list", "--porcelain"])?;
+        for tree in parse(&listing.stdout) {
+            if tree.path.starts_with(&self.dir) && !tree.path.exists() {
+                let text = tree.path.to_string_lossy();
+                let _ = git(&self.repo, &["worktree", "remove", "-f", "-f", &text]);
+            }
+        }
         git(&self.repo, add).map(|_| ())
     }
 }

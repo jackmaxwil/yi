@@ -852,7 +852,7 @@ impl Pool {
             checkout.extend(["-B", branch.as_str(), &sha]);
         }
         if fresh {
-            self.add_fresh(slot, &add)?;
+            self.rebuild(&add)?;
         } else {
             self.stop_warmer(slot)?;
             git(&path, &checkout)?;
