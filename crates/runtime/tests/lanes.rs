@@ -3646,6 +3646,7 @@ async fn a_worktree_spawn_whose_status_fails_still_names_the_head() -> TestResul
     let (next, _) = spawn_reply(&rig).await?;
     let row = format!("the child starts at HEAD {head}; uncommitted paths not counted: git status");
     assert!(next.starts_with(&row), "{next}");
+    assert!(next.contains("index"), "git's own cause is dropped: {next}");
     Ok(())
 }
 

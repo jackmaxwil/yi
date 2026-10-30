@@ -37,11 +37,10 @@ impl Uncommitted {
                 if started.elapsed() >= LIST_BUDGET {
                     format!("git status past LIST_BUDGET ({} s)", LIST_BUDGET.as_secs())
                 } else {
-                    error.lines().take(2).collect::<Vec<_>>().join(" ")
+                    briefly(&error)
                 }
             })
     }
-
     fn counted(status: &yi_tools::CommandCapture) -> Self {
         let (rows, cut) = (status.stdout.lines().count(), status.cut);
         // Invariant: a cut list is a head and a tail around a marker row; three lines may be no path.
@@ -72,6 +71,24 @@ impl std::fmt::Display for Uncommitted {
             (None, 1) => formatter.write_str("1 uncommitted path"),
             (None, n) => write!(formatter, "{n} uncommitted paths"),
         }
+    }
+}
+
+/// One failed read says why: the diagnostics past capture_named's label, and any cut it makes.
+fn briefly(error: &str) -> String {
+    let mut lines = error.lines();
+    let label = lines.next().unwrap_or_default();
+    let mut body = lines.filter(|line| !line.trim().is_empty());
+    let kept: Vec<&str> = body.by_ref().take(2).collect();
+    let more = body.count();
+    if kept.is_empty() {
+        return label.to_owned();
+    }
+    let joined = kept.join(" ");
+    if more == 0 {
+        format!("{label} {joined}")
+    } else {
+        format!("{label} {joined} [… {more} more]")
     }
 }
 
@@ -320,6 +337,21 @@ impl Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Dies when a failed status read drops git's own cause and keeps only capture_named's label.
+    #[test]
+    fn a_failed_read_keeps_the_diagnostic_and_names_its_cut() {
+        let two = briefly(
+            "git status failed:\nerror: bad signature 0x00000000\nfatal: index file corrupt\n",
+        );
+        assert_eq!(
+            two,
+            "git status failed: error: bad signature 0x00000000 fatal: index file corrupt"
+        );
+        let many = briefly("git status failed:\nwarning: a\nfatal: b\nhint: c\nhint: d\n");
+        assert_eq!(many, "git status failed: warning: a fatal: b [… 2 more]");
+        let bare = briefly("git status: No such file or directory (os error 2)");
+        assert_eq!(bare, "git status: No such file or directory (os error 2)");
+    }
 
     #[test]
     fn judgment_reads_a_detached_head_newer_than_the_listing()
