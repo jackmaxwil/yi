@@ -665,6 +665,7 @@ async fn prune_removes_oversized_variables_and_list_names_reports() -> TestResul
 /// Incident: a listing issued while another cell held the kernel answered "no names" inside its
 /// own budget, reddening the gate on a namespace query the change never touched.
 #[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
 async fn a_namespace_listing_answers_after_a_contended_kernel() -> TestResult {
     let kernel = manager()?;
     let cell = kernel

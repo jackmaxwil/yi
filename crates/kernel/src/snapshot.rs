@@ -457,17 +457,11 @@ impl KernelManager {
                 parsed
             }
             Ok(result) => {
-                let detail = result
-                    .error
-                    .map(|error| error.evalue)
-                    .unwrap_or(result.stderr);
+                let timed_out = result.status == ExecuteStatus::Aborted;
+                let detail = cell_detail(result);
                 self.inner.diagnostic(&format!(
                     "state snapshot {}: {detail}",
-                    if result.status == ExecuteStatus::Aborted {
-                        "timed out"
-                    } else {
-                        "failed"
-                    }
+                    if timed_out { "timed out" } else { "failed" }
                 ));
                 None
             }
@@ -490,12 +484,8 @@ impl KernelManager {
                 parse_restore_result(&result.stdout, &config.path)
             }
             Ok(result) => {
-                let detail = result
-                    .error
-                    .map(|error| error.evalue)
-                    .unwrap_or(result.stderr);
                 self.inner
-                    .diagnostic(&format!("state restore failed: {detail}"));
+                    .diagnostic(&format!("state restore failed: {}", cell_detail(result)));
                 None
             }
             Err(error) => {
@@ -509,39 +499,48 @@ impl KernelManager {
     /// Live user-defined top-level names, or None if the kernel isn't
     /// running. Never fails a caller; bounded like a snapshot cell.
     pub async fn list_namespace_names(&self) -> Option<Vec<String>> {
-        let mut reason = String::new();
+        let _span = yi_types::trace::span("kernel.list_names");
+        let code = build_list_names_code();
+        let cap = std::time::Duration::from_millis(crate::KERNEL_STATE_LISTING_TIMEOUT_MS);
+        // One deadline over both attempts, each capped at the listing budget: the retry may not
+        // hand a caller two full budgets plus two abort graces.
+        let deadline = tokio::time::Instant::now() + cap * LISTING_ATTEMPTS;
+        let mut reasons: Vec<String> = Vec::new();
         for attempt in 1..=LISTING_ATTEMPTS {
             if !self.is_running() {
                 return None;
             }
-            match self.list_namespace_names_once().await {
-                Ok(names) => return Some(names),
-                Err(detail) => {
-                    reason = format!("{detail} (attempt {attempt} of {LISTING_ATTEMPTS})");
-                }
+            let remaining = deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .min(cap);
+            let budget_ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX);
+            if budget_ms == 0 {
+                push_listing_reason(&mut reasons, attempt, "the attempt budget was spent");
+                break;
             }
+            let failure = match self.execute_internal(&code, Some(budget_ms)).await {
+                Ok(result) if result.status == ExecuteStatus::Ok => {
+                    if let Some(names) = parse_list_names(&result.stdout) {
+                        return Some(names);
+                    }
+                    "unreadable marker".to_owned()
+                }
+                Ok(result) => {
+                    let aborted = result.status == ExecuteStatus::Aborted;
+                    let detail = cell_detail(result);
+                    if detail.is_empty() && aborted {
+                        "timed out waiting on the execution queue".to_owned()
+                    } else {
+                        detail
+                    }
+                }
+                Err(error) => error.to_string(),
+            };
+            push_listing_reason(&mut reasons, attempt, &failure);
         }
         self.inner
-            .diagnostic(&format!("namespace listing failed: {reason}"));
+            .diagnostic(&format!("namespace listing failed: {}", reasons.join("; ")));
         None
-    }
-
-    async fn list_namespace_names_once(&self) -> Result<Vec<String>, String> {
-        let _span = yi_types::trace::span("kernel.list_names");
-        let code = build_list_names_code();
-        match self
-            .execute_internal(&code, Some(crate::KERNEL_STATE_LISTING_TIMEOUT_MS))
-            .await
-        {
-            Ok(result) if result.status == ExecuteStatus::Ok => {
-                parse_list_names(&result.stdout).ok_or_else(|| "unreadable marker".to_owned())
-            }
-            Ok(result) => Err(result
-                .error
-                .map(|error| error.evalue)
-                .unwrap_or(result.stderr)),
-            Err(error) => Err(error.to_string()),
-        }
     }
 
     async fn execute_internal(
@@ -575,6 +574,16 @@ impl KernelManager {
     }
 }
 
+fn cell_detail(result: ExecuteResult) -> String {
+    result
+        .error
+        .map(|error| error.evalue)
+        .unwrap_or(result.stderr)
+}
+
+fn push_listing_reason(reasons: &mut Vec<String>, attempt: u32, detail: &str) {
+    reasons.push(format!("attempt {attempt} of {LISTING_ATTEMPTS}: {detail}"));
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -642,6 +651,22 @@ mod tests {
         assert!(
             restore.contains("\"/tmp/out.blobs\""),
             "restore must read the blobs dir the writer derives"
+        );
+    }
+
+    #[test]
+    fn every_listing_attempt_reason_reaches_the_diagnostic() {
+        let mut reasons = Vec::new();
+        push_listing_reason(&mut reasons, 1, "timed out waiting on the execution queue");
+        push_listing_reason(&mut reasons, 2, "unreadable marker");
+        let message = format!("namespace listing failed: {}", reasons.join("; "));
+        assert!(
+            message.contains("attempt 1 of 2: timed out waiting on the execution queue"),
+            "the first attempt's cause must survive the second: {message}"
+        );
+        assert!(
+            message.contains("attempt 2 of 2: unreadable marker"),
+            "the last attempt's cause must be in the line: {message}"
         );
     }
 }
