@@ -289,6 +289,20 @@ impl AgentSession {
         })
     }
 
+    /// The history as the parent's own requests send it: its cuts rendered as placeholders, so a
+    /// fork seed never carries bytes the parent's model already stopped seeing.
+    pub fn view_handle(&self) -> Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            let messages = shared
+                .messages
+                .lock()
+                .map(|messages| messages.clone())
+                .unwrap_or_default();
+            crate::reclaim::view(&shared.reclaimed, messages)
+        })
+    }
+
     /// Summed under the lock, not over a history clone; `None` when poisoned, never a fake `0.0`.
     /// The flag is true when a reply came back without usage, so the sum is a lower bound.
     pub fn cost_handle(&self) -> Arc<dyn Fn() -> Option<(f64, bool)> + Send + Sync> {

@@ -456,6 +456,13 @@ fn reason(
     pays.then_some("breakeven")
 }
 
+pub(crate) fn view(cut: &Mutex<Cut>, messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+    apply(
+        messages,
+        &cut.lock().unwrap_or_else(PoisonError::into_inner),
+    )
+}
+
 /// Every cut result as its placeholder: kept nothing of how much, the rule, and the read
 /// that restores it, all from the stored result, so the line is the same on every request.
 pub(crate) fn apply(mut messages: Vec<AgentMessage>, cut: &Cut) -> Vec<AgentMessage> {

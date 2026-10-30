@@ -467,7 +467,10 @@ fn seen_recently(host: &super::SubagentHost, text: &str) -> bool {
     seen.insert(crate::fetch::content_hash(text), now).is_some()
 }
 
-/// Cut where compaction cuts: typed turns, a cut point, the window less compaction's reserve.
+/// Cut where compaction cuts. Invariant: a fork seed fills at most this share of the child's
+/// own route window, so its first request still has room for the brief and the turn it was forked for.
+const FORK_CEILING_PERCENT: u64 = 80;
+
 pub(super) fn seed_for_fork(
     parent: &dyn Fn() -> Vec<AgentMessage>,
     fork: super::Fork,
@@ -500,8 +503,7 @@ pub(super) fn seed_for_fork(
             .unwrap_or(0)
     });
     let tail = parent.get(start..).unwrap_or_default();
-    let reserve = yi_context::Settings::default().reserve_tokens.0;
-    let budget = window.saturating_sub(reserve);
+    let budget = window.saturating_mul(FORK_CEILING_PERCENT) / 100;
     let first = crate::compaction::fitting_start(tail, yi_context::Tokens(budget));
     let kept = tail.get(first.unwrap_or(tail.len())..).unwrap_or_default();
     if kept.len() == tail.len() {
@@ -509,7 +511,7 @@ pub(super) fn seed_for_fork(
     }
     // The notice also keeps a cut seed from opening on an assistant turn.
     let notice = format!(
-        "[… fork kept {} of {} messages: the child's window less the compaction reserve is {budget} tokens; history://parent/since/0 has the rest]",
+        "[… fork kept {} of {} messages: {FORK_CEILING_PERCENT}% of the child's {window}-token window is {budget} tokens; history://parent/since/0 has the rest]",
         kept.len(),
         tail.len()
     );
