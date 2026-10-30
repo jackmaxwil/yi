@@ -9,6 +9,7 @@ use yi_runtime::plan::ops::{Actor, PlanEngine};
 use yi_runtime::plan::store::PlanStore;
 use yi_types::plan::doc::PlanId;
 
+use crate::repo::{git, init_repo};
 use crate::scratch::Scratch;
 
 use crate::prompt_slots_support::prompt_slots;
@@ -270,6 +271,9 @@ fn ask_reads_a_prompt_past_the_argument_cap_from_stdin() -> TestResult {
     let empty = run("")?;
     assert_eq!(empty.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&empty.stderr).contains("no prompt on stdin"));
+    let last: Value = serde_json::from_str(stdout(&empty).lines().last().ok_or("no stdout")?)?;
+    assert_eq!(last["type"], "final", "{last}");
+    assert_eq!(last["class"], "refusal:config", "{last}");
     Ok(())
 }
 
@@ -383,7 +387,8 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
     assert!(full.iter().any(|kind| kind == "message_update"), "{full:?}");
     let kept: Vec<_> = full.into_iter().filter(|k| k != "message_update").collect();
     assert_eq!(lean, kept);
-    assert_eq!(lean.last().map(String::as_str), Some("agent_end"));
+    let tail: Vec<_> = lean.iter().rev().take(2).map(String::as_str).collect();
+    assert_eq!(tail, ["final", "agent_end"]);
 
     let mut argv = vec!["--faux", recorded.as_str()];
     argv.extend("--model faux/faux-1 --json --no-deltas look on".split(' '));
@@ -935,6 +940,31 @@ fn gc_fix_takes_the_checkpoints_of_a_deleted_project() -> TestResult {
     Ok(())
 }
 
+/// The binary's bare `gc` previews a merged worktree and only `gc --fix` removes it.
+#[test]
+fn gc_fix_removes_the_merged_worktree_the_preview_kept() -> TestResult {
+    let workspace = Workspace::new("gc-worktree")?;
+    init_repo(&workspace.project())?;
+    let tree = workspace.0.join("merged-worktree");
+    let repo = workspace.project();
+    let path = tree.to_string_lossy().into_owned();
+    git(&repo, &["worktree", "add", "-q", "-b", "merged", &path])?;
+    std::fs::write(tree.join("work.txt"), "work\n")?;
+    git(&repo, &["-C", &path, "add", "work.txt"])?;
+    git(&repo, &["-C", &path, "commit", "-qm", "work"])?;
+    git(&repo, &["merge", "-q", "--no-ff", "-m", "merged", "merged"])?;
+
+    let preview = workspace.yi(&["gc"])?;
+    assert!(preview.status.success(), "{preview:?}");
+    assert!(tree.is_dir(), "{}", stdout(&preview));
+    assert!(stdout(&preview).contains("would remove"), "{preview:?}");
+    let swept = workspace.yi(&["gc", "--fix"])?;
+    assert!(swept.status.success(), "{swept:?}");
+    assert!(!tree.exists(), "{}", stdout(&swept));
+    assert!(stdout(&swept).contains("removed"), "{swept:?}");
+    Ok(())
+}
+
 /// Incident: a console killed by SIGHUP never ran its browser's drop, and its profile stayed
 /// for good. `yi gc --fix` takes the idle one whose pid is gone, never a live or fresh one.
 #[test]
@@ -1464,6 +1494,53 @@ fn an_unknown_model_names_itself_over_acp() -> TestResult {
         message.contains("unknown model openrouter/openai/gpt-6-astra"),
         "the reason must reach the client, got: {reply}"
     );
+    Ok(())
+}
+
+/// Dies with `final` printed only inside the loop's stream: a driver waiting on the closing
+/// line of `ask --json` saw nothing when the model was unknown.
+#[test]
+fn an_unknown_model_still_closes_a_json_ask_with_a_final_line() -> TestResult {
+    let workspace = Workspace::new("ask-early-final")?;
+    let run = workspace.yi(&[
+        "ask",
+        "--json",
+        "--model",
+        "openrouter/openai/gpt-6-astra",
+        "hi",
+    ])?;
+    assert_ne!(run.status.code(), Some(0), "{run:?}");
+    let last: Value = serde_json::from_str(stdout(&run).lines().last().ok_or("no stdout")?)?;
+    assert_eq!(last["type"], "final", "{run:?}");
+    assert_eq!(last["kind"], "error");
+    assert_eq!(last["class"], "refusal:unknown_model");
+    assert!(
+        last["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("gpt-6-astra")),
+        "{last}"
+    );
+    Ok(())
+}
+
+/// Dies with the store spelling pinned: a driver branching on the closed vocabulary saw
+/// whatever a regression wrote, and nothing failed.
+#[test]
+fn a_resume_the_store_cannot_honour_closes_as_a_harness_store_final() -> TestResult {
+    let workspace = Workspace::new("ask-store-final")?;
+    let run = workspace.yi(&[
+        "ask",
+        "--json",
+        "--model",
+        "faux/faux-1",
+        "--session",
+        "no-such-session",
+        "hi",
+    ])?;
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+    let last: Value = serde_json::from_str(stdout(&run).lines().last().ok_or("no stdout")?)?;
+    assert_eq!(last["type"], "final", "{last}");
+    assert_eq!(last["class"], "harness:store", "{last}");
     Ok(())
 }
 
@@ -2897,12 +2974,16 @@ fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -
     assert_eq!(run.status.code(), Some(4), "{out}{err}");
     assert!(err.contains(command), "{err}");
     assert!(!workspace.project().join("made[1]").exists());
-    let last: Value = serde_json::from_str(out.lines().last().ok_or("no output")?)?;
-    assert_eq!(last["type"], "denied", "{out}");
-    assert_eq!(last["tool"], "bash", "{out}");
-    assert_eq!(last["args"]["command"], command, "{out}");
-    let reason = last["reason"].as_str().ok_or("no reason")?;
-    assert!(reason.contains(command), "{reason}");
+    let mut lines = out.lines().rev();
+    let last: Value = serde_json::from_str(lines.next().ok_or("no output")?)?;
+    assert_eq!(last["type"], "final", "{out}");
+    assert_eq!(last["kind"], "error", "{out}");
+    assert_eq!(last["class"], "harness:denied", "{out}");
+    let denied: Value = serde_json::from_str(lines.next().ok_or("no denial")?)?;
+    assert_eq!(denied["type"], "denied", "{out}");
+    assert_eq!(denied["tool"], "bash", "{out}");
+    assert_eq!(denied["args"]["command"], command, "{out}");
+    let reason = denied["reason"].as_str().ok_or("no reason")?;
 
     let (_, tail) = reason
         .split_once("permissions.allow entry ")

@@ -1,4 +1,6 @@
 ---
+version: 0.640.0
+decisions: D415
 issue: Closes #1238
 decision: solo commits rows the viewport's top already shows by adopting them where they stand, and a short screen whose viewport leaves fewer than two rows above it commits through a full-screen scroll and a repaint, never a one-row scroll region | a committed paragraph was written above the region again while it stayed on screen, so history jumped by its height and the shrunk region floated the composer up (4 to 16 rows a frame, the floor moving 27 times in one reply), and on a short screen a one-row region, which terminals ignore, scrolled the whole screen and wrote composer borders into scrollback (5 rows corrupt and 7 lines lost at 12x80) | drop `Terminal::adopt` and its call in `draw_frame`, and restore the full-screen branch of `insert_before`
 raise: crate tui +39, comments +4, tests +138

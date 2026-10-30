@@ -301,7 +301,7 @@ pub(crate) fn spill_roots_and_stores(
 }
 
 /// Invariant: a walled session reads only its family's spills and its own transcript: the spill
-/// roots and session stores are walled, the board's spill dir and the transcript spared (D345).
+/// roots and session stores are walled, the board's spill dir and the transcript spared.
 pub(crate) fn walled_roots(
     wall: &crate::wall::Wall,
     broker: Option<&PermissionBroker>,
@@ -766,6 +766,15 @@ impl ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
+                    if let (Some(store), Some(usage)) = (&ledger, &output.result.usage) {
+                        crate::spend::append_main_usage(
+                            store,
+                            format!("{}{name}", crate::spend::TOOL_USAGE_PREFIX),
+                            usage.clone(),
+                            Some(output.result.details.clone()),
+                        )
+                        .ok();
+                    }
                     let failed =
                         yi_types::event::shown_failed(output.is_error, &output.result.details);
                     if let Some(hooks) = hooks.as_ref().filter(|_| failed || !cancel()) {

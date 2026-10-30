@@ -1,4 +1,5 @@
 ---
+version: 0.554.0
 issue: Closes #1026
 growth: +407 rustc-diagnostic selection with line numbers kept through compress, the capture-cut row, the poll-delivered bit and its queue predicate, the unfenced reader prompt, the environment facts as number sources, the quote-aware chain scan, the check classification on the tool-result event, the summed child cost; weighed for deletion and cut: routing by command segment (safety::parse refuses `>`), a new check tool, sorting find_models by cost, lifting todos into a plan by id, a rustfmt-diff notice on edits (one red `just check` in 38 sessions, and it was guardrails)
 raise: comments +18, crate cli +1, crate runtime +132, crate tools +274, tests +360

@@ -22,7 +22,8 @@ pub(crate) struct Reduced {
 static SLOTS: OnceLock<Mutex<HashMap<PathBuf, Arc<Slot<Reduced>>>>> = OnceLock::new();
 
 fn stamp(journal: &Journal) -> Result<Option<Stamp>, StoreError> {
-    Ok(Stamp::of(journal.path(), journal.tail()?))
+    let tail = journal.tail()?;
+    Ok(tail.and_then(|tail| Stamp::of(journal.path(), Some(tail))))
 }
 
 /// A damaged chain is refused here, so a reading handed back is whole or torn at its tail.

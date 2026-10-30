@@ -113,8 +113,8 @@ impl SessionRepo for MemRepo {
             parent_session_id: parent,
             name: None,
         });
-        for mutation in mutations {
-            store.replay(mutation)?;
+        for (index, mutation) in mutations.into_iter().enumerate() {
+            store.replay(mutation, index.saturating_add(2))?;
         }
         let shared = Arc::new(Mutex::new(store));
         self.sessions.insert(id, Arc::clone(&shared));

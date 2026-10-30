@@ -1,4 +1,6 @@
 ---
+version: 0.627.0
+decisions: D405
 issue: Closes #1251
 growth: +825 the menu (target under the click, verb table, levels and their layout and hit test), the overlay press gate, lifting kitty images under an overlay, the pane close mark and an OSC log beside drive frames, with their unit tests; weighed reusing the command palette's popup (one fixed centred list, no anchor, no submenu) and a flat menu with no submenus (Copy as and the coming Open in each need one), and kept app.rs under its cap by moving the mouse mapping into app/mouse.rs
 raise: crate console +811, crate tui +14, tests +175, comments +23
