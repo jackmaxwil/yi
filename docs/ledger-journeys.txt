@@ -540,6 +540,7 @@ TUI | `cards::a_mail_body_keeps_its_angle_brackets_and_an_advisory_loses_only_it
 console right-click menu and pane close mark | `sessions::the_sidebar_lists_pins_then_each_workspace_need_first` (T0)
 console right-click menu and pane close mark | `drive::pin_from_the_menu_moves_a_session_under_pinned`
 console right-click menu and pane close mark | `drive::a_click_on_a_workspace_header_folds_it`
+console right-click menu and pane close mark | `drive::an_arrow_and_enter_reach_a_workspace_header_and_fold_it` (T2)
 console right-click menu and pane close mark | `drive::a_workspace_headers_plus_starts_a_session_there`
 console right-click menu and pane close mark | `drive::rows_group_by_workspace_and_rank_by_need_inside_it` (T2)
 console settings pane | `drive::the_gear_opens_settings_and_a_default_saves_or_says_why_not`
@@ -558,5 +559,13 @@ TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
 catastrophic-path denylist M10 | `decide::yolo_writes_a_system_config_but_not_a_key_or_the_git_dir`
 permission modes/rules/holds, deterministic auto | `permission_auto::auto_asks_before_an_uncontained_python_cell`
 permission modes/rules/holds, deterministic auto | `bash::a_command_that_writes_behind_a_read_verb_is_not_a_read`
+file checkpoints + /undo | `checkpoint::undo_restores_and_removes_non_ascii_paths`
+file checkpoints + /undo | `checkpoint::a_capture_leaves_the_callers_git_index_untouched`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::parallel_claims_check_out_side_by_side`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_claim_leaves_a_process_that_is_not_the_warmer_alive`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::concurrent_syncs_keep_every_seen_lockfile`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_tree_with_two_lockfiles_syncs_both`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_failed_sync_starts_the_session_with_a_notice`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_worktree_spawn_names_the_edits_its_child_starts_without`
 web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
 web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)

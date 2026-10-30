@@ -11,6 +11,7 @@ mod scratch;
 mod seatbelt;
 
 mod bash;
+mod checkpoint;
 mod documents;
 mod endings;
 mod hashline_parser;
