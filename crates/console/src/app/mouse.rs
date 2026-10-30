@@ -266,6 +266,10 @@ impl App {
                 self.release_browser_presses();
                 return self.overlay_press(kind, x, y);
             }
+            Mode::Files(_) => {
+                self.release_browser_presses();
+                return self.files_mouse(kind, x, y);
+            }
             Mode::Normal | Mode::Prefix => {}
         }
         if self.browser_mouse(kind, x, y) {

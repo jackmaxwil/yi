@@ -200,7 +200,7 @@ impl Editor {
 }
 
 impl App {
-    pub(super) fn open_editor(&mut self, path: &str, workdir: String) {
+    pub(crate) fn open_editor(&mut self, path: &str, workdir: String) {
         match load(path, workdir) {
             Ok(editor) => {
                 if let Some(pane) = self.state.focused_pane_mut() {

@@ -921,7 +921,7 @@ impl App {
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
             Action::OpenTerminal => self.open_terminal(),
-            Action::OpenEditor => self.open_navigator("e "),
+            Action::OpenEditor => self.open_files(),
             Action::OpenBrowser => self.open_browser(),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
@@ -1038,8 +1038,8 @@ impl App {
         if key.modifiers.contains(KeyModifiers::SUPER) {
             self.cmd_hints = true;
         }
-        if matches!(self.state.mode, Mode::Navigator { .. }) {
-            return self.handle_navigator_key(outbound, key);
+        if matches!(self.state.mode, Mode::Navigator { .. } | Mode::Files(_)) {
+            return self.navigator_key(outbound, key);
         }
         if matches!(self.state.mode, Mode::Menu(_)) {
             return self.menu_key(outbound, key);

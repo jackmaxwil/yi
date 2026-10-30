@@ -311,6 +311,7 @@ console editor and viewers | `editor_view::the_editor_opens_65536_lines_and_refu
 console editor and viewers | `editor_view::the_cursor_sits_past_an_emoji_drawn_two_cells_wide`
 console editor and viewers | `editor_view::find_wraps_to_a_match_earlier_on_the_cursors_line` (T0)
 console editor and viewers | `tui_unit::the_compose_draft_is_private_new_and_never_written_through_a_link` (T0)
+console editor and viewers | `chrome::the_files_button_opens_a_tree_that_folds_a_folder_and_opens_a_file`
 console Notebook and Review from a replay | `drive::a_resumed_sessions_kernel_cells_fill_the_notebook`
 console Notebook and Review from a replay | `drive::a_second_replay_of_the_branch_leaves_the_notebook_as_it_was`
 console Notebook and Review from a replay | `drive::a_second_replay_of_a_notebook_past_its_cap_keeps_the_numbering`

@@ -691,7 +691,7 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         lift(frame.buffer_mut(), rect, theme);
     }
     let popup = match &app.state.mode {
-        Mode::Navigator { .. } => crate::palette::render_navigator(app, frame, view, theme),
+        Mode::Navigator { .. } | Mode::Files(_) => crate::palette::overlay(app, frame, view, theme),
         Mode::Menu(menu) => {
             let rects = crate::menu::rects(menu, frame.area());
             crate::menu::render(menu, &rects, frame, theme);

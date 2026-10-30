@@ -50,7 +50,7 @@ impl App {
             .collect()
     }
 
-    pub(super) fn handle_navigator_key(&mut self, outbound: &Outbound, key: KeyEvent) {
+    pub(crate) fn handle_navigator_key(&mut self, outbound: &Outbound, key: KeyEvent) {
         let Mode::Navigator { query, selected } = &mut self.state.mode else {
             return;
         };

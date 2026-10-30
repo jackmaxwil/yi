@@ -22,7 +22,7 @@ fn popup_in(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-const DISMISS: &str = " esc ✕ ";
+pub(crate) const DISMISS: &str = " esc ✕ ";
 
 pub(crate) fn dismiss_mark(popup: Rect) -> Rect {
     let width = u16::try_from(DISMISS.chars().count()).unwrap_or(7);
@@ -32,6 +32,21 @@ pub(crate) fn dismiss_mark(popup: Rect) -> Rect {
         width,
         1,
     )
+}
+
+/// The mode's popup over the panes: the palette, or the file tree, each marking its own hits.
+pub(crate) fn overlay(
+    app: &App,
+    frame: &mut Frame<'_>,
+    view: &ViewState,
+    theme: &Theme,
+) -> Option<Rect> {
+    match &app.state.mode {
+        Mode::Files(files) => Some(crate::files::render(files, frame, view.panes_area, theme)),
+        Mode::Normal | Mode::Prefix | Mode::Navigator { .. } | Mode::Menu(_) => {
+            render_navigator(app, frame, view, theme)
+        }
+    }
 }
 
 pub(crate) fn render_navigator(
