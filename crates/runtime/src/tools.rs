@@ -71,6 +71,10 @@ fn verdict_is_a_result(output: &mut yi_tools::ToolOutput) {
     }
 }
 
+/// Incident: session 01a04c94 printed 26,490 and 18,747 characters of a kernel variable, then
+/// re-typed the second through `write`; a cell result past this many characters earns the line.
+const LARGE_PRINT_CHARS: usize = 10_000;
+
 fn result_text(result: &yi_types::event::ToolResult) -> String {
     yi_types::message::join_text(&result.content, "\n")
 }
@@ -100,6 +104,9 @@ fn facts_of(tool: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
     };
     if let Some(needle) = needle.filter(|_| tool == "ipython") {
         holds.push(needle.to_owned());
+    }
+    if tool == "ipython" && text.chars().count() > LARGE_PRINT_CHARS {
+        holds.push(yi_types::graph::LARGE_PRINT.to_owned());
     }
     holds
 }
@@ -858,6 +865,29 @@ impl ToolAdapter {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+
+    fn lines_after(tool: &str, chars: usize) -> Vec<String> {
+        let output = yi_tools::text_output("é".repeat(chars));
+        let holds = super::facts_of(tool, &output);
+        let facts = crate::affordance::Facts {
+            holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
+            name: "",
+            cap: crate::affordance::TOOL_LINES,
+        };
+        crate::affordance::render(crate::affordance::shipped(), tool, &facts)
+    }
+
+    #[test]
+    fn a_large_cell_result_names_the_file_write_one_liner() -> Result<(), String> {
+        let limit = super::LARGE_PRINT_CHARS;
+        let lines = lines_after("ipython", limit + 1);
+        let line = lines.first().ok_or("no line past the limit")?;
+        assert!(line.contains("open(path,'w').write(var)"), "{line}");
+        assert_eq!(lines.len(), 1);
+        assert!(lines_after("ipython", limit).is_empty());
+        assert!(lines_after("bash", limit + 1).is_empty());
+        Ok(())
+    }
 
     #[test]
     fn a_flag_after_cd_still_scopes_the_relative_paths_that_follow() {
