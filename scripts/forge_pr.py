@@ -101,10 +101,23 @@ def pull(number):
     return pr
 
 
-def pull_for_branch(name):
-    pulls = fgj_api("GET", f"repos/{repo()}/pulls?state=open&limit=50") or []
-    for pr in pulls:
-        if pr.get("head", {}).get("ref") == name:
+def open_pulls(name=None):
+    """Every open pull request, page by page: the forge returns 50 a page, and a reader of page one
+    alone never sees the oldest. Incident: 102 were open and a pass saw #1830..#1891 only."""
+    page, found = 1, []
+    while True:
+        batch = fgj_api("GET", f"repos/{name or repo()}/pulls?state=open&limit=50&page={page}")
+        if not isinstance(batch, list):
+            return batch
+        found += batch
+        if len(batch) < 50:
+            return found
+        page += 1
+
+
+def pull_for_branch(branch_name):
+    for pr in open_pulls() or []:
+        if pr.get("head", {}).get("ref") == branch_name:
             return pr
     return None
 
@@ -621,6 +634,27 @@ def selfcheck():
         raise AssertionError("a missing workflow read as a limit")
     except FileNotFoundError:
         pass
+    # The listing pages: 102 open pulls are three pages, and a reader of page one never sees the oldest.
+    served = [{"number": n, "head": {"ref": f"b{n}"}} for n in range(102)]
+
+    def listing(method, path, payload=None):
+        if "pulls?state=open" not in path:
+            return {"message": "not this one"}
+        page = int(re.search(r"page=(\d+)", path).group(1))
+        return served[(page - 1) * 50:page * 50]
+
+    real = globals()["fgj_api"], globals()["repo"]
+    globals()["fgj_api"], globals()["repo"] = listing, lambda: "o/r"
+    try:
+        assert [pr["number"] for pr in open_pulls()] == list(range(102)), "the open listing skipped a page's worth"
+        assert pull_for_branch("b101")["number"] == 101, "a pull request past the first page is not found by branch"
+    finally:
+        globals()["fgj_api"], globals()["repo"] = real
+    globals()["fgj_api"] = lambda *a, **k: {"message": "no token"}
+    try:
+        assert open_pulls()["message"] == "no token", "an error object read as a page"
+    finally:
+        globals()["fgj_api"] = real[0]
     assert repo_of("ssh://git@forge.example.invalid:2222/apex/yi.git") == "apex/yi"
     assert repo_of("https://git.example.invalid/apex/yi") == "apex/yi"
     assert repo_of("git@github.com:jackmaxwil/yi.git") == "jackmaxwil/yi"

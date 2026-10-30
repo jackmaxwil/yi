@@ -829,7 +829,7 @@ def discard(tree):
 
 def intake_of(repo, pr):
     """The zero-token checks on a PR as it stands: its body's template and its twins."""
-    others = (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50") or []) + \
+    others = (forge_pr.open_pulls(repo) or []) + \
              (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=50") or [])
     return intake(pr, raw_diff(repo, pr["number"]), others, lambda n: raw_diff(repo, n), repo, stacked,
                   lambda n: forge_pr.fgj_api("GET", f"repos/{repo}/issues/{n}"))
@@ -1038,7 +1038,7 @@ def cmd_sweep(args):
     """One pass over the open drafts: promote one already clean, review a head no round has read
     (a push whose job died, or a draft opened before the job ran); the autofixer answers a blocked one."""
     repo, allowed = forge_pr.repo(), authors()
-    pulls = forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50")
+    pulls = forge_pr.open_pulls(repo)
     # Incident: an unsigned fgj answered the list with an error object and the loop died indexing it.
     if not isinstance(pulls, list):
         print(f"sweep: the forge did not list the pull requests: {(pulls or {}).get('message')}")
