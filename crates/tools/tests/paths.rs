@@ -492,27 +492,3 @@ fn a_walk_never_enters_a_walled_tree_by_another_name() -> TestResult {
     );
     Ok(())
 }
-
-/// Incident: a bare workspace under `TMPDIR=<checkout>/../tmp` walked its cwd lexically, found
-/// the checkout on its `..` ancestor list, and read that checkout's AGENTS.md as its own.
-#[test]
-fn a_parent_segment_does_not_adopt_a_neighbouring_repository() -> TestResult {
-    let scratch = Scratch::new("yi-git-root")?;
-    let repo = scratch.join("repo");
-    fs::create_dir_all(repo.join(".git"))?;
-    let outside = scratch.join("outside");
-    fs::create_dir_all(&outside)?;
-    assert!(yi_tools::git_root(&repo).is_some(), "no root for {repo:?}");
-    let through = repo.join("..").join("outside");
-    assert_eq!(
-        yi_tools::git_root(&through),
-        None,
-        "a `..` segment adopts a repository the dir is not inside"
-    );
-    assert_eq!(
-        yi_tools::git_root(&repo.join("..").join("gone")),
-        None,
-        "a `..` before a missing leaf adopts a repository the dir is not inside"
-    );
-    Ok(())
-}

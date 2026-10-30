@@ -149,6 +149,28 @@ fn decode_base64(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(out)
 }
 
+/// Invariant: TMUX is a socket path under the user's TMUX_TMPDIR and may hold bytes that are
+/// not UTF-8; dropping to a value parse writes raw APC into the multiplexer that swallows it.
+#[cfg(unix)]
+#[test]
+fn a_multiplexer_variable_outside_utf8_still_falls_back_to_text() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let tmux = OsStr::from_bytes(b"/tmp/tmux-\xff/default,42,0").to_os_string();
+    let var = |key: &str| -> Option<std::ffi::OsString> {
+        match key {
+            "TERM" => Some("xterm-kitty".into()),
+            "TMUX" => Some(tmux.clone()),
+            _ => None,
+        }
+    };
+    assert!(
+        !orb::kitty::supported_with(var),
+        "raw APC escapes reach the multiplexer"
+    );
+}
+
 #[test]
 fn orb_engine_feeds_the_kitty_painter() -> TestResult {
     use yi_orb::{OrbState, kitty, pose, render};

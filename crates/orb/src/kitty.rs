@@ -28,14 +28,17 @@ pub fn kitty_named_terminal(term: Option<&str>, term_program: Option<&str>) -> b
 /// Invariant: kitty's FAQ has tmux users set `default-terminal "xterm-kitty"`, so TERM can
 /// name no multiplexer; TMUX and STY are the variables tmux and screen set themselves.
 pub fn supported() -> bool {
-    supported_with(|name| std::env::var(name).ok())
+    supported_with(|name| std::env::var_os(name))
 }
 
-pub fn supported_with(var: impl Fn(&str) -> Option<String>) -> bool {
+/// Invariant: TMUX is a socket path and TMUX_TMPDIR is the user's, so presence is the question
+/// for a multiplexer and only TERM, TERM_PROGRAM and KITTY_WINDOW_ID need their text.
+pub fn supported_with(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
+    let text = |name: &str| var(name).and_then(|value| value.into_string().ok());
     supported_in(
-        var("TERM").as_deref(),
-        var("TERM_PROGRAM").as_deref(),
-        var("KITTY_WINDOW_ID").as_deref(),
+        text("TERM").as_deref(),
+        text("TERM_PROGRAM").as_deref(),
+        text("KITTY_WINDOW_ID").as_deref(),
         var("TMUX").is_some() || var("STY").is_some(),
     )
 }

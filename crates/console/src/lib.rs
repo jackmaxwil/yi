@@ -284,7 +284,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
     app.wake = Some(event_tx.clone());
-    app.kitty = crate::kitty::graphics(|name| std::env::var(name).ok());
+    app.kitty = yi_tui::orb::kitty::supported();
     configure(&mut app, options);
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(

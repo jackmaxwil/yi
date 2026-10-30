@@ -132,14 +132,17 @@ fn terminal_environments_share_graphics_support_but_not_chord_support() {
         ("xterm", "xterm-256color", None, None, None, false, false),
     ];
     for (name, term, program, window_id, multiplexer, graphics, chords) in environments {
-        let var = |key: &str| match key {
-            "TERM" => Some(term.to_owned()),
-            "TERM_PROGRAM" => program.map(str::to_owned),
-            "KITTY_WINDOW_ID" => window_id.map(str::to_owned),
-            _ => (multiplexer == Some(key)).then(|| "1".to_owned()),
+        let var = |key: &str| -> Option<std::ffi::OsString> {
+            let value = match key {
+                "TERM" => Some(term),
+                "TERM_PROGRAM" => program,
+                "KITTY_WINDOW_ID" => window_id,
+                _ => (multiplexer == Some(key)).then_some("1"),
+            };
+            value.map(std::ffi::OsString::from)
         };
         assert_eq!(
-            yi_console::kitty::graphics(var),
+            yi_tui::orb::kitty::supported_with(var),
             graphics,
             "{name} graphics"
         );
