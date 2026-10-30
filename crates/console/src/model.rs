@@ -115,6 +115,20 @@ pub struct Group {
     pub folded: bool,
 }
 
+/// Where the sidebar's cursor rests: a group's fold header, or a session's row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Slot {
+    Group(String),
+    Row(usize),
+}
+
+/// One entry of the painted order: a header carries the group it heads, a row the group it is
+/// drawn under, so the painter reads both without a second traversal.
+pub(crate) enum Painted<'a> {
+    Header(&'a str, &'a Group),
+    Row(&'a Group, usize),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarMode {
     Rail,
@@ -445,6 +459,9 @@ pub struct ConsoleState {
     pub sessions: BTreeMap<SessionId, SessionRow>,
     pub order: Vec<SessionId>,
     pub selected: usize,
+    /// Invariant: the cursor rests on a header or a session, never both, so landing on a
+    /// folded group's header leaves the session it came from in `selected`.
+    pub header: Option<String>,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
     pub panes: BTreeMap<PaneId, Pane>,
@@ -491,6 +508,7 @@ impl ConsoleState {
             sessions: BTreeMap::new(),
             order: Vec::new(),
             selected: 0,
+            header: None,
             tabs: vec![Tab {
                 layout,
                 zoomed: false,
@@ -644,6 +662,91 @@ impl ConsoleState {
         }
     }
 
+    pub fn cursor(&self) -> Slot {
+        match &self.header {
+            Some(root) => Slot::Group(root.clone()),
+            None => Slot::Row(self.selected),
+        }
+    }
+
+    /// The painted order: a full sidebar heads a group with its fold header, a folded group
+    /// paints no row under it, and the rail paints no header.
+    pub(crate) fn painted<'a>(&self, groups: &'a [Group]) -> Vec<Painted<'a>> {
+        let mut painted = Vec::new();
+        for group in groups {
+            if let Some(root) = group.root.as_deref()
+                && self.sidebar == SidebarMode::Full
+            {
+                painted.push(Painted::Header(root, group));
+            }
+            if !group.folded {
+                painted.extend(group.rows.iter().map(|index| Painted::Row(group, *index)));
+            }
+        }
+        painted
+    }
+
+    /// The slots in the order the sidebar paints them.
+    pub fn slots(&self) -> Vec<Slot> {
+        self.painted(&self.groups())
+            .into_iter()
+            .map(|painted| match painted {
+                Painted::Header(root, _) => Slot::Group(root.to_owned()),
+                Painted::Row(_, index) => Slot::Row(index),
+            })
+            .collect()
+    }
+
+    /// Invariant: the cursor steps over the painted order, header or session, so a folded
+    /// group's header is reachable without a mouse, and `enter` there folds or unfolds it.
+    pub fn move_cursor(&mut self, down: bool) {
+        let slots = self.slots();
+        let at = slots
+            .iter()
+            .position(|slot| *slot == self.cursor())
+            .unwrap_or(0);
+        let next = if down {
+            at.saturating_add(1)
+        } else {
+            at.saturating_sub(1)
+        };
+        if let Some(slot) = slots.get(next) {
+            match slot {
+                Slot::Group(root) => self.header = Some(root.clone()),
+                Slot::Row(index) => {
+                    self.header = None;
+                    self.selected = *index;
+                }
+            }
+        }
+        self.cursor_moved = true;
+    }
+
+    /// A folded group keeps its header, so the cursor stays on the one it folded.
+    pub fn fold_from_header(&mut self, root: &str) {
+        self.toggle_fold(root);
+        self.header = Some(root.to_owned());
+    }
+
+    pub(crate) fn settle_visible(&mut self) {
+        let slots = self.slots();
+        if slots.contains(&self.cursor()) {
+            return;
+        }
+        match slots
+            .iter()
+            .find(|slot| matches!(slot, Slot::Row(_)))
+            .or_else(|| slots.first())
+        {
+            Some(Slot::Row(index)) => {
+                self.header = None;
+                self.selected = *index;
+            }
+            Some(Slot::Group(root)) => self.header = Some(root.clone()),
+            None => self.header = None,
+        }
+    }
+
     pub fn set_session_status(&mut self, id: &SessionId, status: SessionStatus) {
         if let Some(row) = self.sessions.get_mut(id) {
             row.status = status;
@@ -710,17 +813,6 @@ impl ConsoleState {
         if !self.folded.remove(root) {
             self.folded.insert(root.to_owned());
         }
-        let rows = self.visible_rows();
-        if rows.contains(&self.selected) {
-            return;
-        }
-        let next = rows
-            .iter()
-            .find(|index| **index >= self.selected)
-            .or_else(|| rows.first());
-        if let Some(next) = next {
-            self.selected = *next;
-        }
     }
 
     pub fn roots(&self) -> Vec<String> {
@@ -734,6 +826,14 @@ impl ConsoleState {
             }
         }
         roots
+    }
+
+    pub fn split_focused_at(&mut self, direction: Direction, ratio: f32) -> Option<Vec<bool>> {
+        let new_id = self.split_focused(direction)?;
+        let tab = self.tabs.get_mut(self.active_tab)?;
+        let path = tab.layout.split_path_of_second(new_id)?;
+        tab.layout.set_ratio_at(&path, ratio);
+        Some(path)
     }
 
     pub fn split_focused(&mut self, direction: Direction) -> Option<PaneId> {
