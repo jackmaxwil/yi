@@ -480,5 +480,6 @@ edited by hand.
 - [D507](adr/d507.md) - Web search permission
 - [D508](adr/d508.md) - Live test spend
 - [D509](adr/d509.md) - the autofix pass reads every open pull request page by page, and its limits...
+- [D510](adr/d510.md) - a second question on the classifier sidecar, consumer `inject`, marks the...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
