@@ -31,6 +31,7 @@ const QUIT_WINDOW: Duration = Duration::from_secs(1);
 struct Anim {
     tab: usize,
     path: Vec<bool>,
+    to: f32,
     start: Instant,
 }
 
@@ -315,7 +316,7 @@ impl App {
             };
             let elapsed = now.saturating_duration_since(anim.start);
             let t = elapsed.as_secs_f32() / SPLIT_ANIM.as_secs_f32();
-            let ratio = 0.12 + (0.5 - 0.12) * ease_out_cubic(t);
+            let ratio = 0.12 + (anim.to - 0.12) * ease_out_cubic(t);
             let tab = anim.tab;
             let path = anim.path.clone();
             if let Some(tab) = self.state.tabs.get_mut(tab) {
@@ -840,8 +841,8 @@ impl App {
 
     fn apply_action(&mut self, outbound: &Outbound, action: Action) {
         match action {
-            Action::SplitRight => self.split_with_anim(Direction::Horizontal),
-            Action::SplitDown => self.split_with_anim(Direction::Vertical),
+            Action::SplitRight => self.split_share(Direction::Horizontal, 0.5),
+            Action::SplitDown => self.split_share(Direction::Vertical, 0.5),
             Action::ClosePane => match self.state.close_focused_pane() {
                 None => self.note("last pane — alt+q quits"),
                 Some(mut pane) => {
@@ -947,25 +948,16 @@ impl App {
         }
     }
 
-    fn split_with_anim(&mut self, direction: Direction) {
-        let Some(new_id) = self.state.split_focused(direction) else {
+    fn split_share(&mut self, direction: Direction, to: f32) {
+        let start = if self.animate { 0.12 } else { to };
+        let Some(path) = self.state.split_focused_at(direction, start) else {
             return;
         };
-        if !self.animate {
-            return;
-        }
-        let tab = self.state.active_tab;
-        if let Some(path) = self
-            .state
-            .tab()
-            .and_then(|tab| tab.layout.split_path_of_second(new_id))
-        {
-            if let Some(tab_state) = self.state.tabs.get_mut(tab) {
-                tab_state.layout.set_ratio_at(&path, 0.12);
-            }
+        if self.animate {
             self.animations.push(Anim {
-                tab,
+                tab: self.state.active_tab,
                 path,
+                to,
                 start: self.clock.now(),
             });
         }

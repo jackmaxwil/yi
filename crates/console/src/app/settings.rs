@@ -38,7 +38,7 @@ impl App {
             Some(pane) => pane,
             None => {
                 let home = self.state.focused_pane_id();
-                self.split_with_anim(ratatui::layout::Direction::Horizontal);
+                self.split_share(ratatui::layout::Direction::Horizontal, 0.5);
                 let Some(pane) = self.state.focused_pane_id().filter(|id| Some(*id) != home) else {
                     return;
                 };

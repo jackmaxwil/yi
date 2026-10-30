@@ -15,6 +15,7 @@ use super::notebook::apply_notebook;
 use super::{App, RequestKind};
 
 pub(crate) const NOTEBOOK_IDLE: Duration = Duration::from_secs(20);
+const NOTEBOOK_SHARE: f32 = 0.4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SideKind {
@@ -353,7 +354,12 @@ impl App {
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(home);
         }
-        self.split_with_anim(Direction::Horizontal);
+        let side = if kind == SideKind::Notebook {
+            NOTEBOOK_SHARE
+        } else {
+            0.5
+        };
+        self.split_share(Direction::Horizontal, 1.0 - side);
         let opened = self.state.focused_pane_id().filter(|id| *id != home);
         if let Some(pane) = self.state.focused_pane_mut() {
             (pane.content, pane.scroll_from_bottom) = match (kind, session) {
@@ -439,6 +445,47 @@ mod tests {
             };
         }
         (app, session)
+    }
+
+    /// The owner found the notebook's half-width default too wide: it opens at two fifths, so at
+    /// a hundred columns it draws 41 wide where a plain split gives 51.
+    #[test]
+    fn a_new_notebook_takes_two_fifths_of_the_pane_area() {
+        let (mut app, session) = app_with_session();
+        app.maybe_open_side(&session, SideKind::Notebook);
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let widths: Vec<u16> = app
+            .state
+            .tab()
+            .expect("a tab")
+            .layout
+            .panes(area)
+            .iter()
+            .map(|pane| pane.rect.width)
+            .collect();
+        assert_eq!(
+            widths,
+            [60, 41],
+            "a fifth under the 51 a half split gives at 100 columns"
+        );
+    }
+
+    #[test]
+    fn the_review_side_keeps_the_half_split() {
+        let (mut app, session) = app_with_session();
+        let home = app.state.focused_pane_id().expect("home");
+        app.open_side(home, Some(session), SideKind::Diff);
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let widths: Vec<u16> = app
+            .state
+            .tab()
+            .expect("a tab")
+            .layout
+            .panes(area)
+            .iter()
+            .map(|pane| pane.rect.width)
+            .collect();
+        assert_eq!(widths, [50, 51], "Review opens at the generic half");
     }
 
     #[test]
