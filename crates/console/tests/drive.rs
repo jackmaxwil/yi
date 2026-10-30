@@ -5266,17 +5266,37 @@ fn a_resumed_sessions_kernel_cells_fill_the_notebook() -> TestResult {
     Ok(())
 }
 
+/// The recorded kernel call and its result, `count` copies: each renumbered and with its script
+/// replaced, so a fixture is one session's shape with N cells in it.
+fn replayed_cells(count: usize) -> Vec<(Value, Value)> {
+    let entries = recorded(KERNEL_SESSION);
+    let Some(result) = entries
+        .iter()
+        .find(|e| e["message"]["toolName"] == "ipython")
+    else {
+        return Vec::new();
+    };
+    let Some(call) = entries
+        .iter()
+        .find(|e| e["message"]["content"][0]["id"] == result["message"]["toolCallId"])
+    else {
+        return Vec::new();
+    };
+    (0..count)
+        .map(|n| {
+            let (mut call, mut result) = (call.clone(), result.clone());
+            let id = json!(format!("call_{n}"));
+            call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
+            call["message"]["content"][0]["id"] = id.clone();
+            result["message"]["toolCallId"] = id;
+            (call, result)
+        })
+        .collect()
+}
+
 /// Four kernel calls of one recorded session, each result carrying the mime a notebook renders
 /// it by: markdown, JSON, python, then the plain text it already drew.
 fn mime_entries() -> Vec<Value> {
-    let entries = recorded(KERNEL_SESSION);
-    let result = (entries.iter()).find(|e| e["message"]["toolName"] == "ipython");
-    let call = result.and_then(|r| {
-        (entries.iter()).find(|e| e["message"]["content"][0]["id"] == r["message"]["toolCallId"])
-    });
-    let (Some(call), Some(result)) = (call, result) else {
-        return entries;
-    };
     let values = [
         ("text/markdown", "# Tide survey\n\n- one\n- two"),
         ("application/json", "{\"datum\":4}"),
@@ -5284,13 +5304,8 @@ fn mime_entries() -> Vec<Value> {
         ("text/plain", "plain 42"),
     ];
     let mut out: Vec<Value> = Vec::new();
-    for (n, (mime, text)) in values.iter().enumerate() {
-        let (mut call, mut result) = (call.clone(), result.clone());
-        let id = json!(format!("call_{n}"));
-        call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
-        call["message"]["content"][0]["id"] = id.clone();
+    for ((call, mut result), (mime, text)) in replayed_cells(values.len()).into_iter().zip(values) {
         result["message"]["details"] = json!({"stdout": "", "result": text, "resultMime": mime});
-        result["message"]["toolCallId"] = id;
         out.push(call);
         out.push(result);
     }
@@ -5363,25 +5378,15 @@ fn a_second_replay_of_the_branch_leaves_the_notebook_as_it_was() -> TestResult {
     Ok(())
 }
 
-/// `count` kernel calls: the recording's first call and result, each under its own ids and as a
-/// one-line cell, then a last reply `tail`.
+/// `count` kernel calls, each a one-line cell, then a last reply `tail`.
 fn cell_entries(count: usize, tail: &str) -> Vec<Value> {
-    let entries = recorded(KERNEL_SESSION);
-    let result = (entries.iter()).find(|e| e["message"]["toolName"] == "ipython");
-    let call = result.and_then(|r| {
-        (entries.iter()).find(|e| e["message"]["content"][0]["id"] == r["message"]["toolCallId"])
-    });
-    let mut out: Vec<Value> = (0..count)
-        .filter_map(|n| {
-            let (mut call, mut result) = (call.cloned()?, result.cloned()?);
-            let id = json!(format!("call_{n}"));
-            call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
-            call["message"]["content"][0]["id"] = id.clone();
+    let mut out: Vec<Value> = replayed_cells(count)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(n, (call, mut result))| {
             result["message"]["details"]["stdout"] = json!(format!("{n}\n"));
-            result["message"]["toolCallId"] = id;
-            Some([call, result])
+            [call, result]
         })
-        .flatten()
         .collect();
     out.push(entry("e-tail", None, 9999, &assistant(tail)));
     out

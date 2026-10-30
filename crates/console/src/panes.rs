@@ -384,7 +384,6 @@ fn trace_rows(
     }
 }
 
-
 fn highlight_line(
     line: &str,
     lang: Option<&mut yi_tui::highlight::Lang>,
@@ -464,7 +463,11 @@ fn result_rows(
             }
             Err(_) => {
                 let mut rows = capped(result, lead, style, None, shape, "result", theme);
-                let why = if result.rsplit('\n').next().is_some_and(|row| row.starts_with("[…")) {
+                let why = if result
+                    .rsplit('\n')
+                    .next()
+                    .is_some_and(|row| row.starts_with("[…"))
+                {
                     "application/json result is past the cell's byte cap · the transcript holds all of it"
                 } else {
                     "application/json result did not parse as JSON · shown as text"
@@ -645,4 +648,22 @@ pub fn notebook_lines(
         out.push(Line::default());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Renderer, renderer_for};
+    use yi_types::kernel::RESULT_MIMES;
+
+    /// Dies with the kernel able to name a bundle the pane draws as flat text: the mime would
+    /// reach the cell and the pane would show the repr the richer bundle replaced.
+    #[test]
+    fn every_mime_the_kernel_ranks_by_has_a_renderer() {
+        for mime in RESULT_MIMES {
+            assert!(
+                !matches!(renderer_for(Some(mime)), Renderer::Text),
+                "{mime} draws as flat text"
+            );
+        }
+    }
 }

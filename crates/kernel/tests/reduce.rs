@@ -336,3 +336,37 @@ fn a_displayed_value_keeps_the_richest_bundle_its_data_names() {
     assert_eq!(empty.result, None);
     assert_eq!(empty.result_mime, None);
 }
+
+/// Dies with a bundle member past the cell's char cap stored whole: a JSON document of a
+/// million characters would ride every session line, and one beside a text/plain repr had a
+/// drawable form to fall back on.
+#[test]
+fn a_bundle_past_the_cells_cap_falls_back_to_its_plain_text() {
+    let big = json!({"rows": "x".repeat(600)});
+    let mut paired = cell(256);
+    reduce(
+        &mut paired,
+        &message(
+            "execute_result",
+            "req",
+            json!({"data": {"text/plain": "plain", "application/json": big}}),
+        ),
+        None,
+    );
+    assert_eq!(paired.result.as_deref(), Some("plain"));
+    assert_eq!(paired.result_mime.as_deref(), Some("text/plain"));
+
+    let mut solo = cell(256);
+    reduce(
+        &mut solo,
+        &message(
+            "execute_result",
+            "req",
+            json!({"data": {"application/json": big}}),
+        ),
+        None,
+    );
+    let kept = solo.result.clone().unwrap_or_default();
+    assert_eq!(kept.chars().count(), 256, "{kept}");
+    assert_eq!(solo.result_mime.as_deref(), Some("application/json"));
+}
