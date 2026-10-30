@@ -7,23 +7,25 @@ use yi_types::model::Model;
 
 use crate::args::Args;
 use crate::mailbox::{ParentLink, register_child_messaging};
+use crate::permission::PermissionBroker;
 use crate::rules::RuleEngine;
 use crate::session::AgentSession;
 use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
+use crate::wall::Wall;
 
 /// A child is a fresh session with its own extensions and cwd, on its family's stream (D314).
 fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
     Arc::new(move |build: ChildBuild<'_>| {
         let provider = Arc::new(wiring.provider.for_child());
-        let cwd = build
+        let child_cwd = build
             .cwd
             .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
         let below = RuntimeWiring {
-            broker: child_broker(&wiring, &build.wall, &cwd),
+            broker: child_broker(&wiring, &build.wall, &child_cwd),
             depth: wiring.depth.saturating_add(1),
             rlm_dir: build.session_dir.to_path_buf(),
             family_dir: Some(wiring.family_dir()),
-            cwd: cwd.clone(),
+            cwd: child_cwd.clone(),
             parent_link: Some(build.link.clone()),
             wall: build.wall.clone(),
             deadline: build.deadline,
@@ -32,7 +34,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             ..wiring.clone()
         };
         if let Some(reader) = build.reader.clone() {
-            let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
+            let rules = crate::rules::discover_armed(&child_cwd, &wiring.home).rules;
             let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
             let kernel = reader.tools.iter().any(|name| name == "ipython");
             let tools = |child: &AgentSession| {
@@ -45,7 +47,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
                 build,
                 &reader,
                 tools,
-                (cwd, &wiring.home),
+                (child_cwd, &wiring.home),
                 below.broker.clone(),
                 rules,
             ));
@@ -60,7 +62,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             Arc::clone(&provider),
         );
         child.install_extensions(crate::ext::install(crate::ext::ExtOptions {
-            cwd,
+            cwd: child_cwd.clone(),
             home: wiring.home.clone(),
             mode: wiring
                 .broker
@@ -79,11 +81,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
 }
 
 /// Rules flow down only: a child's broker starts from a copy of its parent's (#600).
-fn child_broker(
-    wiring: &RuntimeWiring,
-    wall: &crate::wall::Wall,
-    cwd: &Path,
-) -> Option<Arc<crate::permission::PermissionBroker>> {
+fn child_broker(wiring: &RuntimeWiring, wall: &Wall, cwd: &Path) -> Option<Arc<PermissionBroker>> {
     (wiring.broker.as_ref()).map(|broker| Arc::new(broker.for_child(wall, cwd)))
 }
 
@@ -97,7 +95,7 @@ pub struct RuntimeWiring {
     pub home: PathBuf,
     /// `lanes.slots`: how many worktree slots the repo's pool holds.
     pub lane_slots: u8,
-    pub broker: Option<Arc<crate::permission::PermissionBroker>>,
+    pub broker: Option<Arc<PermissionBroker>>,
     pub tools: Arc<dyn Fn() -> Vec<Arc<dyn yi_tools::Tool>> + Send + Sync>,
     pub depth: u8,
     pub max_depth: u8,
@@ -120,7 +118,7 @@ pub struct RuntimeWiring {
     /// Set for a child: its §12 route back into the family that spawned it.
     pub parent_link: Option<ParentLink>,
     /// The wall reduction: paths this session may not touch (plan §3.4 wall).
-    pub wall: crate::wall::Wall,
+    pub wall: Wall,
     /// `bash.autoBackgroundMs`, for a call that passes no `wait`; None backgrounds only one that does.
     pub auto_background: Option<std::time::Duration>,
     /// `--deadline`: the run's wall clock, counted down in the environment block and enforced.
@@ -915,7 +913,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &service,
     );
     let mut tools = (wiring.tools)();
-    crate::fetch::route_urls(&mut tools, &resolver);
+    crate::web_search::wire_search(&wiring, &mut tools, &resolver);
     let ipython = crate::kernel_tools::ipython_tool(Arc::clone(&service), Some(calls));
     tools.push(ipython);
     let annotate = crate::annotate::AnnotateTool::new(session.store_handle(), session.reclaimed());

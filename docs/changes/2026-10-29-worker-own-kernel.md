@@ -1,5 +1,5 @@
 ---
 issue: Closes #1584
-raise: crate runtime +32, tests +14
+raise: crate runtime +33, tests +14
 ---
 A worker (`rlm.run(role="worker")`) may now name `ipython` in `tools=`, which boots it a kernel of its own at worker prices; it is allowed, not a default, so a bare worker is unchanged. The child factory builds the worker's kernel the way a root child's is built (`wire_kernel`, the `bash()` host handlers under the worker's wall and broker, `tool.list` and `tool.call` over the worker's own tools) minus every `rlm` handler, so a cell in a worker cannot spawn. `reader::session` takes its tools as a closure over the built child so the `ipython` tool can hold that child's kernel service. A walled worker where the kernel would run unconfined (no Seatbelt) keeps the loud refusal, `WALLED_KERNEL_UNCONFINED`. The refusal text for a worker now lists `ipython` among the tools it may call, and the ipython skill and the feature-ledger row say so.
