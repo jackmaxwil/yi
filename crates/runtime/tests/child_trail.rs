@@ -6,10 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yi_ai::faux::{faux_assistant_message, faux_text};
-use yi_loop::ExecutionMode;
-use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
-use yi_types::message::StopReason;
+use yi_runtime::{ProviderStream, SubagentHost, SubagentHostOptions};
 use yi_types::model::{Effort, Model, ModelCost};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -41,15 +38,32 @@ fn faux_model() -> Model {
 
 /// A host whose parent has a real transcript on disk, as every CLI root does at spawn time.
 type Slot = Arc<std::sync::Mutex<Option<yi_session::SharedSession>>>;
+type Providers = Arc<std::sync::Mutex<Vec<Arc<ProviderStream>>>>;
 
 fn slot(parent: Option<yi_session::SharedSession>) -> Slot {
     Arc::new(std::sync::Mutex::new(parent))
 }
 
 fn host(depth: u8, parent_dir: PathBuf, parent: Slot) -> Arc<SubagentHost> {
+    host_with_hold(depth, parent_dir, parent, false)
+}
+
+fn host_with_hold(depth: u8, parent_dir: PathBuf, parent: Slot, hold: bool) -> Arc<SubagentHost> {
+    host_with_providers(depth, parent_dir, parent, hold, false).0
+}
+
+fn host_with_providers(
+    depth: u8,
+    parent_dir: PathBuf,
+    parent: Slot,
+    hold: bool,
+    fail: bool,
+) -> (Arc<SubagentHost>, Providers) {
+    let providers = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let factory_providers = Arc::clone(&providers);
     let (events, _keep) = tokio::sync::broadcast::channel(64);
     let spawned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    Arc::new(SubagentHost::new(SubagentHostOptions {
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         provider: Arc::new(ProviderStream::new(None)),
         depth,
         max_depth: depth.saturating_add(1),
@@ -61,21 +75,21 @@ fn host(depth: u8, parent_dir: PathBuf, parent: Slot) -> Arc<SubagentHost> {
         defaults: Arc::new(|| (faux_model(), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let provider = Arc::new(ProviderStream::new(None));
+            if let Ok(mut held) = factory_providers.lock() {
+                held.push(Arc::clone(&provider));
+            }
             let n = spawned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let answer = format!("the token is minted in auth.rs, answer {n}");
-            provider.queue_faux(vec![faux_assistant_message(
-                vec![faux_text(&answer)],
-                StopReason::Stop,
-            )]);
-            Ok(AgentSession::new(
-                SessionConfig {
-                    system_prompt: "child sys".to_owned(),
-                    model: build.model,
-                    thinking_level: build.thinking,
-                    tool_execution: ExecutionMode::Sequential,
-                },
-                provider,
-            ))
+            let reply = if fail {
+                crate::support::hung_up(&answer)
+            } else {
+                crate::support::priced_reply(&answer, 0.012)
+            };
+            provider.queue_faux(vec![reply]);
+            if hold {
+                provider.faux_hold.arm("text_delta", 1);
+            }
+            Ok(crate::support::child_session(build, provider))
         }),
         notice: Arc::new(|_, _| {}),
         events,
@@ -85,7 +99,8 @@ fn host(depth: u8, parent_dir: PathBuf, parent: Slot) -> Arc<SubagentHost> {
         store: Arc::new(move || parent.lock().ok().and_then(|held| held.clone())),
         plans_dir: std::env::temp_dir().join(".yi/plans"),
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }))
+    }));
+    (host, providers)
 }
 
 fn root_session(
@@ -99,6 +114,27 @@ fn root_session(
         (file, store.metadata().id.clone())
     };
     Ok((session, file, id))
+}
+
+async fn held_child(
+    label: &str,
+) -> Result<(Scratch, PathBuf, Arc<SubagentHost>, Arc<ProviderStream>), Box<dyn Error>> {
+    let scratch = Scratch::new(label)?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let (host, providers) =
+        host_with_providers(0, scratch.join("rlm-1"), slot(Some(session)), true, false);
+    host.spawn("Keep running.".to_owned(), kwargs("closed"))?;
+    let provider = providers
+        .lock()
+        .map_err(|_| "poisoned")?
+        .first()
+        .cloned()
+        .ok_or("no child provider")?;
+    assert!(
+        crate::support::wait_until(2_000, || provider.faux_hold.reached()).await,
+        "the stream never held"
+    );
+    Ok((scratch, root_file, host, provider))
 }
 
 fn kwargs(name: &str) -> Map<String, Value> {
@@ -177,6 +213,162 @@ async fn a_child_lives_inside_its_parent_and_the_parent_points_at_it() -> TestRe
         .ok_or("no end line")?;
     assert_eq!(end["exit"]["kind"], "completed");
     assert_eq!(end["name"], "scout");
+
+    assert_eq!(spawned["role"], "root");
+    assert_eq!(spawned["task"], "Where is the token minted?");
+    assert!(end["elapsedMs"].is_u64());
+    assert_eq!(end["cost"], json!(0.012));
+    assert_eq!(
+        end["answerPreview"].as_str().unwrap_or_default(),
+        "the token is minted in auth.rs, answer 0"
+    );
+    let children = host.children_view();
+    let update = &children.first().ok_or("no child update")?.update;
+    let live = serde_json::to_value(update)?;
+    assert_eq!(live["session"], spawned["session"]);
+    assert_eq!(live["role"], "root");
+    assert_eq!(live["task"], "Where is the token minted?");
+    assert_eq!(live["elapsedMs"], end["elapsedMs"]);
+    assert_eq!(live["cost"], end["cost"]);
+    assert_eq!(live["answerPreview"], end["answerPreview"]);
+    host.delete("scout")?;
+    assert_eq!(
+        trail(&root_file)?
+            .iter()
+            .filter(|line| line["event"] == "ended")
+            .count(),
+        1,
+        "reaping a concluded child repeats no end"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reap_journals_its_fresh_end() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-reap")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let host = host_with_hold(0, scratch.join("rlm-1"), slot(Some(session)), true);
+    host.spawn("Keep running.".to_owned(), kwargs("reap-me"))?;
+    host.delete("reap-me")?;
+    let lines = trail(&root_file)?;
+    let ends: Vec<_> = lines
+        .iter()
+        .filter(|line| line["event"] == "ended")
+        .collect();
+    assert_eq!(ends.len(), 1, "{lines:?}");
+    assert_eq!(ends[0]["exit"]["kind"], "reaped");
+    assert!(ends[0]["elapsedMs"].is_u64());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_repossession_after_parent_close_journals_that_cause() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-parent-close")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let host = host_with_hold(0, scratch.join("rlm-1"), slot(Some(session)), true);
+    let mut asked = kwargs("closed");
+    asked.insert(
+        "parent_close".to_owned(),
+        json!({"policy": "terminate", "grace_ms": 0}),
+    );
+    host.spawn("Keep running.".to_owned(), asked)?;
+    assert_eq!(host.close(), ["closed"]);
+    host.expire().await;
+    let lines = trail(&root_file)?;
+    let ends: Vec<_> = lines
+        .iter()
+        .filter(|line| line["event"] == "ended")
+        .collect();
+    assert_eq!(ends.len(), 1, "{lines:?}");
+    assert_eq!(ends[0]["exit"]["kind"], "repossessed");
+    assert_eq!(ends[0]["error"], "parent closed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_interruption_during_parent_close_grace_keeps_that_cause() -> TestResult {
+    let (_scratch, root_file, host, _provider) =
+        held_child("yi-child-trail-parent-close-interrupted").await?;
+    assert_eq!(host.close(), ["closed"]);
+    host.interrupt("closed")?;
+    let lines = ended(&root_file).await?;
+    let end = lines
+        .iter()
+        .find(|line| line["event"] == "ended")
+        .ok_or("no end line")?;
+    assert_eq!(end["exit"]["kind"], "interrupted");
+    assert_eq!(end["error"], "parent closed", "{lines:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_child_failing_during_parent_close_grace_keeps_its_own_error() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-parent-close-failed")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let (host, providers) =
+        host_with_providers(0, scratch.join("rlm-1"), slot(Some(session)), true, true);
+    host.spawn("Keep running.".to_owned(), kwargs("closed"))?;
+    let provider = providers
+        .lock()
+        .map_err(|_| "poisoned")?
+        .first()
+        .cloned()
+        .ok_or("no child provider")?;
+    assert!(
+        crate::support::wait_until(2_000, || provider.faux_hold.reached()).await,
+        "the stream never held"
+    );
+    assert_eq!(host.close(), ["closed"]);
+    assert!(provider.faux_hold.release());
+    let lines = ended(&root_file).await?;
+    let end = lines
+        .iter()
+        .find(|line| line["event"] == "ended")
+        .ok_or("no end line")?;
+    assert_eq!(end["exit"]["kind"], "failed", "{lines:?}");
+    assert_eq!(end["error"], "the provider hung up", "{lines:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_child_completing_during_parent_close_grace_ends_done() -> TestResult {
+    let (_scratch, root_file, host, provider) =
+        held_child("yi-child-trail-parent-close-done").await?;
+    assert_eq!(host.close(), ["closed"]);
+    assert!(provider.faux_hold.release());
+    let lines = ended(&root_file).await?;
+    let end = lines
+        .iter()
+        .find(|line| line["event"] == "ended")
+        .ok_or("no end line")?;
+    assert_eq!(end["exit"]["kind"], "completed");
+    assert_eq!(end["error"], Value::Null, "{lines:?}");
+    let children = host.children_view();
+    let update = &children.first().ok_or("no child update")?.update;
+    assert_eq!(update.error, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_resumed_run_measures_only_its_own_elapsed_time() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-resumed-elapsed")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let host = host(0, scratch.join("rlm-1"), slot(Some(session)));
+    host.spawn("First run.".to_owned(), kwargs("scout"))?;
+    ended(&root_file).await?;
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    host.route("parent", "scout", "Second run.", true)?;
+    let lines = ended_n(&root_file, 2).await?;
+    let elapsed: Vec<u64> = lines
+        .iter()
+        .filter(|line| line["event"] == "ended")
+        .filter_map(|line| line["elapsedMs"].as_u64())
+        .collect();
+    assert_eq!(elapsed.len(), 2, "{lines:?}");
+    assert!(
+        elapsed[1] < 80,
+        "the second run includes the gap after the first: {elapsed:?}"
+    );
     Ok(())
 }
 

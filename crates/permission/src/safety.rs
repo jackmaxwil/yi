@@ -481,12 +481,14 @@ pub fn classify(argv: &[String]) -> Class {
             false => worst_reading(argv.get(1..).unwrap_or_default()),
         };
     }
-    // `env` with only assignments prints the environment; with a program it launders one.
-    if name == "env" {
-        return match argv.iter().skip(1).all(|word| word.contains('=')) {
-            true => Class::Safe,
-            false => Class::Destructive,
-        };
+    // Reading a provider key is not a proven-safe read; it stays contained instead of allowed.
+    if name == "printenv"
+        && argv
+            .iter()
+            .skip(1)
+            .any(|word| (yi_types::PROVIDER_KEY_VARS.iter()).any(|(_, var)| var == word))
+    {
+        return Class::Unknown;
     }
     if LAUNDERING.binary_search(&name).is_ok() {
         return Class::Destructive;

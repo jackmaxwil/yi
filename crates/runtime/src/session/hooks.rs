@@ -1,7 +1,7 @@
 //! The session's handle vocabulary: every closure the runtime hands a subsystem so it can
 //! steer, notice or read this session without holding it. The run loop stays out.
 
-use std::sync::{Arc, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
@@ -203,6 +203,25 @@ impl AgentSession {
         })
     }
 
+    pub fn install_extensions(&self, host: crate::ext::Host) {
+        if let Ok(mut slot) = self.shared.ext.lock() {
+            *slot = Some(Arc::new(Mutex::new(host)));
+        }
+        let deliver = self.deliver_hook();
+        if let Some(host) = self.extensions()
+            && let Ok(mut host) = host.lock()
+        {
+            host.set_screen(self.screeners());
+            host.set_deliver(Arc::new(move |message| {
+                deliver(message, false);
+            }));
+        }
+    }
+
+    /// The screen this session's outside text is judged by: its own, never another session's.
+    pub fn screeners(&self) -> crate::classifier::Screeners {
+        self.shared.screen.clone()
+    }
     /// Delivers each text `observe` returns as a shown notice of `custom_type`, never a wake:
     /// a notice must not buy another turn.
     pub fn show_notices(
@@ -297,6 +316,9 @@ impl AgentSession {
             let messages = shared.messages.lock().ok()?;
             let usages = messages.iter().filter_map(|message| match message {
                 AgentMessage::Assistant { usage, .. } => Some(usage),
+                AgentMessage::ToolResult {
+                    usage: Some(usage), ..
+                } => Some(usage),
                 _ => None,
             });
             Some(usages.fold((0.0, false), |(cost, lower_bound), usage| {

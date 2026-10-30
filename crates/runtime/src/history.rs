@@ -10,6 +10,7 @@ use yi_types::message::{AgentMessage, Content, UserContent};
 use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::args::Args;
+use crate::file_cache::{Slot, Stamp};
 use crate::memory::rank::{Bm25, tokens};
 use yi_session::SNIPPET_CHARS;
 
@@ -273,21 +274,12 @@ pub fn units_of(file: &Path) -> Vec<Unit> {
 #[derive(Default)]
 pub struct Corpus {
     dirs: Mutex<BTreeMap<PathBuf, Belongs>>,
-    files: Mutex<BTreeMap<PathBuf, Cached>>,
+    files: Mutex<BTreeMap<PathBuf, Slot<Vec<Unit>>>>,
 }
 
 /// Incident: every kernel kept its own copy of the repo's session text, and each query cloned
 /// all of it; one corpus per process, shared by reference, holds it once.
 static SHARED: LazyLock<Arc<Corpus>> = LazyLock::new(Arc::default);
-
-type Cached = ((u64, u64), Arc<Vec<Unit>>);
-
-/// Invariant: a torn-tail repair or fork replaces a session file by rename, which can keep its
-/// length and mtime; the inode is what moves.
-fn stamp_of(file: &Path) -> (u64, u64) {
-    use std::os::unix::fs::MetadataExt;
-    fs::metadata(file).map_or((0, 0), |meta| (meta.len(), meta.ino()))
-}
 
 impl Corpus {
     pub fn sessions(&self, sessions_dir: &Path, cwd: &Path) -> RepoSessions {
@@ -318,13 +310,17 @@ impl Corpus {
         };
         let mut all = Vec::new();
         for file in files {
-            let stamp = stamp_of(file);
-            let fresh = cached.get(file).is_some_and(|(seen, _)| *seen == stamp);
-            if !fresh {
-                cached.insert(file.clone(), (stamp, Arc::new(units_of(file))));
-            }
-            if let Some((_, units)) = cached.get(file) {
-                all.push(Arc::clone(units));
+            let Some(stamp) = Stamp::of(file, None) else {
+                all.push(Arc::new(units_of(file)));
+                continue;
+            };
+            let units = cached
+                .entry(file.clone())
+                .or_default()
+                .load(stamp, || Ok::<_, std::convert::Infallible>(units_of(file)));
+            match units {
+                Ok(units) => all.push(units),
+                Err(never) => match never {},
             }
         }
         all

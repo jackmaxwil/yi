@@ -29,7 +29,7 @@ fn a_command_that_writes_behind_a_read_verb_is_not_a_read() {
 }
 
 /// Two searches are reads the loop runs side by side, so the classifier must keep calling them
-/// reads, and so is a command that only prints the environment.
+/// reads, and so is a command that prints one named variable.
 #[test]
 fn read_only_searches_stay_reads() {
     let bash = BashTool::default();
@@ -38,10 +38,15 @@ fn read_only_searches_stay_reads() {
         "rg -l Tool crates/tools 2>/dev/null",
         "ag -n parse crates",
         "printenv PATH",
-        "env | grep PATH",
     ] {
         let input = input(command);
         assert_eq!(bash.kind_for(&input), ToolKind::Read, "{command:?}");
         assert!(!bash.irreversible(&input), "{command:?}");
+    }
+    // A bare `env` prints every key in the process, so a pipeline over it is not a proven read.
+    for command in ["env | grep PATH", "printenv OPENAI_API_KEY"] {
+        let input = input(command);
+        assert_eq!(bash.kind_for(&input), ToolKind::Exec, "{command:?}");
+        assert!(bash.irreversible(&input), "{command:?}");
     }
 }

@@ -964,6 +964,9 @@ type SharedStore = yi_session::SharedSession;
 /// claims nor refuses the own transcript; an unwalled one reads them as before.
 #[tokio::test]
 async fn a_walled_command_reads_its_own_transcript_and_no_other() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
     let root = Scratch::new("yi-seam-transcript")?;
     let project = root.join("project");
     let (home, [author, grandchild, elsewhere], store) = plant_store(&root, &project)?;
@@ -1077,7 +1080,11 @@ async fn a_walled_retry_the_auto_reviewer_approves_never_runs_outside_the_sandbo
         vec![yi_ai::faux::faux_text("allow")],
         StopReason::Stop,
     )]);
-    let reviewer = yi_runtime::auto_review::Reviewer::new(provider, faux_model());
+    let reviewer = yi_runtime::auto_review::Reviewer::new(
+        provider,
+        faux_model(),
+        yi_runtime::classifier::Screeners::default(),
+    );
     let retry = walled_retry(None, Some(Arc::new(reviewer))).await?;
     assert!(
         refused_outright(&retry),
