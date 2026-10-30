@@ -188,10 +188,9 @@ def cap_wait(notes, now):
         return None
     left = spent
     for at, row in inside:
-        left -= float(row.get("cost") or 0)
+        left -= bot_meter.cost(row)
         if left < CAP_PR:
             return spent, at + WINDOW
-    return spent, inside[-1][0] + WINDOW
 
 
 def cap_reason(spent, reopens):
@@ -1648,7 +1647,7 @@ def selfcheck():
         # and an 11-hour one does not. Delete that branch and the first case reads stopped.
         module.conflicts_of = lambda base, sha: []
         pr_review.rounds_of = lambda *a: [{"n": 1, "sha": "abc", "verdict": "clean", "findings": []}]
-        stale = lambda at: [dict(bot, created_at=iso(at), body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 verdict=failed -->\n")]
+        stale = lambda at: [row(0, at, "failed")]
         for stale_rows, want in ((stale(now - RETRY_AFTER - 60), "clean"), (stale(now - RETRY_AFTER + 3600), "stopped")):
             labelled[:], pr_review.comments = [], (lambda repo, n, stale_rows=stale_rows: stale_rows)
             said = attempt("o/r", {"number": 1, "labels": [{"name": "autofix:failed"}],
@@ -1670,11 +1669,9 @@ def selfcheck():
                     or (comments and "Autofix is waiting" not in posted[0]):
                 errs.append(f"a capped PR read {said} with labels {labelled} and {len(posted)} comment(s), "
                             f"not capped, unlabelled and {comments} comment(s)")
-        pr_review.comments, forge_pr.fgj_api = (lambda repo, n: tried_notes), (lambda *a, **k: {})
-        pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
+        pr_review.comments, posted = (lambda repo, n: tried_notes), []
         draft = {"number": 1, "title": forge_pr.DRAFT + "t", "labels": [{"name": "autofix"}],
                  "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
-        posted = []
         forge_pr.fgj_api = lambda method, path, body=None, **k: posted.append((body or {}).get("body", "")) or {}
         high = (1, {"claim": "a false alarm", "path": "a.rs", "line": 3}, "already fixed at a.rs:3")
         for highs in ([], [high]):

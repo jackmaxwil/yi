@@ -105,16 +105,19 @@ def pull(number):
 def open_pulls():
     """Every open pull request, page by page: the forge returns 50 a page, and a reader of page one
     alone never sees the oldest. Incident: 102 were open and a pass saw #1830..#1891 only."""
-    served = []
+    bad = None
 
     def transport(method, path, body):
+        nonlocal bad
         batch = fgj_api(method, path, body)
-        served.append(batch)
+        if not isinstance(batch, list) and bad is None:
+            bad = batch
         return batch
 
     found = list(forge_tracking.paged(transport, f"repos/{repo()}/pulls?state=open"))
-    # Incident: an unsigned fgj answered the listing with an error object the loop then indexed.
-    return found if isinstance(served[0], list) else served[0]
+    # Incident: an unsigned fgj answered the listing with an error object the loop then indexed, so
+    # every page's reply is judged, not the first one.
+    return found if bad is None else bad
 
 
 def pull_for_branch(name):
@@ -655,6 +658,13 @@ def selfcheck():
     globals()["fgj_api"] = lambda *a, **k: {"message": "no token"}
     try:
         assert open_pulls()["message"] == "no token", "an error object read as a page"
+    finally:
+        globals()["fgj_api"] = real[0]
+    # A page after the first answering with an error object is returned, never spliced into the list.
+    globals()["fgj_api"] = lambda m, path, payload=None: served[:50] if path.endswith("page=1") else {"message": "no token"}
+    try:
+        late = open_pulls()
+        assert not isinstance(late, list) and late["message"] == "no token", f"a later page's error object read as {late[50:]!r}"
     finally:
         globals()["fgj_api"] = real[0]
     globals()["fgj_api"] = lambda *a, **k: served[:50]
