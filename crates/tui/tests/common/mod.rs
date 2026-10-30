@@ -387,6 +387,34 @@ pub fn test_model(id: &str) -> yi_types::model::Model {
     }
 }
 
+pub fn child_host_options(
+    dir: &crate::scratch::Scratch,
+    max_children: usize,
+    store: yi_runtime::goal::StoreHandle,
+    factory: Arc<yi_runtime::subagent::ChildFactory>,
+) -> yi_runtime::SubagentHostOptions {
+    yi_runtime::SubagentHostOptions {
+        provider: Arc::new(yi_runtime::ProviderStream::new(None)),
+        depth: 0,
+        max_depth: 1,
+        max_children,
+        parent_session_dir: dir.to_path_buf(),
+        cwd: dir.to_path_buf(),
+        home: dir.join("home"),
+        lane_slots: 1,
+        defaults: Arc::new(|| (test_model("faux-1"), yi_types::model::Effort::Medium)),
+        factory,
+        notice: Arc::new(|_, _| {}),
+        events: tokio::sync::broadcast::channel(64).0,
+        parent_messages: Arc::new(Vec::new),
+        report: Arc::new(|_, _| {}),
+        attribute: Arc::new(|_| {}),
+        store,
+        plans_dir: dir.join(".yi/plans"),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
+    }
+}
+
 /// Replay a recorded session as the event stream the reducer sees live: each
 /// assistant entry re-streamed through `stream_with_deltas`, each tool result
 /// paired with the call it answers, and every turn a typed prompt opens is

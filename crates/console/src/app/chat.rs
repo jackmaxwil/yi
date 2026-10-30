@@ -929,6 +929,10 @@ mod tests {
             error: None,
             exit: None,
             flag: None,
+            session: None,
+            role: None,
+            task: None,
+            elapsed_ms: None,
         }
     }
 

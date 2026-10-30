@@ -1,13 +1,11 @@
 use serde_json::Value;
 use yi_types::image::{has_magic_number, strict_base64_head};
 use yi_types::kernel::{
-    ExecuteResult, ExecuteStatus, JupyterMessage, KernelAttachment, KernelError,
+    ExecuteResult, ExecuteStatus, JupyterMessage, KernelAttachment, KernelError, RESULT_MIMES,
 };
 
 use crate::{ATTACHMENT_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS};
 
-/// The display bundles a value can arrive as, richest first: a notebook renders the one it kept.
-const RESULT_MIMES: [&str; 3] = ["text/markdown", "application/json", "text/x-python"];
 const PLAIN_MIME: &str = "text/plain";
 
 #[derive(Debug)]
@@ -169,10 +167,24 @@ pub fn reduce(
                     .find_map(|mime| data.get(*mime).map(|value| (*mime, value)))
                     .or_else(|| data.get(PLAIN_MIME).map(|value| (PLAIN_MIME, value)))
             });
-            if let Some((mime, value)) = picked {
+            if let Some((picked, value)) = picked {
+                let mut mime = picked;
                 let text = match value {
                     Value::String(text) => text.clone(),
-                    other => other.to_string(),
+                    other => {
+                        let serialized = other.to_string();
+                        if serialized.chars().count() <= cell.max_chars {
+                            serialized
+                        } else if let Some(plain) = data
+                            .and_then(|data| data.get(PLAIN_MIME))
+                            .and_then(Value::as_str)
+                        {
+                            mime = PLAIN_MIME;
+                            plain.to_owned()
+                        } else {
+                            serialized.chars().take(cell.max_chars).collect()
+                        }
+                    }
                 };
                 cell.result = Some(text.clone());
                 cell.result_mime = Some(mime.to_owned());

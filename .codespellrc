@@ -10,5 +10,5 @@
 # payload bytes rather than prose: a byte after a word reads as a misspelling of it.
 # `regraded` is what the archive's incident reviews do to a severity.
 [codespell]
-skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv,./ref,./runs,./evals/arc/runs,./crates/tui/tests/fixtures/sessions,./scripts/proof/tui_see/*.jsonl,./crates/runtime/tests/fixtures/documents,./evals/fixtures/tasks/fleet-forensics/environment/app/incidents/framed
-ignore-words-list = ratatui,advices,unparseable,disjointness,modle,iterm,regraded,jsut
+skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv,./ref,./runs,./evals/arc/runs,./crates/tui/tests/fixtures/sessions,./scripts/proof/tui_see/*.jsonl,./crates/runtime/tests/fixtures/documents,./evals/fixtures/tasks/fleet-forensics/environment/app/incidents/framed,./crates/ai/tests/fixtures/openrouter-web-search-*.json
+ignore-words-list = ratatui,advices,unparseable,jsut,disjointness,modle,iterm,regraded

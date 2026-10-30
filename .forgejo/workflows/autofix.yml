@@ -21,8 +21,8 @@ jobs:
   autofix:
     runs-on: ubuntu-latest
     # The one place the autofix job's limit is set; pr_autofix.py budgets its pass from it, and the
-    # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 45m) bounds it.
-    timeout-minutes: 45
+    # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 120m) bounds it.
+    timeout-minutes: 90
     steps:
       - name: install fgj
         run: |

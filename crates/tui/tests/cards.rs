@@ -391,6 +391,10 @@ fn child_update(status: ChildStatus, answer_preview: Option<String>) -> ChildUpd
         error: None,
         exit: None,
         flag: None,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
 
@@ -401,7 +405,16 @@ fn child_update(status: ChildStatus, answer_preview: Option<String>) -> ChildUpd
 #[test]
 fn a_feedless_childs_long_answer_keeps_its_tail_when_the_preview_arrives() -> TestResult {
     let mut app = app();
-    app.adopt(&child_update(ChildStatus::Running, None), None, None);
+    app.reduce_agent(AgentEvent::ToolExecutionStart {
+        tool_call_id: "cell-1".to_owned(),
+        tool_name: "ipython".to_owned(),
+        args: serde_json::json!({"code": "h = await rlm.run()"}),
+    });
+    app.adopt(
+        &child_update(ChildStatus::Running, None),
+        None,
+        Some("cell-1"),
+    );
     let text: String = (0..3_000)
         .map(|n| format!("line {n} of a long report\n"))
         .collect();
@@ -423,7 +436,7 @@ fn a_feedless_childs_long_answer_keeps_its_tail_when_the_preview_arrives() -> Te
     }
     let preview = format!("{}…", text.chars().take(240).collect::<String>());
     app.reduce_child_update(&child_update(ChildStatus::Completed, Some(preview)));
-    let rows = flat(&app.take_commits());
+    let rows = common::live_rows(&mut app)?;
     let row = rows
         .iter()
         .find(|row| row.contains("[…] kept the last"))
@@ -691,7 +704,12 @@ fn a_turn_receipt_names_its_kinds_of_work_and_the_model_time() -> TestResult {
     app.reduce_agent(AgentEvent::MessageStart { message: reply() });
     std::thread::sleep(std::time::Duration::from_millis(20));
     app.reduce_agent(AgentEvent::MessageEnd { message: reply() });
-    for (id, name) in [("c1", "read"), ("c2", "todo"), ("c3", "edit")] {
+    for (id, name) in [
+        ("c1", "read"),
+        ("c2", "todo"),
+        ("c3", "edit"),
+        ("c5", "web_search"),
+    ] {
         app.reduce_agent(AgentEvent::ToolExecutionStart {
             tool_call_id: id.to_owned(),
             tool_name: name.to_owned(),
@@ -720,7 +738,7 @@ fn a_turn_receipt_names_its_kinds_of_work_and_the_model_time() -> TestResult {
         .find(|r| r.starts_with("  ↳ "))
         .ok_or_else(|| format!("no footer: {rows:?}"))?;
     assert!(
-        footer.starts_with("  ↳ read 1 · edited 1 · ran 1 · "),
+        footer.starts_with("  ↳ read 1 · edited 1 · searched 1 · ran 1 · "),
         "{footer}"
     );
     assert!(footer.contains(" (model "), "{footer}");
