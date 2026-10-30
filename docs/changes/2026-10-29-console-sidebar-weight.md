@@ -1,4 +1,6 @@
 ---
+version: 0.831.0
+decisions: D513
 issue: Closes #1712
 decision: a console sidebar session's second line is drawn only when it carries news (a state that is not idle, a red gate, a todo list, a claimed question) or when the pane behind it shows that session, so an idle row is one line and the workspace headers and control rows wear the muted style instead of the text one | the owner asked on 2026-10-28 to "Reduce visual weight of the sidebar": two lines per session doubled its height, and every idle session carried a state line reading "idle · 7s" over bright chrome | restore the unconditional second line in `crates/console/src/sidebar.rs::session_rows` and the `text` style on the control rows and the bold workspace header
 raise: crate console +70, tests +135, comments +4
