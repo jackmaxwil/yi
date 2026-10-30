@@ -125,7 +125,7 @@ impl SubagentHost {
             return Err(yi_ai::auth::missing_message(&model.provider));
         }
         let mut wall = self.wall_for(kwargs)?;
-        wall.isolated = *isolation != super::Isolation::None;
+        wall.isolated |= *isolation != super::Isolation::None;
         let reader = super::reader::parse(kwargs)?;
         Ok((model, thinking.unwrap_or(parent_effort), wall, reader))
     }

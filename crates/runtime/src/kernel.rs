@@ -220,12 +220,11 @@ pub(crate) fn kernel_profile(
 ) -> yi_tools::Sandbox {
     // ~/.yi stays read-only: the MCP session store is the host's alone (D296).
     let mut profile = sandbox.clone();
-    // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling
-    // granted only to a member that shares the parent's view of it.
-    let granted = family_dir.filter(|dir| !sandbox.deny_write.iter().any(|held| held == *dir));
+    // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling,
+    // granted here and withdrawn from a contained member by the deny `session_sandbox` adds.
     profile
         .writable
-        .extend(granted.map(std::path::Path::to_path_buf));
+        .extend(family_dir.map(std::path::Path::to_path_buf));
     // Invariant: only the host writes the board's spills, so no cell swaps the dir for a link
     // between the host's check and its open, and no child rewrites a parent's kept output.
     (profile.deny_write).extend(family_dir.map(crate::wiring::board_spills));

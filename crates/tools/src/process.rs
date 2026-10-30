@@ -15,9 +15,17 @@ pub(crate) fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// The repository's top; a worktree never borrows the main checkout's.
+/// Incident: a TMPDIR spelled `repo/../tmp` walked into `repo` and borrowed its AGENTS.md, so
+/// `..` is resolved before the walk; a worktree never borrows the main checkout's root either.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    (cwd.ancestors())
+    let mut plain = std::path::PathBuf::new();
+    for part in cwd.components() {
+        match part {
+            std::path::Component::ParentDir => _ = plain.pop(),
+            other => plain.push(other),
+        }
+    }
+    (plain.ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }

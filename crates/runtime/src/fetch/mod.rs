@@ -385,13 +385,6 @@ fn unsupported(url: &Url, missing: &'static str) -> FetchError {
     }
 }
 
-/// What a `kernel://<agent>/<var>` object request answers: the dill path its kernel wrote, or
-/// text read in its place for a member whose kernel may not write the board.
-pub enum Object {
-    Dumped { path: PathBuf, bytes: u64 },
-    Text,
-}
-
 /// Invariant: read-only, always — there is no write path through a URL; every
 /// effect stays a tool call under permission.
 pub struct Resolver {
@@ -825,7 +818,7 @@ fn read_text(
 
 /// The `fetch` host handler: one addressable read, object branch first, since a family member
 /// asking for a `kernel://` variable gets a pickle only from a member that may write the board.
-pub async fn serve(
+pub(crate) async fn serve(
     resolver: &Arc<Resolver>,
     payload: &Map<String, Value>,
 ) -> Result<Map<String, Value>, String> {
@@ -843,14 +836,10 @@ pub async fn serve(
         }
         let dump = Arc::clone(resolver);
         let asked = url.clone();
-        let dumped = match tokio::task::spawn_blocking(move || dump.dump_kernel(&asked))
+        let dumped = tokio::task::spawn_blocking(move || dump.dump_kernel(&asked))
             .await
             .map_err(|error| format!("fetch task failed: {error}"))?
-            .map_err(|error| error.to_string())?
-        {
-            Object::Dumped { path, bytes } => Some((path, bytes)),
-            Object::Text => None,
-        };
+            .map_err(|error| error.to_string())?;
         if let Some((path, bytes)) = dumped {
             let mut reply = Map::new();
             reply.insert("url".to_owned(), Value::String(raw));

@@ -146,7 +146,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     let object: yi_types::url::Url = "kernel://helper/answer".parse()?;
     let dumper = Arc::clone(&resolver);
     let dumped = tokio::task::spawn_blocking(move || dumper.dump_kernel(&object)).await??;
-    let yi_runtime::fetch::Object::Dumped { path, bytes } = dumped else {
+    let Some((path, bytes)) = dumped else {
         return Err("the helper may write the board".into());
     };
     assert_eq!(path, family.join("helper.answer.dill"));

@@ -231,6 +231,31 @@ async fn a_child_cannot_spawn_with_a_smaller_wall_than_its_parent() -> TestResul
     Ok(())
 }
 
+/// Dies with the spawn's own isolation assigned over `Wall::under`'s: a worktree child's
+/// unisolated child is uncontained, writes the board, and the root unpickles what it put.
+#[tokio::test]
+async fn an_isolated_parents_unisolated_child_stays_contained() -> TestResult {
+    let (_bare_root, bare) = family("yi-lease-unisolated")?;
+    bare.host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("bare"))]))?;
+    let plain = bare.built.lock().map_err(|_| "poisoned")?[0]
+        .wall
+        .contained();
+    assert!(!plain, "a plain child of a root keeps the board");
+    let (_root, family) = family("yi-lease-isolated")?;
+    let held = yi_runtime::Wall {
+        isolated: true,
+        ..yi_runtime::Wall::default()
+    };
+    family.host.set_grant(held, None);
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("bare"))]))?;
+    let built = family.built.lock().map_err(|_| "poisoned")?;
+    assert!(built[0].wall.contained(), "{:?}", built[0].wall);
+    Ok(())
+}
+
 /// Dies with `seen` advanced by every reply: the run loop's own cursor moves the model's bare
 /// one past a child it never saw, so its next bare wait blocks to the cap on a finished child.
 #[tokio::test]

@@ -1,9 +1,7 @@
 ---
 issue: Closes #1538
-raise: comments +14
-raise: crate runtime +70
-raise: tests +196
 decision: A contained member's kernel writes no family board, and its `kernel://` objects read as text | D240 granted the board to every child so D164's upward channel reached the root, but the grant is also write access to the one directory the root's unconfined kernel unpickles from, and the child it protects is exactly the one with a wall, a container or a checkout of its own | restore the grant in `session_sandbox` and let `Resolver::dump_kernel` hand back its path again
+raise: crate runtime +58, crate tools +8, tests +221, comments +13
 ---
 
 # Stop a parent kernel unpickling what a contained child wrote
@@ -16,13 +14,13 @@ kernel calls `dill.load` on: a walled child â€” the member D240 was protecting â
 
 `Wall::contained` now answers the question both ends ask: any wall, a container, or a checkout
 of its own (`isolated`, set from the spawn's isolation and inherited through `Wall::under`).
-`session_sandbox` names the board in that member's `deny_write`, so `kernel_profile` leaves it
-out of the writable roots: the child's kernel meets `EPERM` on `rlm.put`, and so does its
+`session_sandbox` names the board in that member's `deny_write`, which outranks the writable
+root `kernel_profile` grants: the child's kernel meets `EPERM` on `rlm.put`, and so does its
 `bash()`.
 
 Reading up still works, as text. `Resolver::dump_kernel` asks the member's own kernel whether
 it may write the board (`KernelService::writes_board`, the same deny read back), and answers
-`Object::Text` when it may not; the idling host handler falls through to the ordinary text read,
+`None` when it may not; the idling host handler falls through to the ordinary text read,
 which `rlm.fetch` already returns when a reply carries no path. So a parent can still read what
 a contained child computed, and never loads its pickle.
 
