@@ -163,3 +163,65 @@ pub fn user_key(window: &[AgentMessage], inputs: &[UserContent]) -> String {
         rows.join("\n")
     )
 }
+
+const UNVERIFIED: &str = " [unverified: not in user://";
+
+fn squash(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn mark_line(line: &str, inputs: &[UserContent]) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    let mut address: Option<usize> = None;
+    loop {
+        let at = rest.find("user://");
+        let quote = rest.find('"');
+        match (at, quote) {
+            (Some(at), quote) if quote.is_none_or(|quote| at < quote) => {
+                let (before, after) = rest.split_at(at.saturating_add("user://".len()));
+                out.push_str(before);
+                let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+                address = digits.parse().ok();
+                out.push_str(&digits);
+                rest = after.get(digits.len()..).unwrap_or_default();
+            }
+            (_, Some(open)) => {
+                let (before, after) = rest.split_at(open.saturating_add(1));
+                out.push_str(before);
+                let Some((body, tail)) = after.split_once('"') else {
+                    out.push_str(after);
+                    return out;
+                };
+                out.push_str(body);
+                out.push('"');
+                rest = tail;
+                if let Some(n) = address
+                    && !rest.starts_with(UNVERIFIED)
+                {
+                    let found = n
+                        .checked_sub(1)
+                        .and_then(|index| inputs.get(index))
+                        .is_some_and(|input| squash(&user_text(input)).contains(&squash(body)));
+                    if !found {
+                        out.push_str(&format!("{UNVERIFIED}{n}]"));
+                    }
+                }
+            }
+            (_, None) => {
+                out.push_str(rest);
+                return out;
+            }
+        }
+    }
+}
+
+/// Incident: a tool result could plant a quote the summary then cited as `user://N`; a quote
+/// the addressed typed message lacks (whitespace aside) is marked in the view, never the ledger.
+pub fn mark_unmatched_quotes(summary: &str, inputs: &[UserContent]) -> String {
+    summary
+        .split('\n')
+        .map(|line| mark_line(line, inputs))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
