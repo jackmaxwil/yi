@@ -3,8 +3,8 @@ mod scratch;
 #[path = "support/upstream.rs"]
 mod upstream;
 use scratch::Scratch;
-
 use std::error::Error;
+use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 use yi_ai::anthropic::{AnthropicOptions, Thinking, build_params};
@@ -784,6 +784,32 @@ const ROLES: [(&str, &str, Option<&str>); 5] = [
 fn checkout() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
+/// Incident: a temp dir under a checkout made every bare row price that checkout's AGENTS.md,
+/// 44342 bytes against a 50477 budget; a base inside a repository is refused, never fallen back on.
+fn repo_free(base: PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+    let Some(root) = yi_tools::git_root(&base) else {
+        return Ok(base);
+    };
+    Err(format!(
+        "{} sits inside the repository at {}, which would price its AGENTS.md",
+        base.display(),
+        root.display()
+    )
+    .into())
+}
+
+#[test]
+fn a_base_inside_a_repository_is_refused() -> TestResult {
+    let dir = Scratch::new("yi-repo-free")?;
+    std::fs::create_dir_all(dir.join(".git"))?;
+    let Err(error) = repo_free(dir.to_path_buf()) else {
+        return Err("a repo-bound base was accepted".into());
+    };
+    if !error.to_string().contains(&dir.display().to_string()) {
+        return Err(format!("the refusal does not name {}: {error}", dir.display()).into());
+    }
+    Ok(())
+}
 
 /// Each role's first request body, from a root wired as yi wires one and children spawned
 /// through its host, so a child's prefix is the one its production factory builds.
@@ -791,7 +817,8 @@ async fn role_bodies(
     workspace: Workspace,
     max_depth: u8,
 ) -> Result<Vec<(&'static str, Value)>, Box<dyn Error>> {
-    let scratch = Scratch::new("yi-role-prefix")?;
+    let base = repo_free(std::env::temp_dir()).or_else(|_| repo_free(PathBuf::from("/tmp")))?;
+    let scratch = Scratch::new_at(&base, "yi-role-prefix")?;
     let ws = scratch.join("ws");
     std::fs::create_dir_all(&ws)?;
     let mode = match workspace {
