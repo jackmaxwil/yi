@@ -2742,13 +2742,17 @@ async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dy
 /// A `name` hook in the rig's repository that sleeps two seconds the first time git runs it
 /// and leaves `hook-ran` behind.
 fn slow_hook(rig: &Rig, name: &str) -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
     let mark = rig.root.join("hook-ran");
-    let hook = rig.repo.join(".git/hooks").join(name);
     let script = format!(
         "#!/bin/sh\n[ -e '{0}' ] && exit 0\n: > '{0}'\nsleep 2\n",
         mark.display()
     );
+    write_hook(rig, name, &script)
+}
+
+fn write_hook(rig: &Rig, name: &str, script: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = rig.repo.join(".git/hooks").join(name);
     std::fs::write(&hook, script)?;
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
@@ -3277,11 +3281,11 @@ async fn a_check_past_the_deadline_is_cut_while_the_executor_serves() -> TestRes
 
 /// A `post-checkout` hook that sleeps `seconds`, so every fresh slot's `worktree add` takes it.
 fn sleeping_checkout(rig: &Rig, seconds: u32) -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
-    let hook = rig.repo.join(".git/hooks/post-checkout");
-    std::fs::write(&hook, format!("#!/bin/sh\nsleep {seconds}\n"))?;
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
-    Ok(())
+    write_hook(
+        rig,
+        "post-checkout",
+        &format!("#!/bin/sh\nsleep {seconds}\n"),
+    )
 }
 
 fn claim_at_once(pool: &Pool, sessions: usize) -> Vec<Result<Lane, LaneError>> {
@@ -3489,13 +3493,6 @@ fn an_oversubscribed_pool_never_hands_one_slot_out_twice() -> TestResult {
     Ok(())
 }
 
-fn alive(pid: &str) -> Result<bool, Box<dyn Error>> {
-    let probe = yi_tools::command("/bin/sh")
-        .args(["-c", r#"kill -0 "$1""#, "kill", pid])
-        .status()?;
-    Ok(probe.success())
-}
-
 /// Dies with a claim that signals whatever process reuses a stale warm receipt's pid.
 #[test]
 fn a_claim_leaves_a_process_that_is_not_the_warmer_alive() -> TestResult {
@@ -3505,8 +3502,13 @@ fn a_claim_leaves_a_process_that_is_not_the_warmer_alive() -> TestResult {
     git(&rig.repo, &["commit", "-qm", "lock"])?;
     let pool = rig.pool(1)?;
     let slot = pool.claim("s-first", ClaimBase::Main)?.slot();
+    let cargo = rig.root.join("cargo");
+    std::fs::write(&cargo, "sleep 30\n")?;
     let stranger = yi_tools::command("/bin/sh")
-        .args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!"])
+        .arg("-c")
+        .arg(r#"/bin/sh "$1" build >/dev/null 2>&1 & echo $!"#)
+        .arg("sh")
+        .arg(&cargo)
         .output()?;
     let pid = String::from_utf8(stranger.stdout)?.trim().to_owned();
     let path = pool.dir().join(format!("{slot}.json"));
@@ -3521,14 +3523,14 @@ fn a_claim_leaves_a_process_that_is_not_the_warmer_alive() -> TestResult {
     });
     std::fs::write(&path, serde_json::to_vec(&state)?)?;
     let claimed = pool.claim("s-next", ClaimBase::Main);
-    let survived = alive(&pid)?;
+    let survived = yi_kernel::bootstrap::process_is_running(pid.parse()?)?;
     let _ = yi_tools::command("/bin/sh")
         .args(["-c", r#"kill -KILL "$1""#, "kill", &pid])
         .status();
     assert_eq!(claimed?.slot(), slot);
     assert!(
         survived,
-        "the claim signalled pid {pid}, a sleep, not the warmer"
+        "the claim signalled pid {pid}, a `cargo build`, not the warmer"
     );
     Ok(())
 }
@@ -3671,10 +3673,16 @@ fn merged_crashed_slot(
 #[test]
 fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
     let rig = Rig::new("gc-stale-lock")?;
+    std::fs::write(rig.repo.join("Cargo.lock"), "# lock\n")?;
+    git(&rig.repo, &["add", "Cargo.lock"])?;
+    git(&rig.repo, &["commit", "-qm", "lock"])?;
     let pool = rig.pool(1)?;
     let (path, state_path, mut state) = merged_crashed_slot(&rig, &pool)?;
-    let mut warmer = yi_tools::command("sleep")
-        .arg("30")
+    let cargo = rig.root.join("cargo");
+    std::fs::write(&cargo, "sleep 30\n")?;
+    let mut warmer = yi_tools::command("/bin/sh")
+        .arg(&cargo)
+        .args(["check", "--offline", "--all-targets", "--quiet"])
         .current_dir(&path)
         .spawn()?;
     let warmer_pid = warmer.id();

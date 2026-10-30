@@ -98,13 +98,18 @@ pub fn lockfile_hash(tree: &Path, toolchain: &Toolchain) -> Option<String> {
     Some(crate::ext::content_hash(&String::from_utf8_lossy(&bytes)))
 }
 
-/// An interpreter's script counts by its stem, so `node …/npm ci` is npm's warmer.
+/// An interpreter's script counts by its stem, so `node …/npm ci` is npm's warmer; the warm
+/// command's own arguments must follow it, so the user's `cargo build` is not one.
 pub(super) fn is_warmer(tree: &Path, argv: &[String]) -> bool {
     detect(tree).iter().any(|toolchain| {
-        toolchain.warm.first().is_some_and(|program| {
-            argv.iter().any(|arg| {
-                Path::new(arg).file_stem().and_then(|stem| stem.to_str()) == Some(*program)
-            })
+        let Some((program, flags)) = toolchain.warm.split_first() else {
+            return false;
+        };
+        argv.iter().enumerate().any(|(at, arg)| {
+            Path::new(arg).file_stem().and_then(|stem| stem.to_str()) == Some(*program)
+                && argv.get(at.saturating_add(1)..).is_some_and(|rest| {
+                    rest.len() >= flags.len() && rest.iter().zip(flags).all(|(a, f)| a == f)
+                })
         })
     })
 }
@@ -274,12 +279,11 @@ impl Pool {
         }
         // Incident: a receipt outlives its warmer, and its pid can name an unrelated process.
         let tree = self.slot_path(slot);
-        let argv = process_argv(&self.dir, pid);
-        let in_tree = process_cwd(pid).is_some_and(|cwd| Some(cwd) == tree.canonicalize().ok());
-        if !(argv.is_some_and(|argv| is_warmer(&tree, &argv)) || in_tree) {
+        if !process_argv(&self.dir, pid).is_some_and(|argv| is_warmer(&tree, &argv)) {
             if let Some(warm) = state.warm.as_mut() {
                 warm.pid = None;
             }
+            state.lockfile = None;
             return self.write_state(slot, &state);
         }
         let term = ["-c", r#"kill -TERM "$1""#, "kill", &pid.to_string()];
@@ -326,10 +330,6 @@ fn process_argv(cwd: &Path, pid: u32) -> Option<Vec<String>> {
     )
     .ok()?;
     Some(args.split_whitespace().map(str::to_owned).collect())
-}
-
-fn process_cwd(pid: u32) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 #[cfg(test)]

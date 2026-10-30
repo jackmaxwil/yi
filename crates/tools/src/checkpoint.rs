@@ -2,8 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use crate::process::host_git;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeId(String);
 
@@ -254,7 +252,6 @@ impl Checkpoints {
     }
 
     fn git_fed(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<String, CheckpointError> {
-        use std::io::Write;
         let verb = args.first().copied().unwrap_or_default();
         let _span = yi_types::trace::span("checkpoint.git").arg("verb", verb);
         let _serialized = self
@@ -268,26 +265,36 @@ impl Checkpoints {
             .arg("--work-tree")
             .arg(&self.work_tree)
             .args(args)
-            .current_dir(&self.work_tree)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        let missing = |error: std::io::Error| CheckpointError::GitMissing(error.to_string());
-        let mut child = process.spawn().map_err(missing)?;
-        if let Some(mut pipe) = child.stdin.take()
-            && let Some(bytes) = stdin
-        {
-            pipe.write_all(bytes).map_err(missing)?;
-        }
-        let output = child.wait_with_output().map_err(missing)?;
-        if !output.status.success() {
+            .current_dir(&self.work_tree);
+        let never: crate::tool::CancelFlag = Arc::new(|| false);
+        let capture = crate::process::run_captured(
+            process,
+            stdin.map(<[u8]>::to_vec),
+            &never,
+            crate::process::OUTPUT_CAP,
+        )
+        .map_err(CheckpointError::GitMissing)?;
+        if capture.exit_code != Some(0) {
             return Err(CheckpointError::Git {
                 command: verb.to_owned(),
-                message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                message: capture.stderr.trim().to_owned(),
             });
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(capture.stdout)
     }
+}
+
+/// A git Yi drives on its own repository: a caller's `GIT_INDEX_FILE`, `GIT_WORK_TREE` or
+/// `GIT_DIR` never redirects it, and paths come back unquoted.
+fn host_git() -> std::process::Command {
+    let mut process = crate::process::keyless_command("git");
+    for (variable, _) in std::env::vars_os() {
+        if variable.to_string_lossy().starts_with("GIT_") {
+            process.env_remove(variable);
+        }
+    }
+    process.args(["-c", "core.quotepath=false"]);
+    process
 }
 
 /// Read relative to the earlier tree from `-z` rows (status NUL path NUL), with renames split by

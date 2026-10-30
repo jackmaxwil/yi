@@ -68,8 +68,7 @@ impl SubagentHost {
             .claim(child_id, crate::lane::ClaimBase::Commit(head.clone()))
             .map_err(|error| error.to_string())?;
         // Invariant: a child is cut at the commit, so the parent's uncommitted edits are not in it.
-        let left_out = crate::lane::reap::Uncommitted::read(&self.options.cwd)
-            .ok()
+        let left_out = crate::lane::reap::Uncommitted::read_briefly(&self.options.cwd)
             .filter(|dirt| !dirt.is_empty())
             .map(|dirt| {
                 let short: String = head.chars().take(8).collect();

@@ -551,7 +551,6 @@ TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
 file checkpoints + /undo | `checkpoint::undo_restores_and_removes_non_ascii_paths`
 file checkpoints + /undo | `checkpoint::a_capture_leaves_the_callers_git_index_untouched`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::parallel_claims_check_out_side_by_side`
-lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::an_oversubscribed_pool_never_hands_one_slot_out_twice`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_claim_leaves_a_process_that_is_not_the_warmer_alive`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::concurrent_syncs_keep_every_seen_lockfile`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_tree_with_two_lockfiles_syncs_both`
