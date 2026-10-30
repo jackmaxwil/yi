@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::path::Component::ParentDir;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,7 +17,17 @@ pub(crate) fn quoted(text: &str) -> String {
 }
 
 /// The repository's top; a worktree never borrows the main checkout's.
+///
+/// Incident: ancestors are lexical, so a cwd holding `..` (a TMPDIR of
+/// `/repo/../scratch`) climbed to `/repo/..` and then `/repo`, attaching a sibling
+/// checkout's AGENTS.md as trusted instructions.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    let cwd = std::path::absolute(cwd).ok()?;
+    let cwd = if cwd.components().any(|part| part == ParentDir) {
+        std::fs::canonicalize(&cwd).unwrap_or_else(|_| yi_permission::lexical_normalize(&cwd))
+    } else {
+        cwd
+    };
     (cwd.ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
@@ -457,6 +468,48 @@ mod tests {
             drain_capped(text.as_bytes(), 35, None, (&spill, Stream::Out)),
             (text, None)
         );
+    }
+
+    #[test]
+    fn a_dotdot_cwd_never_climbs_to_a_sibling_repo() -> Fallible {
+        let base = std::env::temp_dir().join(format!("yi-git-root-{}", std::process::id()));
+        let (repo, scratch) = (base.join("repo"), base.join("scratch"));
+        std::fs::create_dir_all(repo.join(".git"))?;
+        std::fs::create_dir_all(repo.join("src"))?;
+        std::fs::create_dir_all(&scratch)?;
+        assert_eq!(
+            git_root(&repo.join("..").join("scratch")),
+            None,
+            "a dotted path is not an ancestor of the repo it passes through"
+        );
+        assert_eq!(
+            git_root(&repo.join("..").join("scratch").join("missing")),
+            None,
+            "an unresolvable dotted path does not fall back to the lexical walk"
+        );
+        assert_eq!(git_root(&scratch), None);
+        assert_eq!(
+            git_root(&repo.join("src")),
+            Some(yi_permission::lexical_normalize(&repo))
+        );
+        std::fs::remove_dir_all(&base)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_dotdot_past_a_symlink_resolves_on_disk() -> Fallible {
+        let base = std::env::temp_dir().join(format!("yi-git-root-link-{}", std::process::id()));
+        let (deep, wrong) = (base.join("x/y"), base.join("repo"));
+        std::fs::create_dir_all(deep.join("..").join("repo/.git"))?;
+        std::fs::create_dir_all(wrong.join(".git"))?;
+        std::os::unix::fs::symlink(&deep, base.join("link"))?;
+        assert_eq!(
+            git_root(&base.join("link").join("..").join("repo")),
+            Some(std::fs::canonicalize(base.join("x/repo"))?),
+            "`..` after a symlink lands where the kernel lands, not where the text says"
+        );
+        std::fs::remove_dir_all(&base)?;
+        Ok(())
     }
 
     #[test]

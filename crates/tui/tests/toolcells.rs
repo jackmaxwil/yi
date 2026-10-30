@@ -41,7 +41,7 @@ fn started(app: &mut App, id: &str, tool: &str, arg: &str) {
     app.reduce_agent(AgentEvent::ToolExecutionStart {
         tool_call_id: id.to_owned(),
         tool_name: tool.to_owned(),
-        args: json!({ "path": arg, "pattern": arg, "command": arg }),
+        args: json!({ "path": arg, "pattern": arg, "command": arg, "query": arg }),
     });
 }
 
@@ -712,6 +712,32 @@ fn every_tool_a_recorded_session_calls_has_its_own_glyph_and_hue() -> TestResult
             "{name} has no hue"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn web_search_card_has_its_query_glyph_hue_and_citation_count() -> TestResult {
+    let theme = theme();
+    let summary = ToolCell::summary_of("web_search", "latest Rust");
+    assert!(summary.starts_with('⌕'), "{summary}");
+    assert!(summary.contains("latest Rust"));
+    assert_eq!(yi_tui::card::tool_hue(&theme, "web_search"), theme.cyan);
+    assert_eq!(yi_tui::cell::explore_verb("web_search"), Some("Search"));
+    let digest = ToolCell::digest_of(
+        "web_search",
+        "answer",
+        &json!({"citationCount": 5, "costUsd": 0.0075}),
+        false,
+    );
+    assert_eq!(digest.as_deref(), Some("5 citations · $0.007"));
+    let mut app = app();
+    started(&mut app, "search", "web_search", "latest Rust");
+    ended(&mut app, "search", "web_search", "answer");
+    app.reduce_agent(AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let rows = flat(&app.take_commits()).join("\n");
+    assert!(rows.contains("latest Rust"), "{rows}");
     Ok(())
 }
 
