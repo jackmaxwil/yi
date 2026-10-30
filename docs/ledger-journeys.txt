@@ -4,6 +4,8 @@ pure loop + event enum | `interrupt::an_abort_during_the_cut_drain_returns_at_on
 pure loop + event enum | `pump_stop::an_abort_stops_the_provider_pump_at_the_next_event`
 pure loop + event enum | `openrouter::an_aborted_turn_is_settled_from_the_record`
 entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
+entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
+entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
 hashline edit (+ registers, instrumented) | `hashline_patcher::read_edit_round_trip_replaces_lines_and_mints_a_new_tag`
@@ -28,6 +30,9 @@ Claude Code tool hooks | `claude_hooks::a_hook_allow_never_widens_an_in_process_
 Claude Code tool hooks | `mcp_cli::a_cells_mcp_call_runs_claude_code_hooks_under_its_mcp_name` (T2)
 permission modes/rules/holds, deterministic auto | `gate_battery::the_battery_lands_where_the_table_says`
 permission modes/rules/holds, deterministic auto | `safety::an_unknown_command_is_contained_not_allowed`
+check probe | `ask_check::a_check_that_cannot_run_exits_2_before_any_request`
+check probe | `goal_e2e::a_declared_check_that_cannot_start_is_refused_not_run`
+check probe | `check_probe::a_check_whose_program_is_absent_is_refused_by_name`
 permission modes/rules/holds, deterministic auto | `decide::auto_reads_a_command_segment_by_segment`
 permission modes/rules/holds, deterministic auto | `safety::a_flag_that_runs_or_writes_is_not_read_only`
 model auto-review M7/M8 | `auto_review::a_reviewer_denial_carries_its_evidence_and_a_request_number`
@@ -536,3 +541,5 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
+web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)

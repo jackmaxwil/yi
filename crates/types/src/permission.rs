@@ -52,23 +52,6 @@ impl crate::entry::CustomRecord for SessionPermissionRule {
     const TYPE: &'static str = PERMISSION_RULE_ENTRY;
 }
 
-/// ACP-shaped permission request/response.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PermissionRequest {
-    pub title: String,
-    pub description: String,
-    pub subject: String,
-    pub options: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionResponse {
-    Selected { option: String },
-    Cancelled,
-}
-
 /// The custom entry type a session journals each settled ask under.
 pub const PERMISSION_ENTRY: &str = "permission";
 
