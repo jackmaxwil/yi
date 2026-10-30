@@ -251,6 +251,14 @@ pub fn label(tool: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The summary opens with the tool's own glyph and label; what is left is the source.
+pub(crate) fn subject_of<'a>(name: &str, summary: &'a str) -> &'a str {
+    summary
+        .split_once(label(name).as_str())
+        .map(|(_, rest)| rest.trim())
+        .unwrap_or(summary)
+}
+
 const PREVIEW_ROWS: usize = 3;
 
 pub(crate) fn glyph(tool: &str) -> char {
@@ -573,11 +581,8 @@ impl ToolCell {
         let anchored = matches!(self.name.as_str(), "read" | "edit");
         // A patch routes to `diffview`, which colours from its own header; this is the plain
         // numbered dump a read prints, its path in the summary since `details` lacks it.
-        let label = label(&self.name);
         let subject = anchored
-            .then(|| self.summary.split_once(label.as_str()))
-            .flatten()
-            .map(|(_, rest)| rest.trim())
+            .then(|| subject_of(&self.name, &self.summary))
             .filter(|subject| !subject.is_empty());
         let mut lang = subject.and_then(crate::highlight::lang_for);
         let mut expect = 1_u64;
@@ -974,6 +979,15 @@ fn boxed(title: &str, body: Vec<Line<'static>>, width: usize, style: Style) -> V
     out.push(Line::from(Span::styled(bottom, style)));
     out.push(Line::default());
     out
+}
+
+/// Invariant: a run closes into the cell it commits as whatever its length, so the live region
+/// and the transcript draw one shape and a lone read does not shrink then grow.
+pub(crate) fn explored_cell(rows: Vec<ToolCell>) -> Cell {
+    match <[ToolCell; 1]>::try_from(rows) {
+        Ok([single]) => Cell::Tool(single),
+        Err(rows) => Cell::Explored(rows),
+    }
 }
 
 impl Cell {

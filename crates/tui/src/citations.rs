@@ -3,9 +3,11 @@
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
-use crate::cell::{ToolCell, ToolStatus, TranscriptMode, explore_verb, glyph, subject_spans};
+use crate::cell::{
+    ToolCell, ToolStatus, TranscriptMode, explore_verb, glyph, subject_of, subject_spans,
+};
 use crate::colors::Theme;
 use crate::wrap::wrap_line;
 
@@ -45,7 +47,7 @@ pub(crate) fn lines(
         )];
         spans.extend(subject_spans(
             &row.name,
-            subject(row),
+            subject_of(&row.name, &row.summary),
             theme,
             Style::default().fg(theme.text),
         ));
@@ -63,14 +65,6 @@ pub(crate) fn lines(
     crate::card::card(head, &[], out, width, theme, ToolStatus::Done)
 }
 
-/// The summary opens with the tool's own glyph and label, which the row already carries; what is
-/// left is the source.
-fn subject(row: &ToolCell) -> &str {
-    row.summary
-        .split_once(&crate::cell::label(&row.name))
-        .map(|(_, rest)| rest.trim())
-        .unwrap_or(row.summary.as_str())
-}
 fn citation_row(rows: &[ToolCell], width: usize, theme: &Theme) -> Line<'static> {
     let mut text = String::new();
     let mut shown = 0_usize;
@@ -79,7 +73,7 @@ fn citation_row(rows: &[ToolCell], width: usize, theme: &Theme) -> Line<'static>
             "{}{} {}",
             if index == 0 { "" } else { "  " },
             glyph(&row.name),
-            subject(row)
+            subject_of(&row.name, &row.summary)
         );
         let hidden = rows.len().saturating_sub(index).saturating_sub(1);
         let tail = tail_of(hidden);
@@ -92,7 +86,9 @@ fn citation_row(rows: &[ToolCell], width: usize, theme: &Theme) -> Line<'static>
             text.push_str(&piece);
         } else if index == 0 {
             let room = width.saturating_sub(UnicodeWidthStr::width(tail.as_str()));
-            text.push_str(&clip(&piece, room));
+            for span in crate::wrap::fit(Line::from(piece), room).spans {
+                text.push_str(&span.content);
+            }
         } else {
             break;
         }
@@ -108,17 +104,4 @@ fn tail_of(hidden: usize) -> String {
         return String::new();
     }
     format!(" +{hidden}")
-}
-
-fn clip(text: &str, width: usize) -> String {
-    let mut used = 0_usize;
-    let mut out = String::new();
-    for ch in text.chars() {
-        used = used.saturating_add(UnicodeWidthChar::width(ch).unwrap_or(0));
-        if used > width {
-            break;
-        }
-        out.push(ch);
-    }
-    out
 }
