@@ -36,6 +36,10 @@ impl Workspace {
     }
 
     fn import(&self, words: &[&str]) -> Result<Output, Box<dyn Error>> {
+        self.import_in(&self.project, words)
+    }
+
+    fn import_in(&self, project: &Path, words: &[&str]) -> Result<Output, Box<dyn Error>> {
         #[expect(
             clippy::disallowed_methods,
             reason = "the spawned binary's argv, exit code and stdout are the contract"
@@ -45,8 +49,15 @@ impl Workspace {
             .args(["tool", "import"])
             .args(words)
             .env("HOME", self.home())
-            .current_dir(&self.project)
+            .current_dir(project)
             .output()?)
+    }
+
+    fn sibling(&self, name: &str, justfile: &str) -> Result<PathBuf, Box<dyn Error>> {
+        let project = self.dir.join(name);
+        std::fs::create_dir_all(&project)?;
+        std::fs::write(project.join("justfile"), justfile)?;
+        Ok(project)
     }
 
     fn tool(&self, name: &str, stdin: &str) -> Result<Output, Box<dyn Error>> {
@@ -330,10 +341,209 @@ status:
     let imported = space.import(&["just"])?;
     assert!(imported.status.success(), "{imported:?}");
     assert_eq!(space.schema("show")?["kind"], "read");
-    assert_eq!(space.schema("status")?["kind"], "read");
+    assert_eq!(
+        space.schema("status")?["kind"],
+        "exec",
+        "a recipe's name never decides its permission kind"
+    );
     assert!(
         !space.path("internal").exists(),
         "a skipped recipe is not imported"
     );
+    Ok(())
+}
+
+#[test]
+fn an_omitted_default_leaves_a_later_value_in_its_own_parameter() -> TestResult {
+    let space = Workspace::new(
+        "shift",
+        "\
+# Deploy it
+deploy env=\"prod\" region=\"us\":
+    printf '%s %s\\n' \"{{env}}\" \"{{region}}\"
+",
+    )?;
+    let imported = space.import(&["just"])?;
+    assert!(imported.status.success(), "{imported:?}");
+    let called = space.tool("deploy", r#"{"region":"eu"}"#)?;
+    assert!(called.status.success(), "{called:?}");
+    assert_eq!(
+        String::from_utf8(called.stdout)?,
+        "prod eu\n",
+        "an omitted default keeps the supplied value in its own parameter"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_call_that_omits_a_required_parameter_is_refused() -> TestResult {
+    let space = Workspace::new(
+        "required",
+        "\
+# Print the value
+show value:
+    printf '%s\\n' \"{{value}}\"
+",
+    )?;
+    let imported = space.import(&["just"])?;
+    assert!(imported.status.success(), "{imported:?}");
+    let called = space.tool("show", "{}")?;
+    assert!(!called.status.success(), "{called:?}");
+    let complaint = String::from_utf8(called.stderr)?;
+    assert!(
+        complaint.contains("show needs value"),
+        "an omitted required parameter is named, not shifted: {complaint}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_variadic_call_reaches_the_recipe_as_separate_arguments() -> TestResult {
+    let space = Workspace::new(
+        "variadic",
+        "\
+# Build everything
+all +targets:
+    printf '<%s>\\n' {{targets}}
+",
+    )?;
+    let imported = space.import(&["just"])?;
+    assert!(imported.status.success(), "{imported:?}");
+    let called = space.tool("all", r#"{"targets":["a","b c"]}"#)?;
+    assert!(called.status.success(), "{called:?}");
+    assert_eq!(
+        String::from_utf8(called.stdout)?,
+        "<a>\n<b>\n<c>\n",
+        "a variadic list spreads into one argv element per item"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_recipe_with_no_parameters_needs_no_interpreter() -> TestResult {
+    let space = Workspace::new(
+        "no-args",
+        "\
+# Build the project
+build:
+    echo built
+",
+    )?;
+    let imported = space.import(&["just"])?;
+    assert!(imported.status.success(), "{imported:?}");
+    let body = std::fs::read_to_string(space.path("build"))?;
+    assert!(
+        !body.contains("python3"),
+        "a wrapper with nothing to map execs just itself: {body}"
+    );
+    let called = space.tool("build", "")?;
+    assert!(called.status.success(), "{called:?}");
+    assert_eq!(String::from_utf8(called.stdout)?, "built\n");
+    Ok(())
+}
+
+#[test]
+fn another_project_s_recipe_is_left_out_instead_of_written_over() -> TestResult {
+    let space = Workspace::new("cross-project", "build:\n    echo first\n")?;
+    let first = space.import(&["just"])?;
+    assert!(first.status.success(), "{first:?}");
+    let mine = std::fs::read(space.path("build"))?;
+    let other = space.sibling("other", "build:\n    echo second\npack:\n    echo packed\n")?;
+
+    let second = space.import_in(&other, &["just"])?;
+    assert!(second.status.success(), "{second:?}");
+    let said = String::from_utf8(second.stdout)?;
+    assert!(said.contains("conflict 1: build (from"), "{said}");
+    assert!(said.contains("added 1: pack"), "{said}");
+    assert_eq!(
+        std::fs::read(space.path("build"))?,
+        mine,
+        "the first project's wrapper of that name is untouched"
+    );
+
+    let picked = space.import_in(&other, &["just", "build"])?;
+    assert_eq!(picked.status.code(), Some(2), "{picked:?}");
+    let complaint = String::from_utf8(picked.stderr)?;
+    assert!(
+        complaint.contains("another project's wrapper"),
+        "naming it must refuse rather than write it: {complaint}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_prune_keeps_the_wrappers_another_project_wrote() -> TestResult {
+    let space = Workspace::new(
+        "cross-prune",
+        "build:\n    echo build\ntest:\n    echo test\n",
+    )?;
+    let first = space.import(&["just"])?;
+    assert!(first.status.success(), "{first:?}");
+    let other = space.sibling("other", "pack:\n    echo packed\n")?;
+    let second = space.import_in(&other, &["just"])?;
+    assert!(second.status.success(), "{second:?}");
+
+    space.justfile("build:\n    echo build\n")?;
+    let third = space.import(&["just"])?;
+    assert!(third.status.success(), "{third:?}");
+    let said = String::from_utf8(third.stdout)?;
+    assert!(said.contains("removed 1: test"), "{said}");
+    assert!(
+        !said.contains("removed 2"),
+        "the other project's wrapper is not pruned: {said}"
+    );
+    assert!(space.path("pack").exists());
+    assert!(space.path("build").exists());
+    Ok(())
+}
+
+#[test]
+fn a_tool_that_is_not_text_is_not_replaced() -> TestResult {
+    let space = Workspace::new("binary", "build:\n    echo build\n")?;
+    std::fs::create_dir_all(space.tools())?;
+    let compiled = [0xff_u8, 0xfe, b'\n'];
+    std::fs::write(space.path("build"), compiled)?;
+
+    let refused = space.import(&["just"])?;
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let complaint = String::from_utf8(refused.stderr)?;
+    assert!(complaint.contains("not a wrapper yi wrote"), "{complaint}");
+    assert_eq!(
+        std::fs::read(space.path("build"))?,
+        compiled,
+        "an unreadable-as-text tool is neither overwritten nor deleted"
+    );
+    Ok(())
+}
+
+#[test]
+fn naming_recipes_imports_only_those_and_skips_the_prune() -> TestResult {
+    let space = Workspace::new("picked", FIXTURE)?;
+    let first = space.import(&["just"])?;
+    assert!(first.status.success(), "{first:?}");
+
+    let second = space.import(&["just", "build"])?;
+    assert!(second.status.success(), "{second:?}");
+    let said = String::from_utf8(second.stdout)?;
+    assert!(said.contains("imported 1 just recipes"), "{said}");
+    assert!(said.contains("unchanged 1: build"), "{said}");
+    assert!(
+        space.path("test").exists() && space.path("all").exists(),
+        "a named import prunes nothing: {said}"
+    );
+
+    let unknown = space.import(&["just", "nope"])?;
+    assert_eq!(unknown.status.code(), Some(2), "{unknown:?}");
+    let complaint = String::from_utf8(unknown.stderr)?;
+    assert!(
+        complaint.contains("the justfile has no recipe named nope"),
+        "{complaint}"
+    );
+
+    let skipped = Workspace::new("picked-skip", "# yi: skip\nhidden:\n    echo hidden\n")?;
+    let refused = skipped.import(&["just", "hidden"])?;
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let complaint = String::from_utf8(refused.stderr)?;
+    assert!(complaint.contains("marked `yi: skip`"), "{complaint}");
     Ok(())
 }

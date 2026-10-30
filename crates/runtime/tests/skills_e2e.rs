@@ -658,3 +658,74 @@ fn a_skill_within_a_repository_is_listed_only_there() -> TestResult {
     assert_eq!((reachable(&ours), reachable(&theirs)), (1, 0));
     Ok(())
 }
+
+const TOOL_IMPORT_SKILL: &str = include_str!("../../../skills/yi/tool-import/SKILL.md");
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> TestResult {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)?.flatten() {
+        let path = entry.path();
+        let dest = to.join(entry.file_name());
+        if path.is_dir() {
+            copy_tree(&path, &dest)?;
+        } else {
+            std::fs::copy(&path, &dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// The bundled catalog is how a session offers this skill: the line it renders must say what
+/// the importer is called, whole, and the skill must be listed from a project that is not Yi's.
+#[test]
+fn the_bundled_catalog_names_tool_import_without_clipping_it() -> TestResult {
+    let root = Scratch::new("yi-skills-taught")?;
+    let home = root.join("home");
+    let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi");
+    copy_tree(&bundle, &home.join(".yi/skills/yi"))?;
+
+    let description = yi_runtime::skills::frontmatter(TOOL_IMPORT_SKILL)
+        .get("description")
+        .cloned()
+        .ok_or("the skill states no description")?;
+    assert!(
+        description.chars().count() <= yi_runtime::skills::DESCRIPTION_CLIP,
+        "the catalog line would be clipped before it says what to run: {description}"
+    );
+    let catalog =
+        yi_runtime::skills_catalog(&root, &home, yi_runtime::skills::catalog_budget(128_000))
+            .ok_or("no catalog")?;
+    let line = format!("- tool-import: {description}\n");
+    assert!(
+        catalog.text.contains(&line),
+        "the catalog must describe tool-import, whole:\n{}",
+        catalog.text
+    );
+    assert!(
+        line.contains("yi tool import just"),
+        "the catalog line names the command: {line}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_tool_import_skill_shows_the_schema_and_usage_the_model_acts_on() -> TestResult {
+    for needle in [
+        "yi tool import just [recipe ...]",
+        "--schema",
+        "yi: read",
+        "yi: skip",
+        "next session",
+        "conflict",
+    ] {
+        assert!(
+            TOOL_IMPORT_SKILL.contains(needle),
+            "the skill no longer teaches {needle}"
+        );
+    }
+    assert!(
+        !TOOL_IMPORT_SKILL.contains("within:"),
+        "a within: line hides the skill outside Yi's own repository"
+    );
+    Ok(())
+}

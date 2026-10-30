@@ -366,7 +366,7 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
 - `yi tool import just [recipe ...]` writes one exec tool per recipe of the project's justfile
   into `~/.yi/tools`, from just's own `--dump --dump-format json`: the schema is the recipe's
   parameters (a default makes one optional, `*` and `+` a variadic array), its doc comment the
-  description; a doc line `yi: read` or a read-shaped name makes the tool `read`, `yi: skip` and
+  description; a doc line `yi: read` makes the tool `read` and its name never does, `yi: skip` and
   a `[private]` recipe are left out, and a built-in's name is refused by name. Each wrapper's
   marker line names its justfile and recipe, so a rerun rewrites only what changed and removes
   the wrappers it wrote for recipes the justfile dropped, never a hand-written tool.

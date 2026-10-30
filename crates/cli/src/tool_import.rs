@@ -11,7 +11,6 @@ const MARKER: &str = "# yi: ";
 const MARKED: &str = "# yi: {";
 const SKIP: &str = "yi: skip";
 const READ: &str = "yi: read";
-const READ_NAMES: [&str; 8] = ["cat", "diff", "info", "list", "log", "ls", "show", "status"];
 const WIRED: [&str; 7] = [
     "annotate",
     "answer",
@@ -27,14 +26,17 @@ call = json.load(sys.stdin)
 if not isinstance(call, dict):
     sys.exit("yi: the just wrapper takes a JSON object on stdin")
 argv = ["just", "--justfile", spec["justfile"], spec["recipe"]]
-for name, variadic in spec["parameters"]:
+for name, variadic, default in spec["parameters"]:
     value = call.get(name)
-    if value is None:
-        continue
     if variadic:
-        argv.extend(str(item) for item in (value if isinstance(value, list) else [value]))
-    else:
-        argv.append(str(value))
+        if value is not None:
+            argv.extend(str(item) for item in (value if isinstance(value, list) else [value]))
+        continue
+    if value is None:
+        if default is None:
+            sys.exit("yi: %s needs %s" % (spec["recipe"], name))
+        value = default
+    argv.append(str(value))
 os.execvp(argv[0], argv)"#;
 
 pub(crate) struct Param {
@@ -63,6 +65,7 @@ pub(crate) struct Report {
     unchanged: Vec<String>,
     removed: Vec<String>,
     skipped: Vec<String>,
+    conflicts: Vec<String>,
     module_recipes: usize,
 }
 
@@ -75,21 +78,13 @@ pub(crate) fn run(args: &Args) -> i32 {
             return 2;
         }
     };
-    match import(&cwd(args), picked) {
+    match import(&crate::effective_cwd(args), picked) {
         Ok(code) => code,
         Err(reason) => {
             eprintln!("error: {reason}");
             2
         }
     }
-}
-
-fn cwd(args: &Args) -> PathBuf {
-    args.cwd
-        .as_ref()
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[expect(
@@ -210,19 +205,12 @@ fn marker(doc: Option<&str>) -> Option<&'static str> {
     }
 }
 
-fn read_by_name(name: &str) -> bool {
-    let head = name.split(['-', '_']).next().unwrap_or(name);
-    READ_NAMES.contains(&head)
-}
-
 fn kind(recipe: &Recipe) -> &'static str {
     match marker(recipe.doc.as_deref()) {
-        Some(marker) => marker,
-        None if read_by_name(&recipe.name) => "read",
-        None => "exec",
+        Some("read") => "read",
+        _ => "exec",
     }
 }
-
 fn description(recipe: &Recipe) -> String {
     match recipe.doc.as_deref().map(str::trim) {
         Some(doc) if marker(Some(doc)).is_none() && !doc.is_empty() => doc.to_owned(),
@@ -265,6 +253,10 @@ fn marker_line(justfile: &Path, recipe: &str) -> String {
     )
 }
 
+fn shell(text: &str) -> String {
+    text.replace('\'', r"'\''")
+}
+
 fn wrapper(justfile: &Path, recipe: &Recipe) -> String {
     let declaration = json!({
         "name": recipe.name,
@@ -272,18 +264,8 @@ fn wrapper(justfile: &Path, recipe: &Recipe) -> String {
         "input_schema": schema(recipe),
         "kind": kind(recipe),
     });
-    let spec = json!({
-        "justfile": justfile.to_string_lossy(),
-        "recipe": recipe.name,
-        "parameters": recipe
-            .params
-            .iter()
-            .map(|param| json!([param.name, param.variadic]))
-            .collect::<Vec<_>>(),
-    });
-    let quoted = spec.to_string().replace('\'', r"'\''");
     let name = &recipe.name;
-    format!(
+    let mut script = format!(
         "#!/bin/sh
 {}
 set -eu
@@ -293,14 +275,38 @@ if [ \"${{1:-}}\" = \"--schema\" ]; then
 JUST_SCHEMA
   exit 0
 fi
-command -v python3 >/dev/null 2>&1 || {{
+",
+        marker_line(justfile, name)
+    );
+    let just = format!(
+        "exec just --justfile '{}' '{}'",
+        shell(&justfile.to_string_lossy()),
+        shell(name)
+    );
+    if recipe.params.is_empty() {
+        script.push_str(&just);
+        script.push('\n');
+        return script;
+    }
+    let spec = json!({
+        "justfile": justfile.to_string_lossy(),
+        "recipe": name,
+        "parameters": recipe
+            .params
+            .iter()
+            .map(|param| json!([param.name, param.variadic, param.default]))
+            .collect::<Vec<_>>(),
+    });
+    script.push_str(&format!(
+        "command -v python3 >/dev/null 2>&1 || {{
   printf '%s\\n' \"{name}: the just wrapper needs python3 to turn JSON arguments into argv\" >&2
   exit 127
 }}
-exec python3 -c '{ARGV}' '{quoted}'
 ",
-        marker_line(justfile, name)
-    )
+    ));
+    let quoted = shell(&spec.to_string());
+    script.push_str(&format!("exec python3 -c '{ARGV}' '{quoted}'\n"));
+    script
 }
 
 fn marked(script: &str) -> Option<(PathBuf, String)> {
@@ -360,11 +366,11 @@ pub(crate) fn sync(
             })
             .collect::<Result<_, _>>()?
     };
-    let held = reserved();
+    let taken = reserved();
     let clashes: Vec<&str> = chosen
         .iter()
         .map(|recipe| recipe.name.as_str())
-        .filter(|name| held.iter().any(|held| held == name))
+        .filter(|name| taken.iter().any(|taken| taken == name))
         .collect();
     if !clashes.is_empty() {
         return Err(format!(
@@ -380,35 +386,64 @@ pub(crate) fn sync(
         ..Report::default()
     };
     let mut written = Vec::new();
+    let mut planned = Vec::new();
     for recipe in &chosen {
         let path = dir.join(&recipe.name);
         let body = wrapper(justfile, recipe);
-        let existing = fs::read_to_string(&path).ok();
-        if let Some(script) = &existing
-            && marked(script).is_none()
-        {
-            return Err(format!(
-                "{} is a hand-written tool; yi imports nothing over it",
-                path.display()
-            ));
-        }
-        match existing {
-            Some(script) if script == body => report.unchanged.push(recipe.name.clone()),
+        let previous = match held(&path) {
+            Held::Absent => None,
+            Held::Foreign => {
+                return Err(format!(
+                    "{} is not a wrapper yi wrote, so yi imports nothing over it",
+                    path.display()
+                ));
+            }
+            Held::Script(script) => match marked(&script) {
+                None => {
+                    return Err(format!(
+                        "{} is a hand-written tool; yi imports nothing over it",
+                        path.display()
+                    ));
+                }
+                Some((source, _)) if source != justfile => {
+                    report
+                        .conflicts
+                        .push(format!("{} (from {})", recipe.name, source.display()));
+                    continue;
+                }
+                Some(_) => Some(script),
+            },
+        };
+        planned.push((recipe.name.as_str(), path, body, previous));
+        written.push(recipe.name.as_str());
+    }
+    if !picked.is_empty() && !report.conflicts.is_empty() {
+        return Err(format!(
+            "{} is another project's wrapper, so yi imports nothing over that name",
+            report.conflicts.join(", ")
+        ));
+    }
+    for (name, path, body, previous) in planned {
+        match previous {
+            Some(script) if script == body => report.unchanged.push(name.to_owned()),
             Some(_) => {
                 write(&path, &body)?;
-                report.updated.push(recipe.name.clone());
+                report.updated.push(name.to_owned());
             }
             None => {
                 write(&path, &body)?;
-                report.added.push(recipe.name.clone());
+                report.added.push(name.to_owned());
             }
         }
-        written.push(recipe.name.as_str());
     }
     if picked.is_empty() {
         report.removed = prune(dir, justfile, &written)?;
     }
-    for names in [&mut report.added, &mut report.removed] {
+    for names in [
+        &mut report.added,
+        &mut report.removed,
+        &mut report.conflicts,
+    ] {
         names.sort();
     }
     Ok(report)
@@ -420,6 +455,25 @@ fn write(path: &Path, body: &str) -> Result<(), String> {
     executable(path)
 }
 
+/// Invariant: a file yi cannot read as text is a tool yi did not write, so it is neither
+/// overwritten nor deleted; folding the error into "absent" lost a user's executable.
+enum Held {
+    Absent,
+    Script(String),
+    Foreign,
+}
+
+fn held(path: &Path) -> Held {
+    match fs::read(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Held::Absent,
+        Err(_) => Held::Foreign,
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(script) => Held::Script(script),
+            Err(_) => Held::Foreign,
+        },
+    }
+}
+
 fn prune(dir: &Path, justfile: &Path, kept: &[&str]) -> Result<Vec<String>, String> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Ok(Vec::new());
@@ -427,8 +481,10 @@ fn prune(dir: &Path, justfile: &Path, kept: &[&str]) -> Result<Vec<String>, Stri
     let mut removed = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some((source, recipe)) = fs::read_to_string(&path).ok().as_deref().and_then(marked)
-        else {
+        let Held::Script(script) = held(&path) else {
+            continue;
+        };
+        let Some((source, recipe)) = marked(&script) else {
             continue;
         };
         if source != justfile || kept.contains(&recipe.as_str()) {
@@ -454,6 +510,7 @@ fn print(dir: &Path, justfile: &Path, report: &Report) {
         ("unchanged", &report.unchanged),
         ("removed", &report.removed),
         ("left out", &report.skipped),
+        ("conflict", &report.conflicts),
     ] {
         if !names.is_empty() {
             println!("  {label} {}: {}", names.len(), names.join(", "));
