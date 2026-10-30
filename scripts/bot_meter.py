@@ -100,8 +100,12 @@ def rows(comments):
     return out
 
 
+def cost(row):
+    return float(row.get("cost") or 0)
+
+
 def spent(found):
-    return sum(float(row.get("cost") or 0) for row in found)
+    return sum(cost(row) for row in found)
 
 
 def since(repo, start):

@@ -91,6 +91,7 @@ pub struct ProviderStream {
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
+    pub(crate) web_search: Arc<Mutex<Option<Arc<dyn yi_ai::search::SearchProvider>>>>,
     /// Set by `--faux` or a `faux/…` model: every model, whatever its provider, streams from
     /// the script (#943).
     force_faux: bool,
@@ -127,6 +128,7 @@ impl ProviderStream {
             proxy: None,
             routing: None,
             telemetry: None,
+            web_search: Arc::default(),
             force_faux: false,
             cursor: cursor_stream,
             settle: Mutex::new(None),
@@ -163,6 +165,7 @@ impl ProviderStream {
             proxy: self.proxy.clone(),
             routing: self.routing.clone(),
             telemetry: self.telemetry.clone(),
+            web_search: Arc::clone(&self.web_search),
             force_faux: self.force_faux,
             cursor: self.cursor,
             settle: Mutex::new(None),
