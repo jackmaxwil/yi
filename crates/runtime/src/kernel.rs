@@ -704,7 +704,7 @@ impl KernelService {
                         *restarted = None;
                     }
                     if result.status != yi_types::kernel::ExecuteStatus::Aborted
-                        && let Some(names) = manager.list_namespace_names().await
+                        && let Some(names) = manager.list_namespace_names_once().await
                         && let Ok(mut slot) = self.names.lock()
                     {
                         *slot = Some(names);
