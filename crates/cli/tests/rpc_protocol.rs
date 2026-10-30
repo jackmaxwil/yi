@@ -18,39 +18,62 @@ fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
     Ok(Scratch::new(&format!("yi-rpc-{tag}"))?)
 }
 
-fn run_rpc(dir: &std::path::Path, commands: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
+fn spawn_rpc(
+    dir: &Path,
+    cassette: Option<&Path>,
+) -> Result<(Child, ChildStdin, Receiver<Value>), Box<dyn Error>> {
     #[expect(
         clippy::disallowed_methods,
         reason = "the protocol contract is the spawned binary's stdio; tests must drive the real process"
     )]
-    let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "rpc",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--cwd",
-            &dir.display().to_string(),
-        ])
+    let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+    command.args([
+        "rpc",
+        "--model",
+        "faux/faux-1",
+        "--session-dir",
+        &dir.join("sessions").display().to_string(),
+        "--cwd",
+        &dir.display().to_string(),
+    ]);
+    if let Some(cassette) = cassette {
+        command.args(["--faux", &cassette.display().to_string()]);
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    {
-        let mut stdin = child.stdin.take().ok_or("no stdin")?;
-        for command in commands {
-            serde_json::to_writer(&mut stdin, command)?;
-            stdin.write_all(b"\n")?;
-        }
-    }
+    let stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
-    let mut frames = Vec::new();
-    for line in BufReader::new(stdout).lines() {
-        frames.push(serde_json::from_str(&line?)?);
+    let (sender, frames) = channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+                break;
+            };
+            if sender.send(frame).is_err() {
+                break;
+            }
+        }
+    });
+    Ok((child, stdin, frames))
+}
+
+fn run_rpc(dir: &std::path::Path, commands: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
+    let (mut child, mut stdin, frames) = spawn_rpc(dir, None)?;
+    for command in commands {
+        serde_json::to_writer(&mut stdin, command)?;
+        stdin.write_all(b"\n")?;
+    }
+    drop(stdin);
+    let mut collected = Vec::new();
+    while let Ok(frame) = frames.recv() {
+        collected.push(frame);
     }
     child.wait()?;
-    Ok(frames)
+    Ok(collected)
 }
 
 fn responses(frames: &[Value]) -> Vec<&Value> {
@@ -448,40 +471,7 @@ struct Live {
 
 impl Live {
     fn start(dir: &Path, cassette: &Path) -> Result<Self, Box<dyn Error>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the protocol contract is the spawned binary's stdio; tests must drive the real process"
-        )]
-        let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
-            .args([
-                "rpc",
-                "--model",
-                "faux/faux-1",
-                "--faux",
-                &cassette.display().to_string(),
-                "--session-dir",
-                &dir.join("sessions").display().to_string(),
-                "--cwd",
-                &dir.display().to_string(),
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let stdin = child.stdin.take().ok_or("no stdin")?;
-        let stdout = child.stdout.take().ok_or("no stdout")?;
-        let (sender, frames) = channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                let Ok(frame) = serde_json::from_str::<Value>(&line) else {
-                    break;
-                };
-                if sender.send(frame).is_err() {
-                    break;
-                }
-            }
-        });
+        let (child, stdin, frames) = spawn_rpc(dir, Some(cassette))?;
         Ok(Self {
             child,
             stdin,
@@ -600,18 +590,88 @@ fn a_compact_in_flight_reports_compacting() -> TestResult {
         );
     }
     live.send(json!({"id": "c", "type": "compact"}))?;
-    live.send(json!({"id": "s", "type": "get_state"}))?;
-    let state = live
-        .until(|frame| frame["type"] == "response" && frame["id"] == "s")?
-        .ok_or("the state query went unanswered")?;
-    assert_eq!(
-        state["data"]["isCompacting"], true,
-        "a compact was in flight and the state said otherwise: {state}"
+    // The runtime raises its own flag when the summarizer starts, which is after this line, so a
+    // single query races the compact's first poll: keep asking while the summary is paced.
+    let mut in_flight = None;
+    for attempt in 0..400_u32 {
+        let id = format!("s{attempt}");
+        live.send(json!({"id": id, "type": "get_state"}))?;
+        let Some(state) =
+            live.until(|frame| frame["type"] == "response" && frame["id"] == id.as_str())?
+        else {
+            break;
+        };
+        if state["data"]["isCompacting"] == true {
+            in_flight = Some(state);
+            break;
+        }
+    }
+    assert!(
+        in_flight.is_some(),
+        "a compact was in flight and no state query said so"
     );
     assert!(
         live.until(|frame| frame["type"] == "response" && frame["id"] == "c")?
             .is_some(),
         "the compact never answered"
+    );
+    Ok(())
+}
+
+/// The rpc peer speaks Pi's command names; a surface this build cannot honour must say so with a
+/// reason, and the state must not echo a mode nothing reads.
+#[test]
+fn pi_compatibility_surfaces_answer_what_this_build_honours() -> TestResult {
+    let dir = temp_dir("pi-surfaces")?;
+    let frames = run_rpc(
+        &dir,
+        &[
+            json!({"id": "c", "type": "get_commands"}),
+            json!({"id": "s", "type": "set_steering_mode", "mode": "all"}),
+            json!({"id": "f", "type": "set_follow_up_mode", "mode": "all"}),
+            json!({"id": "g", "type": "get_state"}),
+        ],
+    )?;
+    let responses = responses(&frames);
+    let reply = |id: &str| -> Result<&Value, Box<dyn Error>> {
+        responses
+            .iter()
+            .copied()
+            .find(|frame| frame["id"] == id)
+            .ok_or_else(|| format!("no response {id} in {frames:?}").into())
+    };
+    let commands = reply("c")?;
+    assert_eq!(commands["success"], true, "{commands}");
+    let verbs: Vec<&str> = commands["data"]["commands"]
+        .as_array()
+        .ok_or("no commands array")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        verbs.contains(&"compact") && verbs.contains(&"plan"),
+        "the verb list is not the runtime's slash verbs: {commands}"
+    );
+    for id in ["s", "f"] {
+        let refused = reply(id)?;
+        assert_eq!(refused["success"], false, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("no mode to set")),
+            "a refusal names why: {refused}"
+        );
+    }
+    let state = reply("g")?;
+    assert!(
+        state["data"]["sessionId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "the state names its session: {state}"
+    );
+    assert!(
+        state["data"].get("steeringMode").is_none() && state["data"].get("followUpMode").is_none(),
+        "the state echoes a mode nothing reads: {state}"
     );
     Ok(())
 }

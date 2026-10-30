@@ -205,15 +205,10 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
 
 /// Invariant: child lanes and side calls book their spend as [`LaneRecord::Usage`] rows no message carries.
 fn reduce_record(record: &LaneRecord, totals: &mut Totals) {
-    let (LaneRecord::Usage { cause, .. }, Some(usage)) = (record, record.billed_usage()) else {
+    let (LaneRecord::Usage { .. }, Some(usage)) = (record, record.billed_usage()) else {
         return;
     };
     totals.all.spend(usage);
-    totals
-        .by_model
-        .entry(cause.clone())
-        .or_default()
-        .spend(usage);
 }
 
 fn fold_usage(

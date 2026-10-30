@@ -74,5 +74,12 @@ fn stats_bills_a_sessions_usage_records_as_its_ledger_does() -> TestResult {
         (cost - 0.15).abs() < 1e-9,
         "the reply is 0.10 and the child's row 0.05, so the session bills 0.15: {folded}"
     );
+    let models = folded["models"].as_array().ok_or("no models in the row")?;
+    assert_eq!(
+        models.len(),
+        1,
+        "a usage cause is not a model, so the model table holds the reply's model alone: {folded}"
+    );
+    assert_eq!(models[0]["model"], "faux/faux-1", "{folded}");
     Ok(())
 }

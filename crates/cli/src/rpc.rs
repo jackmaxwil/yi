@@ -1,6 +1,6 @@
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde_json::{Map, Value, json};
@@ -86,7 +86,7 @@ struct RpcState {
     repo: Mutex<JsonlRepo>,
     store: Mutex<SharedSession>,
     session_id: Mutex<String>,
-    compacting: AtomicBool,
+    compacts_in_flight: AtomicUsize,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -271,7 +271,10 @@ impl RpcState {
                         "model": model,
                         "thinkingLevel": self.session.effort().to_string(),
                         "isStreaming": self.session.status() == Status::Running,
-                        "isCompacting": self.compacting.load(Ordering::SeqCst),
+                        "isCompacting": self
+                            .session
+                            .compactor()
+                            .is_some_and(|compactor| compactor.compacting()),
                         "sessionId": locked(&self.session_id).clone(),
                         "sessionFile": file,
                         "sessionName": name,
@@ -464,7 +467,7 @@ pub fn run_rpc(
         repo: Mutex::new(repo),
         store: Mutex::new(store),
         session_id: Mutex::new(session_id),
-        compacting: AtomicBool::new(false),
+        compacts_in_flight: AtomicUsize::new(0),
     });
 
     runtime.block_on(async move {
@@ -499,11 +502,11 @@ pub fn run_rpc(
                                 .unwrap_or("")
                                 .to_owned();
                             if command_type == "compact" {
-                                state.compacting.store(true, Ordering::SeqCst);
+                                state.compacts_in_flight.fetch_add(1, Ordering::SeqCst);
                             }
                             // Invariant: a state query answers while a compact runs; mutations stay ordered.
                             let bypass = command_type == "get_state"
-                                && state.compacting.load(Ordering::SeqCst);
+                                && state.compacts_in_flight.load(Ordering::SeqCst) > 0;
                             let queued = if bypass { None } else { ahead.take() };
                             let (finished, next) = tokio::sync::oneshot::channel();
                             if !bypass {
@@ -518,7 +521,9 @@ pub fn run_rpc(
                                     .handle(&command_type, id.as_deref(), &payload)
                                     .await;
                                 if command_type == "compact" {
-                                    answering.compacting.store(false, Ordering::SeqCst);
+                                    answering
+                                        .compacts_in_flight
+                                        .fetch_sub(1, Ordering::SeqCst);
                                 }
                                 write_line(&frame);
                                 if !bypass {
@@ -534,6 +539,7 @@ pub fn run_rpc(
                         break;
                     }
                 }
+                _ = answers.join_next(), if !answers.is_empty() => {}
             }
         }
         let mut open = true;
