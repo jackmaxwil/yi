@@ -3277,6 +3277,25 @@ fn a_write_result_carries_the_tag_an_edit_must_cite() -> TestResult {
 }
 
 #[test]
+fn a_grep_hit_on_a_long_line_names_the_clip_and_its_remedy_prints_the_line() -> TestResult {
+    let dir = temp_dir("grep-long-line")?;
+    let long = format!("{} NEEDLE {}", "x".repeat(600), "y".repeat(600));
+    fs::write(dir.join("long.txt"), format!("short\n{long}\nend\n"))?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let found = GrepTool::default().execute(args(&[("pattern", json!("NEEDLE"))]), &context);
+    let shown = output_text(&found);
+    let notice = shown
+        .lines()
+        .find(|row| row.contains("exceeded 512 chars and were clipped"))
+        .ok_or_else(|| format!("no clip notice: {shown}"))?;
+    let remedy = format!("sed -n '{}p' long.txt]", 2);
+    assert!(notice.ends_with(&remedy), "{notice}");
+    let printed = fs::read_to_string(dir.join("long.txt"))?;
+    assert_eq!(printed.lines().nth(1), Some(long.as_str()));
+    Ok(())
+}
+
+#[test]
 fn multiline_hits_keep_their_line_numbers_in_a_linear_walk() -> TestResult {
     let dir = temp_dir("grep-multiline-linear")?;
     let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/grep.rs"))?;

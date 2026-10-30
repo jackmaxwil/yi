@@ -1,14 +1,16 @@
 ---
 issue: Closes #1532
-growth: +377 one line-diff builder replaces four copies per edit; four runtime helpers and two hashline unquoters fold into one each, and the rest is the tests that hold them.
-raise: tests +364
+growth: +379 one line-diff builder replaces four copies per edit; four runtime helpers and two hashline unquoters fold into one each, and the rest is the tests that hold them.
+raise: tests +383
 raise: crate runtime +142
-raise: crate tools +236
+raise: crate tools +237
 raise: comments +15
 ---
 A 2,000-line edit paid the same line diff four times: once for the rendered patch, once for the changed lines, once for the line map, and once for the ripwire regions. `EditScript` is now built once per `(before, after)` pair, carried on the section's result, and read by all four, so the quadratic table is computed once. A snapshot's text is an `Arc<str>`, so the clones an edit's reply makes are pointers, and the snapshot lock is released before the syntax checker spawns instead of being held across it.
 
 A multiline grep numbered each hit by counting newlines from the file's start, which made a 4 MB search over about 15,000 matches scan tens of gigabytes; the walk between matches is one pass now and the numbers are unchanged. `rustfmt` is checked on the file's text over stdin rather than by path, because a path makes it follow the root's `mod` declarations and read, and fail on, a child file the edit did not touch.
+
+A grep hit on a line past 512 characters was cut with `…` and nothing said so, so the model saw a hit whose matched text was gone and no way back to it. The page now ends with the same row `read` writes for a clipped line: how many lines were cut, the 512-character cap, and the `sed -n` call that prints them whole.
 
 `get_context`'s header counted all six layers whether or not the call asked for them, so a plain call opened `PARTIAL` and read as a broken packet; it counts the layers asked for, and a layer it did not ask for says `not asked:` instead of `absent:`. The same packet's file skeletons now show declarations one indent level in, so an `impl`'s methods and a class's `def`s reach the model instead of only the block that opens them.
 

@@ -486,6 +486,7 @@ impl GrepTool {
         let last = lines.len().saturating_sub(1);
         let mut collected: Vec<Row> = Vec::new();
         let mut seen: Vec<u64> = Vec::new();
+        let mut cut: Vec<u64> = Vec::new();
         let mut emitted: Option<usize> = None;
         let mut rendered = 0_usize;
         let prefix = if mint && self.hashline.is_some() {
@@ -540,9 +541,7 @@ impl GrepTool {
                     .saturating_add(shown.len())
                     .saturating_add(2);
                 *room = room.saturating_sub(spent);
-                if !clipped {
-                    seen.push(number);
-                }
+                (if clipped { &mut cut } else { &mut seen }).push(number);
                 collected.push(Row::Line {
                     number,
                     hit: page_hits.binary_search(&row).is_ok(),
@@ -552,7 +551,7 @@ impl GrepTool {
             emitted = Some(hi.saturating_add(1));
             rendered = rendered.max(page_hits.partition_point(|&hit| hit <= hi.max(index)));
         }
-        let rows = match self.hashline.as_ref().filter(|_| mint) {
+        let mut rows = match self.hashline.as_ref().filter(|_| mint) {
             // A tagged file anchors an edit directly; a bare one names itself
             // on every row and anchors nothing.
             Some(state) => {
@@ -584,6 +583,8 @@ impl GrepTool {
                 })
                 .collect(),
         };
+        let hint = crate::hashline::messages::clipped_lines_hint(&cut, LINE_CLIP, &file.display);
+        rows.extend(hint);
         (rows, rendered)
     }
 }
