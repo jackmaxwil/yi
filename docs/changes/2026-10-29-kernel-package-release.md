@@ -1,5 +1,6 @@
 ---
 issue: Closes #1546
+growth: +243 the overlay is built by the existing venv and pip helpers instead of a second installer, the ready stamp's fingerprint helpers moved into probe.rs so both callers share one, and the largest block is yi/convert.py's 190 lines, whose embedded copy in crates/tools/src/document.rs this branch still ships and the release commit deletes, so that duplication is priced and dated rather than left
 decision: the kernel package ships no harness store: rlm.harness, rlm.get_harness_state and the Harness* types are deleted with the harness.save_global host request and the RLM_GLOBAL_HARNESS_STATE_DIR and RLM_GLOBAL_HARNESS_HOST env (retires D270) | no prompt, skill or Yi code reads the store, and every line of it rebuilt the venv when it changed | restore python/yi_runtime/src/rlm/harness.py, its re-exports and kernel_state::register_harness_save from git
 raise: crate kernel +319, tests +50, comments +9
 ---
