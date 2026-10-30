@@ -4,6 +4,8 @@ pure loop + event enum | `interrupt::an_abort_during_the_cut_drain_returns_at_on
 pure loop + event enum | `pump_stop::an_abort_stops_the_provider_pump_at_the_next_event`
 pure loop + event enum | `openrouter::an_aborted_turn_is_settled_from_the_record`
 entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
+entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
+entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
 hashline edit (+ registers, instrumented) | `hashline_patcher::read_edit_round_trip_replaces_lines_and_mints_a_new_tag`
@@ -202,6 +204,7 @@ trigger rules (gate + remind) | `recursion_e2e::a_rule_promoted_after_the_spawn_
 host-written memory (one file per fact, hook index) | `ext_e2e::the_memory_block_is_present_at_zero_notes` (T1)
 host-written memory (one file per fact, hook index) | `skills_e2e::save_read_forget_through_the_kernel` (T1)
 host-written memory (one file per fact, hook index) | `cli_surfaces::memory_imports_lists_checks_and_forgets` (T2)
+host-written memory (one file per fact, hook index) | `cli_surfaces::yi_memory_list_changes_no_file` (T2)
 advisor (LlmReviewer only) | `advisor_e2e::llm_reviewer_advises_through_the_advise_tool`
 advisor (LlmReviewer only) | `advisor_e2e::headless_hold_degrades_to_warn`
 advisor (LlmReviewer only) | `advisor_e2e::an_untargeted_hold_warns_instead_of_holding_every_call`
