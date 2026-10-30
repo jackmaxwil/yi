@@ -271,25 +271,12 @@ fn cap_row(what: &str, cap: &str, next: &str, theme: &Theme) -> Line<'static> {
     )
 }
 
-fn capped(
-    text: &str,
-    lead: Span<'static>,
-    style: Style,
-    (width, cap, tail, full): (usize, usize, bool, bool),
+fn cap_rows(
+    mut rows: Vec<Line<'static>>,
+    (cap, tail, full): (usize, bool, bool),
     noun: &str,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let indent = " ".repeat(lead.width());
-    let mut rows: Vec<Line<'static>> = text
-        .lines()
-        .flat_map(|line| {
-            let line = Line::from(vec![
-                lead.clone(),
-                Span::styled(yi_tui::transcript::show_controls(line), style),
-            ]);
-            yi_tui::wrap::wrap_line(&line, width, &indent)
-        })
-        .collect();
     let total = rows.len();
     if full || total <= cap {
         return rows;
@@ -315,6 +302,56 @@ fn capped(
     }
 }
 
+fn capped(
+    text: &str,
+    lead: Span<'static>,
+    style: Style,
+    (width, cap, tail, full): (usize, usize, bool, bool),
+    noun: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let indent = " ".repeat(lead.width());
+    let rows: Vec<Line<'static>> = text
+        .lines()
+        .flat_map(|line| {
+            let line = Line::from(vec![
+                lead.clone(),
+                Span::styled(yi_tui::transcript::show_controls(line), style),
+            ]);
+            yi_tui::wrap::wrap_line(&line, width, &indent)
+        })
+        .collect();
+    cap_rows(rows, (cap, tail, full), noun, theme)
+}
+
+fn trace_rows(
+    text: &str,
+    code: &str,
+    width: usize,
+    lead: Span<'static>,
+    (cap, tail, full): (usize, bool, bool),
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let indent = " ".repeat(lead.width());
+    let rows = yi_tui::pycell::traceback_rows(text, code, theme);
+    let mark = rows
+        .iter()
+        .position(|(kind, _)| *kind == yi_tui::pycell::TraceRow::Raised)
+        .unwrap_or(0);
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for (at, (_, spans)) in rows.into_iter().enumerate() {
+        let first = vec![if at == mark {
+            lead.clone()
+        } else {
+            Span::raw(indent.clone())
+        }];
+        let spans = first.into_iter().chain(spans).collect::<Vec<_>>();
+        out.extend(yi_tui::wrap::wrap_line(&Line::from(spans), width, &indent));
+    }
+    let rows = out;
+    cap_rows(rows, (cap, tail, full), "traceback", theme)
+}
+
 /// Incident: a `│` gutter read as part of the `cargo tree` box-drawing a cell parsed, so rows
 /// are numbered; a wrapped row hangs past its own indent so the Python still reads.
 fn code_rows(code: &str, width: usize, full: bool, theme: &Theme) -> Vec<Line<'static>> {
@@ -328,7 +365,7 @@ fn code_rows(code: &str, width: usize, full: bool, theme: &Theme) -> Vec<Line<'s
     } else {
         lines.len().min(CODE_ROWS)
     };
-    let mut lang = yi_tui::highlight::lang_for("python");
+    let mut lang = yi_tui::highlight::lang_for(yi_tui::pycell::chip(code));
     let base = Style::default().fg(theme.text);
     let mut out = Vec::new();
     for (index, line) in lines.iter().take(shown).enumerate() {
@@ -452,12 +489,12 @@ pub fn notebook_lines(
         }
         if let Some(trace) = &cell.error {
             let lead = Span::styled("✕ ", error);
-            out.extend(capped(
+            out.extend(trace_rows(
                 trace,
+                &cell.code,
+                width,
                 lead,
-                error,
-                shape(TRACE_ROWS, true),
-                "traceback",
+                (TRACE_ROWS, true, full),
                 theme,
             ));
         }

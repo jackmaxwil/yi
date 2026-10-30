@@ -268,3 +268,61 @@ fn a_loud_failed_cell_is_bounded_and_its_lines_counted() -> TestResult {
     assert!(verbose.len() > 50, "verbose stays whole: {}", verbose.len());
     Ok(())
 }
+
+fn row_text(line: &ratatui::text::Line) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+/// Dies with the chat drawing a traceback as one red wall: a frame's header is scaffolding,
+/// and the row it ran keeps the colour of the code it is.
+#[test]
+fn a_tracebacks_frames_dim_and_the_rows_they_ran_keep_their_colour() -> TestResult {
+    let cell = cell(
+        json!({
+            "code": "train(model)",
+            "error": {
+                "ename": "ValueError",
+                "evalue": "shape mismatch",
+                "traceback": [
+                    "Traceback (most recent call last):\n  File \"/work/plot.py\", line 12, in train\n    for row in bad_rows(model):\nValueError: shape mismatch"
+                ],
+            },
+            "durationMs": 41,
+        }),
+        ToolStatus::Failed,
+    );
+    let theme = theme();
+    let rows = Cell::Tool(cell).lines(120, &theme, TranscriptMode::Verbose, 0);
+    let frame = rows
+        .iter()
+        .find(|line| row_text(line).contains("File \"/work/plot.py\""))
+        .ok_or("no frame header row")?;
+    let header = frame
+        .spans
+        .iter()
+        .find(|span| span.content.contains("File \"/work/plot.py\""))
+        .ok_or("no frame header span")?;
+    assert_eq!(
+        header.style.fg,
+        theme.dim_style().fg,
+        "a frame header is scaffolding: {:?}",
+        frame.spans
+    );
+    let source = rows
+        .iter()
+        .find(|line| row_text(line).contains("for row in bad_rows(model)"))
+        .ok_or("no source row")?;
+    let keyword = theme.syntax_style(yi_tui::highlight::Token::Keyword).fg;
+    assert!(
+        source
+            .spans
+            .iter()
+            .any(|span| span.style.fg == keyword && span.content.as_ref() == "for"),
+        "the row a frame ran is lexed as code: {:?}",
+        source.spans
+    );
+    Ok(())
+}

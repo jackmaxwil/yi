@@ -153,7 +153,7 @@ fn line_count(text: &str) -> usize {
 
 /// `%%bash` is a shell cell whose output is a shell's; naming it python because
 /// the kernel is a Python one tells the reader the wrong thing about the code.
-fn chip(code: &str) -> &'static str {
+pub fn chip(code: &str) -> &'static str {
     if code.trim_start().starts_with("%%bash") {
         "bash"
     } else {
@@ -285,6 +285,153 @@ pub fn traceback_of(details: &Value) -> String {
     format!("{ename}: {evalue}")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceRow {
+    Frame,
+    Source,
+    Error,
+    Raised,
+}
+
+fn separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty() && trimmed.chars().all(|c| c == '-')
+}
+
+fn frame(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("File ")
+        || trimmed.starts_with("Cell In[")
+        || trimmed.contains("Traceback (most recent call last)")
+}
+
+fn caret(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty() && trimmed.chars().all(|c| c == '^' || c == '~')
+}
+
+fn gutter(line: &str) -> usize {
+    let bytes = line.as_bytes();
+    let mut at = 0_usize;
+    while bytes
+        .get(at)
+        .is_some_and(|b| matches!(b, b' ' | b'-' | b'>'))
+    {
+        at = at.saturating_add(1);
+    }
+    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+        at = at.saturating_add(1);
+    }
+    while bytes.get(at) == Some(&b' ') {
+        at = at.saturating_add(1);
+    }
+    at
+}
+
+/// A `----> 61` row, as ipython marks the line a frame ran: two dashes at least, then the arrow.
+fn arrow(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let dashes = trimmed
+        .len()
+        .saturating_sub(trimmed.trim_start_matches('-').len());
+    dashes >= 2
+        && trimmed
+            .get(dashes..)
+            .is_some_and(|rest| rest.starts_with('>'))
+}
+
+/// `SyntaxError: invalid syntax`, unindented and named: the one row a failed block exists to say.
+fn exception(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.len() < line.len() || caret(line) || separator(line) || frame(line) {
+        return false;
+    }
+    let Some((name, _)) = trimmed.split_once(':') else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.'))
+}
+
+fn trace_row(line: &str, last: TraceRow) -> TraceRow {
+    if line.trim().is_empty() || separator(line) || frame(line) {
+        return TraceRow::Frame;
+    }
+    let indent = line.len().saturating_sub(line.trim_start().len());
+    let source = arrow(line)
+        || (!caret(line) && indent >= 4 && matches!(last, TraceRow::Frame | TraceRow::Source));
+    if source {
+        TraceRow::Source
+    } else if exception(line) {
+        TraceRow::Raised
+    } else {
+        TraceRow::Error
+    }
+}
+
+/// Invariant: a frame's source row keeps its own syntax colour, and the numbering the kernel
+/// printed above it stays scaffolding, so a twenty-row traceback reads as code and not a wall.
+pub fn traceback_rows(
+    text: &str,
+    code: &str,
+    theme: &Theme,
+) -> Vec<(TraceRow, Vec<Span<'static>>)> {
+    let mut lang = highlight::lang_for(chip(code));
+    let base = Style::default().fg(theme.text);
+    let error = Style::default().fg(theme.error);
+    let mut last = TraceRow::Frame;
+    text.trim_end_matches('\n')
+        .split('\n')
+        .map(|raw| {
+            let line = show_controls(raw);
+            let row = trace_row(&line, last);
+            if !line.trim().is_empty() {
+                last = row;
+            }
+            let spans = match row {
+                TraceRow::Frame => vec![Span::styled(line, theme.dim_style())],
+                TraceRow::Error => vec![Span::styled(line, error)],
+                TraceRow::Raised => vec![Span::styled(line, error.add_modifier(Modifier::BOLD))],
+                TraceRow::Source => source_spans(&line, lang.as_mut(), theme, base),
+            };
+            (row, spans)
+        })
+        .collect()
+}
+
+fn source_spans(
+    line: &str,
+    lang: Option<&mut highlight::Lang>,
+    theme: &Theme,
+    base: Style,
+) -> Vec<Span<'static>> {
+    let at = gutter(line);
+    let (lead, body) = if line.is_char_boundary(at) {
+        line.split_at(at)
+    } else {
+        ("", line)
+    };
+    let mut spans = vec![Span::styled(lead.to_owned(), theme.dim_style())];
+    match lang {
+        Some(lang) => spans.extend(highlight::spans(body, lang, theme, base)),
+        None => spans.push(Span::styled(body.to_owned(), base)),
+    }
+    spans
+}
+
+fn traceback_lines(text: &str, code: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    traceback_rows(text, code, theme)
+        .into_iter()
+        .flat_map(|(_, spans)| {
+            let mut row = vec![Span::raw("  ")];
+            row.extend(spans);
+            wrap_line(&Line::from(row), width, "        ")
+        })
+        .collect()
+}
+
 /// A failed cell shows its source and its traceback in every mode: a reader who
 /// cannot see why the kernel raised cannot act on it.
 pub fn lines(
@@ -338,22 +485,25 @@ pub fn lines(
     }
     let raw_stdout = string(&cell.details, "stdout");
     let (stdout, trailing) = split_traceback(&raw_stdout);
-    let (plain, error) = (
-        Style::default().fg(theme.text),
-        Style::default().fg(theme.error),
-    );
+    let plain = Style::default().fg(theme.text);
     for (text, style) in [
         (stdout.to_owned(), plain),
         (string(&cell.details, "result"), plain),
         (string(&cell.details, "stderr"), theme.muted_style()),
-        (trailing.to_owned(), error),
-        (traceback_of(&cell.details), error),
     ] {
         let bounded = (!expanded).then(|| crate::transcript::preview_lines(&text, 5, 5).join("\n"));
         let shown = bounded.as_deref().unwrap_or(&text);
         if !text.trim().is_empty() {
             out.extend(stream_lines(shown, style, inner));
         }
+    }
+    for text in [trailing.to_owned(), traceback_of(&cell.details)] {
+        if text.trim().is_empty() {
+            continue;
+        }
+        let bounded = (!expanded).then(|| crate::transcript::preview_lines(&text, 5, 5).join("\n"));
+        let shown = bounded.as_deref().unwrap_or(&text);
+        out.extend(traceback_lines(shown, &code, inner, theme));
     }
     card(out)
 }

@@ -145,6 +145,7 @@ mod tests {
     use serde_json::{Value, json};
     use unicode_width::UnicodeWidthStr;
     use yi_tui::colors::{ColorTier, Theme};
+    use yi_tui::highlight::Token;
     use yi_types::acp::{AcpSessionUpdate, AcpToolCallStatus, AcpToolCallUpdate};
     use yi_types::message::{AgentMessage, Content};
 
@@ -655,6 +656,100 @@ mod tests {
         assert!(
             out.contains(";bmV3ZXN0"),
             "the newest image was not placed: {out:?}"
+        );
+        Ok(())
+    }
+
+    fn said(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    /// Dies with a traceback drawn as one flat wall: its frame headers and the line each frame
+    /// ran must not share a colour, and the failure marker must name the exception, once.
+    #[test]
+    fn a_recorded_traceback_dims_its_frames_and_lexes_what_each_ran() -> TestResult {
+        let cells = replay(include_str!(
+            "../../../tui/tests/fixtures/sessions/01a0648f.jsonl"
+        ))?;
+        let cell = cells
+            .iter()
+            .find(|cell| {
+                cell.error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("RuntimeError"))
+            })
+            .ok_or("no RuntimeError cell")?;
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let lines = notebook_lines(std::slice::from_ref(cell), 100, true, &theme, "x");
+        let frame = lines
+            .iter()
+            .find(|line| said(line).trim_start().starts_with("File "))
+            .ok_or("no frame header row")?;
+        let styled: Vec<_> = frame
+            .spans
+            .iter()
+            .filter(|span| span.style.fg.is_some())
+            .collect();
+        assert!(!styled.is_empty(), "the header row is drawn");
+        assert!(
+            styled
+                .iter()
+                .all(|span| span.style.fg == theme.dim_style().fg),
+            "a frame header is scaffolding: {:?}",
+            frame.spans
+        );
+        let source = lines
+            .iter()
+            .find(|line| said(line).contains("return await result(self.rlm_child_id, schema)"))
+            .ok_or("no source row")?;
+        let keyword = theme.syntax_style(Token::Keyword).fg;
+        assert!(
+            source
+                .spans
+                .iter()
+                .any(|span| span.style.fg == keyword && span.content.as_ref() == "return"),
+            "the row a frame ran is lexed as code: {:?}",
+            source.spans
+        );
+        let marked: Vec<String> = lines
+            .iter()
+            .map(said)
+            .filter(|row| row.starts_with('✕'))
+            .collect();
+        assert_eq!(marked.len(), 1, "one marker per block: {marked:?}");
+        assert!(
+            marked
+                .first()
+                .is_some_and(|row| row.contains("RuntimeError: child")),
+            "the marker sits on the row naming the failure: {marked:?}"
+        );
+        Ok(())
+    }
+
+    /// Dies with a `%%bash` cell's source lexed as Python, where `ls` and `head` are plain words.
+    #[test]
+    fn a_bash_cells_source_is_lexed_as_a_shell() -> TestResult {
+        let cell = NbCell {
+            number: 1,
+            code: "%%bash\npwd && ls | head -5".to_owned(),
+            ..NbCell::default()
+        };
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let lines = notebook_lines(std::slice::from_ref(&cell), 70, false, &theme, "x");
+        let row = lines
+            .iter()
+            .find(|line| said(line).contains("pwd && ls"))
+            .ok_or("no shell row")?;
+        let function = theme.syntax_style(Token::Function).fg;
+        assert!(
+            row.spans
+                .iter()
+                .any(|span| span.style.fg == function && span.content.as_ref() == "ls"),
+            "a shell command in a shell cell: {:?}",
+            row.spans
         );
         Ok(())
     }
