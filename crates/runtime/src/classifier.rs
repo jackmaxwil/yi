@@ -478,13 +478,31 @@ impl Screeners {
         }
     }
 
+    fn attached(&self) -> Option<Arc<Screener>> {
+        self.0.lock().ok().and_then(|slot| slot.clone())
+    }
+
     /// Whether a screener is attached: a host with none has nothing to park for the screen.
     pub fn armed(&self) -> bool {
-        self.0.lock().is_ok_and(|slot| slot.is_some())
+        self.attached().is_some()
     }
+
+    /// Invariant: a spawned session inherits the root's endpoint, cut and cap over its own
+    /// journal, breaker and cache, so its rows are read from it and its dead endpoint is its own.
+    pub fn hand_down(&self, child: &Self, record: Record) {
+        let Some(screener) = self.attached() else {
+            return;
+        };
+        child.set(Arc::new(Screener::new(
+            screener.sidecar.clone(),
+            screener.cut,
+            screener.cap,
+            record,
+        )));
+    }
+
     pub fn screen(&self, kind: &str, text: &str) -> Screened {
-        let screener = self.0.lock().ok().and_then(|slot| slot.clone());
-        match screener {
+        match self.attached() {
             Some(screener) => screener.check(kind, text),
             None => Screened::clean(text),
         }
@@ -493,8 +511,7 @@ impl Screeners {
     /// The blocking sidecar call handed to a blocking thread: the reviewer reaches the screen
     /// from a tokio task, and a reactor worker waiting out the timeout stalls every other task.
     pub async fn screen_off_reactor(&self, kind: &str, text: &str) -> Screened {
-        let screener = self.0.lock().ok().and_then(|slot| slot.clone());
-        let Some(screener) = screener else {
+        let Some(screener) = self.attached() else {
             return Screened::clean(text);
         };
         if tokio::runtime::Handle::try_current().is_err() {
@@ -843,7 +860,7 @@ fn sidecar_key(
     }
 }
 
-fn journal(session: &AgentSession) -> Record {
+pub(crate) fn journal(session: &AgentSession) -> Record {
     let store = session.store_handle();
     Arc::new(move |record| {
         if let Some(store) = store() {
