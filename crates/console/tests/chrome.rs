@@ -5,6 +5,7 @@ use std::error::Error;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Direction, Rect};
 use yi_console::app::{App, MouseKind};
 use yi_console::client;
@@ -67,6 +68,15 @@ fn mouse(app: &mut App, kind: MouseKind, x: u16, y: u16) {
     let socket = std::env::temp_dir().join("yi-chrome-no-daemon.sock");
     let (outbound, _threads) = client::spawn(socket, events);
     app.handle_mouse(&outbound, kind, x, y);
+    outbound.shutdown();
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    let (events, _received) = client::events();
+    let socket = std::env::temp_dir().join("yi-chrome-no-daemon.sock");
+    let (outbound, _threads) = client::spawn(socket, events);
+    let key = KeyEvent::new(code, KeyModifiers::NONE);
+    app.handle_event(&outbound, ratatui::crossterm::event::Event::Key(key));
     outbound.shutdown();
 }
 
@@ -704,6 +714,14 @@ fn the_files_button_opens_a_tree_that_folds_a_folder_and_opens_a_file() -> TestR
     assert!(
         editor.ends_with("crates/inner/a.rs"),
         "the editor opened {editor}, not the clicked file"
+    );
+    mouse(&mut app, MouseKind::Down, files.x, files.y);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Esc);
+    assert!(
+        matches!(app.state.mode, Mode::Normal),
+        "keys left the tree up"
     );
     Ok(())
 }
