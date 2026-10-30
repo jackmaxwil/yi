@@ -1,4 +1,5 @@
 ---
+version: 0.826.0
 issue: Closes #1863
 raise: crate tui +67, comments +2, tests +127
 ---
