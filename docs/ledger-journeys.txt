@@ -558,6 +558,7 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+TUI | `json_salvage_prefix::every_prefix_of_a_real_tool_call_salvages_a_consistent_object` (T0)
 file checkpoints + /undo | `checkpoint::undo_restores_and_removes_non_ascii_paths`
 file checkpoints + /undo | `checkpoint::a_capture_leaves_the_callers_git_index_untouched`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::parallel_claims_check_out_side_by_side`
