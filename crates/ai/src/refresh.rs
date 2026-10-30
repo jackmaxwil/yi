@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use yi_types::model::Model;
 
 use crate::catalog::{Catalog, SCHEMA};
-use crate::request::{ProxyConfig, get_json, post_json};
+use crate::request::{DEFAULT_READ_TIMEOUT, ProxyConfig, get_json, post_json};
 
 pub const MODELS_DEV: &str = "https://models.dev/api.json";
 pub const CAP_BYTES: usize = 16 * 1024 * 1024;
@@ -276,7 +276,9 @@ fn refresh_cursor(
         "{}",
         proxy,
         CAP_BYTES,
-    )?;
+        DEFAULT_READ_TIMEOUT,
+    )
+    .map_err(|error| error.to_string())?;
     let catalog = cursor_catalog(&list)?;
     let count = catalog["cursor-agent"]
         .as_object()

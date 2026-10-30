@@ -454,6 +454,16 @@ fn refusal_of(check: &str) -> Result<String, Box<dyn Error>> {
 }
 
 #[test]
+fn a_declared_check_that_cannot_start_is_refused_not_run() -> TestResult {
+    let error = refusal_of("jsut check")?;
+    assert!(
+        error.contains("`jsut` is not runnable (exit 127"),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_red_check_keeps_its_verdict_and_names_the_cut() -> TestResult {
     let error = refusal_of(&format!("cat '{RED_PYTEST}'; exit 1"))?;
     for verdict in [

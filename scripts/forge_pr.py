@@ -327,7 +327,7 @@ def cmd_check(args):
         title, body = pr["title"], pr.get("body") or ""
     else:
         title = args.title or ""
-        body = pathlib.Path(args.body).read_text() if args.body else ""
+        body = compose_body(args)
     errs = check_problems(title, body)
     for err in errs:
         print(err)
@@ -684,7 +684,7 @@ def selfcheck():
     assert not [e for e in drafted if e.startswith("title:")], "a draft title passes the title rule"
     assert any("no `## Why needed`" in e for e in drafted), "`just pr open` runs the template check"
     # Incident: the D249 hard-cap line missed the ratchet regex, so `just push` went on.
-    import contextlib, io, check_binary_size
+    import contextlib, io, types, check_binary_size
 
     over = check_binary_size.problems(9_500_000, check_binary_size.HARD_CAP_BYTES)[0]
     assert over == "dist binary 9500000 > hard cap 9437184 bytes", over
@@ -800,10 +800,33 @@ def selfcheck():
         globals()["fgj_api"] = real_fgj
     assert stopped == 1, "a refused PATCH is not reported as an edit"
     assert any("no `## Why needed`" in line for line in seen.getvalue().splitlines()), seen.getvalue()
-    # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green,
-    # because nothing here built the verbs; a name the parser wires that no longer exists
-    # now fails this flag instead of the next `just commit`.
-    build_parser()
+    gate.measure = lambda: (([], [], 200, ([], [])), None)
+    prefill = "## UI changes\n\nNone.\n"
+    unlisted = "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED if title != "UI changes")
+    body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_check.md"
+    body_file.write_text(unlisted)
+    issue_ok, judged, real_check, real_run = gate.issue_problems, [], check_problems, subprocess.run
+    gate.issue_problems = lambda *a: []
+    globals()["check_problems"] = lambda title, body: judged.append(body) or real_check(title, body)
+    subprocess.run = lambda cmd, *a, **k: types.SimpleNamespace(stdout=prefill) if "pr_body.py" in str(cmd) else real_run(cmd, *a, **k)
+    try:
+        for closes, want in (([1], 0), ([], 1)):
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = cmd_check(argparse.Namespace(number=None, title="Keep the gate", body=str(body_file), closes=closes, refs=[]))
+            assert code == want, ("pr check judges the body as pr open composes it", closes, code)
+    finally:
+        gate.measure, gate.issue_problems, subprocess.run = real_measure, issue_ok, real_run
+        globals()["check_problems"] = real_check
+        body_file.unlink()
+    assert judged[0] == "Closes #1\n\n" + unlisted.strip() + "\n\n" + prefill.strip(), ("pr check judges the body pr open submits", judged[0])
+    # Incident: a merge resolution dropped the check verb's flags and every gate stayed green;
+    # the parser is built and every wired name resolved here, so neither repeats.
+    flags = {}
+    try:
+        flags = vars(build_parser().parse_args(["pr", "check", "--closes", "1", "--refs", "2"]))
+    except SystemExit:
+        pass
+    assert flags.get("closes") == ["1"] and flags.get("refs") == ["2"], ("pr check takes the flags pr open takes", flags)
     print("ok   forge_pr selfcheck")
 
 
@@ -837,6 +860,8 @@ def build_parser():
     check.add_argument("number", nargs="?")
     check.add_argument("--title")
     check.add_argument("--body")
+    check.add_argument("--closes", action="append", default=[])
+    check.add_argument("--refs", action="append", default=[])
     check.set_defaults(run=cmd_check)
     edit = pr.add_parser("edit")
     edit.add_argument("number", type=int)

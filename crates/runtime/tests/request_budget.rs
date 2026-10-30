@@ -131,6 +131,21 @@ fn session_tools() -> Result<(Scratch, SessionTools), Box<dyn Error>> {
     std::fs::create_dir_all(&cwd)?;
     std::fs::create_dir_all(&home)?;
     let provider = Arc::new(ProviderStream::new(None));
+    let search = yi_ai::catalog::Catalog::bundled()
+        .get("openrouter", "deepseek/deepseek-v4-flash")
+        .cloned()
+        .and_then(|model| {
+            yi_ai::search::OpenRouterSearch::new(
+                model,
+                Some(yi_ai::auth::Secret::new("x".to_owned())),
+                yi_ai::search::SearchEngine::default(),
+                None,
+                None,
+            )
+            .ok()
+        })
+        .map(|provider| Arc::new(provider) as Arc<dyn yi_ai::search::SearchProvider>);
+    provider.set_web_search(search);
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
