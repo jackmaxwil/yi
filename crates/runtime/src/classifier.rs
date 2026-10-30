@@ -86,7 +86,12 @@ fn fail(breaker: &Mutex<Breaker>, cause: &str) -> bool {
         return false;
     };
     breaker.failures = breaker.failures.saturating_add(1);
-    if breaker.failures < breaker.trips_at.max(1) {
+    let trips = if breaker.trips_at == 0 {
+        TRIP_AFTER
+    } else {
+        breaker.trips_at
+    };
+    if breaker.failures < trips {
         return false;
     }
     breaker.failures = 0;
