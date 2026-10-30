@@ -284,11 +284,15 @@ pub(crate) fn read_main(
     Ok(tokio::task::spawn_blocking(move || resolver.fetch(&url)))
 }
 
-type Cell = tokio::task::JoinHandle<Result<yi_tools::KernelCellOutcome, String>>;
+pub(crate) type Cell = tokio::task::JoinHandle<Result<yi_tools::KernelCellOutcome, String>>;
 
-const SLEEP: &str = "import time\nopen('sleeping', 'w').close()\ntime.sleep(20)";
+pub(crate) const SLEEP: &str = "import time\nopen('sleeping', 'w').close()\ntime.sleep(20)";
 
-fn run_cell(service: &Arc<KernelService>, stop: &Arc<AtomicBool>, code: &'static str) -> Cell {
+pub(crate) fn run_cell(
+    service: &Arc<KernelService>,
+    stop: &Arc<AtomicBool>,
+    code: &'static str,
+) -> Cell {
     let (service, stop) = (Arc::clone(service), Arc::clone(stop));
     tokio::task::spawn_blocking(move || {
         let cancelled: yi_tools::CancelFlag = Arc::new(move || stop.load(Ordering::SeqCst));
@@ -296,7 +300,7 @@ fn run_cell(service: &Arc<KernelService>, stop: &Arc<AtomicBool>, code: &'static
     })
 }
 
-async fn wait_for_file(path: &std::path::Path) {
+pub(crate) async fn wait_for_file(path: &std::path::Path) {
     for _ in 0..600 {
         if path.is_file() {
             return;
