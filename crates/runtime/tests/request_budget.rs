@@ -769,6 +769,7 @@ async fn role_bodies(
     let scratch = Scratch::new("yi-role-prefix")?;
     let ws = scratch.join("ws");
     std::fs::create_dir_all(&ws)?;
+    upstream::git(&ws, &["init", "-q", "-b", "main"])?;
     let mode = match workspace {
         Workspace::Bare => PermissionMode::Yolo,
         Workspace::Lane | Workspace::Main => PermissionMode::Auto,
@@ -806,7 +807,6 @@ async fn role_bodies(
     if !matches!(workspace, Workspace::Bare) {
         std::fs::copy(checkout().join("AGENTS.md"), ws.join("AGENTS.md"))?;
         std::fs::write(ws.join("Cargo.toml"), "[workspace]\n")?;
-        upstream::git(&ws, &["init", "-q", "-b", "main"])?;
         upstream::git(&ws, &["add", "."])?;
         upstream::git(&ws, &["commit", "-q", "-m", "seed"])?;
     }

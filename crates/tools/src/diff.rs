@@ -120,12 +120,13 @@ pub fn shown_after_lines(pre: &str, post: &str) -> Vec<u64> {
     shown
 }
 
-/// Where each line of `pre` sits in `post`: `Some(n)` for a line whose text is unchanged,
-/// `None` for one that was removed or rewritten. Index is the `pre` line minus one.
-pub fn line_map(pre: &str, post: &str) -> Vec<Option<u64>> {
+/// Where each line of `pre` sits in `post`, and which `post` lines were added. A removed or
+/// rewritten `pre` line maps to `None`; the line vector is indexed by `pre` line minus one.
+pub fn line_map(pre: &str, post: &str) -> (Vec<Option<u64>>, Vec<u64>) {
     let before = split_lines(pre);
     let after = split_lines(post);
     let mut map: Vec<Option<u64>> = Vec::with_capacity(before.len());
+    let mut authored = Vec::new();
     let mut after_line: u64 = 1;
     for (op, _) in edit_script(&before, &after) {
         match op {
@@ -134,53 +135,13 @@ pub fn line_map(pre: &str, post: &str) -> Vec<Option<u64>> {
                 after_line = after_line.saturating_add(1);
             }
             Op::Remove => map.push(None),
-            Op::Add => after_line = after_line.saturating_add(1),
-        }
-    }
-    map
-}
-
-/// What an edit moved: the `post` lines it authored, and the `pre` rows it removed or rewrote
-/// with the numbering they held, so a reply can answer with counts and the rows that went away.
-pub struct ChangedLines<'a> {
-    pub authored: Vec<u64>,
-    pub removed: Vec<(u64, &'a str)>,
-}
-
-pub fn changed_lines<'a>(pre: &'a str, post: &str) -> ChangedLines<'a> {
-    let mut change = ChangedLines {
-        authored: Vec::new(),
-        removed: Vec::new(),
-    };
-    if pre == post {
-        return change;
-    }
-    let before = split_lines(pre);
-    let after = split_lines(post);
-    let mut before_line: u64 = 1;
-    let mut after_line: u64 = 1;
-    for (op, _) in edit_script(&before, &after) {
-        match op {
-            Op::Keep => {
-                before_line = before_line.saturating_add(1);
-                after_line = after_line.saturating_add(1);
-            }
             Op::Add => {
-                change.authored.push(after_line);
+                authored.push(after_line);
                 after_line = after_line.saturating_add(1);
-            }
-            Op::Remove => {
-                if let Some(text) = usize::try_from(before_line.saturating_sub(1))
-                    .ok()
-                    .and_then(|index| before.get(index))
-                {
-                    change.removed.push((before_line, text));
-                }
-                before_line = before_line.saturating_add(1);
             }
         }
     }
-    change
+    (map, authored)
 }
 
 fn split_lines(text: &str) -> Vec<&str> {

@@ -2390,12 +2390,7 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
     let viewed = bash.execute(args(&[("command", json!("cat a.txt"))]), &context);
     let text = output_text(&viewed);
     assert!(text.starts_with("[a.txt#"), "{text}");
-    let tag = text
-        .lines()
-        .next()
-        .and_then(|header| header.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-        .ok_or("no tag")?;
+    let tag = tag_of(&text).ok_or("no tag")?;
     let edit = yi_tools::hashline::tool::HashlineEditTool {
         state: std::sync::Arc::clone(&state),
         freeform_grammar: false,
@@ -2431,12 +2426,7 @@ fn bash_then_put(
     bash.hashline = Some(Arc::clone(&state));
     let viewed = bash.execute(args(&[("command", json!(command))]), context);
     let text = output_text(&viewed);
-    let tag = text
-        .lines()
-        .next()
-        .and_then(|header| header.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-        .ok_or_else(|| format!("no tag in {text}"))?;
+    let tag = tag_of(&text).ok_or_else(|| format!("no tag in {text}"))?;
     let old = fs::read_to_string(dir.join(path))?;
     let current = old
         .split('\n')
@@ -3171,12 +3161,7 @@ fn an_edit_that_breaks_python_says_so_in_its_result() -> TestResult {
 
     let read = yi_tools::hashline::tool::HashlineReadTool::new(Arc::clone(&state))
         .execute(args(&[("path", json!("a.py"))]), &context);
-    let tag = output_text(&read)
-        .lines()
-        .next()
-        .and_then(|header| header.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-        .ok_or("no tag")?;
+    let tag = tag_of(&output_text(&read)).ok_or("no tag")?;
     let edit = yi_tools::hashline::tool::HashlineEditTool {
         state: Arc::clone(&state),
         freeform_grammar: false,
@@ -3251,12 +3236,7 @@ fn a_write_result_carries_the_tag_an_edit_must_cite() -> TestResult {
     let text = output_text(&written);
     assert!(text.starts_with("[w.py#"), "{text}");
     assert!(text.contains("Wrote "), "{text}");
-    let tag = text
-        .lines()
-        .next()
-        .and_then(|header| header.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-        .ok_or("no tag on the write result")?;
+    let tag = tag_of(&text).ok_or("no tag on the write result")?;
     let edit = yi_tools::hashline::tool::HashlineEditTool {
         state: std::sync::Arc::clone(&state),
         freeform_grammar: false,
@@ -3349,12 +3329,6 @@ fn an_edit_carries_the_seen_lines_it_did_not_move() -> TestResult {
         args(&[("path", json!("long.txt")), ("content", json!(body))]),
         &context,
     );
-    let tag_of = |text: &str| -> Option<String> {
-        text.lines()
-            .next()
-            .and_then(|header| header.rsplit_once('#'))
-            .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-    };
     let first = tag_of(&output_text(&written)).ok_or("no write tag")?;
     let edit = yi_tools::hashline::tool::HashlineEditTool {
         state: std::sync::Arc::clone(&state),
@@ -3469,7 +3443,7 @@ fn an_edit_that_drops_a_kept_line_shows_it() -> TestResult {
     let reply = output_text(&edit);
     assert!(!edit.is_error, "{reply}");
     assert!(
-        reply.contains("-2:    msg = \"Hello, \" + name"),
+        reply.contains("-before 2:    msg = \"Hello, \" + name"),
         "the dropped row is missing from the reply: {reply}"
     );
     Ok(())
@@ -3530,7 +3504,6 @@ fn nine_removed_rows_report_the_cap_and_the_read_that_shows_the_rest() -> TestRe
     Ok(())
 }
 
-/// The rows an edit authored stay anchors under the tag it minted, though the reply never
 /// A removed row wider than the clip is cut at 120 columns and marked, so one long line never
 /// costs the reply its shape (#1522).
 #[test]
@@ -3562,12 +3535,16 @@ fn a_removed_row_wider_than_the_clip_is_cut_and_marked() -> TestResult {
     assert!(!edit.is_error, "{reply}");
     let row = reply
         .lines()
-        .find(|line| line.starts_with("-3:"))
+        .find(|line| line.starts_with("-before 3:"))
         .ok_or_else(|| format!("no removed row: {reply}"))?;
     assert!(row.ends_with('\u{2026}'), "{row}");
     assert!(!reply.contains(&"x".repeat(121)), "{reply}");
+    assert!(reply.contains("1 of 1 removed rows clipped"), "{reply}");
+    assert!(reply.contains("EDIT_REMOVED_CLIP 120"), "{reply}");
+    assert!(reply.contains("details.patch"), "{reply}");
     Ok(())
 }
+/// The rows an edit authored stay anchors under the tag it minted, though the reply never
 /// reprinted them (#1522).
 #[test]
 fn a_follow_up_edit_anchors_on_an_authored_unprinted_row() -> TestResult {
@@ -3616,7 +3593,10 @@ fn tag_of(text: &str) -> Option<String> {
     text.lines()
         .next()
         .and_then(|header| header.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .and_then(|(_, tail)| {
+            yi_tools::hashline::format::FileTag::parse(tail.trim_end_matches(']'))
+        })
+        .map(|tag| tag.to_string())
 }
 
 fn numbered_row_len(line: u64, text: &str) -> usize {

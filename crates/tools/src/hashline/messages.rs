@@ -564,7 +564,11 @@ of a multi-line construct. For only this statement use `{plain}`.",
 pub const EDIT_REMOVED_CAP: usize = 8;
 pub const EDIT_REMOVED_CLIP: usize = 120;
 
-pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore) -> String {
+pub fn section_reply(
+    result: &PatchSectionResult,
+    snapshots: &mut SnapshotStore,
+    counts: (u64, u64),
+) -> String {
     let mut out = vec![result.header.clone()];
     let op = match result.op {
         SectionOp::Update => "updated",
@@ -574,10 +578,11 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
     if result.op == SectionOp::Delete {
         out.push(op.to_owned());
     } else {
-        let change = crate::diff::changed_lines(&result.before, &result.after);
-        let counts = format!("+{} -{}", change.authored.len(), change.removed.len());
-        let at = change
-            .authored
+        let map = super::rebase::LineMap::between(&result.before, &result.after);
+        let removed = map.removed(&result.before);
+        let counts = format!("+{} -{}", counts.0, counts.1);
+        let at = map
+            .authored()
             .first()
             .copied()
             .or(result.first_changed_line);
@@ -586,14 +591,22 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
             (None, Some(line)) => format!("{op}; {counts} at line {line}"),
             (None, None) => format!("{op}; {counts}"),
         });
-        for (line, text) in change.removed.iter().take(EDIT_REMOVED_CAP) {
-            let (text, _) = crate::tool::clip(text, EDIT_REMOVED_CLIP);
-            out.push(format!("-{}", format_numbered_line(*line, &text)));
+        let mut clipped = 0_usize;
+        for (line, text) in removed.iter().take(EDIT_REMOVED_CAP) {
+            let (text, was_clipped) = crate::tool::clip(text, EDIT_REMOVED_CLIP);
+            clipped = clipped.saturating_add(usize::from(was_clipped));
+            out.push(format!("-before {line}:{text}"));
         }
-        if change.removed.len() > EDIT_REMOVED_CAP {
+        if clipped > 0 {
+            out.push(format!(
+                "[{clipped} of {} removed rows clipped; cap EDIT_REMOVED_CLIP {EDIT_REMOVED_CLIP} columns; full text: details.patch]",
+                removed.len()
+            ));
+        }
+        if removed.len() > EDIT_REMOVED_CAP {
             out.push(crate::tool::cut_row(
                 EDIT_REMOVED_CAP,
-                change.removed.len(),
+                removed.len(),
                 "removed rows",
                 "EDIT_REMOVED_CAP",
                 EDIT_REMOVED_CAP,
@@ -607,18 +620,15 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
         // model authored are seen though the reply never reprints them: both stay anchors.
         let mut seen: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before)
         {
-            Some(prior) => {
-                let map = super::rebase::LineMap::between(&result.before, &result.after);
-                prior
-                    .seen_lines
-                    .iter()
-                    .flatten()
-                    .filter_map(|line| map.line(*line))
-                    .collect()
-            }
+            Some(prior) => prior
+                .seen_lines
+                .iter()
+                .flatten()
+                .filter_map(|line| map.line(*line))
+                .collect(),
             None => Vec::new(),
         };
-        seen.extend(change.authored.iter().copied());
+        seen.extend(map.authored().iter().copied());
         snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
     }
     for warning in &result.warnings {
