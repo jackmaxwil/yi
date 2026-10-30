@@ -510,3 +510,34 @@ fn a_sidebar_toggle_after_a_fold_leaves_the_cursor_on_a_painted_row() -> Result<
     }
     Ok(())
 }
+
+/// Dies with the cursor left on a row the only group's fold hides: nothing is banded and
+/// `enter` resumes a session the sidebar does not draw.
+#[test]
+fn a_toggle_back_into_an_all_folded_sidebar_lands_on_a_painted_header() -> Result<(), String> {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use yi_console::model::{SidebarMode, Slot};
+    let one = [("yi-new", "/w/yi", SessionStatus::Idle, 900, None)];
+    let (mut app, outbound) = sidebar_app("/w/yi", SidebarMode::Full, &one);
+    for code in [KeyCode::Up, KeyCode::Enter] {
+        key(&mut app, &outbound, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+    assert_eq!(app.state.folded.len(), 1, "{:?}", app.state.folded);
+    for _ in 0..2 {
+        key(
+            &mut app,
+            &outbound,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+        );
+    }
+    let cursor = app.state.cursor();
+    if !app.state.slots().contains(&cursor) {
+        return Err(format!("the cursor names no painted slot: {cursor:?}"));
+    }
+    if cursor != Slot::Group("/w/yi".to_owned()) {
+        return Err(format!(
+            "the cursor is not on the folded header: {cursor:?}"
+        ));
+    }
+    Ok(())
+}

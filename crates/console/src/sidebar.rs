@@ -10,7 +10,9 @@ use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 use crate::app::App;
 use crate::avatar::Placement;
 use crate::keys::{self, Action};
-use crate::model::{Mode, SessionId, SessionRow, SessionStatus, SidebarMode, Slot, Zone, now_ms};
+use crate::model::{
+    Mode, Painted, SessionId, SessionRow, SessionStatus, SidebarMode, Slot, Zone, now_ms,
+};
 use crate::render::Hit;
 use crate::render::{NAME_WIDTH, status_style};
 use yi_tui::orb::OrbState;
@@ -278,20 +280,23 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     let pinned = groups.first().map_or(0, |group| group.rows.len());
     let mut pinned_head = false;
     let mut last_group: Option<Option<String>> = None;
-    for entry in app.state.slots() {
+    for entry in app.state.painted(&groups) {
         match entry {
-            Slot::Group(root) => {
-                let found = groups
-                    .iter()
-                    .find(|group| group.root.as_deref() == Some(root.as_str()));
-                let is_cursor = on_sidebar && cursor == Slot::Group(root.clone());
-                if let Some(group) = found {
-                    let (rows_of, folded) = (&group.rows, group.folded);
-                    let header = group_header(app, &root, rows_of, folded, is_cursor, width, theme);
-                    rows.push(header);
-                }
+            Painted::Header(root, group) => {
+                let is_cursor =
+                    on_sidebar && matches!(&cursor, Slot::Group(drawn) if drawn == root);
+                let header = group_header(
+                    app,
+                    root,
+                    &group.rows,
+                    group.folded,
+                    is_cursor,
+                    width,
+                    theme,
+                );
+                rows.push(header);
             }
-            Slot::Row(index) => {
+            Painted::Row(index) => {
                 let Some(id) = app.state.order.get(index) else {
                     continue;
                 };
