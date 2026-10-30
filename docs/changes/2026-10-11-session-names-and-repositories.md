@@ -1,4 +1,6 @@
 ---
+version: 0.675.0
+decisions: D421
 issue: Closes #1244
 growth: +335 the review's two wall bypasses and its typed refusals cost most of it: a name lookup, a per-level child lookup sharing the host's trail reader, every spelling judged by the wall for a read and a grep, a capped candidate list and a desk that says why it cannot reach; weighed: names only within this repository (the owner's round 4 answer asked for every repository), and refusing every name under any wall without the spelling check (a wall written by name would still have failed open on the id)
 raise: comments +30, crate runtime +324, crate session +11, tests +417

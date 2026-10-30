@@ -15,6 +15,9 @@ jobs:
   # One arm left, so the matrix (and its fail-fast: false) went with the macOS
   # row it existed for.
   postmerge:
+    # The recorder's commit is a push to main like any other, so the mirror runs for it; this lane
+    # spends real money per merge on its live suite, and a docs commit has nothing to run.
+    if: github.event.head_commit.author.name != 'yi-ci'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -55,10 +58,14 @@ jobs:
       # The image carries just and the uv the kernel journey boots, so the
       # install steps the GitHub file needs are both gone.
       - run: just postmerge
+      # Incident: a red journey skipped the evals and the live append behind it, so the telemetry
+      # branch, 4 to 21 postmerge files a day until 2026-10-14, has had two since.
       - run: just postmerge-evals
+        if: always()
       # The live suite on main is the lane's memory: one run per merge, appended to the
       # telemetry branch the PR verdicts read their baseline from. No secret, no run.
       - name: live suite on main, appended to the telemetry branch
+        if: always()
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           EVAL_ROUTING: '{"order":["coreweave/nvfp4"],"allow_fallbacks":false}'
@@ -83,16 +90,24 @@ jobs:
           FORGEJO_REPOSITORY: ${{ github.repository }}
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/forge_tracking.py --comment-closed
+      # A record job that stopped running left 271 change files unrecorded and nothing red on main;
+      # this goes red past 10 unrecorded files or one older than 3 days, whatever the record job did.
+      - name: unrecorded change files
+        if: always()
+        run: python3 scripts/record_changes.py --drift
 
   # Incident: pr.yml promised "one key per lane, shared with postmerge", but postmerge saved
   # only `test`, so `lint` and `guardrails` built cold on every pull request and a cold
   # `live` build was cancelled by the runner's clock three times in a row. A branch can read
   # only the caches main saved, so main saves every lane's key here, warm for the next push.
+  # Invariant: `test` is in the matrix so each main commit carries the PR gate's own test lane
+  # as a status; green pull requests that fail together turn that commit red within one run.
   warm:
+    if: github.event.head_commit.author.name != 'yi-ci'
     strategy:
       fail-fast: false
       matrix:
-        lane: [lint, guardrails]
+        lane: [lint, guardrails, test]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -128,6 +143,8 @@ jobs:
           python3 scripts/record_changes.py
           if [ -z "$(git status --porcelain)" ]; then exit 0; fi
           git add docs
+          # Not silenced: the mirror runs only for a push to main, and this is the push that leaves
+          # main final; the two lanes above skip a recorder commit by its author instead.
           git -c user.name=yi-ci -c user.email=ci@yi \
-            commit -q -m "Record the change files main landed" -m "[skip ci]"
+            commit -q -m "Record the change files main landed"
           git push origin HEAD:main

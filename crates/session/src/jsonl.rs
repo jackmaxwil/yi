@@ -92,7 +92,7 @@ pub fn load_session(path: &Path) -> Result<SessionStore, SessionError> {
         match parsed {
             Ok(mutation) => {
                 store
-                    .replay(mutation)
+                    .replay(mutation, index + 1)
                     .map_err(|error| invalid_file(path, index + 1, error))?;
             }
             Err(error) => {

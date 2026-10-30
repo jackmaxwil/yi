@@ -4,6 +4,8 @@ pure loop + event enum | `interrupt::an_abort_during_the_cut_drain_returns_at_on
 pure loop + event enum | `pump_stop::an_abort_stops_the_provider_pump_at_the_next_event`
 pure loop + event enum | `openrouter::an_aborted_turn_is_settled_from_the_record`
 entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
+entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
+entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
 hashline edit (+ registers, instrumented) | `hashline_patcher::read_edit_round_trip_replaces_lines_and_mints_a_new_tag`
@@ -23,6 +25,9 @@ Claude Code tool hooks | `claude_hooks::a_hook_allow_never_widens_an_in_process_
 Claude Code tool hooks | `mcp_cli::a_cells_mcp_call_runs_claude_code_hooks_under_its_mcp_name` (T2)
 permission modes/rules/holds, deterministic auto | `gate_battery::the_battery_lands_where_the_table_says`
 permission modes/rules/holds, deterministic auto | `safety::an_unknown_command_is_contained_not_allowed`
+check probe | `ask_check::a_check_that_cannot_run_exits_2_before_any_request`
+check probe | `goal_e2e::a_declared_check_that_cannot_start_is_refused_not_run`
+check probe | `check_probe::a_check_whose_program_is_absent_is_refused_by_name`
 permission modes/rules/holds, deterministic auto | `decide::auto_reads_a_command_segment_by_segment`
 permission modes/rules/holds, deterministic auto | `safety::a_flag_that_runs_or_writes_is_not_read_only`
 model auto-review M7/M8 | `auto_review::a_reviewer_denial_carries_its_evidence_and_a_request_number`
@@ -202,6 +207,7 @@ trigger rules (gate + remind) | `recursion_e2e::a_rule_promoted_after_the_spawn_
 host-written memory (one file per fact, hook index) | `ext_e2e::the_memory_block_is_present_at_zero_notes` (T1)
 host-written memory (one file per fact, hook index) | `skills_e2e::save_read_forget_through_the_kernel` (T1)
 host-written memory (one file per fact, hook index) | `cli_surfaces::memory_imports_lists_checks_and_forgets` (T2)
+host-written memory (one file per fact, hook index) | `cli_surfaces::yi_memory_list_changes_no_file` (T2)
 advisor (LlmReviewer only) | `advisor_e2e::llm_reviewer_advises_through_the_advise_tool`
 advisor (LlmReviewer only) | `advisor_e2e::headless_hold_degrades_to_warn`
 advisor (LlmReviewer only) | `advisor_e2e::an_untargeted_hold_warns_instead_of_holding_every_call`
@@ -422,6 +428,9 @@ catastrophic-path denylist M10 | `decide::a_catastrophic_target_in_any_segment_i
 `yi update` | `tarball::tests::a_file_is_replaced_by_a_directory_and_restored`
 `yi update` | `tarball::tests::a_failed_link_falls_back_to_a_copy`
 `yi update` | `update::the_token_goes_only_to_the_forge_host`
+`yi update` | `install_script::a_vouched_and_signed_archive_installs_the_binary_its_runtime_and_receipt`
+`yi update` | `install_script::an_archive_signed_by_another_key_installs_nothing`
+`yi update` | `install_script::an_archive_whose_sha256_differs_from_sha256sums_installs_nothing`
 cursor login and models | `cursor_login::poll_waits_through_404_then_stores_the_token`
 cursor login and models | `cursor_login::refresh_keeps_the_old_refresh_when_the_body_omits_one`
 cursor login and models | `cursor_login::cursor_is_a_built_in_until_a_profile_file_exists`

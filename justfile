@@ -72,8 +72,8 @@ guardrails-fast:
 
 # Serial on purpose: beside the dist build, nextest's first exec of 134 fresh test binaries
 # queued behind Gatekeeper's per-binary scan, and the gate took 116-302s where serial took 135-151s.
-# `--quiet` prints one line when green and only the failing lane's own output otherwise, with the
-# same exit code, so an agent reads `$?` and the failure rather than every launched gate.
+# `--quiet` prints the guardrails lane's own quiet output when green (its skip rows, then its summary line),
+# and only the failing lane's own output otherwise, with the same exit code, so an agent reads `$?`.
 check *flags:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -86,6 +86,7 @@ check *flags:
       out=$(just $lane 2>&1)
       rc=$?
       if [ "$rc" != 0 ]; then printf '%s\n' "$out"; exit "$rc"; fi
+      case $lane in guardrails*) printf '%s\n' "$out" ;; esac
     done
     echo "check: lint, guardrails and test green"
 
@@ -154,7 +155,9 @@ prerelease version:
 journeys:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo test --workspace -- --ignored
+    # Incident: cargo stops at the first failing test binary, so red terminal journeys hid the
+    # ignored tests of every binary after them for as long as postmerge stayed red.
+    cargo test --workspace --no-fail-fast -- --ignored
     # The true-terminal journey has no cargo home: no test can hand the binary
     # a pty that answers its cursor-position query, so the harness runs here.
     cargo build -p yi-cli
@@ -285,6 +288,13 @@ publish version:
     auth="Authorization: token $FORGEJO_TOKEN"
     assets=(target/package/yi-{{version}}-*.tar.gz*)
     [ -e "${assets[0]}" ] || { echo "nothing built for {{version}} -- run: just prerelease {{version}}"; exit 1; }
+    for archive in target/package/yi-{{version}}-*.tar.gz; do
+      [ -e "$archive.sig" ] || { echo "$archive has no .sig; run: just prerelease {{version}}"; exit 1; }
+    done
+    # scripts/install.sh finds the latest archive for its machine, and its digest, in this one file.
+    { echo "# yi {{version}} forge build of commit $(git rev-parse HEAD)"; cat target/package/yi-{{version}}-*.tar.gz.sha256; } \
+      > target/package/SHA256SUMS
+    assets+=(target/package/SHA256SUMS)
     body=$(printf '{"tag_name":"v%s","name":"v%s"}' '{{version}}' '{{version}}')
     # python3, not sed: the response carries several "id" keys -- the author's
     # among them -- and a greedy match takes the last one rather than the

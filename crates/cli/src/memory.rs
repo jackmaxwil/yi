@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use yi_runtime::memory::{Note, Store, block, global_dir, ranked, repo_dir};
+use yi_runtime::memory::{Note, Store, global_dir, listed, ranked, repo_dir};
 
 const USAGE: &str = "usage: yi memory [list | show <name> | search <words> | forget <name> | import <dir> | stats | check | rebuild]";
 
@@ -14,7 +14,7 @@ fn find<'a>(
 }
 
 fn list(home: &Path, cwd: &Path, stores: &[(&'static str, Store)]) -> i32 {
-    let (_, summary) = block(home, cwd);
+    let summary = listed(home, cwd);
     println!("  {}", summary.line());
     for (label, store) in stores {
         for note in store.notes() {

@@ -124,7 +124,7 @@ impl PermissionBroker {
     }
 
     /// A walled holder's call that would leave the sandbox is refused before anyone is asked: one
-    /// that needs the host, a retry of a pathless refusal, or one in a protected dir (D345).
+    /// that needs the host, a retry of a pathless refusal, or one in a protected dir.
     pub(super) fn walled_retry(
         &self,
         command: Option<&str>,

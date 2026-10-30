@@ -301,7 +301,7 @@ pub(crate) fn spill_roots_and_stores(
 }
 
 /// Invariant: a walled session reads only its family's spills and its own transcript: the spill
-/// roots and session stores are walled, the board's spill dir and the transcript spared (D345).
+/// roots and session stores are walled, the board's spill dir and the transcript spared.
 pub(crate) fn walled_roots(
     wall: &crate::wall::Wall,
     broker: Option<&PermissionBroker>,

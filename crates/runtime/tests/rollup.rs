@@ -307,7 +307,7 @@ fn a_window_keeps_plan_ops_by_their_own_stamp() -> TestResult {
 /// the journal unreadable whole, as plan recovery does, and a torn tail is one bad line.
 #[test]
 fn a_journal_the_engine_refuses_counts_no_op_and_a_torn_tail_is_one_bad_line() -> TestResult {
-    use yi_runtime::plan::journal::RECORD_CAP;
+    use yi_runtime::journal::RECORD_CAP;
     use yi_runtime::plan::ops::PlanEngine;
     use yi_runtime::plan::store::{JOURNAL_NAME, PlanStore};
     use yi_runtime::rollup::{Scan, fold_journals};
