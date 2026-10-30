@@ -292,9 +292,12 @@ impl SubagentHost {
             .lock()
             .map(|mut children| {
                 // An idle service has no run to revoke; the close still ends it for good.
-                children
-                    .values_mut()
-                    .for_each(|record| record.standing.stop());
+                children.values_mut().for_each(|record| {
+                    record.standing.stop();
+                    if record.exit.is_none() {
+                        record.error = Some(super::subagent::PARENT_CLOSED.to_owned());
+                    }
+                });
                 children
                     .values()
                     .filter(|record| record.exit.is_none() && record.lease.revoked.is_none())
@@ -304,9 +307,12 @@ impl SubagentHost {
             .unwrap_or_default();
         live.into_iter()
             .filter_map(|(name, grace)| {
-                self.revoke(&name, grace, "the parent closed")
-                    .ok()
-                    .map(|_| name)
+                self.revoke(&name, grace, "the parent closed").ok()?;
+                if grace == 0 {
+                    let at = self.lease_now();
+                    self.settle_repossessed(&name, at).ok()?;
+                }
+                Some(name)
             })
             .collect()
     }

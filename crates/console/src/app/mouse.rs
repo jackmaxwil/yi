@@ -108,7 +108,7 @@ impl App {
             .panes
             .iter()
             .find(|(id, _)| *id == pane_id)?;
-        let inner = rect.inner(crate::render::pane_margin(true));
+        let inner = rect.inner(crate::layout::pane_margin(true, false));
         let PaneContent::Editor(editor) = &self.state.panes.get(&pane_id)?.content else {
             return None;
         };
@@ -171,11 +171,13 @@ impl App {
                 return self.apply_action(outbound, Action::Navigator);
             }
             Some((_, crate::render::Hit::Fold(root))) => {
-                self.state.toggle_fold(&root);
+                self.state.fold_from_header(&root);
+                self.state.zone = Zone::Sidebar;
                 self.dirty = true;
                 return;
             }
             Some((_, crate::render::Hit::Session(index))) => {
+                self.state.header = None;
                 self.state.selected = index;
                 self.state.cursor_moved = true;
                 self.state.zone = Zone::Sidebar;

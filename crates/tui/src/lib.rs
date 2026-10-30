@@ -8,6 +8,7 @@ pub mod capture;
 pub mod card;
 pub mod cell;
 pub mod chrome;
+pub mod citations;
 pub mod colors;
 pub mod commands;
 pub mod composer;
