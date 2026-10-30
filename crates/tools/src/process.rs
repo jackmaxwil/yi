@@ -17,7 +17,15 @@ pub(crate) fn quoted(text: &str) -> String {
 
 /// The repository's top; a worktree never borrows the main checkout's.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    (cwd.ancestors())
+    let mut clean = std::path::PathBuf::new();
+    for part in cwd.components() {
+        match part {
+            std::path::Component::ParentDir if clean.pop() => {}
+            std::path::Component::CurDir => {}
+            other => clean.push(other),
+        }
+    }
+    (clean.ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }

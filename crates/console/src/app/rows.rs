@@ -170,15 +170,15 @@ fn an_idle_session_with_news_keeps_its_state_line_and_its_avatar_height() {
         app.state.parked.insert(SessionId(id.to_owned()), chat);
     }
     let lines = sidebar_lines(&app, &theme, 60);
-    let drawn = |id: &str| -> Option<(usize, u16)> {
+    let drawn = |id: &str| -> Option<(usize, (u16, u16))> {
         let index = app.state.order.iter().position(|row| row.0 == id)?;
         let mine = lines.iter().filter(|row| row.index == Some(index));
-        let height = mine.clone().find_map(|row| row.avatar.as_ref())?.rows;
-        Some((mine.count(), height))
+        let avatar = mine.clone().find_map(|row| row.avatar.as_ref())?;
+        Some((mine.count(), (avatar.cols, avatar.rows)))
     };
-    assert_eq!(drawn("quiet"), Some((1, 1)));
-    assert_eq!(drawn("done-claim"), Some((1, 1)));
+    assert_eq!(drawn("quiet"), Some((1, (2, 1))));
+    assert_eq!(drawn("done-claim"), Some((1, (2, 1))));
     for id in ["red", "todo", "claim"] {
-        assert_eq!(drawn(id), Some((2, 2)), "{id} keeps its state line");
+        assert_eq!(drawn(id), Some((2, (4, 2))), "{id} keeps its state line");
     }
 }

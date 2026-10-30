@@ -38,7 +38,7 @@ impl SidebarRow {
 
 fn avatar_at(
     col: u16,
-    (cols, rows): (u16, u16),
+    rows: u16,
     key: &str,
     hue: usize,
     state: Option<OrbState>,
@@ -46,7 +46,7 @@ fn avatar_at(
     Some(Placement {
         col,
         row: 0,
-        cols,
+        cols: rows * 2,
         rows,
         key: key.to_owned(),
         seed: key.to_owned(),
@@ -370,7 +370,7 @@ fn session_rows(
                     on_row(status_style(theme, row.status)),
                 ),
             ]),
-            avatar: avatar_at(2, (4, 2), &id.0, hue, motion_of(app, id, row)),
+            avatar: avatar_at(2, 2, &id.0, hue, motion_of(app, id, row)),
             control: None,
         });
         rows.push(SidebarRow::plain(
@@ -407,7 +407,7 @@ fn session_rows(
     rows.push(SidebarRow {
         index: Some(index),
         line: Line::from(spans),
-        avatar: avatar_at(2, (4, state_rows), &id.0, hue, motion_of(app, id, row)),
+        avatar: avatar_at(2, state_rows, &id.0, hue, motion_of(app, id, row)),
         control: None,
     });
     if state_rows == 2 {
@@ -537,7 +537,7 @@ fn child_rows(
         rows.push(SidebarRow {
             index: None,
             line: Line::from(spans),
-            avatar: avatar_at(3, (2, 1), child.id.as_str(), hue, None),
+            avatar: avatar_at(3, 1, child.id.as_str(), hue, None),
             control: None,
         });
     }
