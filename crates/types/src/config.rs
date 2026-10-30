@@ -25,6 +25,9 @@ pub struct ModelRoles {
     /// the line ranges of the full output that explain it. Unset, nothing is asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
+    /// Search's separate OpenRouter completion; unset uses Yi's built-in search model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<String>,
 }
 
 /// `~/.yi/config.json` is the whole user surface. Config is not durable state, so §20's
@@ -35,6 +38,7 @@ pub struct UserConfig {
     pub model: Option<String>,
     pub thinking: Option<crate::model::Effort>,
     pub models: Option<ModelRoles>,
+    pub web_search: Option<WebSearchConfig>,
     pub bash: Option<BashConfig>,
     pub plan: Option<PlanConfig>,
     pub plans: Option<PlansConfig>,
@@ -63,6 +67,13 @@ pub struct UserConfig {
     /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
     pub open: Option<Vec<OpenApp>>,
     pub browser: Option<BrowserConfig>,
+}
+
+/// `webSearch.engine`: the OpenRouter server-search engine; unset is `exa`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSearchConfig {
+    pub engine: Option<String>,
 }
 
 /// `mail.hopLimit`: the longest chain of letters between sessions, each sent by a turn another

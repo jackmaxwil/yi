@@ -755,7 +755,7 @@ impl App {
     fn count_kind(&mut self, name: &str) {
         let verb = match name {
             "read" | "get_context" => "read",
-            "grep" => "searched",
+            "grep" | "web_search" => "searched",
             "edit" | "write" => "edited",
             "bash" => "ran",
             "ipython" => "computed",

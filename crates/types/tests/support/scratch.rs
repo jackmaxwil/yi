@@ -10,7 +10,8 @@ impl Scratch {
     pub fn new(name: &str) -> std::io::Result<Self> {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("{name}-{}-{n}", std::process::id()));
+        let dir = std::fs::canonicalize(std::env::temp_dir())?
+            .join(format!("{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
         Ok(Self(dir))
