@@ -449,7 +449,7 @@ pub(crate) fn attach_like_yi_ask(
     session: &mut AgentSession,
     root: &std::path::Path,
     deadline: Option<Duration>,
-) {
+) -> Arc<yi_runtime::SubagentHost> {
     let provider = Arc::clone(session.provider_arc());
     yi_runtime::attach_runtime(
         session,
@@ -480,7 +480,7 @@ pub(crate) fn attach_like_yi_ask(
             sessions_dir: None,
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
-    );
+    )
 }
 
 fn scratch(name: &str) -> Result<Scratch, Box<dyn Error>> {

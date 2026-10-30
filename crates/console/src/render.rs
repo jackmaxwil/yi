@@ -17,8 +17,8 @@ use yi_tui::diffview::{self, DiffBudget};
 use crate::app::App;
 use crate::header::{header_buttons, render_header, tab_hits};
 use crate::keys;
-use crate::layout::{PaneId, SplitBorder};
-use crate::model::{Link, Mode, PaneContent, SessionStatus, Zone};
+use crate::layout::{PaneId, SplitBorder, pane_margin};
+use crate::model::{Link, Mode, Pane, PaneContent, SessionStatus, Zone};
 
 pub(crate) const NAME_WIDTH: usize = 20;
 
@@ -26,6 +26,7 @@ pub struct PaneView {
     pub scroll: Option<(usize, usize)>,
     pub id: PaneId,
     pub rect: Rect,
+    pub margin: ratatui::layout::Margin,
     pub focused: bool,
     pub hue: Color,
     pub title: String,
@@ -37,7 +38,7 @@ pub struct PaneView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hit {
     Tab(usize),
-    Settings(PaneId, usize),
+    Settings(PaneId, crate::settings::Target),
     Button(keys::Action),
     Gear,
     Title(PaneId),
@@ -59,7 +60,7 @@ pub struct Hits {
     pub tabs: Vec<(Rect, usize)>,
     pub closers: Vec<(PaneId, Rect)>,
     pub titles: Vec<(PaneId, Rect)>,
-    pub settings_tabs: Vec<(Rect, PaneId, usize)>,
+    pub settings_targets: Vec<(Rect, PaneId, crate::settings::Target)>,
     /// Popups over the panes, outermost first: they take every click and hide kitty images.
     pub overlays: Vec<Rect>,
     pub dismiss: Option<Rect>,
@@ -103,10 +104,10 @@ impl Hits {
             .find(|(rect, _)| rect.contains(at))
             .map(|(rect, index)| (*rect, Hit::Tab(*index)))
             .or_else(|| {
-                self.settings_tabs
+                self.settings_targets
                     .iter()
                     .find(|(rect, ..)| rect.contains(at))
-                    .map(|(rect, pane, tab)| (*rect, Hit::Settings(*pane, *tab)))
+                    .map(|(rect, pane, target)| (*rect, Hit::Settings(*pane, *target)))
             })
             .or_else(|| {
                 (self.hint_buttons.iter().chain(&self.header_buttons))
@@ -189,11 +190,6 @@ pub struct ViewState {
 /// Incident: Ghostty draws U+2699 two cells wide while it advances one, so the glyph ate the
 /// space after it (`⚙⌥,`); a second space is what it eats. U+FE0E shifted the whole row.
 pub(crate) const GEAR: &str = "⚙ ";
-
-/// A framed pane keeps one blank column between its border and its text.
-pub(crate) fn pane_margin(framed: bool) -> ratatui::layout::Margin {
-    ratatui::layout::Margin::new(if framed { 2 } else { 1 }, u16::from(framed))
-}
 
 /// The pane's session hue, the one its avatar wears; a pane with no session is `muted`.
 fn pane_hue(app: &App, id: PaneId, theme: &Theme) -> Color {
@@ -284,7 +280,9 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     let mut editor_cursor = None;
     let notes = session_notes(app);
     for pane_rect in pane_rects {
-        let inner = pane_rect.rect.inner(pane_margin(framed));
+        let content = app.state.panes.get(&pane_rect.id);
+        let fills = content.is_some_and(Pane::fills_frame);
+        let inner = pane_rect.rect.inner(pane_margin(framed, fills));
         let diffs = &app.state.diffs;
         let sessions = &app.state.sessions;
         let (title, lines, scroll) = match app.state.panes.get_mut(&pane_rect.id) {
@@ -317,6 +315,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             scroll,
             id: pane_rect.id,
             rect: pane_rect.rect,
+            margin: pane_margin(framed, fills),
             focused: pane_rect.focused && panes_zone,
             hue: theme.muted,
             title,
@@ -345,7 +344,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
         splits: split_borders.clone(),
         tabs: tab_hits,
-        settings_tabs: settings_hits(app, &panes, framed),
+        settings_targets: crate::settings::hits(app, &panes),
         gear: (gear.height > 0).then_some(gear),
         header_buttons: header_buttons(header, taken),
         ..Hits::default()
@@ -387,23 +386,6 @@ fn frames_panes(app: &App) -> bool {
             || !lone
             || !chat.is_some_and(|pane| matches!(pane.content, PaneContent::Session { .. }))
     })
-}
-
-fn settings_hits(app: &App, panes: &[PaneView], framed: bool) -> Vec<(Rect, PaneId, usize)> {
-    let mut hits = Vec::new();
-    for view in panes {
-        let Some(PaneContent::Settings(settings)) =
-            app.state.panes.get(&view.id).map(|p| &p.content)
-        else {
-            continue;
-        };
-        let inner = view.rect.inner(pane_margin(framed));
-        for (x, width, tab) in crate::settings::tab_targets(settings, usize::from(inner.width)) {
-            let rect = Rect::new(inner.x.saturating_add(x), inner.y, width, 1);
-            hits.push((rect.intersection(inner), view.id, tab));
-        }
-    }
-    hits
 }
 
 type SidebarHits = (
@@ -663,7 +645,7 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
     let crowd = view.panes.len() > 1;
     let framed = view.framed;
     for pane in &mut view.panes {
-        let inner = pane.rect.inner(pane_margin(framed));
+        let inner = pane.rect.inner(pane.margin);
         let dim = crowd && !pane.focused;
         if pane.chat {
             paint_chat_pane(app, pane, inner, frame.buffer_mut(), dim, framed, theme);

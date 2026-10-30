@@ -1,12 +1,12 @@
 use ratatui::crossterm::event::KeyEvent;
 use serde_json::{Value, json};
-
-use crate::client::Outbound;
-use crate::layout::PaneId;
-use crate::model::PaneContent;
-use crate::settings::{Intent, Settings};
+use yi_types::acp::AcpConfigOption;
 
 use super::{App, RequestKind};
+use crate::client::Outbound;
+use crate::layout::PaneId;
+use crate::model::{PaneContent, SessionId};
+use crate::settings::{Intent, Settings, Target};
 
 impl App {
     pub(super) fn on_settings(&self) -> bool {
@@ -38,7 +38,7 @@ impl App {
             Some(pane) => pane,
             None => {
                 let home = self.state.focused_pane_id();
-                self.split_with_anim(ratatui::layout::Direction::Horizontal);
+                self.split_share(ratatui::layout::Direction::Horizontal, 0.5);
                 let Some(pane) = self.state.focused_pane_id().filter(|id| Some(*id) != home) else {
                     return;
                 };
@@ -68,10 +68,8 @@ impl App {
         );
     }
 
-    pub(super) fn settings_key(&mut self, outbound: &Outbound, key: KeyEvent) {
-        let Some(pane) = self.state.focused_pane_id() else {
-            return;
-        };
+    /// The settings pane under the press: the session it edits and its option list, once.
+    fn settings_options(&mut self, pane: PaneId) -> (Option<SessionId>, Vec<AcpConfigOption>) {
         let session = self
             .settings_pane(pane)
             .and_then(|settings| settings.session.clone());
@@ -80,12 +78,73 @@ impl App {
             .and_then(|id| self.state.session_options.get(id))
             .cloned()
             .unwrap_or_default();
+        (session, options)
+    }
+
+    pub(super) fn settings_key(&mut self, outbound: &Outbound, key: KeyEvent) {
+        let Some(pane) = self.state.focused_pane_id() else {
+            return;
+        };
+        let (session, options) = self.settings_options(pane);
         let Some(settings) = self.settings_pane(pane) else {
             return;
         };
         settings.status = None;
         let intent = crate::settings::key(settings, key, &options);
         self.dirty = true;
+        self.settings_intent(outbound, pane, session, intent);
+    }
+
+    /// A press on a tab opens it; a press on a row focuses it and works its control.
+    pub(super) fn settings_press(&mut self, outbound: &Outbound, pane: PaneId, target: Target) {
+        self.focus_pane(pane);
+        self.dirty = true;
+        match target {
+            Target::Tab(tab) => {
+                if let Some(settings) = self.settings_pane(pane) {
+                    (settings.tab, settings.cursor) = (tab, 0);
+                    (settings.edit, settings.status) = (None, None);
+                }
+            }
+            Target::Row(row) => {
+                let (session, options) = self.settings_options(pane);
+                let Some(settings) = self.settings_pane(pane) else {
+                    return;
+                };
+                let intent = crate::settings::click(settings, row, &options);
+                self.settings_intent(outbound, pane, session, intent);
+            }
+        }
+    }
+
+    /// A wheel over the pane moves its cursor, so a row past the window is reachable by pointer.
+    pub(super) fn settings_wheel(&mut self, pane: PaneId, delta: isize) -> bool {
+        let (_, options) = self.settings_options(pane);
+        let Some(settings) = self.settings_pane(pane) else {
+            return false;
+        };
+        if settings.edit.is_some() {
+            return true;
+        }
+        let last = crate::settings::count(settings, &options).saturating_sub(1);
+        let moved = if delta >= 0 {
+            settings.cursor.saturating_sub(1)
+        } else {
+            settings.cursor.saturating_add(1).min(last)
+        };
+        let changed = moved != settings.cursor;
+        settings.cursor = moved;
+        self.dirty |= changed;
+        true
+    }
+
+    fn settings_intent(
+        &mut self,
+        outbound: &Outbound,
+        pane: PaneId,
+        session: Option<SessionId>,
+        intent: Intent,
+    ) {
         match intent {
             Intent::None => {}
             Intent::Note(text) => {

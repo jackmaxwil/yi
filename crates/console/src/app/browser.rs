@@ -26,7 +26,7 @@ impl App {
             .and_then(|id| self.state.chat(&id))
             .and_then(|chat| crate::browser::last_local_url(chat.app.sources()));
         let home = self.state.focused_pane_id();
-        self.split_with_anim(Direction::Horizontal);
+        self.split_share(Direction::Horizontal, 0.5);
         if self.state.focused_pane_id() == home {
             return;
         }
