@@ -28,6 +28,7 @@ mod openrouter;
 mod proxy;
 mod pump_stop;
 mod quota;
+mod recommend;
 mod refresh;
 mod resend;
 mod strict_tools;

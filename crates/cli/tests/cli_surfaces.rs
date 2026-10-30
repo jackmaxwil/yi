@@ -3310,3 +3310,50 @@ fn a_bare_words_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
     assert!(told_it_is_alone(&alone)?);
     Ok(())
 }
+
+/// `yi models recommend --role` reads the cached snapshot offline, prints the citation, its
+/// age, the count left out and three tagged picks with their arithmetic, and leaves the config as it was.
+#[test]
+fn models_recommend_prints_three_tagged_picks_from_the_offline_snapshot() -> TestResult {
+    let workspace = Workspace::new("models-recommend")?;
+    let catalog = workspace.0.join("home/.yi/catalog");
+    std::fs::create_dir_all(&catalog)?;
+    let snapshot = json!({"fetchedMs": 0, "benchmarks": {"data": [
+        {"model_permaslug": "anthropic/claude-opus-5-20260723", "intelligence_index": 54.1},
+        {"model_permaslug": "deepseek/deepseek-v4-flash", "intelligence_index": 42},
+        {"model_permaslug": "z-ai/glm-5.1", "intelligence_index": 46},
+    ], "meta": {"as_of": "2026-09-05T00:00:00Z", "citation": "Artificial Analysis"}}});
+    std::fs::write(catalog.join("benchmarks.json"), snapshot.to_string())?;
+    let out = workspace.yi_env(
+        &["models", "recommend", "--role", "advisor"],
+        &[("OPENROUTER_API_KEY", "x")],
+    )?;
+    let text = stdout(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.starts_with("data: Artificial Analysis (CC BY 4.0), as of 2026-09-05T00:00:00Z\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("scored:") && text.contains("without an intelligence index"),
+        "{text}"
+    );
+    let tags: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|word| matches!(*word, "high" | "medium" | "low"))
+        .collect();
+    assert_eq!(tags, ["high", "medium", "low"], "{text}");
+    assert!(
+        text.contains("openrouter/anthropic/claude-opus-5") && text.contains("54.1^2 / $"),
+        "{text}"
+    );
+    let config = std::fs::read_to_string(workspace.0.join("home/.yi/config.json"))?;
+    assert_eq!(config, r#"{"kernel":{"prewarm":false}}"#);
+    Ok(())
+}

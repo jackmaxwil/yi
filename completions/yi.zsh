@@ -12,6 +12,7 @@ _yi() {
         'gate:say whether a command would run, and why'
         'fetch:resolve one URL through the wall'
         'catalog:show or refresh the model catalog'
+        'models:suggest models per role from OpenRouter benchmarks'
         'doctor:check session invariants, --fix repairs'
         'gc:preview the retention sweep, --fix runs it'
         'debug:info, paths, config, profile, trace, select'
@@ -67,6 +68,7 @@ _yi() {
         '--since[after stats: fold the sessions of this window]:span:'
         '--by[after stats: group by model, upstream, day, prices or plan]:axis:'
         '--top[after stats: list the n costliest sessions]:n:'
+        '--role[after models recommend: only this role]:role:'
     )
     _arguments -C $flags '1: :->command' '*:: :->rest'
     case $state in

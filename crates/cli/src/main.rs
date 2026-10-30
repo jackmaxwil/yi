@@ -10,6 +10,7 @@ mod doctor;
 mod fetch;
 mod lanes;
 mod memory;
+mod models;
 mod plan;
 mod plugin;
 mod roles;
