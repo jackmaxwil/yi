@@ -43,6 +43,16 @@ pub(crate) fn assistant_block_mut(
     assistant_content_mut(message)?.get_mut(index)
 }
 
+/// A JSON object whose values move in; `json!` copies every interpolated value, an image too.
+pub(crate) fn object<const N: usize>(fields: [(&str, Value); N]) -> Value {
+    Value::Object(
+        fields
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}
+
 pub(crate) fn push_assistant_block(message: &mut AgentMessage, block: Content) -> usize {
     let Some(content) = assistant_content_mut(message) else {
         return 0;
@@ -249,6 +259,33 @@ fn pooled_idle_from_now() {
     }
 }
 
+struct Counted(usize);
+
+impl std::io::Write for Counted {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Incident: a doubling String held 7 MB for a 3 MB body of images; the length is measured
+/// first so the request text is allocated once at its exact size.
+fn exact_json(body: &Value) -> String {
+    let mut counted = Counted(0);
+    let mut buffer = Vec::new();
+    if serde_json::to_writer(&mut counted, body).is_ok() {
+        buffer.reserve_exact(counted.0);
+    }
+    match serde_json::to_writer(&mut buffer, body).map(|()| String::from_utf8(buffer)) {
+        Ok(Ok(text)) => text,
+        _ => body.to_string(),
+    }
+}
+
 pub fn send_with_retry(
     url: &str,
     headers: &[(String, String)],
@@ -261,7 +298,7 @@ pub fn send_with_retry(
     let agent = stream_agent(proxy.and_then(|config| config.proxy_for(host_of(url))));
     let body = {
         let _span = yi_types::trace::span("ai.serialize");
-        body.to_string()
+        exact_json(body)
     };
     let mut attempt: u32 = 0;
     loop {

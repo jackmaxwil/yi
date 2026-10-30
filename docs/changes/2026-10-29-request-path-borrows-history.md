@@ -1,0 +1,5 @@
+---
+issue: Closes #1558
+raise: comments +3, crate ai +141, crate loop +4, tests +360
+---
+A request no longer copies its history on the way to the wire, and a streamed tool call's arguments are parsed once instead of on every delta (Closes #1558). `transform_messages` returns borrowed messages and copies only one it rewrites. The three adapters move their message and image values into the body instead of cloning them through `json!`, and `send_with_retry` sizes the request text before it writes it. With three 1 MB images in a session, one request's allocations fall from 25.0 MB to 9.0 MB on Anthropic and from 28.0 MB to 9.0 MB on both OpenAI wires. The body bytes are unchanged, and a recorded fixture holds them. The Anthropic, OpenAI chat and Responses mappers append argument deltas and parse them when the call ends, or when the stream is cut or fails. The cut path keeps the best-effort object it stored before. A 238 KB write call took over 10 s to stream in 16-byte deltas and now takes 0.6 s for all three adapters together. The loop reads tool names once per batch instead of rebuilding every definition for each call.
