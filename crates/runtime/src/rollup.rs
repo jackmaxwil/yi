@@ -13,7 +13,7 @@ use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
 use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::cache_miss::diagnostic_detail;
-use crate::plan::journal::{Damage, Journal, RealFs};
+use crate::journal::{Damage, Journal, RealFs};
 use crate::plan::ops::{CLASSIFIER_ACTOR, ENGINE_AGENT, HOST_ACTOR};
 use crate::plan::state::{KIND_DONE_REFUSED, KIND_VERIFICATION_STALE};
 use crate::plan::store::JOURNAL_NAME;

@@ -273,18 +273,6 @@ fn asked_of(recent: &[Entry]) -> Option<(MemberState, String)> {
     ))
 }
 
-fn timestamp_of(entry: &Entry) -> u64 {
-    match entry {
-        Entry::Message { timestamp, .. }
-        | Entry::ModelChange { timestamp, .. }
-        | Entry::ThinkingLevelChange { timestamp, .. }
-        | Entry::ActiveToolsChange { timestamp, .. }
-        | Entry::Compaction { timestamp, .. }
-        | Entry::BranchSummary { timestamp, .. }
-        | Entry::Custom { timestamp, .. } => *timestamp,
-    }
-}
-
 /// The state a member's newest records show: `needs_you` after a todo blocked on the user,
 /// `stuck` after a re-drive in them or [`STUCK_IDLE_MS`] idle; the note says which.
 pub fn state_from_records(
@@ -293,7 +281,7 @@ pub fn state_from_records(
     recent: &[Entry],
     now_ms: u64,
 ) -> (MemberState, Option<String>, u64) {
-    let newest = recent.iter().map(timestamp_of).max().unwrap_or(now_ms);
+    let newest = recent.iter().map(Entry::timestamp).max().unwrap_or(now_ms);
     let idle_s = now_ms.saturating_sub(newest) / 1000;
     match read_exit(exit).state {
         MemberState::Running if phase == Phase::Queued => (MemberState::Queued, None, idle_s),
@@ -412,15 +400,7 @@ pub fn children_line(views: &[MemberView]) -> Option<String> {
 
 /// One line per entry for `history://<agent>/tail/N`: the sequence, who, and the first line.
 pub fn compact_entry(entry: &Entry) -> (String, bool) {
-    let seq = match entry {
-        Entry::Message { seq, .. }
-        | Entry::ModelChange { seq, .. }
-        | Entry::ThinkingLevelChange { seq, .. }
-        | Entry::ActiveToolsChange { seq, .. }
-        | Entry::Compaction { seq, .. }
-        | Entry::BranchSummary { seq, .. }
-        | Entry::Custom { seq, .. } => *seq,
-    };
+    let seq = entry.seq();
     let mut cut_any = false;
     let body = match entry {
         Entry::Message { message, .. } => match message {
@@ -492,6 +472,7 @@ pub fn compact_entry(entry: &Entry) -> (String, bool) {
         },
         Entry::BranchSummary { .. } => "branch summary".to_owned(),
         Entry::Custom { custom_type, .. } => format!("custom {custom_type}"),
+        Entry::Other(_) => format!("unread {}", entry.type_name()),
         Entry::ModelChange { model_id, .. } => format!("model {model_id}"),
         Entry::ThinkingLevelChange { thinking_level, .. } => format!("thinking {thinking_level}"),
         Entry::ActiveToolsChange { .. } => "tools changed".to_owned(),
