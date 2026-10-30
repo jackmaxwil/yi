@@ -64,8 +64,7 @@ async fn wait_for_status(host: &Arc<SubagentHost>, name: &str, status: &str) -> 
     false
 }
 
-#[tokio::test]
-async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
+async fn child_kernel_answer(role: &str, tools: Option<&str>) -> TestResult {
     let root = Scratch::new("yi-kernel-across")?;
     let provider = Arc::new(ProviderStream::new(None));
     let mut code = Map::new();
@@ -123,7 +122,13 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
 
     let mut kwargs = Map::new();
     kwargs.insert("name".to_owned(), Value::String("helper".to_owned()));
-    kwargs.insert("role".to_owned(), Value::String("root".to_owned()));
+    kwargs.insert("role".to_owned(), Value::String(role.to_owned()));
+    if let Some(tools) = tools {
+        kwargs.insert(
+            "tools".to_owned(),
+            Value::Array(vec![Value::String(tools.to_owned())]),
+        );
+    }
     host.spawn("bind the answer".to_owned(), kwargs)?;
     assert!(
         wait_for_status(&host, "helper", "completed").await,
@@ -149,6 +154,16 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     assert_eq!(path, family.join("helper.answer.dill"));
     assert!(bytes > 0 && path.is_file(), "{path:?} {bytes}");
     Ok(())
+}
+
+#[tokio::test]
+async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
+    child_kernel_answer("root", None).await
+}
+
+#[tokio::test]
+async fn a_worker_naming_ipython_holds_its_own_kernel() -> TestResult {
+    child_kernel_answer("worker", Some("ipython")).await
 }
 
 /// One root session wired as `build_session` wires it once the session id is known.

@@ -15,21 +15,38 @@ use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOption
 fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
     Arc::new(move |build: ChildBuild<'_>| {
         let provider = Arc::new(wiring.provider.for_child());
+        let cwd = build
+            .cwd
+            .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
+        let below = RuntimeWiring {
+            broker: child_broker(&wiring, &build.wall, &cwd),
+            depth: wiring.depth.saturating_add(1),
+            rlm_dir: build.session_dir.to_path_buf(),
+            family_dir: Some(wiring.family_dir()),
+            cwd: cwd.clone(),
+            parent_link: Some(build.link.clone()),
+            wall: build.wall.clone(),
+            deadline: build.deadline,
+            kernel_prewarm: false,
+            provider: Arc::clone(&provider),
+            ..wiring.clone()
+        };
         if let Some(reader) = build.reader.clone() {
-            let cwd = build
-                .cwd
-                .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
-            let broker = child_broker(&wiring, &build.wall, &cwd);
-            let tools = (wiring.tools)();
             let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
             let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
+            let kernel = reader.tools.iter().any(|name| name == "ipython");
+            let tools = |child: &AgentSession| {
+                let mut tools = (wiring.tools)();
+                tools.extend(kernel.then(|| crate::kernel_tools::worker_ipython(child, &below)));
+                tools
+            };
             return Ok(crate::subagent::reader::session(
                 provider,
                 build,
                 &reader,
                 tools,
                 (cwd, &wiring.home),
-                broker,
+                below.broker.clone(),
                 rules,
             ));
         }
@@ -42,11 +59,8 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             },
             Arc::clone(&provider),
         );
-        let child_cwd = build
-            .cwd
-            .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
         child.install_extensions(crate::ext::install(crate::ext::ExtOptions {
-            cwd: child_cwd.clone(),
+            cwd,
             home: wiring.home.clone(),
             mode: wiring
                 .broker
@@ -58,22 +72,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             global_skills: Vec::new(),
             can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
         }));
-        let host = attach_runtime(
-            &mut child,
-            RuntimeWiring {
-                broker: child_broker(&wiring, &build.wall, &child_cwd),
-                depth: wiring.depth.saturating_add(1),
-                rlm_dir: build.session_dir.to_path_buf(),
-                family_dir: Some(wiring.family_dir()),
-                cwd: child_cwd,
-                parent_link: Some(build.link),
-                wall: build.wall,
-                deadline: build.deadline,
-                kernel_prewarm: false,
-                provider,
-                ..wiring.clone()
-            },
-        );
+        let host = attach_runtime(&mut child, below);
         host.set_grant(child.wall(), build.tokens);
         Ok(child)
     })
@@ -316,7 +315,7 @@ pub(crate) type OwnPathsFn = Arc<dyn Fn(Option<&Path>) -> Vec<PathBuf> + Send + 
 
 /// A kernel `bash()` job's profile, built as it spawns: the kernel's own plus every write
 /// grant kept since, so a grant reaches a kernel that was running before it (#600).
-fn job_profile(
+pub(crate) fn job_profile(
     wiring: &RuntimeWiring,
     session: &AgentSession,
 ) -> impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static {
@@ -797,7 +796,7 @@ fn job_settled() -> &'static tokio::sync::Notify {
     SETTLED.get_or_init(tokio::sync::Notify::new)
 }
 
-fn wire_kernel(
+pub(crate) fn wire_kernel(
     session: &AgentSession,
     wiring: &RuntimeWiring,
     registry: crate::kernel::HostRegistry,

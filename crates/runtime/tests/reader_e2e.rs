@@ -149,7 +149,7 @@ pub(crate) fn family_with(
                 provider,
                 build,
                 &reader,
-                yi_tools::builtin_tools(),
+                |_| yi_tools::builtin_tools(),
                 (cwd.clone(), &home),
                 broker.clone(),
                 rules.clone(),
@@ -846,7 +846,7 @@ async fn a_worker_writes_where_a_reader_is_walled_and_holds_a_worker_slot() -> T
 }
 
 #[tokio::test]
-async fn a_worker_is_refused_a_fork_a_check_and_the_kernel() -> TestResult {
+async fn a_worker_is_refused_a_fork_a_check_and_a_tool_it_may_not_call() -> TestResult {
     let family = family(4, Arc::default())?;
     let refused = |args: Value| family.host.spawn("w".to_owned(), kwargs(args)).err();
     let fork = refused(json!({"role": "worker", "fork": "all"})).ok_or("fork admitted")?;
@@ -860,11 +860,10 @@ async fn a_worker_is_refused_a_fork_a_check_and_the_kernel() -> TestResult {
         check.contains("a worker answers once and runs no check"),
         "{check}"
     );
-    let kernel =
-        refused(json!({"role": "worker", "tools": ["ipython"]})).ok_or("ipython admitted")?;
+    let spawn = refused(json!({"role": "worker", "tools": ["answer"]})).ok_or("answer admitted")?;
     assert_eq!(
-        kernel,
-        "a worker may call read, grep, edit, write, bash and get_context, not ipython; \
+        spawn,
+        "a worker may call read, grep, edit, write, bash, get_context and ipython, not answer; \
          role=\"root\" spawns a full child"
     );
     let turns = refused(json!({"role": "worker", "turns": 41})).ok_or("41 turns admitted")?;
