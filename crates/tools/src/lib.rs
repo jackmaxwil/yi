@@ -56,8 +56,7 @@ pub const SPILLS: &str = "spills";
 pub const FLAT_SPILLS: &str = "tool-output";
 pub use tool::{
     CancelFlag, DETAIL_CAP, FileChange, Fuse, READ_FILE_CAP, Tool, ToolContext, ToolKind,
-    ToolOutput, cut_row, error_output, error_output_kind, glob_head, replace_after, require_str,
-    text_output,
+    ToolOutput, cut_row, error_output, error_output_kind, glob_head, require_str, text_output,
 };
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {

@@ -332,17 +332,6 @@ pub(crate) fn overwrite(
     path: &Path,
     content: &[u8],
 ) -> std::io::Result<Option<&'static str>> {
-    replace_after(file, path, content, &mut || ())
-}
-
-/// A test seam: [`overwrite`] with `held` run after the temp is written and before the name is
-/// checked, the one window a racing process has. Production calls [`overwrite`].
-pub fn replace_after(
-    file: &std::fs::File,
-    path: &Path,
-    content: &[u8],
-    held: &mut dyn FnMut(),
-) -> std::io::Result<Option<&'static str>> {
     use std::io::{Seek, Write};
     let meta = file.metadata()?;
     let in_place = |mut file: &std::fs::File| {
@@ -372,7 +361,8 @@ pub fn replace_after(
         staged.set_permissions(meta.permissions())?;
         staged.write_all(content)?;
         staged.sync_all()?;
-        held();
+        #[cfg(test)]
+        tests::HELD.with_borrow_mut(|held| held.as_mut().map(|held| held()));
         let named = std::fs::symlink_metadata(path)?;
         let id = yi_permission::file_id;
         if named.file_type().is_symlink() || id(&named) != id(&meta) {
@@ -457,4 +447,39 @@ pub(crate) fn rooted_glob(raw: &str, base: &Path) -> Result<RootedGlob, String> 
         base: yi_permission::lexical_normalize(&head),
         rest,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::scratch::Scratch;
+    use std::fs;
+
+    thread_local! {
+        /// Run inside [`super::overwrite`] after the temp is written and before the name is
+        /// checked, the one window a racing process has.
+        pub(super) static HELD: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_swapped_for_a_symlink_before_the_rename_is_refused()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-tools-write-atomic-swap")?;
+        let (path, victim) = (dir.join("a.txt"), dir.join("victim.txt"));
+        fs::write(&path, "judged\n")?;
+        fs::write(&victim, "kept\n")?;
+        let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+        let (name, target) = (path.clone(), victim.clone());
+        HELD.set(Some(Box::new(move || {
+            let _ = fs::remove_file(&name);
+            let _ = std::os::unix::fs::symlink(&target, &name);
+        })));
+        let landed = super::overwrite(&file, &path, b"new\n");
+        HELD.set(None);
+        assert!(landed.is_err(), "the swapped name was written");
+        assert!(fs::symlink_metadata(&path)?.file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&victim)?, "kept\n");
+        Ok(())
+    }
 }

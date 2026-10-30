@@ -60,24 +60,6 @@ fn readers_polling_during_rewrites_never_read_a_short_file() -> TestResult {
 }
 
 #[test]
-fn a_name_swapped_for_a_symlink_before_the_rename_is_refused() -> TestResult {
-    let dir = temp_dir("write-atomic-swap")?;
-    let (path, victim) = (dir.join("a.txt"), dir.join("victim.txt"));
-    fs::write(&path, "judged\n")?;
-    fs::write(&victim, "kept\n")?;
-    let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
-    let mut swap = || {
-        let _ = fs::remove_file(&path);
-        let _ = std::os::unix::fs::symlink(&victim, &path);
-    };
-    let landed = yi_tools::replace_after(&file, &path, b"new\n", &mut swap);
-    assert!(landed.is_err(), "the swapped name was written");
-    assert!(fs::symlink_metadata(&path)?.file_type().is_symlink());
-    assert_eq!(fs::read_to_string(&victim)?, "kept\n");
-    Ok(())
-}
-
-#[test]
 fn a_hard_linked_files_other_name_sees_the_new_bytes() -> TestResult {
     let dir = temp_dir("write-atomic-link")?;
     let context = ToolContext::new(dir.to_path_buf());
