@@ -13,9 +13,10 @@ case "$(uname -s)-$(uname -m)" in
 esac
 eval "$(sed -n '/^sha256() {$/,/^}$/p' "$(dirname "$0")/../install.sh")"
 declare -F sha256 >/dev/null || { echo "gitleaks: scripts/install.sh defines no sha256()"; exit 1; }
-# The installed file is trusted by content alone: a binary that answers the pinned `version` proves nothing.
+# The installed file is trusted by content alone, and the last line printed is the path check_scan.py runs.
 if [ -x "$dest/gitleaks" ] && [ "$(sha256 "$dest/gitleaks")" = "$binary" ]; then
   echo "gitleaks: $version already installed at $dest/gitleaks"
+  printf '%s\n' "$dest/gitleaks"
   exit 0
 fi
 work=$(mktemp -d)
@@ -30,3 +31,4 @@ chmod +x "$work/gitleaks"
 cp "$work/gitleaks" "$staged"
 mv -f "$staged" "$dest/gitleaks"
 "$dest/gitleaks" version
+printf '%s\n' "$dest/gitleaks"

@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import BASE, ROOT, fail, test_mask
@@ -28,7 +29,9 @@ GITLEAKS = (ROOT / "scripts/scan/gitleaks.version").read_text().strip()
 ZIZMOR = "zizmor==1.31.1"
 SEMGREP = "semgrep==1.182.1"
 INSTALL_SECS = 300
-GITLEAKS_DIR = pathlib.Path("/usr/local/bin")
+INSTALL = ROOT / "scripts/scan/install_gitleaks.sh"
+_INSTALLED = {}
+_INSTALL_LOCK = threading.Lock()
 FIXTURES = ROOT / "scripts/scan/fixtures"
 RULES = ROOT / "scripts/scan/rules"
 SCAN_ROOTS = ("evals", "scripts", "python", "crates")
@@ -94,35 +97,38 @@ def require_uv(package, executable, version):
         raise Unavailable(reason[-1] if reason else f"{executable} {version} is unavailable")
 
 
-def require_gitleaks():
+def install_gitleaks(script):
+    """Incident: CI installed the pinned gitleaks from a workflow step, so the autofix clone ran the lane
+    without it and the CI-strict skip failed every pass (#1733). The scan that needs it installs it."""
+    try:
+        proc = subprocess.run([str(script)], capture_output=True, text=True, check=False,
+                              timeout=INSTALL_SECS, env=environment())
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise Unavailable(f"the gitleaks install did not finish: {error}") from error
+    named = proc.stdout.strip().splitlines()
+    if proc.returncode or not named:
+        detail = (proc.stdout + proc.stderr).strip()[-400:]
+        raise Unavailable(f"the gitleaks install failed ({proc.returncode}): {detail}")
+    binary = pathlib.Path(named[-1])
+    if not binary.is_file():
+        raise Unavailable(f"the gitleaks installer named no binary: {named[-1]}")
+    return str(binary)
+
+
+def require_gitleaks(script=None):
+    script = script or INSTALL
     executable = shutil.which("gitleaks")
+    if os.environ.get("CI") and script.is_file():
+        with _INSTALL_LOCK:
+            if str(script) not in _INSTALLED:
+                _INSTALLED[str(script)] = install_gitleaks(script)
+            executable = _INSTALLED[str(script)]
     if executable is None:
         raise Unavailable(f"gitleaks {GITLEAKS} is not installed")
     proc = run([executable, "version"])
     if proc.returncode or proc.stdout.strip() != GITLEAKS:
         raise Unavailable(f"gitleaks {GITLEAKS} is required, found {proc.stdout.strip() or 'none'}")
     return executable
-
-
-def on_path(directory):
-    entries = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry]
-    if str(directory) not in entries:
-        os.environ["PATH"] = os.pathsep.join([str(directory), *entries])
-
-def provision_gitleaks(strict, script=None):
-    """Incident: the CI lanes installed the pinned gitleaks from a workflow step, so the autofix clone
-    ran the lane without it and the CI-strict skip failed every pass (#1733). One gate provisions it."""
-    script = script or ROOT / "scripts/scan/install_gitleaks.sh"
-    if not strict or not script.is_file():
-        return
-    try:
-        proc = subprocess.run([str(script)], capture_output=True, text=True, check=False,
-                              timeout=INSTALL_SECS, env=environment())
-    except (OSError, subprocess.TimeoutExpired) as error:
-        print(f"scan: the gitleaks install did not finish: {error}")
-        return
-    if proc.returncode:
-        print(f"scan: the gitleaks install failed ({proc.returncode}): {(proc.stdout + proc.stderr).strip()[-400:]}")
 
 
 def zizmor(paths):
@@ -178,18 +184,11 @@ def go_glob(pattern):
     return translated.replace(r"\Z", r"\z")
 
 
-def tracked():
-    proc = subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True, text=True, check=False)
-    return proc.stdout.splitlines() if not proc.returncode else []
-
-
 def gitleaks_ignores():
-    """A shared ignore reaches gitleaks only when every file it matches is planted under a fixtures
-    directory, so a path a PR adds for real source is still scanned."""
-    paths = tracked()
+    """A shared ignore reaches gitleaks only when its own path names a fixtures directory, so a path a PR
+    adds for real source is still scanned however it is spelled."""
     return tuple(pattern for pattern in unscanned()
-                 if (hits := [path for path in paths if fnmatch.fnmatch(path, pattern)])
-                 and all("fixtures" in pathlib.PurePosixPath(path).parts for path in hits))
+                 if "fixtures" in pathlib.PurePosixPath(pattern).parts)
 
 
 def gitleaks_config(ignores, name):
@@ -388,28 +387,47 @@ def selfcheck(off="", fixtures=None):
             errors.append(f"a missing scanner with CI {'set did not abort' if strict else 'unset aborted the run'}")
         if not strict and "skip scan (probe)" not in printed.getvalue():
             errors.append("the announced skip row was not printed")
+    ci = os.environ.pop("CI", None)
     with tempfile.TemporaryDirectory() as tmp:
-        dest = pathlib.Path(tmp) / "bin"
-        dest.mkdir()
-        marker = dest / "ran"
+        fake = pathlib.Path(tmp) / "bin/gitleaks"
+        fake.parent.mkdir()
+        marker = pathlib.Path(tmp) / "ran"
+        fake.write_text(f"#!/bin/sh\necho {GITLEAKS}\n")
+        fake.chmod(0o755)
         installer = pathlib.Path(tmp) / "install.sh"
-        installer.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+        installer.write_text(f"#!/bin/sh\ntouch '{marker}'\nprintf '%s\\n' '{fake}'\n")
         installer.chmod(0o755)
-        (dest / "gitleaks").write_text(f"#!/bin/sh\necho {GITLEAKS}\n")
-        (dest / "gitleaks").chmod(0o755)
-        provision_gitleaks(False, installer)
-        if marker.exists():
-            errors.append("the scan gate provisioned gitleaks outside CI")
-        provision_gitleaks(True, installer if off != "provision" else pathlib.Path(tmp) / "absent.sh")
-        if not marker.exists():
-            errors.append("a gitleaks at PATH that prints the pinned version kept the installer from running")
-        path = os.environ.get("PATH", "")
+        failing = pathlib.Path(tmp) / "fail.sh"
+        failing.write_text("#!/bin/sh\necho 'gitleaks: SHA-256 mismatch'\nexit 3\n")
+        failing.chmod(0o755)
         try:
-            on_path(dest)
-            if shutil.which("gitleaks") != str(dest / "gitleaks"):
-                errors.append("the gate does not search the directory its installer writes to")
+            try:
+                require_gitleaks(installer)
+            except Unavailable:
+                pass
+            if marker.exists():
+                errors.append("the scan gate provisioned gitleaks outside CI")
+            os.environ["CI"] = "1"
+            try:
+                resolved = require_gitleaks(installer if off != "provision" else pathlib.Path(tmp) / "absent.sh")
+            except Unavailable:
+                resolved = None
+            if not marker.exists():
+                errors.append("a CI scan ran gitleaks without running the installer")
+            if resolved != str(fake):
+                errors.append("a CI scan did not run the gitleaks its installer named")
+            if off != "provision":
+                try:
+                    require_gitleaks(failing)
+                except Unavailable as error:
+                    if "install failed (3)" not in str(error) or "SHA-256 mismatch" not in str(error):
+                        errors.append(f"a failed gitleaks install lost its exit code or the installer's reason: {error}")
+                else:
+                    errors.append("a failed gitleaks install still let a scan run")
         finally:
-            os.environ["PATH"] = path
+            os.environ.pop("CI", None)
+            if ci is not None:
+                os.environ["CI"] = ci
     original = BASELINE
     with tempfile.TemporaryDirectory() as tmp:
         try:
@@ -517,8 +535,6 @@ def main(argv):
     parser.add_argument("--history", action="store_true")
     args = parser.parse_args(argv)
     strict = bool(os.environ.get("CI"))
-    on_path(GITLEAKS_DIR)
-    provision_gitleaks(strict)
     if args.selfcheck:
         findings, tools = gather(fixture_tasks(), strict)
         absent = sorted(set(FAMILIES) - tools)
