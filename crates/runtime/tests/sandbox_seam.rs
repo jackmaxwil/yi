@@ -1128,7 +1128,11 @@ async fn a_walled_retry_the_auto_reviewer_approves_never_runs_outside_the_sandbo
         vec![yi_ai::faux::faux_text("allow")],
         StopReason::Stop,
     )]);
-    let reviewer = yi_runtime::auto_review::Reviewer::new(provider, faux_model());
+    let reviewer = yi_runtime::auto_review::Reviewer::new(
+        provider,
+        faux_model(),
+        yi_runtime::classifier::Screeners::default(),
+    );
     let retry = walled_retry(None, Some(Arc::new(reviewer))).await?;
     assert!(
         refused_outright(&retry),
