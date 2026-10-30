@@ -775,6 +775,46 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
     Ok(())
 }
 
+/// The inline viewport moves by committing rows, so its level sets how many land in one frame:
+/// one a frame for `slide`, half a pane for `page`.
+#[test]
+fn solo_follow_levels_pace_the_rows_that_land() -> TestResult {
+    use std::io::Write;
+    let answer: String = (0..20).map(|row| format!("- answer row {row}\n")).collect();
+    let mut landed = Vec::new();
+    for mode in [
+        yi_types::config::FollowMode::Slide,
+        yi_types::config::FollowMode::Page,
+    ] {
+        let mut backend = VT100Backend::with_scrollback(80, 24, 400);
+        backend.write_all(&b"\n".repeat(23))?;
+        let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+        let mut app = app();
+        app.set_rows(24);
+        app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
+        app.set_follow(mode);
+        app.commit_cell(&yi_tui::cell::Cell::Assistant {
+            markdown: answer.clone(),
+        });
+        let queued = app.take_commits().len();
+        assert!(
+            queued > 12 && queued <= 24,
+            "test setup: {queued} rows queued"
+        );
+        app.commit_cell(&yi_tui::cell::Cell::Assistant {
+            markdown: answer.clone(),
+        });
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        let left = app.take_commits().len();
+        landed.push((mode, queued.saturating_sub(left)));
+    }
+    let slide = landed[0].1;
+    let page = landed[1].1;
+    assert_eq!(slide, 1, "slide landed {slide} rows in one frame");
+    assert_eq!(page, 12, "page landed {page} rows, not half a pane");
+    Ok(())
+}
+
 /// A history commit scrolls region `[0, viewport_top)`, and a terminal keeps the rows that
 /// leaves: scrollback is where the reader finds the answer once it is longer than the screen.
 /// Every line must be there once, in order, with none of the live region's chrome in it.

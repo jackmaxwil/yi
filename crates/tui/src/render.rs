@@ -92,7 +92,12 @@ fn draw_frame<B>(
         clear_screen(terminal);
     }
     let mut commits = std::mem::take(&mut app.pending_commit);
-    let arrived = commits.len();
+    let queued = commits.len();
+    let release = inline_release(app, queued);
+    if release < queued {
+        app.pending_commit = commits.split_off(release);
+        app.scheduler.request();
+    }
     // OSC 133 semantic prompt zones: Ghostty and iTerm2 use these to jump
     // between prompts, so a user turn is navigable in the terminal's own UI.
     let mark = std::mem::take(&mut app.pending_prompt_mark);
@@ -122,7 +127,7 @@ fn draw_frame<B>(
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
     let mut layout = layout_chat(app, goal, memory);
     let budget = usize::from(total.saturating_sub(layout.floor.min(total)));
-    let more = solo_follow(app, &mut layout.live, budget, arrived);
+    let more = solo_follow(app, &mut layout.live, budget, release);
     let rows = layout.rows().saturating_add(u16::from(more > 0));
     let resized = terminal
         .resize_viewport(rows, layout.floor)
@@ -505,6 +510,25 @@ pub(crate) struct Still {
     hidden: usize,
 }
 
+/// Rows a follower lets through this frame: one row at a time, or half a page when the reader
+/// asked for jumps. Both catch up proportionally when far behind, so 200 rows land in 70 frames.
+fn follow_step(mode: yi_types::config::FollowMode, behind: usize, page: usize) -> usize {
+    match mode {
+        yi_types::config::FollowMode::Slide => behind.div_ceil(ROLL_ROWS),
+        yi_types::config::FollowMode::Page => page.min(behind).max(usize::from(behind > 0)),
+        yi_types::config::FollowMode::Still => 0,
+    }
+}
+
+/// The inline viewport scrolls by committing rows, so its mode paces that queue: the pane's
+/// window arithmetic cannot move a viewport whose finished rows are already scrollback.
+fn inline_release(app: &mut App, queued: usize) -> usize {
+    match app.follow() {
+        yi_types::config::FollowMode::Still => queued,
+        mode => follow_step(mode, queued, (app.rows / 2).max(1)),
+    }
+}
+
 /// The inline view's held window, and the rows that landed under it since it was seeded.
 fn solo_follow(
     app: &mut App,
@@ -566,18 +590,13 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
             let at = owners.iter().position(|&cell| cell == pinned)?;
             let behind = column.len().saturating_sub(at).saturating_sub(below);
             let base = at.saturating_add(below);
+            let page = (height / 2).max(1).min(above.max(1));
             match follow_mode {
-                yi_types::config::FollowMode::Slide => {
-                    Some(base.saturating_add(behind.div_ceil(ROLL_ROWS)))
-                }
-                yi_types::config::FollowMode::Page if column.len() > base => {
-                    Some(base.saturating_add((height / 2).max(1).min(above.max(1))))
-                }
-                yi_types::config::FollowMode::Page => Some(base),
                 yi_types::config::FollowMode::Still if base < above => {
                     Some(column.len().min(above))
                 }
                 yi_types::config::FollowMode::Still => Some(base),
+                paced => Some(base.saturating_add(follow_step(paced, behind, page))),
             }
         })
         .map_or(column.len(), |end| end.min(column.len()));

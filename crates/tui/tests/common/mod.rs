@@ -556,9 +556,17 @@ pub fn rows_sized(
     height: u16,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut terminal = yi_tui::terminal::Terminal::new(VT100Backend::new(width, height), 4)?;
-    yi_tui::render::draw(app, &mut terminal, None);
-    let backend = terminal.backend();
-    Ok((0..height)
-        .map(|row| backend.row_text(row).trim_end().to_owned())
-        .collect())
+    let mut rows = vec![String::new(); usize::from(height)];
+    for _ in 0..6 {
+        yi_tui::render::draw(app, &mut terminal, None);
+        let backend = terminal.backend();
+        let now: Vec<String> = (0..height)
+            .map(|row| backend.row_text(row).trim_end().to_owned())
+            .collect();
+        if now == rows {
+            break;
+        }
+        rows = now;
+    }
+    Ok(rows)
 }
