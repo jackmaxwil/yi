@@ -1,5 +1,6 @@
 //! The sidebar's session rows as polls and focus change them.
 
+use ratatui::crossterm::event::KeyEvent;
 use yi_console::model::{ConsoleState, SessionId, SessionRow, SessionStatus};
 
 fn row(status: SessionStatus) -> SessionRow {
@@ -139,50 +140,39 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
     use yi_console::model::SidebarMode;
     use yi_console::render::Hit;
     use yi_console::sidebar::sidebar_lines;
-    use yi_tui::colors::{ColorTier, Theme};
-    let theme = Theme::new(ColorTier::Ansi16, true);
-    let mut app = App::new("/w/yi".to_owned(), theme);
-    app.state.sidebar = SidebarMode::Full;
-    let rows = [
-        ("old-idle", "/w/yi", SessionStatus::Idle, 100, None),
-        ("new-idle", "/w/yi", SessionStatus::Idle, 900, None),
-        ("asks", "/w/yi", SessionStatus::Blocked, 50, None),
-        (
-            "pin-late",
-            "/w/legios",
-            SessionStatus::Idle,
-            10,
-            Some(2_000),
-        ),
-        (
-            "pin-early",
-            "/w/buildhost",
-            SessionStatus::Working,
-            10,
-            Some(1_000),
-        ),
-        (
-            "legios-asks",
-            "/w/legios",
-            SessionStatus::Blocked,
-            300,
-            None,
-        ),
-        ("buildhost-idle", "/w/buildhost", SessionStatus::Idle, 400, None),
-        ("solo-pin", "/w/solo", SessionStatus::Idle, 20, Some(3_000)),
-    ];
-    for (id, root, status, last_ms, pinned) in rows {
-        app.state.upsert_row(SessionRow {
-            id: SessionId(id.to_owned()),
-            root: root.to_owned(),
-            status,
-            attached: false,
-            name: Some(id.to_owned()),
-            created_ms: 0,
-            last_ms,
-            pinned,
-        });
-    }
+    let (mut app, _outbound) = sidebar_app(
+        "/w/yi",
+        SidebarMode::Full,
+        &[
+            ("old-idle", "/w/yi", SessionStatus::Idle, 100, None),
+            ("new-idle", "/w/yi", SessionStatus::Idle, 900, None),
+            ("asks", "/w/yi", SessionStatus::Blocked, 50, None),
+            (
+                "pin-late",
+                "/w/legios",
+                SessionStatus::Idle,
+                10,
+                Some(2_000),
+            ),
+            (
+                "pin-early",
+                "/w/buildhost",
+                SessionStatus::Working,
+                10,
+                Some(1_000),
+            ),
+            (
+                "legios-asks",
+                "/w/legios",
+                SessionStatus::Blocked,
+                300,
+                None,
+            ),
+            ("buildhost-idle", "/w/buildhost", SessionStatus::Idle, 400, None),
+            ("solo-pin", "/w/solo", SessionStatus::Idle, 20, Some(3_000)),
+        ],
+    );
+    let theme = app.theme;
     let drawn = |app: &App| -> Vec<String> {
         let mut last = None;
         sidebar_lines(app, &theme, 60)
@@ -238,13 +228,6 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
         .ok_or("legios-asks has a row")?;
     app.state.selected = asks;
     app.state.toggle_fold("/w/legios");
-    let landed = app.state.selected;
-    let name = |index: usize| app.state.order.get(index).map(|id| id.0.as_str());
-    assert!(
-        app.state.visible_rows().contains(&landed) && name(landed) != Some("legios-asks"),
-        "the fold moved the cursor off the hidden row: {:?}",
-        name(landed)
-    );
     let folded: Vec<String> = want
         .iter()
         .filter(|row| **row != "legios-asks")
@@ -263,31 +246,25 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
 /// workspaces together with no blank row between them.
 #[test]
 fn the_rail_lists_the_pin_first_and_parts_workspaces_with_a_blank_row() -> Result<(), String> {
-    use yi_console::app::App;
     use yi_console::model::SidebarMode;
     use yi_console::sidebar::sidebar_lines;
-    use yi_tui::colors::{ColorTier, Theme};
-    let theme = Theme::new(ColorTier::Ansi16, true);
-    let mut app = App::new("/w/yi".to_owned(), theme);
-    app.state.sidebar = SidebarMode::Rail;
-    let rows = [
-        ("legios-new", "/w/legios", 900, None),
-        ("yi-old", "/w/yi", 100, None),
-        ("legios-pin", "/w/legios", 10, Some(1_000)),
-        ("yi-new", "/w/yi", 500, None),
-    ];
-    for (id, root, last_ms, pinned) in rows {
-        app.state.upsert_row(SessionRow {
-            id: SessionId(id.to_owned()),
-            root: root.to_owned(),
-            status: SessionStatus::Idle,
-            attached: false,
-            name: Some(id.to_owned()),
-            created_ms: 0,
-            last_ms,
-            pinned,
-        });
-    }
+    let (app, _outbound) = sidebar_app(
+        "/w/yi",
+        SidebarMode::Rail,
+        &[
+            ("legios-new", "/w/legios", SessionStatus::Idle, 900, None),
+            ("yi-old", "/w/yi", SessionStatus::Idle, 100, None),
+            (
+                "legios-pin",
+                "/w/legios",
+                SessionStatus::Idle,
+                10,
+                Some(1_000),
+            ),
+            ("yi-new", "/w/yi", SessionStatus::Idle, 500, None),
+        ],
+    );
+    let theme = app.theme;
     let mut last = None;
     let drawn: Vec<String> = sidebar_lines(&app, &theme, 60)
         .into_iter()
@@ -305,41 +282,43 @@ fn the_rail_lists_the_pin_first_and_parts_workspaces_with_a_blank_row() -> Resul
     Ok(())
 }
 
-fn sidebar_app(sidebar: yi_console::model::SidebarMode) -> yi_console::app::App {
+const SIDEBAR_ROWS: [(&str, &str, SessionStatus, u64, Option<u64>); 4] = [
+    ("yi-new", "/w/yi", SessionStatus::Idle, 900, None),
+    ("yi-old", "/w/yi", SessionStatus::Idle, 100, None),
+    ("legios-new", "/w/legios", SessionStatus::Idle, 800, None),
+    ("legios-old", "/w/legios", SessionStatus::Idle, 200, None),
+];
+
+fn sidebar_app(
+    root: &str,
+    sidebar: yi_console::model::SidebarMode,
+    rows: &[(&str, &str, SessionStatus, u64, Option<u64>)],
+) -> (yi_console::app::App, yi_console::client::Outbound) {
     use yi_console::model::Link;
     use yi_tui::colors::{ColorTier, Theme};
-    let mut app =
-        yi_console::app::App::new("/w/yi".to_owned(), Theme::new(ColorTier::Ansi16, true));
-    app.state.sidebar = sidebar;
-    app.state.link = Link::Connected;
-    for (id, root, last_ms) in [
-        ("yi-new", "/w/yi", 900),
-        ("yi-old", "/w/yi", 100),
-        ("legios-new", "/w/legios", 800),
-        ("legios-old", "/w/legios", 200),
-    ] {
-        app.state.upsert_row(SessionRow {
-            id: SessionId(id.to_owned()),
-            root: root.to_owned(),
-            status: SessionStatus::Idle,
-            attached: false,
-            name: Some(id.to_owned()),
-            created_ms: 0,
-            last_ms,
-            pinned: None,
-        });
-    }
-    app
-}
-
-fn press(app: &mut yi_console::app::App, code: ratatui::crossterm::event::KeyCode, mods: u8) {
-    use ratatui::crossterm::event::{Event, KeyEvent, KeyModifiers};
     let (events, _received) = yi_console::client::events();
     let socket = std::env::temp_dir().join("yi-sessions-no-daemon.sock");
     let (outbound, _threads) = yi_console::client::spawn(socket, events);
-    let modifiers = KeyModifiers::from_bits_truncate(mods);
-    app.handle_event(&outbound, Event::Key(KeyEvent::new(code, modifiers)));
-    outbound.shutdown();
+    let mut app = yi_console::app::App::new(root.to_owned(), Theme::new(ColorTier::Ansi16, true));
+    app.state.sidebar = sidebar;
+    app.state.link = Link::Connected;
+    for (id, row_root, status, last_ms, pinned) in rows {
+        app.state.upsert_row(SessionRow {
+            id: SessionId((*id).to_owned()),
+            root: (*row_root).to_owned(),
+            status: *status,
+            attached: false,
+            name: Some((*id).to_owned()),
+            created_ms: 0,
+            last_ms: *last_ms,
+            pinned: *pinned,
+        });
+    }
+    (app, outbound)
+}
+
+fn key(app: &mut yi_console::app::App, outbound: &yi_console::client::Outbound, key: KeyEvent) {
+    crate::editor_view::key(app, outbound, key);
 }
 
 fn name_at(app: &yi_console::app::App) -> Option<&str> {
@@ -350,17 +329,25 @@ fn name_at(app: &yi_console::app::App) -> Option<&str> {
 /// paints instead of opening the selected session, and the first `down` skipped a row.
 #[test]
 fn leaving_the_full_sidebar_drops_a_header_cursor() {
-    use ratatui::crossterm::event::KeyCode;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use yi_console::model::{SidebarMode, Slot};
-    let mut app = sidebar_app(SidebarMode::Full);
+    let (mut app, outbound) = sidebar_app("/w/yi", SidebarMode::Full, &SIDEBAR_ROWS);
     let first = app.state.slots().into_iter().find_map(|slot| match slot {
         Slot::Row(index) => Some(index),
         Slot::Group(_) => None,
     });
     app.state.selected = first.unwrap_or(0);
-    press(&mut app, KeyCode::Up, 0);
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+    );
     assert!(matches!(app.state.cursor(), Slot::Group(_)));
-    press(&mut app, KeyCode::Char('b'), 8);
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+    );
     assert_eq!(app.state.sidebar, SidebarMode::Rail);
     assert!(
         matches!(app.state.cursor(), Slot::Row(_)),
@@ -368,9 +355,17 @@ fn leaving_the_full_sidebar_drops_a_header_cursor() {
         app.state.cursor()
     );
     let before = name_at(&app).map(str::to_owned);
-    press(&mut app, KeyCode::Down, 0);
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+    );
     assert_ne!(name_at(&app).map(str::to_owned), before);
-    press(&mut app, KeyCode::Enter, 0);
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
     assert!(app.state.folded.is_empty(), "{:?}", app.state.folded);
 }
 
@@ -378,17 +373,42 @@ fn leaving_the_full_sidebar_drops_a_header_cursor() {
 /// pinning that session while the highlight rests on the header.
 #[test]
 fn a_fold_from_a_header_keeps_the_session_and_pin_ignores_the_header() {
-    use ratatui::crossterm::event::KeyCode;
-    use yi_console::model::{SidebarMode, Slot};
-    let mut app = sidebar_app(SidebarMode::Full);
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use yi_console::model::{Mode, SidebarMode, Slot};
+    let (mut app, outbound) = sidebar_app("/w/yi", SidebarMode::Full, &SIDEBAR_ROWS);
     let came_from = app.state.selected;
-    press(&mut app, KeyCode::Up, 0);
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+    );
     assert!(matches!(app.state.cursor(), Slot::Group(_)));
-    press(&mut app, KeyCode::Enter, 0);
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
     assert!(!app.state.folded.is_empty());
     assert_eq!(app.state.selected, came_from);
-    press(&mut app, KeyCode::Char('p'), 4);
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
+    );
     assert_eq!(app.state.banner.as_deref(), Some("no session to pin"));
+    app.hits = Some(yi_console::render::Hits {
+        sidebar_rows: vec![(5, app.state.selected)],
+        ..Default::default()
+    });
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
+    );
+    assert!(
+        !matches!(app.state.mode, Mode::Menu(_)),
+        "the menu opened for a session the cursor is not on"
+    );
 }
 
 /// Dies with the cursor's order drifting from the painted order: the slots are what an
@@ -401,7 +421,7 @@ fn the_cursor_slots_are_the_painted_rows_in_order() {
     use yi_tui::colors::{ColorTier, Theme};
     let theme = Theme::new(ColorTier::Ansi16, true);
     for mode in [SidebarMode::Full, SidebarMode::Rail] {
-        let mut app = sidebar_app(mode);
+        let (mut app, _outbound) = sidebar_app("/w/yi", mode, &SIDEBAR_ROWS);
         app.state.folded.insert("/w/legios".to_owned());
         let mut painted = Vec::new();
         for row in sidebar_lines(&app, &theme, 60) {
@@ -426,7 +446,7 @@ fn a_header_under_the_cursor_is_banded_only_while_the_sidebar_has_focus() {
     use yi_console::sidebar::sidebar_lines;
     use yi_tui::colors::{ColorTier, Theme};
     let theme = Theme::new(ColorTier::Ansi16, true);
-    let mut app = sidebar_app(SidebarMode::Full);
+    let (mut app, _outbound) = sidebar_app("/w/yi", SidebarMode::Full, &SIDEBAR_ROWS);
     app.state.header = Some("/w/legios".to_owned());
     let banded = |app: &yi_console::app::App, root: &str| -> Option<bool> {
         let rows = sidebar_lines(app, &theme, 60);
@@ -444,4 +464,49 @@ fn a_header_under_the_cursor_is_banded_only_while_the_sidebar_has_focus() {
     assert_eq!(banded(&app, "/w/yi"), Some(false));
     app.state.zone = Zone::Panes;
     assert_eq!(banded(&app, "/w/legios"), Some(false));
+}
+
+/// Dies with the cursor left on a row a folded group hides: the sidebar toggle dropped the
+/// header and the banded row with it, so `enter` opened a session nothing drew.
+#[test]
+fn a_sidebar_toggle_after_a_fold_leaves_the_cursor_on_a_painted_row() -> Result<(), String> {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use yi_console::model::{SidebarMode, Slot};
+    let (mut app, outbound) = sidebar_app("/w/yi", SidebarMode::Full, &SIDEBAR_ROWS);
+    let legios = app
+        .state
+        .order
+        .iter()
+        .position(|id| id.0 == "legios-new")
+        .ok_or("legios-new has a row")?;
+    app.state.selected = legios;
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+    );
+    assert!(matches!(app.state.cursor(), Slot::Group(_)));
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
+    assert!(!app.state.folded.is_empty());
+    for _ in 0..2 {
+        key(
+            &mut app,
+            &outbound,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+        );
+    }
+    let Slot::Row(index) = app.state.cursor() else {
+        return Err(format!(
+            "the cursor is not on a row: {:?}",
+            app.state.cursor()
+        ));
+    };
+    if !app.state.visible_rows().contains(&index) {
+        return Err(format!("the cursor names a row no group paints: {index}"));
+    }
+    Ok(())
 }

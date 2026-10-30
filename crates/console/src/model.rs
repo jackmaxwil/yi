@@ -703,10 +703,21 @@ impl ConsoleState {
 
     /// A folded group keeps its header, so the cursor stays on the one it folded.
     pub fn fold_from_header(&mut self, root: &str) {
-        let came_from = self.selected;
         self.toggle_fold(root);
-        self.selected = came_from;
         self.header = Some(root.to_owned());
+    }
+
+    pub fn settle_visible(&mut self) {
+        if self.header.is_some() {
+            return;
+        }
+        let rows = self.visible_rows();
+        if rows.contains(&self.selected) {
+            return;
+        }
+        if let Some(first) = rows.first() {
+            self.selected = *first;
+        }
     }
 
     pub fn set_session_status(&mut self, id: &SessionId, status: SessionStatus) {
@@ -774,17 +785,6 @@ impl ConsoleState {
     pub fn toggle_fold(&mut self, root: &str) {
         if !self.folded.remove(root) {
             self.folded.insert(root.to_owned());
-        }
-        let rows = self.visible_rows();
-        if rows.contains(&self.selected) {
-            return;
-        }
-        let next = rows
-            .iter()
-            .find(|index| **index >= self.selected)
-            .or_else(|| rows.first());
-        if let Some(next) = next {
-            self.selected = *next;
         }
     }
 

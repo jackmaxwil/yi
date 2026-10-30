@@ -17,7 +17,15 @@ pub(crate) fn quoted(text: &str) -> String {
 
 /// The repository's top; a worktree never borrows the main checkout's.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    (cwd.ancestors())
+    // Incident: a scratch dir under `<checkout>/../tmp` lexically lists the checkout as an
+    // ancestor, so a session outside any repo read that repo's AGENTS.md. Resolve `..` first.
+    let resolved = cwd
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+        .then(|| cwd.canonicalize().ok())
+        .flatten();
+    let walk = resolved.as_deref().unwrap_or(cwd);
+    walk.ancestors()
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }

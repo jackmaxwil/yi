@@ -274,63 +274,55 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         let search = flush_right(" ⌕ Search", chord(Action::Navigator), width);
         rows.push(control_row(search, text, Hit::Search));
     }
-    for group in app.state.groups() {
-        if rail {
-            if group.rows.is_empty() || slot >= RAIL_CAP {
-                beyond = beyond.saturating_add(group.rows.len());
-                continue;
-            }
-            if slot > 0 {
-                rows.push(SidebarRow::plain(None, Line::raw("")));
-            }
-        } else {
-            match &group.root {
-                None if group.rows.is_empty() => continue,
-                None => rows.push(SidebarRow::plain(
-                    None,
-                    Line::styled(
-                        format!(" PINNED {}", group.rows.len()),
-                        theme.dim_style().add_modifier(Modifier::BOLD),
-                    ),
-                )),
-                Some(root) => {
-                    let is_cursor = on_sidebar && cursor == Slot::Group(root.clone());
-                    rows.push(group_header(
-                        app,
-                        root,
-                        &group.rows,
-                        group.folded,
-                        is_cursor,
-                        width,
-                        theme,
-                    ));
+    let groups = app.state.groups();
+    let pinned = groups.first().map_or(0, |group| group.rows.len());
+    let mut pinned_head = false;
+    let mut last_group: Option<Option<String>> = None;
+    for entry in app.state.slots() {
+        match entry {
+            Slot::Group(root) => {
+                let found = groups
+                    .iter()
+                    .find(|group| group.root.as_deref() == Some(root.as_str()));
+                let is_cursor = on_sidebar && cursor == Slot::Group(root.clone());
+                if let Some(group) = found {
+                    let (rows_of, folded) = (&group.rows, group.folded);
+                    let header = group_header(app, &root, rows_of, folded, is_cursor, width, theme);
+                    rows.push(header);
                 }
             }
-        }
-        if group.folded {
-            continue;
-        }
-        for index in group.rows {
-            let Some(id) = app.state.order.get(index) else {
-                continue;
-            };
-            let Some(row) = app.state.sessions.get(id) else {
-                continue;
-            };
-            let is_focused = focused.as_ref() == Some(id);
-            let is_cursor = on_sidebar && cursor == Slot::Row(index);
-            slot = slot.saturating_add(1);
-            if rail && slot > RAIL_CAP {
-                beyond = beyond.saturating_add(1);
-                continue;
+            Slot::Row(index) => {
+                let Some(id) = app.state.order.get(index) else {
+                    continue;
+                };
+                let Some(row) = app.state.sessions.get(id) else {
+                    continue;
+                };
+                let is_focused = focused.as_ref() == Some(id);
+                let is_cursor = on_sidebar && cursor == Slot::Row(index);
+                if rail {
+                    if slot >= RAIL_CAP {
+                        beyond = beyond.saturating_add(1);
+                        continue;
+                    }
+                    let group = row.pinned.is_none().then(|| row.root.clone());
+                    if slot > 0 && last_group.as_ref() != Some(&group) {
+                        rows.push(SidebarRow::plain(None, Line::raw("")));
+                    }
+                    last_group = Some(group);
+                } else if row.pinned.is_some() && !pinned_head {
+                    pinned_head = true;
+                    rows.push(pinned_header(pinned, theme));
+                }
+                slot = slot.saturating_add(1);
+                rows.extend(session_rows(
+                    app,
+                    theme,
+                    (index, id, row),
+                    (is_focused, is_cursor),
+                    (slot, cols, now),
+                ));
             }
-            rows.extend(session_rows(
-                app,
-                theme,
-                (index, id, row),
-                (is_focused, is_cursor),
-                (slot, cols, now),
-            ));
         }
     }
     if beyond > 0 {
@@ -340,6 +332,11 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         ));
     }
     window_rows(rows, height, &cursor, theme)
+}
+
+fn pinned_header(pinned: usize, theme: &Theme) -> SidebarRow {
+    let style = theme.dim_style().add_modifier(Modifier::BOLD);
+    SidebarRow::plain(None, Line::styled(format!(" PINNED {pinned}"), style))
 }
 
 fn session_rows(

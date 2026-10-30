@@ -919,6 +919,7 @@ impl App {
             Action::ToggleSidebar => {
                 self.state.sidebar = self.state.sidebar.next();
                 self.state.header = None;
+                self.state.settle_visible();
             }
             Action::Pin => self.pin_focus(outbound),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
