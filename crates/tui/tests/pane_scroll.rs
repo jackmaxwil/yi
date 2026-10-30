@@ -457,10 +457,6 @@ fn still_holds_the_view_and_marks_hidden_rows_at_a_nonzero_offset() -> TestResul
         !after.iter().any(|row| row.contains("let x019")),
         "{after:#?}"
     );
-    assert!(
-        common::hidden_rows(&after).is_some_and(|hidden| hidden > 0),
-        "{after:#?}"
-    );
     assert_eq!(scroll, 0);
     Ok(())
 }

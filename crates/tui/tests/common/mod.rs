@@ -589,3 +589,11 @@ pub fn hidden_rows(rows: &[String]) -> Option<usize> {
             .ok()
     })
 }
+
+/// The inline viewport's rows as a real screen shows them.
+pub fn viewport_rows(terminal: &yi_tui::terminal::Terminal<VT100Backend>) -> Vec<String> {
+    let viewport = terminal.viewport_area();
+    (viewport.top()..viewport.bottom())
+        .map(|row| terminal.backend().row_text(row))
+        .collect()
+}

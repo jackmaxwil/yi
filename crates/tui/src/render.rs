@@ -95,20 +95,19 @@ fn draw_frame<B>(
     if app.take_pending_clear() {
         clear_screen(terminal);
     }
-    let mut commits = std::mem::take(&mut app.pending_commit);
-    let queued = commits.len();
+    let queued = app.pending_commit.len();
     // OSC 133 semantic prompt zones: Ghostty and iTerm2 use these to jump
     // between prompts, so a user turn is navigable in the terminal's own UI.
     let mark = std::mem::take(&mut app.pending_prompt_mark);
     // Invariant: a paced release never splits a prompt's rows, so its zone closes after all of them.
-    let release = if mark {
+    let restored = std::mem::take(&mut app.restoring);
+    let release = if mark || restored {
         queued
     } else {
         follow_step(app.follow(), queued, app.rows, usize::MAX)
-    };
-    if release < queued {
-        app.pending_commit = commits.split_off(release);
     }
+    .min(queued);
+    let mut commits: Vec<Line<'static>> = app.pending_commit.drain(..release).collect();
     let mode_changed = app.take_pending_repaint();
     schedule_reflow(app);
     if mark {
@@ -518,8 +517,7 @@ pub(crate) struct Still {
     hidden: usize,
 }
 
-/// Rows a follower lets through this frame: one a frame, or half a window when the reader asked
-/// for jumps; both catch up proportionally when far behind, so 200 rows land in under 70 frames.
+/// Rows a follower lets through this frame: half the window for a page, never past the cap.
 fn follow_step(
     mode: yi_types::config::FollowMode,
     behind: usize,

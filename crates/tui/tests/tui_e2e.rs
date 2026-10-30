@@ -680,12 +680,7 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
     app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
     app.set_follow(yi_types::config::FollowMode::Still);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
-    let window = |terminal: &yi_tui::terminal::Terminal<VT100Backend>| {
-        let viewport = terminal.viewport_area();
-        (viewport.top()..viewport.bottom())
-            .map(|row| terminal.backend().row_text(row))
-            .collect::<Vec<_>>()
-    };
+    let window = common::viewport_rows;
     let answer = |rows: &[String]| -> Vec<String> {
         rows.iter()
             .filter(|row| row.contains("of the answer"))
@@ -725,7 +720,19 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
     assert_eq!(answer(&held), answer(&later), "the still window moved");
     assert!(!after.contains("row 43 of the answer"), "{later:#?}");
     let counted = common::hidden_rows(&later);
-    assert_eq!(counted, Some(14), "{later:#?}");
+    let last_shown = later
+        .iter()
+        .rev()
+        .find_map(|row| {
+            let rest = row.trim().strip_prefix("‣ row ")?;
+            rest.split_once(' ')?.0.parse::<usize>().ok()
+        })
+        .ok_or("no answer row in the held window")?;
+    assert_eq!(
+        counted,
+        Some(43 - last_shown),
+        "the marker counts the rows between the last one shown and the newest: {later:#?}"
+    );
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let page_down =
         ratatui::crossterm::event::Event::Key(ratatui::crossterm::event::KeyEvent::new(
@@ -740,6 +747,12 @@ fn solo_still_marks_rows_hidden_from_the_inline_viewport() -> TestResult {
         answer(&held),
         answer(&paged),
         "PgDn left the window where it was"
+    );
+    assert!(
+        answer(&paged)
+            .iter()
+            .any(|row| row.contains("row 43 of the answer")),
+        "PgDn shows the rows the marker counted: {paged:#?}"
     );
     let reseeded =
         |app: &mut App, terminal: &mut yi_tui::terminal::Terminal<VT100Backend>, rows: usize| {
@@ -874,12 +887,7 @@ fn a_submitted_prompt_releases_the_inline_still_hold() -> TestResult {
     app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
     app.set_follow(yi_types::config::FollowMode::Still);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
-    let window = |terminal: &yi_tui::terminal::Terminal<VT100Backend>| -> Vec<String> {
-        let viewport = terminal.viewport_area();
-        (viewport.top()..viewport.bottom())
-            .map(|row| terminal.backend().row_text(row))
-            .collect()
-    };
+    let window = common::viewport_rows;
     let body: String = (0..30)
         .map(|row| format!("- row {row} of the answer\n"))
         .collect();

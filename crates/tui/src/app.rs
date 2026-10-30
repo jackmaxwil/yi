@@ -100,6 +100,8 @@ pub struct App {
     pub selection: crate::model::Selection,
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
+    /// A replay is restoring rows the terminal already showed, not streaming new ones.
+    pub(crate) restoring: bool,
     pub(crate) pane: bool,
     /// §17.3: the `Yi` mark at rest and one looping pose per agent state; one orb, never two.
     pub(crate) orb: yi_orb::Orb,
@@ -249,6 +251,7 @@ impl App {
             selection: crate::model::Selection::new(options.model.clone()),
             pending_repaint: false,
             pending_prompt_mark: false,
+            restoring: false,
             pane: false,
             orb: yi_orb::Orb::default(),
             history: crate::history::History::default(),
