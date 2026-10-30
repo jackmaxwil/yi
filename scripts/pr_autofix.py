@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 
@@ -80,7 +81,9 @@ LANE_SECS = 900
 # Incident: #1025's retry died on an upstream 429 and was labelled failed and counted as a miss,
 # though a busy provider says nothing about the PR; such an attempt waits for the next pass.
 # Incident: #1111's pass met a runner with a full /tmp, and a disk that frees itself stopped the PR.
-TRANSIENT = re.compile(r"\b(429|502|503|rate.limit\w*|overloaded|temporarily)\b|No space left|Out of diskspace", re.I)
+# Incident: #1779's clone still held the index lock of a git its model's timed-out turn left running.
+TRANSIENT = re.compile(r"\b(429|502|503|rate.limit\w*|overloaded|temporarily)\b|No space left|Out of diskspace"
+                       r"|index\.lock|Another git process", re.I)
 
 
 class Missed(RuntimeError):
@@ -166,6 +169,20 @@ def sh(cwd, *args, env=None, input=None, check=True):
     return out
 
 
+def indexed(clone, *args):
+    """A staging write, waited out while another process holds the index. Incident: #1779's clone still
+    ran a git the model's timed-out turn left behind, and one `git add -u` was never retried."""
+    for wait in (0.0, 0.5, 1.0, 2.0):
+        time.sleep(wait)
+        out = sh(clone, "git", *args, check=False)
+        said = (out.stdout + out.stderr).strip()
+        if not out.returncode:
+            return out
+        if "index.lock" not in said:
+            break
+    raise Missed(f"`git {' '.join(args)}` could not take the clone's index: {said[-300:]}")
+
+
 def conflicts_of(base_ref, sha, repo=ROOT):
     """Paths a merge of `origin/<base_ref>` into `sha` leaves conflicted, by a trial merge in a
     throwaway clone with the baseline driver the fix uses. Incident: `git merge-tree --write-tree`
@@ -219,6 +236,13 @@ def hook_prompt(pr, refused):
     )
 
 
+def by_hand(pr, base_ref=None):
+    """What a person runs where the fixer stops, as the comment a stop posts must say."""
+    if base_ref:
+        return f"A person resolves it by hand in this branch: `git fetch origin && git merge origin/{base_ref}`."
+    return (f"A person fixes it by hand, then removes `autofix:failed` and runs `just pr autofix {pr['number']}`.")
+
+
 def resolve_in(clone, pr, base_ref, answer, tried=0):
     """Merge the base into the clone's checkout and resolve it. Returns (summary, model, touched);
     raises RuntimeError with the reason a person reads when the fix cannot stand."""
@@ -229,7 +253,7 @@ def resolve_in(clone, pr, base_ref, answer, tried=0):
         raise RuntimeError(f"git merge refused: {(merged.stdout + merged.stderr).strip()[-600:]}")
     walled = pr_review.walled(conflicted)
     if walled:
-        raise RuntimeError(f"a conflict in a file the fixer may not touch: {', '.join(walled)}")
+        raise RuntimeError(f"a conflict in a file the fixer may not touch: {', '.join(walled)}. {by_hand(pr, base_ref)}")
     summary, model, touched = "git merged it without a conflict", None, []
     if conflicted:
         hunks = sum(len(re.findall(r"^<<<<<<< ", (clone / p).read_text(errors="replace"), re.M))
@@ -241,7 +265,7 @@ def resolve_in(clone, pr, base_ref, answer, tried=0):
         touched, note = accept(clone, conflicted, before)
         summary += note
     else:
-        sh(clone, "git", "add", "-u")
+        indexed(clone, "add", "-u")
     return summary, model, touched
 
 
@@ -276,9 +300,9 @@ def accept(clone, conflicted, before, keep_new=lambda path: False):
     new = sh(clone, "git", "ls-files", "--others", "--exclude-standard").stdout.split()
     kept = [path for path in new if keep_new(path)]
     # A build dir or a scratch file the model left would otherwise ride the merge into the PR.
-    sh(clone, "git", "add", "-u")
+    indexed(clone, "add", "-u")
     if conflicted or kept:
-        sh(clone, "git", "add", "--", *conflicted, *kept)
+        indexed(clone, "add", "--", *conflicted, *kept)
     strays = sh(clone, "git", "ls-files", "--others", "--exclude-standard", "--directory").stdout.split()
     sh(clone, "git", "clean", "-fdq")
     note = f"\n\nLeft out of the commit, as files the model created: {', '.join(strays)}" if strays else ""
@@ -424,7 +448,7 @@ def formatted(clone):
     if not (clone / "Cargo.toml").is_file():
         return
     sh(clone, "cargo", "fmt", "--all", env=scrubbed(), check=False)
-    sh(clone, "git", "add", "-u")
+    indexed(clone, "add", "-u")
 
 
 def failures(output):
@@ -756,7 +780,8 @@ def findings_in(clone, pr, rnd, answer, tried=0, floor=0):
     if not sh(clone, "git", "diff", "--cached", "--name-only").stdout.strip():
         if todo and {d["n"] for d in declined} == set(range(1, len(todo) + 1)):
             raise Declined(reasons.strip(), declined_highs)
-        raise Missed("the fixer changed nothing" + reasons)
+        raise Missed(f"the fixer changed nothing of the {len(todo)} finding(s) listed; it said "
+                     f"'{(said.get('summary') or '').strip()[:600] or 'nothing'}'" + reasons)
     return summary, model, touched, declined_highs
 
 
@@ -778,13 +803,13 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             subject, signed = f"Merge {base_ref} into this branch and resolve its conflicts", ""
         elif kind == "gate":
             if prior_fixes(root, sha, stopped, GATE_SIGNED) >= 2:
-                raise RuntimeError("two fixes in a row did not clear the gate; a person is next")
+                raise RuntimeError("two fixes in a row did not clear the gate; a person is next. " + by_hand(pr))
             summary, model, touched = gate_in(clone, pr, lanes, answer, tried)
             subject, signed = f"Fix what the {' and '.join(lanes)} gate refused", f"{GATE_SIGNED} {sha[:12]} of #{pr['number']}.\n"
         else:
             before = prior_fixes(root, sha, stopped)
             if before >= STOP_AT:
-                raise RuntimeError(f"{before} fixes in a row did not clear the review; a person is next")
+                raise RuntimeError(f"{before} fixes in a row did not clear the review; a person is next. " + by_hand(pr))
             # A fix after a fix the review did not clear goes up from that fix's tier, never down.
             floor = last_tier(root, sha) + 1 if before else 0
             summary, model, touched, declined_highs = findings_in(clone, pr, rnd, answer, tried + before, floor)
@@ -961,9 +986,9 @@ def attempt(repo, pr, ids, asked=False):
     post = lambda body: forge_pr.fgj_api("POST", f"repos/{repo}/issues/{number}/comments", {"body": body})
     if fix_spend(notes) >= CAP_PR:
         reason = f"this PR's fixes have spent ${fix_spend(notes):.2f} of its ${CAP_PR:.2f} cap"
-        set_label(repo, number, ids, "autofix:failed", True)
         meter = bot_meter.Meter()
         post(render(number, {}, "capped", reason, bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), "autofix"), meter))
+        set_label(repo, number, ids, "autofix:failed", True)
         return "capped"
     set_label(repo, number, ids, "autofix:working", True)
     fields, verdict, reason, meter = {}, "failed", "", bot_meter.Meter()
@@ -990,14 +1015,15 @@ def attempt(repo, pr, ids, asked=False):
         reason, verdict = str(err), verdict_of(err, notes)
     finally:
         set_label(repo, number, ids, "autofix:working", False)
-    # Stop and wait: a high the fixer showed wrong is the owner's call, not another round's.
+    what = f"autofix ({fields.get('kind') or KINDS[said]})"
+    status = bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), what)
+    # The comment before the label: `autofix:failed` means "its comment says why", so a comment that
+    # fails to post must not leave the label behind. Incident: #1732 and #1733 were labelled with nothing.
+    post(render(number, fields, verdict, reason, status, meter))
     if verdict == "failed" or fields.get("declined"):
         set_label(repo, number, ids, "autofix:failed", True)
     if verdict == "pushed" and "autofix" in labels:
         set_label(repo, number, ids, "autofix", False)
-    what = f"autofix ({fields.get('kind') or KINDS[said]})"
-    status = bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), what)
-    post(render(number, fields, verdict, reason, status, meter))
     print(status)
     return verdict
 
@@ -1071,7 +1097,12 @@ def cmd_autofix(args):
             break
         if not any(label["name"] == "autofix:hold" for label in pr.get("labels") or []):
             tidy(repo, pr)
-        said = attempt(repo, pr, ids)
+        try:
+            said = attempt(repo, pr, ids)
+        except Exception as err:
+            # One PR the pass cannot read is that PR's: the rest of the open PRs are still tried.
+            said = "error"
+            print(f"#{pr['number']}: the pass could not finish this PR: {err}")
         # Incident: a PR already labelled failed answered "failed" here too, so three of them
         # filled every pass's quota with skips and no other PR was tried for a day.
         fixed += said in ("pushed", "failed", "missed", "moved", "declined")
@@ -1259,6 +1290,8 @@ def selfcheck():
             errs.append("a resolution that left markers was accepted")
         if "may not touch" not in str(run({"a.txt": "ok\n", "scripts/guardrails/x.py": "weaker\n"})):
             errs.append("a resolution that edited the gates was accepted")
+        if "`just pr autofix 7`" not in by_hand({"number": 7}) or "`git fetch origin && git merge origin/main`" not in by_hand({"number": 7}, "main"):
+            errs.append("a stop's next step does not name the command a person runs")
         stray = run({"a.txt": "main and topic\n", "target-check/x.d": "build output\n"})
         if not (isinstance(stray, tuple) and "target-check/" in stray[0] and "target-check/x.d" not in stray[2]):
             errs.append(f"a build dir the model left read {stray}, not left out and named")
@@ -1349,6 +1382,9 @@ def selfcheck():
         if "names no finding" not in str(findings_run({}, declined=[99])):
             errs.append("a decline that names no listed finding lost its reason")
         whole, part = findings_run({}, declined=[1, 2]), findings_run({}, declined=[1])
+        empty = findings_run({})
+        if "changed nothing" not in str(empty) or "it said 'done'" not in str(empty):
+            errs.append(f"a fix that changed nothing and declined none read {empty!r}, not the model's own words")
         if "changed nothing" in str(whole) or "Declined 2 (high)" not in str(whole) or "changed nothing" not in str(part):
             errs.append(f"declining every finding read {whole!r} and declining one read {part!r}")
         first = len(asked)
@@ -1392,8 +1428,9 @@ def selfcheck():
                 and not any("baselines" in path for path in code) and prior_fixes(tmp, tip) == 4
                 and pr_review.answered(sh(tmp, "git", "log", "-1", "--format=%B", tip).stdout, 4, 7)):
             errs.append(f"a fix that moved the request budget read {fourth if isinstance(fourth, str) else subjects}, code={code}")
-        if f"{STOP_AT} fixes in a row" not in str(findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n}\n"})):
-            errs.append(f"a fix after {STOP_AT} in a row was not stopped for a person")
+        if f"{STOP_AT} fixes in a row" not in str(findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n}\n"})) \
+                or "`just pr autofix 7`" not in str(findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n}\n"})):
+            errs.append(f"a fix after {STOP_AT} in a row was not stopped for a person with the command to run")
     finally:
         shutil.rmtree(tmp)
         shutil.rmtree(tmp.parent / (tmp.name + "-remote.git"), ignore_errors=True)
@@ -1509,6 +1546,18 @@ def selfcheck():
             owner = bool(highs) and "a false alarm (`a.rs:3`)" in "".join(posted)
             if said != "declined" or (("autofix:failed", True) in labelled) != bool(highs) or bool(highs) != owner:
                 errs.append(f"a round declined whole (highs={len(highs)}) read {said} with labels {labelled}, owner list shown={owner}")
+        # A comment the forge refused leaves no label behind: `autofix:failed` means "its comment says why".
+        labelled[:] = []
+        module.fix = lambda pr, **kw: (_ for _ in ()).throw(RuntimeError("the clone's hook refused the fix"))
+        forge_pr.fgj_api = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("the forge was down"))
+        try:
+            attempt("o/r", draft, {})
+            uncommented = "returned"
+        except RuntimeError:
+            uncommented = "raised"
+        if uncommented != "raised" or ("autofix:failed", True) in labelled:
+            errs.append(f"a comment the forge refused {uncommented} with labels {labelled}, not an error and no label")
+        module.fix, labelled[:] = stand["fix"], []
         forge_pr.fgj_api = lambda *a, **k: {}
         declined = tried_notes + [dict(bot, body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 kind=findings from=abc round=2 verdict=declined -->\n")]
         pr_review.comments, module.fix = (lambda repo, n: declined), stand["fix"]
@@ -1560,6 +1609,37 @@ def selfcheck():
         shutil.rmtree(repo)
     if tier_for(1, 0, 2) != TIERS[2] or tier_for(20, 0, 0) != TIERS[2] or tier_for(1, 1, 0) != TIERS[1]:
         errs.append("a tier floor does not hold a fix at or above the tier of the fix before it")
+    # A staging write waits out another process's index lock, and one that never frees defers the PR.
+    repo = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-lock-"))
+    try:
+        g = lambda *a: sh(repo, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        g("init", "-q")
+        (repo / "a.rs").write_text("old\n")
+        g("add", "-A")
+        g("commit", "-qm", "seed")
+        before = snapshot(repo)
+        (repo / "a.rs").write_text("new\n")
+        lock = repo / ".git/index.lock"
+        lock.write_text("")
+        holder = threading.Thread(target=lambda: (time.sleep(0.4), lock.unlink(missing_ok=True)))
+        holder.start()
+        try:
+            freed, _ = accept(repo, [], before)
+        except Missed as err:
+            freed = str(err)
+        holder.join()
+        if freed != ["a.rs"]:
+            errs.append(f"a staging write lost the clone to another process's index lock: {freed}")
+        lock.write_text("")
+        try:
+            accept(repo, [], before)
+            stuck = RuntimeError("the lock was never seen")
+        except Missed as err:
+            stuck = err
+        if verdict_of(stuck, []) != "deferred":
+            errs.append(f"a clone whose index lock never frees read {verdict_of(stuck, [])}, not deferred")
+    finally:
+        shutil.rmtree(repo)
     # Three baselines moving at once still make a subject the commit-style gate passes.
     repo = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-ratchet-"))
     try:
@@ -1645,6 +1725,18 @@ def selfcheck():
                                                               ("missed" if misses_left and misses_left.pop() else "pushed"))
         forge_pr.fgj_api = lambda *a, **k: [fresh, dict(fresh, number=5)]
         cmd_autofix(type("A", (), {"number": None})())
+        reached = []
+        def one_bad(repo, pr, ids, asked=False):
+            reached.append(pr["number"])
+            raise RuntimeError(f"#{pr['number']}: its clone could not be made")
+        module.attempt = one_bad
+        try:
+            cmd_autofix(type("A", (), {"number": None})())
+            ended = "finished"
+        except RuntimeError:
+            ended = f"stopped at #{reached[-1]}"
+        if ended != "finished" or reached != [4, 5]:
+            errs.append(f"a PR the pass could not read {ended} having reached {reached}, not the pass finishing both")
     finally:
         forge_pr.fgj_api, forge_pr.repo = keep_api, keep_repo
         for name, value in keep.items():
