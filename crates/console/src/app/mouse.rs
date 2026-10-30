@@ -165,11 +165,13 @@ impl App {
                 return self.apply_action(outbound, Action::Navigator);
             }
             Some((_, crate::render::Hit::Fold(root))) => {
-                self.state.toggle_fold(&root);
+                self.state.fold_from_header(&root);
+                self.state.zone = Zone::Sidebar;
                 self.dirty = true;
                 return;
             }
             Some((_, crate::render::Hit::Session(index))) => {
+                self.state.header = None;
                 self.state.selected = index;
                 self.state.cursor_moved = true;
                 self.state.zone = Zone::Sidebar;
