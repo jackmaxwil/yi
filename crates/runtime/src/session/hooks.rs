@@ -297,6 +297,9 @@ impl AgentSession {
             let messages = shared.messages.lock().ok()?;
             let usages = messages.iter().filter_map(|message| match message {
                 AgentMessage::Assistant { usage, .. } => Some(usage),
+                AgentMessage::ToolResult {
+                    usage: Some(usage), ..
+                } => Some(usage),
                 _ => None,
             });
             Some(usages.fold((0.0, false), |(cost, lower_bound), usage| {

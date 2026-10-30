@@ -116,7 +116,6 @@ pub struct ProjectResources {
     global_skills: Vec<String>,
     lists_skills: bool,
 }
-
 impl ProjectResources {
     pub fn new(cwd: PathBuf, home: PathBuf) -> Self {
         let gate = TrustGate::new(&home);

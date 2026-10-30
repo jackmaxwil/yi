@@ -72,8 +72,8 @@ guardrails-fast:
 
 # Serial on purpose: beside the dist build, nextest's first exec of 134 fresh test binaries
 # queued behind Gatekeeper's per-binary scan, and the gate took 116-302s where serial took 135-151s.
-# `--quiet` prints one line when green and only the failing lane's own output otherwise, with the
-# same exit code, so an agent reads `$?` and the failure rather than every launched gate.
+# `--quiet` prints the guardrails lane's own quiet output when green (its skip rows, then its summary line),
+# and only the failing lane's own output otherwise, with the same exit code, so an agent reads `$?`.
 check *flags:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -86,6 +86,7 @@ check *flags:
       out=$(just $lane 2>&1)
       rc=$?
       if [ "$rc" != 0 ]; then printf '%s\n' "$out"; exit "$rc"; fi
+      case $lane in guardrails*) printf '%s\n' "$out" ;; esac
     done
     echo "check: lint, guardrails and test green"
 

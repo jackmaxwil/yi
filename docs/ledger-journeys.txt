@@ -25,6 +25,9 @@ Claude Code tool hooks | `claude_hooks::a_hook_allow_never_widens_an_in_process_
 Claude Code tool hooks | `mcp_cli::a_cells_mcp_call_runs_claude_code_hooks_under_its_mcp_name` (T2)
 permission modes/rules/holds, deterministic auto | `gate_battery::the_battery_lands_where_the_table_says`
 permission modes/rules/holds, deterministic auto | `safety::an_unknown_command_is_contained_not_allowed`
+check probe | `ask_check::a_check_that_cannot_run_exits_2_before_any_request`
+check probe | `goal_e2e::a_declared_check_that_cannot_start_is_refused_not_run`
+check probe | `check_probe::a_check_whose_program_is_absent_is_refused_by_name`
 permission modes/rules/holds, deterministic auto | `decide::auto_reads_a_command_segment_by_segment`
 permission modes/rules/holds, deterministic auto | `safety::a_flag_that_runs_or_writes_is_not_read_only`
 model auto-review M7/M8 | `auto_review::a_reviewer_denial_carries_its_evidence_and_a_request_number`
@@ -534,3 +537,5 @@ TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_sea
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
 extension system + yard + native voice/method | `ext_e2e::one_instruction_file_attaches_for_two_ruler_renders`
+web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
+web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)
