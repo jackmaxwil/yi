@@ -226,13 +226,6 @@ fn the_recorded_tool_turn_maps_to_thinking_a_call_and_its_usage() -> TestResult 
     Ok(())
 }
 
-pub(crate) fn json_reply(status: &str, body: &str) -> String {
-    format!(
-        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
-    )
-}
-
 fn user_agent(request: &str) -> Option<String> {
     request.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
@@ -246,10 +239,14 @@ fn user_agent(request: &str) -> Option<String> {
 #[test]
 fn every_agent_identifies_as_yi_and_a_profile_header_replaces_it() -> TestResult {
     let (port, _, handle) = serve(vec![
-        json_reply("200 OK", "{}"),
-        json_reply("200 OK", "{}"),
-        json_reply("200 OK", "{}"),
-        json_reply("200 OK", r#"{"access_token":"a2","expires_in":900}"#),
+        crate::loopback::reply("200 OK", "application/json", "{}"),
+        crate::loopback::reply("200 OK", "application/json", "{}"),
+        crate::loopback::reply("200 OK", "application/json", "{}"),
+        crate::loopback::reply(
+            "200 OK",
+            "application/json",
+            r#"{"access_token":"a2","expires_in":900}"#,
+        ),
     ])?;
     let base = format!("http://127.0.0.1:{port}");
     let probe =
@@ -338,7 +335,11 @@ fn a_non_moonshot_route_is_byte_identical() -> TestResult {
 /// `?beta=true` included, off the same `api_base` the chat models use.
 #[test]
 fn an_anthropic_protocol_kimi_model_posts_to_beta_messages() -> TestResult {
-    let (port, _, handle) = serve(vec![json_reply("200 OK", "{}")])?;
+    let (port, _, handle) = serve(vec![crate::loopback::reply(
+        "200 OK",
+        "application/json",
+        "{}",
+    )])?;
     let base = format!("http://127.0.0.1:{port}/coding/v1");
     let list =
         json!({"data": [{"id": "k3-a", "protocol": "anthropic", "limit": {"context": 262144}}]});

@@ -171,8 +171,8 @@ fn a_literal_api_key_is_the_bearer() -> TestResult {
     Ok(())
 }
 
-/// No key anywhere is refused before any request, naming the two routes a custom id has; `yi
-/// login` has no profile for one, so it is not offered.
+/// No key anywhere is refused before any request, naming the variable that would supply one;
+/// `yi login` has no profile for a custom id, so it is not offered.
 #[test]
 fn a_declared_provider_with_no_key_is_refused_before_any_request() -> TestResult {
     let (port, seen) = fake_gateway()?;
@@ -182,14 +182,34 @@ fn a_declared_provider_with_no_key_is_refused_before_any_request() -> TestResult
     )?;
     let ask = home.yi(&["ask", "--here", "--model", "localgw/m1", "hi"], &[])?;
     assert_eq!(ask.status.code(), Some(4), "{}", text(&ask));
-    let refusal = "no credential for provider localgw (export LOCALGW_API_KEY or set providers.localgw.apiKey in config.json)";
+    let refusal = "no credential for provider localgw (export LOCALGW_API_KEY)";
     assert!(text(&ask).contains(refusal), "{}", text(&ask));
     assert!(seen.lock().map_err(|_| "fake lock")?.is_empty());
     let row = providers_row(&home, &[])?;
     assert_eq!(row["status"], "fail", "{row}");
     let detail = row["detail"].as_str().unwrap_or_default();
     assert!(
-        detail.ends_with("no key (export LOCALGW_API_KEY or set apiKey)"),
+        detail.ends_with("no key (export LOCALGW_API_KEY or set apiKeyEnv)"),
+        "{row}"
+    );
+    Ok(())
+}
+
+/// A key only the yi-oauth store holds is named by the file it actually lives at.
+#[test]
+fn a_stored_key_names_the_token_file_it_came_from() -> TestResult {
+    let home = Home::new("stored", &localgw(1, json!({})))?;
+    let tokens = home.dir.join("home/.yi/providers/tokens");
+    std::fs::create_dir_all(&tokens)?;
+    std::fs::write(
+        tokens.join("localgw.json"),
+        json!({"version": 1, "kind": "key", "access": "sk-stored"}).to_string(),
+    )?;
+    let row = providers_row(&home, &[])?;
+    assert_eq!(row["status"], "ok", "{row}");
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.ends_with("key from ~/.yi/providers/tokens/localgw.json"),
         "{row}"
     );
     Ok(())

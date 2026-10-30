@@ -267,9 +267,10 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   merge after the cache, so no refresh rewrites or drops them, and no refresh ever fetches one.
   Requests go through the OpenAI completions adapter at `baseUrl` with plain `max_tokens`
   (`compat.plainMaxTokens`) and none of OpenAI's own fields. Key: `apiKeyEnv`'s variable, else
-  `apiKey` (a literal, for a gateway placeholder that is not a secret); none is a missing-credential
-  refusal naming both. The block is read once per process: an edit takes hold on restart.
-  `yi doctor` has a `providers` row naming each and where its key resolved.
+  `apiKey` (a literal placeholder that is not a secret), else a token in the yi-oauth store at
+  `~/.yi/providers/tokens/<id>.json`; none is a missing-credential refusal naming the variable. A
+  real key belongs in the variable, never in `config.json`. The block is read once per process: an
+  edit takes hold on restart. `yi doctor` has a `providers` row naming each and where its key resolved.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
