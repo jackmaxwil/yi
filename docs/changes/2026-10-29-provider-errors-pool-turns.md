@@ -1,11 +1,7 @@
 ---
 issue: Closes #1514
-growth: +294 classing provider errors once, pooling the connections a turn hands back, keeping the partial turn every adapter had already been billed for, and keeping leak recovery off quoted text
-raise: tests +652
-raise: comments +30
-raise: crate ai +235
-raise: crate loop +7
-raise: crate types +37
+growth: +279 classing provider errors once, pooling the connections a turn hands back, keeping the partial turn every adapter had already been billed for, and keeping leak recovery off quoted text
+raise: crate ai +235, crate loop +7, crate types +37, tests +652, comments +30
 ---
 Provider errors are classed once, the connection a finished stream hands back is pooled, and a
 turn that dies mid-stream keeps what it produced.

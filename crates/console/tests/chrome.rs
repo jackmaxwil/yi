@@ -12,7 +12,7 @@ use yi_console::layout::PaneId;
 use yi_console::model::{
     Link, PaneContent, SessionId, SessionRow, SessionStatus, SidebarMode, Zone,
 };
-use yi_console::settings::{Edit, Settings, tab_name};
+use yi_console::settings::{Edit, Settings, Target, tab_name};
 use yi_tui::colors::{ColorTier, Theme};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -79,12 +79,15 @@ fn a_click_on_a_settings_tab_opens_that_tab() -> TestResult {
     let (mut app, pane) = console()?;
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
-    let (keys, _, want) = hits(&app)?
-        .settings_tabs
+    let (keys, _, target) = hits(&app)?
+        .settings_targets
         .iter()
         .copied()
-        .rfind(|(_, at, tab)| *at == pane && *tab > 0)
+        .rfind(|(_, at, target)| *at == pane && matches!(target, Target::Tab(tab) if *tab > 0))
         .ok_or("no other tab has a click target")?;
+    let Target::Tab(want) = target else {
+        return Err("no other tab has a click target".into());
+    };
     let strip = row_text(&terminal, keys.y);
     let label: String = strip
         .chars()
@@ -118,10 +121,10 @@ fn a_click_on_a_settings_tab_drops_a_pending_edit() -> TestResult {
         settings.status = Some("saved".to_owned());
     }
     let (keys, ..) = hits(&app)?
-        .settings_tabs
+        .settings_targets
         .iter()
         .copied()
-        .rfind(|(_, at, tab)| *at == pane && *tab > 0)
+        .rfind(|(_, at, target)| *at == pane && matches!(target, Target::Tab(tab) if *tab > 0))
         .ok_or("no other tab has a click target")?;
     mouse(&mut app, MouseKind::Down, keys.x.saturating_add(1), keys.y);
     match app.state.panes.get(&pane).map(|pane| &pane.content) {
@@ -131,6 +134,188 @@ fn a_click_on_a_settings_tab_drops_a_pending_edit() -> TestResult {
         }
         _ => return Err("the settings pane went away".into()),
     }
+    Ok(())
+}
+
+fn settings_of(app: &App, pane: PaneId) -> Result<&Settings, Box<dyn Error>> {
+    match app.state.panes.get(&pane).map(|pane| &pane.content) {
+        Some(PaneContent::Settings(settings)) => Ok(settings),
+        _ => Err("the settings pane went away".into()),
+    }
+}
+
+/// The tab's rows, each beside the click target the last frame drew for it.
+fn page_with_targets(
+    app: &App,
+    pane: PaneId,
+    page: &[yi_types::settings::SettingRow],
+) -> Result<Vec<(usize, Rect)>, Box<dyn Error>> {
+    let targets = &hits(app)?.settings_targets;
+    (0..page.len())
+        .map(|index| {
+            let at = targets
+                .iter()
+                .find(|(_, at, target)| *at == pane && *target == Target::Row(index))
+                .map(|(rect, ..)| *rect)
+                .ok_or(format!("row {index} has no click target"))?;
+            Ok((index, at))
+        })
+        .collect()
+}
+
+/// Incident: the page's rows carried no click target, so a press on a setting began a text
+/// selection and left the control alone; every row answers the pointer now.
+#[test]
+fn a_press_on_a_settings_row_works_the_control_it_names() -> TestResult {
+    let (mut app, pane) = console()?;
+    let mut settings = Settings::new(None, yi_types::settings::TABS.len());
+    settings.rows = Some(yi_types::settings::rows());
+    app.state.panes.get_mut(&pane).ok_or("no pane")?.content =
+        PaneContent::Settings(Box::new(settings));
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let tab = tab_name(yi_types::settings::TABS.len());
+    let page: Vec<_> = yi_types::settings::rows()
+        .into_iter()
+        .filter(|row| row.tab == tab)
+        .collect();
+    let rows = page_with_targets(&app, pane, &page)?;
+    assert_eq!(rows.len(), page.len(), "a row on the page has no target");
+    for (index, at) in &rows {
+        let drawn = row_text(&terminal, at.y);
+        assert!(
+            drawn.contains(&page[*index].label),
+            "row {index} sits at {} over {drawn:?}",
+            at.y
+        );
+    }
+    let find = |id: &str| -> Result<(usize, Rect), Box<dyn Error>> {
+        let index = page
+            .iter()
+            .position(|row| row.id == id)
+            .ok_or(format!("no {id} row"))?;
+        let (index, at) = rows
+            .iter()
+            .find(|(at, _)| *at == index)
+            .copied()
+            .ok_or(format!("{id} has no target"))?;
+        Ok((index, at))
+    };
+    let look = |terminal: &Terminal<TestBackend>, x: u16, y: u16| {
+        terminal
+            .backend()
+            .buffer()
+            .cell((x, y))
+            .map(|cell| cell.style())
+    };
+    let (_, first) = find("console.autoSide")?;
+    let rest = look(&terminal, first.x, first.y);
+    mouse(&mut app, MouseKind::Moved, first.x, first.y);
+    assert!(app.dirty, "moving onto a settings row asks for no frame");
+    draw(&mut app, &mut terminal)?;
+    assert_ne!(
+        look(&terminal, first.x, first.y),
+        rest,
+        "the hovered row looks the same"
+    );
+    let (index, toggle) = find("console.autoSide")?;
+    mouse(&mut app, MouseKind::Down, toggle.x, toggle.y);
+    let settings = settings_of(&app, pane)?;
+    assert_eq!(settings.cursor, index, "the press left the cursor alone");
+    assert!(settings.edit.is_none(), "a toggle opened an editor");
+    assert!(app.selection.is_none(), "the press began a text selection");
+    let (index, field) = find("browser.path")?;
+    mouse(&mut app, MouseKind::Down, field.x, field.y);
+    let settings = settings_of(&app, pane)?;
+    assert_eq!(settings.cursor, index, "the press left the cursor alone");
+    assert!(
+        matches!(&settings.edit, Some(Edit::Type(text)) if text.is_empty()),
+        "a text row opened no editor"
+    );
+    let (index, number) = find("tui.pace")?;
+    mouse(&mut app, MouseKind::Down, number.x, number.y);
+    let settings = settings_of(&app, pane)?;
+    assert_eq!(settings.cursor, index, "the press left the cursor alone");
+    assert!(
+        matches!(&settings.edit, Some(Edit::Type(_))),
+        "a number row opened no editor"
+    );
+    let (_, json) = find("keys")?;
+    mouse(&mut app, MouseKind::Down, json.x, json.y);
+    let settings = settings_of(&app, pane)?;
+    assert!(
+        settings
+            .status
+            .as_deref()
+            .is_some_and(|note| note.contains("config.json")),
+        "a json row said nothing: {:?}",
+        settings.status
+    );
+    Ok(())
+}
+
+/// The pane draws only a window of a long page; a wheel over it moves that window now, so a row
+/// past the fold is drawn, hoverable and pressable with no key at all.
+#[test]
+fn a_wheel_over_a_settings_pane_brings_a_row_past_the_fold_into_reach() -> TestResult {
+    let (mut app, pane) = console()?;
+    let rows = yi_types::settings::rows();
+    let tab = (1..=yi_types::settings::TABS.len())
+        .max_by_key(|tab| rows.iter().filter(|row| row.tab == tab_name(*tab)).count())
+        .ok_or("no config tab")?;
+    let page: Vec<_> = rows
+        .into_iter()
+        .filter(|row| row.tab == tab_name(tab))
+        .collect();
+    let mut settings = Settings::new(None, tab);
+    settings.rows = Some(yi_types::settings::rows());
+    app.state.panes.get_mut(&pane).ok_or("no pane")?.content =
+        PaneContent::Settings(Box::new(settings));
+    let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+    draw(&mut app, &mut terminal)?;
+    let last = page.len().saturating_sub(1);
+    let target_of = |app: &App, row: usize| -> Option<Rect> {
+        hits(app)
+            .ok()?
+            .settings_targets
+            .iter()
+            .find_map(|(rect, at, target)| {
+                (*at == pane && *target == Target::Row(row)).then_some(*rect)
+            })
+    };
+    assert!(
+        target_of(&app, last).is_none(),
+        "the page fits at 80x24, so no row is past the fold"
+    );
+    let at = hits(&app)?
+        .panes
+        .iter()
+        .find_map(|(id, rect)| (*id == pane).then_some(*rect))
+        .ok_or("no pane rect")?;
+    let (x, y) = (
+        at.x.saturating_add(at.width / 2),
+        at.y.saturating_add(at.height / 2),
+    );
+    for _ in 0..page.len() {
+        if target_of(&app, last).is_some() {
+            break;
+        }
+        mouse(&mut app, MouseKind::ScrollDown, x, y);
+        draw(&mut app, &mut terminal)?;
+    }
+    let rect = target_of(&app, last).ok_or("the wheel never brought the last row in")?;
+    let drawn = row_text(&terminal, rect.y);
+    assert!(
+        drawn.contains(&page[last].label),
+        "the last row's target sits at {} over {drawn:?}",
+        rect.y
+    );
+    mouse(&mut app, MouseKind::Down, rect.x, rect.y);
+    assert_eq!(
+        settings_of(&app, pane)?.cursor,
+        last,
+        "the press missed the row the wheel brought in"
+    );
     Ok(())
 }
 
@@ -173,7 +358,10 @@ fn hovering_a_control_lifts_it_and_only_a_new_target_redraws() -> TestResult {
     let found = hits(&app)?;
     let session = found.sidebar_rows.first().ok_or("no sidebar row")?.0;
     let title = found.titles.iter().find(|(at, _)| *at == pane);
-    let tab = found.settings_tabs.iter().find(|(_, _, tab)| *tab > 0);
+    let tab = found
+        .settings_targets
+        .iter()
+        .find(|(_, _, target)| matches!(target, Target::Tab(tab) if *tab > 0));
     let controls = found
         .controls
         .iter()
@@ -404,9 +592,9 @@ fn the_palette_and_the_settings_tabs_use_no_accent_blue() -> TestResult {
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
     let tab = hits(&app)?
-        .settings_tabs
+        .settings_targets
         .iter()
-        .find(|(_, _, tab)| *tab == 0)
+        .find(|(_, _, target)| *target == Target::Tab(0))
         .map(|(rect, ..)| *rect)
         .ok_or("no first tab")?;
     let chip = cell_at(&terminal, tab.x.saturating_add(1), tab.y)?;

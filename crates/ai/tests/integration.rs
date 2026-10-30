@@ -34,3 +34,4 @@ mod resend;
 mod strict_tools;
 mod structured;
 mod tool_choice;
+mod web_search;
