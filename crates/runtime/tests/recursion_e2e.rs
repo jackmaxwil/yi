@@ -4944,8 +4944,8 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
     })
     .await??;
     assert!(
-        cell.result.stdout.contains("doomed error"),
-        "the delete takes the handle and says the run did not finish: {} {}",
+        cell.result.stdout.contains("doomed failed"),
+        "the delete takes the handle and says the run did not finish, in the roster's word: {} {}",
         cell.result.stdout,
         cell.result.stderr
     );
