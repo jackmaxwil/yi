@@ -95,7 +95,7 @@ def rows(comments):
                 if line.startswith(marker) and line.endswith(" -->"):
                     fields = dict(p.split("=", 1) for p in line[len(marker):-4].split() if "=" in p)
                     url = comment.get("pull_request_url") or comment.get("issue_url") or ""
-                    out.append({**fields, "kind": marker[5:].split("-meta")[0], "at": comment.get("created_at", ""),
+                    out.append({**fields, "kind": marker[5:].split("-meta")[0], "at": comment.get("created_at", ""), "id": comment.get("id", 0),
                                 "pr": fields.get("pr") or url.rsplit("/", 1)[-1]})
     return out
 
