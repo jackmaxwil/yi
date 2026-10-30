@@ -736,7 +736,7 @@ impl AgentSession {
             *messages = loaded;
         }
         if let Ok(mut queue) = self.shared.steer.lock() {
-            for message in crate::mail::unread(&entries) {
+            for message in crate::mail::resumed(&store, &entries) {
                 run::push(&mut queue, Queued::new(message, false, None));
             }
         }
