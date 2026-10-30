@@ -391,6 +391,10 @@ fn child_update(status: ChildStatus, answer_preview: Option<String>) -> ChildUpd
         error: None,
         exit: None,
         flag: None,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
 
@@ -401,7 +405,16 @@ fn child_update(status: ChildStatus, answer_preview: Option<String>) -> ChildUpd
 #[test]
 fn a_feedless_childs_long_answer_keeps_its_tail_when_the_preview_arrives() -> TestResult {
     let mut app = app();
-    app.adopt(&child_update(ChildStatus::Running, None), None, None);
+    app.reduce_agent(AgentEvent::ToolExecutionStart {
+        tool_call_id: "cell-1".to_owned(),
+        tool_name: "ipython".to_owned(),
+        args: serde_json::json!({"code": "h = await rlm.run()"}),
+    });
+    app.adopt(
+        &child_update(ChildStatus::Running, None),
+        None,
+        Some("cell-1"),
+    );
     let text: String = (0..3_000)
         .map(|n| format!("line {n} of a long report\n"))
         .collect();
@@ -423,7 +436,7 @@ fn a_feedless_childs_long_answer_keeps_its_tail_when_the_preview_arrives() -> Te
     }
     let preview = format!("{}…", text.chars().take(240).collect::<String>());
     app.reduce_child_update(&child_update(ChildStatus::Completed, Some(preview)));
-    let rows = flat(&app.take_commits());
+    let rows = common::live_rows(&mut app)?;
     let row = rows
         .iter()
         .find(|row| row.contains("[…] kept the last"))

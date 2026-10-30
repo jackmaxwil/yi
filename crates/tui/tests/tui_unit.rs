@@ -1870,9 +1870,9 @@ fn antecedent(cell: &Cell) -> Option<&'static str> {
         | Cell::Explored(_)
         | Cell::Advisory { .. }
         | Cell::Notice { .. }
-        | Cell::Footer { .. }
-        | Cell::Rule { .. }
-        | Cell::Divider => None,
+        | Cell::Footer { .. } => None,
+        Cell::Rule { .. } => Some("an_early_end_waits_for_its_cell_then_follows_its_start"),
+        Cell::Divider => None,
     }
 }
 
