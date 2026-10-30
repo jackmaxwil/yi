@@ -36,13 +36,31 @@ fn skill(name: &str, needle: &str) -> RuleDoc {
 pub(crate) fn sidecar(
     bodies: Vec<&'static str>,
 ) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
-    sidecar_after(bodies, Duration::ZERO)
+    sidecar_on(bodies, Duration::ZERO, None)
 }
 
 /// [`sidecar`] that waits `pause` before each answer, as a loaded checkpoint does.
 fn sidecar_after(
     bodies: Vec<&'static str>,
     pause: Duration,
+) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
+    sidecar_on(bodies, pause, None)
+}
+
+/// [`sidecar`] whose answer waits for the returned sender: a caller that screens on the thread
+/// it was asked from is still blocked when the caller returns.
+pub(crate) fn sidecar_held(
+    body: &'static str,
+) -> std::io::Result<(u16, std::sync::mpsc::Sender<()>, SidecarThread)> {
+    let (release, hold) = std::sync::mpsc::channel();
+    let (port, handle) = sidecar_on(vec![body], Duration::ZERO, Some(hold))?;
+    Ok((port, release, handle))
+}
+
+fn sidecar_on(
+    bodies: Vec<&'static str>,
+    pause: Duration,
+    hold: Option<std::sync::mpsc::Receiver<()>>,
 ) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -67,6 +85,9 @@ fn sidecar_after(
             let _ = reader.read_exact(&mut sent);
             seen.push(String::from_utf8_lossy(&sent).into_owned());
             std::thread::sleep(pause);
+            if let Some(hold) = &hold {
+                let _ = hold.recv();
+            }
             let reply = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
                 body.len()
@@ -1110,7 +1131,17 @@ pub(crate) fn armed_into(
     Ok((seen, handle))
 }
 
-/// [`armed_into`] for a test that owns the slot itself.
+/// [`armed_into`] whose sidecar holds its one answer until the returned sender fires.
+pub(crate) fn armed_held(
+    body: &'static str,
+    into: &yi_runtime::classifier::Screeners,
+) -> std::io::Result<(Sink, std::sync::mpsc::Sender<()>, SidecarThread)> {
+    let (port, release, handle) = sidecar_held(body)?;
+    let (screener, seen) = screener(port, DEFAULT_SCREEN_AT, DEFAULT_SCREEN_MAX_CHARS);
+    into.set(screener);
+    Ok((seen, release, handle))
+}
+
 pub(crate) fn armed(
     body: &'static str,
 ) -> std::io::Result<(yi_runtime::classifier::Screeners, Sink, SidecarThread)> {

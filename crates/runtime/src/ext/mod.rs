@@ -249,16 +249,14 @@ impl Host {
     ) {
         let mut changed = false;
         for (pending, outcome) in screened {
-            changed |= self.state.attach_external(
+            changed |= self.attach_external(
                 &pending.source,
                 Trust::Untrusted,
                 &outcome.body,
                 outcome.mark,
             );
         }
-        if changed && let Some(store) = store {
-            persist_state(store, self.state.snapshot(&self.late));
-        }
+        self.persist_if(changed, store);
     }
 
     /// Before the first request the slot joins the prompt. After it, the text is delivered once
@@ -410,7 +408,7 @@ impl Host {
                     // screen never argues with it; only text read as data is screened, and with
                     // no screen attached there is nothing to wait for.
                     if trust == Trust::Granted || !self.screen.armed() {
-                        changed |= self.state.attach_external(&source, trust, &text, None);
+                        changed |= self.attach_external(&source, trust, &text, None);
                         continue;
                     }
                     self.pending.push(Pending { source, kind, text });
@@ -419,6 +417,20 @@ impl Host {
                 Effect::Record { key, value } => record(store, key, &value),
             }
         }
+        self.persist_if(changed, store);
+    }
+
+    fn attach_external(
+        &mut self,
+        source: &str,
+        trust: Trust,
+        text: &str,
+        mark: Option<f64>,
+    ) -> bool {
+        self.state.attach_external(source, trust, text, mark)
+    }
+
+    fn persist_if(&self, changed: bool, store: Option<&yi_session::SharedSession>) {
         if changed && let Some(store) = store {
             persist_state(store, self.state.snapshot(&self.late));
         }

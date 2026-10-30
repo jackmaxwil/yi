@@ -1301,8 +1301,8 @@ fn an_untrusted_attach_is_parked_until_the_caller_drains_it() -> TestResult {
     Ok(())
 }
 
-/// The session drains the host it owns before the first request: the attach its extension parked
-/// is screened by the run task, and the mark it comes back with is in the frozen prompt.
+/// The sidecar's answer is held until `prompt` returns, so only a screen the run task awaits can
+/// carry the mark: on the prompting thread the call times out and journals `unscreened`.
 #[tokio::test]
 async fn a_session_marks_the_attach_its_host_parked_before_the_first_request() -> TestResult {
     let provider = std::sync::Arc::new(yi_runtime::ProviderStream::new(None));
@@ -1319,7 +1319,7 @@ async fn a_session_marks_the_attach_its_host_parked_before_the_first_request() -
         },
         provider,
     );
-    let (seen, handle) = crate::classifier_e2e::armed_into(
+    let (seen, release, handle) = crate::classifier_e2e::armed_held(
         r#"{"answers":{"inject":{"noul":0.93}}}"#,
         &session.screeners(),
     )?;
@@ -1327,6 +1327,9 @@ async fn a_session_marks_the_attach_its_host_parked_before_the_first_request() -
     host.register(Box::new(TwoAttaches));
     session.install_extensions(host);
     session.prompt("go")?;
+    release
+        .send(())
+        .map_err(|_| "the held answer outlived the prompt")?;
     session.wait_idle().await;
     handle.join().map_err(|_| "sidecar thread")?;
     let prompt = session.system_prompt();
@@ -1334,10 +1337,12 @@ async fn a_session_marks_the_attach_its_host_parked_before_the_first_request() -
         prompt.contains(r#"source="page" trust="untrusted" screen="flagged:0.93""#),
         "the session's first request carries the mark: {prompt}"
     );
+    let records = crate::classifier_e2e::taken(&seen);
+    assert_eq!(records.len(), 1, "the parked attach was screened once");
     assert_eq!(
-        crate::classifier_e2e::taken(&seen).len(),
-        1,
-        "the parked attach was screened once"
+        records.first().and_then(|record| record.answer.as_deref()),
+        Some("flagged"),
+        "the answer is journaled as the mark, not as unscreened: {records:?}"
     );
     Ok(())
 }
