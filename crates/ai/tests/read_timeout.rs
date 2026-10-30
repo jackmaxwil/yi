@@ -1,6 +1,4 @@
 //! A gateway that says nothing until its first token is ready, against the model's own deadline.
-use std::io::{BufReader, Write};
-use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -9,67 +7,30 @@ use yi_ai::request::{Retry, pump_sse_with_resend, send_with_retry};
 use yi_types::model::DEFAULT_READ_TIMEOUT_SECS;
 
 use crate::common::model;
-use crate::loopback::read_request;
+use crate::loopback_server::{Script, serve_scripted};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+type Served = std::io::Result<(u16, Arc<AtomicUsize>, std::thread::JoinHandle<Vec<String>>)>;
 
 const SSE_HEAD: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
 
 /// Serves `replies` requests, each read whole and then held `stall` before its first byte.
-fn silent_at_first(
-    stall: Duration,
-    replies: usize,
-) -> std::io::Result<(u16, Arc<AtomicUsize>, std::thread::JoinHandle<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let served = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&served);
-    let handle = std::thread::spawn(move || {
-        for _ in 0..replies {
-            let Ok((stream, _)) = listener.accept() else {
-                break;
-            };
-            let mut reader = BufReader::new(stream);
-            let _ = read_request(&mut reader);
-            counted.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(stall);
-            let _ = reader.get_mut().write_all(SSE_HEAD.as_bytes());
-        }
-    });
-    Ok((port, served, handle))
+fn silent_at_first(stall: Duration, replies: usize) -> Served {
+    serve_scripted(std::iter::repeat_n(
+        Script::new(SSE_HEAD).stall(stall),
+        replies,
+    ))
 }
 
 /// Serves `replies` requests: headers at once, then `chunks` events, `gap` apart.
-fn trickle(
-    gap: Duration,
-    chunks: usize,
-    replies: usize,
-) -> std::io::Result<(u16, Arc<AtomicUsize>, std::thread::JoinHandle<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let served = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&served);
-    let handle = std::thread::spawn(move || {
-        for _ in 0..replies {
-            let Ok((stream, _)) = listener.accept() else {
-                break;
-            };
-            let mut reader = BufReader::new(stream);
-            let _ = read_request(&mut reader);
-            counted.fetch_add(1, Ordering::SeqCst);
-            if reader.get_mut().write_all(SSE_HEAD.as_bytes()).is_err() {
-                continue;
-            }
-            for index in 0..chunks {
-                std::thread::sleep(gap);
-                let event = format!("data: {{\"n\":{index}}}\n\n");
-                if reader.get_mut().write_all(event.as_bytes()).is_err() {
-                    break;
-                }
-            }
-        }
-    });
-    Ok((port, served, handle))
+fn trickle(gap: Duration, chunks: usize, replies: usize) -> Served {
+    let events: Vec<String> = (0..chunks)
+        .map(|n| format!("data: {{\"n\":{n}}}\n\n"))
+        .collect();
+    serve_scripted(std::iter::repeat_n(
+        Script::new(SSE_HEAD).then(gap, events),
+        replies,
+    ))
 }
 
 fn probe() -> yi_ai::breakpoints::Encoded {

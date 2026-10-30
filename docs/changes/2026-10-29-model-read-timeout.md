@@ -1,6 +1,6 @@
 ---
 issue: Closes #1824
-growth: +205 deadline plumbing through three adapters, the refresh merge and the loop guard; the fixture dedupe in tests already deleted what it could
+growth: +205 deadline plumbing through three adapters, the read-deadline pool and the loop guard; the refresh merge moved onto the catalog overlay and the fixture dedupe deleted what it could
 decision: a catalog entry's `readTimeoutSecs` (default 60 s) is the model's own read deadline, applied per read so it bounds the idle gap between chunks and never the whole body, and a timeout is neither retried nor resent | four commands ended mid-task on a gateway that answers only when its first token is ready, the fixed 60 s was the HTTP client's and named nothing, and the retry layers spent it three times over | delete the field from the catalog entry, which restores the client's constant
 raise: crate ai +131, crate cli +42, crate tui +1, crate types +36, comments +12
 ---
@@ -16,6 +16,7 @@ points at the catalog entry, and states how many attempts ran. A `yi ask` run th
 provider error now exits 1 in `--json` mode too, where it used to exit 0 with the error only in the
 final line.
 
-The loop does not re-run a turn that ended on that refusal, so one stall costs one deadline, and a
-catalog refresh keeps a `readTimeoutSecs` already in the cached entry instead of rewriting the file
-without it.
+The loop does not re-run a turn that ended on that refusal, so one stall costs one deadline. A
+refresh reads the cached entry through the catalog overlay, so a `readTimeoutSecs` set by hand
+survives it, and a cursor-agent entry carrying the field is refused at load rather than accepted
+and dropped: that wire waits on its own connect and header bounds.

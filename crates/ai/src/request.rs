@@ -300,10 +300,10 @@ pub fn waiting(sender: &Sender<AssistantMessageEvent>) -> impl Fn(Wait) + '_ {
 /// Past this a pooled connection is not trusted: a NAT may have dropped it without a FIN.
 const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(30);
 
-static POOLED: std::sync::Mutex<Option<Pooled>> = std::sync::Mutex::new(None);
+static POOLED: std::sync::Mutex<Vec<Pooled>> = std::sync::Mutex::new(Vec::new());
 
 /// A deadline is built into the agent, so a pool keyed by nothing but idle time handed a fast
-/// model's connection the slow model's bound.
+/// model's connection the slow model's bound. One slot thrashed two models in one session.
 struct Pooled {
     agent: ureq::Agent,
     idle_since: std::time::Instant,
@@ -322,15 +322,27 @@ fn stream_agent(proxy: Option<&ureq::Proxy>, read_timeout: std::time::Duration) 
     let Ok(mut pooled) = POOLED.lock() else {
         return builder.build();
     };
-    let agent = match pooled.take() {
-        Some(held)
-            if held.idle_since.elapsed() < KEEP_ALIVE && held.read_timeout == read_timeout =>
-        {
-            held.agent
-        }
-        _ => builder.build(),
-    };
-    *pooled = Some(Pooled {
+    pooled.retain(|held| held.idle_since.elapsed() < KEEP_ALIVE);
+    if let Some(agent) = pooled
+        .iter_mut()
+        .find(|held| held.read_timeout == read_timeout)
+        .map(|held| {
+            held.idle_since = std::time::Instant::now();
+            held.agent.clone()
+        })
+    {
+        return agent;
+    }
+    let agent = builder.build();
+    if pooled.len() >= POOLED_SLOTS
+        && let Some((at, _)) = pooled
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, held)| held.idle_since)
+    {
+        drop(pooled.swap_remove(at));
+    }
+    pooled.push(Pooled {
         agent: agent.clone(),
         idle_since: std::time::Instant::now(),
         read_timeout,
@@ -338,9 +350,14 @@ fn stream_agent(proxy: Option<&ureq::Proxy>, read_timeout: std::time::Duration) 
     agent
 }
 
-fn pooled_idle_from_now() {
+/// Two deadlines at once is the alternating main/advisor pattern; a third covers a subagent.
+const POOLED_SLOTS: usize = 3;
+
+fn pooled_idle_from_now(read_timeout: std::time::Duration) {
     if let Ok(mut pooled) = POOLED.lock()
-        && let Some(held) = pooled.as_mut()
+        && let Some(held) = pooled
+            .iter_mut()
+            .find(|held| held.read_timeout == read_timeout)
     {
         held.idle_since = std::time::Instant::now();
     }
@@ -518,13 +535,17 @@ pub fn pump_sse_with_resend(
         });
         match pumped {
             Ok(()) => {
-                pooled_idle_from_now();
+                pooled_idle_from_now(retry.deadline);
                 return Ok(first_error);
             }
             // A silent gateway already spent the model's whole deadline: one more wait is longer
             // than the bound the field sets.
             Err(text) if read_timed_out(&text) => {
-                return Err(read_timeout_notice(retry.deadline, retry.ran()));
+                let notice = read_timeout_notice(retry.deadline, retry.ran());
+                return Err(match first_error {
+                    Some(first) => format!("{notice} (resent once after: {first})"),
+                    None => notice,
+                });
             }
             // Incident: `Bad address (os error 14)` killed a trial's third request
             // before any byte arrived (ledger 0017, issue #256).
