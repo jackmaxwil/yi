@@ -5,6 +5,6 @@ decision: Web search uses a provider-generic side completion, with models.webSea
 decision: Web search permission: "Never ask" | the tool is a read in every permission mode, with irreversible left false | make the tool irreversible and restore permission prompts
 decision: Live test spend: "Yes, up to $1" | six recorded OpenRouter calls cost $0.049 and supply the parser fixtures | keep future live smoke tests opt-in and outside every gate
 
-raise: crate ai +500, crate cli +94, crate runtime +345, crate tools +31, crate tui +13, crate types +11, tests +1311, over-cap +1, comments +3
+raise: crate ai +500, crate cli +90, crate runtime +343, crate tools +53, crate tui +13, crate types +11, tests +1327, over-cap +1, comments +3
 ---
 Add a credential-gated `web_search` tool backed by OpenRouter's server-side search, defaulting to Exa. Return cited answers as untrusted data, preserve measured token and dollar usage, and make the tool available independently of the primary model provider.

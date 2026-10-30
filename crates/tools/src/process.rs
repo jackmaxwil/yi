@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::path::Component::ParentDir;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,7 +22,12 @@ pub(crate) fn quoted(text: &str) -> String {
 /// `/repo/../scratch`) climbed to `/repo/..` and then `/repo`, attaching a sibling
 /// checkout's AGENTS.md as trusted instructions.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    let cwd = yi_permission::lexical_normalize(&std::path::absolute(cwd).ok()?);
+    let cwd = std::path::absolute(cwd).ok()?;
+    let cwd = if cwd.components().any(|part| part == ParentDir) {
+        std::fs::canonicalize(&cwd).unwrap_or_else(|_| yi_permission::lexical_normalize(&cwd))
+    } else {
+        cwd
+    };
     (cwd.ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
@@ -485,6 +491,22 @@ mod tests {
         assert_eq!(
             git_root(&repo.join("src")),
             Some(yi_permission::lexical_normalize(&repo))
+        );
+        std::fs::remove_dir_all(&base)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_dotdot_past_a_symlink_resolves_on_disk() -> Fallible {
+        let base = std::env::temp_dir().join(format!("yi-git-root-link-{}", std::process::id()));
+        let (deep, wrong) = (base.join("x/y"), base.join("repo"));
+        std::fs::create_dir_all(deep.join("..").join("repo/.git"))?;
+        std::fs::create_dir_all(wrong.join(".git"))?;
+        std::os::unix::fs::symlink(&deep, base.join("link"))?;
+        assert_eq!(
+            git_root(&base.join("link").join("..").join("repo")),
+            Some(std::fs::canonicalize(base.join("x/repo"))?),
+            "`..` after a symlink lands where the kernel lands, not where the text says"
         );
         std::fs::remove_dir_all(&base)?;
         Ok(())
