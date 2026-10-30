@@ -60,8 +60,27 @@ impl Sandbox {
         }
     }
 
+    /// Incident: macOS refuses a sandbox inside a sandbox, and 67 runtime tests died on
+    /// `sandbox_apply: Operation not permitted` under the workspace one; a probe tells.
     pub fn available() -> bool {
-        cfg!(target_os = "macos") && Path::new(SEATBELT).is_file()
+        static APPLIES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        cfg!(target_os = "macos")
+            && Path::new(SEATBELT).is_file()
+            && *APPLIES.get_or_init(|| {
+                let nested = crate::process::command(SEATBELT)
+                    .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+                    .output()
+                    .ok()
+                    .filter(|probe| !probe.status.success())
+                    .and_then(|probe| nested_sandbox_note(&String::from_utf8_lossy(&probe.stderr)));
+                if let Some(note) = &nested {
+                    eprintln!("{note}");
+                    eprintln!(
+                        "[sandbox: Yi's Seatbelt is off; kernels and bash run under the outer sandbox alone, a bash call the gate would have contained becomes an ask (auto's classifier may settle it), and the tests that need Seatbelt return early]"
+                    );
+                }
+                nested.is_none()
+            })
     }
 
     /// Outside every writable root, or under a denied one; the devices the base policy grants
