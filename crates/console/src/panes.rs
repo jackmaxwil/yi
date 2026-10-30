@@ -288,6 +288,20 @@ fn cap_first(total: usize, cap: usize, tail: bool, full: bool) -> Option<usize> 
     (total > cap && !full).then(|| if tail { total.saturating_sub(cap) } else { 0 })
 }
 
+/// Invariant: the notice sits where the rows it counts were dropped, so a tail cut leads with it.
+fn with_notice(
+    mut kept: Vec<Line<'static>>,
+    notice: Line<'static>,
+    tail: bool,
+) -> Vec<Line<'static>> {
+    if tail {
+        kept.insert(0, notice);
+    } else {
+        kept.push(notice);
+    }
+    kept
+}
+
 fn cap_rows(
     mut rows: Vec<Line<'static>>,
     (cap, tail, full): (usize, bool, bool),
@@ -299,15 +313,13 @@ fn cap_rows(
         return rows;
     };
     let notice = cap_notice(noun, cap, tail, total, theme);
-    if tail {
-        let mut kept = rows.split_off(first);
-        kept.insert(0, notice);
-        kept
+    let kept = if tail {
+        rows.split_off(first)
     } else {
         rows.truncate(cap);
-        rows.push(notice);
         rows
-    }
+    };
+    with_notice(kept, notice, tail)
 }
 
 fn capped(
@@ -343,7 +355,13 @@ fn trace_rows(
     let indent = " ".repeat(lead.width());
     let rows = yi_tui::pycell::traceback_rows(text);
     let total = rows.len();
-    let mark = yi_tui::pycell::raised_row(&rows);
+    // Invariant: the marker names the exception even when the block is tail-capped, so it lands
+    // on the last exception raised and never on a row the cap cuts away.
+    let mark = rows
+        .iter()
+        .rposition(|(kind, _)| *kind == yi_tui::pycell::TraceRow::Raised)
+        .or_else(|| rows.iter().rposition(|(_, line)| !line.trim().is_empty()))
+        .unwrap_or(0);
     let cut = cap_first(total, cap, tail, full);
     let kept = match cut {
         Some(first) if tail => first..total,
@@ -361,15 +379,10 @@ fn trace_rows(
         spans.extend(yi_tui::pycell::row_spans(*kind, line, lang.as_mut(), theme));
         out.extend(yi_tui::wrap::wrap_line(&Line::from(spans), width, &indent));
     }
-    if cut.is_some() {
-        let notice = cap_notice("traceback", cap, tail, total, theme);
-        if tail {
-            out.insert(0, notice);
-        } else {
-            out.push(notice);
-        }
+    match cut {
+        Some(_) => with_notice(out, cap_notice("traceback", cap, tail, total, theme), tail),
+        None => out,
     }
-    out
 }
 
 /// Incident: a `│` gutter read as part of the `cargo tree` box-drawing a cell parsed, so rows

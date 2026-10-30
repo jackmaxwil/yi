@@ -340,19 +340,27 @@ fn arrow(line: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('>'))
 }
 
+/// The exception name an unindented row leads with: `Foo.Bar` out of `Foo.Bar: value`.
+fn name_of(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if trimmed.len() < line.len() {
+        return None;
+    }
+    let at = trimmed
+        .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.')))
+        .unwrap_or(trimmed.len());
+    trimmed.get(..at).filter(|name| !name.is_empty())
+}
+
 /// `SyntaxError: invalid syntax`, unindented and named: the one row a failed block exists to say.
 fn exception(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    if trimmed.len() < line.len() || caret(line) || separator(line) || frame(line) {
+    if caret(line) || separator(line) || frame(line) {
         return false;
     }
-    let Some((name, _)) = trimmed.split_once(':') else {
-        return false;
-    };
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.'))
+    name_of(line).is_some_and(|name| {
+        line.get(name.len()..)
+            .is_some_and(|rest| rest.starts_with(':'))
+    })
 }
 
 fn trace_row(line: &str, last: TraceRow, bare: bool) -> TraceRow {
@@ -373,12 +381,7 @@ fn trace_row(line: &str, last: TraceRow, bare: bool) -> TraceRow {
 
 /// An exception name with no value after it, as a bare `assert` or a bare `SystemExit` prints it.
 fn bare_exception(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    !trimmed.is_empty()
-        && trimmed.len() == line.len()
-        && trimmed
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.'))
+    name_of(line).is_some_and(|name| name.len() == line.trim_start().len())
 }
 
 /// Invariant: a frame's source row keeps its own syntax colour, and the numbering the kernel
@@ -441,15 +444,6 @@ fn source_spans(
         None => spans.push(Span::styled(body.to_owned(), base)),
     }
     spans
-}
-
-/// Invariant: the marker names the exception even when the block is tail-capped, so it lands on
-/// the last exception raised and never on a row the cap cuts away.
-pub fn raised_row(rows: &[(TraceRow, String)]) -> usize {
-    rows.iter()
-        .rposition(|(kind, _)| *kind == TraceRow::Raised)
-        .or_else(|| rows.iter().rposition(|(_, line)| !line.trim().is_empty()))
-        .unwrap_or(0)
 }
 
 /// A failed cell shows its source and its traceback in every mode: a reader who

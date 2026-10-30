@@ -667,6 +667,18 @@ mod tests {
             .collect()
     }
 
+    fn only_marker(lines: &[Line]) -> Option<String> {
+        let marked: Vec<String> = lines
+            .iter()
+            .map(said)
+            .filter(|row| row.starts_with('✕'))
+            .collect();
+        assert_eq!(marked.len(), 1, "one marker per block: {marked:?}");
+        marked
+            .first()
+            .map(|row| row.trim_start_matches('✕').trim().to_owned())
+    }
+
     /// Dies with no marker at all: a bare `AssertionError` has no `Name: value` row to raise, so
     /// the marker fell on row 0, which the last-12 cap then cut away.
     #[test]
@@ -694,17 +706,10 @@ mod tests {
             "the block is tail-capped: {:?}",
             lines.iter().map(said).collect::<Vec<_>>()
         );
-        let marked: Vec<String> = lines
-            .iter()
-            .map(said)
-            .filter(|row| row.starts_with('✕'))
-            .collect();
-        assert_eq!(marked.len(), 1, "one marker per block: {marked:?}");
+        let marker = only_marker(&lines);
         assert!(
-            marked
-                .first()
-                .is_some_and(|row| row.trim_start_matches('✕').trim() == "AssertionError"),
-            "the marker sits on the row naming the failure: {marked:?}"
+            marker.as_deref() == Some("AssertionError"),
+            "the marker sits on the row naming the failure: {marker:?}"
         );
         Ok(())
     }
@@ -756,17 +761,12 @@ mod tests {
             "the row a frame ran is lexed as code: {:?}",
             source.spans
         );
-        let marked: Vec<String> = lines
-            .iter()
-            .map(said)
-            .filter(|row| row.starts_with('✕'))
-            .collect();
-        assert_eq!(marked.len(), 1, "one marker per block: {marked:?}");
+        let marker = only_marker(&lines);
         assert!(
-            marked
-                .first()
+            marker
+                .as_deref()
                 .is_some_and(|row| row.contains("RuntimeError: child")),
-            "the marker sits on the row naming the failure: {marked:?}"
+            "the marker sits on the row naming the failure: {marker:?}"
         );
         Ok(())
     }
