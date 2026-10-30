@@ -327,6 +327,7 @@ console notebook pane | `app::notebook::tests::the_newest_image_of_the_newest_ce
 console notebook pane | `tests::v_on_the_notebook_shows_the_code_rows_its_cap_cut` (T0)
 console notebook pane | `drive::notebook_pane_shows_cells_and_image_placeholder` (T2)
 console notebook pane | `app::notebook::tests::a_recorded_traceback_dims_its_frames_and_lexes_what_each_ran`
+console notebook pane | `app::diffs::tests::a_new_notebook_takes_two_fifths_of_the_pane_area`
 MCP CLI | `mcp_cli::disabled_config_hides_the_subcommand`
 MCP CLI | `mcp_cli::sessions_persist_states_and_survive_close_restart`
 MCP CLI | `mcp_cli::connect_prints_no_schema_and_names_the_call_that_lists_the_tools`
