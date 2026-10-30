@@ -250,22 +250,35 @@ mod tests {
         Ok(())
     }
 
+    /// A hung probe spends its own deadline and nothing more: with eight hung tools and a pool of
+    /// four, discovery costs two rounds, which no single shared budget can produce.
     #[test]
-    fn four_hung_probes_cost_one_deadline_between_them() -> TestResult {
+    fn hung_probes_spend_one_deadline_per_pool_round() -> TestResult {
         let dir = crate::scratch::Scratch::new("yi-tools-exec-hung")?;
-        let bodies: Vec<(&str, String)> = ["hang-a", "hang-b", "hang-c", "hang-d"]
-            .into_iter()
-            .map(|name| (name, "#!/bin/sh\nsleep 30\n".to_owned()))
-            .collect();
+        let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        let bodies: Vec<(&str, String)> =
+            ["hang-a", "hang-b", "hang-c", "hang-d", "hang-e", "hang-f"]
+                .into_iter()
+                .chain(["hang-g", "hang-h"])
+                .map(|name| (name, "#!/bin/sh\nsleep 30\n".to_owned()))
+                .collect();
         scripts(&dir, &bodies)?;
+        let deadline = std::time::Duration::from_secs(1);
         let started = std::time::Instant::now();
-        let (_tools, skipped) = discover_within(&dir, std::time::Duration::from_millis(500));
-        assert_eq!(skipped.len(), 4, "{skipped:?}");
+        let (_tools, skipped) = discover_within(&dir, deadline);
+        let elapsed = started.elapsed();
+        assert_eq!(skipped.len(), names.len(), "{skipped:?}");
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(2),
-            "{:?}",
-            started.elapsed()
+            skipped
+                .iter()
+                .all(|skip| skip.reason == "schema probe timed out after 1s"),
+            "{skipped:?}"
         );
+        assert!(
+            elapsed >= deadline.saturating_mul(2),
+            "eight hung probes at {deadline:?} finished in {elapsed:?}, so one budget covered them"
+        );
+        assert!(elapsed < deadline.saturating_mul(5), "{elapsed:?}");
         Ok(())
     }
 
@@ -283,18 +296,18 @@ mod tests {
                 ),
                 (
                     "slow",
-                    "#!/bin/sh\nsleep 3\nprintf '{\"name\":\"slow\",\"input_schema\":{\"type\":\"object\"}}'\n"
+                    "#!/bin/sh\nsleep 30\nprintf '{\"name\":\"slow\",\"input_schema\":{\"type\":\"object\"}}'\n"
                         .to_owned(),
                 ),
             ],
         )?;
-        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(1));
+        let (tools, skipped) = discover_within(&dir, std::time::Duration::from_secs(3));
         assert_eq!(tools.len(), 1, "{skipped:?}");
         assert_eq!(tools[0].name(), "fast");
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].path, dir.join("slow"));
         assert!(
-            skipped[0].reason.contains("timed out after 1s"),
+            skipped[0].reason.contains("timed out after 3s"),
             "{skipped:?}"
         );
         Ok(())
