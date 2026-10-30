@@ -363,6 +363,13 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   `check_request_budget.py` prices system block plus tool table against a shrink-only baseline
   and locks each tool's text and sha256 in `tool_surface.json`;
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
+- `yi tool import just [recipe ...]` writes one exec tool per recipe of the project's justfile
+  into `~/.yi/tools`, from just's own `--dump --dump-format json`: the schema is the recipe's
+  parameters (a default makes one optional, `*` and `+` a variadic array), its doc comment the
+  description; a doc line `yi: read` or a read-shaped name makes the tool `read`, `yi: skip` and
+  a `[private]` recipe are left out, and a built-in's name is refused by name. Each wrapper's
+  marker line names its justfile and recipe, so a rerun rewrites only what changed and removes
+  the wrappers it wrote for recipes the justfile dropped, never a hand-written tool.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
   (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
@@ -1112,6 +1119,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
 | `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target, and the member's own): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. A row is a `Program` (a tar.gz member published as its name) or a `Tree` (a zip unpacked whole by the in-tree reader, its member the executable inside, its digest checked before the one rename): `chrome`, Chrome for Testing's headless shell, is the one tree. Yi uses only the pinned version, else a program on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed programs first on PATH, and a tree is neither on PATH nor carded: the console starts it, never the model |
+| `tool import just [recipe ...]` | One exec tool per recipe of the project's justfile, under `~/.yi/tools`, its schema the recipe's parameters (§7.1) |
 | `update` | the installed binary, and the release's skills written over `~/.yi/skills`, each top-level directory the release ships (`yi/`) replaced whole so a skill it dropped goes (other skills kept), from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
