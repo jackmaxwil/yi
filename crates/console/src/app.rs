@@ -532,8 +532,7 @@ impl App {
             RequestKind::Open(name) => self.note(&format!("launched {name}")),
             RequestKind::Slash(session) => {
                 if let Some(text) = result.get("text").and_then(Value::as_str) {
-                    let text = text.to_owned();
-                    self.fan_out(&session, || UiEvent::Reply(Reply::Notice(text.clone())));
+                    self.fan_out(&session, || UiEvent::Reply(Reply::Notice(text.to_owned())));
                 }
             }
             RequestKind::Rewind(session) => self.absorb_rewind(&session, &result),
@@ -1125,6 +1124,7 @@ mod browser;
 mod chat;
 mod diffs;
 mod editor;
+mod files;
 pub(crate) mod ids;
 mod menu;
 mod mouse;

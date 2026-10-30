@@ -423,19 +423,20 @@ mod tests {
     #[test]
     fn a_gitignore_hides_what_it_names_and_a_negation_puts_one_back() -> std::io::Result<()> {
         let root = scratch("ignore")?;
-        for dir in ["build", "a/deep"] {
+        for dir in ["build", "a/deep", "a/build"] {
             std::fs::create_dir_all(root.join(dir))?;
         }
         for name in [
             "debug.log",
             "keep.log",
             "build/x.rs",
+            "a/build/y.rs",
             "a/deep/trace.log",
             "a/deep/keep.log",
         ] {
             std::fs::write(root.join(name), "")?;
         }
-        std::fs::write(root.join(".gitignore"), "*.log\n!keep.log\nbuild/\n")?;
+        std::fs::write(root.join(".gitignore"), "*.log\n!keep.log\n/build/\n")?;
         let files = Files::opened(&root.display().to_string(), 100);
         let listed = |name: &str| files.nodes.iter().any(|node| node.path == root.join(name));
         assert!(listed("keep.log"), "the negation put nothing back");
@@ -445,7 +446,11 @@ mod tests {
         );
         assert!(!listed("debug.log"), "an ignored file reached the tree");
         assert!(!listed("a/deep/trace.log"), "the rule stopped at the root");
-        assert!(!listed("build"), "an ignored folder reached the tree");
+        assert!(!listed("build"), "an anchored rule reached the root folder");
+        assert!(
+            listed("a/build"),
+            "a leading-slash rule hid a folder at depth"
+        );
         std::fs::remove_dir_all(&root)?;
         Ok(())
     }
