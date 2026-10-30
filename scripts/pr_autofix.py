@@ -455,9 +455,7 @@ def push_url_env(repo=ROOT):
             "GIT_CONFIG_KEY_1": key, "GIT_CONFIG_VALUE_1": f"Authorization: token {token}"}
 
 
-def fenced(text):
-    """Review text inside the prompt's fence: a `</findings>` in a claim would close it early."""
-    return re.sub(r"<\s*/?\s*findings", lambda m: m.group(0).replace("<", "&lt;"), str(text), flags=re.I)
+fenced = pr_review.fenced
 
 
 def findings_prompt(pr, n, todo):
