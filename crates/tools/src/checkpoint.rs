@@ -54,17 +54,38 @@ fn serial_for(git_dir: &Path) -> Arc<Mutex<()>> {
         .unwrap_or_else(PoisonError::into_inner);
     Arc::clone(locks.entry(git_dir.to_path_buf()).or_default())
 }
+/// Not project content: the home holding the store, or, in a home that is itself the work tree,
+/// the store and the caches spared beside it. Incident: a probe home there stored its venv again.
+fn not_project_content(checkpoint_root: &Path, project: &Path) -> Vec<PathBuf> {
+    let subtree = checkpoint_root
+        .parent()
+        .filter(|dir| dir.file_name().is_some_and(|name| name == ".yi"))
+        .and_then(Path::parent);
+    match subtree {
+        Some(home) if real(home) == real(project) => [".yi", ".cache", ".local", ".cargo"]
+            .into_iter()
+            .map(|spared| home.join(spared))
+            .collect(),
+        Some(home) => vec![home.to_path_buf()],
+        None => vec![checkpoint_root.to_path_buf()],
+    }
+}
+
+fn real(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
 
 impl Checkpoints {
     pub fn open(checkpoint_root: &Path, project: &Path) -> Result<Self, CheckpointError> {
         let git_dir = checkpoint_root.join(project_key(project));
         std::fs::create_dir_all(&git_dir)
             .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
-        let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let mut staged = ["add", "--all", "--", "."].map(str::to_owned).to_vec();
         // Incident: `yi` started in `~` staged the shadow into itself, each capture slower.
-        if let Ok(inside) = real(checkpoint_root).strip_prefix(real(project)) {
-            staged.push(format!(":(exclude,literal){}", inside.to_string_lossy()));
+        for root in not_project_content(checkpoint_root, project) {
+            if let Ok(inside) = real(&root).strip_prefix(real(project)) {
+                staged.push(format!(":(exclude,literal){}", inside.to_string_lossy()));
+            }
         }
         let checkpoints = Self {
             serial: serial_for(&git_dir),
