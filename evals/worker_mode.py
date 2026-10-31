@@ -133,20 +133,21 @@ def score(run_dir, spec_id):
 
 
 def rollup(rows, families):
-    """({family: {arm: {"retries", "failed", "tasks"}}}, complete) over scored rows carrying their family;
-    complete only when every family and arm of the grid scored every task."""
-    tables, seen = {family: {} for family in families}, {}
+    """({family: {arm: {"retries", "failed", "tasks"}}}, complete) over one row per task: a family
+    measured twice is scored on its newest row for each task, so a re-run neither doubles a figure
+    nor leaves the task count reading one run. Complete only over the whole grid."""
+    tables, newest, scored = {family: {} for family in families}, {}, {}
     for row in rows:
         arm = row.get("arm") or ""
-        if arm not in ARMS:
-            continue
-        cell = tables.setdefault(row["family"], {}).setdefault(arm, {"retries": 0, "failed": 0, "tasks": 0})
+        if arm in ARMS:
+            newest[(row["family"], arm, row["task"])] = row
+    for (family, arm, _task), row in newest.items():
+        cell = tables.setdefault(family, {}).setdefault(arm, {"retries": 0, "failed": 0, "tasks": 0})
         cell["retries"] += int(row.get("retries") or 0)
         cell["failed"] += 1 if row.get("failed") else 0
-        tasks = seen.setdefault((row["family"], arm), set())
-        tasks.add(row["task"])
-        cell["tasks"] = len(tasks)
-    complete = all(len(seen.get((family, arm), ())) == len(TASKS) for family in families for arm in ARMS)
+        cell["tasks"] += 1
+        scored[(family, arm)] = scored.get((family, arm), 0) + 1
+    complete = all(scored.get((family, arm), 0) == len(TASKS) for family in families for arm in ARMS)
     return tables, complete
 
 

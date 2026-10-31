@@ -80,6 +80,17 @@ class Counter(unittest.TestCase):
         self.assertEqual(worker_mode.rollup(grid(families, worker_mode.ARMS, worker_mode.TASKS[:9]),
                                             families)[1], False)
 
+    def test_a_family_measured_twice_is_scored_on_its_newest_row_per_task(self):
+        # Failure a consumer sees: a second run of one family doubled its retries and failures in
+        # the verdict while the task count still read ten, so KEEP or WITHDRAW fired on how often
+        # the family ran rather than on the arm.
+        families = ("kimi",)
+        stale = [{**row, "retries": 4, "failed": True} for row in grid(families, worker_mode.ARMS)]
+        tables, complete = worker_mode.rollup(stale + grid(families, worker_mode.ARMS), families)
+        self.assertTrue(complete)
+        self.assertEqual(tables["kimi"]["with-mode"], {"retries": 0, "failed": 0, "tasks": 10})
+        self.assertIn("over 10 tasks", worker_mode.verdict(tables, complete))
+
     def test_a_family_missing_an_arm_or_the_whole_family_is_unresolved(self):
         # Failure a consumer sees: an arm that never ran was compared as zero retries and zero
         # failures, so one failure on the other arm withdrew the drop on no measured evidence.
