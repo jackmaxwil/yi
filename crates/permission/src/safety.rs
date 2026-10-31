@@ -1,5 +1,3 @@
-use crate::catastrophic::word;
-
 /// Ordered by severity, so the worst of several readings of one argv is the greatest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Class {
@@ -22,7 +20,8 @@ pub enum Verdict {
     },
 }
 
-const SAFE: [&str; 42] = [
+const SAFE: [&str; 44] = [
+    "ag",
     "base64",
     "basename",
     "cat",
@@ -47,6 +46,7 @@ const SAFE: [&str; 42] = [
     "md5sum",
     "nl",
     "od",
+    "printenv",
     "printf",
     "pwd",
     "readlink",
@@ -481,6 +481,15 @@ pub fn classify(argv: &[String]) -> Class {
             false => worst_reading(argv.get(1..).unwrap_or_default()),
         };
     }
+    // Reading a provider key is not a proven-safe read; it stays contained instead of allowed.
+    if name == "printenv"
+        && argv
+            .iter()
+            .skip(1)
+            .any(|word| (yi_types::PROVIDER_KEY_VARS.iter()).any(|(_, var)| var == word))
+    {
+        return Class::Unknown;
+    }
     if LAUNDERING.binary_search(&name).is_ok() {
         return Class::Destructive;
     }
@@ -598,13 +607,18 @@ fn sed_script_acts(script: &str) -> bool {
 /// The ladder: any destructive segment asks, any unknown segment is contained,
 /// and allow needs positive proof from every segment.
 pub fn verdict(command: &str) -> Verdict {
-    let Parsed::Segments(segments) = parse(command) else {
-        return Verdict::Contain {
+    match parse(command) {
+        Parsed::Segments(segments) => verdict_of(&segments),
+        Parsed::Unparsed => Verdict::Contain {
             reason: "the command uses shell expansion, redirection, or control flow that Yi does not read statically".to_owned(),
-        };
-    };
+        },
+    }
+}
+
+/// The ladder over segments a caller already parsed, so a caller needing both parses once.
+pub fn verdict_of(segments: &[Vec<String>]) -> Verdict {
     let mut unknown: Option<String> = None;
-    for argv in &segments {
+    for argv in segments {
         let shown = (argv.iter().find(|word| !word.contains('=')))
             .or(argv.first())
             .map_or("", String::as_str);
@@ -716,110 +730,10 @@ pub fn refused_scopes(command: &str) -> Vec<String> {
     scopes.dedup();
     scopes
 }
-pub(crate) struct RedirectTarget {
-    pub(crate) path: String,
-    pub(crate) directory_known: bool,
-}
-/// Incident: a character-boundary scan fired inside `%cd` and on `grep cd`'s argument, and missed
-/// `'cd'`; the word is assembled as a shell assembles it and read only where a shell runs one.
-const DIRECTORY_WORDS: [&str; 3] = ["cd", "pushd", "popd"];
-const COMMAND_OPENERS: [&str; 12] = [
-    "if", "then", "elif", "else", "while", "until", "do", "!", "builtin", "command", "time", "}",
-];
-const WORD_BREAKS: &str = ";&|(){}<>`";
-fn end_word(word: &mut String, command_start: &mut bool, moved: &mut bool) {
-    if word.is_empty() {
-        return;
-    }
-    *moved |= *command_start && DIRECTORY_WORDS.contains(&word.as_str());
-    *command_start = COMMAND_OPENERS.contains(&word.as_str());
-    word.clear();
-}
-/// The files a command redirects into, read as the shell reads them: quotes, comments and heredoc
-/// bodies name nothing. A directory change leaves every later relative target unknown.
-pub(crate) fn redirect_targets(command: &str) -> Vec<RedirectTarget> {
-    let (mut files, mut quote, mut ends) = (Vec::new(), None, Vec::<String>::new());
-    let (mut moved, mut command_start) = (false, true);
-    let mut token = String::new();
-    let mut continued = false;
-    for line in command.split('\n') {
-        let mut prev = ' ';
-        let continuing = std::mem::take(&mut continued);
-        if let Some(end) = ends.first() {
-            if line.trim() == end {
-                ends.remove(0);
-            }
-            token.clear();
-            command_start = true;
-            continue;
-        }
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            match (quote, c) {
-                (Some(open), c) if c == open => quote = None,
-                (Some('"'), '\\') => match chars.next() {
-                    Some(next) => token.push(next),
-                    None => continued = true,
-                },
-                (Some(_), _) => token.push(c),
-                (None, '\\') => match chars.next() {
-                    Some(next) => token.push(next),
-                    None => continued = true,
-                },
-                (None, '#') if prev.is_whitespace() => break,
-                (None, '\'' | '"') => quote = Some(c),
-                (None, '<') => {
-                    if !token.chars().all(|c| c.is_ascii_digit()) {
-                        end_word(&mut token, &mut command_start, &mut moved);
-                    }
-                    token.clear();
-                    let heredoc =
-                        chars.next_if_eq(&'<').is_some() && chars.next_if_eq(&'<').is_none();
-                    if heredoc {
-                        chars.next_if_eq(&'-');
-                        ends.extend(word(&mut chars));
-                    }
-                }
-                (None, '>') => {
-                    if !token.chars().all(|c| c.is_ascii_digit()) {
-                        end_word(&mut token, &mut command_start, &mut moved);
-                    }
-                    token.clear();
-                    while chars.next_if(|next| matches!(next, '>' | '|')).is_some() {}
-                    let combined = chars.next_if_eq(&'&').is_some();
-                    if let Some(target) = word(&mut chars)
-                        && (!combined
-                            || (target != "-" && !target.chars().all(|c| c.is_ascii_digit())))
-                    {
-                        let relative = !std::path::Path::new(&target).is_absolute();
-                        files.push(RedirectTarget {
-                            path: target,
-                            directory_known: !(moved && relative),
-                        });
-                    }
-                }
-                (None, c) if WORD_BREAKS.contains(c) => {
-                    end_word(&mut token, &mut command_start, &mut moved);
-                    command_start = true;
-                }
-                (None, c) if c.is_whitespace() => {
-                    end_word(&mut token, &mut command_start, &mut moved);
-                }
-                (None, c) => token.push(c),
-            }
-            prev = c;
-        }
-        if !continuing {
-            end_word(&mut token, &mut command_start, &mut moved);
-            command_start = true;
-        }
-    }
-    files
-}
 /// What a command writes as an honest agent spells it: redirects (which the lenient splitter
 /// skips), in-place edits, file verbs. `2>&1` names no file.
 pub fn write_targets(command: &str) -> Vec<String> {
-    let mut out: Vec<String> = redirect_targets(command)
+    let mut out: Vec<String> = crate::scope::redirect_targets(command)
         .into_iter()
         .map(|target| target.path)
         .collect();
@@ -873,7 +787,36 @@ pub fn write_targets(command: &str) -> Vec<String> {
     out
 }
 
+fn redirect_word(token: &str) -> &str {
+    let Some((word, redirect)) = token.split_once('>') else {
+        return token;
+    };
+    if redirect.trim_start_matches('>') != "/dev/null" {
+        return token;
+    }
+    let bare = word.is_empty() || word == "&" || word.chars().all(|c| c.is_ascii_digit());
+    match bare {
+        true => "",
+        false => word,
+    }
+}
+
+/// The command with each token's redirect read down to its word: `2>/dev/null` names none,
+/// `-delete>/dev/null` spells `-delete`, and a redirect to a file stays whole and unproven.
+pub fn without_redirects(command: &str) -> std::borrow::Cow<'_, str> {
+    let tokens: Vec<&str> = command.split(' ').collect();
+    let kept: Vec<&str> = (tokens.iter().copied())
+        .map(redirect_word)
+        .filter(|word| !word.is_empty())
+        .collect();
+    match kept == tokens {
+        true => std::borrow::Cow::Borrowed(command),
+        false => std::borrow::Cow::Owned(kept.join(" ")),
+    }
+}
+
 fn lenient_segments(command: &str) -> Vec<Vec<String>> {
+    let command = without_redirects(command);
     let mut segments = vec![Vec::new()];
     let mut tokens = command.split_whitespace();
     while let Some(token) = tokens.next() {
@@ -881,7 +824,7 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
             segments.push(Vec::new());
         } else if matches!(token, ">" | ">>" | "<") {
             tokens.next();
-        } else if !token.contains('>') && !token.starts_with('<') {
+        } else {
             let word = token.trim_matches(['(', ')', '$', '`', ';']);
             if let Some(argv) = segments.last_mut().filter(|_| !word.is_empty()) {
                 argv.push(word.to_owned());

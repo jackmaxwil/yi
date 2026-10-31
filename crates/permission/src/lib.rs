@@ -26,6 +26,6 @@ pub use rules::{
 };
 pub use safety::{
     Class, Parsed, Verdict, classify, command_segments, host_need, parse, refused_scopes, verdict,
-    write_targets,
+    verdict_of, without_redirects, write_targets,
 };
 pub use scope::write_scope;

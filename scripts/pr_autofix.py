@@ -5,7 +5,7 @@ merges a PR.
 
 Labels are the control surface and the state, read from LABELS: `autofix` asks for the next
 pass and skips the quiet wait, `autofix:hold` keeps the fixer out, `autofix:working` shows a fix
-in flight, `autofix:failed` stops it until a person removes the label. One comment per attempt is
+in flight, `autofix:failed` stops it until its window runs out or a person removes it. One comment per attempt is
 the ledger the spend caps are summed from. The work happens in a clone with no token in its
 environment, since the merged tree's hooks run the PR's own code; the push is made from the
 trusted checkout. Verbs: `just pr autofix` (one pass, oldest PR first), `just pr autofix N`.
@@ -38,20 +38,23 @@ LABELS = {
     "autofix": ("1d76db", "Fix this PR's conflicts on the next autofix pass, without the quiet wait"),
     "autofix:hold": ("cccccc", "The autofixer never touches this PR while the label is on"),
     "autofix:working": ("fbca04", "Set by the autofixer while a fix runs; cleared when it ends"),
-    "autofix:failed": ("d93f0b", "The last autofix failed and its comment says why; remove the label to retry"),
+    "autofix:failed": ("d93f0b", "The last autofix failed and its comment says why; it clears itself twice, then a person's"),
 }
-# The owner's numbers (2026-09-30): a person gets two quiet hours to fix their own branch first.
+# Two quiet hours give a person time to fix their own branch first. A spend or streak limit delays a
+# fix and never parks the PR: every one of them names when it lets go.
 QUIET = 2 * 3600
-PER_RUN = 3
-# Incident: the runner killed a 45-minute pass ("exceeds the maximum run time") mid-fix. A fix's
-# model gets 20 minutes and its hook repair 10; a new PR starts only while both fit the job's limit
-# (autofix.yml), less the checkout, build and catalog refresh before the pass.
+PER_RUN = 5
+# Incident: the runner killed a pass at its job limit mid-fix. A fix's model gets 20 minutes and its
+# hook repair 10; a new PR starts only while both fit the limit autofix.yml sets.
 FIX_SECS, REPAIR_SECS, SETUP_SECS = 1200, 600, 5 * 60
 PASS_SECS = forge_pr.job_secs("autofix") - SETUP_SECS
-CAP_DAY, CAP_PR = 25.0, 8.0
-# The owner's tiers (2026-10-01; DeepSeek V4.1 Flash and Kimi K3.1 Pro replaced GLM 5.3 on 2026-10-27),
-# meant for roughly 60/30/10 of fixes: (model, thinking), cheapest first.
-TIERS = (("openrouter/deepseek/deepseek-v4.1-flash-1017", "high"), ("openrouter/moonshotai/kimi-k3.1-pro", "medium"),
+CAP_DAY, CAP_PR = 60.0, 16.0
+# A cap that labels a PR stops the fixer until a person: these three only ever delay one.
+WINDOW, RETRY_AFTER, RETRIES = 24 * 3600, 12 * 3600, 2
+# The owner's tiers (2026-10-01; DeepSeek V4.1 Flash and Kimi K3.1 Pro replaced GLM 5.3 on 2026-10-27, and
+# GPT-6.1 Terra replaced Kimi on 2026-10-29), meant for roughly 60/30/10 of fixes: (model, thinking), cheapest
+# first. The medium tier uses the bundled Terra id at high; its thinking map does not advertise xhigh.
+TIERS = (("openrouter/deepseek/deepseek-v4.1-flash-1017", "high"), ("openrouter/openai/gpt-5.6-terra", "high"),
          ("openrouter/anthropic/claude-opus-5.5", "high"))
 TIER_NAMES = ("low", "medium", "high")
 # Points that move a fix up a tier: cut where 61/30/9 of the 44 fixable blocked rounds of
@@ -79,8 +82,9 @@ GATE_SIGNED = "The fixer's answer to the gate on"
 LANE_SECS = 900
 # Incident: #1025's retry died on an upstream 429 and was labelled failed and counted as a miss,
 # though a busy provider says nothing about the PR; such an attempt waits for the next pass.
-# Incident: #1111's pass met a runner with a full /tmp, and a disk that frees itself stopped the PR.
-TRANSIENT = re.compile(r"\b(429|502|503|rate.limit\w*|overloaded|temporarily)\b|No space left|Out of diskspace", re.I)
+# Incident: #1111's pass met a full /tmp, and #1779's was labelled for a git `index.lock` a dead
+# pass left behind: a disk or a lock that frees itself is a blip, never the PR's fault.
+TRANSIENT = re.compile(pr_review.THROTTLED.pattern + r"|No space left|Out of diskspace|Unable to create .*\.lock", re.I)
 
 
 class Missed(RuntimeError):
@@ -141,16 +145,69 @@ def misses(notes):
     return sum(v in ("failed", "deferred", "missed") for v in itertools.takewhile(lambda v: v != "pushed", reversed(verdicts)))
 
 
+def when(at):
+    """A comment's ISO time as a Unix time, 0 for a row that carries none."""
+    return datetime.datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp() if at else 0.0
+
+
+def autofix_rows(notes):
+    """The fixer's own meta rows on this PR, the ledger every cap and streak below is read from."""
+    return [row for row in bot_meter.rows(notes) if row["kind"] == "yi-autofix"]
+
+
 def last_stop(notes):
     """When the fixer last stopped on this PR (a Unix time, 0 for never): its newest failed attempt."""
-    return max((datetime.datetime.fromisoformat(row["at"].replace("Z", "+00:00")).timestamp() for row in bot_meter.rows(notes)
-                if row["kind"] == "yi-autofix" and row.get("verdict") == "failed" and row.get("at")), default=0.0)
+    return max((when(row["at"]) for row in autofix_rows(notes) if row.get("verdict") == "failed" and row.get("at")), default=0.0)
+
+
+def stops(notes):
+    """How many attempts on this PR ended failed, which is how many retries its label promised."""
+    return sum(row.get("verdict") == "failed" for row in autofix_rows(notes))
+
+
+def retry_due(notes, now):
+    """Whether the label a stop left has run out its window and clears itself. A declined round is
+    the owner's to rule on and never expires, and the third failure keeps the label for good."""
+    newest = max(autofix_rows(notes), key=lambda row: when(row.get("at")), default=None)
+    return bool(newest and newest.get("verdict") in ("failed", "capped") and stops(notes) <= RETRIES
+                and when(newest.get("at")) + RETRY_AFTER <= now)
 
 
 def fix_spend(comments):
     """What the autofixer has spent, from its own meta lines; the review bot's rounds are not counted."""
-    return bot_meter.spent([row for row in bot_meter.rows(comments) if row["kind"] == "yi-autofix"])
+    return bot_meter.spent(autofix_rows(comments))
 
+
+def cap_wait(notes, now):
+    """This PR's spend in the last 24 hours and when that window reopens, or None while under the cap.
+    The reopen is when enough of the window has aged out that what is left is under the cap, not when
+    the oldest row expires: a fix that overshot the cap is what usually took the PR past it."""
+    inside = sorted(((when(row["at"]), row) for row in autofix_rows(notes) if row.get("at") and when(row["at"]) > now - WINDOW),
+                    key=lambda pair: pair[0])
+    spent = bot_meter.spent([row for _, row in inside])
+    if spent < CAP_PR:
+        return None
+    left = spent
+    for at, row in inside:
+        left -= bot_meter.cost(row)
+        if left < CAP_PR:
+            return spent, at + WINDOW
+
+
+def cap_reason(spent, reopens):
+    """The wait comment's sentence: what the PR's last 24 hours spent, and when that window reopens."""
+    return (f"this PR's fixes have spent ${spent:.2f} of the ${CAP_PR:.2f} they may in 24 hours; that window "
+            f"reopens at {hourly(reopens)}, and the next pass after it tries again")
+
+
+def waited(notes, now):
+    """Whether this window already carries its wait comment: one per window, not one per pass."""
+    return any(row.get("verdict") == "capped" and when(row.get("at")) > now - WINDOW for row in autofix_rows(notes))
+
+
+def hourly(at):
+    """A Unix time as the UTC clock a comment names, which is how a person reads when it reopens."""
+    return datetime.datetime.fromtimestamp(at, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 def scrubbed():
     """The environment for anything that runs the PR's code or a model on its text: no forge token."""
@@ -559,7 +616,8 @@ def prior_fixes(repo, sha, stopped=0.0, signed=SIGNED):
     return count
 
 
-STOP_AT = 4
+# Six review fixes in a row on one head, three gate fixes, then a person: the streaks the label counts.
+STOP_AT, GATE_STREAK = 6, 3
 
 
 def last_tier(repo, sha):
@@ -777,8 +835,8 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             summary, model, touched = resolve_in(clone, pr, base_ref, answer, tried)
             subject, signed = f"Merge {base_ref} into this branch and resolve its conflicts", ""
         elif kind == "gate":
-            if prior_fixes(root, sha, stopped, GATE_SIGNED) >= 2:
-                raise RuntimeError("two fixes in a row did not clear the gate; a person is next")
+            if prior_fixes(root, sha, stopped, GATE_SIGNED) >= GATE_STREAK:
+                raise RuntimeError(f"{GATE_STREAK} fixes in a row did not clear the gate; a person is next")
             summary, model, touched = gate_in(clone, pr, lanes, answer, tried)
             subject, signed = f"Fix what the {' and '.join(lanes)} gate refused", f"{GATE_SIGNED} {sha[:12]} of #{pr['number']}.\n"
         else:
@@ -874,13 +932,16 @@ def render(n, fields, verdict, reason="", status="", meter=None):
     elif verdict == "declined":
         lines += [f"**Autofix declined** every finding of review round {fields['round']} with a reason and changed "
                   "nothing; a person decides, and the fixer waits for a new round, a new head or `just pr autofix N`.", "", "```", reason.strip(), "```"]
+    elif verdict == "capped":
+        lines += ["**Autofix is waiting**, not stopped: a spend limit delays a fix.", "", reason.strip()]
     elif verdict == "deferred":
         lines += ["**Autofix deferred**: the model's provider was busy, so the next pass tries again.", "", "```", reason.strip(), "```"]
     elif verdict == "missed":
         lines += ["**Autofix missed**; the next pass tries again a tier up while one is left, and a miss on the top tier stops it.",
                   "", "```", reason.strip(), "```"]
     else:
-        lines += ["**Autofix failed**; `autofix:failed` stops it until the label is removed.", "", "```", reason.strip(), "```"]
+        lines += ["**Autofix failed**; " + (fields.get("retry") or "`autofix:failed` stops it until the label is removed."),
+                  "", "```", reason.strip(), "```"]
     if fields.get("touched"):
         lines += ["", "Files the fixer wrote: " + ", ".join(f"`{p}`" for p in fields["touched"])]
     if fields.get("declined"):
@@ -917,8 +978,7 @@ def spent_today(repo):
 
 def quiet_for(pr, notes, now):
     """Seconds since a person last touched the PR: a comment, or a head commit not the bot's."""
-    times = [datetime.datetime.fromisoformat(c["created_at"].replace("Z", "+00:00")).timestamp()
-             for c in notes if (c.get("user") or {}).get("login") != pr_review.BOT]
+    times = [when(c.get("created_at")) for c in notes if (c.get("user") or {}).get("login") != pr_review.BOT]
     head = sh(ROOT, "git", "log", "-1", "--format=%ct%x00%cn", pr["head"]["sha"], check=False).stdout.strip()
     if "\x00" in head and head.split("\x00", 1)[1] != pr_review.BOT:
         times.append(float(head.split("\x00", 1)[0]))
@@ -934,6 +994,11 @@ def attempt(repo, pr, ids, asked=False):
     labels = {label["name"] for label in pr.get("labels") or []}
     forge_pr.git("fetch", "-q", "origin", f"refs/pull/{number}/head", pr["base"]["ref"])
     notes = pr_review.comments(repo, number)
+    # A stop is a delay: the label clears itself once the window its comment named has run out,
+    # twice per PR. Incident: seven PRs sat on it until a person read them.
+    if "autofix:failed" in labels and retry_due(notes, time.time()):
+        set_label(repo, number, ids, "autofix:failed", False)
+        labels.discard("autofix:failed")
     rounds = pr_review.rounds_of(notes, pr_review.authors(), number)
     rnd = round_on(rounds, pr["head"]["sha"], pr_review.holds_for(number, pr["base"]["ref"]))
     # The owner (2026-10-05): a clean round's mediums are fixed too, since a draft leaves draft
@@ -959,11 +1024,12 @@ def attempt(repo, pr, ids, asked=False):
     if said not in ("fix", "findings", "gate"):
         return said
     post = lambda body: forge_pr.fgj_api("POST", f"repos/{repo}/issues/{number}/comments", {"body": body})
-    if fix_spend(notes) >= CAP_PR:
-        reason = f"this PR's fixes have spent ${fix_spend(notes):.2f} of its ${CAP_PR:.2f} cap"
-        set_label(repo, number, ids, "autofix:failed", True)
-        meter = bot_meter.Meter()
-        post(render(number, {}, "capped", reason, bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), "autofix"), meter))
+    capped = cap_wait(notes, time.time())
+    if capped:
+        if not waited(notes, time.time()):
+            reason = cap_reason(*capped)
+            meter = bot_meter.Meter()
+            post(render(number, {}, "capped", reason, bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), "autofix"), meter))
         return "capped"
     set_label(repo, number, ids, "autofix:working", True)
     fields, verdict, reason, meter = {}, "failed", "", bot_meter.Meter()
@@ -990,6 +1056,10 @@ def attempt(repo, pr, ids, asked=False):
         reason, verdict = str(err), verdict_of(err, notes)
     finally:
         set_label(repo, number, ids, "autofix:working", False)
+    # What the comment promises: twice it names the hour the label clears itself, then it stays.
+    if verdict == "failed":
+        fields["retry"] = (f"`autofix:failed` clears itself at {hourly(time.time() + RETRY_AFTER)}, when the next pass tries again"
+                           if stops(notes) + 1 <= RETRIES else "`autofix:failed` stays: no more automatic retries, a person is next")
     # Stop and wait: a high the fixer showed wrong is the owner's call, not another round's.
     if verdict == "failed" or fields.get("declined"):
         set_label(repo, number, ids, "autofix:failed", True)
@@ -1038,6 +1108,17 @@ def room(elapsed):
     return elapsed + FIX_SECS + REPAIR_SECS + 120 <= PASS_SECS
 
 
+def pass_stop(fixed, spent, now=None):
+    """Why a pass takes no more pull requests, or None: its fix count, or the day's spend, which
+    names the hour it reopens. A limit delays a fix and never parks a PR."""
+    if fixed >= PER_RUN:
+        return f"{PER_RUN} fixes this pass; the rest wait for the next"
+    if spent >= CAP_DAY:
+        tomorrow = datetime.datetime.fromtimestamp(now or time.time(), datetime.timezone.utc) + datetime.timedelta(days=1)
+        return f"today's fixes spent the ${CAP_DAY:.2f} cap; the rest wait until {hourly(tomorrow.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())}"
+    return None
+
+
 def cmd_autofix(args):
     # Incident: a pass the runner killed had buffered every line it printed, so its log was empty.
     sys.stdout.reconfigure(line_buffering=True)
@@ -1047,7 +1128,7 @@ def cmd_autofix(args):
         pr = forge_pr.pull(forge_pr.pull_number(args.number))
         print(f"#{pr['number']}: {attempt(repo, pr, ids, asked=True)}")
         return 0
-    pulls = forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50")
+    pulls = forge_pr.open_pulls()
     if not isinstance(pulls, list):
         print(f"autofix: the forge did not list the pull requests: {(pulls or {}).get('message')}")
         return 1
@@ -1063,11 +1144,9 @@ def cmd_autofix(args):
         if not room(time.monotonic() - started):
             print(f"autofix: {int(time.monotonic() - started)}s into the pass, a fix no longer fits the runner's limit; the rest wait")
             break
-        if fixed >= PER_RUN:
-            print(f"autofix: {PER_RUN} fixes this pass; the rest wait for the next")
-            break
-        if spent_today(repo) >= CAP_DAY:
-            print(f"autofix: today's fixes spent the ${CAP_DAY:.2f} cap; the rest wait for tomorrow")
+        stop = pass_stop(fixed, spent_today(repo))
+        if stop:
+            print(f"autofix: {stop}")
             break
         if not any(label["name"] == "autofix:hold" for label in pr.get("labels") or []):
             tidy(repo, pr)
@@ -1141,6 +1220,21 @@ def gate_selfcheck():
             errs.append("a gate fix at the head is not counted as a prior gate fix")
         elif prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 0:
             errs.append("a gate fix at the head is counted against the findings fixes' stop")
+        # The author rides the environment: a pre-commit hook's own GIT_AUTHOR_* beats `-c user.name`.
+        botted = {**os.environ, "GIT_AUTHOR_NAME": pr_review.BOT, "GIT_COMMITTER_NAME": pr_review.BOT,
+                  "GIT_AUTHOR_EMAIL": "yi-bot@noreply.example.invalid", "GIT_COMMITTER_EMAIL": "yi-bot@noreply.example.invalid"}
+        # The gate streak stops at its own limit: the fix after three in a row waits for a person.
+        for n in range(1, GATE_STREAK):
+            sh(tmp, "git", "fetch", "-q", "origin")
+            git("checkout", "-q", "-f", "origin/topic")
+            (tmp / "a.txt").write_text(f"bug {n}\n")
+            git("add", "-A")
+            sh(tmp, "git", "commit", "-qm", f"Fix what the test gate refused\n\n{GATE_SIGNED} {n} of #7.\n", env=botted)
+            git("push", "-q", "origin", "HEAD:refs/heads/topic")
+        sh(tmp, "git", "fetch", "-q", "origin")
+        stopped = run("topic", "ok\n")
+        if f"{GATE_STREAK} fixes in a row" not in str(stopped):
+            errs.append(f"a gate fix after {GATE_STREAK - 1} in a row read {stopped!r}")
         if not isinstance(run("flaky", "ok\n"), Flaky):
             errs.append("a lane that passes in the clone was handed to the model instead of rerun")
     finally:
@@ -1189,6 +1283,8 @@ def selfcheck():
         errs.append("a pass starts a fix that cannot finish before the runner's limit, or refuses one that fits")
     if decide(set(), ["a.rs"], 60, asked=True) != "fix":
         errs.append("a fix asked for by number waits out the quiet hours")
+    if TIERS[1] != ("openrouter/openai/gpt-5.6-terra", "high"):
+        errs.append(f"the medium tier is {TIERS[1]}, not the bundled Terra model at its supported thinking level")
     tiers = [(points(3, 0), 0, 0), (points(2, 4), 0, 1), (points(4, 2), 0, 1), (points(4, 3), 0, 2), (points(1, 2), 1, 1),
              (points(1, 2), 2, 2), (points(9, 9), 3, 2)]
     errs += [f"{score} points after {tried} miss(es) took {tier_for(score, tried)}, not tier {want}"
@@ -1205,6 +1301,58 @@ def selfcheck():
         errs.append(f"the misses since the last push read {misses(notes), misses(tries), misses(tries + notes[:1])}")
     if fix_spend(notes) != 0.5:
         errs.append(f"the fixer's cap read {fix_spend(notes)}, not 0.5: only its own meta lines count")
+    # Every cap is read at its limit and one step over: the wrong side parks a PR or spends past it.
+    now = time.time()
+    iso = lambda at: datetime.datetime.fromtimestamp(at, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    row = lambda cost, at, verdict="pushed": dict(bot, created_at=iso(at), body="<!-- yi-autofix -->\n"
+                                                 f"<!-- yi-autofix-meta pr=1 cost={cost:.4f} verdict={verdict} -->\n")
+    if pass_stop(PER_RUN - 1, 0.0, now) is not None or pass_stop(PER_RUN, 0.0, now) is None:
+        errs.append(f"a pass stops after {PER_RUN} fixes but not after {PER_RUN - 1}")
+    day, over = pass_stop(0, CAP_DAY - 0.01, now), pass_stop(0, CAP_DAY, now)
+    if day is not None or over is None or "00:00 UTC" not in over or f"${CAP_DAY:.2f}" not in over:
+        errs.append(f"the day's ${CAP_DAY:.2f} cap read {day!r} just under and {over!r} at it, which must name its hour")
+    if cap_wait([row(CAP_PR - 0.01, now - 3600)], now) is not None or cap_wait([row(CAP_PR, now - 3600)], now) is None:
+        errs.append(f"the per-PR ${CAP_PR:.2f} cap does not read 24 hours of spend at its limit, or reads one under it")
+    if cap_wait([row(99, now - WINDOW - 60)], now) is not None:
+        errs.append("spend older than the 24-hour window still counts against the per-PR cap")
+    if (capped := cap_wait([row(CAP_PR / 2, now - 7200), row(CAP_PR / 2, now - 3600)], now)) and (
+            round(capped[0], 2), int(capped[1])) != (round(CAP_PR, 2), int(now + WINDOW - 7200)):
+        errs.append(f"the per-PR cap read {capped}, not {CAP_PR} reopening when its oldest spend expires")
+    elif not capped:
+        errs.append("two spends that add to the per-PR cap are not capped")
+    # A fix that overshoots is what takes a PR past the cap: the reopen is when the oldest rows have
+    # aged out enough, not when the oldest one has.
+    overshot = [row(0.50, now - 23 * 3600), row(5, now - 6 * 3600), row(5, now - 4 * 3600), row(6.50, now - 3600)]
+    if (capped := cap_wait(overshot, now)) is None or int(capped[1]) != int(now + 18 * 3600):
+        errs.append(f"the per-PR cap named {capped} for $17 spent, not the hour the spend falls under ${CAP_PR:.2f}")
+    fail = lambda at, verdict="failed": row(0, at, verdict)
+    if not retry_due([fail(now - RETRY_AFTER)], now) or retry_due([fail(now - RETRY_AFTER + 1)], now):
+        errs.append("the label a failure left does not clear itself at 12 hours, or clears itself before")
+    if not retry_due([fail(now - RETRY_AFTER - 60), fail(now - RETRY_AFTER)], now) or retry_due([fail(now - RETRY_AFTER)] * 3, now):
+        errs.append("the second failure does not clear its label, or the third clears it too")
+    if retry_due([fail(now - RETRY_AFTER, "declined")], now) or retry_due(
+            [fail(now - RETRY_AFTER - 60), fail(now - 60, "declined")], now):
+        errs.append("a declined round's label expired by itself, which is the owner's to rule on")
+    # A PR the old per-PR cap parked keeps a `capped` row at the top of its ledger and the same label.
+    if not retry_due([fail(now - RETRY_AFTER, "capped")], now):
+        errs.append("a capped row at the top of the ledger keeps a person's label on the PR forever")
+    if verdict_of(RuntimeError("fatal: Unable to create '/tmp/c/.git/index.lock': File exists."), tried()) != "deferred":
+        errs.append("a git lock an earlier pass left behind counted as a failure, not a deferred attempt")
+    status = bot_meter.status_line(bot_meter.Meter(), 3.5, 12.0, "autofix")
+    reason = cap_reason(CAP_PR, now + 3 * 3600)
+    wait = render(1, {}, "capped", reason, status)
+    if ("**Autofix is waiting**" not in wait or "autofix:failed" in wait or f"${CAP_PR:.2f}" not in wait
+            or hourly(now + 3 * 3600) not in wait or "this PR $3.50" not in wait):
+        errs.append(f"the wait comment says nothing a person can act on, or parks the PR: {wait!r}")
+    if not waited([dict(bot, created_at=iso(now - 60), body=wait)], now) or waited([dict(bot, created_at=iso(now - WINDOW - 60), body=wait)], now):
+        errs.append("the wait comment repeats inside its window, or stays silent in the next one")
+    # One ISO parse for the module: a comment the forge returned without a created_at is no time, not a crash.
+    if quiet_for({"head": {"sha": "abc"}}, [{"user": {"login": "someone"}, "body": "x"}], now) != now:
+        errs.append("quiet_for does not read a comment the forge returned without a created_at")
+    lost = render(1, {"retry": f"`autofix:failed` clears itself at {hourly(now + RETRY_AFTER)}, when the next pass tries again"},
+                  "failed", "the lane stayed red", status)
+    if hourly(now + RETRY_AFTER) not in lost or "clears itself" not in lost:
+        errs.append(f"a failure's comment does not say when its label clears itself: {lost!r}")
     if not NEW_FILE.match("crates/tools/tests/fixtures/ripwire/callers-shape.json") or not NEW_FILE.match("crates/a/tests/new.rs") or NEW_FILE.match("target-check/x.d") or NEW_FILE.match("crates/a/target/x.rs") or NEW_FILE.match("skills/x/SKILL.md"):
         errs.append("the new-file rule keeps a build output or drops a new test")
     if not MARKER.search("a\n<<<<<<< HEAD\nb\n") or MARKER.search("a\n<<<<<<<< not one\n"):
@@ -1392,6 +1540,9 @@ def selfcheck():
                 and not any("baselines" in path for path in code) and prior_fixes(tmp, tip) == 4
                 and pr_review.answered(sh(tmp, "git", "log", "-1", "--format=%B", tip).stdout, 4, 7)):
             errs.append(f"a fix that moved the request budget read {fourth if isinstance(fourth, str) else subjects}, code={code}")
+        # Two more fixes reach the end of the streak: the seventh is the first a person reads.
+        for extra in ("five", "six"):
+            findings_run({"a.txt": f"main and topic and more, and {extra}\n"})
         if f"{STOP_AT} fixes in a row" not in str(findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n}\n"})):
             errs.append(f"a fix after {STOP_AT} in a row was not stopped for a person")
     finally:
@@ -1495,10 +1646,35 @@ def selfcheck():
                                "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
         if said != "deferred" or ("autofix:failed", True) in labelled:
             errs.append(f"a provider 429 read {said} with labels {labelled}, not deferred and unlabelled")
-        # A round declined whole is posted once and holds its head; a declined high stops for the owner.
+        # The label clears itself inside attempt(), where it runs: an aged failure row releases the PR
+        # and an 11-hour one does not. Delete that branch and the first case reads stopped.
+        module.conflicts_of = lambda base, sha: []
+        pr_review.rounds_of = lambda *a: [{"n": 1, "sha": "abc", "verdict": "clean", "findings": []}]
+        stale = lambda at: [row(0, at, "failed")]
+        for stale_rows, want in ((stale(now - RETRY_AFTER - 60), "clean"), (stale(now - RETRY_AFTER + 3600), "stopped")):
+            labelled[:], pr_review.comments = [], (lambda repo, n, stale_rows=stale_rows: stale_rows)
+            said = attempt("o/r", {"number": 1, "labels": [{"name": "autofix:failed"}],
+                                   "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
+            lifted = ("autofix:failed", False) in labelled
+            if said != want or lifted != (want == "clean"):
+                errs.append(f"a failure {int((now - when(stale_rows[0]['created_at'])) // 3600)}h old read {said} "
+                            f"with labels {labelled}, not {want} and the label {'lifted' if want == 'clean' else 'kept'}")
+        # The capped branch itself: one wait comment and no failed label, and silence inside its window.
+        module.conflicts_of, posted = (lambda base, sha: []), []
+        pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
+        forge_pr.fgj_api = lambda method, path, body=None, **k: posted.append((body or {}).get("body", "")) or {}
+        over = [row(CAP_PR, now - 3600)]
+        for capped_rows, comments in ((over, 1), (over + [row(0, now - 60, "capped")], 0)):
+            posted[:], labelled[:], pr_review.comments = [], [], (lambda repo, n, capped_rows=capped_rows: capped_rows)
+            said = attempt("o/r", {"number": 1, "title": forge_pr.DRAFT + "t", "labels": [{"name": "autofix"}],
+                                   "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
+            if said != "capped" or ("autofix:failed", True) in labelled or len(posted) != comments \
+                    or (comments and "Autofix is waiting" not in posted[0]):
+                errs.append(f"a capped PR read {said} with labels {labelled} and {len(posted)} comment(s), "
+                            f"not capped, unlabelled and {comments} comment(s)")
+        pr_review.comments, posted = (lambda repo, n: tried_notes), []
         draft = {"number": 1, "title": forge_pr.DRAFT + "t", "labels": [{"name": "autofix"}],
                  "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
-        posted = []
         forge_pr.fgj_api = lambda method, path, body=None, **k: posted.append((body or {}).get("body", "")) or {}
         high = (1, {"claim": "a false alarm", "path": "a.rs", "line": 3}, "already fixed at a.rs:3")
         for highs in ([], [high]):
