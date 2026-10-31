@@ -89,7 +89,7 @@ fn sidecar_on(
                 let _ = hold.recv();
             }
             let reply = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = reader.get_mut().write_all(reply.as_bytes());
@@ -129,7 +129,7 @@ fn counting_sidecar(
             let mut sent = vec![0; length];
             let _ = reader.read_exact(&mut sent);
             let reply = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = reader.get_mut().write_all(reply.as_bytes());
@@ -1286,7 +1286,7 @@ fn allowed(
         })
         .collect();
     let (port, served) = sidecar(bodies)?;
-    let (approver, _records) = jev(port, thresholds);
+    let (approver, records) = jev(port, thresholds);
     let mut counts = (0, 0);
     for Scored {
         danger, command, ..
@@ -1306,6 +1306,10 @@ fn allowed(
                 counts.1 += 1;
             }
         }
+    }
+    for _ in 0..rows.len() {
+        let record = records.recv_timeout(Duration::from_secs(5))?;
+        assert!(record.error.is_none(), "a judgement failed: {record:?}");
     }
     served.join().map_err(|_| "the endpoint thread panicked")?;
     Ok(counts)
