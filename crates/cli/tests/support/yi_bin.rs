@@ -5,6 +5,10 @@ use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_yi");
 
+pub fn bin() -> &'static Path {
+    Path::new(BIN)
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "the harness under test is the shipped binary; every test spawn goes through here"

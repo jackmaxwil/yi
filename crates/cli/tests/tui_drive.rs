@@ -558,7 +558,6 @@ fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult
     use std::io::{BufRead, Write};
     let dir = Scratch::new("yi-tui-control")?;
     let home = dir.home()?;
-    let yi = yi_command(&home);
     let cassette = dir.join("cassette.jsonl");
     let held = "The rail is calmer now. ".repeat(6);
     std::fs::write(
@@ -579,7 +578,7 @@ fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult
         ))
         .args(["--seconds", "60", "--stdin"])
         .arg("--binary")
-        .arg(yi.get_program())
+        .arg(crate::yi_bin::bin())
         .arg("--home")
         .arg(&home)
         .args(["--", "tui", "--model", "faux/faux-1", "--faux"])
@@ -1075,7 +1074,6 @@ fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>
 #[test]
 fn a_lane_session_commits_contained() -> TestResult {
     let dir = Scratch::new("yi-tui-lane-commit")?;
-    let home = dir.home()?;
     // Outside tmp: every tmp root is writable, which would hide the trunk's git dir.
     let trunk = TargetScratch::new("yi-tui-lane-commit")?;
     if !trunk.outside_tmp() {
@@ -1137,7 +1135,6 @@ fn a_lane_session_commits_contained() -> TestResult {
 #[test]
 fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResult {
     let dir = Scratch::new("yi-tui-refused-retry")?;
-    let home = dir.home()?;
     let outside = TargetScratch::new("yi-tui-refused-retry")?;
     if !outside.outside_tmp() {
         return Ok(());

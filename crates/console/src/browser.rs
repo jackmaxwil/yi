@@ -425,13 +425,10 @@ fn launch(chrome: &mut Chrome, url: &str, size: (u32, u32), scale: u32) -> Engin
         Ok(found) => found,
         Err(looked) => return chrome.missing(&looked),
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the console relaunches its own executable through the browser shim"
-    )]
     let launched = std::env::current_exe().and_then(|yi| {
         Browser::launch(
-            std::process::Command::new(yi),
+            &yi,
+            &[],
             &chrome,
             pinned,
             &yi_browser::profile_dir(),

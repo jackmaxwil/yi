@@ -114,7 +114,8 @@ fn a_click_on_a_served_link_brings_its_page_and_a_new_frame() -> TestResult {
         .map_err(|looked| format!("no Chrome: looked in {}", looked.join(", ")))?;
     let url = format!("http://127.0.0.1:{port}/");
     let mut browser = Browser::launch(
-        crate::yi_bin::yi_command(&home),
+        crate::yi_bin::bin(),
+        &[(std::ffi::OsStr::new("HOME"), home.as_os_str())],
         &chrome,
         pinned_chrome().as_deref(),
         &dir.join("profile"),

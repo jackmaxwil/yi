@@ -41,13 +41,13 @@ fn run_client(
     repo: &std::path::Path,
     script: &std::path::Path,
 ) -> Result<String, Box<dyn Error>> {
-    let yi = crate::yi_bin::yi_command(&dir.home()?);
+    dir.home()?;
     run(
         "python3",
         &[
             &program.display().to_string(),
             CLIENT_DIR,
-            yi.get_program()
+            crate::yi_bin::bin()
                 .to_str()
                 .ok_or("yi binary path is not UTF-8")?,
             &repo.display().to_string(),
