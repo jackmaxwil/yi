@@ -3580,6 +3580,46 @@ fn a_removed_row_wider_than_the_clip_is_cut_and_marked() -> TestResult {
     assert!(reply.contains("details.patch"), "{reply}");
     Ok(())
 }
+
+/// The clipped-row count is over the removed rows the reply printed, not over every removed
+/// row, and it reads in the one loud-cut shape the row cap uses (#1522).
+#[test]
+fn clipped_removed_rows_are_counted_over_the_printed_rows() -> TestResult {
+    let dir = temp_dir("edit-removed-clip-count")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let wide = "x".repeat(300);
+    let content: String = (1..=20)
+        .map(|line| match line {
+            2 | 4 => format!("{wide}\n"),
+            _ => format!("line {line}\n"),
+        })
+        .collect();
+    let written = WriteTool {
+        hashline: Some(Arc::clone(&state)),
+    }
+    .execute(
+        args(&[("path", json!("c.txt")), ("content", json!(content))]),
+        &context,
+    );
+    let tag = tag_of(&output_text(&written)).ok_or("no write tag")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[("patch", json!(format!("[c.txt#{tag}]\nCUT 1.=20\n")))]),
+        &context,
+    );
+    let reply = output_text(&edit);
+    assert!(!edit.is_error, "{reply}");
+    assert!(
+        reply.lines().any(|line| line
+            == "[\u{2026} 2 of 8 removed rows clipped (EDIT_REMOVED_CLIP 120); the rest: details.patch]"),
+        "{reply}"
+    );
+    Ok(())
+}
 /// The rows an edit authored stay anchors under the tag it minted, though the reply never
 /// reprinted them (#1522).
 #[test]

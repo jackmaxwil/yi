@@ -594,9 +594,13 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
             out.push(format!("-before {line}:{text}"));
         }
         if clipped > 0 {
-            out.push(format!(
-                "[{clipped} of {} removed rows clipped; cap EDIT_REMOVED_CLIP {EDIT_REMOVED_CLIP} columns; full text: details.patch]",
-                removed.len()
+            out.push(crate::tool::cut_row(
+                clipped,
+                removed.len().min(EDIT_REMOVED_CAP),
+                "removed rows clipped",
+                "EDIT_REMOVED_CLIP",
+                EDIT_REMOVED_CLIP,
+                "details.patch",
             ));
         }
         if removed.len() > EDIT_REMOVED_CAP {
