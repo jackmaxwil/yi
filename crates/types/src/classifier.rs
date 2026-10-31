@@ -1,5 +1,5 @@
-//! The `POST /v1/systemone` wire shapes a `classifier` sidecar speaks, and the ledger record of
-//! each decision. Laya's server answers in this schema (its README, "Self-Hosting: HTTP Server").
+//! The `POST /v1/systemone` wire shapes the `classifier` speaks, and the ledger record of each
+//! decision. TypeSafe's Jev answers in this schema through OpenRouter.
 
 use std::collections::BTreeMap;
 
@@ -12,9 +12,10 @@ pub const CLASSIFY_ENTRY: &str = "classify";
 /// One request: a state and named typed questions, answered in one forward pass.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DecisionRequest {
-    pub state: BTreeMap<String, Value>,
+    /// Sent in insertion order: the order the measured question was asked in.
+    pub state: serde_json::Map<String, Value>,
     pub questions: BTreeMap<String, Question>,
-    /// The checkpoint to use; the server echoes the one it ran in `routing.model`.
+    /// The model to use; a server may echo the one it ran in `routing.model`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
@@ -36,6 +37,9 @@ pub struct DecisionResponse {
     pub answers: BTreeMap<String, Answer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<Routing>,
+    /// The model OpenRouter ran, dated (`typesafe/jev-1.13-20260917`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default, flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -49,6 +53,13 @@ pub struct Answer {
     /// The calibrated probability of the reported answer; the number to gate on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer_confidence: Option<f64>,
+    /// Jev's `choice` answer: each option's probability. With no `answer_confidence`, the
+    /// chosen option's entry is the number to gate on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probabilities: Option<BTreeMap<String, serde_json::Number>>,
+    /// Jev's confidence in the answer as a whole, beside `probabilities`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<serde_json::Number>,
     #[serde(default, flatten)]
     pub extra: BTreeMap<String, Value>,
 }
