@@ -24,6 +24,7 @@ pub(super) fn done(
         }
     }
     let by_name = matches!(target, Target::Label(_));
+    let bare = matches!(target, Target::All);
     let mut kept: Vec<String> = Vec::new();
     each_target(list, target, |item| {
         let closed = item.state.is_terminal();
@@ -33,7 +34,7 @@ pub(super) fn done(
         if closed {
             return Ok(());
         }
-        if !by_name && matches!(item.state, TodoState::Blocked { .. }) {
+        if bare && matches!(item.state, TodoState::Blocked { .. }) {
             kept.push(named(item));
             return Ok(());
         }

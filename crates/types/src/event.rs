@@ -361,16 +361,6 @@ pub enum AgentEvent {
     },
 }
 
-impl AgentEvent {
-    /// The one end a run emits: what it collected and why it stopped.
-    pub fn agent_end(messages: Vec<AgentMessage>, reason: RunEnd) -> Self {
-        Self::AgentEnd {
-            messages,
-            reason: Some(reason),
-        }
-    }
-}
-
 /// A stretch the agent spends on neither the model's reply nor a tool's work.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

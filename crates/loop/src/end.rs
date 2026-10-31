@@ -17,6 +17,9 @@ pub(crate) async fn end(
     reason: RunEnd,
 ) -> Vec<AgentMessage> {
     side_work(config).await;
-    emit(AgentEvent::agent_end(collected.clone(), reason));
+    emit(AgentEvent::AgentEnd {
+        messages: collected.clone(),
+        reason: Some(reason),
+    });
     collected
 }

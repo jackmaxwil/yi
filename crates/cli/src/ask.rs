@@ -505,7 +505,8 @@ async fn follow(
         }
         exit = EXIT_DENIED;
     }
-    let how = ended_how(run_end, last_stop);
+    let how =
+        run_end.unwrap_or_else(|| last_stop.map_or(RunEnd::Stop, |(stop, _)| RunEnd::of(stop)));
     let closed = !matches!(
         how,
         RunEnd::Error | RunEnd::Aborted | RunEnd::Length | RunEnd::Guard
@@ -546,16 +547,6 @@ async fn follow(
         exit = EXIT_QUOTA;
     }
     (exit, line)
-}
-
-/// Why the run ended: the loop's own reason, or for a producer that sent none, the last reply's stop.
-fn ended_how(reason: Option<RunEnd>, last_stop: Option<(StopReason, bool)>) -> RunEnd {
-    reason.unwrap_or(match last_stop.map(|(stop, _)| stop) {
-        Some(StopReason::Error) => RunEnd::Error,
-        Some(StopReason::Aborted) => RunEnd::Aborted,
-        Some(StopReason::Length) => RunEnd::Length,
-        _ => RunEnd::Stop,
-    })
 }
 
 #[cfg(test)]

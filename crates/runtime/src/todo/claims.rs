@@ -55,7 +55,6 @@ impl History {
                     if attribution == Attribution::User {
                         self.seen.clear();
                         self.written.clear();
-                        self.asked.clear();
                     }
                     self.seen.push_str(&text);
                     self.seen.push('\n');
@@ -133,6 +132,7 @@ impl History {
 
     pub(crate) fn start_prompt(&mut self) {
         self.written.clear();
+        self.asked.clear();
     }
 
     pub(crate) fn seen(&self) -> &str {

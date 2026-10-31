@@ -240,12 +240,15 @@ pub fn claims_impossible(text: &str) -> bool {
     })
 }
 
-/// The phrase stands alone: no letter or digit of another word touches either end of it.
+/// The phrase stands alone, a plural ending aside: no letter or digit of another word touches it.
 fn bounded(lower: &str, at: usize, word: &str) -> bool {
     let before = lower.get(..at).and_then(|head| head.chars().next_back());
-    let after = lower
-        .get(at.saturating_add(word.len())..)
-        .and_then(|tail| tail.chars().next());
+    let tail = lower.get(at.saturating_add(word.len())..).unwrap_or("");
+    let after = (tail.strip_prefix("es"))
+        .or_else(|| tail.strip_prefix('s'))
+        .unwrap_or(tail)
+        .chars()
+        .next();
     !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
 }
 

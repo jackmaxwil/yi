@@ -718,8 +718,14 @@ impl GoalService {
             .map(|mut slot| std::mem::take(&mut *slot))
             .unwrap_or(false);
         if continuing {
-            let quiet =
-                reason == Some(&yi_types::event::RunEnd::Error) || !Self::flag(&self.called);
+            use yi_types::event::RunEnd;
+            let quiet = match reason {
+                Some(RunEnd::Error) => true,
+                None | Some(RunEnd::Stop | RunEnd::Drained) => !Self::flag(&self.called),
+                Some(RunEnd::Aborted | RunEnd::Length | RunEnd::Guard | RunEnd::Other(_)) => {
+                    return self.continue_if_idle();
+                }
+            };
             let runs = self.quiet_run(quiet);
             if runs >= QUIET_RUNS_CAP {
                 self.release(runs);

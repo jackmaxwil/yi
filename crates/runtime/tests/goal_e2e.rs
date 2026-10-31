@@ -1052,6 +1052,80 @@ async fn a_goal_releases_its_continuation_after_three_runs_that_changed_nothing(
     Ok(())
 }
 
+fn goal_rig() -> Result<(Scratch, yi_session::SharedSession, Arc<GoalService>), Box<dyn Error>> {
+    use yi_types::event::AgentEvent;
+    let (root, (service, store, _delivered)) = service_with_plans()?;
+    service.create("keep going", None, None, None)?;
+    service.observe(&AgentEvent::AgentStart);
+    service.observe(&AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("start".to_owned()), 0),
+    });
+    Ok((root, store, service))
+}
+
+fn goal_run(service: &GoalService, tool: bool, stop: StopReason, reason: yi_types::event::RunEnd) {
+    use yi_types::event::AgentEvent;
+    service.observe(&AgentEvent::AgentStart);
+    if tool {
+        service.observe(&AgentEvent::ToolExecutionStart {
+            tool_call_id: "c1".to_owned(),
+            tool_name: "bash".to_owned(),
+            args: json!({"command": "cargo test"}),
+        });
+    }
+    service.observe(&AgentEvent::MessageEnd {
+        message: faux_assistant_message(vec![faux_text("ok")], stop),
+    });
+    service.observe(&AgentEvent::AgentEnd {
+        messages: Vec::new(),
+        reason: Some(reason),
+    });
+}
+
+fn goal_active(store: &yi_session::SharedSession) -> bool {
+    yi_session::lock_session(store)
+        .goal()
+        .is_some_and(|goal| goal.status.is_active())
+}
+
+/// Dies with a productive run between quiet ones not resetting the count: a goal blocked after
+/// three quiet runs in total although work happened between them.
+#[tokio::test]
+async fn a_run_that_calls_a_tool_resets_the_quiet_count() -> TestResult {
+    use yi_types::event::RunEnd;
+    let (_root, store, service) = goal_rig()?;
+    goal_run(&service, false, StopReason::Stop, RunEnd::Stop);
+    for tool in [false, false, true, false, false] {
+        goal_run(&service, tool, StopReason::Stop, RunEnd::Stop);
+    }
+    assert!(
+        goal_active(&store),
+        "two quiet runs after a working one leave the goal active"
+    );
+    Ok(())
+}
+
+/// Dies with interrupted continuations counted as runs that changed nothing: three Ctrl-Cs
+/// blocked the goal with "3 runs that changed nothing".
+#[tokio::test]
+async fn an_interrupted_continuation_is_not_a_quiet_run() -> TestResult {
+    use yi_types::event::{AgentEvent, RunEnd};
+    let (_root, store, service) = goal_rig()?;
+    goal_run(&service, false, StopReason::Stop, RunEnd::Stop);
+    for _ in 0..3 {
+        goal_run(&service, false, StopReason::Aborted, RunEnd::Aborted);
+        service.observe(&AgentEvent::MessageStart {
+            message: AgentMessage::user_input(UserContent::Text("go on".to_owned()), 0),
+        });
+        goal_run(&service, false, StopReason::Stop, RunEnd::Stop);
+    }
+    assert!(
+        goal_active(&store),
+        "an interrupt is the user's, not a run that changed nothing"
+    );
+    Ok(())
+}
+
 /// Dies with the first failed turn blocking the goal: one provider error ended auto-continuation
 /// for good, and a run that went on to work never got its chance.
 #[tokio::test]

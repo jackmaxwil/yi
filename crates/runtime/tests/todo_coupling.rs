@@ -1064,6 +1064,10 @@ fn an_impossibility_is_a_phrase_of_its_own_not_a_stretch_of_another_word() -> Te
         claims_impossible("No valid route exists under the weight limits."),
         "the phrase on its own is still a claim"
     );
+    assert!(claims_impossible("No routes exist under these limits."));
+    assert!(claims_impossible(
+        "There are no solutions under these limits."
+    ));
     assert!(claims_impossible("That route is impossible."));
     assert!(claims_impossible("Routing it is not feasible."));
     let recorded = std::fs::read_to_string(
@@ -1078,6 +1082,30 @@ fn an_impossibility_is_a_phrase_of_its_own_not_a_stretch_of_another_word() -> Te
         !claims_impossible(line),
         "a recorded session that says validation claims nothing is impossible"
     );
+    Ok(())
+}
+
+/// Dies with a mid-turn steer forgetting the prompt: the steer replaced the text the answer file
+/// was named in, so the named file no longer earned its re-drive at stop.
+#[test]
+fn a_steer_keeps_the_answer_file_the_prompt_named() -> TestResult {
+    let r = rig("artifact-steered")?;
+    let hooks = prelude_hooks(&r);
+    let prompt = user("Write the detection limit to /app/answer.txt");
+    assert!((hooks.on_prompt)(&prompt).is_none());
+    yi_session::lock_session(&r.store).append_message("main", prompt)?;
+    yi_session::lock_session(&r.store).append_message("main", user("also check the logs"))?;
+    let mut args: Map<String, Value> = Map::new();
+    args.insert("path".to_owned(), json!("/app/answer.txt"));
+    args.insert("content".to_owned(), json!("limit 4242\n"));
+    let write = faux_assistant_message(
+        vec![faux_tool_call("c1", "write", args)],
+        StopReason::ToolUse,
+    );
+    yi_session::lock_session(&r.store).append_message("main", write)?;
+    let first = (hooks.intercept_stop)(&snap(&stop("Written."), &[]))
+        .ok_or("the named answer file re-drives after a steer")?;
+    assert!(custom_type(&first).2.contains("/app/answer.txt"));
     Ok(())
 }
 

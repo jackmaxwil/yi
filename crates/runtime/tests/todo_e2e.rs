@@ -108,6 +108,38 @@ fn a_done_with_no_target_keeps_blocked_rows_and_names_them() -> TestResult {
     Ok(())
 }
 
+/// Dies with a `done` that names a phase keeping its blocked rows: the call named its target, so
+/// every open row in that phase closes with the evidence and no note claims the call had none.
+#[test]
+fn a_done_that_names_a_phase_closes_its_blocked_rows() -> TestResult {
+    let (_root, session) = session("done-phase")?;
+    let todos = store_for(&session);
+    todos.apply(
+        Op::Init {
+            phases: vec![(PhaseName::new("Tasks")?, vec![item("wait on the gate")?])],
+        },
+        None,
+    )?;
+    let tool = TodoTool::new(Arc::clone(&todos));
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "block", "id": "t1", "on": "external", "note": "the gate is red"}),
+    );
+    assert!(!is_error, "{text}");
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "done", "phase": "Tasks", "evidence": "`cargo test` 3 passed"}),
+    );
+    assert!(!is_error, "{text}");
+    assert!(!text.contains("kept blocked"), "{text}");
+    let list = latest_record(&session).ok_or("no record")?.list;
+    assert_eq!(
+        states(&list),
+        vec![("wait on the gate".to_owned(), TodoStateName::Done)]
+    );
+    Ok(())
+}
+
 fn ids(list: &TodoList) -> Vec<(String, String)> {
     list.items()
         .map(|item| {
