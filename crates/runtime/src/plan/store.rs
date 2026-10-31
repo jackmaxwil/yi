@@ -511,14 +511,10 @@ impl PlanStore {
 
     pub fn checkpoint(&self, plan: &Plan) -> Result<(), StoreError> {
         let text = Self::render(plan)?;
-        self.write_checkpoint(&plan.id, &text)
-    }
-
-    fn write_checkpoint(&self, id: &PlanId, text: &str) -> Result<(), StoreError> {
-        let dir = self.plan_dir(id);
+        let dir = self.plan_dir(&plan.id);
         std::fs::create_dir_all(&dir).map_err(io_at(&dir))?;
         let tmp = dir.join(format!("{TEMP_PREFIX}{}{TEMP_SUFFIX}", nonce()));
-        let target = self.path(id);
+        let target = self.path(&plan.id);
         let written = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -551,18 +547,11 @@ impl PlanStore {
             })
             .collect();
         plans.sort_by_key(|plan| plan.id.is_root());
-        let mut rendered = Vec::with_capacity(plans.len());
         for plan in &plans {
-            rendered.push((plan, Self::render(plan)?));
+            Self::render(plan)?;
         }
-        for (plan, text) in rendered {
-            // Invariant: a checkpoint whose file already holds these bytes costs no write, so a
-            // refresh that changes nothing fsyncs nothing.
-            let on_disk = std::fs::read_to_string(self.path(&plan.id)).ok();
-            if on_disk.is_some_and(|on_disk| on_disk == text) {
-                continue;
-            }
-            self.write_checkpoint(&plan.id, &text)?;
+        for plan in &plans {
+            self.checkpoint(plan)?;
         }
         Ok(plans.into_iter().map(|plan| plan.id).collect())
     }
