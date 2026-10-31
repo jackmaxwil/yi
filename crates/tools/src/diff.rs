@@ -18,23 +18,47 @@ impl GitPatch {
         self.0.is_empty()
     }
 
-    /// Counts exclude the `--- a/` and `+++ b/` header pair, which shares the
-    /// sign column with change rows but is not one.
+    /// Counts walk each hunk by its `@@` line counts, so the `--- a/` and `+++ b/` header
+    /// pair is skipped by position and a body row reading `--- ` or `+++ ` is still counted.
     pub fn stats(&self) -> (u64, u64) {
         let mut added: u64 = 0;
         let mut removed: u64 = 0;
+        let (mut old_left, mut new_left) = (0_u64, 0_u64);
         for line in self.0.lines() {
-            if line.starts_with("+++ ") || line.starts_with("--- ") {
+            if old_left == 0 && new_left == 0 {
+                if let Some((old, new)) = hunk_counts(line) {
+                    (old_left, new_left) = (old, new);
+                }
                 continue;
             }
             match line.as_bytes().first() {
-                Some(b'+') => added = added.saturating_add(1),
-                Some(b'-') => removed = removed.saturating_add(1),
-                _ => {}
+                Some(b'+') => {
+                    added = added.saturating_add(1);
+                    new_left = new_left.saturating_sub(1);
+                }
+                Some(b'-') => {
+                    removed = removed.saturating_add(1);
+                    old_left = old_left.saturating_sub(1);
+                }
+                Some(b'\\') => {}
+                _ => {
+                    old_left = old_left.saturating_sub(1);
+                    new_left = new_left.saturating_sub(1);
+                }
             }
         }
         (added, removed)
     }
+}
+
+fn hunk_counts(line: &str) -> Option<(u64, u64)> {
+    let ranges = line.strip_prefix("@@ -")?.split(" @@").next()?;
+    let (old, new) = ranges.split_once(" +")?;
+    let count = |range: &str| match range.split_once(',') {
+        Some((_, count)) => count.parse().ok(),
+        None => Some(1),
+    };
+    Some((count(old)?, count(new)?))
 }
 
 /// The `patch` / `added` / `removed` keys an edit or write result carries so the transcript

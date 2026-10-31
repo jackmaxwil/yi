@@ -3482,6 +3482,8 @@ fn an_edit_of_dash_dash_rows_counts_every_row_it_shows() -> TestResult {
     assert!(!edit.is_error, "{reply}");
     assert!(reply.contains("-before 2:-- old note"), "{reply}");
     assert!(reply.contains("+1 -1 at line 2"), "{reply}");
+    assert_eq!(edit.result.details["added"], json!(1), "{reply}");
+    assert_eq!(edit.result.details["removed"], json!(1), "{reply}");
     Ok(())
 }
 
