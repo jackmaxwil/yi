@@ -293,55 +293,19 @@ fn walk_capped(
     walked
 }
 
-/// Every other verb keeps the `Exec` default: the flag warns about blast
-/// radius, and this is the set with none.
-const READ_ONLY_VERBS: [&str; 24] = [
-    "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "which", "type", "file", "stat",
-    "du", "df", "date", "env", "printenv", "grep", "rg", "ag", "find", "fd", "diff", "true",
-];
-
-#[rustfmt::skip]
-const READ_ONLY_GIT: [&str; 10] = [
-    "log", "status", "diff", "show", "blame", "branch", "describe", "rev-parse", "ls-files",
-    "shortlog",
-];
-
-/// Incident: every bash call reported as irreversible, so the advisor flagged `ls -la && git
-/// log` into meaninglessness. Each segment is screened; all must be read-only.
+/// Incident: a hand-split verb list called `find . -delete` a read. A read is what the permission
+/// classifier proves, less cargo, whose proven verbs write `target/` and the source.
 fn read_only_command(command: &str) -> bool {
-    command
-        .split(['|', ';', '\n'])
-        .flat_map(|part| part.split("&&"))
-        .all(read_only_segment)
-}
-
-fn read_only_segment(segment: &str) -> bool {
-    let tokens: Vec<&str> = segment
-        .split_whitespace()
-        // `2>/dev/null` overwrites nothing that exists.
-        .filter(|token| !(token.contains('>') && token.ends_with("/dev/null")))
-        .collect();
-    if tokens
-        .iter()
-        .any(|token| token.contains('>') || token.contains('`') || token.contains("$("))
-    {
+    let command = yi_permission::without_redirects(command);
+    let yi_permission::Parsed::Segments(segments) = yi_permission::parse(&command) else {
         return false;
-    }
-    let mut words = tokens.iter().skip_while(|word| word.contains('='));
-    let Some(verb) = words.next() else {
-        return true;
     };
-    let verb = verb.rsplit('/').next().unwrap_or(verb);
-    match verb {
-        "git" => words.next().is_some_and(|sub| READ_ONLY_GIT.contains(sub)),
-        // The permission wall's own verdict: the label and the decision cannot disagree.
-        "ripwire" => matches!(
-            yi_permission::parse(segment),
-            yi_permission::Parsed::Segments(argvs)
-                if matches!(argvs.as_slice(), [argv] if yi_permission::classify(argv) == yi_permission::Class::Safe)
-        ),
-        _ => READ_ONLY_VERBS.contains(&verb),
-    }
+    yi_permission::verdict_of(&segments) == yi_permission::Verdict::Allow
+        && segments.iter().all(|argv| {
+            (argv.iter().map(String::as_str))
+                .find(|word| !yi_permission::wraps(word))
+                .is_none_or(|word| word.rsplit('/').next() != Some("cargo"))
+        })
 }
 
 const BROAD_ROOTS: [&str; 10] = [

@@ -1,7 +1,6 @@
 use std::error::Error;
 
 use crate::common::flat;
-use crate::common::test_model;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use yi_tui::agents::{AgentRow, AgentState, AgentsPopup};
 use yi_tui::app::{App, TuiOptions};
@@ -146,15 +145,8 @@ fn the_roster_marks_each_child_in_the_status_vocabulary() -> TestResult {
 fn ctrl_c_closes_the_agents_popup_without_stopping_a_row() -> TestResult {
     let mut app = App::new(
         TuiOptions {
-            model: test_model("faux-1"),
             session_name: "agents".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
+            ..crate::common::options()
         },
         theme(),
         default_keymap(),
@@ -186,5 +178,9 @@ fn child_update() -> ChildUpdate {
         error: None,
         exit: None,
         flag: None,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
