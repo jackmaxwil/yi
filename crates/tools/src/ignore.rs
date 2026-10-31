@@ -67,9 +67,9 @@ fn parse_line(line: &str, dir: &Path) -> Option<Rule> {
     if line.is_empty() {
         return None;
     }
-    // A pattern with an interior slash is anchored to the declaring
-    // directory; a bare name matches at any depth below it.
-    let anchored = line.trim_start_matches('/').contains('/');
+    // A leading or interior slash anchors the pattern to the declaring directory; a bare
+    // name matches at any depth below it.
+    let anchored = line.starts_with('/') || line.trim_start_matches('/').contains('/');
     let pattern = if anchored {
         line.trim_start_matches('/').to_owned()
     } else {

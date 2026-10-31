@@ -5201,11 +5201,11 @@ fn a_paste_into_the_palette_lands_in_its_query() -> TestResult {
         "paste-into-palette",
         session_fixture(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
-         key alt-e\npaste docs/Yi's Next\u{7} Shape.md\n\
+         key alt-/\npaste docs/Yi's Next\u{7} Shape.md\n\
          wait-frame 3000 Shape.md\nquit\n",
     )?;
-    let row = row_holding(&frame, "› e docs")?;
-    assert_eq!(row, "› e docs/Yi's Next Shape.md▌");
+    let row = row_holding(&frame, "› docs")?;
+    assert_eq!(row, "› docs/Yi's Next Shape.md▌");
     Ok(())
 }
 
