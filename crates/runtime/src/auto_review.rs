@@ -9,8 +9,7 @@ use crate::packed::Packed;
 use crate::provider::ProviderStream;
 use crate::session::{AgentSession, SessionConfig};
 
-static AUTO_REVIEW: Packed =
-    Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/auto_review.zz")));
+pub(crate) static AUTO_REVIEW: Packed = crate::packed::packed!("auto_review");
 
 /// Incident: the reviewer sits in front of every unprovable command in auto mode, so a
 /// stalled provider would stall the agent. Past the cap the answer is a denial, not a wait.

@@ -3,8 +3,6 @@ use std::sync::OnceLock;
 use serde_json::{Map, Value};
 use yi_types::graph::{Edge, Graph};
 
-use crate::packed::Packed;
-
 /// Host-authored next steps: deterministic, at most two lines, and immutable
 /// once written, because a recomputed line would move transcript bytes.
 pub const NEXT: &str = "next: ";
@@ -24,8 +22,14 @@ pub struct Facts<'a> {
 /// `the_shipped_graph_passes_every_structural_check` is what keeps that from shipping.
 pub fn shipped() -> &'static Graph {
     static GRAPH: OnceLock<Graph> = OnceLock::new();
-    static PACKED: Packed = Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/graph.zz")));
-    GRAPH.get_or_init(|| serde_json::from_str(PACKED.text()).unwrap_or_default())
+    GRAPH.get_or_init(|| {
+        let raw = miniz_oxide::inflate::decompress_to_vec_zlib(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/graph.zz"
+        )))
+        .unwrap_or_default();
+        serde_json::from_slice(&raw).unwrap_or_default()
+    })
 }
 
 /// Invariant: a pure function of the graph and the facts, localized by exact match on the

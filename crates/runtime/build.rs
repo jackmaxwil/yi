@@ -1,6 +1,7 @@
-use std::io::Write;
+include!("../ai/pack.rs");
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo::rerun-if-changed=../ai/pack.rs");
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR unset")?);
     for dir in ["src/prompts", "src/goal/prompts"] {
         println!("cargo::rerun-if-changed={dir}");
@@ -15,14 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !prompt {
                 continue;
             }
-            let raw = std::fs::read(&path)?;
-            let packed = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 9);
-            let round = miniz_oxide::inflate::decompress_to_vec_zlib(&packed)
-                .map_err(|error| format!("{}: {error:?}", path.display()))?;
-            if round != raw {
-                return Err(format!("{}: deflate round trip differs", path.display()).into());
-            }
-            std::fs::File::create(out.join(format!("{stem}.zz")))?.write_all(&packed)?;
+            pack(&path, &out, stem)?;
         }
     }
     Ok(())

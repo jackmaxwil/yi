@@ -9,16 +9,10 @@ use crate::session::{AgentSession, SessionConfig};
 
 use crate::packed::Packed;
 
-static READER: Packed = Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/reader.zz")));
-static READER_FENCED: Packed = Packed::new(include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/reader_fenced.zz"
-)));
-static READER_UNFENCED: Packed = Packed::new(include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/reader_unfenced.zz"
-)));
-static WORKER: Packed = Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/worker.zz")));
+pub(crate) static READER: Packed = crate::packed::packed!("reader");
+pub(crate) static READER_FENCED: Packed = crate::packed::packed!("reader_fenced");
+pub(crate) static READER_UNFENCED: Packed = crate::packed::packed!("reader_unfenced");
+pub(crate) static WORKER: Packed = crate::packed::packed!("worker");
 
 fn reader_prompt(fenced: bool) -> String {
     let tail = if fenced {

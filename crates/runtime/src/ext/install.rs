@@ -11,9 +11,8 @@ use super::{Host, Rank, Slot, Trust};
 
 use crate::packed::Packed;
 
-static ORCHESTRATE: Packed =
-    Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/orchestrate.zz")));
-static HAR_CORE: Packed = Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/har-core.zz")));
+pub(crate) static ORCHESTRATE: Packed = crate::packed::packed!("orchestrate");
+pub(crate) static HAR_CORE: Packed = crate::packed::packed!("har-core");
 
 pub struct ExtOptions {
     pub cwd: PathBuf,

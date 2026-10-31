@@ -116,14 +116,10 @@ pub fn workspace_sandbox(
     yi_tools::Sandbox::available().then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir))
 }
 
-static IDENTITY: packed::Packed =
-    packed::Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/identity.zz")));
-static DOCTRINE: packed::Packed =
-    packed::Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/doctrine.zz")));
-static DELEGATION: packed::Packed =
-    packed::Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/delegation.zz")));
-static UNATTENDED: packed::Packed =
-    packed::Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/unattended.zz")));
+static IDENTITY: packed::Packed = packed::packed!("identity");
+static DOCTRINE: packed::Packed = packed::packed!("doctrine");
+static DELEGATION: packed::Packed = packed::packed!("delegation");
+static UNATTENDED: packed::Packed = packed::packed!("unattended");
 
 pub fn identity_fragment() -> &'static str {
     IDENTITY.text()

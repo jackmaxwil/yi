@@ -13,14 +13,9 @@ use crate::args::Args;
 
 use crate::packed::Packed;
 
-static CONTINUATION: Packed =
-    Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/continuation.zz")));
-static BUDGET_LIMIT: Packed =
-    Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/budget_limit.zz")));
-static OBJECTIVE_UPDATED: Packed = Packed::new(include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/objective_updated.zz"
-)));
+pub(crate) static CONTINUATION: Packed = crate::packed::packed!("continuation");
+pub(crate) static BUDGET_LIMIT: Packed = crate::packed::packed!("budget_limit");
+pub(crate) static OBJECTIVE_UPDATED: Packed = crate::packed::packed!("objective_updated");
 
 pub const GOAL_EXISTS_ERROR: &str = "A goal already exists and is not finished; use goal.update(status=\"complete\"|\"blocked\") to finish it first.";
 pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one with goal.create.";
