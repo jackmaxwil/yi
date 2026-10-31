@@ -16,6 +16,37 @@ use super::{
 
 pub(super) type LedgerFold = dyn FnMut(&str, &[Entry], &SessionStats) + Send;
 
+/// Invariant: `at` is the last typed user text and `seen` the prefix already searched.
+#[derive(Default)]
+struct Task {
+    at: Option<(usize, AgentMessage)>,
+    seen: usize,
+}
+
+impl Task {
+    fn latest(&mut self, messages: &[AgentMessage]) -> Option<(usize, AgentMessage)> {
+        let moved = self
+            .at
+            .as_ref()
+            .is_some_and(|(index, message)| messages.get(*index) != Some(message));
+        if moved || messages.len() < self.seen {
+            *self = Task::default();
+        }
+        let found = (self.seen..messages.len())
+            .rev()
+            .find(|index| messages.get(*index).is_some_and(is_typed));
+        if let Some(index) = found {
+            self.at = messages.get(index).cloned().map(|message| (index, message));
+        }
+        self.seen = messages.len();
+        self.at.clone()
+    }
+}
+
+fn is_typed(message: &AgentMessage) -> bool {
+    crate::rules::typed_text(message).is_some()
+}
+
 pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
     let model = shared
         .model
@@ -308,27 +339,26 @@ impl AgentSession {
         })
     }
 
-    /// Invariant: a judgement reads the tail, so its cost is the bound and not the session; the
-    /// whole transcript is cloned only for a child's fork.
+    /// Invariant: a judgement reads the tail plus the last typed user text, found once and then
+    /// tracked by index, so its cost is the bound and not the session.
     pub fn history_tail(&self, tail: usize) -> Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
+        let task = Mutex::new(Task::default());
         Arc::new(move || {
-            shared
-                .messages
-                .lock()
-                .map(|messages| {
-                    let start = messages.len().saturating_sub(tail);
-                    let Some((before, window)) = messages.split_at_checked(start) else {
-                        return Vec::new();
-                    };
-                    let typed =
-                        |message: &&AgentMessage| crate::rules::typed_text(message).is_some();
-                    let task = (!window.iter().any(|message| typed(&message)))
-                        .then(|| before.iter().rev().find(typed))
-                        .flatten();
-                    task.into_iter().chain(window).cloned().collect()
-                })
-                .unwrap_or_default()
+            let Ok(messages) = shared.messages.lock() else {
+                return Vec::new();
+            };
+            let start = messages.len().saturating_sub(tail);
+            let (_, window) = messages.split_at(start);
+            let Ok(mut task) = task.lock() else {
+                return window.to_vec();
+            };
+            match task.latest(&messages).filter(|(index, _)| *index < start) {
+                Some((_, message)) => std::iter::once(message)
+                    .chain(window.iter().cloned())
+                    .collect(),
+                None => window.to_vec(),
+            }
         })
     }
 
@@ -754,6 +784,39 @@ mod tests {
                 if cause == "settled" && usage.output == 3089)
         });
         assert!(settled, "the root's settled usage was dropped");
+        Ok(())
+    }
+
+    fn result(index: usize) -> Result<yi_types::message::AgentMessage, serde_json::Error> {
+        serde_json::from_value(serde_json::json!({
+            "role": "toolResult", "toolCallId": format!("c{index}"), "toolName": "bash",
+            "content": [{"type": "text", "text": "ok"}], "isError": false, "timestamp": 1
+        }))
+    }
+    #[test]
+    fn a_judgement_reads_the_task_past_its_tail() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
+        let session = super::AgentSession::new(settle_test_config(), provider);
+        let history = session.history_tail(256);
+        let mut messages = vec![crate::session::user_input("tidy the vault")];
+        messages.extend((0..300).map(result).collect::<Result<Vec<_>, _>>()?);
+        session.seed_messages(messages.clone());
+        let seen = history();
+        assert_eq!(seen.len(), 257, "the tail alone carries no typed text");
+        assert_eq!(
+            crate::rules::typed_text(&seen[0]).as_deref(),
+            Some("tidy the vault"),
+            "the task before the tail was dropped"
+        );
+        messages.push(crate::session::user_input("ship it"));
+        session.seed_messages(messages);
+        let seen = history();
+        assert_eq!(seen.len(), 256);
+        assert_eq!(
+            crate::rules::typed_text(&seen[255]).as_deref(),
+            Some("ship it"),
+            "a typed message appended after the first read did not replace the task"
+        );
         Ok(())
     }
 }

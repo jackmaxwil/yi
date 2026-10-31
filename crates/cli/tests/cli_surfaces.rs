@@ -3181,25 +3181,15 @@ fn loopback(
     content_type: &'static str,
     reply: &'static str,
 ) -> Result<(u16, std::sync::mpsc::Receiver<Value>), Box<dyn Error>> {
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::Write;
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let (sender, bodies) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let mut reader = BufReader::new(stream);
-            let (mut length, mut line) = (0usize, String::new());
-            while reader.read_line(&mut line).unwrap_or(0) > 0 && !line.trim().is_empty() {
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-                line.clear();
-            }
-            let mut body = vec![0u8; length];
-            let _ = reader.read_exact(&mut body);
-            let _ = sender.send(serde_json::from_slice(&body).unwrap_or(Value::Null));
+            let mut reader = std::io::BufReader::new(stream);
+            let request = crate::loopback::read_request(&mut reader);
+            let _ = sender.send(crate::loopback::json_body(&request).unwrap_or(Value::Null));
             let _ = write!(
                 reader.into_inner(),
                 "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
