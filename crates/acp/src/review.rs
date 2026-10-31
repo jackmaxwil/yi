@@ -6,10 +6,7 @@ use yi_runtime::AgentSession;
 use crate::{INTERNAL_ERROR, INVALID_PARAMS};
 
 pub(crate) fn root(session: &AgentSession, cwd: &Path) -> PathBuf {
-    session
-        .lane()
-        .and_then(|lane| lane.path())
-        .unwrap_or_else(|| cwd.to_path_buf())
+    session.work_dir(cwd)
 }
 
 pub(crate) fn why(session: &AgentSession, cwd: &Path, params: &Value) -> Value {

@@ -393,6 +393,12 @@ impl AgentSession {
         self.shared.lane.lock().ok().and_then(|slot| slot.clone())
     }
 
+    pub fn work_dir(&self, cwd: &std::path::Path) -> std::path::PathBuf {
+        self.lane()
+            .and_then(|lane| lane.path())
+            .unwrap_or_else(|| cwd.to_path_buf())
+    }
+
     pub fn lane_handle(
         &self,
     ) -> Arc<dyn Fn() -> Option<Arc<crate::lane::land::LaneHandle>> + Send + Sync> {
@@ -490,10 +496,7 @@ impl AgentSession {
     }
 
     pub fn plan_service(&self) -> Option<Arc<crate::plan::PlanService>> {
-        self.plan
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().map(Arc::clone))
+        self.plan.lock().ok().and_then(|slot| slot.clone())
     }
 
     pub fn set_memory(&self, activity: Arc<crate::memory::Activity>) {
@@ -503,17 +506,11 @@ impl AgentSession {
     }
 
     pub fn memory(&self) -> Option<Arc<crate::memory::Activity>> {
-        self.memory
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().map(Arc::clone))
+        self.memory.lock().ok().and_then(|slot| slot.clone())
     }
 
     pub fn goal_service(&self) -> Option<Arc<crate::goal::GoalService>> {
-        self.goal
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().map(Arc::clone))
+        self.goal.lock().ok().and_then(|slot| slot.clone())
     }
 
     pub fn heartbeat_service(&self) -> Option<Arc<crate::schedule::HeartbeatService>> {

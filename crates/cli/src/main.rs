@@ -94,7 +94,7 @@ fn work_dir(lane: Option<std::path::PathBuf>, args: &Args) -> std::path::PathBuf
 }
 
 fn session_work_dir(session: &AgentSession, args: &Args) -> std::path::PathBuf {
-    work_dir(session.lane().and_then(|lane| lane.path()), args)
+    session.work_dir(&effective_cwd(args))
 }
 
 fn env_either(upper: &str, lower: &str) -> Option<String> {
