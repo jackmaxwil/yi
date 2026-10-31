@@ -7,7 +7,7 @@ mod document;
 mod exec;
 mod grep;
 pub mod hashline;
-mod ignore;
+pub mod ignore;
 mod ipython;
 pub mod jobs;
 mod orient;
@@ -56,7 +56,7 @@ pub const SPILLS: &str = "spills";
 pub const FLAT_SPILLS: &str = "tool-output";
 pub use tool::{
     CancelFlag, DETAIL_CAP, FileChange, Fuse, Tool, ToolContext, ToolKind, ToolOutput, cut_row,
-    error_output, error_output_kind, glob_head, text_output,
+    error_output, error_output_kind, glob_head, require_str, text_output,
 };
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {

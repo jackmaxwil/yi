@@ -755,7 +755,7 @@ impl App {
     fn count_kind(&mut self, name: &str) {
         let verb = match name {
             "read" | "get_context" => "read",
-            "grep" => "searched",
+            "grep" | "web_search" => "searched",
             "edit" | "write" => "edited",
             "bash" => "ran",
             "ipython" => "computed",
@@ -778,6 +778,7 @@ impl App {
         terminate: bool,
     ) {
         let is_error = yi_types::event::shown_failed(is_error, &details);
+        self.projection.settled_calls.insert(cell.call_id.clone());
         cell.status = if is_error {
             ToolStatus::Failed
         } else {

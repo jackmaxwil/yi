@@ -10,6 +10,7 @@ mod encoding;
 mod graph;
 mod image;
 mod journal_chain;
+mod json_salvage_prefix;
 mod lease;
 mod mail;
 mod oauth_files;
