@@ -16,11 +16,36 @@ pub struct Uncommitted {
 
 impl Uncommitted {
     pub(crate) fn read(tree: &Path) -> Result<Self, LaneError> {
-        let status = git_capture(tree, &STATUS)?;
+        Ok(Self::counted(&git_capture(tree, &STATUS)?))
+    }
+
+    /// One status read bounded by [`LIST_BUDGET`]; the error names why the paths went uncounted.
+    pub(crate) fn read_briefly(tree: &Path) -> Result<Self, String> {
+        let started = std::time::Instant::now();
+        let capture = super::capture_named(
+            tree,
+            "git status",
+            "git",
+            &STATUS,
+            LIST_BUDGET,
+            yi_tools::OUTPUT_CAP,
+            None,
+        );
+        capture
+            .map(|capture| Self::counted(&capture))
+            .map_err(|error| {
+                if started.elapsed() >= LIST_BUDGET {
+                    format!("git status past LIST_BUDGET ({} s)", LIST_BUDGET.as_secs())
+                } else {
+                    briefly(&error)
+                }
+            })
+    }
+    fn counted(status: &yi_tools::CommandCapture) -> Self {
         let (rows, cut) = (status.stdout.lines().count(), status.cut);
         // Invariant: a cut list is a head and a tail around a marker row; three lines may be no path.
         let paths = rows.saturating_sub(if cut.is_some() { 3 } else { 0 });
-        Ok(Self { paths, cut })
+        Self { paths, cut }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -46,6 +71,24 @@ impl std::fmt::Display for Uncommitted {
             (None, 1) => formatter.write_str("1 uncommitted path"),
             (None, n) => write!(formatter, "{n} uncommitted paths"),
         }
+    }
+}
+
+/// One failed read says why: the diagnostics past capture_named's label, and any cut it makes.
+fn briefly(error: &str) -> String {
+    let mut lines = error.lines();
+    let label = lines.next().unwrap_or_default();
+    let mut body = lines.filter(|line| !line.trim().is_empty());
+    let kept: Vec<&str> = body.by_ref().take(2).collect();
+    let more = body.count();
+    if kept.is_empty() {
+        return label.to_owned();
+    }
+    let joined = kept.join(" ");
+    if more == 0 {
+        format!("{label} {joined}")
+    } else {
+        format!("{label} {joined} [… {more} more]")
     }
 }
 
@@ -294,6 +337,21 @@ impl Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Dies when a failed status read drops git's own cause and keeps only capture_named's label.
+    #[test]
+    fn a_failed_read_keeps_the_diagnostic_and_names_its_cut() {
+        let two = briefly(
+            "git status failed:\nerror: bad signature 0x00000000\nfatal: index file corrupt\n",
+        );
+        assert_eq!(
+            two,
+            "git status failed: error: bad signature 0x00000000 fatal: index file corrupt"
+        );
+        let many = briefly("git status failed:\nwarning: a\nfatal: b\nhint: c\nhint: d\n");
+        assert_eq!(many, "git status failed: warning: a fatal: b [… 2 more]");
+        let bare = briefly("git status: No such file or directory (os error 2)");
+        assert_eq!(bare, "git status: No such file or directory (os error 2)");
+    }
 
     #[test]
     fn judgment_reads_a_detached_head_newer_than_the_listing()

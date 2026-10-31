@@ -337,16 +337,17 @@ except yi.tools.ToolError as error:
     Ok(())
 }
 
-/// The cell's own approval never covers its calls: an Auto broker with nobody to ask judges
-/// the nested `rm` on its own arguments.
+/// The cell's own approval never covers its calls: an Auto broker with nobody to ask, granted the
+/// uncontained cell by a rule on `ipython` alone, judges the nested `rm` on its own arguments.
 #[tokio::test]
 async fn an_auto_broker_with_no_asker_refuses_a_cells_nested_rm() -> Result<(), Box<dyn Error>> {
     let (_dir, cwd) = scratch("kernel-tools-broker")?;
     std::fs::write(cwd.join("victim.txt"), "v\n")?;
+    let cell = yi_runtime::ConfigRule::new("ipython", "*", yi_runtime::ConfigRuleAction::Allow)?;
     let broker = Arc::new(PermissionBroker::new(
         yi_runtime::PermissionMode::Auto,
         cwd.clone(),
-        Vec::new(),
+        vec![cell],
         None,
         tokio::sync::broadcast::channel(8).0,
     ));

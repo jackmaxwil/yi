@@ -15,7 +15,7 @@ hashline edit (+ registers, instrumented) | `tools::a_write_through_a_symlink_is
 hashline edit (+ registers, instrumented) | `tools::a_changed_contract_names_the_callers_that_still_call_the_old_one`
 hashline edit (+ registers, instrumented) | `toolcells::an_edit_cell_shows_the_check_rows_the_model_read_under_its_diff`
 first-run setup (`yi setup`) | `journeys::setup_saves_the_answered_steps_and_keeps_every_other_key`
-first-run setup (`yi setup`) | `journeys::setup_saves_the_classifier_only_once_one_answers` (T2)
+first-run setup (`yi setup`) | `journeys::setup_saves_jev_as_the_classifier_only_with_an_openrouter_key` (T2)
 Claude Code tool hooks | `claude_hooks::a_hook_allow_never_lifts_a_configured_deny_rule`
 Claude Code tool hooks | `claude_hooks::gates::a_hook_allow_never_answers_a_rule_a_hold_or_a_credential_read`
 Claude Code tool hooks | `claude_hooks::edits::an_edit_reaches_its_hooks_as_claude_codes_edit_input_per_file`
@@ -39,6 +39,7 @@ bash reduce (launch set) | `session_faux::a_job_that_exits_mid_turn_lands_its_vi
 bash reduce (launch set) | `kernel_cell::a_shell_cell_keeps_its_failing_test_and_summary_inline`
 bash reduce (launch set) | `kernel_data_surface::a_cut_cell_stream_names_a_file_with_every_character`
 file checkpoints + /undo | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
+file checkpoints + /undo | `tools::a_capture_leaves_out_a_home_that_lives_inside_the_project`
 kernel + ipython + rlm() subagents | `reader_retry::schema_failure_gets_one_retry_and_a_second_failure_is_refused`
 kernel + ipython + rlm() subagents | `reader_retry::an_anthropic_retry_over_tool_blocks_is_one_cold_text_request`
 kernel + ipython + rlm() subagents | `reader_retry::a_follow_up_restores_tools_and_gets_its_own_repair`
@@ -177,6 +178,9 @@ skills: catalog ladder, `$name`, Yi's triggered skills | `journeys::the_agents_o
 skill classifier | `classifier_e2e::below_the_threshold_a_decision_is_recorded_and_nothing_fires`
 skill classifier | `session_faux::an_unset_classifier_threshold_points_at_0_9_through_attach`
 skill classifier | `classifier_e2e::a_dead_sidecar_trips_the_breaker_and_says_so_once` (T1)
+skill classifier | `classifier_e2e::a_page_at_the_cut_is_flagged_and_a_clean_one_journals_nothing` (T1)
+skill classifier | `classifier_e2e::a_flagged_page_reaches_the_prompt_marked_and_keeps_its_line` (T1)
+skill classifier | `web_search::a_child_spawned_by_a_screened_root_marks_and_journals_its_own_page` (T1)
 runtime facts on the tools: bash contract, chain-stop note, reducer ranges, `ask_user` where someone answers | `tools::a_stopped_chain_says_so_beside_the_exit_code`
 runtime facts on the tools: bash contract, chain-stop note, reducer ranges, `ask_user` where someone answers | `auto_review::a_question_ends_the_turn_and_lists_its_options` (T0)
 session mining: deterministic signals + the prompt drift gate | `extract.py --selfcheck` (run by `check_guardrails.sh`)
@@ -226,6 +230,11 @@ daemon (ACP-router supervisor + worker/root) | `serve_daemon::a_config_edit_reac
 Python client (`python/yi_client.py`) | `python_client::a_python_program_fans_out_readers_with_no_model_turn_at_the_root`
 Python client (`python/yi_client.py`) | `python_client::a_permission_ask_is_refused_and_the_client_continues` (T2)
 TUI | `toolcells::digests_come_from_the_typed_details_and_survive_rewording_the_text` (T0)
+terminal text follow | `pane_scroll::page_moves_only_in_half_page_jumps` (T0)
+TUI | `toolcells::nine_sources_are_one_row_cut_with_the_count` (T0)
+TUI | `toolcells::a_run_of_read_only_calls_commits_as_one_row` (T0)
+TUI | `toolcells::a_lone_read_shows_live_as_the_cell_it_commits` (T0)
+TUI | `toolcells::a_source_wider_than_the_row_is_cut_with_an_ellipsis` (T0)
 TUI child cards | `tui_e2e::a_card_lands_under_the_cell_its_record_names` (T0)
 TUI child cards | `tui_e2e::a_card_whose_record_names_no_cell_waits_on_none` (T0)
 TUI child cards | `kernel_cell::a_cell_hands_its_call_id_to_the_kernel` (T0)
@@ -237,6 +246,15 @@ TUI child cards | `tui_e2e::a_new_session_and_a_rewind_drop_the_old_cards` (T0)
 TUI child cards | `tui_e2e::the_thirty_third_finished_card_drops_the_oldest_and_says_so` (T0)
 TUI child cards | `recursion_e2e::rlm_run_round_trips_through_a_real_kernel` (T0)
 TUI child cards | `lease::a_spawn_line_names_its_cell_and_an_older_line_still_decodes` (T0)
+TUI child cards | `child_rows::an_early_end_waits_for_its_cell_then_follows_its_start` (T0)
+TUI child cards | `child_rows::a_running_update_rearms_only_the_end_and_a_new_session_gets_a_new_start` (T0)
+TUI child cards | `child_rows::eviction_and_roster_ticks_never_duplicate_committed_rows` (T0)
+TUI child cards | `child_rows::replay_builds_enriched_and_reduced_legacy_rows` (T0)
+TUI child cards | `child_rows::replayed_rows_match_live_bytes_in_every_mode_and_after_resize` (T0)
+TUI child cards | `child_rows::replayed_rows_reach_a_nonzero_vt100_offset_once` (T0)
+TUI child cards | `child_rows::replay_flushes_an_unresolved_antecedent_at_eof` (T0)
+TUI child cards | `drive::replayed_child_rows_render_in_the_shared_console_reducer` (T0)
+TUI child cards | `child_trail::a_repossession_after_parent_close_journals_that_cause` (T0)
 console right-click menu and pane close mark | `drive::a_right_click_on_a_reply_copies_that_reply`
 console right-click menu and pane close mark | `drive::copy_as_plain_text_drops_the_markdown`
 console right-click menu and pane close mark | `drive::quote_puts_the_message_in_the_composer`
@@ -300,6 +318,7 @@ console editor and viewers | `editor_view::the_editor_opens_65536_lines_and_refu
 console editor and viewers | `editor_view::the_cursor_sits_past_an_emoji_drawn_two_cells_wide`
 console editor and viewers | `editor_view::find_wraps_to_a_match_earlier_on_the_cursors_line` (T0)
 console editor and viewers | `tui_unit::the_compose_draft_is_private_new_and_never_written_through_a_link` (T0)
+console editor and viewers | `chrome::the_files_button_opens_a_tree_that_folds_a_folder_and_opens_a_file`
 console Notebook and Review from a replay | `drive::a_resumed_sessions_kernel_cells_fill_the_notebook`
 console Notebook and Review from a replay | `drive::a_second_replay_of_the_branch_leaves_the_notebook_as_it_was`
 console Notebook and Review from a replay | `drive::a_second_replay_of_a_notebook_past_its_cap_keeps_the_numbering`
@@ -315,6 +334,13 @@ console notebook pane | `app::notebook::tests::only_the_newest_figure_keeps_its_
 console notebook pane | `app::notebook::tests::the_newest_image_of_the_newest_cell_is_the_one_placed`
 console notebook pane | `tests::v_on_the_notebook_shows_the_code_rows_its_cap_cut` (T0)
 console notebook pane | `drive::notebook_pane_shows_cells_and_image_placeholder` (T2)
+console notebook pane | `app::notebook::tests::a_recorded_traceback_dims_its_frames_and_lexes_what_each_ran`
+console notebook pane | `pycell::a_tracebacks_frames_dim_and_the_rows_they_ran_keep_their_colour`
+console sidebar | `sessions::a_quiet_session_draws_one_row` (T0)
+console sidebar | `sessions::the_sidebars_chrome_is_dimmer_than_a_session_name` (T0)
+console sidebar | `sessions::the_sidebar_lists_pins_then_each_workspace_need_first` (T0)
+console sidebar | `drive::sidebar_rows_show_names_and_ages_newest_first` (T2)
+console notebook pane | `app::diffs::tests::a_new_notebook_takes_two_fifths_of_the_pane_area`
 MCP CLI | `mcp_cli::disabled_config_hides_the_subcommand`
 MCP CLI | `mcp_cli::sessions_persist_states_and_survive_close_restart`
 MCP CLI | `mcp_cli::connect_prints_no_schema_and_names_the_call_that_lists_the_tools`
@@ -522,10 +548,16 @@ TUI | `cards::a_mail_body_keeps_its_angle_brackets_and_an_advisory_loses_only_it
 console right-click menu and pane close mark | `sessions::the_sidebar_lists_pins_then_each_workspace_need_first` (T0)
 console right-click menu and pane close mark | `drive::pin_from_the_menu_moves_a_session_under_pinned`
 console right-click menu and pane close mark | `drive::a_click_on_a_workspace_header_folds_it`
+console right-click menu and pane close mark | `drive::an_arrow_and_enter_reach_a_workspace_header_and_fold_it` (T2)
 console right-click menu and pane close mark | `drive::a_workspace_headers_plus_starts_a_session_there`
 console right-click menu and pane close mark | `drive::rows_group_by_workspace_and_rank_by_need_inside_it` (T2)
+console right-click menu and pane close mark | `chrome::a_hidden_sidebar_frees_its_width_and_names_the_chord_back` (T0)
+console right-click menu and pane close mark | `chrome::the_sidebar_chord_cycles_three_states_and_never_focuses_a_hidden_one` (T0)
+console right-click menu and pane close mark | `drive::cmd_chords_split_close_and_hide_the_sidebar` (T2)
+console settings pane | `settings::the_sidebar_row_takes_the_hidden_state_it_saves` (T0)
 console settings pane | `drive::the_gear_opens_settings_and_a_default_saves_or_says_why_not`
 console settings pane | `drive::the_session_tab_sets_the_live_option_and_makes_it_the_default`
+console settings pane | `drive::a_press_on_a_session_option_steps_it_and_sends_the_change`
 console settings pane | `drive::the_keys_key_opens_settings_on_the_keys_tab` (T2)
 console settings pane | `serve_daemon::a_saved_default_reaches_the_next_session_and_a_refused_one_writes_nothing` (T2)
 console settings pane | `settings::every_config_leaf_has_exactly_one_row`
@@ -537,3 +569,18 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+catastrophic-path denylist M10 | `decide::yolo_writes_a_system_config_but_not_a_key_or_the_git_dir`
+permission modes/rules/holds, deterministic auto | `permission_auto::auto_asks_before_an_uncontained_python_cell`
+permission modes/rules/holds, deterministic auto | `bash::a_command_that_writes_behind_a_read_verb_is_not_a_read`
+TUI | `json_salvage_prefix::every_prefix_of_a_real_tool_call_salvages_a_consistent_object` (T0)
+file checkpoints + /undo | `checkpoint::undo_restores_and_removes_non_ascii_paths`
+file checkpoints + /undo | `checkpoint::a_capture_leaves_the_callers_git_index_untouched`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::parallel_claims_check_out_side_by_side`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_claim_leaves_a_process_that_is_not_the_warmer_alive`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::concurrent_syncs_keep_every_seen_lockfile`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_tree_with_two_lockfiles_syncs_both`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_failed_sync_starts_the_session_with_a_notice`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_worktree_spawn_names_the_edits_its_child_starts_without`
+web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
+web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)
+console settings pane | `drive::a_press_on_a_settings_row_saves_the_control_it_names`
