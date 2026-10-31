@@ -1701,6 +1701,15 @@ def waits_selfcheck():
         notes[:] = [meta(now - 60, "handoff", extra=gate)]
         if attempt("o/r", dict(pr, labels=[{"name": "autofix"}]), {}) != "handoff":
             errs.append("the `autofix` label did not ask a held hand-off to try now")
+        # The sentence counts this kind's hand-offs, the ones that hold it, not the head's others.
+        notes[:] = [meta(now - RETRY_AFTER - 60, "handoff", extra=" stop=findings round=3")] * RETRIES
+        attempt("o/r", pr, {})
+        if "tries again at" not in posted[-1] or "waits for a new head" in posted[-1]:
+            errs.append(f"a gate's first hand-off beside findings' two promised {posted[-1][:160]!r}")
+        notes[:] = [meta(now - RETRY_AFTER - 60, "handoff", extra=gate)] * RETRIES
+        attempt("o/r", pr, {})
+        if "waits for a new head" not in posted[-1]:
+            errs.append(f"a gate's last hand-off promised {posted[-1][:160]!r}")
         if not handed_off([meta(now - 60, "handoff", extra=" stop=findings round=3")], "a" * 40, "findings", now, 3):
             errs.append("a hand-off of round 3 did not hold round 3")
         if handed_off([meta(now - 60, "handoff", extra=" stop=findings round=3")], "a" * 40, "findings", now, 4):
