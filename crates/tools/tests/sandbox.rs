@@ -659,6 +659,7 @@ fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestRes
     std::fs::create_dir_all(state.join("secret"))?;
     // The spare names the root by another spelling (`/private/var` for `/var`), as a link may.
     let spelled = state.canonicalize()?;
+    let state = Path::new("/").join(spelled.strip_prefix("/private")?);
     assert_ne!(spelled, state, "the scratch dir has one spelling only");
     std::fs::write(state.join("secret/f"), "WALLED")?;
     let sandbox = Sandbox {
@@ -959,6 +960,134 @@ fn a_contained_command_cannot_write_a_hook_or_the_config() -> TestResult {
     std::fs::write(lane.join("change.txt"), "from the lane\n")?;
     let (code, output) = run("git add -A", &lane, Some(&sandbox))?;
     assert_eq!(code, 0, "a contained `git add` still works: {output}");
+    Ok(())
+}
+
+/// The lane profile with tmp's blanket grant dropped, so a deny is judged and not hidden by it.
+fn lane_profile(root: &Path, lane: &Path, home: &Path) -> Result<Sandbox, Box<dyn Error>> {
+    let mut sandbox = Sandbox::for_workspace(lane, home, None);
+    let scratch = root.canonicalize()?;
+    sandbox.writable.retain(|writable| {
+        writable
+            .canonicalize()
+            .is_ok_and(|resolved| resolved.starts_with(&scratch))
+            || writable == Path::new("/private/tmp")
+    });
+    Ok(sandbox)
+}
+
+/// A script that leaves `marker` when git runs it, the shape of a planted `core.fsmonitor`.
+fn marker_script(root: &Path, marker: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    let script = root.join("fsmonitor.sh");
+    std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display()))?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    Ok(script)
+}
+
+/// Incident: `config.worktree` was writable, and with `extensions.worktreeConfig` on, as this
+/// repository has it, the host's next `git status` ran the `core.fsmonitor` planted there.
+#[test]
+fn a_planted_worktree_config_never_runs_on_the_host() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("worktree-config")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    git(&trunk, &["config", "extensions.worktreeConfig", "true"])?;
+    let marker = root.join("ran-on-host");
+    let script = marker_script(&root, &marker)?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    let admin = git(&lane, &["rev-parse", "--absolute-git-dir"])?;
+    let plant = format!(
+        "printf '[core]\\n\\tfsmonitor = {}\\n' >> {admin}/config.worktree",
+        script.display()
+    );
+    let (code, output) = run(&plant, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "the write must be refused: {output}");
+    std::fs::write(lane.join("touched.txt"), "x\n")?;
+    git(&lane, &["status", "--porcelain"])?;
+    assert!(!marker.exists(), "the planted fsmonitor ran on the host");
+    Ok(())
+}
+
+/// A repointed `.git` makes the host's git read a config the contained process wrote.
+#[test]
+fn a_repointed_dot_git_never_runs_on_the_host() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("pointer")?;
+    let (_trunk, lane) = linked_worktree(&root)?;
+    let marker = root.join("ran-on-host");
+    let script = marker_script(&root, &marker)?;
+    let evil = root.join("evil");
+    std::fs::create_dir_all(&evil)?;
+    git(&evil, &["init", "-q", "-b", "main"])?;
+    git(
+        &evil,
+        &["config", "core.fsmonitor", &script.to_string_lossy()],
+    )?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    let plant = format!("printf 'gitdir: {}/.git\\n' > .git", evil.display());
+    let (code, output) = run(&plant, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "the pointer must stay out of reach: {output}");
+    git(&lane, &["status", "--porcelain"])?;
+    assert!(!marker.exists(), "the planted fsmonitor ran on the host");
+    Ok(())
+}
+
+/// Every other file a git dir holds that the host's git reads as authority: attributes pick merge
+/// drivers, a submodule's config runs like the top one, an alternate adds objects unseen.
+#[test]
+fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("host-read")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let common = trunk.join(".git");
+    std::fs::create_dir_all(common.join("modules/sub"))?;
+    std::fs::write(common.join("modules/sub/config"), "")?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    for target in [
+        common.join("config.worktree"),
+        common.join("info/attributes"),
+        common.join("info/exclude"),
+        common.join("modules/sub/config"),
+        common.join("objects/info/alternates"),
+    ] {
+        let command = format!("printf x >> {}", target.display());
+        let (code, output) = run(&command, &lane, Some(&sandbox))?;
+        assert_ne!(
+            code,
+            0,
+            "{} must stay out of reach: {output}",
+            target.display()
+        );
+    }
+    Ok(())
+}
+
+/// A checkout that is no linked worktree has no `.git` file to protect, but a planted one in a
+/// non-repository cwd would turn the host's next git on, and `worktrees` holds every lane's admin.
+#[test]
+fn a_contained_command_cannot_plant_a_dot_git_or_reach_another_lanes_admin() -> TestResult {
+    seatbelt()?;
+    let (root, project, home) = workspace("plant")?;
+    let sandbox = lane_profile(&root, &project, &home)?;
+    let (code, output) = run("printf 'gitdir: /x\\n' > .git", &project, Some(&sandbox))?;
+    assert_ne!(code, 0, "a non-repository's .git must be refused: {output}");
+
+    let (trunk, lane) = linked_worktree(&root)?;
+    let sandbox = lane_profile(&root, &trunk, &home)?;
+    let admin = git(&lane, &["rev-parse", "--absolute-git-dir"])?;
+    let command = format!("printf x >> {admin}/gitdir.note");
+    let (code, output) = run(&command, &trunk, Some(&sandbox))?;
+    assert_ne!(
+        code, 0,
+        "a main checkout must not reach a lane's admin: {output}"
+    );
+    let (code, output) = run(
+        "printf 'x\\n' > note.txt && git status -s",
+        &trunk,
+        Some(&sandbox),
+    )?;
+    assert_eq!(code, 0, "ordinary work still runs there: {output}");
     Ok(())
 }
 

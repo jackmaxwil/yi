@@ -30,19 +30,40 @@ const NETWORK_POLICY: &str = "; loopback only, and no unix socket\n\
     (allow network-bind network-inbound (local ip \"localhost:*\"))\n\
     (allow network-outbound (remote ip \"localhost:*\"))\n";
 
-/// A git dir's escape hatches: `hooks` and `config` run under the host's next git, and the
-/// pointers are what the next sandbox policy is built from.
-const HOST_RUN_BY_GIT: [&str; 4] = ["hooks", "config", "commondir", "gitdir"];
+/// A git dir's escape hatches: `hooks` and both configs run under the host's next git, `info` and
+/// `modules` hold more of its config, the pointers are what the next sandbox policy is built from.
+const HOST_RUN_BY_GIT: [&str; 7] = [
+    "hooks",
+    "config",
+    "config.worktree",
+    "info",
+    "modules",
+    "commondir",
+    "gitdir",
+];
 
 impl Sandbox {
     /// The worktree, its git dirs (a lane's index lives in the trunk's), and build scratch.
     pub fn for_workspace(cwd: &Path, home: &Path, session_dir: Option<&Path>) -> Self {
         let mut writable = vec![cwd.to_path_buf()];
         let git_dirs = yi_permission::git_dirs(cwd);
-        let deny_write = git_dirs
+        let mut deny_write: Vec<PathBuf> = git_dirs
             .iter()
             .flat_map(|dir| HOST_RUN_BY_GIT.iter().map(|leaf| dir.join(leaf)))
+            .chain(
+                git_dirs
+                    .iter()
+                    .map(|dir| dir.join("objects/info/alternates")),
+            )
             .collect();
+        // Invariant: a `.git` that is no directory, or none yet, tells the host's next git where
+        // its config lives; a main checkout's `worktrees` holds every lane's pointers.
+        if !cwd.join(".git").is_dir() {
+            deny_write.push(cwd.join(".git"));
+        }
+        if let [main] = git_dirs.as_slice() {
+            deny_write.push(main.join("worktrees"));
+        }
         writable.extend(git_dirs);
         if let Some(dir) = session_dir {
             writable.push(dir.to_path_buf());
