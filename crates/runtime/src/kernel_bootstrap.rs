@@ -133,6 +133,7 @@ pub fn rlm_bootstrap_code(import_names: &[&str]) -> String {
 }
 
 const RESTORE_NAMES_SHOWN: usize = 40;
+const RESTORE_FAILED_SHOWN: usize = 40;
 
 pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> String {
     let mut lines = vec!["<ipython_state_restored>".to_owned()];
@@ -156,14 +157,21 @@ pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> S
         let names: Vec<String> = restore
             .failed
             .iter()
-            .map(|failure| match failure.reason.is_empty() {
-                true => failure.name.clone(),
-                false => format!("{} ({})", failure.name, failure.reason),
-            })
+            .map(|failure| failure.name.clone())
             .collect();
+        let next = format!(
+            "dill.load(open({}, \"rb\"))[\"_skips\"]",
+            serde_json::to_string(&restore.path).unwrap_or_else(|_| "\"\"".to_owned())
+        );
         lines.push(format!(
             "These could not be restored and must be recreated if needed: {}.",
-            names.join(", ")
+            crate::listed::listed(
+                &names,
+                "names not revived",
+                "RESTORE_FAILED_SHOWN",
+                RESTORE_FAILED_SHOWN,
+                &next
+            )
         ));
     }
     lines.push("</ipython_state_restored>".to_owned());

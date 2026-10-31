@@ -49,8 +49,8 @@ def get_ipython():
     return _IP()
 "#;
 
-fn scratch() -> Result<PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-snap-skips-{}", std::process::id()));
+fn scratch(name: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let dir = std::env::temp_dir().join(format!("yi-snap-skips-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir)?;
     Ok(dir)
@@ -90,7 +90,7 @@ fn run(dir: &Path, helper: &str, namespace: &str, code: &str) -> Result<String, 
 
 #[test]
 fn a_name_the_snapshot_skipped_comes_back_named_at_resume() -> TestResult {
-    let dir = scratch()?;
+    let dir = scratch("resume")?;
     let state = dir.join("kernel-state.dill");
     let snapshot = build_snapshot_code(&state, 1 << 20, 64, false);
     let said = run(&dir, "snapshot", NAMESPACE, &snapshot)?;
@@ -125,10 +125,71 @@ fn a_name_the_snapshot_skipped_comes_back_named_at_resume() -> TestResult {
         "the reason travels with it: {}",
         result.failed[0].reason
     );
-    let skips = fs::read_to_string(state.with_extension("skips.json"))?;
+    assert!(
+        !state.with_extension("skips.json").exists(),
+        "the skip list rides the index, not a file beside it"
+    );
+    let skips = index_skips(&dir, &state)?;
     assert!(
         skips.contains("\"name\": \"big\"") && skips.contains("size cap"),
-        "the skip list sits beside the index: {skips}"
+        "the index carries the skipped name and its reason: {skips}"
+    );
+    Ok(())
+}
+
+/// The `_skips` value the index holds, read back by the same stub serializer.
+fn index_skips(dir: &Path, path: &Path) -> Result<String, Box<dyn Error>> {
+    index_step(
+        dir,
+        "import dill, json, sys; print(json.dumps(dill.load(open(sys.argv[1], 'rb'))['_skips']))",
+        path,
+    )
+}
+
+fn index_step(dir: &Path, code: &str, path: &Path) -> Result<String, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the index is read and written by a real python3, not a Rust stub of pickle"
+    )]
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(code)
+        .arg(path)
+        .env("PYTHONPATH", dir.join("stub"))
+        .output()?;
+    let said = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success(),
+        "python step failed: {said}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(said)
+}
+
+#[test]
+fn a_skip_entry_of_the_wrong_shape_still_lets_the_marker_line_decode() -> TestResult {
+    let dir = scratch("shape")?;
+    let state = dir.join("kernel-state.dill");
+    fs::create_dir_all(dir.join("stub"))?;
+    fs::write(dir.join("stub").join("dill.py"), STUB_DILL)?;
+    index_step(
+        &dir,
+        "import dill, sys; skip = [{'name': 'gone', 'reason': 3}, {'name': 7, 'reason': 'x'}, 'junk']; open(sys.argv[1], 'wb').write(dill.dumps({'small': dill.dumps(7), '_skips': skip}))",
+        &state,
+    )?;
+    let restore = build_restore_code(&state);
+    let said = run(&dir, "restore", RESTORE_NAMESPACE, &restore)?;
+    let result = parse_restore_result(&said, &state).ok_or("the marker line must decode")?;
+    assert_eq!(result.restored, vec!["small"], "{said}");
+    let failed: Vec<(&str, &str)> = result
+        .failed
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.reason.as_str()))
+        .collect();
+    assert_eq!(
+        failed,
+        vec![("gone", "")],
+        "only a named skip rides the marker, with a reason the wire accepts: {said}"
     );
     Ok(())
 }

@@ -450,7 +450,7 @@ fn revived(restored: usize, failed: usize) -> KernelRestoreResult {
                 reason: "PicklingError".to_owned(),
             })
             .collect(),
-        path: String::new(),
+        path: "/tmp/kernel-state.dill".to_owned(),
     }
 }
 
@@ -468,33 +468,24 @@ fn the_restore_notice_lists_a_bounded_number_of_names() -> TestResult {
     );
     assert!(over.contains("var039"), "{over}");
     assert!(!over.contains("var040"), "{over}");
-
-    let failed = yi_runtime::restore_notice_text(&revived(1, 100));
-    assert!(
-        failed.contains("gone099 (PicklingError)"),
-        "names to recreate stay whole, with the reason they did not: {failed}"
-    );
-    assert!(row_in(&failed).is_none(), "{failed}");
     Ok(())
 }
 
 #[test]
-fn the_restore_notice_names_why_a_variable_did_not_come_back() -> TestResult {
-    let notice = yi_runtime::restore_notice_text(&revived(1, 1));
-    assert!(
-        notice.contains("gone000 (PicklingError)"),
-        "the reason the name could not be restored travels with it: {notice}"
+fn the_restore_notice_cuts_a_long_list_of_names_it_could_not_restore() -> TestResult {
+    let failed = yi_runtime::restore_notice_text(&revived(1, 100));
+    let row = row_of(&failed)?;
+    assert_eq!(
+        (row.kept, row.total, row.what, row.cap, row.limit),
+        (40, 100, "names not revived", "RESTORE_FAILED_SHOWN", 40)
     );
-
-    let mut bare = revived(1, 1);
-    if let Some(failure) = bare.failed.first_mut() {
-        failure.reason.clear();
-    }
-    let notice = yi_runtime::restore_notice_text(&bare);
     assert!(
-        notice.contains("gone000.") && !notice.contains("()"),
-        "a failure with no reason named stays a bare name: {notice}"
+        row.next.contains("kernel-state.dill"),
+        "the row names the index that holds the rest: {}",
+        row.next
     );
+    assert!(failed.contains("gone039"), "{failed}");
+    assert!(!failed.contains("gone040"), "{failed}");
     Ok(())
 }
 

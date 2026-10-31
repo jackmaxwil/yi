@@ -27,10 +27,6 @@ pub fn blobs_dir_for(snapshot_path: &Path) -> PathBuf {
     snapshot_path.with_extension("blobs")
 }
 
-fn skips_path_for(snapshot_path: &Path) -> PathBuf {
-    snapshot_path.with_extension("skips.json")
-}
-
 // JSON string escaping is a valid subset of Python string-literal escaping.
 fn py_str(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned())
@@ -52,7 +48,6 @@ pub fn build_snapshot_code(
     // All builtins are sourced via the locally-imported _b alias so the helper
     // keeps working even when the user namespace shadows names like list/open.
     let blobs = py_path(&blobs_dir_for(out_path));
-    let skips = py_path(&skips_path_for(out_path));
     format!(
         r#"def _yi_snapshot_state():
     import builtins as _b, hashlib, io, json, os, sys
@@ -180,15 +175,19 @@ pub fn build_snapshot_code(
     # Each variable is a content-named blob written once; the index is the commit point, so a
     # cell that changed one small name rewrites one small file, not the whole namespace.
     index = {{}}
+    keep = _b.set()
     try:
         for name, blob in payload.items():
             digest = hashlib.blake2b(blob, digest_size=16).hexdigest()
             index[name] = digest
+            keep.add(digest + ".pkl")
             path = os.path.join(blobs, digest + ".pkl")
             if not os.path.exists(path):
                 durable(path, blob)
         sync_dir(blobs)
-        durable({skips}, json.dumps(skipped).encode())
+        # Reserved key: names starting with "_" are skipped above, so it cannot collide with a
+        # variable, and one write commits the names and the skips together.
+        index["_skips"] = _b.list(skipped)
         durable({out}, dill.dumps(index))
         sync_dir(os.path.dirname({out}))
     except _b.BaseException as _err:
@@ -196,7 +195,6 @@ pub fn build_snapshot_code(
             raise
         _b.print({marker} + json.dumps({{"error": "write failed: " + _b.str(_err)}}))
         return
-    keep = {{digest + ".pkl" for digest in index.values()}}
     for entry in os.listdir(blobs):
         if entry not in keep:
             try:
@@ -242,7 +240,6 @@ pub fn build_restore_code(in_path: &Path) -> String {
     // Builtins via the local _b alias so a shadowed name in the user namespace
     // (list/open/print/…) can't break the restore path.
     let blobs = py_path(&blobs_dir_for(in_path));
-    let skips = py_path(&skips_path_for(in_path));
     format!(
         r#"def _yi_restore_state():
     import builtins as _b, json, os
@@ -275,6 +272,7 @@ pub fn build_restore_code(in_path: &Path) -> String {
     restored = []
     failed = []
     blobs = {blobs}
+    skipped = payload.pop("_skips", [])
     for name, blob in payload.items():
         try:
             # A digest names a blob beside the index; bytes are the pre-blob single-file form.
@@ -285,14 +283,13 @@ pub fn build_restore_code(in_path: &Path) -> String {
             restored.append(name)
         except _b.Exception as _err:
             failed.append({{"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]}})
-    try:
-        with _b.open({skips}, "rb") as fh:
-            for entry in json.loads(fh.read().decode("utf-8", "replace")):
-                name = entry.get("name") if _b.isinstance(entry, _b.dict) else None
-                if _b.isinstance(name, _b.str) and name not in ns:
-                    failed.append(entry)
-    except _b.Exception:
-        pass
+    # A skip entry reaches the marker as a normalised pair, so no stored shape can make the
+    # model read as "nothing was revived".
+    for entry in skipped if _b.isinstance(skipped, _b.list) else []:
+        name = entry.get("name") if _b.isinstance(entry, _b.dict) else None
+        if _b.isinstance(name, _b.str) and name not in ns:
+            reason = entry.get("reason")
+            failed.append({{"name": name, "reason": reason if _b.isinstance(reason, _b.str) else ""}})
     _b.print({marker} + json.dumps({{"restored": _b.sorted(restored), "failed": failed}}))
 
 

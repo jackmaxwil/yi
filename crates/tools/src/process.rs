@@ -17,9 +17,25 @@ pub(crate) fn quoted(text: &str) -> String {
 
 /// The repository's top; a worktree never borrows the main checkout's.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    (cwd.ancestors())
+    (resolved(cwd).ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
+}
+
+/// Incident: a temp path holding `..` made a sibling checkout's `.git` look like an ancestor,
+/// so a scratch workspace read that repo's AGENTS.md and every role's prefix carried it.
+fn resolved(path: &std::path::Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -549,6 +565,19 @@ mod tests {
             elapsed < Duration::from_secs(6),
             "the re-grouped grandchild outlived the kill and held stdout for {elapsed:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_parent_segment_does_not_make_a_sibling_the_repository() -> Fallible {
+        let root = std::env::temp_dir().join(format!("yi-git-root-{}", std::process::id()));
+        let (repo, scratch) = (root.join("repo"), root.join("tmp/ws"));
+        std::fs::create_dir_all(repo.join(".git"))?;
+        std::fs::create_dir_all(&scratch)?;
+        assert_eq!(git_root(&root.join("repo/../tmp/ws")), None);
+        assert_eq!(git_root(&scratch), None);
+        assert!(git_root(&repo).is_some_and(|top| top.ends_with("repo")));
+        std::fs::remove_dir_all(&root)?;
         Ok(())
     }
 }

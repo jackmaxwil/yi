@@ -722,7 +722,7 @@ async def find_models(query: str = "", limit: int = 8) -> list[RLMModel]:
 
     Each model's ``cost`` is ``{input, output}`` in USD per million tokens, ``None`` when unknown.
     A search that matched more than ``limit`` prints the host's row saying how many it held back
-    and the call that lists them all; the list returned is always the ``limit`` asked for.
+    and the call that lists them all; the list returned is at most the ``limit`` asked for.
     """
     if not isinstance(query, str):
         raise TypeError(f"query must be str, got {type(query).__name__}")
