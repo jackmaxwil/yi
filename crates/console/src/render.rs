@@ -18,7 +18,7 @@ use crate::app::App;
 use crate::header::{header_buttons, render_header, tab_hits};
 use crate::keys;
 use crate::layout::{PaneId, SplitBorder, pane_margin};
-use crate::model::{Link, Mode, Pane, PaneContent, SessionStatus, Zone};
+use crate::model::{Mode, Pane, PaneContent, SessionStatus, Zone};
 
 pub(crate) const NAME_WIDTH: usize = 20;
 
@@ -786,30 +786,7 @@ fn paint_chat_pane(
 }
 
 fn render_banner(app: &mut App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let mut spans = Vec::new();
-    match &app.state.link {
-        Link::Connecting => spans.push(Span::styled(" connecting… ", theme.dim_style())),
-        Link::Connected => {}
-        Link::Disconnected { reason } => {
-            let short: String = reason.chars().take(28).collect();
-            spans.push(Span::styled(
-                format!(" ✕ disconnected: {short} "),
-                Style::default().fg(theme.error),
-            ));
-        }
-    }
-    if let Some(note) = &app.state.banner {
-        spans.push(Span::styled(
-            format!(" {note}"),
-            Style::default().fg(theme.warning),
-        ));
-    }
-    if app.state.dropped_frames > 0 {
-        spans.push(Span::styled(
-            format!("  dropped:{}", app.state.dropped_frames),
-            theme.dim_style(),
-        ));
-    }
+    let mut spans = crate::chrome::banner_spans(app, theme);
     if spans.is_empty()
         && let Some((flash, _)) = &app.flash
     {
