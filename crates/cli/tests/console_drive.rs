@@ -236,6 +236,49 @@ fn a_console_start_is_covered_by_the_title_and_any_key_gives_the_screen_back() -
     Ok(())
 }
 
+/// #1713: the state a press lands on is the config's, so the console opened next starts hidden.
+#[test]
+fn a_hidden_sidebar_is_still_hidden_in_the_console_opened_next() -> TestResult {
+    let dir = Scratch::new("yi-console-hidden")?;
+    let home = dir.home()?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        // The default start is the rail; two presses walk it to hidden.
+        run_console(
+            &dir,
+            &socket,
+            &root,
+            "wait-frame 8000 !connecting…\nkey alt-b\nkey alt-b\nwait-frame 8000 ⌥b sidebar\nquit\n",
+            &[],
+        )?;
+        let config = home.join(".yi/config.json");
+        let saved: serde_json::Value = std::fs::read_to_string(&config)?.parse()?;
+        assert_eq!(
+            saved["console"]["sidebar"], "hidden",
+            "the press was not saved: {saved}"
+        );
+        let frames = dir.join("frames");
+        run_console(
+            &dir,
+            &socket,
+            &root,
+            "wait-frame 8000 ⌥b sidebar\nquit\n",
+            &["--frames", &frames.display().to_string()],
+        )?;
+        let drawn = frames_text(&frames)?;
+        assert!(
+            drawn.contains("⌥b sidebar"),
+            "the next console started without the way back:\n{drawn}"
+        );
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// One script, two hosts: the console pane and solo render the same prompt, reply and
 /// popup, because they run the same chat.
 #[test]

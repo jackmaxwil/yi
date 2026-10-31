@@ -476,6 +476,7 @@ fn ready_marker(sidebar: SidebarMode) -> &'static str {
     match sidebar {
         SidebarMode::Full => "s-alpha",
         SidebarMode::Rail => "1 SA",
+        SidebarMode::Hidden => "s-alpha",
     }
 }
 
@@ -619,19 +620,30 @@ fn run_opts(
     frames: Option<PathBuf>,
     size: (u16, u16),
 ) -> TestResult {
-    let console = (autostart, sidebar, Vec::new());
+    let console = (
+        autostart,
+        sidebar,
+        Vec::new(),
+        yi_types::config::FollowMode::Page,
+    );
     run_console(name, fixture, script, console, frames, size)
 }
 
-/// `console` is (autostart, sidebar, the Open in apps the config lists).
+/// `console` is (autostart, sidebar, Open in apps, terminal-text follow mode).
 fn run_console(
     name: &str,
     fixture: Option<Vec<Step>>,
     script: &str,
-    (autostart, sidebar, open_apps): (bool, SidebarMode, Vec<String>),
+    (autostart, sidebar, open_apps, follow): (
+        bool,
+        SidebarMode,
+        Vec<String>,
+        yi_types::config::FollowMode,
+    ),
     frames: Option<PathBuf>,
-    (width, height): (u16, u16),
+    size: (u16, u16),
 ) -> TestResult {
+    let (width, height) = size;
     let (dir, socket) = scratch_socket(name)?;
     let server = fixture.map(|fixture| spawn_fixture(socket.clone(), fixture));
     let steps = parse_script(script)?;
@@ -648,6 +660,7 @@ fn run_console(
             open_apps,
             sidebar,
             pace: 0,
+            follow,
             browser: None,
             chrome_pin: None,
             home: Some(drive_home().display().to_string()),
@@ -691,6 +704,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             open_apps: Vec::new(),
             sidebar: SidebarMode::Rail,
             pace: 0,
+            follow: yi_types::config::FollowMode::Page,
             browser: None,
             chrome_pin: None,
             home: Some(drive_home().display().to_string()),
@@ -937,20 +951,20 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
     )
 }
 
-fn lane_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("yi-console-lane-{}", std::process::id()))
+fn lane_dir(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("yi-console-lane-{}-{name}", std::process::id()))
 }
 
-fn resume_alpha_in_a_lane_dir(frame: &Value) -> Vec<Value> {
+fn resume_alpha_in_a_lane_dir(name: &str, frame: &Value) -> Vec<Value> {
     let mut frames = resume_alpha(frame);
-    let cwd = lane_dir().display().to_string();
+    let cwd = lane_dir(name).display().to_string();
     let workdir = json!({"sessionUpdate": "_yi/workdir", "cwd": cwd, "lane": "yi"});
     frames.insert(0, update("s-alpha", workdir));
     frames
 }
 
-fn agent_rewrites_the_lane_file() -> Vec<Value> {
-    let path = lane_dir().join("a.txt");
+fn agent_rewrites_the_lane_file(name: &str) -> Vec<Value> {
+    let path = lane_dir(name).join("a.txt");
     let _write = std::fs::write(&path, "rewritten in the lane\n");
     vec![update(
         "s-alpha",
@@ -965,17 +979,19 @@ fn agent_rewrites_the_lane_file() -> Vec<Value> {
 /// the agent's patch, which names the lane's file, never refreshed the open editor either.
 #[test]
 fn e_opens_a_relative_path_in_the_sessions_lane() -> TestResult {
-    let lane = lane_dir();
+    let lane = lane_dir("editor");
     std::fs::create_dir_all(&lane)?;
     std::fs::write(lane.join("a.txt"), "lane copy\n")?;
     let fixture = vec![
         Step::Expect("initialize", init_reply),
         Step::Expect("session/list", two_session_list),
         Step::Expect("session/list", empty_list),
-        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("session/resume", |frame| {
+            resume_alpha_in_a_lane_dir("editor", frame)
+        }),
         Step::Expect("_yi/seen", seen_ok),
         Step::Expect("session/list", empty_list),
-        Step::Push(agent_rewrites_the_lane_file),
+        Step::Push(|| agent_rewrites_the_lane_file("editor")),
         Step::Expect("_yi/tracked", tracked_no_then_answer),
     ];
     let ran = run(
@@ -993,7 +1009,7 @@ fn e_opens_a_relative_path_in_the_sessions_lane() -> TestResult {
 /// first one opened holds no session, so the next relative path fell back to the root.
 #[test]
 fn each_path_opened_from_a_file_pane_stays_in_the_sessions_lane() -> TestResult {
-    let lane = lane_dir();
+    let lane = lane_dir("panes");
     std::fs::create_dir_all(&lane)?;
     std::fs::write(lane.join("a.txt"), "lane copy a\n")?;
     std::fs::write(lane.join("b.txt"), "lane copy b\n")?;
@@ -1002,7 +1018,9 @@ fn each_path_opened_from_a_file_pane_stays_in_the_sessions_lane() -> TestResult 
         Step::Expect("initialize", init_reply),
         Step::Expect("session/list", two_session_list),
         Step::Expect("session/list", empty_list),
-        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("session/resume", |frame| {
+            resume_alpha_in_a_lane_dir("panes", frame)
+        }),
         Step::Expect("_yi/seen", seen_ok),
     ];
     let ran = run(
@@ -1609,6 +1627,8 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
          wait-frame 3000 s-beta\n\
          cmd-b\n\
          wait-frame 3000 !s-beta\n\
+         cmd-b\n\
+         wait-frame 3000 1 SA\n\
          cmd-b\n\
          wait-frame 3000 s-beta\n\
          quit\n",
@@ -3364,6 +3384,9 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
          wait-frame 3000 2 SA  s-alpha\n\
          wait-frame 3000 demo-root 2 ▾\n\
          cmd-b\n\
+         wait-frame 3000 !s-alpha\n\
+         wait-frame 3000 !1 SB\n\
+         cmd-b\n\
          wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 !s-alpha\n\
          quit\n",
@@ -4099,6 +4122,50 @@ fn only_a_sent_prompt_returns_a_scrolled_pane_to_the_bottom() -> TestResult {
     )
 }
 
+fn long_follow_turn(frame: &Value) -> Vec<Value> {
+    let text: String = (0..60).map(|row| format!("new row {row}\n\n")).collect();
+    let mut frames = vec![ok(frame, json!({}))];
+    frames.extend(turn("s-alpha", 10, "more", &assistant(&text)));
+    frames
+}
+
+#[test]
+fn still_page_down_and_submit_work_through_the_console_key_path() -> TestResult {
+    run_console(
+        "still-scroll-send",
+        Some(vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_long),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("session/prompt", long_follow_turn),
+            Step::Expect("session/prompt", seen_ok),
+        ]),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 row 59\n\
+         type more\n\
+         key enter\n\
+         wait-frame 5000 more rows · PgDn\n\
+         wait-frame 2000 !new row 59\n\
+         key pagedown\n\
+         wait-frame 2000 new row 0\n\
+         type again\n\
+         key enter\n\
+         wait-frame 2000 new row 59\n\
+         quit\n",
+        (
+            false,
+            SidebarMode::Full,
+            Vec::new(),
+            yi_types::config::FollowMode::Still,
+        ),
+        None,
+        (100, 30),
+    )
+}
+
 /// Dies with the sidebar gone and `X` typed at the end: Ghostty sends Option+Left as alt+b,
 /// the console's sidebar chord, so word-left over a draft hid the sidebar instead.
 #[test]
@@ -4412,9 +4479,9 @@ fn a_press_on_a_settings_row_saves_the_control_it_names() -> TestResult {
          key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
          wait-frame 3000 Open Review beside\n\
          mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\n\
-         mouse down 110 8\nmouse up 110 8\nwait-frame 3000 ▌\n\
+         mouse down 110 9\nmouse up 110 9\nwait-frame 3000 ▌\n\
          type firefox\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
-         mouse down 110 10\nmouse up 110 10\nwait-frame 3000 ▌\n\
+         mouse down 110 11\nmouse up 110 11\nwait-frame 3000 ▌\n\
          type 40\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
          mouse down 116 3\nmouse up 116 3\nwait-frame 3000 Permissions\n\
          mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
@@ -4994,7 +5061,12 @@ fn open_in_sends_the_reply_to_the_app_picked() -> TestResult {
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
          mouse right 30 5\nwait-frame 3000 Open in\nkey up\nkey up\nkey right\n\
          wait-frame 3000 Second\nkey down\nkey enter\nwait-frame 3000 launched Second\nquit\n",
-        (false, SidebarMode::Full, apps),
+        (
+            false,
+            SidebarMode::Full,
+            apps,
+            yi_types::config::FollowMode::Page,
+        ),
         None,
         (100, 30),
     )

@@ -24,15 +24,8 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn options() -> TuiOptions {
     TuiOptions {
-        model: test_model("faux-1"),
         session_name: "asks".to_owned(),
-        cwd: "/tmp".to_owned(),
-        lane: None,
-        context_window: 128_000,
-        session_dir: String::new(),
-        keys: Vec::new(),
-        initial_prompt: None,
-        pace: 0,
+        ..common::options()
     }
 }
 

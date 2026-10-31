@@ -74,6 +74,7 @@ impl App {
             keys: Vec::new(),
             initial_prompt: None,
             pace: self.state.chat_pace,
+            follow: self.state.chat_follow,
         };
         let mut app =
             yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
@@ -130,6 +131,13 @@ impl App {
                 on_chat && key.modifiers.contains(KeyModifiers::ALT) && self.chat_takes_ctrl_c()
             }
             _ => false,
+        }
+    }
+
+    pub(super) fn scroll_focused(&mut self, delta: isize) {
+        if let Some(pane) = self.state.focused_pane_mut() {
+            pane.scroll_by(delta);
+            self.dirty = true;
         }
     }
 

@@ -79,6 +79,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         keys: configured_keys(),
         initial_prompt,
         pace: reveal_pace(args),
+        follow: configured_follow(),
     };
     let control = match control(args) {
         Ok(control) => control,
@@ -301,6 +302,134 @@ fn reveal_pace(args: &Args) -> u16 {
         .unwrap_or(100)
 }
 
+#[cfg(feature = "tui")]
+fn configured_follow() -> yi_types::config::FollowMode {
+    let explicit = config().tui.as_ref().and_then(|tui| tui.follow);
+    follow_mode(explicit, reduce_motion)
+}
+
+#[cfg(feature = "tui")]
+fn follow_mode(
+    explicit: Option<yi_types::config::FollowMode>,
+    probe: impl FnOnce() -> Option<bool>,
+) -> yi_types::config::FollowMode {
+    use yi_types::config::FollowMode;
+    explicit.unwrap_or_else(|| match probe() {
+        Some(true) => FollowMode::Still,
+        _ => FollowMode::Page,
+    })
+}
+
+#[cfg(all(feature = "tui", target_os = "macos"))]
+fn reduce_motion_plist(bytes: &[u8]) -> Option<bool> {
+    if bytes.starts_with(b"bplist00") {
+        return binary_reduce_motion(bytes);
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let (_, tail) = text.split_once("<key>reduceMotion</key>")?;
+    let tail = tail.split("<key>").next()?;
+    if ["<true/>", "<true />", "<integer>1</integer>"]
+        .iter()
+        .any(|tag| tail.contains(tag))
+    {
+        Some(true)
+    } else if ["<false/>", "<false />", "<integer>0</integer>"]
+        .iter()
+        .any(|tag| tail.contains(tag))
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+#[cfg(all(feature = "tui", target_os = "macos"))]
+fn binary_reduce_motion(bytes: &[u8]) -> Option<bool> {
+    let trailer = bytes.len().checked_sub(32)?;
+    let offset_size = usize::from(*bytes.get(trailer.checked_add(6)?)?);
+    let ref_size = usize::from(*bytes.get(trailer.checked_add(7)?)?);
+    let root = be_uint(bytes, trailer.checked_add(16)?, 8)?;
+    let offset_table = be_uint(bytes, trailer.checked_add(24)?, 8)?;
+    let object_at = |index: usize| {
+        let at = offset_table.checked_add(index.checked_mul(offset_size)?)?;
+        be_uint(bytes, at, offset_size)
+    };
+    let (kind, count, keys) = binary_object(bytes, object_at(root)?)?;
+    if kind != 0x0d {
+        return None;
+    }
+    let values = keys.checked_add(count.checked_mul(ref_size)?)?;
+    for index in 0..count {
+        let key_at = keys.checked_add(index.checked_mul(ref_size)?)?;
+        let key = object_at(be_uint(bytes, key_at, ref_size)?)?;
+        if !binary_string_is(bytes, key, b"reduceMotion") {
+            continue;
+        }
+        let value_at = values.checked_add(index.checked_mul(ref_size)?)?;
+        let value = object_at(be_uint(bytes, value_at, ref_size)?)?;
+        return match bytes.get(value) {
+            Some(0x09) => Some(true),
+            Some(0x08) => Some(false),
+            Some(0x10) => bytes.get(value.checked_add(1)?).map(|int| *int != 0),
+            _ => None,
+        };
+    }
+    None
+}
+
+#[cfg(all(feature = "tui", target_os = "macos"))]
+fn binary_object(bytes: &[u8], at: usize) -> Option<(u8, usize, usize)> {
+    let marker = *bytes.get(at)?;
+    let kind = marker >> 4;
+    let short = usize::from(marker & 0x0f);
+    if short < 15 {
+        return Some((kind, short, at.checked_add(1)?));
+    }
+    let integer = *bytes.get(at.checked_add(1)?)?;
+    if integer >> 4 != 1 {
+        return None;
+    }
+    let width = 1usize.checked_shl(u32::from(integer & 0x0f))?;
+    let start = at.checked_add(2)?;
+    let count = be_uint(bytes, start, width)?;
+    Some((kind, count, start.checked_add(width)?))
+}
+
+#[cfg(all(feature = "tui", target_os = "macos"))]
+fn binary_string_is(bytes: &[u8], at: usize, expected: &[u8]) -> bool {
+    let Some((0x05, count, start)) = binary_object(bytes, at) else {
+        return false;
+    };
+    start
+        .checked_add(count)
+        .and_then(|end| bytes.get(start..end))
+        == Some(expected)
+}
+
+#[cfg(all(feature = "tui", target_os = "macos"))]
+fn be_uint(bytes: &[u8], at: usize, size: usize) -> Option<usize> {
+    let end = at.checked_add(size)?;
+    bytes.get(at..end)?.iter().try_fold(0usize, |value, byte| {
+        value.checked_mul(256)?.checked_add(usize::from(*byte))
+    })
+}
+
+#[cfg(all(feature = "tui", target_os = "macos"))]
+fn reduce_motion() -> Option<bool> {
+    reduce_motion_in(&crate::update::absolute_home().ok()?)
+}
+
+#[cfg(all(feature = "tui", target_os = "macos"))]
+fn reduce_motion_in(home: &std::path::Path) -> Option<bool> {
+    let path = home.join("Library/Preferences/com.apple.universalaccess.plist");
+    reduce_motion_plist(&std::fs::read(path).ok()?)
+}
+
+#[cfg(all(feature = "tui", not(target_os = "macos")))]
+fn reduce_motion() -> Option<bool> {
+    None
+}
+
 /// Where `yi plugin add chrome` puts the headless shell; None on a target it pins no build for.
 #[cfg(feature = "tui")]
 fn chrome_pin() -> Option<yi_console::browser::Pinned> {
@@ -350,8 +479,11 @@ pub fn run_console_command(args: &Args) -> i32 {
             .flatten()
             .map(|app| app.name.clone())
             .collect(),
-        sidebar: yi_console::model::SidebarMode::Rail,
+        sidebar: console
+            .sidebar
+            .map_or(yi_console::model::SidebarMode::Rail, Into::into),
         pace: reveal_pace(args),
+        follow: configured_follow(),
         browser: config()
             .browser
             .as_ref()
@@ -433,4 +565,85 @@ pub(crate) fn session_extensions(
             .unwrap_or_default(),
         can_delegate: true,
     })
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use yi_types::config::FollowMode;
+
+    #[test]
+    fn follow_precedence_reads_the_os_once_only_when_config_is_unset() {
+        let calls = std::cell::Cell::<usize>::new(0);
+        let probe = || {
+            calls.set(calls.get().saturating_add(1));
+            Some(true)
+        };
+        assert_eq!(super::follow_mode(None, probe), FollowMode::Still);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(super::follow_mode(None, || Some(false)), FollowMode::Page);
+        assert_eq!(super::follow_mode(None, || None), FollowMode::Page);
+        assert_eq!(
+            super::follow_mode(Some(FollowMode::Slide), || Some(true)),
+            FollowMode::Slide
+        );
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reduce_motion_reads_xml_and_binary_plists() {
+        let xml = |value: &str| {
+            format!(
+                "<?xml version=\"1.0\"?><plist><dict><key>reduceMotion</key>{value}</dict></plist>"
+            )
+        };
+        assert_eq!(
+            super::reduce_motion_plist(xml("<true/>").as_bytes()),
+            Some(true)
+        );
+        assert_eq!(
+            super::reduce_motion_plist(xml("<false/>").as_bytes()),
+            Some(false)
+        );
+        let binary = [
+            0x62, 0x70, 0x6c, 0x69, 0x73, 0x74, 0x30, 0x30, 0xd1, 0x01, 0x02, 0x5c, 0x72, 0x65,
+            0x64, 0x75, 0x63, 0x65, 0x4d, 0x6f, 0x74, 0x69, 0x6f, 0x6e, 0x09, 0x08, 0x0b, 0x18,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x19,
+        ];
+        assert_eq!(super::reduce_motion_plist(&binary), Some(true));
+        let mut disabled = binary;
+        disabled[24] = 0x08;
+        assert_eq!(super::reduce_motion_plist(&disabled), Some(false));
+        let integer = |value: u8| {
+            let mut bytes = binary.to_vec();
+            bytes.splice(24..25, [0x10, value]);
+            if let Some(last) = bytes.last_mut() {
+                *last = 0x1a;
+            }
+            bytes
+        };
+        assert_eq!(super::reduce_motion_plist(&integer(1)), Some(true));
+        assert_eq!(super::reduce_motion_plist(&integer(0)), Some(false));
+        assert_eq!(super::reduce_motion_plist(b"bplist00"), None);
+        assert_eq!(
+            super::reduce_motion_plist(xml("<integer>1</integer>").as_bytes()),
+            Some(true)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reduce_motion_reads_the_plist_under_home() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = crate::plan::scratch::Scratch::new("yi-reduce-motion")?;
+        let home: &std::path::Path = &tmp;
+        let prefs = home.join("Library/Preferences");
+        std::fs::create_dir_all(&prefs)?;
+        assert_eq!(super::reduce_motion_in(home), None);
+        std::fs::write(
+            prefs.join("com.apple.universalaccess.plist"),
+            "<plist><dict><key>reduceMotion</key><true/></dict></plist>",
+        )?;
+        assert_eq!(super::reduce_motion_in(home), Some(true));
+        Ok(())
+    }
 }

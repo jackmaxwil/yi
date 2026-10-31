@@ -133,13 +133,34 @@ pub(crate) enum Painted<'a> {
 pub enum SidebarMode {
     Rail,
     Full,
+    Hidden,
 }
 
 impl SidebarMode {
     pub fn next(self) -> Self {
         match self {
             Self::Rail => Self::Full,
-            Self::Full => Self::Rail,
+            Self::Full => Self::Hidden,
+            Self::Hidden => Self::Rail,
+        }
+    }
+
+    /// The name `console.sidebar` carries in config.json.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Rail => "rail",
+            Self::Full => "full",
+            Self::Hidden => "hidden",
+        }
+    }
+}
+
+impl From<yi_types::config::SidebarState> for SidebarMode {
+    fn from(state: yi_types::config::SidebarState) -> Self {
+        match state {
+            yi_types::config::SidebarState::Rail => Self::Rail,
+            yi_types::config::SidebarState::Full => Self::Full,
+            yi_types::config::SidebarState::Hidden => Self::Hidden,
         }
     }
 }
@@ -411,6 +432,27 @@ impl Pane {
         }
     }
 
+    pub fn scroll_by(&mut self, delta: isize) -> bool {
+        let mut follows = false;
+        if delta < 0
+            && self.scroll_from_bottom == 0
+            && let PaneContent::Session {
+                chat: Some(chat), ..
+            } = &mut self.content
+            && chat.app.follow() == yi_types::config::FollowMode::Still
+        {
+            chat.app.advance_follow(delta.unsigned_abs());
+            follows = true;
+        }
+        let before = self.scroll_from_bottom;
+        self.scroll_from_bottom = if delta >= 0 {
+            self.scroll_from_bottom.saturating_add(delta.unsigned_abs())
+        } else {
+            self.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
+        };
+        follows || self.scroll_from_bottom != before
+    }
+
     pub fn session(&self) -> Option<&SessionId> {
         match &self.content {
             PaneContent::Session { session, .. } | PaneContent::Notebook { session, .. } => {
@@ -474,6 +516,7 @@ pub struct ConsoleState {
     pub quit: bool,
     pub sidebar: SidebarMode,
     pub sidebar_cols: usize,
+    sidebar_focus: bool,
     pub cursor_moved: bool,
     pub diffs: BTreeMap<SessionId, SessionDiff>,
     pub notebooks: BTreeMap<SessionId, Vec<NbCell>>,
@@ -484,6 +527,8 @@ pub struct ConsoleState {
     pub title_frame: Option<std::time::Instant>,
     pub title_cache: yi_tui::title::Cache,
     pub chat_pace: u16,
+    pub chat_follow: yi_types::config::FollowMode,
+    pub follow_fallback: yi_types::config::FollowMode,
     pub open_apps: Vec<String>,
     pub session_options: BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
     pub folded: std::collections::BTreeSet<String>,
@@ -523,6 +568,7 @@ impl ConsoleState {
             dropped_frames: 0,
             sidebar: SidebarMode::Rail,
             sidebar_cols: 0,
+            sidebar_focus: false,
             cursor_moved: false,
             diffs: BTreeMap::new(),
             notebooks: BTreeMap::new(),
@@ -533,6 +579,8 @@ impl ConsoleState {
             title_frame: None,
             title_cache: yi_tui::title::Cache::default(),
             chat_pace: 0,
+            chat_follow: yi_types::config::FollowMode::Page,
+            follow_fallback: yi_types::config::FollowMode::Page,
             open_apps: Vec::new(),
             session_options: BTreeMap::new(),
             folded: std::collections::BTreeSet::new(),
@@ -615,6 +663,23 @@ impl ConsoleState {
             })
             .chain(parked)
             .collect()
+    }
+
+    pub fn set_follow(&mut self, follow: yi_types::config::FollowMode) {
+        self.chat_follow = follow;
+        for chat in self
+            .panes
+            .values_mut()
+            .filter_map(|pane| match &mut pane.content {
+                PaneContent::Session {
+                    chat: Some(chat), ..
+                } => Some(chat.as_mut()),
+                _ => None,
+            })
+            .chain(self.parked.values_mut().map(Box::as_mut))
+        {
+            chat.app.set_follow(follow);
+        }
     }
 
     /// ponytail: evicts the lowest session id, not the least recent; order it if 8 is tight.
@@ -872,6 +937,37 @@ impl ConsoleState {
     pub fn select_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active_tab = index;
+        }
+    }
+}
+
+impl ConsoleState {
+    pub fn cycle_zone(&mut self) {
+        match self.zone {
+            Zone::Sidebar => self.focus_panes(),
+            Zone::Panes if self.sidebar == SidebarMode::Hidden => self.focus_panes(),
+            Zone::Panes => self.zone = Zone::Sidebar,
+        }
+    }
+
+    pub fn focus_panes(&mut self) {
+        self.zone = Zone::Panes;
+        self.sidebar_focus = false;
+    }
+
+    pub(crate) fn cycle_sidebar(&mut self) {
+        let was_hidden = self.sidebar == SidebarMode::Hidden;
+        let held = self.zone == Zone::Sidebar;
+        let return_focus = self.sidebar_focus;
+        self.sidebar = self.sidebar.next();
+        self.header = None;
+        self.settle_visible();
+        if self.sidebar == SidebarMode::Hidden {
+            self.focus_panes();
+            self.sidebar_focus = held;
+        } else if was_hidden && return_focus {
+            self.zone = Zone::Sidebar;
+            self.sidebar_focus = false;
         }
     }
 }
