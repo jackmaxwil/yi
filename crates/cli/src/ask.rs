@@ -87,10 +87,7 @@ pub(super) fn run(args: &Args) -> i32 {
     };
     let json = args.json;
     let checks = args.check.clone();
-    let dir = lane
-        .as_ref()
-        .and_then(|lane| lane.path())
-        .unwrap_or_else(|| crate::effective_cwd(args));
+    let dir = crate::session_work_dir(&session, args);
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))

@@ -89,6 +89,14 @@ fn effective_cwd(args: &Args) -> std::path::PathBuf {
     )
 }
 
+fn work_dir(lane: Option<std::path::PathBuf>, args: &Args) -> std::path::PathBuf {
+    lane.unwrap_or_else(|| effective_cwd(args))
+}
+
+fn session_work_dir(session: &AgentSession, args: &Args) -> std::path::PathBuf {
+    work_dir(session.lane().and_then(|lane| lane.path()), args)
+}
+
 fn env_either(upper: &str, lower: &str) -> Option<String> {
     std::env::var(upper).or_else(|_| std::env::var(lower)).ok()
 }
@@ -233,9 +241,7 @@ fn build_session(
             });
         }
     };
-    let work = lane
-        .as_ref()
-        .map_or_else(|| cwd.clone(), |lane| lane.path().to_path_buf());
+    let work = work_dir(lane.as_ref().map(|lane| lane.path().to_path_buf()), args);
     let settings = config();
     let rules = (settings
         .permissions
