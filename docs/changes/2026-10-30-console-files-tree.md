@@ -1,4 +1,5 @@
 ---
+version: 0.833.0
 issue: Closes #1738
 growth: +814 the tree's walker and the shared `.gitignore` matcher's re-export, weighed against a new `ignore` dependency (the design's allowed-dependency table lists no `ignore`, deny.toml bans nothing here), a daemon RPC seam for a listing, and borrowing `yi-tools`' permission-gated walk through `yi-tui` (it refuses a home or system root and returns bare paths with no total, so a directory the user clicked would draw as an empty popup and the cut row could not say what it kept); the smallest of the three that keeps the issue's ignore rule and its loud cap
 raise: crate console +810
