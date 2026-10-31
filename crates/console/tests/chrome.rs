@@ -836,9 +836,9 @@ fn press(app: &mut App, outbound: &client::Outbound, code: KeyCode, modifiers: K
     crate::editor_view::key(app, outbound, KeyEvent::new(code, modifiers));
 }
 
-/// #1713: the third state gives its columns to the pane and keeps the chord back on screen.
+/// #1713: the third state gives its columns to the pane. #1923: the hint row names the chord back, so the header does not.
 #[test]
-fn a_hidden_sidebar_frees_its_width_and_names_the_chord_back() -> TestResult {
+fn a_hidden_sidebar_frees_its_width_and_leaves_the_header_bare() -> TestResult {
     let (mut app, _) = console()?;
     let (outbound, _threads) = no_daemon();
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
@@ -863,30 +863,8 @@ fn a_hidden_sidebar_frees_its_width_and_names_the_chord_back() -> TestResult {
     );
     let header = row_text(&terminal, 0);
     assert!(
-        header.contains("⌥b sidebar"),
-        "the way back is not on screen: {header:?}"
-    );
-    app.state.sidebar = SidebarMode::Rail;
-    draw(&mut app, &mut terminal)?;
-    let header = row_text(&terminal, 0);
-    assert!(
-        !header.contains("⌥b sidebar"),
-        "the hint outlives the hidden sidebar: {header:?}"
-    );
-    Ok(())
-}
-
-/// #1713: the hint is the only way back a hidden sidebar offers, so no button may paint on it.
-#[test]
-fn a_hidden_sidebar_keeps_its_way_back_on_a_narrow_header() -> TestResult {
-    let (mut app, _) = console()?;
-    app.state.sidebar = SidebarMode::Hidden;
-    let mut terminal = Terminal::new(TestBackend::new(50, 30))?;
-    draw(&mut app, &mut terminal)?;
-    let header = row_text(&terminal, 0);
-    assert!(
-        header.contains("⌥b sidebar"),
-        "a button overwrote the way back: {header:?}"
+        !header.contains("sidebar"),
+        "the header still names the sidebar: {header:?}"
     );
     Ok(())
 }
