@@ -2591,6 +2591,10 @@ fn a_shell_read_names_the_dedicated_tool_first() -> TestResult {
         ("grep -E 'needle|x' notes.txt", "grep"),
         ("head -2 notes.txt | grep needle", "grep"),
         ("cat notes.txt | grep needle", "grep"),
+        ("NO_COLOR=1 grep -rn needle .", "grep"),
+        ("RUST_LOG=debug cat notes.txt", "read"),
+        ("sed -n '1,2p' notes.txt\ngrep -n needle notes.txt", "grep"),
+        ("cat notes.txt\n", "read"),
     ];
     for (command, tool) in table {
         let text = output_text(&bash.execute(args(&[("command", json!(command))]), &context));
@@ -2632,6 +2636,9 @@ fn a_write_a_vcs_or_build_call_gets_no_dedicated_tool_row() -> TestResult {
         "rg --pre true needle",
         "tree -o out.html .",
         "sed -ni '1p' notes.txt",
+        "less -o log.txt notes.txt",
+        "cat notes.txt\nrm -f copy.txt",
+        "NO_COLOR=1 rm -f copy.txt",
     ];
     for command in table {
         let text = output_text(&bash.execute(args(&[("command", json!(command))]), &context));
