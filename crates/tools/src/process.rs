@@ -15,9 +15,10 @@ pub(crate) fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// The repository's top; a worktree never borrows the main checkout's.
+/// The repository's top; a worktree never borrows the main checkout's, and a path walked lexically past `..` names no one's.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    (cwd.ancestors())
+    let start = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    (start.ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }
