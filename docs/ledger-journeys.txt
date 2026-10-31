@@ -15,7 +15,7 @@ hashline edit (+ registers, instrumented) | `tools::a_write_through_a_symlink_is
 hashline edit (+ registers, instrumented) | `tools::a_changed_contract_names_the_callers_that_still_call_the_old_one`
 hashline edit (+ registers, instrumented) | `toolcells::an_edit_cell_shows_the_check_rows_the_model_read_under_its_diff`
 first-run setup (`yi setup`) | `journeys::setup_saves_the_answered_steps_and_keeps_every_other_key`
-first-run setup (`yi setup`) | `journeys::setup_saves_the_classifier_only_once_one_answers` (T2)
+first-run setup (`yi setup`) | `journeys::setup_saves_jev_as_the_classifier_only_with_an_openrouter_key` (T2)
 Claude Code tool hooks | `claude_hooks::a_hook_allow_never_lifts_a_configured_deny_rule`
 Claude Code tool hooks | `claude_hooks::gates::a_hook_allow_never_answers_a_rule_a_hold_or_a_credential_read`
 Claude Code tool hooks | `claude_hooks::edits::an_edit_reaches_its_hooks_as_claude_codes_edit_input_per_file`
