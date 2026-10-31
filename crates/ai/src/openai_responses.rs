@@ -931,9 +931,11 @@ fn run_request(
             if sse.data == "[DONE]" {
                 return Ok(true);
             }
-            // Incident: an unparsable line was skipped, so a body that stopped being SSE read as
-            // an empty turn; Anthropic has failed its turn on one since the mapper existed.
-            let mut payload = parse_json_with_repair(&sse.data)
+            let data = sse.data.trim();
+            if data.is_empty() {
+                return Ok(true);
+            }
+            let mut payload = parse_json_with_repair(data)
                 .map_err(|error| format!("Could not parse Responses SSE event: {error}"))?;
             if payload.get("type").is_none()
                 && let Some(kind) = sse.event.as_deref().filter(|kind| !kind.is_empty())

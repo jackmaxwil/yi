@@ -21,6 +21,7 @@ pub fn recover_in(output: &mut AgentMessage) -> bool {
     let AgentMessage::Assistant {
         content,
         stop_reason,
+        timestamp,
         ..
     } = output
     else {
@@ -47,11 +48,12 @@ pub fn recover_in(output: &mut AgentMessage) -> bool {
         return false;
     }
     // Incident: every message's first leaked call was `leak-0`, so a cut keyed by that id answered
-    // the wrong turn's call. The message's own number leads the id and no two share one.
+    // the wrong turn's call — the same again on a resumed session, so the message's own clock leads.
     let message = MESSAGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stamp = *timestamp;
     for (n, (name, arguments)) in calls.into_iter().enumerate() {
         content.push(Content::ToolCall {
-            id: format!("leak-{message}-{n}"),
+            id: format!("leak-{stamp}-{message}-{n}"),
             name,
             arguments,
             thought_signature: None,

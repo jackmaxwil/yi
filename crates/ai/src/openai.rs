@@ -893,20 +893,12 @@ fn run_request(
     wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
-    let crate::request::Wire {
-        api_key: _,
-        proxy: _,
-        stop,
-        extra: _,
-        oauth,
-        settle: _,
-    } = wire;
     let url = format!("{}/chat/completions", model.base_url);
     let mut mapper = ChunkMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
     let pumped = crate::request::pump_sse_with_resend(
-        stop,
+        wire.stop,
         || crate::request::openai_bearer_post(&url, model, body, wire, &retried),
         |sse| {
             if sse.data == "[DONE]" {
@@ -939,7 +931,7 @@ fn run_request(
             detach_settlement(settle_from_record(&mut mapper.output, model, &wire));
             let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
                 &message,
-                oauth,
+                wire.oauth,
                 &model.provider,
             )));
             return Ok(());
@@ -950,7 +942,9 @@ fn run_request(
     }
     // a cut dropped the stream before its finish and usage chunks: the turn ends as a length
     // stop and is settled from the generation record (D163)
-    let cut = stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
+    let cut = wire
+        .stop
+        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
     if cut {
         mapper.cut();
     }

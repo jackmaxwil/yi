@@ -203,3 +203,28 @@ fn a_streamed_call_with_leaked_markup_reaches_the_tool_repaired() -> TestResult 
     }
     Ok(())
 }
+
+/// The id is written into the session JSONL, so it must not repeat across a resumed run: a second
+/// process minting its own first leak would otherwise be `leak-0` again in the same transcript.
+#[test]
+fn a_leaked_call_id_carries_its_message_clock() -> TestResult {
+    let mut message = faux_assistant_message(vec![faux_text(LEAK)], StopReason::Stop);
+    if let AgentMessage::Assistant { timestamp, .. } = &mut message {
+        *timestamp = 1_764_000_000_000;
+    }
+    assert!(recover_in(&mut message));
+    let AgentMessage::Assistant { content, .. } = &message else {
+        return Err("assistant".into());
+    };
+    let Some(Content::ToolCall { id, .. }) = content
+        .iter()
+        .find(|block| matches!(block, Content::ToolCall { .. }))
+    else {
+        return Err("no call".into());
+    };
+    assert!(
+        id.starts_with("leak-1764000000000-"),
+        "the id cannot distinguish a resumed session: {id}"
+    );
+    Ok(())
+}

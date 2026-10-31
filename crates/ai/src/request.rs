@@ -489,15 +489,27 @@ pub fn pump_sse(
 
 /// Incident: `response.completed` ends the Responses stream before the body's terminator, so the
 /// dropped reader never reached the pool. Reading on for 2 s hands the connection back to ureq.
-fn drain_to_eof(mut reader: Box<dyn std::io::Read + Send + Sync + 'static>) {
+fn drain_to_eof(reader: Box<dyn std::io::Read + Send + Sync + 'static>) {
     const DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
-    let deadline = std::time::Instant::now() + DRAIN;
-    let mut sink = [0u8; 8192];
-    while std::time::Instant::now() < deadline {
-        match std::io::Read::read(&mut reader, &mut sink) {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {}
-        }
+    // Invariant: one read blocks on ureq's 60 s socket timeout, so only the wait for it is DRAINed.
+    let (done, drained) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("yi-stream-drain".to_owned())
+        .spawn(move || {
+            let mut reader = reader;
+            let deadline = std::time::Instant::now() + DRAIN;
+            let mut sink = [0u8; 8192];
+            while std::time::Instant::now() < deadline {
+                match std::io::Read::read(&mut reader, &mut sink) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            drop(reader);
+            let _ = done.send(());
+        });
+    if spawned.is_ok() {
+        let _ = drained.recv_timeout(DRAIN);
     }
 }
 

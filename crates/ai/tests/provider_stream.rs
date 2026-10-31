@@ -570,3 +570,139 @@ fn a_400_body_ends_the_turn_at_once() -> TestResult {
     drop(server);
     Ok(())
 }
+
+/// A keepalive is not an event either wire may fail on: `event: ping` arrives with no data, and a
+/// proxy's bare `data:` line, so the Responses wire ends the turn on its first heartbeat.
+#[test]
+fn a_blank_data_line_is_a_keepalive_not_a_parse_error() {
+    let body = concat!(
+        "event: ping\ndata:\n\n",
+        "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+        "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\n"
+    );
+    let opened = responses_turn("", "openai-responses", "openai", body.to_owned());
+    assert_eq!(
+        opened.iter().find_map(|event| event.error.clone()),
+        None,
+        "a keepalive ended the turn: {opened:?}"
+    );
+    assert_eq!(
+        opened
+            .iter()
+            .find(|event| event.stop.is_some())
+            .map(|event| event.text.clone())
+            .as_deref(),
+        Some("hello"),
+        "{opened:?}"
+    );
+}
+
+/// A body that never reaches its terminator past `response.completed` cannot hold the turn: one read
+/// blocks on ureq's 60 s socket timeout, and the wait for the drain is bounded at 2 s.
+#[test]
+fn a_body_that_never_ends_past_the_turn_does_not_hold_it() -> TestResult {
+    let stream = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\n";
+    let head = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n",
+        stream.len().saturating_add(1 << 20)
+    );
+    let (port, _, server) = keep_alive(format!("{head}{stream}").into_bytes())?;
+    let model = model("openai-responses", "openai", port)?;
+    let started = std::time::Instant::now();
+    let opened = drain(|| {
+        yi_ai::openai_responses::stream(&model, &context(), &OpenAiOptions::default(), "k")
+    });
+    let waited = started.elapsed();
+    drop(server);
+    assert!(
+        waited < std::time::Duration::from_secs(10),
+        "the turn waited {waited:?} for a body that never ends"
+    );
+    assert!(
+        opened.iter().any(|event| event.stop.is_some()),
+        "{opened:?}"
+    );
+    Ok(())
+}
+
+fn refused(status: &str, should_retry: &str) -> Vec<u8> {
+    let body = "{\"error\":{\"message\":\"try again later\"}}";
+    format!(
+        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\nx-should-retry: {should_retry}\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+fn sends(port: u16) -> Result<ureq::Response, String> {
+    let body =
+        yi_ai::breakpoints::Encoded::provider_prefix(json!({"model": "p"}), "messages", Vec::new());
+    yi_ai::request::send_with_retry(
+        &format!("http://127.0.0.1:{port}/chat/completions"),
+        &[],
+        &body,
+        None,
+        None,
+        &|_| {},
+    )
+}
+
+/// The header decides, not the status: a 429 that says `false` is not sent again, so a throttling
+/// provider keeps its request count, and a 400 that says `true` is, so a routing 400 still recovers.
+#[test]
+fn x_should_retry_overrides_the_status() -> TestResult {
+    let (port, counts, server) = keep_alive(refused("429 Too Many Requests", "false"))?;
+    let error = sends(port).err().ok_or("a 429 was taken as a success")?;
+    assert!(error.starts_with("HTTP 429"), "{error}");
+    assert_eq!(counts.requests(), 1, "x-should-retry: false was sent again");
+    drop(server);
+
+    let (port, counts, server) = keep_alive(refused("400 Bad Request", "true"))?;
+    let error = sends(port).err().ok_or("a 400 was taken as a success")?;
+    assert!(error.starts_with("HTTP 400"), "{error}");
+    assert!(
+        counts.requests() >= 2,
+        "x-should-retry: true was not sent again"
+    );
+    drop(server);
+    Ok(())
+}
+
+/// A turn that says something, calls a tool, then says more carries two text blocks in that order,
+/// so speech after a call is not appended to the sentence before it.
+#[test]
+fn text_a_call_and_more_text_are_two_blocks_in_order() -> TestResult {
+    let model = model("openai-responses", "openai", 1)?;
+    let mut mapper = EventMapper::new(&model);
+    for payload in [
+        json!({"type":"response.output_text.delta","delta":"before"}),
+        json!({"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":""}}),
+        json!({"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{}"}),
+        json!({"type":"response.function_call_arguments.done","item_id":"fc_1","call_id":"call_1","name":"read","arguments":"{}"}),
+        json!({"type":"response.output_text.delta","delta":"after"}),
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed"}}),
+    ] {
+        drop(mapper.push(&payload));
+    }
+    let message = mapper
+        .finish()
+        .into_iter()
+        .find_map(|event| match event {
+            AssistantMessageEvent::Done { message, .. }
+            | AssistantMessageEvent::Error { error: message, .. } => Some(message),
+            _ => None,
+        })
+        .ok_or("no terminal event")?;
+    let AgentMessage::Assistant { content, .. } = &message else {
+        return Err("not an assistant message".into());
+    };
+    let texts: Vec<&str> = content
+        .iter()
+        .filter_map(|block| match block {
+            Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["before", "after"], "{content:?}");
+    Ok(())
+}
