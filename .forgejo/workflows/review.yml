@@ -41,8 +41,8 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      # A job's HOME starts with no skills. The copy is this checkout's, main's, so a PR cannot write its own rule.
-      - run: mkdir -p ~/.yi/skills && cp -R .ruler/skills/. ~/.yi/skills/ && cp -R skills/yi ~/.yi/skills/yi
+      # A job's HOME starts with no skills. The copy is this checkout's, main's, never the PR's tree.
+      - run: just bot-skills
       - run: rustup show
       # The same dev build the live job reads from postmerge's `test` cache.
       - uses: Swatinem/rust-cache@v2

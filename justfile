@@ -364,6 +364,12 @@ package-musl version target='x86_64-unknown-linux-musl':
     echo "package-musl: smoke.sh NOT run on this host (cross binary can't execute on darwin);"
     echo "package-musl: the container's 'yi --version' preflight (evals/README) is the real smoke."
 
+# The review bot and autofixer read the owner's skills from a job's HOME, copied from main's checkout.
+bot-skills:
+    mkdir -p ~/.yi/skills
+    cp -R .ruler/skills/. ~/.yi/skills/
+    cp -R skills/yi ~/.yi/skills/yi
+
 # Catalog skills (§7.8) install into the global root; the fragments an
 # extension attaches are compiled in.
 install-skills:

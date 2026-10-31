@@ -489,5 +489,6 @@ edited by hand.
 - [D516](adr/d516.md) - "Yes, hold three rows"
 - [D517](adr/d517.md) - "Console panes only"
 - [D518](adr/d518.md) - the classifier runs on TypeSafe's Jev (`typesafe/jev-1.13`) at OpenRouter's...
+- [D519](adr/d519.md) - the autofixer tells a red base and a person's call apart from a failure, and...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

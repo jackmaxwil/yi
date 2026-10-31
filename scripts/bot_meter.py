@@ -21,7 +21,7 @@ import forge_tracking  # noqa: E402
 BOT = "yi-bot"
 # The meta lines whose `cost=` the totals sum: a review round, a voided round, an autofix attempt.
 MARKERS = ("<!-- yi-round-meta ", "<!-- yi-round-void-meta ", "<!-- yi-autofix-meta ")
-FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs", "models", "skills")
+FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs", "models")
 SKILL_READ = re.compile(r"(?:\.yi/skills/|yi://skills/)(.+?)(?:/SKILL\.md)?$")
 
 

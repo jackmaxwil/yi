@@ -107,6 +107,10 @@ def unread_lane(text, off=""):
     return [] if off == "lane" else lanes(text)[1]
 
 
+def no_skills(text, off=""):
+    return off != "skills" and not re.search(r"^\s*(- )?run: just bot-skills$", text, re.M)
+
+
 def selfcheck(off=""):
     incident = "jobs:\n  review:\n    if: github.head == github.repo && startsWith(github.title, 'WIP: ')\n"
     fixed = "jobs:\n  review:\n    if: >-\n      startsWith(github.title, 'WIP: ')\n"
@@ -139,13 +143,17 @@ def selfcheck(off=""):
         bad.append("a review job on a lane of its own is refused")
     if not unread_lane(expr, off):
         bad.append("a `runs-on` that is an expression is dropped instead of refused")
+    if not no_skills("steps:\n  - run: rustup show\n", off):
+        bad.append("a bot job that installs no skills is not refused")
+    if no_skills("steps:\n  - run: just bot-skills\n", "") or no_skills("steps:\n  - if: x\n    run: just bot-skills\n", ""):
+        bad.append("a bot job that installs the skills is refused")
     return bad
 
 
 if __name__ == "__main__":
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
-        for off in ("plain", "blocks", "comments", "silenced", "lane"):
+        for off in ("plain", "blocks", "comments", "silenced", "lane", "skills"):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} check disabled, so it refutes nothing")
         fail(errs, "workflows selfcheck")
@@ -165,4 +173,7 @@ if __name__ == "__main__":
     errs += [f".forgejo/workflows/{name}: job {job}'s `runs-on` `{value}` is not a lane this check reads; "
              "an expression there is a review lane nobody compared, so name the label"
              for name, text in (("pr.yml", gate), ("review.yml", review)) for job, value in unread_lane(text)]
+    errs += [f".forgejo/workflows/{name}: no `run: just bot-skills` step; the job's HOME then holds no skills and its "
+             "footer says `skills read none`"
+             for name in ("review.yml", "autofix.yml") if no_skills((ROOT / ".forgejo/workflows" / name).read_text())]
     fail(errs, "workflows")
