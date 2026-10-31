@@ -107,13 +107,6 @@ pub const ROLES: &[Role] = &[
         min_context: 128_000,
         mix: Some(Mix::FRESH_READ),
     },
-    Role {
-        name: "worker",
-        exponent: 1.0,
-        floor: 35.0,
-        min_context: 128_000,
-        mix: None,
-    },
 ];
 
 pub fn role(name: &str) -> Option<&'static Role> {

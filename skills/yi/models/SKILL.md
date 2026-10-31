@@ -2,7 +2,7 @@
 name: models
 description: >
   Suggest a model per role (primary, advisor, summarizer, autoReview,
-  selector, worker) from OpenRouter's Artificial Analysis benchmarks and
+  selector) from OpenRouter's Artificial Analysis benchmarks and
   the catalog's prices. Use when the user asks which model to use, says a
   model is too slow, too costly or not smart enough, or asks to compare
   models. Suggestions only: never change config without the user's word.
@@ -29,7 +29,7 @@ One model can hold two tags; that means it is both the cheapest and the best rat
 ## Reading the arithmetic
 
 - The blended price weights input, cache-read, cache-write and output by a token mix. The
-  primary, advisor and worker roles use the mix from the user's last 7 days of root sessions, or
+  primary and advisor roles use the mix from the user's last 7 days of root sessions, or
   the default 97.8% cache-hit mix when there are none, so cache-read price usually decides. The
   summarizer, autoReview and selector roles read fresh text each call and use their own
   mostly-uncached mix.
