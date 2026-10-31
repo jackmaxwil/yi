@@ -1,20 +1,25 @@
 ---
 issue: Closes #819
-raise: crate cli +2, crate runtime +5, crate tools +46, tests +82, comments +2
+raise: crate cli +2, crate runtime +5, crate tools +49, tests +97, comments +2
 ---
 A backgrounded `bash` job outlived the `yi` that started it. The job's watchdog is a thread in the
-process, and every exit path ended the process without signalling it, so a `sleep 300` or a
-`./server` kept its process group alive under the shell's `nohup`-less parent: the model was told
-the job would be killed at the next interrupt or turn end, and nothing was left to do it. The job
-registry now remembers the process group each backgrounded command was spawned into, and
-`Jobs::kill_running` asks every running poller job to stop, signals those groups directly, and
-waits up to the existing five-second `KILL_GRACE` for their reapers to settle. `main` calls it
-once, after `dispatch` returns and before `std::process::exit`, so `yi ask`, `yi -p`, `yi tui`,
-`yi console`, `yi rpc` and a `yi serve` worker all leave no job behind; the daemon's supervisor
-owns no jobs, and a worker that exits itself runs the same path. `rustix` stays out of `yi-tools`
-(§18.3): the group is signalled through `/bin/sh`'s builtin, the same route `kill_tree` already
-takes, because slim images ship no `kill(1)`.
+process, and a normal return from `dispatch` ended the process without signalling it, so a
+`sleep 300` or a `./server` kept its process group alive: the model was told the job would be
+killed at the next interrupt or turn end, and nothing was left to do it. `Jobs::kill_running` now
+sets the kill flag of every running job, the `bash` tool's and the kernel bridge's `exec.spawn`
+alike, since at exit no owner is left to release either, and waits up to the existing five-second
+`KILL_GRACE` for each job's own watchdog to run `kill_tree` (descendants walked first, so a
+re-grouped child dies too). `main` calls it once, after `dispatch` returns and before
+`std::process::exit`. Only that normal-return path is covered: a `yi` ended by a signal (Ctrl-C
+on `yi ask` mid-turn, `kill -TERM`, the serve daemon's SIGKILL of a worker) still leaves its jobs
+running, since no signal handler is installed.
 
 A tier-2 journey drives the real binary: `yi ask` starts `echo $$ > job-pgid; exec sleep 300` with
 `wait: 5`, the turn ends, and the test asserts the recorded process group is gone by the time the
 binary exits.
+
+A second, separate fix rides along: `tools::a_job_wait_returns_as_the_job_settles` raced its 80 ms
+auto-background timer against `sleep 0.1` and failed under a full-suite load when the sleep
+finished inline; it now retries an inline finish (up to twenty attempts for five backgrounded
+waits) and still bounds only the waits that ran. Seen red: the unretried loop failed with
+`no job id` in a loaded `just check`.

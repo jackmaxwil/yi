@@ -108,11 +108,7 @@ struct Job {
     capture: Option<CommandCapture>,
     live: Arc<LiveOutput>,
     kill: Arc<AtomicBool>,
-    process_group: Option<ProcessGroupId>,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ProcessGroupId(u32);
 
 #[derive(Debug, Default)]
 struct LiveBuffer {
@@ -189,26 +185,13 @@ impl Jobs {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    #[cfg(test)]
     fn insert(
-        &self,
-        command: &str,
-        cwd: (&Path, Option<&Path>),
-        reaper: Reaper,
-        live: Arc<LiveOutput>,
-        kill: Arc<AtomicBool>,
-    ) -> JobId {
-        self.insert_with_process_group(command, cwd, reaper, live, kill, None)
-    }
-
-    fn insert_with_process_group(
         &self,
         command: &str,
         (cwd, recovery_dir): (&Path, Option<&Path>),
         reaper: Reaper,
         live: Arc<LiveOutput>,
         kill: Arc<AtomicBool>,
-        process_group: Option<ProcessGroupId>,
     ) -> JobId {
         let id = self.next.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         let mut jobs = self.lock();
@@ -225,7 +208,6 @@ impl Jobs {
                 capture: None,
                 live,
                 kill,
-                process_group,
             },
         );
         let owner = match jobs.get(&id).map(|job| &job.reaper) {
@@ -346,27 +328,17 @@ impl Jobs {
         }
     }
 
-    /// Stops running poller jobs before the process that owns their watchdog exits.
+    /// Stops every running job before the process that owns their watchdogs exits.
     pub fn kill_running(&self) {
-        let groups = {
-            let jobs = self.lock();
-            jobs.values()
-                .filter(|job| matches!(&job.reaper, Reaper::Poller { .. }))
-                .filter(|job| state(job) == JobState::Running)
-                .filter_map(|job| {
-                    job.kill.store(true, Ordering::SeqCst);
-                    job.process_group
-                })
-                .collect::<Vec<_>>()
-        };
-        for group in groups {
-            let _already_stopped = crate::process::kill_process_group(group.0);
+        let ids: Vec<JobId> = (self.lock().iter())
+            .filter(|(_, job)| state(job) == JobState::Running)
+            .map(|(id, _)| JobId(*id))
+            .collect();
+        for id in ids {
+            let _settled_meanwhile_is_fine = self.kill(id);
         }
-        let running = |jobs: &mut HashMap<u64, Job>| {
-            jobs.values().any(|job| {
-                matches!(&job.reaper, Reaper::Poller { .. }) && state(job) == JobState::Running
-            })
-        };
+        let running =
+            |jobs: &mut HashMap<u64, Job>| jobs.values().any(|job| state(job) == JobState::Running);
         drop(
             self.settled
                 .wait_timeout_while(self.lock(), KILL_GRACE, running),
@@ -601,13 +573,12 @@ fn start(
     };
     process.current_dir(cwd);
     let (child, program) = spawn_captured(process, false)?;
-    let id = registry().insert_with_process_group(
+    let id = registry().insert(
         shell_command,
         (cwd, spill_dir),
         reaper,
         Arc::clone(&live),
         Arc::clone(&kill),
-        Some(ProcessGroupId(child.id())),
     );
     let spill_dir = spill_dir.map(Path::to_path_buf);
     std::thread::spawn(move || {
@@ -943,6 +914,38 @@ mod tests {
         let report = registry().release(id)?;
         assert!(report.finished);
         assert_eq!(report.exit_code, None);
+        Ok(())
+    }
+
+    /// Dies with the exit sweep scoped to poller jobs: a kernel bridge `exec.spawn` shell
+    /// outlived `yi`, and once the process is gone nothing can release or kill it.
+    #[test]
+    fn the_exit_sweep_stops_a_handle_job() -> Fallible {
+        let jobs = Jobs::default();
+        let kill = Arc::new(AtomicBool::new(false));
+        let at = (Path::new("/yi-jobs-test/exit-sweep"), None);
+        let id = jobs.insert(
+            "sleep 300",
+            at,
+            Reaper::Handle,
+            Arc::default(),
+            Arc::clone(&kill),
+        );
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _signalled = poll_until(|| kill.load(Ordering::SeqCst).then_some(()));
+                let cancelled = CommandCapture {
+                    cancelled: true,
+                    ..exited()
+                };
+                jobs.finish(id, cancelled);
+            });
+            jobs.kill_running();
+        });
+        assert!(
+            kill.load(Ordering::SeqCst),
+            "the sweep left a handle job running"
+        );
         Ok(())
     }
 

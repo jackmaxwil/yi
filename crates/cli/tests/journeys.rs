@@ -138,7 +138,12 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
     std::fs::write(&note, "before\n")?;
     succeeded(&journey.yi(&["ask", "first"])?, "the opening ask")?;
     std::fs::write(&note, "between\n")?;
-    let script = write_script(&journey, "note.txt", "after\n")?;
+    let script = write_script(
+        &journey,
+        "write",
+        json!({"path": "note.txt", "content": "after\n"}),
+        "written",
+    )?;
     succeeded(
         &journey.yi(&["ask", "--continue", "--faux", &script, "second"])?,
         "the resume",
@@ -180,16 +185,20 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
     Ok(())
 }
 
-/// A `--faux` script whose one turn writes `content` to `path`, then says so.
-fn write_script(journey: &Journey, path: &str, content: &str) -> Result<String, Box<dyn Error>> {
+/// A `--faux` script whose one turn calls `tool` with `args`, then says `closing`.
+fn write_script(
+    journey: &Journey,
+    tool: &str,
+    args: serde_json::Value,
+    closing: &str,
+) -> Result<String, Box<dyn Error>> {
     use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
     use yi_types::message::StopReason;
-    let args = json!({"path": path, "content": content});
-    let call = faux_tool_call("c1", "write", args.as_object().cloned().unwrap_or_default());
+    let call = faux_tool_call("c1", tool, args.as_object().cloned().unwrap_or_default());
     let lines = [
         serde_json::to_string(&faux_assistant_message(vec![call], StopReason::ToolUse))?,
         serde_json::to_string(&faux_assistant_message(
-            vec![faux_text("written")],
+            vec![faux_text(closing)],
             StopReason::Stop,
         ))?,
     ];
@@ -547,7 +556,12 @@ fn doctor_fix_keeps_an_orphan_with_uncommitted_work() -> TestResult {
 fn a_quit_over_lane_work_says_which_slot_kept_it() -> TestResult {
     let journey = Journey::new("lane-kept")?;
     trunk(&journey)?;
-    let script = write_script(&journey, "notes-é.txt", "only copy\n")?;
+    let script = write_script(
+        &journey,
+        "write",
+        json!({"path": "notes-é.txt", "content": "only copy\n"}),
+        "written",
+    )?;
     let output = (journey.command(&["ask", "--lanes", "--faux", &script, "write the note"]))
         .stderr(Stdio::piped())
         .output()?;
@@ -963,36 +977,16 @@ fn a_session_start_sweeps_an_aged_orphan_without_yi_gc() -> TestResult {
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn an_exiting_ask_kills_its_background_bash_process_group() -> TestResult {
-    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
-    use yi_types::message::StopReason;
-
     let journey = Journey::new("exit-bash-job")?;
     let group = journey.project().join("job-pgid");
-    let call = faux_tool_call(
-        "c1",
+    let script = write_script(
+        &journey,
         "bash",
-        json!({"command": "echo $$ > job-pgid; exec sleep 300", "wait": 5})
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-    );
-    let script = journey.project().join("script.jsonl");
-    let lines = [
-        serde_json::to_string(&faux_assistant_message(vec![call], StopReason::ToolUse))?,
-        serde_json::to_string(&faux_assistant_message(
-            vec![faux_text("done")],
-            StopReason::Stop,
-        ))?,
-    ];
-    std::fs::write(&script, lines.join("\n"))?;
+        json!({"command": "echo $$ > job-pgid; exec sleep 300", "wait": 5}),
+        "done",
+    )?;
     succeeded(
-        &journey.yi(&[
-            "ask",
-            "--yolo",
-            "--faux",
-            &script.display().to_string(),
-            "start the command",
-        ])?,
+        &journey.yi(&["ask", "--yolo", "--faux", &script, "start the command"])?,
         "headless ask",
     )?;
     let group = std::fs::read_to_string(group)?.trim().to_owned();
