@@ -1,4 +1,5 @@
 ---
+version: 0.834.0
 issue: Closes #262
 growth: +21 the home the store serves is derived from its own path and excluded with it; weighed: no new argument on `Checkpoints::open` for six call sites, and no size cap on the shadow repo that would leave the growth in place
 raise: crate tools +21, tests +51, comments +2
