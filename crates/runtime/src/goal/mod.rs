@@ -11,11 +11,12 @@ use yi_types::subagent::Discovery;
 
 use crate::args::Args;
 
-use crate::packed::Packed;
-
-pub(crate) static CONTINUATION: Packed = crate::packed::packed!("continuation");
-pub(crate) static BUDGET_LIMIT: Packed = crate::packed::packed!("budget_limit");
-pub(crate) static OBJECTIVE_UPDATED: Packed = crate::packed::packed!("objective_updated");
+pub(crate) static CONTINUATION: std::sync::LazyLock<String> =
+    crate::packed::packed!("continuation");
+pub(crate) static BUDGET_LIMIT: std::sync::LazyLock<String> =
+    crate::packed::packed!("budget_limit");
+pub(crate) static OBJECTIVE_UPDATED: std::sync::LazyLock<String> =
+    crate::packed::packed!("objective_updated");
 
 pub const GOAL_EXISTS_ERROR: &str = "A goal already exists and is not finished; use goal.update(status=\"complete\"|\"blocked\") to finish it first.";
 pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one with goal.create.";
@@ -335,15 +336,15 @@ pub fn continuation_text(goal: &Goal, plan: Option<&yi_types::plan::doc::Plan>) 
         ("check_status", check_status),
         ("plan_frontier", plan_frontier),
     ];
-    fill(CONTINUATION.text(), goal, extra)
+    fill(CONTINUATION.as_str(), goal, extra)
 }
 
 pub fn budget_limit_text(goal: &Goal) -> String {
-    fill(BUDGET_LIMIT.text(), goal, Vec::new())
+    fill(BUDGET_LIMIT.as_str(), goal, Vec::new())
 }
 
 pub fn objective_updated_text(goal: &Goal) -> String {
-    fill(OBJECTIVE_UPDATED.text(), goal, Vec::new())
+    fill(OBJECTIVE_UPDATED.as_str(), goal, Vec::new())
 }
 
 fn goal_prompt_message(text: String) -> AgentMessage {

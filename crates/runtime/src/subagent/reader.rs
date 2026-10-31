@@ -7,20 +7,20 @@ use yi_types::url::{Scheme, Url};
 
 use crate::session::{AgentSession, SessionConfig};
 
-use crate::packed::Packed;
-
-pub(crate) static READER: Packed = crate::packed::packed!("reader");
-pub(crate) static READER_FENCED: Packed = crate::packed::packed!("reader_fenced");
-pub(crate) static READER_UNFENCED: Packed = crate::packed::packed!("reader_unfenced");
-pub(crate) static WORKER: Packed = crate::packed::packed!("worker");
+pub(crate) static READER: std::sync::LazyLock<String> = crate::packed::packed!("reader");
+pub(crate) static READER_FENCED: std::sync::LazyLock<String> =
+    crate::packed::packed!("reader_fenced");
+pub(crate) static READER_UNFENCED: std::sync::LazyLock<String> =
+    crate::packed::packed!("reader_unfenced");
+pub(crate) static WORKER: std::sync::LazyLock<String> = crate::packed::packed!("worker");
 
 fn reader_prompt(fenced: bool) -> String {
     let tail = if fenced {
-        READER_FENCED.text()
+        READER_FENCED.as_str()
     } else {
-        READER_UNFENCED.text()
+        READER_UNFENCED.as_str()
     };
-    format!("{}{tail}", READER.text())
+    format!("{}{tail}", READER.as_str())
 }
 pub(crate) const PARTITION_CAP: usize = 65_536;
 
@@ -195,7 +195,7 @@ pub fn session(
         provider,
     );
     if reader.role == Role::Worker {
-        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER.text()));
+        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER.as_str()));
         child.enable_compaction();
     }
     child.set_turn_cap(reader.turns);

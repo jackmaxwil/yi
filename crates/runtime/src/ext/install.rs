@@ -9,10 +9,8 @@ use super::project::{ProjectResources, TrustGate, git_root};
 use super::telemetry::RouteTelemetry;
 use super::{Host, Rank, Slot, Trust};
 
-use crate::packed::Packed;
-
-pub(crate) static ORCHESTRATE: Packed = crate::packed::packed!("orchestrate");
-pub(crate) static HAR_CORE: Packed = crate::packed::packed!("har-core");
+pub(crate) static ORCHESTRATE: std::sync::LazyLock<String> = crate::packed::packed!("orchestrate");
+pub(crate) static HAR_CORE: std::sync::LazyLock<String> = crate::packed::packed!("har-core");
 
 pub struct ExtOptions {
     pub cwd: PathBuf,
@@ -30,7 +28,7 @@ pub struct ExtOptions {
 fn rust_pack() -> Pack {
     Pack {
         name: "lang-rust".to_owned(),
-        fragment: HAR_CORE.text().to_owned(),
+        fragment: HAR_CORE.as_str().to_owned(),
         project_markers: vec!["Cargo.toml".to_owned()],
         write_extensions: vec!["rs".to_owned()],
     }
@@ -79,7 +77,7 @@ pub fn install(options: ExtOptions) -> Host {
     ));
     register_packs(&mut host, &cwd, &home);
     if can_delegate {
-        host.register(Box::new(Orchestrate::new(ORCHESTRATE.text())));
+        host.register(Box::new(Orchestrate::new(ORCHESTRATE.as_str())));
     }
     host.register(Box::new(Plugins { home }));
     host.register(Box::new(RouteTelemetry::new()));

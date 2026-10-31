@@ -116,28 +116,28 @@ pub fn workspace_sandbox(
     yi_tools::Sandbox::available().then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir))
 }
 
-static IDENTITY: packed::Packed = packed::packed!("identity");
-static DOCTRINE: packed::Packed = packed::packed!("doctrine");
-static DELEGATION: packed::Packed = packed::packed!("delegation");
-static UNATTENDED: packed::Packed = packed::packed!("unattended");
+static IDENTITY: std::sync::LazyLock<String> = crate::packed::packed!("identity");
+static DOCTRINE: std::sync::LazyLock<String> = crate::packed::packed!("doctrine");
+static DELEGATION: std::sync::LazyLock<String> = crate::packed::packed!("delegation");
+static UNATTENDED: std::sync::LazyLock<String> = crate::packed::packed!("unattended");
 
 pub fn identity_fragment() -> &'static str {
-    IDENTITY.text()
+    IDENTITY.as_str()
 }
 
 /// Stable text: it rides the cached prefix, so every byte is paid per turn.
 pub fn doctrine_fragment() -> &'static str {
-    DOCTRINE.text()
+    DOCTRINE.as_str()
 }
 
 /// Attached only where [`ext::ExtOptions::can_delegate`]: a leaf never reads it.
 pub fn delegation_fragment() -> &'static str {
-    DELEGATION.text()
+    DELEGATION.as_str()
 }
 
 /// Rides the system prompt only when no asker is wired, so no person can answer.
 pub fn unattended_fragment() -> &'static str {
-    UNATTENDED.text()
+    UNATTENDED.as_str()
 }
 pub use yi_ai::faux;
 pub use yi_context::{Bytes, SourceBudgets, Truncated, reply_tokens};

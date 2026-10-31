@@ -1,50 +1,34 @@
 //! Incident: 54 KiB of raw prompt text cost the dist binary four 16 KiB `__TEXT` pages of the
 //! measured size ratchet, so `build.rs` deflates every prompt and the binary carries the deflate.
-use std::sync::OnceLock;
 
-/// One prompt the build deflated; [`Packed::text`] inflates it on first use and never again.
-pub(crate) struct Packed {
-    bytes: &'static [u8],
-    text: OnceLock<String>,
-}
-
-impl Packed {
-    pub(crate) const fn new(bytes: &'static [u8]) -> Self {
-        Self {
-            bytes,
-            text: OnceLock::new(),
-        }
-    }
-
-    /// Invariant: `build.rs` proves the round trip before the crate compiles, so a decode that
-    /// failed here would name itself in the prompt rather than reach the model as silence.
-    pub(crate) fn text(&self) -> &str {
-        self.text.get_or_init(|| {
-            miniz_oxide::inflate::decompress_to_vec_zlib(self.bytes)
-                .map(|raw| String::from_utf8_lossy(&raw).into_owned())
-                .unwrap_or_else(|error| format!("[prompt unavailable: {error:?}]"))
-        })
-    }
+/// Invariant: `build.rs` proves the round trip before the crate compiles, so a decode that
+/// failed here would name itself in the prompt rather than reach the model as silence.
+pub(crate) fn inflate(bytes: &'static [u8]) -> String {
+    miniz_oxide::inflate::decompress_to_vec_zlib(bytes)
+        .map(|raw| String::from_utf8_lossy(&raw).into_owned())
+        .unwrap_or_else(|error| format!("[prompt unavailable: {error:?}]"))
 }
 
 /// The prompt `build.rs` deflated from the source file stemmed `$stem`, so a static's name and
 /// the bytes it is handed are spelled once.
 macro_rules! packed {
     ($stem:literal) => {
-        $crate::packed::Packed::new(include_bytes!(concat!(env!("OUT_DIR"), "/", $stem, ".zz")))
+        std::sync::LazyLock::new(|| {
+            $crate::packed::inflate(include_bytes!(concat!(env!("OUT_DIR"), "/", $stem, ".zz")))
+        })
     };
 }
 pub(crate) use packed;
 
 #[cfg(test)]
 mod tests {
-    use super::Packed;
     use crate::{auto_review, ext::install, goal, subagent::reader};
+    use std::sync::LazyLock;
 
     /// A static handed another stem ships that prompt to the model; the build cannot see it.
     #[test]
     fn every_packed_prompt_reads_as_its_own_file() {
-        let rows: [(&str, &Packed, &str); 10] = [
+        let rows: [(&str, &LazyLock<String>, &str); 10] = [
             (
                 "auto_review.md",
                 &auto_review::AUTO_REVIEW,
@@ -98,7 +82,7 @@ mod tests {
         ];
         let wrong: Vec<&str> = rows
             .iter()
-            .filter(|(_, packed, source)| packed.text() != *source)
+            .filter(|(_, packed, source)| packed.as_str() != *source)
             .map(|(name, _, _)| *name)
             .collect();
         assert!(wrong.is_empty(), "read as another file: {wrong:?}");
