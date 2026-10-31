@@ -6,7 +6,9 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use yi_kernel::snapshot::{build_restore_code, build_snapshot_code, parse_restore_result};
+use yi_kernel::snapshot::{
+    RESTORE_FAILURES_VAR, build_restore_code, build_snapshot_code, parse_restore_result,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -85,7 +87,7 @@ fn run(dir: &Path, namespace: &str, code: &str) -> Result<String, Box<dyn Error>
     let driver = format!(
         "import sys\n{namespace}\npath = sys.argv[1]\n\
          exec(compile(open(path).read(), path, \"exec\"), {{\"get_ipython\": get_ipython, \"__name__\": \"driven\"}})\n\
-         print(\"_YI_TEST_RESTORE_FAILURES=\" + repr(get_ipython().user_ns.get(\"_yi_restore_failures\")))\n"
+         print(\"_YI_TEST_RESTORE_FAILURES=\" + repr(get_ipython().user_ns.get({RESTORE_FAILURES_VAR:?})))\n"
     );
     fs::write(&driver_path, driver)?;
     python_step(dir, &[driver_path.as_os_str(), helper_path.as_os_str()])

@@ -479,8 +479,12 @@ fn the_restore_notice_cuts_a_long_list_of_names_it_could_not_restore() -> TestRe
         (row.kept, row.total, row.what, row.cap, row.limit),
         (40, 100, "names not revived", "RESTORE_FAILED_SHOWN", 40)
     );
+    let next = format!(
+        "globals().get({:?}, list())",
+        yi_kernel::snapshot::RESTORE_FAILURES_VAR
+    );
     assert_eq!(
-        row.next, "globals().get(\"_yi_restore_failures\", list())",
+        row.next, next,
         "the row names the restored kernel list that holds every failure"
     );
     assert!(failed.contains("gone039"), "{failed}");

@@ -83,7 +83,7 @@ loud caps on runtime lists and echoes | `caps_runtime::todo_error_lists_stop_at_
 loud caps on runtime lists and echoes | `caps_runtime::a_phase_list_stops_at_the_cap_and_names_the_view_call` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::a_refused_answer_echoes_a_bounded_view_naming_the_held_file` (T1)
 loud caps on runtime lists and echoes | `caps_runtime::the_restore_notice_lists_a_bounded_number_of_names` (T0)
-loud caps on runtime lists and echoes | `caps_runtime::the_restore_notice_names_why_a_variable_did_not_come_back` (T0)
+loud caps on runtime lists and echoes | `caps_runtime::the_restore_notice_cuts_a_long_list_of_names_it_could_not_restore` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::the_memory_index_names_what_it_did_not_load` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::the_files_line_names_the_cap_and_the_hidden_names_it_skipped` (T0)
 kernel tool calls (`yi.tools`) | `kernel_tools::a_cell_writes_and_reads_through_the_sessions_own_gated_tools`

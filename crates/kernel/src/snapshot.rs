@@ -19,6 +19,7 @@ const KERNEL_STATE_BASENAME: &str = "kernel-state";
 // Lowercase deliberately: the env-surface guardrail scans for YI_[A-Z_]+ and
 // this marker is a stdout sentinel, not an env var.
 const RESULT_MARKER: &str = "__yi_kernel_state__";
+pub const RESTORE_FAILURES_VAR: &str = "_yi_restore_failures";
 
 pub fn snapshot_path_in(artifact_dir: &Path) -> PathBuf {
     artifact_dir.join(format!("{KERNEL_STATE_BASENAME}.dill"))
@@ -240,6 +241,7 @@ finally:
 pub fn build_restore_code(in_path: &Path) -> String {
     let source = py_path(in_path);
     let marker = py_str(RESULT_MARKER);
+    let failures = py_str(RESTORE_FAILURES_VAR);
     // Builtins via the local _b alias so a shadowed name in the user namespace
     // (list/open/print/…) can't break the restore path.
     let blobs = py_path(&blobs_dir_for(in_path));
@@ -293,7 +295,7 @@ pub fn build_restore_code(in_path: &Path) -> String {
         if _b.isinstance(name, _b.str) and name not in ns:
             reason = entry.get("reason")
             failed.append({{"name": name, "reason": reason if _b.isinstance(reason, _b.str) else ""}})
-    ns["_yi_restore_failures"] = failed
+    ns[{failures}] = failed
     _b.print({marker} + json.dumps({{"restored": _b.sorted(restored), "failed": failed}}))
 
 

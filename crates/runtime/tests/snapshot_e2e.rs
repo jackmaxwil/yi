@@ -109,12 +109,13 @@ fn store(id: &str) -> yi_session::SharedSession {
 
 async fn cell(
     service: &Arc<KernelService>,
-    code: &'static str,
+    code: &str,
 ) -> Result<yi_tools::KernelCellOutcome, String> {
     let service = Arc::clone(service);
+    let code = code.to_owned();
     tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        KernelBridge::execute_cell(service.as_ref(), code, "", &cancelled, None)
+        KernelBridge::execute_cell(service.as_ref(), &code, "", &cancelled, None)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -469,7 +470,8 @@ async fn a_cell_that_changes_one_name_writes_only_that_name() -> TestResult {
         !announced.contains("small (") && !announced.contains("FileNotFoundError"),
         "the restore notice must omit failure reasons: {announced}"
     );
-    let failures = cell(&third, "print(_yi_restore_failures)").await?;
+    let print_failures = format!("print({})", yi_kernel::snapshot::RESTORE_FAILURES_VAR);
+    let failures = cell(&third, &print_failures).await?;
     assert!(
         failures.result.stdout.contains("small")
             && failures.result.stdout.contains("FileNotFoundError"),
