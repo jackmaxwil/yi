@@ -32,7 +32,6 @@ pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }
-
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[expect(
         clippy::disallowed_methods,
@@ -597,6 +596,48 @@ mod tests {
             elapsed < Duration::from_secs(6),
             "the re-grouped grandchild outlived the kill and held stdout for {elapsed:?}"
         );
+        Ok(())
+    }
+
+    /// Invariant: the root comes back in the spelling the caller typed, so a walker comparing it
+    /// against that path's own ancestors still finds it.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_cwd_keeps_the_root_in_the_spelling_the_caller_typed() -> Fallible {
+        let dir = crate::scratch::Scratch::new("yi-git-root")?;
+        std::fs::create_dir_all(dir.join("real").join("src"))?;
+        std::fs::create_dir_all(dir.join("real").join(".git"))?;
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link"))?;
+        let link = dir.join("link");
+        let root = super::git_root(&link.join("src"));
+        assert_eq!(root.as_deref(), Some(link.as_path()));
+        let above: Vec<&std::path::Path> = link.ancestors().collect();
+        assert_eq!(
+            above.iter().position(|dir| root.as_deref() == Some(*dir)),
+            Some(0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_parent_step_never_borrows_a_neighbours_repository() -> Fallible {
+        let base = std::env::temp_dir()
+            .canonicalize()?
+            .join(format!("yi-git-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (repo, other) = (base.join("repo"), base.join("other"));
+        std::fs::create_dir_all(repo.join("nested"))?;
+        std::fs::create_dir_all(&other)?;
+        std::fs::write(repo.join(".git"), "gitdir: elsewhere")?;
+        assert_eq!(
+            git_root(&other.join("..").join("repo").join("nested")).as_deref(),
+            Some(repo.as_path())
+        );
+        assert_eq!(
+            git_root(&repo.join("nested").join("..").join("..").join("other")),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&base);
         Ok(())
     }
 }

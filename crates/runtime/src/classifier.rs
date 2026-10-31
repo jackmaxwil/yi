@@ -7,11 +7,13 @@ use sha2::{Digest, Sha256};
 
 use yi_types::classifier::{ClassifyRecord, DecisionRequest, DecisionResponse, Question};
 use yi_types::config::{ApprovalMode, ClassifierConfig, UserConfig};
-use yi_types::message::{AgentMessage, UserContent};
+use yi_types::message::{AgentMessage, Content, UserContent};
 
 use crate::AgentSession;
+use crate::mailbox::clamp;
 
-pub const DEFAULT_URL: &str = "http://127.0.0.1:8000";
+pub const DEFAULT_URL: &str = "https://openrouter.ai/api";
+pub const JEV: &str = "typesafe/jev-1.13";
 pub const NOTICE_TYPE: &str = "classifier";
 const DEFAULT_TIMEOUT_MS: u64 = 1000;
 const CANDIDATE_CAP: usize = 20;
@@ -39,6 +41,33 @@ impl Sidecar {
     fn named(&self, error: &str) -> String {
         format!("{}: {error}", self.url)
     }
+
+    fn decide(&self, request: &DecisionRequest) -> Result<DecisionResponse, String> {
+        yi_ai::decide::decide(&self.url, self.key.as_deref(), self.timeout, request)
+    }
+}
+
+fn ask(
+    state: impl IntoIterator<Item = (String, serde_json::Value)>,
+    name: &str,
+    question: Question,
+    model: &str,
+) -> DecisionRequest {
+    DecisionRequest {
+        state: state.into_iter().collect(),
+        questions: [(name.to_owned(), question)].into(),
+        model: Some(model.to_owned()),
+    }
+}
+
+fn noul(instructions: &str) -> Question {
+    Question::Noul {
+        instructions: instructions.to_owned(),
+    }
+}
+
+fn since(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 struct Breaker {
@@ -163,36 +192,24 @@ impl SkillClassifier {
         let message = message_id(text);
         runtime.spawn(async move {
             let started = Instant::now();
-            let (url, key, deadline) = (
-                this.sidecar.url.clone(),
-                this.sidecar.key.clone(),
-                this.sidecar.timeout,
-            );
-            let outcome = tokio::task::spawn_blocking(move || {
-                yi_ai::decide::decide(&url, key.as_deref(), deadline, &request)
-            })
-            .await
-            .unwrap_or_else(|error| Err(error.to_string()));
-            let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            this.settle(outcome, latency_ms, message, &already);
+            let sidecar = this.sidecar.clone();
+            let outcome = tokio::task::spawn_blocking(move || sidecar.decide(&request))
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()));
+            this.settle(outcome, since(started), message, &already);
         });
     }
 
     fn request(&self, text: &str) -> DecisionRequest {
         let mut criteria = self.candidates.clone();
         criteria.insert(NONE.to_owned(), "no listed method applies".to_owned());
-        DecisionRequest {
-            state: [("message".to_owned(), serde_json::json!(text))].into(),
-            questions: [(
-                QUESTION.to_owned(),
-                Question::Choice {
-                    instructions: INSTRUCTIONS.to_owned(),
-                    criteria,
-                },
-            )]
-            .into(),
-            model: Some(self.sidecar.model.clone()),
-        }
+        let instructions = INSTRUCTIONS.to_owned();
+        let choice = Question::Choice {
+            instructions,
+            criteria,
+        };
+        let state = [("message".to_owned(), serde_json::json!(text))];
+        ask(state, QUESTION, choice, &self.sidecar.model)
     }
 
     fn settle(
@@ -202,17 +219,7 @@ impl SkillClassifier {
         message: String,
         already: &[String],
     ) {
-        let mut record = ClassifyRecord {
-            consumer: QUESTION.to_owned(),
-            message,
-            answer: None,
-            confidence: None,
-            model: None,
-            latency_ms,
-            fired: false,
-            error: None,
-            extra: BTreeMap::new(),
-        };
+        let mut record = blank(QUESTION, message, latency_ms);
         let response = match outcome {
             Ok(response) => response,
             Err(error) => {
@@ -227,8 +234,16 @@ impl SkillClassifier {
         succeed(&self.breaker);
         let answer = response.answers.get(QUESTION);
         record.answer = answer.and_then(|answer| answer.choice.clone());
-        record.confidence = answer.and_then(|answer| answer.answer_confidence);
-        record.model = response.routing.map(|routing| routing.model);
+        record.confidence = answer.and_then(|answer| {
+            answer.answer_confidence.or_else(|| {
+                let chosen = answer
+                    .probabilities
+                    .as_ref()?
+                    .get(answer.choice.as_deref()?)?;
+                chosen.as_f64()
+            })
+        });
+        record.model = (response.routing.map(|routing| routing.model)).or(response.model);
         if let (Some(name), Some(confidence)) = (record.answer.as_deref(), record.confidence)
             && self.sidecar.threshold < 1.0
             && confidence >= self.sidecar.threshold
@@ -263,12 +278,21 @@ impl SkillClassifier {
 }
 
 const SAFE: &str = "safe";
-const SAFE_INSTRUCTIONS: &str = "Is it safe for a coding agent to run this without asking the user? Safe means it cannot destroy work a checkpoint would not restore, leak a secret, or act outside the project.";
+const RUBRIC: &str = "Is it safe for a coding agent to run this without asking the user? Safe means it cannot destroy work a checkpoint would not restore, leak a secret, or act outside the project. Unsafe: deleting or overwriting anything outside the project root or inside .git; sending any file, environment variable or credential to a remote host; running downloaded code; force-pushing, publishing or deleting remote resources; changing system or permission settings; anything the user's task rules out. Safe: reading, building, testing, formatting, editing or deleting files inside the project, local git operations a checkpoint can undo, and the push the user's task asks for.";
+const CHECKPOINTS: &str = "Yi snapshots the working tree before every turn: files changed or deleted inside the project restore; .git, files outside the project and remote systems do not";
 const DEFAULT_THRESHOLD: f64 = 0.9;
-const DEFAULT_ALLOW_AT: f64 = 0.9;
-const DEFAULT_ALLOW_DESTRUCTIVE_AT: f64 = 0.98;
+const DEFAULT_ALLOW_AT: f64 = 0.8;
+const DEFAULT_ALLOW_DESTRUCTIVE_AT: f64 = 0.9;
 const DEFAULT_ASK_AT: f64 = 0.05;
 const DEFAULT_DELAY_SECS: u64 = 30;
+const CONTEXT_CHARS: usize = 1000;
+const CONTEXT_NAME: &str = "classifier.context_chars";
+const CONTEXT_NEXT: &str = "the classifier judges this head only";
+const COMMAND_CHARS: usize = 4000;
+const WRITABLE_CAP: usize = 8;
+const RECENT_CALLS: usize = 2;
+const HISTORY_TAIL: usize = 256;
+const PROBE_MS: u64 = 3000;
 
 pub struct Thresholds {
     pub allow_at: f64,
@@ -282,6 +306,20 @@ pub struct Call<'a> {
     pub command: Option<&'a str>,
     pub reason: &'a str,
     pub cwd: &'a str,
+}
+
+/// The project facts the approval question carries beside the call.
+pub struct Project {
+    pub root: String,
+    pub writable: Vec<String>,
+    pub protected_branches: Vec<String>,
+}
+
+pub type History = Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync>;
+
+struct Context {
+    project: Project,
+    history: History,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -303,6 +341,7 @@ pub struct Approver {
     timing: Timing,
     breaker: Mutex<Breaker>,
     record: Record,
+    context: Option<Context>,
 }
 
 impl Approver {
@@ -313,7 +352,14 @@ impl Approver {
             timing,
             breaker: Mutex::new(Breaker::new(TRIP_AFTER)),
             record,
+            context: None,
         }
+    }
+
+    /// The user's task and recent calls come from `history`, read at each judgement.
+    pub fn with_context(mut self, project: Project, history: History) -> Self {
+        self.context = Some(Context { project, history });
+        self
     }
 
     pub fn timing(&self) -> Timing {
@@ -325,62 +371,32 @@ impl Approver {
             return Judgement::Undecided;
         }
         let class = class(call.command);
-        let state = [
-            ("tool", call.tool),
-            ("command", call.display),
-            ("cwd", call.cwd),
-            (
-                "why Yi asks",
-                call.reason
-                    .strip_suffix(call.display)
-                    .and_then(|reason| reason.strip_suffix(": "))
-                    .unwrap_or(call.reason),
-            ),
-        ]
-        .into_iter()
-        .map(|(key, value)| (key.to_owned(), serde_json::json!(value)))
-        .collect();
-        let request = DecisionRequest {
-            state,
-            questions: [(
-                SAFE.to_owned(),
-                Question::Noul {
-                    instructions: SAFE_INSTRUCTIONS.to_owned(),
-                },
-            )]
-            .into(),
-            model: Some(self.sidecar.model.clone()),
-        };
+        let mut record = blank("approve", message_id(call.display), 0);
+        record.extra = [("verdictClass".to_owned(), serde_json::json!(class))].into();
         let started = Instant::now();
-        let outcome = yi_ai::decide::decide(
-            &self.sidecar.url,
-            self.sidecar.key.as_deref(),
-            self.sidecar.timeout,
-            &request,
-        );
-        let mut record = ClassifyRecord {
-            consumer: "approve".to_owned(),
-            message: message_id(call.display),
-            answer: None,
-            confidence: None,
-            model: None,
-            latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            fired: false,
-            error: None,
-            extra: [("verdictClass".to_owned(), serde_json::json!(class))].into(),
-        };
-        let safe = match outcome {
-            Ok(response) => {
-                succeed(&self.breaker);
-                record.model = response.routing.map(|routing| routing.model);
-                response.answers.get(SAFE).and_then(|answer| answer.noul)
-            }
-            Err(error) => {
-                fail(&self.breaker, None);
-                record.error = Some(self.sidecar.named(&error));
-                None
+        let length = call.display.chars().count();
+        let safe = if length > COMMAND_CHARS {
+            record.error = Some(format!(
+                "a {length}-char command is past the {COMMAND_CHARS}-char cap (COMMAND_CHARS) on what the classifier judges, so the person decides"
+            ));
+            None
+        } else {
+            let request = ask(self.state(call), SAFE, noul(RUBRIC), &self.sidecar.model);
+            match self.sidecar.decide(&request) {
+                Ok(response) => {
+                    succeed(&self.breaker);
+                    record.model =
+                        (response.routing.map(|routing| routing.model)).or(response.model);
+                    response.answers.get(SAFE).and_then(|answer| answer.noul)
+                }
+                Err(error) => {
+                    fail(&self.breaker, None);
+                    record.error = Some(self.sidecar.named(&error));
+                    None
+                }
             }
         };
+        record.latency_ms = since(started);
         let allow_at = if class != "ordinary" {
             self.thresholds.allow_destructive_at
         } else {
@@ -403,6 +419,98 @@ impl Approver {
         record.fired = matches!(judgement, Judgement::Allow(_));
         (self.record)(record);
         judgement
+    }
+
+    fn state(&self, call: &Call<'_>) -> serde_json::Map<String, serde_json::Value> {
+        let why = (call.reason.strip_suffix(call.display))
+            .and_then(|reason| reason.strip_suffix(": "))
+            .unwrap_or(call.reason);
+        let mut state: serde_json::Map<_, _> = [
+            ("tool", context(call.tool)),
+            ("command", call.display.to_owned()),
+            ("cwd", context(call.cwd)),
+            ("why Yi asks", context(why)),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), serde_json::json!(value)))
+        .collect();
+        let Some(Context { project, history }) = &self.context else {
+            return state;
+        };
+        let messages = history();
+        if let Some(task) = messages.iter().rev().find_map(crate::rules::typed_text) {
+            state.insert("user task".to_owned(), serde_json::json!(context(&task)));
+        }
+        state.insert(
+            "recent commands".to_owned(),
+            serde_json::json!(recent(&messages)),
+        );
+        let mut writable: Vec<String> = (project.writable.iter())
+            .take(WRITABLE_CAP)
+            .map(|root| context(root))
+            .collect();
+        if project.writable.len() > WRITABLE_CAP {
+            writable.push(format!(
+                "… [kept {WRITABLE_CAP} of {} writable roots · cap WRITABLE_CAP = {WRITABLE_CAP} · the root above is the one sent]",
+                project.writable.len()
+            ));
+        }
+        state.insert(
+            "project".to_owned(),
+            serde_json::json!({
+                "root": context(&project.root),
+                "writable": writable,
+                "protected branches": project.protected_branches,
+                "checkpoints": CHECKPOINTS,
+            }),
+        );
+        state
+    }
+}
+
+fn context(text: &str) -> String {
+    clamp(text, CONTEXT_CHARS, CONTEXT_NAME, CONTEXT_NEXT)
+}
+
+/// The last calls that have a result, oldest first: the call being judged has none yet.
+fn recent(messages: &[AgentMessage]) -> Vec<String> {
+    let answered: std::collections::BTreeSet<&str> = (messages.iter())
+        .filter_map(|message| match message {
+            AgentMessage::ToolResult { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut calls: Vec<String> = (messages.iter().rev())
+        .filter_map(|message| match message {
+            AgentMessage::Assistant { content, .. } => Some(content.iter().rev()),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|block| match block {
+            Content::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } if answered.contains(id.as_str()) => Some(context(&call_line(name, arguments))),
+            _ => None,
+        })
+        .take(RECENT_CALLS)
+        .collect();
+    calls.reverse();
+    calls
+}
+
+/// Incident: a `write` or `edit` call's arguments are the file's body, so a judgement reads the
+/// tool and the path it names, never the payload it carries.
+fn call_line(name: &str, arguments: &serde_json::Map<String, serde_json::Value>) -> String {
+    let text = |key: &str| arguments.get(key).and_then(serde_json::Value::as_str);
+    if name == "bash" {
+        return text("command").unwrap_or(name).to_owned();
+    }
+    match text("path").or_else(|| text("file_path")) {
+        Some(path) => format!("{name} {path}"),
+        None => name.to_owned(),
     }
 }
 
@@ -551,41 +659,29 @@ impl Screener {
         }
         if let Some(cause) = paused(&self.breaker) {
             let cause = cause.unwrap_or_else(|| "the breaker's lock is poisoned".to_owned());
-            (self.record)(unscreened(kind, &hash, total, cause, 0));
+            (self.record)(unscreened(kind, &hash, total, Some(cause), 0));
             return Screened { mark: None, body };
         }
-        let request = DecisionRequest {
-            state: [
-                ("kind".to_owned(), serde_json::json!(kind)),
-                (
-                    "text".to_owned(),
-                    serde_json::json!(text.chars().take(self.cap).collect::<String>()),
-                ),
-            ]
-            .into(),
-            questions: [(
-                SCREEN_QUESTION.to_owned(),
-                Question::Noul {
-                    instructions: SCREEN_INSTRUCTIONS.to_owned(),
-                },
-            )]
-            .into(),
-            model: Some(self.sidecar.model.clone()),
-        };
-        let started = Instant::now();
-        let outcome = yi_ai::decide::decide(
-            &self.sidecar.url,
-            self.sidecar.key.as_deref(),
-            self.sidecar.timeout,
-            &request,
+        let head: String = text.chars().take(self.cap).collect();
+        let state = [
+            ("kind".to_owned(), serde_json::json!(kind)),
+            ("text".to_owned(), serde_json::json!(head)),
+        ];
+        let request = ask(
+            state,
+            SCREEN_QUESTION,
+            noul(SCREEN_INSTRUCTIONS),
+            &self.sidecar.model,
         );
-        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let started = Instant::now();
+        let outcome = self.sidecar.decide(&request);
+        let latency_ms = since(started);
         let response = match outcome {
             Ok(response) => response,
             Err(error) => {
                 let cause = self.sidecar.named(&error);
                 fail(&self.breaker, Some(&cause));
-                (self.record)(unscreened(kind, &hash, total, cause, latency_ms));
+                (self.record)(unscreened(kind, &hash, total, Some(cause), latency_ms));
                 return Screened { mark: None, body };
             }
         };
@@ -597,7 +693,7 @@ impl Screener {
         else {
             let cause = self.sidecar.named("the answer carried no inject score");
             fail(&self.breaker, Some(&cause));
-            (self.record)(unscreened(kind, &hash, total, cause, latency_ms));
+            (self.record)(unscreened(kind, &hash, total, Some(cause), latency_ms));
             return Screened { mark: None, body };
         };
         let mark = (score >= self.cut).then_some(score);
@@ -605,22 +701,13 @@ impl Screener {
         let Some(score) = mark else {
             return Screened { mark: None, body };
         };
-        (self.record)(ClassifyRecord {
-            consumer: SCREEN_CONSUMER.to_owned(),
-            message: hash,
-            answer: Some("flagged".to_owned()),
-            confidence: Some(score),
-            model: response.routing.map(|routing| routing.model),
-            latency_ms,
-            fired: true,
-            error: None,
-            extra: [
-                ("sourceKind".to_owned(), serde_json::json!(kind)),
-                ("chars".to_owned(), serde_json::json!(total)),
-                ("action".to_owned(), serde_json::json!("flagged")),
-            ]
-            .into(),
-        });
+        let mut record = unscreened(kind, &hash, total, None, latency_ms);
+        record.answer = Some("flagged".to_owned());
+        record.confidence = Some(score);
+        record.model = response.routing.map(|routing| routing.model);
+        record.fired = true;
+        (record.extra).insert("action".to_owned(), serde_json::json!("flagged"));
+        (self.record)(record);
         Screened {
             mark: Some(score),
             body,
@@ -659,28 +746,36 @@ impl Screener {
     }
 }
 
-fn unscreened(
-    kind: &str,
-    hash: &str,
-    total: usize,
-    cause: String,
-    latency_ms: u64,
-) -> ClassifyRecord {
+fn blank(consumer: &str, message: String, latency_ms: u64) -> ClassifyRecord {
     ClassifyRecord {
-        consumer: SCREEN_CONSUMER.to_owned(),
-        message: hash.to_owned(),
-        answer: Some("unscreened".to_owned()),
+        consumer: consumer.to_owned(),
+        message,
+        answer: None,
         confidence: None,
         model: None,
         latency_ms,
         fired: false,
-        error: Some(cause),
-        extra: [
-            ("sourceKind".to_owned(), serde_json::json!(kind)),
-            ("chars".to_owned(), serde_json::json!(total)),
-        ]
-        .into(),
+        error: None,
+        extra: BTreeMap::new(),
     }
+}
+
+fn unscreened(
+    kind: &str,
+    hash: &str,
+    total: usize,
+    cause: Option<String>,
+    latency_ms: u64,
+) -> ClassifyRecord {
+    let mut record = blank(SCREEN_CONSUMER, hash.to_owned(), latency_ms);
+    record.answer = Some("unscreened".to_owned());
+    record.error = cause;
+    record.extra = [
+        ("sourceKind".to_owned(), serde_json::json!(kind)),
+        ("chars".to_owned(), serde_json::json!(total)),
+    ]
+    .into();
+    record
 }
 
 pub fn message_id(text: &str) -> String {
@@ -696,47 +791,62 @@ pub fn message_id(text: &str) -> String {
         .collect()
 }
 
-pub fn probe(url: &str, checkpoint: &str) -> Result<(), String> {
-    let criteria = [("yes", "this is a probe"), ("no", "this is not a probe")]
-        .into_iter()
-        .map(|(label, text)| (label.to_owned(), text.to_owned()))
-        .collect();
-    let request = DecisionRequest {
-        state: [("message".to_owned(), serde_json::json!("yi setup probe"))].into(),
-        questions: [(
-            "probe".to_owned(),
-            Question::Choice {
-                instructions: "Is this a probe?".to_owned(),
-                criteria,
-            },
-        )]
-        .into(),
-        model: Some(checkpoint.to_owned()),
-    };
-    let key = yi_ai::auth::api_key("laya");
-    let key = key.as_ref().map(|secret| secret.expose());
-    let answer = yi_ai::decide::decide(url, key, Duration::from_secs(10), &request)?;
-    if answer.answers.contains_key("probe") {
-        Ok(())
-    } else {
-        Err("the answer has no decision".to_owned())
-    }
-}
-
 pub struct Endpoint {
-    pub checkpoint: String,
+    pub model: String,
     pub url: String,
 }
 
-pub fn endpoint(config: &UserConfig) -> Option<Endpoint> {
-    Some(Endpoint {
-        checkpoint: config.models.as_ref()?.classifier.clone()?,
-        url: config
-            .classifier
-            .as_ref()
-            .and_then(|block| block.url.clone())
-            .unwrap_or_else(|| DEFAULT_URL.to_owned()),
+pub enum Armed {
+    Off,
+    At(Endpoint),
+    /// A config that names a classifier which will not run, and why.
+    Refused(String),
+}
+
+/// Incident: a config may still name the retired Laya checkpoint, whose loopback URL no sidecar
+/// answers any more, and the bearer is the user's own OpenRouter account key.
+pub fn arm(config: &UserConfig) -> Armed {
+    let Some(named) = (config.models.as_ref()).and_then(|models| models.classifier.clone()) else {
+        return Armed::Off;
+    };
+    if !named.contains('/') {
+        return Armed::Refused(format!(
+            "models.classifier `{named}` is a retired Laya checkpoint and no longer runs, so the classifier stays off; `{JEV}` is its replacement at OpenRouter"
+        ));
+    }
+    let Some(configured) = (config.classifier.as_ref()).and_then(|block| block.url.clone()) else {
+        return Armed::At(Endpoint {
+            model: named,
+            url: DEFAULT_URL.to_owned(),
+        });
+    };
+    if !reachable(&configured) {
+        return Armed::Refused(format!(
+            "classifier.url {configured} is neither {DEFAULT_URL} nor loopback, so the classifier stays off rather than send the OpenRouter key there"
+        ));
+    }
+    Armed::At(Endpoint {
+        model: named,
+        url: configured,
     })
+}
+
+/// Invariant: a configured URL is honoured only where the account key may go, which is the
+/// provider's own host over TLS and this machine.
+fn reachable(url: &str) -> bool {
+    (url.starts_with("https://")
+        && yi_types::url::url_authority(url) == yi_types::url::url_authority(DEFAULT_URL))
+        || yi_types::url::http_loopback_host_and_port(url).is_some()
+}
+
+/// One question with a short deadline: does the endpoint answer at all, or is a row green over a
+/// key that was revoked? Answers the round trip in milliseconds.
+pub fn probe(at: &Endpoint, key: Option<&str>) -> Result<u64, String> {
+    let state = [("message".to_owned(), serde_json::json!("ping"))];
+    let request = ask(state, "probe", noul("Answer yes."), &at.model);
+    let started = Instant::now();
+    yi_ai::decide::decide(&at.url, key, Duration::from_millis(PROBE_MS), &request)?;
+    Ok(since(started))
 }
 
 pub fn timing(block: &ClassifierConfig) -> Option<Timing> {
@@ -766,23 +876,27 @@ fn threshold(block: &ClassifierConfig) -> f64 {
     number(&block.threshold, DEFAULT_THRESHOLD)
 }
 
-pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConfig) -> Vec<String> {
-    let Some(Endpoint {
-        checkpoint: model,
-        url,
-    }) = endpoint(config)
-    else {
-        return Vec::new();
-    };
-    let block = config.classifier.clone().unwrap_or_default();
-    let thresholds = Thresholds {
+pub fn thresholds(block: &ClassifierConfig) -> Thresholds {
+    Thresholds {
         allow_at: number(&block.allow_at, DEFAULT_ALLOW_AT),
         allow_destructive_at: number(&block.allow_destructive_at, DEFAULT_ALLOW_DESTRUCTIVE_AT),
         ask_at: number(&block.ask_at, DEFAULT_ASK_AT),
+    }
+}
+
+pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let Endpoint { model, url } = match arm(config) {
+        Armed::Off => return warnings,
+        Armed::At(at) => at,
+        Armed::Refused(why) => {
+            warnings.push(why);
+            return warnings;
+        }
     };
+    let block = config.classifier.clone().unwrap_or_default();
     let timing = timing(&block);
     let broker = session.permission_broker();
-    let mut warnings = Vec::new();
     if let (Some(Timing::AfterDelay(_)), Some(broker)) = (&timing, broker.as_ref())
         && !broker.asks_close_on_settle()
     {
@@ -792,15 +906,16 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
                 .to_owned(),
         );
     }
-    let key = sidecar_key(
-        home,
-        "laya",
-        timing.is_some() && broker.is_some(),
-        &mut warnings,
-    );
+    let Some(key) = yi_ai::auth::stored_key(home, "openrouter") else {
+        warnings.push(format!(
+            "{}, so the classifier stays off",
+            yi_ai::auth::missing_message("openrouter")
+        ));
+        return warnings;
+    };
     let sidecar = Sidecar {
         url,
-        key,
+        key: Some(key.expose().to_owned()),
         model,
         timeout: Duration::from_millis(block.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         threshold: threshold(&block),
@@ -814,13 +929,27 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
             .unwrap_or(DEFAULT_SCREEN_MAX_CHARS),
         journal(session),
     )));
-    if let (Some(timing), Some(_), Some(broker)) = (timing, &sidecar.key, broker) {
-        broker.set_approver(Arc::new(Approver::new(
+    if let (Some(timing), Some(broker)) = (timing, broker) {
+        let writable = match broker.sandbox() {
+            Some(sandbox) => (sandbox.writable.iter())
+                .map(|root| root.display().to_string())
+                .collect(),
+            None => vec![cwd.display().to_string()],
+        };
+        let project = Project {
+            root: cwd.display().to_string(),
+            writable,
+            protected_branches: vec!["main".to_owned()],
+        };
+        let approver = Approver::new(
             sidecar.clone(),
-            thresholds,
+            thresholds(&block),
             timing,
             journal(session),
-        )));
+        );
+        broker.set_approver(Arc::new(
+            approver.with_context(project, session.history_tail(HISTORY_TAIL)),
+        ));
     }
     let Some(rules) = session.rules_engine() else {
         return warnings;
@@ -839,27 +968,6 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
     warnings
 }
 
-fn sidecar_key(
-    home: &Path,
-    provider: &str,
-    armed: bool,
-    warnings: &mut Vec<String>,
-) -> Option<String> {
-    if !armed {
-        // Approval is off: an existing key may still serve skill reminders, nothing mints.
-        return yi_ai::auth::stored_key(home, provider).map(|secret| secret.expose().to_owned());
-    }
-    match yi_ai::auth::key_in(home, provider) {
-        Ok(key) => Some(key.expose().to_owned()),
-        Err(error) => {
-            warnings.push(format!(
-                "no {provider} key could be made ({error}), so the classifier approves nothing"
-            ));
-            None
-        }
-    }
-}
-
 pub(crate) fn journal(session: &AgentSession) -> Record {
     let store = session.store_handle();
     Arc::new(move |record| {
@@ -871,25 +979,51 @@ pub(crate) fn journal(session: &AgentSession) -> Record {
 
 #[cfg(test)]
 mod tests {
-    use super::sidecar_key;
-    use crate::scratch::Scratch;
-
     #[test]
-    fn an_opt_out_session_mints_no_key_and_an_armed_one_does() -> std::io::Result<()> {
-        let home = Scratch::new("yi-classifier-opt-out")?;
-        let token = home.join(".yi/providers/tokens/yi-key-test.json");
-        let mut warnings = Vec::new();
-        assert!(sidecar_key(&home, "yi-key-test", false, &mut warnings).is_none());
-        assert!(warnings.is_empty());
-        assert!(!token.exists(), "an opt-out session never mints a key");
-        let home = Scratch::new("yi-classifier-armed")?;
-        let token = home.join(".yi/providers/tokens/yi-key-test.json");
-        let mut warnings = Vec::new();
-        assert!(sidecar_key(&home, "yi-key-test", true, &mut warnings).is_some());
+    fn a_retired_laya_checkpoint_stays_off_and_a_named_model_keeps_a_url_it_may_reach()
+    -> serde_json::Result<()> {
+        let (owners, _) = yi_types::config::parse(
+            r#"{"models":{"classifier":"english"},"classifier":{"url":"http://127.0.0.1:8000","threshold":0.9}}"#,
+        )?;
         assert!(
-            token.exists(),
-            "an armed session mints the key it arms with"
+            matches!(super::arm(&owners), super::Armed::Refused(why) if why.contains("english")),
+            "the Laya era config must not be repointed at a paid remote model"
         );
+        let (own, _) = yi_types::config::parse(
+            r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:9"}}"#,
+        )?;
+        let at = match super::arm(&own) {
+            super::Armed::At(at) => at,
+            _ => {
+                return Err(serde_json::Error::io(std::io::Error::other(
+                    "arm refused loopback",
+                )));
+            }
+        };
+        assert_eq!(at.url, "http://127.0.0.1:9");
+        let (lan, _) = yi_types::config::parse(
+            r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://not-openrouter.example:8000"}}"#,
+        )?;
+        assert!(
+            matches!(super::arm(&lan), super::Armed::Refused(why) if why.contains("not-openrouter.example")),
+            "the account key must not reach a host off this machine"
+        );
+        let (plain, _) = yi_types::config::parse(
+            r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://openrouter.ai/api"}}"#,
+        )?;
+        assert!(matches!(super::arm(&plain), super::Armed::Refused(_)));
+        for posing in [
+            r"https://evil.example\@openrouter.ai/api",
+            "https://evil.example#@openrouter.ai/api",
+            r"http://evil.example\@localhost:8080/",
+        ] {
+            let raw = serde_json::json!({"models": {"classifier": "typesafe/jev-1.13"}, "classifier": {"url": posing}});
+            let (config, _) = yi_types::config::parse(&raw.to_string())?;
+            assert!(
+                matches!(super::arm(&config), super::Armed::Refused(_)),
+                "{posing} would hand the key to evil.example"
+            );
+        }
         Ok(())
     }
 

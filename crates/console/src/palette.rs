@@ -11,7 +11,7 @@ use crate::keys;
 use crate::model::{Mode, SessionStatus};
 use crate::render::{ViewState, label_of, status_style};
 
-fn popup_in(area: Rect, width: u16, height: u16) -> Rect {
+pub(crate) fn popup_in(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
     Rect {
@@ -22,7 +22,7 @@ fn popup_in(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-const DISMISS: &str = " esc ✕ ";
+pub(crate) const DISMISS: &str = " esc ✕ ";
 
 pub(crate) fn dismiss_mark(popup: Rect) -> Rect {
     let width = u16::try_from(DISMISS.chars().count()).unwrap_or(7);

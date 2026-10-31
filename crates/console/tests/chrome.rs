@@ -5,6 +5,7 @@ use std::error::Error;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Direction, Rect};
 use yi_console::app::{App, MouseKind};
 use yi_console::client;
@@ -12,7 +13,7 @@ use yi_console::layout::PaneId;
 use yi_console::model::{
     Link, PaneContent, SessionId, SessionRow, SessionStatus, SidebarMode, Zone,
 };
-use yi_console::settings::{Edit, Settings, tab_name};
+use yi_console::settings::{Edit, Settings, Target, tab_name};
 use yi_tui::colors::{ColorTier, Theme};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -79,12 +80,15 @@ fn a_click_on_a_settings_tab_opens_that_tab() -> TestResult {
     let (mut app, pane) = console()?;
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
-    let (keys, _, want) = hits(&app)?
-        .settings_tabs
+    let (keys, _, target) = hits(&app)?
+        .settings_targets
         .iter()
         .copied()
-        .rfind(|(_, at, tab)| *at == pane && *tab > 0)
+        .rfind(|(_, at, target)| *at == pane && matches!(target, Target::Tab(tab) if *tab > 0))
         .ok_or("no other tab has a click target")?;
+    let Target::Tab(want) = target else {
+        return Err("no other tab has a click target".into());
+    };
     let strip = row_text(&terminal, keys.y);
     let label: String = strip
         .chars()
@@ -118,10 +122,10 @@ fn a_click_on_a_settings_tab_drops_a_pending_edit() -> TestResult {
         settings.status = Some("saved".to_owned());
     }
     let (keys, ..) = hits(&app)?
-        .settings_tabs
+        .settings_targets
         .iter()
         .copied()
-        .rfind(|(_, at, tab)| *at == pane && *tab > 0)
+        .rfind(|(_, at, target)| *at == pane && matches!(target, Target::Tab(tab) if *tab > 0))
         .ok_or("no other tab has a click target")?;
     mouse(&mut app, MouseKind::Down, keys.x.saturating_add(1), keys.y);
     match app.state.panes.get(&pane).map(|pane| &pane.content) {
@@ -131,6 +135,188 @@ fn a_click_on_a_settings_tab_drops_a_pending_edit() -> TestResult {
         }
         _ => return Err("the settings pane went away".into()),
     }
+    Ok(())
+}
+
+fn settings_of(app: &App, pane: PaneId) -> Result<&Settings, Box<dyn Error>> {
+    match app.state.panes.get(&pane).map(|pane| &pane.content) {
+        Some(PaneContent::Settings(settings)) => Ok(settings),
+        _ => Err("the settings pane went away".into()),
+    }
+}
+
+/// The tab's rows, each beside the click target the last frame drew for it.
+fn page_with_targets(
+    app: &App,
+    pane: PaneId,
+    page: &[yi_types::settings::SettingRow],
+) -> Result<Vec<(usize, Rect)>, Box<dyn Error>> {
+    let targets = &hits(app)?.settings_targets;
+    (0..page.len())
+        .map(|index| {
+            let at = targets
+                .iter()
+                .find(|(_, at, target)| *at == pane && *target == Target::Row(index))
+                .map(|(rect, ..)| *rect)
+                .ok_or(format!("row {index} has no click target"))?;
+            Ok((index, at))
+        })
+        .collect()
+}
+
+/// Incident: the page's rows carried no click target, so a press on a setting began a text
+/// selection and left the control alone; every row answers the pointer now.
+#[test]
+fn a_press_on_a_settings_row_works_the_control_it_names() -> TestResult {
+    let (mut app, pane) = console()?;
+    let mut settings = Settings::new(None, yi_types::settings::TABS.len());
+    settings.rows = Some(yi_types::settings::rows());
+    app.state.panes.get_mut(&pane).ok_or("no pane")?.content =
+        PaneContent::Settings(Box::new(settings));
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let tab = tab_name(yi_types::settings::TABS.len());
+    let page: Vec<_> = yi_types::settings::rows()
+        .into_iter()
+        .filter(|row| row.tab == tab)
+        .collect();
+    let rows = page_with_targets(&app, pane, &page)?;
+    assert_eq!(rows.len(), page.len(), "a row on the page has no target");
+    for (index, at) in &rows {
+        let drawn = row_text(&terminal, at.y);
+        assert!(
+            drawn.contains(&page[*index].label),
+            "row {index} sits at {} over {drawn:?}",
+            at.y
+        );
+    }
+    let find = |id: &str| -> Result<(usize, Rect), Box<dyn Error>> {
+        let index = page
+            .iter()
+            .position(|row| row.id == id)
+            .ok_or(format!("no {id} row"))?;
+        let (index, at) = rows
+            .iter()
+            .find(|(at, _)| *at == index)
+            .copied()
+            .ok_or(format!("{id} has no target"))?;
+        Ok((index, at))
+    };
+    let look = |terminal: &Terminal<TestBackend>, x: u16, y: u16| {
+        terminal
+            .backend()
+            .buffer()
+            .cell((x, y))
+            .map(|cell| cell.style())
+    };
+    let (_, first) = find("console.autoSide")?;
+    let rest = look(&terminal, first.x, first.y);
+    mouse(&mut app, MouseKind::Moved, first.x, first.y);
+    assert!(app.dirty, "moving onto a settings row asks for no frame");
+    draw(&mut app, &mut terminal)?;
+    assert_ne!(
+        look(&terminal, first.x, first.y),
+        rest,
+        "the hovered row looks the same"
+    );
+    let (index, toggle) = find("console.autoSide")?;
+    mouse(&mut app, MouseKind::Down, toggle.x, toggle.y);
+    let settings = settings_of(&app, pane)?;
+    assert_eq!(settings.cursor, index, "the press left the cursor alone");
+    assert!(settings.edit.is_none(), "a toggle opened an editor");
+    assert!(app.selection.is_none(), "the press began a text selection");
+    let (index, field) = find("browser.path")?;
+    mouse(&mut app, MouseKind::Down, field.x, field.y);
+    let settings = settings_of(&app, pane)?;
+    assert_eq!(settings.cursor, index, "the press left the cursor alone");
+    assert!(
+        matches!(&settings.edit, Some(Edit::Type(text)) if text.is_empty()),
+        "a text row opened no editor"
+    );
+    let (index, number) = find("tui.pace")?;
+    mouse(&mut app, MouseKind::Down, number.x, number.y);
+    let settings = settings_of(&app, pane)?;
+    assert_eq!(settings.cursor, index, "the press left the cursor alone");
+    assert!(
+        matches!(&settings.edit, Some(Edit::Type(_))),
+        "a number row opened no editor"
+    );
+    let (_, json) = find("keys")?;
+    mouse(&mut app, MouseKind::Down, json.x, json.y);
+    let settings = settings_of(&app, pane)?;
+    assert!(
+        settings
+            .status
+            .as_deref()
+            .is_some_and(|note| note.contains("config.json")),
+        "a json row said nothing: {:?}",
+        settings.status
+    );
+    Ok(())
+}
+
+/// The pane draws only a window of a long page; a wheel over it moves that window now, so a row
+/// past the fold is drawn, hoverable and pressable with no key at all.
+#[test]
+fn a_wheel_over_a_settings_pane_brings_a_row_past_the_fold_into_reach() -> TestResult {
+    let (mut app, pane) = console()?;
+    let rows = yi_types::settings::rows();
+    let tab = (1..=yi_types::settings::TABS.len())
+        .max_by_key(|tab| rows.iter().filter(|row| row.tab == tab_name(*tab)).count())
+        .ok_or("no config tab")?;
+    let page: Vec<_> = rows
+        .into_iter()
+        .filter(|row| row.tab == tab_name(tab))
+        .collect();
+    let mut settings = Settings::new(None, tab);
+    settings.rows = Some(yi_types::settings::rows());
+    app.state.panes.get_mut(&pane).ok_or("no pane")?.content =
+        PaneContent::Settings(Box::new(settings));
+    let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+    draw(&mut app, &mut terminal)?;
+    let last = page.len().saturating_sub(1);
+    let target_of = |app: &App, row: usize| -> Option<Rect> {
+        hits(app)
+            .ok()?
+            .settings_targets
+            .iter()
+            .find_map(|(rect, at, target)| {
+                (*at == pane && *target == Target::Row(row)).then_some(*rect)
+            })
+    };
+    assert!(
+        target_of(&app, last).is_none(),
+        "the page fits at 80x24, so no row is past the fold"
+    );
+    let at = hits(&app)?
+        .panes
+        .iter()
+        .find_map(|(id, rect)| (*id == pane).then_some(*rect))
+        .ok_or("no pane rect")?;
+    let (x, y) = (
+        at.x.saturating_add(at.width / 2),
+        at.y.saturating_add(at.height / 2),
+    );
+    for _ in 0..page.len() {
+        if target_of(&app, last).is_some() {
+            break;
+        }
+        mouse(&mut app, MouseKind::ScrollDown, x, y);
+        draw(&mut app, &mut terminal)?;
+    }
+    let rect = target_of(&app, last).ok_or("the wheel never brought the last row in")?;
+    let drawn = row_text(&terminal, rect.y);
+    assert!(
+        drawn.contains(&page[last].label),
+        "the last row's target sits at {} over {drawn:?}",
+        rect.y
+    );
+    mouse(&mut app, MouseKind::Down, rect.x, rect.y);
+    assert_eq!(
+        settings_of(&app, pane)?.cursor,
+        last,
+        "the press missed the row the wheel brought in"
+    );
     Ok(())
 }
 
@@ -168,12 +354,18 @@ fn the_pane_says_a_console_restart_applies_the_reveal_pace() -> TestResult {
 fn hovering_a_control_lifts_it_and_only_a_new_target_redraws() -> TestResult {
     let (mut app, pane) = console()?;
     app.state.sidebar = SidebarMode::Full;
+    if let Some(row) = app.state.sessions.get_mut(&SessionId("s-alpha".to_owned())) {
+        row.status = SessionStatus::Blocked;
+    }
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
     let found = hits(&app)?;
     let session = found.sidebar_rows.first().ok_or("no sidebar row")?.0;
     let title = found.titles.iter().find(|(at, _)| *at == pane);
-    let tab = found.settings_tabs.iter().find(|(_, _, tab)| *tab > 0);
+    let tab = found
+        .settings_targets
+        .iter()
+        .find(|(_, _, target)| matches!(target, Target::Tab(tab) if *tab > 0));
     let controls = found
         .controls
         .iter()
@@ -404,9 +596,9 @@ fn the_palette_and_the_settings_tabs_use_no_accent_blue() -> TestResult {
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
     let tab = hits(&app)?
-        .settings_tabs
+        .settings_targets
         .iter()
-        .find(|(_, _, tab)| *tab == 0)
+        .find(|(_, _, target)| *target == Target::Tab(0))
         .map(|(rect, ..)| *rect)
         .ok_or("no first tab")?;
     let chip = cell_at(&terminal, tab.x.saturating_add(1), tab.y)?;
@@ -496,8 +688,8 @@ fn the_header_row_carries_four_buttons_that_hover_and_open_their_panes() -> Test
     let files = at(Action::OpenEditor)?;
     mouse(&mut app, MouseKind::Down, files.x, files.y);
     assert!(
-        matches!(&app.state.mode, Mode::Navigator { query, .. } if query == "e "),
-        "files did not open the picker"
+        matches!(app.state.mode, Mode::Files(_)),
+        "files did not open the tree"
     );
     app.state.mode = Mode::Normal;
     mouse(&mut app, MouseKind::Down, diff.x, diff.y);
@@ -629,6 +821,258 @@ fn a_press_on_the_lower_title_at_the_split_row_drags_the_split() -> TestResult {
     assert!(
         height(&app)? > before,
         "the split did not move from {before}"
+    );
+    Ok(())
+}
+
+/// One client for the whole test: no daemon listens, so what a key sends goes nowhere.
+fn no_daemon() -> (client::Outbound, client::ClientThreads) {
+    let (events, _received) = client::events();
+    let socket = std::env::temp_dir().join("yi-chrome-no-daemon-keys.sock");
+    client::spawn(socket, events)
+}
+
+fn press(app: &mut App, outbound: &client::Outbound, code: KeyCode, modifiers: KeyModifiers) {
+    crate::editor_view::key(app, outbound, KeyEvent::new(code, modifiers));
+}
+
+/// #1713: the third state gives its columns to the pane and keeps the chord back on screen.
+#[test]
+fn a_hidden_sidebar_frees_its_width_and_names_the_chord_back() -> TestResult {
+    let (mut app, _) = console()?;
+    let (outbound, _threads) = no_daemon();
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let shown = hits(&app)?.panes.first().ok_or("no pane")?.1;
+    assert_eq!(hits(&app)?.sidebar_width, 8, "the rail is not drawn");
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(app.state.sidebar, SidebarMode::Hidden);
+    draw(&mut app, &mut terminal)?;
+    let found = hits(&app)?;
+    assert_eq!(found.sidebar_width, 0, "the sidebar kept its columns");
+    assert!(found.sidebar_rows.is_empty(), "a hidden sidebar drew rows");
+    let freed = found.panes.first().ok_or("no pane")?.1;
+    let edge = found.panes.iter().map(|(_, rect)| rect.right()).max();
+    assert_eq!(edge, Some(140), "the panes stop short of the edge");
+    assert!(
+        freed.width > shown.width,
+        "the pane kept its width: {} from {}",
+        freed.width,
+        shown.width
+    );
+    let header = row_text(&terminal, 0);
+    assert!(
+        header.contains("⌥b sidebar"),
+        "the way back is not on screen: {header:?}"
+    );
+    app.state.sidebar = SidebarMode::Rail;
+    draw(&mut app, &mut terminal)?;
+    let header = row_text(&terminal, 0);
+    assert!(
+        !header.contains("⌥b sidebar"),
+        "the hint outlives the hidden sidebar: {header:?}"
+    );
+    Ok(())
+}
+
+/// #1713: the hint is the only way back a hidden sidebar offers, so no button may paint on it.
+#[test]
+fn a_hidden_sidebar_keeps_its_way_back_on_a_narrow_header() -> TestResult {
+    let (mut app, _) = console()?;
+    app.state.sidebar = SidebarMode::Hidden;
+    let mut terminal = Terminal::new(TestBackend::new(50, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let header = row_text(&terminal, 0);
+    assert!(
+        header.contains("⌥b sidebar"),
+        "a button overwrote the way back: {header:?}"
+    );
+    Ok(())
+}
+
+/// #1713: one chord walks all three states, and focus never sits in a sidebar nobody draws.
+#[test]
+fn the_sidebar_chord_cycles_three_states_and_never_focuses_a_hidden_one() -> TestResult {
+    let (mut app, _) = console()?;
+    let (outbound, _threads) = no_daemon();
+    app.state.sidebar = SidebarMode::Rail;
+    for want in [SidebarMode::Full, SidebarMode::Hidden, SidebarMode::Rail] {
+        press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(app.state.sidebar, want, "the cycle skipped {want:?}");
+    }
+    app.state.sidebar = SidebarMode::Rail;
+    app.state.zone = Zone::Sidebar;
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(app.state.zone, Zone::Sidebar, "a drawn sidebar lost focus");
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(
+        app.state.zone,
+        Zone::Panes,
+        "focus stayed in the hidden sidebar"
+    );
+    press(&mut app, &outbound, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(
+        app.state.zone,
+        Zone::Panes,
+        "tab walked into a sidebar nobody draws"
+    );
+    Ok(())
+}
+
+/// #1713: a pane the user moved into while the sidebar was hidden keeps the keyboard.
+#[test]
+fn a_pane_taken_while_the_sidebar_was_hidden_keeps_the_keyboard() -> TestResult {
+    let (mut app, _) = console()?;
+    let (outbound, _threads) = no_daemon();
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    app.state.sidebar = SidebarMode::Full;
+    app.state.zone = Zone::Sidebar;
+    draw(&mut app, &mut terminal)?;
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(app.state.sidebar, SidebarMode::Hidden);
+    assert_eq!(
+        app.state.zone,
+        Zone::Panes,
+        "focus stayed in the hidden sidebar"
+    );
+    draw(&mut app, &mut terminal)?;
+    let (_, rect) = *hits(&app)?.panes.first().ok_or("no pane")?;
+    mouse(
+        &mut app,
+        MouseKind::Down,
+        rect.x.saturating_add(2),
+        rect.y.saturating_add(2),
+    );
+    assert_eq!(app.state.zone, Zone::Panes);
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(app.state.sidebar, SidebarMode::Rail);
+    assert_eq!(
+        app.state.zone,
+        Zone::Panes,
+        "the chord took the keyboard back from the pane the user chose"
+    );
+    Ok(())
+}
+
+/// The owner's ask (#1738): the Files button opens a tree of the workspace, a folder folds by
+/// click and a file opens in the editor; a gitignored folder never reaches the tree.
+#[test]
+fn the_files_button_opens_a_tree_that_folds_a_folder_and_opens_a_file() -> TestResult {
+    use yi_console::keys::Action;
+    use yi_console::model::Mode;
+    let dir = crate::scratch::Scratch::new("yi-console-files")?;
+    std::fs::create_dir_all(dir.join("crates/inner"))?;
+    std::fs::create_dir_all(dir.join("build"))?;
+    std::fs::write(dir.join("crates/inner/a.rs"), "pub fn a() {}\n")?;
+    std::fs::write(dir.join("readme.md"), "# hi\n")?;
+    std::fs::write(dir.join("build/skip.rs"), "ignored\n")?;
+    std::fs::write(dir.join(".gitignore"), "build/\n")?;
+    let root = dir.display().to_string();
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    let (mut app, pane) = console()?;
+    app.state.upsert_row(SessionRow {
+        root: root.clone(),
+        ..row_of("s-alpha", "alpha")
+    });
+    let slot = app.state.panes.get_mut(&pane).ok_or("no pane")?;
+    slot.content = PaneContent::Session {
+        session: Some(SessionId("s-alpha".to_owned())),
+        chat: None,
+    };
+    draw(&mut app, &mut terminal)?;
+    let files = hits(&app)?
+        .header_buttons
+        .iter()
+        .find(|(_, action)| *action == Action::OpenEditor)
+        .map(|(rect, _)| *rect)
+        .ok_or("no Files button")?;
+    mouse(&mut app, MouseKind::Down, files.x, files.y);
+    assert!(
+        matches!(app.state.mode, Mode::Files(_)),
+        "the Files button opened no tree"
+    );
+    draw(&mut app, &mut terminal)?;
+    let popup = *hits(&app)?.overlays.first().ok_or("no tree popup")?;
+    let leaf = std::path::Path::new(&root)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    let title = row_text(&terminal, popup.y);
+    assert!(
+        title.contains(&leaf),
+        "the tree is not rooted at the focused session's dir: {title}"
+    );
+    let row_of = |terminal: &Terminal<TestBackend>, needle: &str| -> Option<u16> {
+        (popup.y.saturating_add(1)..popup.bottom().saturating_sub(1))
+            .find(|y| row_text(terminal, *y).contains(needle))
+    };
+    let drawn: Vec<String> = (popup.y.saturating_add(1)..popup.bottom().saturating_sub(1))
+        .map(|y| row_text(&terminal, y))
+        .collect();
+    assert!(
+        drawn.iter().any(|row| row.contains("crates")),
+        "no crates row in {drawn:?}"
+    );
+    assert!(
+        drawn.iter().all(|row| !row.contains("skip.rs")),
+        "the gitignored folder reached the tree: {drawn:?}"
+    );
+    let (events, _received) = client::events();
+    let socket = std::env::temp_dir().join("yi-chrome-no-daemon.sock");
+    let (outbound, _threads) = client::spawn(socket, events);
+    let inner = row_of(&terminal, "inner").ok_or("no inner row")?;
+    mouse(&mut app, MouseKind::Down, popup.x.saturating_add(3), inner);
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        row_of(&terminal, "a.rs").is_some(),
+        "the clicked folder did not unfold"
+    );
+    crate::review::press(&mut app, &outbound, KeyCode::Enter);
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        row_of(&terminal, "a.rs").is_none(),
+        "⏎ on a folder did not fold it"
+    );
+    crate::review::press(&mut app, &outbound, KeyCode::Enter);
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        row_of(&terminal, "a.rs").is_some(),
+        "⏎ did not unfold the folder again"
+    );
+    crate::review::press(&mut app, &outbound, KeyCode::Down);
+    crate::review::press(&mut app, &outbound, KeyCode::Enter);
+    assert!(
+        matches!(app.state.mode, Mode::Normal),
+        "⏎ on a file left the tree up"
+    );
+    let editor = app
+        .state
+        .panes
+        .values()
+        .find_map(|pane| match &pane.content {
+            PaneContent::Editor(editor) => Some(editor.path.clone()),
+            _ => None,
+        })
+        .ok_or("no editor pane opened")?;
+    assert!(
+        editor.ends_with("crates/inner/a.rs"),
+        "⏎ opened {editor}, not the chosen file"
+    );
+    draw(&mut app, &mut terminal)?;
+    let files = hits(&app)?
+        .header_buttons
+        .iter()
+        .find(|(_, action)| *action == Action::OpenEditor)
+        .map(|(rect, _)| *rect)
+        .ok_or("no Files button")?;
+    mouse(&mut app, MouseKind::Down, files.x, files.y);
+    crate::review::press(&mut app, &outbound, KeyCode::Esc);
+    outbound.shutdown();
+    assert!(
+        matches!(app.state.mode, Mode::Normal),
+        "Esc left the tree up"
     );
     Ok(())
 }
