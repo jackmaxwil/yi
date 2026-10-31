@@ -156,6 +156,12 @@ impl PermissionBroker {
         let real = dir
             .canonicalize()
             .map_err(|error| format!("{}: {error}", dir.display()))?;
+        if protected(self.sandbox.as_ref(), &real) {
+            return Err(format!(
+                "{} is protected and cannot be granted",
+                real.display()
+            ));
+        }
         // Invariant: a root the profile already holds gains nothing, and its denies still outrank it.
         let held = (self.sandbox.iter()).flat_map(|sandbox| &sandbox.writable);
         if held
