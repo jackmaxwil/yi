@@ -354,6 +354,9 @@ fn the_pane_says_a_console_restart_applies_the_reveal_pace() -> TestResult {
 fn hovering_a_control_lifts_it_and_only_a_new_target_redraws() -> TestResult {
     let (mut app, pane) = console()?;
     app.state.sidebar = SidebarMode::Full;
+    if let Some(row) = app.state.sessions.get_mut(&SessionId("s-alpha".to_owned())) {
+        row.status = SessionStatus::Blocked;
+    }
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
     let found = hits(&app)?;
