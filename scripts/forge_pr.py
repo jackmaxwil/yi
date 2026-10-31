@@ -224,7 +224,7 @@ def cmd_ratchet(args):
         was, now = before.get(path, {}), read_json(path)
         stem = pathlib.Path(path).stem
         if stem in BINARY:
-            parts.append(f"{BINARY[stem]} {was.get('max_bytes', '?')} -> {now.get('max_bytes', '?')}")
+            parts.append(binary_part(stem, was.get("max_bytes", "?"), now.get("max_bytes", "?")))
         elif stem == "request_budget":
             for key in ("system", "tools", "total"):
                 if was.get(key) != now.get(key):
@@ -270,6 +270,15 @@ def overrun(text):
     return (grown.group(3), int(grown.group(2)), int(grown.group(1))) if grown and grown.group(3) in BINARY else None
 
 
+def binary_part(stem, was, now):
+    """A size ceiling's half of a `Ratchet:` subject."""
+    return f"{BINARY[stem]} {was} -> {now}"
+
+
+def write_ceiling(path, size):
+    path.write_text(merge_baseline.layout({"max_bytes": size}))
+
+
 def binary_ratchet(topic):
     """Built here, after the code commit: check_binary_size.py only stats target/dist/yi,
     so without a build it measures the previous landing (said ok while the lane grew)."""
@@ -296,8 +305,8 @@ def binary_ratchet(topic):
         return 1
     stem, was, size = grown
     path = BASELINES / f"{stem}.json"
-    path.write_text(merge_baseline.layout({"max_bytes": size}))
-    subject = ratchet_subject([f"{BINARY[stem]} {was} -> {size}"], topic)
+    write_ceiling(path, size)
+    subject = ratchet_subject([binary_part(stem, was, size)], topic)
     git("commit", "-q", "-m", subject, "--", str(path.relative_to(ROOT)), check=True)
     print(f"ratchet: {subject}")
     return 0
