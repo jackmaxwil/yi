@@ -72,9 +72,7 @@ impl App {
             return;
         }
         if let Some(pane) = self.state.panes.get_mut(&drag.pane) {
-            let scroll = pane.scroll_from_bottom.saturating_add_signed(step);
-            self.dirty = scroll != pane.scroll_from_bottom;
-            pane.scroll_from_bottom = scroll;
+            self.dirty = pane.scroll_by(step);
         }
     }
 
@@ -95,11 +93,7 @@ impl App {
                 self.dirty = true;
                 return;
             }
-            pane.scroll_from_bottom = if delta >= 0 {
-                pane.scroll_from_bottom.saturating_add(delta.unsigned_abs())
-            } else {
-                pane.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
-            };
+            pane.scroll_by(delta);
             self.dirty = true;
         }
     }

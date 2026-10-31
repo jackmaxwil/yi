@@ -100,7 +100,7 @@ fn leaves() -> Vec<String> {
             }),
         ),
         ("browser", fields!(BrowserConfig { path })),
-        ("tui", fields!(TuiConfig { pace })),
+        ("tui", fields!(TuiConfig { pace, follow })),
         (
             "lanes",
             fields!(LanesConfig {
@@ -204,6 +204,22 @@ fn every_config_leaf_has_exactly_one_row() {
     ids.sort();
     want.sort();
     assert_eq!(ids, want);
+}
+
+#[test]
+fn follow_is_a_live_choice_with_page_as_the_unset_default() {
+    let row = rows()
+        .into_iter()
+        .find(|row| row.id == "tui.follow")
+        .expect("a tui.follow settings row");
+    assert_eq!(row.applies, yi_types::settings::Applies::Live);
+    assert_eq!(row.default, json!("page"));
+    assert_eq!(
+        row.kind,
+        SettingKind::Choice {
+            options: ["slide", "page", "still"].map(str::to_owned).to_vec()
+        }
+    );
 }
 
 /// A row is only as good as the config it writes: every row's own sample, saved at its path,
