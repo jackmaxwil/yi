@@ -901,24 +901,31 @@ impl ConsoleState {
 
 impl ConsoleState {
     pub fn cycle_zone(&mut self) {
-        self.zone = match self.zone {
-            Zone::Sidebar => Zone::Panes,
-            Zone::Panes if self.sidebar == SidebarMode::Hidden => Zone::Panes,
-            Zone::Panes => Zone::Sidebar,
-        };
+        match self.zone {
+            Zone::Sidebar => self.focus_panes(),
+            Zone::Panes if self.sidebar == SidebarMode::Hidden => self.focus_panes(),
+            Zone::Panes => self.zone = Zone::Sidebar,
+        }
+    }
+
+    pub fn focus_panes(&mut self) {
+        self.zone = Zone::Panes;
+        self.sidebar_focus = false;
     }
 
     pub(crate) fn cycle_sidebar(&mut self) {
         let was_hidden = self.sidebar == SidebarMode::Hidden;
-        let focused = self.sidebar_focus;
+        let held = self.zone == Zone::Sidebar;
+        let return_focus = self.sidebar_focus;
         self.sidebar = self.sidebar.next();
         self.header = None;
         self.settle_visible();
         if self.sidebar == SidebarMode::Hidden {
-            self.sidebar_focus = self.zone == Zone::Sidebar;
-            self.cycle_zone();
-        } else if was_hidden && focused {
+            self.focus_panes();
+            self.sidebar_focus = held;
+        } else if was_hidden && return_focus {
             self.zone = Zone::Sidebar;
+            self.sidebar_focus = false;
         }
     }
 }

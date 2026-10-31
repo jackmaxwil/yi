@@ -804,7 +804,7 @@ impl App {
             return;
         };
         self.resume_into(outbound, pane_id, &session);
-        self.state.zone = Zone::Panes;
+        self.state.focus_panes();
     }
 
     /// Opening is not resuming: a resume is a sidebar pick, never the boot default.
@@ -830,7 +830,7 @@ impl App {
             self.note("not connected");
             return;
         }
-        self.state.zone = Zone::Panes;
+        self.state.focus_panes();
         let params = json!({"cwd": root});
         self.send_request(
             outbound,
@@ -955,7 +955,7 @@ impl App {
         };
         if let Some(pane_id) = self.state.focused_pane_id() {
             self.resume_into(outbound, pane_id, &session);
-            self.state.zone = Zone::Panes;
+            self.state.focus_panes();
         }
     }
 

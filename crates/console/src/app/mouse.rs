@@ -205,7 +205,7 @@ impl App {
             if let Some(tab) = self.state.tab_mut() {
                 tab.layout.focus_pane(pane_id);
             }
-            self.state.zone = Zone::Panes;
+            self.state.focus_panes();
             let scroll = self
                 .state
                 .panes

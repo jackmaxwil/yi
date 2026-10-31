@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::files::{Files, tree_rows};
-use crate::model::{Mode, Zone};
+use crate::model::Mode;
 
 use super::App;
 use super::MouseKind;
@@ -50,7 +50,7 @@ impl App {
             return;
         };
         self.state.mode = Mode::Normal;
-        self.state.zone = Zone::Panes;
+        self.state.focus_panes();
         self.open_editor(&path, workdir);
     }
 

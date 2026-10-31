@@ -920,6 +920,41 @@ fn the_sidebar_chord_cycles_three_states_and_never_focuses_a_hidden_one() -> Tes
     Ok(())
 }
 
+/// #1713: a pane the user moved into while the sidebar was hidden keeps the keyboard.
+#[test]
+fn a_pane_taken_while_the_sidebar_was_hidden_keeps_the_keyboard() -> TestResult {
+    let (mut app, _) = console()?;
+    let (outbound, _threads) = no_daemon();
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    app.state.sidebar = SidebarMode::Full;
+    app.state.zone = Zone::Sidebar;
+    draw(&mut app, &mut terminal)?;
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(app.state.sidebar, SidebarMode::Hidden);
+    assert_eq!(
+        app.state.zone,
+        Zone::Panes,
+        "focus stayed in the hidden sidebar"
+    );
+    draw(&mut app, &mut terminal)?;
+    let (_, rect) = *hits(&app)?.panes.first().ok_or("no pane")?;
+    mouse(
+        &mut app,
+        MouseKind::Down,
+        rect.x.saturating_add(2),
+        rect.y.saturating_add(2),
+    );
+    assert_eq!(app.state.zone, Zone::Panes);
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(app.state.sidebar, SidebarMode::Rail);
+    assert_eq!(
+        app.state.zone,
+        Zone::Panes,
+        "the chord took the keyboard back from the pane the user chose"
+    );
+    Ok(())
+}
+
 /// The owner's ask (#1738): the Files button opens a tree of the workspace, a folder folds by
 /// click and a file opens in the editor; a gitignored folder never reaches the tree.
 #[test]
