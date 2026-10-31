@@ -10,6 +10,7 @@ pub mod browser;
 mod chrome;
 pub mod client;
 mod editor_view;
+pub mod files;
 mod header;
 pub mod keys;
 pub mod kitty;
@@ -62,6 +63,7 @@ pub struct ConsoleOptions {
     pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
     pub pace: u16,
+    pub follow: yi_types::config::FollowMode,
     pub browser: Option<PathBuf>,
     pub chrome_pin: Option<crate::browser::Pinned>,
     pub home: Option<String>,
@@ -806,6 +808,8 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
+    app.state.chat_follow = options.follow;
+    app.state.follow_fallback = options.follow;
     app.state.home.clone_from(&options.home);
     app.state.chrome =
         crate::browser::Chrome::new(options.browser.clone(), options.chrome_pin.clone());

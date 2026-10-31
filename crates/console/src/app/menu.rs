@@ -83,6 +83,7 @@ impl App {
     pub(super) fn open_menu_for_focus(&mut self) {
         let Some(hits) = &self.hits else { return };
         let opened = match self.state.zone {
+            Zone::Sidebar if self.state.header.is_some() => None,
             Zone::Sidebar => hits
                 .sidebar_rows
                 .iter()
@@ -101,6 +102,7 @@ impl App {
 
     pub(super) fn pin_focus(&mut self, outbound: &Outbound) {
         let target = match self.state.zone {
+            Zone::Sidebar if self.state.header.is_some() => None,
             Zone::Sidebar => self.state.selected_id().cloned(),
             Zone::Panes => self.state.focused_session(),
         };
@@ -206,7 +208,7 @@ impl App {
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(pane);
         }
-        self.state.zone = Zone::Panes;
+        self.state.focus_panes();
     }
 
     fn run_verb(&mut self, outbound: &Outbound, target: Target, verb: Verb) {

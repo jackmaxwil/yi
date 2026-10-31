@@ -164,7 +164,7 @@ impl App {
         let kept = self.state.diffs.get(session).filter(|_| !full);
         let mut turn = kept.map_or(0, |diff| diff.turn);
         if full && self.state.notebooks.remove(session).is_some() {
-            self.redraw_notebooks(session);
+            self.redraw_notebooks(session, true);
         }
         let mut edited = std::collections::BTreeSet::new();
         for entry in entries {
@@ -238,17 +238,19 @@ impl App {
                 update,
             )
         {
-            self.redraw_notebooks(session);
+            self.redraw_notebooks(session, false);
         }
     }
 
-    fn redraw_notebooks(&mut self, session: &SessionId) {
+    fn redraw_notebooks(&mut self, session: &SessionId, reset: bool) {
         for (pane_id, pane) in &mut self.state.panes {
             if pane.session() == Some(session)
                 && let PaneContent::Notebook { drawn, .. } = &mut pane.content
             {
                 *drawn = None;
-                pane.scroll_from_bottom = 0;
+                if reset {
+                    pane.scroll_from_bottom = 0;
+                }
                 if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
                     *seen = Instant::now();
                 }
@@ -484,6 +486,40 @@ mod tests {
             .map(|pane| pane.rect.width)
             .collect();
         assert_eq!(widths, [50, 51], "Review opens at the generic half");
+    }
+
+    #[test]
+    fn a_notebook_update_preserves_the_reader_but_a_full_replay_resets() {
+        let (mut app, session) = app_with_session();
+        app.maybe_open_side(&session, SideKind::Notebook);
+        let opened = *app.auto_notebooks.keys().next().expect("auto-opened");
+        let start = AcpToolCallUpdate {
+            tool_call_id: "c1".to_owned(),
+            title: Some("ipython".to_owned()),
+            raw_input: Some(json!({"code": "x = 1"})),
+            ..AcpToolCallUpdate::default()
+        };
+        app.fill_notebook(&session, &AcpSessionUpdate::ToolCallUpdate(start));
+        app.state
+            .panes
+            .get_mut(&opened)
+            .expect("notebook")
+            .scroll_from_bottom = 7;
+        let end = AcpToolCallUpdate {
+            tool_call_id: "c1".to_owned(),
+            title: Some("ipython".to_owned()),
+            status: Some(AcpToolCallStatus::Completed),
+            raw_output: Some(json!({"stdout": "1\n"})),
+            ..AcpToolCallUpdate::default()
+        };
+        app.fill_notebook(&session, &AcpSessionUpdate::ToolCallUpdate(end));
+        assert_eq!(app.state.panes[&opened].scroll_from_bottom, 7);
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-notebook-scroll-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        app.absorb_history(&outbound, &session, &[], true);
+        assert_eq!(app.state.panes[&opened].scroll_from_bottom, 0);
+        outbound.shutdown();
     }
 
     #[test]

@@ -10,7 +10,9 @@ use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 use crate::app::App;
 use crate::avatar::Placement;
 use crate::keys::{self, Action};
-use crate::model::{Mode, SessionId, SessionRow, SessionStatus, SidebarMode, Zone, now_ms};
+use crate::model::{
+    Group, Mode, Painted, SessionId, SessionRow, SessionStatus, SidebarMode, Slot, Zone, now_ms,
+};
 use crate::render::Hit;
 use crate::render::{NAME_WIDTH, status_style};
 use yi_tui::orb::OrbState;
@@ -38,7 +40,7 @@ impl SidebarRow {
 
 fn avatar_at(
     col: u16,
-    (cols, rows): (u16, u16),
+    rows: u16,
     key: &str,
     hue: usize,
     state: Option<OrbState>,
@@ -46,7 +48,7 @@ fn avatar_at(
     Some(Placement {
         col,
         row: 0,
-        cols,
+        cols: rows * 2,
         rows,
         key: key.to_owned(),
         seed: key.to_owned(),
@@ -65,7 +67,9 @@ fn motion_of(app: &App, id: &SessionId, row: &SessionRow) -> Option<OrbState> {
     }
 }
 
-fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> String {
+/// The state line and whether it carries news: a status that is not idle, a red gate, a todo
+/// list or a claimed question. Invariant: an idle row without news is drawn as one row.
+fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> (String, bool) {
     let chat = app.state.chat(id);
     let doing = match row.status {
         SessionStatus::Blocked => "needs your answer".to_owned(),
@@ -75,14 +79,17 @@ fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> String {
             .unwrap_or_else(|| "working".to_owned()),
         SessionStatus::Idle | SessionStatus::Unknown => "idle".to_owned(),
     };
+    let mut news = !matches!(row.status, SessionStatus::Idle | SessionStatus::Unknown);
     let mut parts = vec![doing];
     if chat.is_some_and(|chat| chat.app.gate_red()) {
         parts.insert(0, "gate red".to_owned());
+        news = true;
     }
     if let Some(todos) = chat.and_then(|chat| chat.port.todo_list()) {
         let progress = todos.progress();
         if progress.total > 0 {
             parts.push(format!("{}/{}", progress.done, progress.total));
+            news = true;
         }
     }
     let claimed = chat
@@ -92,6 +99,7 @@ fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> String {
         });
     if claimed > 0 {
         parts.push(format!("{claimed} claimed"));
+        news = true;
     }
     let then = row.recency();
     if then > 0 {
@@ -103,7 +111,7 @@ fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> String {
             _ => format!("{}d", secs / 86_400),
         });
     }
-    parts.join(" · ")
+    (parts.join(" · "), news)
 }
 
 fn tile_span(app: &App, text: String, hue: usize) -> Span<'static> {
@@ -157,6 +165,7 @@ fn name_cols(app: &App) -> usize {
 
 pub fn width(app: &mut App) -> u16 {
     match app.state.sidebar {
+        SidebarMode::Hidden => 0,
         SidebarMode::Rail => 8,
         SidebarMode::Full => {
             // Incident: narrowing as a turn's children cleared re-wrapped every pane mid-turn.
@@ -191,14 +200,18 @@ fn group_header(
     root: &str,
     rows: &[usize],
     folded: bool,
+    is_cursor: bool,
     width: usize,
     theme: &Theme,
 ) -> SidebarRow {
     let label = root.rsplit('/').next().unwrap_or(root);
-    let mut tail = vec![Span::styled(
-        if folded { " ▸" } else { " ▾" }.to_owned(),
-        theme.dim_style(),
-    )];
+    let mut tail = vec![
+        Span::styled(format!(" {}", rows.len()), theme.dim_style()),
+        Span::styled(
+            if folded { " ▸" } else { " ▾" }.to_owned(),
+            theme.dim_style(),
+        ),
+    ];
     // Invariant: a fold must not hide a session that needs you; a red gate ranks need 2, so
     // the mark reads need_of, the same rank the group's sort uses.
     let worst = rows
@@ -218,13 +231,15 @@ fn group_header(
     let room = width.saturating_sub(tail_cols.saturating_add(4));
     let name = pad_cells(label, drawn_width(label).min(room));
     let pad = room.saturating_sub(drawn_width(&name));
-    let mut spans = vec![Span::styled(
-        format!(" {name}"),
-        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-    )];
+    let mut spans = vec![Span::styled(format!(" {name}"), theme.muted_style())];
     spans.extend(tail);
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled("  +".to_owned(), theme.dim_style()));
+    if is_cursor {
+        for span in &mut spans {
+            span.style = span.style.bg(theme.selection_bg());
+        }
+    }
     SidebarRow {
         control: Some(Hit::Fold(root.to_owned())),
         ..SidebarRow::plain(None, Line::from(spans))
@@ -247,6 +262,9 @@ pub(crate) fn plus_split(line: &Line<'_>) -> (usize, usize) {
 }
 
 pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
+    if app.state.sidebar == SidebarMode::Hidden {
+        return Vec::new();
+    }
     let mut rows = Vec::new();
     let rail = app.state.sidebar == SidebarMode::Rail;
     let mut beyond = 0_usize;
@@ -255,64 +273,66 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     let mut slot = 0_usize;
     let cols = name_cols(app);
     let width = cols.saturating_add(8);
+    let cursor = app.state.cursor();
+    let on_sidebar = app.state.zone == Zone::Sidebar;
     if !rail {
         let chord = |action| keys::chord_for(action, app.cmd_hints);
-        let text = Style::default().fg(theme.text);
+        let text = theme.muted_style();
         let new = flush_right(" + New session", chord(Action::NewSession), width);
         rows.push(control_row(new, text, Hit::New(None)));
         let search = flush_right(" ⌕ Search", chord(Action::Navigator), width);
         rows.push(control_row(search, text, Hit::Search));
     }
-    for group in app.state.groups() {
-        if rail {
-            if group.rows.is_empty() || slot >= RAIL_CAP {
-                beyond = beyond.saturating_add(group.rows.len());
-                continue;
-            }
-            if slot > 0 {
-                rows.push(SidebarRow::plain(None, Line::raw("")));
-            }
-        } else {
-            match &group.root {
-                None if group.rows.is_empty() => continue,
-                None => rows.push(SidebarRow::plain(
-                    None,
-                    Line::styled(" PINNED", theme.dim_style().add_modifier(Modifier::BOLD)),
-                )),
-                Some(root) => rows.push(group_header(
+    let groups = app.state.groups();
+    let mut pinned_head = false;
+    let mut last_group: Option<&Group> = None;
+    for entry in app.state.painted(&groups) {
+        match entry {
+            Painted::Header(root, group) => {
+                let is_cursor =
+                    on_sidebar && matches!(&cursor, Slot::Group(drawn) if drawn == root);
+                let header = group_header(
                     app,
                     root,
                     &group.rows,
                     group.folded,
+                    is_cursor,
                     width,
                     theme,
-                )),
+                );
+                rows.push(header);
             }
-        }
-        if group.folded {
-            continue;
-        }
-        for index in group.rows {
-            let Some(id) = app.state.order.get(index) else {
-                continue;
-            };
-            let Some(row) = app.state.sessions.get(id) else {
-                continue;
-            };
-            let is_focused = focused.as_ref() == Some(id);
-            let is_cursor = index == app.state.selected && app.state.zone == Zone::Sidebar;
-            slot = slot.saturating_add(1);
-            if rail && slot > RAIL_CAP {
-                beyond = beyond.saturating_add(1);
-                continue;
+            Painted::Row(group, index) => {
+                let Some(id) = app.state.order.get(index) else {
+                    continue;
+                };
+                let Some(row) = app.state.sessions.get(id) else {
+                    continue;
+                };
+                let is_focused = focused.as_ref() == Some(id);
+                let is_cursor = on_sidebar && cursor == Slot::Row(index);
+                if rail {
+                    if slot >= RAIL_CAP {
+                        beyond = beyond.saturating_add(1);
+                        continue;
+                    }
+                    if slot > 0 && !last_group.is_some_and(|last| std::ptr::eq(last, group)) {
+                        rows.push(SidebarRow::plain(None, Line::raw("")));
+                    }
+                } else if group.root.is_none() && !pinned_head {
+                    pinned_head = true;
+                    rows.push(pinned_header(group.rows.len(), theme));
+                }
+                last_group = Some(group);
+                slot = slot.saturating_add(1);
+                rows.extend(session_rows(
+                    app,
+                    theme,
+                    (index, id, row),
+                    (is_focused, is_cursor),
+                    (slot, cols, now),
+                ));
             }
-            rows.extend(session_rows(
-                app,
-                theme,
-                (index, id, row),
-                (is_focused, is_cursor),
-                (slot, cols, now),
-            ));
         }
     }
     if beyond > 0 {
@@ -321,7 +341,12 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
             Line::styled(format!("  +{beyond}"), theme.dim_style()),
         ));
     }
-    window_rows(rows, height, app.state.selected, theme)
+    window_rows(rows, height, &cursor, theme)
+}
+
+fn pinned_header(pinned: usize, theme: &Theme) -> SidebarRow {
+    let style = theme.dim_style();
+    SidebarRow::plain(None, Line::styled(format!(" PINNED {pinned}"), style))
 }
 
 fn session_rows(
@@ -354,6 +379,8 @@ fn session_rows(
     } else {
         "  ".to_owned()
     };
+    let (state, news) = detail(app, id, row, now);
+    let state_rows = if is_focused || news { 2 } else { 1 };
     let hue = app.accent_of(&id.0, row.seed());
     if rail {
         rows.push(SidebarRow {
@@ -367,7 +394,7 @@ fn session_rows(
                     on_row(status_style(theme, row.status)),
                 ),
             ]),
-            avatar: avatar_at(2, (4, 2), &id.0, hue, motion_of(app, id, row)),
+            avatar: avatar_at(2, 2, &id.0, hue, motion_of(app, id, row)),
             control: None,
         });
         rows.push(SidebarRow::plain(
@@ -387,7 +414,7 @@ fn session_rows(
         ),
     ];
     let name_style = if is_focused {
-        theme.accent_style().add_modifier(Modifier::BOLD)
+        theme.accent_style()
     } else {
         Style::default().fg(theme.text)
     };
@@ -402,20 +429,19 @@ fn session_rows(
     rows.push(SidebarRow {
         index: Some(index),
         line: Line::from(spans),
-        avatar: avatar_at(2, (4, 2), &id.0, hue, motion_of(app, id, row)),
+        avatar: avatar_at(2, state_rows, &id.0, hue, motion_of(app, id, row)),
         control: None,
     });
-    let text: String = detail(app, id, row, now)
-        .chars()
-        .take(cols.saturating_add(2))
-        .collect();
-    rows.push(SidebarRow::plain(
-        Some(index),
-        Line::from(vec![
-            Span::styled(" ".repeat(6), on_row(Style::default())),
-            Span::styled(text, on_row(theme.dim_style())),
-        ]),
-    ));
+    if state_rows == 2 {
+        let text: String = state.chars().take(cols.saturating_add(2)).collect();
+        rows.push(SidebarRow::plain(
+            Some(index),
+            Line::from(vec![
+                Span::styled(" ".repeat(6), on_row(Style::default())),
+                Span::styled(text, on_row(theme.dim_style())),
+            ]),
+        ));
+    }
     rows.extend(child_rows(app, id, theme, false, cols));
     rows
 }
@@ -533,7 +559,7 @@ fn child_rows(
         rows.push(SidebarRow {
             index: None,
             line: Line::from(spans),
-            avatar: avatar_at(3, (2, 1), child.id.as_str(), hue, None),
+            avatar: avatar_at(3, 1, child.id.as_str(), hue, None),
             control: None,
         });
     }
@@ -555,18 +581,21 @@ fn child_rows(
 fn window_rows(
     rows: Vec<SidebarRow>,
     height: u16,
-    selected: usize,
+    cursor: &Slot,
     theme: &Theme,
 ) -> Vec<SidebarRow> {
     let visible = usize::from(height);
     if visible == 0 || rows.len() <= visible {
         return rows;
     }
-    let cursor = rows
+    let at = rows
         .iter()
-        .position(|row| row.index == Some(selected))
+        .position(|row| match cursor {
+            Slot::Row(index) => row.index == Some(*index),
+            Slot::Group(root) => matches!(&row.control, Some(Hit::Fold(drawn)) if drawn == root),
+        })
         .unwrap_or(0);
-    let start = cursor.saturating_add(1).saturating_sub(visible);
+    let start = crate::panes::first_row(at, visible);
     let end = start.saturating_add(visible).min(rows.len());
     let below = end < rows.len();
     let mut rows = rows;

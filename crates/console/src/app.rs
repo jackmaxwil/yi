@@ -59,6 +59,7 @@ pub enum RequestKind {
     Plan(SessionId),
     SetConfig(SessionId),
     Settings(PaneId, bool),
+    Sidebar,
     Fork(PaneId),
     Open(String),
     Steer,
@@ -528,12 +529,12 @@ impl App {
             | RequestKind::Settings(..)
             | RequestKind::Fork(_)
             | RequestKind::Steer
-            | RequestKind::Shutdown => {}
+            | RequestKind::Shutdown
+            | RequestKind::Sidebar => {}
             RequestKind::Open(name) => self.note(&format!("launched {name}")),
             RequestKind::Slash(session) => {
                 if let Some(text) = result.get("text").and_then(Value::as_str) {
-                    let text = text.to_owned();
-                    self.fan_out(&session, || UiEvent::Reply(Reply::Notice(text.clone())));
+                    self.fan_out(&session, || UiEvent::Reply(Reply::Notice(text.to_owned())));
                 }
             }
             RequestKind::Rewind(session) => self.absorb_rewind(&session, &result),
@@ -803,7 +804,7 @@ impl App {
             return;
         };
         self.resume_into(outbound, pane_id, &session);
-        self.state.zone = Zone::Panes;
+        self.state.focus_panes();
     }
 
     /// Opening is not resuming: a resume is a sidebar pick, never the boot default.
@@ -829,7 +830,7 @@ impl App {
             self.note("not connected");
             return;
         }
-        self.state.zone = Zone::Panes;
+        self.state.focus_panes();
         let params = json!({"cwd": root});
         self.send_request(
             outbound,
@@ -837,17 +838,6 @@ impl App {
             "session/new",
             params,
         );
-    }
-
-    fn scroll_focused(&mut self, delta: isize) {
-        if let Some(pane) = self.state.focused_pane_mut() {
-            pane.scroll_from_bottom = if delta >= 0 {
-                pane.scroll_from_bottom.saturating_add(delta.unsigned_abs())
-            } else {
-                pane.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
-            };
-            self.dirty = true;
-        }
     }
 
     fn apply_action(&mut self, outbound: &Outbound, action: Action) {
@@ -901,12 +891,7 @@ impl App {
                     selected: 0,
                 };
             }
-            Action::ToggleZone => {
-                self.state.zone = match self.state.zone {
-                    Zone::Sidebar => Zone::Panes,
-                    Zone::Panes => Zone::Sidebar,
-                };
-            }
+            Action::ToggleZone => self.state.cycle_zone(),
             Action::ScrollUp => self.scroll_focused(3),
             Action::ScrollDown => self.scroll_focused(-3),
             Action::PageUp => self.scroll_focused(20),
@@ -916,13 +901,17 @@ impl App {
             Action::StopDaemon => self.stop_daemon_and_quit(outbound),
             Action::Keys => self.open_settings(outbound, crate::settings::KEYS),
             Action::Settings => self.open_settings(outbound, crate::settings::SESSION),
+            Action::ToggleSidebar => {
+                self.state.cycle_sidebar();
+                let value = json!({"id": "console.sidebar", "value": self.state.sidebar.key()});
+                self.send_request(outbound, RequestKind::Sidebar, "_yi/set_default", value);
+            }
             Action::Menu => self.open_menu_for_focus(),
-            Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
             Action::Pin => self.pin_focus(outbound),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
             Action::OpenTerminal => self.open_terminal(),
-            Action::OpenEditor => self.open_navigator("e "),
+            Action::OpenEditor => self.open_files(),
             Action::OpenBrowser => self.open_browser(),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
@@ -955,7 +944,7 @@ impl App {
         };
         if let Some(pane_id) = self.state.focused_pane_id() {
             self.resume_into(outbound, pane_id, &session);
-            self.state.zone = Zone::Panes;
+            self.state.focus_panes();
         }
     }
 
@@ -1030,11 +1019,11 @@ impl App {
         if key.modifiers.contains(KeyModifiers::SUPER) {
             self.cmd_hints = true;
         }
-        if matches!(self.state.mode, Mode::Navigator { .. }) {
-            return self.handle_navigator_key(outbound, key);
-        }
-        if matches!(self.state.mode, Mode::Menu(_)) {
-            return self.menu_key(outbound, key);
+        match self.state.mode {
+            Mode::Navigator { .. } => return self.handle_navigator_key(outbound, key),
+            Mode::Files(_) => return self.files_key(key),
+            Mode::Menu(_) => return self.menu_key(outbound, key),
+            Mode::Normal | Mode::Prefix => {}
         }
         if matches!(self.state.mode, Mode::Prefix) {
             self.state.mode = Mode::Normal;
@@ -1087,23 +1076,16 @@ impl App {
         match self.state.zone {
             Zone::Sidebar => match key.code {
                 KeyCode::Up | KeyCode::Down => {
-                    let rows = self.state.visible_rows();
-                    let at = rows
-                        .iter()
-                        .position(|i| *i == self.state.selected)
-                        .unwrap_or(0);
-                    let next = if key.code == KeyCode::Up {
-                        at.saturating_sub(1)
-                    } else {
-                        at.saturating_add(1).min(rows.len().saturating_sub(1))
-                    };
-                    if let Some(index) = rows.get(next) {
-                        self.state.selected = *index;
-                    }
-                    self.state.cursor_moved = true;
+                    self.state.move_cursor(key.code == KeyCode::Down);
                     self.dirty = true;
                 }
-                KeyCode::Enter => self.open_selected(outbound),
+                KeyCode::Enter => match self.state.header.clone() {
+                    Some(root) => {
+                        self.state.fold_from_header(&root);
+                        self.dirty = true;
+                    }
+                    None => self.open_selected(outbound),
+                },
                 _ => {}
             },
             Zone::Panes if self.on_editor() => self.editor_key(key),
@@ -1128,6 +1110,7 @@ mod browser;
 mod chat;
 mod diffs;
 mod editor;
+mod files;
 pub(crate) mod ids;
 mod menu;
 mod mouse;

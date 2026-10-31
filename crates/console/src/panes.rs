@@ -238,6 +238,11 @@ pub(crate) fn down_from_top(from_bottom: usize) -> Option<usize> {
     (down < TOP / 2).then_some(down)
 }
 
+/// The first row of a `room`-tall window that keeps `cursor` in view: its last row once past it.
+pub(crate) fn first_row(cursor: usize, room: usize) -> usize {
+    cursor.saturating_add(1).saturating_sub(room)
+}
+
 pub(crate) fn windowed(
     all: &[Line<'static>],
     from_bottom: &mut usize,
