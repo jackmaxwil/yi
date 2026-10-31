@@ -357,6 +357,33 @@ async fn settle(parts: RunParts, ended_clean: bool) {
     }
 }
 
+/// Invariant: the screen's sidecar call holds neither the host's lock nor the session's worker,
+/// so a hung endpoint costs one blocking thread instead of the turn it was asked for.
+async fn screen_pending(shared: &Arc<Shared>) {
+    let Some(host) = extensions_of(shared) else {
+        return;
+    };
+    let Some((screeners, pending)) = host
+        .lock()
+        .ok()
+        .map(|mut host| (host.screeners(), host.take_pending()))
+    else {
+        return;
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let mut screened = Vec::with_capacity(pending.len());
+    for text in pending {
+        let outcome = screeners.screen_off_reactor(text.kind(), text.text()).await;
+        screened.push((text, outcome));
+    }
+    let store = store_of(shared);
+    if let Ok(mut host) = host.lock() {
+        host.attach_screened(screened, store.as_ref());
+    }
+}
+
 async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -> bool {
     let RunParts {
         shared,
@@ -368,6 +395,9 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
         tool_cwd,
     } = parts.clone();
     let capture = start_capture(&shared);
+    // The first request's fence carries the screen's mark, so the parked attach is drained here:
+    // this task can await the blocking thread, the prompting thread it came from cannot.
+    screen_pending(&shared).await;
     let assembling = yi_types::trace::span("turn.context");
     let mut context = LoopContext {
         system_prompt: {

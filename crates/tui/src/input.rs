@@ -77,7 +77,11 @@ pub fn handle_terminal_event(
             match app.keymap.resolve(&KeyInput::Single(key), &ctx) {
                 Some(action) => handle_action(app, cmd_tx, action),
                 None => {
-                    if key.code == KeyCodeValue::Char('/')
+                    if key.code == KeyCodeValue::PageDown
+                        && app.follow() != yi_types::config::FollowMode::Slide
+                    {
+                        app.advance_follow(20);
+                    } else if key.code == KeyCodeValue::Char('/')
                         && !key.ctrl
                         && !key.alt
                         && app.composer.is_empty()
@@ -228,6 +232,9 @@ fn submit_line(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Comman
 }
 
 fn send_message(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
+    if app.follow() != yi_types::config::FollowMode::Slide {
+        app.follow_bottom();
+    }
     if app.running {
         app.steering.push(text.clone());
         let _ = cmd_tx.send(Command::Steer(text));

@@ -32,7 +32,6 @@ pub struct SessionState {
     name: Option<String>,
     labels: HashMap<String, String>,
     goal: Option<yi_types::goal::Goal>,
-    plan: Option<yi_types::plan::Plan>,
 }
 
 impl Default for SessionState {
@@ -53,7 +52,6 @@ impl SessionState {
             stats: SessionStats::zero(),
             name: None,
             goal: None,
-            plan: None,
             labels: HashMap::new(),
         }
     }
@@ -145,10 +143,8 @@ impl SessionState {
         let invalid = |message: String| {
             SessionError::InvalidEntry(format!("Invalid session mutation: {message}"))
         };
-        let seq = match &mutation {
-            Mutation::Entry { entry, .. } => entry.seq(),
-            Mutation::Record { record } => record.seq(),
-            Mutation::Lane { seq, .. } | Mutation::Fact { seq, .. } => *seq,
+        let Some(seq) = mutation.seq() else {
+            return Err(invalid("has no seq".to_owned()));
         };
         if seq != self.next_sequence() {
             return Err(invalid(format!("has non-consecutive seq {seq}")));
@@ -246,10 +242,7 @@ impl SessionState {
                     self.sequence = seq;
                     self.goal = Some(goal.clone());
                 }
-                Fact::Plan { plan } => {
-                    self.sequence = seq;
-                    self.plan = Some(plan.clone());
-                }
+                Fact::Plan { .. } | Fact::Other(_) => self.sequence = seq,
                 Fact::Label { target_id, label } => {
                     if !self.entries_by_id.contains_key(target_id) {
                         return Err(invalid(format!(
@@ -267,6 +260,7 @@ impl SessionState {
                     }
                 }
             },
+            Mutation::Other(_) => self.sequence = seq,
         }
         self.log.push(mutation);
         Ok(())
@@ -281,14 +275,20 @@ impl SessionState {
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = &Entry> {
         self.log.iter().filter_map(|mutation| match mutation {
             Mutation::Entry { entry, .. } => Some(entry),
-            Mutation::Record { .. } | Mutation::Lane { .. } | Mutation::Fact { .. } => None,
+            Mutation::Record { .. }
+            | Mutation::Lane { .. }
+            | Mutation::Fact { .. }
+            | Mutation::Other(_) => None,
         })
     }
 
     fn records(&self) -> impl DoubleEndedIterator<Item = &LaneRecord> {
         self.log.iter().filter_map(|mutation| match mutation {
             Mutation::Record { record } => Some(record),
-            Mutation::Entry { .. } | Mutation::Lane { .. } | Mutation::Fact { .. } => None,
+            Mutation::Entry { .. }
+            | Mutation::Lane { .. }
+            | Mutation::Fact { .. }
+            | Mutation::Other(_) => None,
         })
     }
 
@@ -398,13 +398,8 @@ impl SessionState {
         validate_limit(options.limit)?;
         let mut results = Vec::new();
         for item in &self.log {
-            let seq = match item {
-                Mutation::Entry { entry, .. } => entry.seq(),
-                Mutation::Record { record } => record.seq(),
-                Mutation::Lane { seq, .. } | Mutation::Fact { seq, .. } => *seq,
-            };
             if let Some(after) = options.after_seq
-                && seq <= after
+                && item.seq().is_some_and(|seq| seq <= after)
             {
                 continue;
             }
@@ -414,10 +409,6 @@ impl SessionState {
             }
         }
         Ok(results)
-    }
-
-    pub fn plan(&self) -> Option<&yi_types::plan::Plan> {
-        self.plan.as_ref()
     }
 
     pub fn goal(&self) -> Option<&yi_types::goal::Goal> {
@@ -570,14 +561,20 @@ impl SessionState {
 fn entry_at(log: &[Mutation], index: usize) -> Option<&Entry> {
     match log.get(index)? {
         Mutation::Entry { entry, .. } => Some(entry),
-        Mutation::Record { .. } | Mutation::Lane { .. } | Mutation::Fact { .. } => None,
+        Mutation::Record { .. }
+        | Mutation::Lane { .. }
+        | Mutation::Fact { .. }
+        | Mutation::Other(_) => None,
     }
 }
 
 fn record_at(log: &[Mutation], index: usize) -> Option<&LaneRecord> {
     match log.get(index)? {
         Mutation::Record { record } => Some(record),
-        Mutation::Entry { .. } | Mutation::Lane { .. } | Mutation::Fact { .. } => None,
+        Mutation::Entry { .. }
+        | Mutation::Lane { .. }
+        | Mutation::Fact { .. }
+        | Mutation::Other(_) => None,
     }
 }
 

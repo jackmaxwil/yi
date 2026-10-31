@@ -9,6 +9,7 @@ use yi_runtime::plan::ops::{Actor, PlanEngine};
 use yi_runtime::plan::store::PlanStore;
 use yi_types::plan::doc::PlanId;
 
+use crate::repo::{git, init_repo};
 use crate::scratch::Scratch;
 
 use crate::prompt_slots_support::prompt_slots;
@@ -936,6 +937,31 @@ fn gc_fix_takes_the_checkpoints_of_a_deleted_project() -> TestResult {
         );
     }
     assert!(!shadow.exists(), "the deleted project's repo was kept");
+    Ok(())
+}
+
+/// The binary's bare `gc` previews a merged worktree and only `gc --fix` removes it.
+#[test]
+fn gc_fix_removes_the_merged_worktree_the_preview_kept() -> TestResult {
+    let workspace = Workspace::new("gc-worktree")?;
+    init_repo(&workspace.project())?;
+    let tree = workspace.0.join("merged-worktree");
+    let repo = workspace.project();
+    let path = tree.to_string_lossy().into_owned();
+    git(&repo, &["worktree", "add", "-q", "-b", "merged", &path])?;
+    std::fs::write(tree.join("work.txt"), "work\n")?;
+    git(&repo, &["-C", &path, "add", "work.txt"])?;
+    git(&repo, &["-C", &path, "commit", "-qm", "work"])?;
+    git(&repo, &["merge", "-q", "--no-ff", "-m", "merged", "merged"])?;
+
+    let preview = workspace.yi(&["gc"])?;
+    assert!(preview.status.success(), "{preview:?}");
+    assert!(tree.is_dir(), "{}", stdout(&preview));
+    assert!(stdout(&preview).contains("would remove"), "{preview:?}");
+    let swept = workspace.yi(&["gc", "--fix"])?;
+    assert!(swept.status.success(), "{swept:?}");
+    assert!(!tree.exists(), "{}", stdout(&swept));
+    assert!(stdout(&swept).contains("removed"), "{swept:?}");
     Ok(())
 }
 
@@ -2049,6 +2075,58 @@ fn doctor_lines(output: &Output) -> Vec<String> {
     stdout(output).lines().map(str::to_owned).collect()
 }
 
+/// The classifier row answers for the endpoint it names: a stored key and an endpoint that
+/// answers is ok, the same config without the key is a FAIL the user can act on, and the probe
+/// names the model it asked.
+#[test]
+fn doctor_answers_for_the_classifier_endpoint() -> TestResult {
+    let workspace = Workspace::new("doctor-classifier")?;
+    let yi_dir = workspace.0.join("home/.yi");
+    std::fs::create_dir_all(&yi_dir)?;
+    let (port, served) = loopback(
+        "application/json",
+        r#"{"answers":{"probe":{"type":"noul","noul":0.9}}}"#,
+    )?;
+    std::fs::write(
+        yi_dir.join("config.json"),
+        format!(
+            r#"{{"models":{{"classifier":"typesafe/jev-1.13"}},"classifier":{{"url":"http://127.0.0.1:{port}"}}}}"#
+        ),
+    )?;
+    let keyless = workspace.yi_env(&["doctor"], NO_KERNEL)?;
+    let lines = doctor_lines(&keyless);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("FAIL  classifier")
+                && line.contains("needs an OpenRouter key")),
+        "{lines:?}"
+    );
+    let tokens = yi_dir.join("providers/tokens");
+    std::fs::create_dir_all(&tokens)?;
+    std::fs::write(
+        tokens.join("openrouter.json"),
+        r#"{"version":1,"kind":"key","access":"sk-or-test","expires_ms":0}"#,
+    )?;
+    let keyed = workspace.yi_env(&["doctor"], NO_KERNEL)?;
+    let lines = doctor_lines(&keyed);
+    assert!(
+        lines.iter().any(|line| line.starts_with("ok    classifier")
+            && line.contains("typesafe/jev-1.13")
+            && line.contains("answered")),
+        "{lines:?}"
+    );
+    let seen = served
+        .try_iter()
+        .find(|body| body.get("model").is_some())
+        .ok_or("the probe sent nothing")?;
+    assert_eq!(
+        seen["model"], "typesafe/jev-1.13",
+        "the probe names the configured model"
+    );
+    Ok(())
+}
+
 /// A dead socket file is the one repair `doctor --fix` makes without asking; a ledger row
 /// whose root is gone is reported and left to the daemon that owns the file.
 #[test]
@@ -3098,31 +3176,23 @@ fn a_contained_bash_call_cannot_write_the_session_corpus() -> TestResult {
     Ok(())
 }
 
-/// Every request body a loopback proxy standing in for openrouter.ai reads, each answered `ok`.
-fn openrouter_proxy() -> Result<(u16, std::sync::mpsc::Receiver<Value>), Box<dyn Error>> {
-    use std::io::{BufRead, BufReader, Read, Write};
+/// Every request body a loopback proxy standing in for openrouter.ai reads, each answered `reply`.
+fn loopback(
+    content_type: &'static str,
+    reply: &'static str,
+) -> Result<(u16, std::sync::mpsc::Receiver<Value>), Box<dyn Error>> {
+    use std::io::Write;
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let (sender, bodies) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let mut reader = BufReader::new(stream);
-            let (mut length, mut line) = (0usize, String::new());
-            while reader.read_line(&mut line).unwrap_or(0) > 0 && !line.trim().is_empty() {
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-                line.clear();
-            }
-            let mut body = vec![0u8; length];
-            let _ = reader.read_exact(&mut body);
-            let _ = sender.send(serde_json::from_slice(&body).unwrap_or(Value::Null));
-            let reply = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            let mut reader = std::io::BufReader::new(stream);
+            let request = crate::loopback::read_request(&mut reader);
+            let _ = sender.send(crate::loopback::json_body(&request).unwrap_or(Value::Null));
             let _ = write!(
                 reader.into_inner(),
-                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
                 reply.len()
             );
         }
@@ -3143,7 +3213,10 @@ fn a_root_session_sends_its_id_as_the_openrouter_session() -> TestResult {
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
         "contextWindow": 100000, "maxTokens": 256}}});
     std::fs::write(catalog.join("openrouter.json"), entry.to_string())?;
-    let (port, bodies) = openrouter_proxy()?;
+    let (port, bodies) = loopback(
+        "text/event-stream",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+    )?;
     let proxy = format!("http://127.0.0.1:{port}");
     let answered = workspace.yi_env(
         &["ask", "--model", "openrouter/probe/flash", "--json", "hi"],
