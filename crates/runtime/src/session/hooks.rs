@@ -21,8 +21,6 @@ pub(super) type LedgerFold = dyn FnMut(&str, &[Entry], &SessionStats) + Send;
 struct Task {
     at: Option<(usize, AgentMessage)>,
     seen: usize,
-    #[cfg(test)]
-    examined: std::cell::Cell<usize>,
 }
 
 impl Task {
@@ -35,8 +33,7 @@ impl Task {
             *self = Task::default();
         }
         let found = (self.seen..messages.len()).rev().find(|index| {
-            #[cfg(test)]
-            self.examined.set(self.examined.get().saturating_add(1));
+            note_examined();
             messages.get(*index).is_some_and(is_typed)
         });
         if let Some(index) = found {
@@ -49,6 +46,26 @@ impl Task {
 
 fn is_typed(message: &AgentMessage) -> bool {
     crate::rules::typed_text(message).is_some()
+}
+
+#[cfg(test)]
+thread_local! {
+    static EXAMINED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn note_examined() {
+    #[cfg(test)]
+    EXAMINED.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+fn examinations() -> usize {
+    EXAMINED.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn forget_examinations() {
+    EXAMINED.with(|count| count.set(0));
 }
 
 pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
@@ -797,13 +814,22 @@ mod tests {
             "content": [{"type": "text", "text": "ok"}], "isError": false, "timestamp": 1
         }))
     }
+    fn transcript(
+        typed: Option<(usize, &str)>,
+    ) -> Result<Vec<yi_types::message::AgentMessage>, serde_json::Error> {
+        (0..300)
+            .map(|index| match typed {
+                Some((at, text)) if at == index => Ok(crate::session::user_input(text)),
+                _ => result(index),
+            })
+            .collect()
+    }
     #[test]
     fn a_judgement_reads_the_task_past_its_tail() -> Result<(), Box<dyn std::error::Error>> {
         let provider = Arc::new(crate::provider::ProviderStream::new(None));
         let session = super::AgentSession::new(settle_test_config(), provider);
         let history = session.history_tail(256);
-        let mut messages = vec![crate::session::user_input("tidy the vault")];
-        messages.extend((0..300).map(result).collect::<Result<Vec<_>, _>>()?);
+        let mut messages = transcript(Some((0, "tidy the vault")))?;
         session.seed_messages(messages.clone());
         let seen = history();
         assert_eq!(seen.len(), 257, "the tail alone carries no typed text");
@@ -821,10 +847,8 @@ mod tests {
             Some("ship it"),
             "a typed message appended after the first read did not replace the task"
         );
-        let mut rewritten = vec![crate::session::user_input("tidy the vault")];
-        rewritten.extend((0..300).map(result).collect::<Result<Vec<_>, _>>()?);
-        rewritten.push(result(301)?);
-        rewritten[2] = crate::session::user_input("start over");
+        let mut rewritten = transcript(Some((2, "start over")))?;
+        rewritten.push(result(300)?);
         session.seed_messages(rewritten);
         let seen = history();
         assert_eq!(
@@ -844,29 +868,39 @@ mod tests {
     #[test]
     fn a_second_judgement_rescans_no_message_it_already_searched()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut task = super::Task::default();
-        let mut messages = vec![crate::session::user_input("tidy the vault")];
-        messages.extend((0..300).map(result).collect::<Result<Vec<_>, _>>()?);
+        let session = super::AgentSession::new(
+            settle_test_config(),
+            Arc::new(crate::provider::ProviderStream::new(None)),
+        );
+        let history = session.history_tail(256);
+        let mut messages = transcript(Some((0, "tidy the vault")))?;
+        session.seed_messages(messages.clone());
         assert_eq!(
-            task.latest(&messages).map(|(index, _)| index),
-            Some(0),
+            history().len(),
+            257,
             "the first judgement missed the only typed message"
         );
-        task.examined.set(0);
+        super::forget_examinations();
         assert_eq!(
-            task.latest(&messages).map(|(index, _)| index),
-            Some(0),
+            history().len(),
+            257,
             "the task was lost between two judgements over one transcript"
         );
         assert_eq!(
-            task.examined.get(),
+            super::examinations(),
             0,
             "a judgement read messages the last one had already searched"
         );
         messages.push(crate::session::user_input("ship it"));
-        assert_eq!(task.latest(&messages).map(|(index, _)| index), Some(301));
+        session.seed_messages(messages);
+        let seen = history();
+        assert_eq!(seen.len(), 256);
         assert_eq!(
-            task.examined.get(),
+            crate::rules::typed_text(&seen[255]).as_deref(),
+            Some("ship it")
+        );
+        assert_eq!(
+            super::examinations(),
             1,
             "the appended message was not the only one read"
         );
