@@ -40,6 +40,29 @@ struct Tally {
     reprompts: u32,
 }
 
+pub(super) fn probe_only(args: &crate::Args) -> i32 {
+    if args.faux.is_some() {
+        yi_runtime::lane::forbid_fetch();
+    }
+    let lane = match crate::claim_lane(args, crate::home(), None) {
+        Ok((lane, _pool)) => lane,
+        Err(message) => {
+            eprintln!("lane: {message}");
+            return 1;
+        }
+    };
+    let cwd = crate::work_dir(lane.as_ref().map(|lane| lane.path().to_path_buf()), args);
+    let Some(refusal) = args
+        .check
+        .iter()
+        .find_map(|check| yi_runtime::goal::probe(check, &cwd))
+    else {
+        return 0;
+    };
+    eprintln!("{refusal}");
+    2
+}
+
 /// Re-prompts the same session with a red check's evidence until it passes, the run ends, or
 /// the cap is reached; every ending prints one row and one `check` line.
 pub(super) async fn chase(

@@ -356,6 +356,24 @@ fn a_lane_ask_probes_the_check_in_the_lane_worktree() -> TestResult {
     assert_eq!(run.status.code(), Some(2), "{out}{err}");
     assert!(err.contains("`./gate.sh` is not runnable"), "{err}");
     assert!(check_lines(&run)?.is_empty(), "{out}");
+    let sessions = std::fs::read_dir(workspace.0.join("home/sessions")).map_or(0, Iterator::count);
+    assert_eq!(sessions, 0, "the refused run recorded a session: {err}");
+    let probe = workspace.yi(&[
+        "ask",
+        "--lanes",
+        "--model",
+        "faux/faux-1",
+        "--faux",
+        &script,
+        "--check",
+        "./gate.sh",
+    ])?;
+    let said = String::from_utf8_lossy(&probe.stderr);
+    assert_eq!(
+        probe.status.code(),
+        Some(2),
+        "the two forms disagree: {said}"
+    );
     Ok(())
 }
 

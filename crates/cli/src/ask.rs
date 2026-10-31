@@ -54,6 +54,16 @@ pub(super) fn run(args: &Args) -> i32 {
             }
         }
     };
+    let lane = session.lane();
+    let checks = args.check.clone();
+    let dir = session.work_dir(&crate::effective_cwd(args));
+    if let Some(refusal) = checks
+        .iter()
+        .find_map(|check| yi_runtime::goal::probe(check, &dir))
+    {
+        release_lane(lane.as_deref());
+        return refuse(args.json, 2, &config, &refusal);
+    }
     let attaching = yi_types::trace::span("ask.attach_store");
     let attached = attach_store(args, &session, &target);
     drop(attaching);
@@ -74,7 +84,6 @@ pub(super) fn run(args: &Args) -> i32 {
         Some(Err(error)) => return refuse(args.json, 2, &config, &error),
         None => None,
     };
-    let lane = session.lane();
     let reserve = args.deadline.map_or(SHUTDOWN_GRACE, |secs| {
         SHUTDOWN_GRACE.min(Duration::from_secs(secs) / 16)
     });
@@ -86,15 +95,6 @@ pub(super) fn run(args: &Args) -> i32 {
         headless: !interactive,
     };
     let json = args.json;
-    let checks = args.check.clone();
-    let dir = crate::session_work_dir(&session, args);
-    if let Some(refusal) = checks
-        .iter()
-        .find_map(|check| yi_runtime::goal::probe(check, &dir))
-    {
-        release_lane(lane.as_deref());
-        return refuse(json, 2, &config, &refusal);
-    }
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))

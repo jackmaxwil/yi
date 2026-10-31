@@ -93,10 +93,6 @@ fn work_dir(lane: Option<std::path::PathBuf>, args: &Args) -> std::path::PathBuf
     lane.unwrap_or_else(|| effective_cwd(args))
 }
 
-fn session_work_dir(session: &AgentSession, args: &Args) -> std::path::PathBuf {
-    session.work_dir(&effective_cwd(args))
-}
-
 fn env_either(upper: &str, lower: &str) -> Option<String> {
     std::env::var(upper).or_else(|_| std::env::var(lower)).ok()
 }
@@ -901,16 +897,7 @@ fn run_version(_: &Args) -> i32 {
 
 fn run_ask(args: &Args) -> i32 {
     if !args.check.is_empty() && args.prompt.is_empty() {
-        let cwd = effective_cwd(args);
-        let Some(refusal) = args
-            .check
-            .iter()
-            .find_map(|check| yi_runtime::goal::probe(check, &cwd))
-        else {
-            return 0;
-        };
-        eprintln!("{refusal}");
-        return 2;
+        return ask_check::probe_only(args);
     }
     if args.prompt.is_empty() {
         eprintln!("usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt | ->");
