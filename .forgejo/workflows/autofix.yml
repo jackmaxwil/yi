@@ -49,7 +49,7 @@ jobs:
           ref: main
           fetch-depth: 0
       # A job's HOME starts with no skills, and this copy is main's, not the PR's tree.
-      # The PR's code this job runs can still write here, as it can the yi binary under target/.
+      # The PR's build, tests and hooks run under their own HOME (pr_autofix.untrusted), not this one.
       - if: steps.queue.outputs.newer == '0'
         run: just install-skills
       - if: steps.queue.outputs.newer == '0'

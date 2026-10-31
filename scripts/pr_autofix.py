@@ -257,6 +257,18 @@ def scrubbed():
     return {**env, **({"TMPDIR": os.path.realpath(env["TMPDIR"])} if env.get("TMPDIR") else {})}
 
 
+def untrusted():
+    """`scrubbed()` for the clone's own code, whose HOME holds no skills: a run's HOME is the bot's
+    instruction, so the PR's build and tests get one they own. Toolchains and caches stay readable.
+    Incident: a PR's test could write ~/.yi/skills/har/SKILL.md, and the next fixer prompt named it."""
+    env = scrubbed()
+    real = pathlib.Path(os.environ.get("HOME") or pathlib.Path.home())
+    home = pathlib.Path(env.get("TMPDIR") or tempfile.gettempdir()) / "yi-untrusted-home"
+    home.mkdir(parents=True, exist_ok=True)
+    keep = {"CARGO_HOME": real / ".cargo", "RUSTUP_HOME": real / ".rustup", "UV_CACHE_DIR": real / ".cache/uv"}
+    return {**env, "HOME": str(home), **{k: env.get(k) or str(v) for k, v in keep.items()}}
+
+
 def sh(cwd, *args, env=None, input=None, check=True):
     out = subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=env, input=input)
     if check and out.returncode:
@@ -419,8 +431,8 @@ def reprice(clone, base="MERGE_HEAD"):
     path = pending[-1]
     text = path.read_text()
     raises = [r for gate in ("crate_size", "test_size", "comments")
-              for r in RAISE.findall(sh(clone, sys.executable, f"scripts/guardrails/check_{gate}.py", env=scrubbed(), check=False).stdout)]
-    growth = re.search(r"growth \(([+-]\d+) src lines", sh(clone, sys.executable, "scripts/guardrails/check_growth.py", env=scrubbed(), check=False).stdout)
+              for r in RAISE.findall(sh(clone, sys.executable, f"scripts/guardrails/check_{gate}.py", env=untrusted(), check=False).stdout)]
+    growth = re.search(r"growth \(([+-]\d+) src lines", sh(clone, sys.executable, "scripts/guardrails/check_growth.py", env=untrusted(), check=False).stdout)
     head, sep, body = text[4:].partition("\n---\n")
     if raises:
         head += "\nraise: " + ", ".join(raises)
@@ -452,7 +464,7 @@ def remeasure(clone):
     roles = clone / ROLES
     before = CEILING.setdefault(str(clone), roles.read_text() if roles.is_file() else "")
     for gate in ("check_schemas_lock.py", "check_request_budget.py"):
-        sh(clone, sys.executable, f"scripts/guardrails/{gate}", "--update", env=scrubbed(), check=False)
+        sh(clone, sys.executable, f"scripts/guardrails/{gate}", "--update", env=untrusted(), check=False)
     try:
         raised = inflated(json.loads(before), json.loads(roles.read_text()))
     except (OSError, ValueError):
@@ -742,7 +754,7 @@ def failed_tests(output):
 
 def run_filtered(cwd, expr):
     """The test lane over a nextest filter, in the environment the fixer's runs have."""
-    return subprocess.run((*TEST_LANE, "-E", expr), cwd=cwd, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
+    return subprocess.run((*TEST_LANE, "-E", expr), cwd=cwd, capture_output=True, text=True, env=untrusted(), timeout=LANE_SECS)
 
 
 def at_base(clone, base_ref, failed):
@@ -767,7 +779,7 @@ def lane_failures(clone, lanes, base_ref="main"):
     found, shared = [], set()
     for lane in lanes:
         command = TEST_LANE if lane == "test" else ["just", "lane", lane]
-        ran = subprocess.run(command, cwd=clone, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
+        ran = subprocess.run(command, cwd=clone, capture_output=True, text=True, env=untrusted(), timeout=LANE_SECS)
         if not ran.returncode:
             continue
         output = ran.stdout + ran.stderr
@@ -939,7 +951,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
         bot = {f"GIT_{who}_{what}": value for who in ("AUTHOR", "COMMITTER")
                for what, value in (("NAME", pr_review.BOT), ("EMAIL", "yi-bot@noreply.example.invalid"))}
         commit = lambda text: sh(clone, "git", "-c", "core.hooksPath=scripts/hooks", "commit", "-q", "-F", "-",
-                                 input=text, env={**scrubbed(), **bot}, check=False)
+                                 input=text, env={**untrusted(), **bot}, check=False)
         formatted(clone)
         settle(clone)
         # A gate repair that only re-measured has nothing for a code commit; its Ratchet carries it.
@@ -1749,6 +1761,30 @@ def selfcheck():
         if prompt.startswith("This change touches Rust") != rust:
             errs.append(f"a fix's opening does not follow its Rust: {prompt[:80]!r}")
     shutil.rmtree(pr_review.SKILLS)
+    marker = ".yi/skills/yi-autofix-selfcheck"
+    probe = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-home-"))
+    try:
+        clone = probe / "clone"
+        (clone / "scripts/guardrails").mkdir(parents=True)
+        for gate in ("crate_size", "test_size", "comments", "growth"):
+            (clone / f"scripts/guardrails/check_{gate}.py").write_text(
+                "import os, pathlib\n"
+                f"out = pathlib.Path(os.environ['HOME']) / {marker!r}\n"
+                "out.mkdir(parents=True, exist_ok=True)\n")
+        (clone / "a.txt").write_text("a\n")
+        seeded = lambda *a: sh(clone, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        seeded("init", "-q", "-b", "main"); seeded("add", "-A"); seeded("commit", "-qm", "seed")
+        (clone / "docs/changes").mkdir(parents=True)
+        (clone / "docs/changes/x.md").write_text("---\n---\nprose\n")
+        reprice(clone, "main")
+        bot_home = pathlib.Path(os.environ.get("HOME") or pathlib.Path.home())
+        if (bot_home / marker).exists():
+            errs.append("the PR's own gate script wrote the bot's HOME, where the next prompt reads its rule")
+        if not (pathlib.Path(untrusted()["HOME"]) / marker).is_dir():
+            errs.append("the PR's own gate script did not run under the untrusted HOME")
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+        shutil.rmtree(pathlib.Path(os.environ.get("HOME") or pathlib.Path.home()) / marker, ignore_errors=True)
     pr_review.SKILLS = installed
     states = {1072: "closed", 1076: "open", 1077: "open"}.get
     body = "Closes #1076. Refs #1072. Stacked on #1098.\nRefs #1077."
