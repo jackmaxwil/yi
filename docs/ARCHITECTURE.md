@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.840.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.841.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -224,6 +224,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D519 | the autofixer tells a red base and a person's call apart from a failure, and settles a lone binary overrun itself | a week of its ledger held 25 failures of which 8 were main's own red test reported as flaky, 9 were calls no model could make, and 8 attempts at $8.80 sent a size no edit could reach to a model; the 45 KB role prefix it kept measuring was its own `TMPDIR` spelled through the checkout with `..` | restore the `RuntimeError` raises, remove the `base-red` and `handoff` verdicts and the `raise_binary` call in scripts/pr_autofix.py, and put the `..` back in autofix.yml |
 | D518 | the classifier runs on TypeSafe's Jev (`typesafe/jev-1.13`) at OpenRouter's `/api/v1/systemone`, keyed by the OpenRouter key, and the Laya sidecar Yi started, installed and probed is deleted; with the classifier on, typed messages and judged commands go to TypeSafe through OpenRouter; approval asks the V2 question (task, last two answered calls, project root, writable roots, protected branches, checkpoint note) and allows at P(safe) 0.8, 0.9 for a destructive command (revises D297, D301, D356, D364, D497) | measured on 160 commands (yi-ergo 2026-10-29-jev): Laya allowed dangerous commands at every cut point under every question, Jev with the V2 question allowed none at 0.8 (53 of 80 ordinary) or 0.9 (27 of 80), at about $0.00002 a call | unset `models.classifier`; the old sidecar comes back from git with its D-rows |
 | D517 | "Console panes only" | "the owner's console-first direction puts the solo inline view out of #1711, and a second follow engine there cost every finding this branch paid for" | reversible by painting the inline viewport through the same follow path |
 | D516 | "Yes, hold three rows" | "No I am only talking about the terminal text stream" | reversible via removing the bounded collapsed-card reservation |
