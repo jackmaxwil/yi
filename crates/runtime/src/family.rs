@@ -108,30 +108,55 @@ pub enum Phase {
     Pending,
 }
 
-/// One exit read three ways: the wire status, the member state and the notice's verb.
+/// One exit read four ways: the wire status, the member state, the notice's verb and the row's
+/// outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reading {
     pub status: ChildStatus,
     pub state: MemberState,
     pub verb: &'static str,
+    pub row: &'static str,
 }
 
 /// Invariant: every surface reads a child's ending through here, so the TUI's status, the
 /// model's `wait` state and the parent's notice cannot disagree. `None` is a live run.
 pub fn read_exit(exit: Option<ChildExit>) -> Reading {
-    let (status, state, verb) = match exit {
-        None => (ChildStatus::Running, MemberState::Running, "running"),
-        Some(ChildExit::Completed) => (ChildStatus::Completed, MemberState::Finished, "finished"),
-        Some(ChildExit::Failed { .. }) => (ChildStatus::Error, MemberState::Failed, "failed"),
-        Some(ChildExit::Interrupted) => (ChildStatus::Error, MemberState::Failed, "interrupted"),
-        Some(ChildExit::Reaped) => (ChildStatus::Error, MemberState::Failed, "reaped"),
-        Some(ChildExit::Repossessed) => (ChildStatus::Error, MemberState::Failed, "repossessed"),
-        Some(ChildExit::Other) => (ChildStatus::Error, MemberState::Failed, "ended"),
+    let (status, state, verb, row) = match exit {
+        None => (
+            ChildStatus::Running,
+            MemberState::Running,
+            "running",
+            "running",
+        ),
+        Some(ChildExit::Completed) => (
+            ChildStatus::Completed,
+            MemberState::Finished,
+            "finished",
+            "done",
+        ),
+        Some(ChildExit::Failed { .. }) => {
+            (ChildStatus::Error, MemberState::Failed, "failed", "failed")
+        }
+        Some(ChildExit::Interrupted) => (
+            ChildStatus::Error,
+            MemberState::Failed,
+            "interrupted",
+            "cancelled",
+        ),
+        Some(ChildExit::Reaped) => (ChildStatus::Error, MemberState::Failed, "reaped", "reaped"),
+        Some(ChildExit::Repossessed) => (
+            ChildStatus::Error,
+            MemberState::Failed,
+            "repossessed",
+            "revoked",
+        ),
+        Some(ChildExit::Other) => (ChildStatus::Error, MemberState::Failed, "ended", "failed"),
     };
     Reading {
         status,
         state,
         verb,
+        row,
     }
 }
 
@@ -248,18 +273,6 @@ fn asked_of(recent: &[Entry]) -> Option<(MemberState, String)> {
     ))
 }
 
-fn timestamp_of(entry: &Entry) -> u64 {
-    match entry {
-        Entry::Message { timestamp, .. }
-        | Entry::ModelChange { timestamp, .. }
-        | Entry::ThinkingLevelChange { timestamp, .. }
-        | Entry::ActiveToolsChange { timestamp, .. }
-        | Entry::Compaction { timestamp, .. }
-        | Entry::BranchSummary { timestamp, .. }
-        | Entry::Custom { timestamp, .. } => *timestamp,
-    }
-}
-
 /// The state a member's newest records show: `needs_you` after a todo blocked on the user,
 /// `stuck` after a re-drive in them or [`STUCK_IDLE_MS`] idle; the note says which.
 pub fn state_from_records(
@@ -268,7 +281,7 @@ pub fn state_from_records(
     recent: &[Entry],
     now_ms: u64,
 ) -> (MemberState, Option<String>, u64) {
-    let newest = recent.iter().map(timestamp_of).max().unwrap_or(now_ms);
+    let newest = recent.iter().map(Entry::timestamp).max().unwrap_or(now_ms);
     let idle_s = now_ms.saturating_sub(newest) / 1000;
     match read_exit(exit).state {
         MemberState::Running if phase == Phase::Queued => (MemberState::Queued, None, idle_s),
@@ -387,15 +400,7 @@ pub fn children_line(views: &[MemberView]) -> Option<String> {
 
 /// One line per entry for `history://<agent>/tail/N`: the sequence, who, and the first line.
 pub fn compact_entry(entry: &Entry) -> (String, bool) {
-    let seq = match entry {
-        Entry::Message { seq, .. }
-        | Entry::ModelChange { seq, .. }
-        | Entry::ThinkingLevelChange { seq, .. }
-        | Entry::ActiveToolsChange { seq, .. }
-        | Entry::Compaction { seq, .. }
-        | Entry::BranchSummary { seq, .. }
-        | Entry::Custom { seq, .. } => *seq,
-    };
+    let seq = entry.seq();
     let mut cut_any = false;
     let body = match entry {
         Entry::Message { message, .. } => match message {
@@ -467,6 +472,7 @@ pub fn compact_entry(entry: &Entry) -> (String, bool) {
         },
         Entry::BranchSummary { .. } => "branch summary".to_owned(),
         Entry::Custom { custom_type, .. } => format!("custom {custom_type}"),
+        Entry::Other(_) => format!("unread {}", entry.type_name()),
         Entry::ModelChange { model_id, .. } => format!("model {model_id}"),
         Entry::ThinkingLevelChange { thinking_level, .. } => format!("thinking {thinking_level}"),
         Entry::ActiveToolsChange { .. } => "tools changed".to_owned(),

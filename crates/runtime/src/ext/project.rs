@@ -116,7 +116,6 @@ pub struct ProjectResources {
     global_skills: Vec<String>,
     lists_skills: bool,
 }
-
 impl ProjectResources {
     pub fn new(cwd: PathBuf, home: PathBuf) -> Self {
         let gate = TrustGate::new(&home);
@@ -184,6 +183,7 @@ impl ProjectResources {
             let effect = Effect::AttachExternal {
                 text: yi_context::fit(&content, self.budget, &next).text,
                 source,
+                kind: "project",
                 trust,
             };
             let hash = content_hash(&instruction_text(&content));
@@ -217,6 +217,7 @@ impl ProjectResources {
         let trust = self.gate.trust_of(&root, "skills", &catalog.text);
         out.push(Effect::AttachExternal {
             source: "project skills".to_owned(),
+            kind: "project",
             trust,
             text: catalog.text,
         });
