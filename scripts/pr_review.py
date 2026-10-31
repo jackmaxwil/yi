@@ -76,6 +76,7 @@ METER = bot_meter.Meter()
 # Incident: a PR's own .yi/skills/har shadowed yi://skills/har in the bot's checkout and served its
 # text as the rule, so a prompt names the workflow's install from main by path, never by address.
 SKILLS = pathlib.Path.home() / ".yi/skills"
+RUST_FILE = re.compile(r"^\+\+\+ b/.*\.rs$", re.M)
 
 
 def har_note():
@@ -549,8 +550,11 @@ def lens_prompt(probe, pr, diff, base, sha, full_read, memory=()):
     cut = f"\n[diff cut at {DIFF_MAX} bytes; read the files for the rest]" if len(diff) > DIFF_MAX else ""
     note = har_note()
     note += "A HAR breach is a finding only when it meets the severity above.\n" if note else ""
+    # Incident: named further down as a condition, 14 lens prompts on #1890 read neither skill.
+    first = (f"This diff changes Rust. Your first two tool calls, before anything else, are read on {SKILLS}/har/SKILL.md "
+             f"and read on {SKILLS}/har-api/SKILL.md.\n") if note and RUST_FILE.search(diff) else ""
     return (
-        f"You review pull request #{pr['number']} ({pr['title']!r}) as its {lens} lens. {brief}\n"
+        f"{first}You review pull request #{pr['number']} ({pr['title']!r}) as its {lens} lens. {brief}\n"
         f"Severity: {scale}\n"
         f"Your working directory is a checkout of the PR's head {sha[:8]}; the diff is the PR's own change {base[:8]}..{sha[:8]}"
         f"{', limited to the files changed since the last round' if not full_read else ''}. "
@@ -1161,6 +1165,10 @@ def selfcheck():
     assert f"- {SKILLS}/har-async/SKILL.md: Load when spawning a task." in note.splitlines(), "a trigger folded in its frontmatter survives whole"
     assert f"- {SKILLS}/har-odd/SKILL.md: read its description" in note.splitlines() and "har-api/SKILL.md:" not in note, "only the triggered ones are listed"
     assert "yi://skills" not in note, "an address is what a PR's own .yi/skills can shadow"
+    rust_lens = {"id": "correctness", "brief": "b", "severity": {"high": "h"}, "claim": "Risk and rollback"}
+    opening = lambda diff: lens_prompt(rust_lens, {"number": 1, "title": "t", "body": ""}, diff, "a" * 8, "b" * 8, True).splitlines()[0]
+    assert opening("+++ b/crates/a/src/lib.rs\n+x\n").endswith(f"read on {SKILLS}/har-api/SKILL.md."), "a Rust diff opens on reading the two skills"
+    assert opening("+++ b/docs/a.md\n+x.rs\n").startswith("You review"), "a diff with no Rust spends no read"
     shutil.rmtree(SKILLS)
     SKILLS = installed
     me = {"jack", "yi-bot"}
