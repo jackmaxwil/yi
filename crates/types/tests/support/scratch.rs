@@ -13,7 +13,7 @@ impl Scratch {
         let dir = std::env::temp_dir().join(format!("{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
-        Ok(Self(dir))
+        Ok(Self(dir.canonicalize()?))
     }
 
     /// Incident: the default `kernel.prewarm` built a 380 MB venv into every fresh HOME a

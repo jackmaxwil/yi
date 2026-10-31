@@ -2584,6 +2584,13 @@ fn a_shell_read_names_the_dedicated_tool_first() -> TestResult {
         ("grep -rn needle .", "grep"),
         ("grep -rn needle . | wc -l", "grep"),
         ("cat notes.txt && head -1 notes.txt", "read"),
+        (
+            r#"grep -rn "needle\|expect(" . --include=*.txt | grep -v test | wc -l"#,
+            "grep",
+        ),
+        ("grep -E 'needle|x' notes.txt", "grep"),
+        ("head -2 notes.txt | grep needle", "grep"),
+        ("cat notes.txt | grep needle", "grep"),
     ];
     for (command, tool) in table {
         let text = output_text(&bash.execute(args(&[("command", json!(command))]), &context));
@@ -2616,6 +2623,15 @@ fn a_write_a_vcs_or_build_call_gets_no_dedicated_tool_row() -> TestResult {
         "git log -1",
         "cargo --version | tail -1",
         "head -c 6 notes.txt | tr a-z A-Z",
+        "cat notes.txt & true",
+        "sed -n -i.bak '1p' notes.txt",
+        "sed -n '1,2w out.txt' notes.txt",
+        "find . -name '*.o' -delete",
+        "find . -name '*.o' -exec true {} +",
+        "fd -x true",
+        "rg --pre true needle",
+        "tree -o out.html .",
+        "sed -ni '1p' notes.txt",
     ];
     for command in table {
         let text = output_text(&bash.execute(args(&[("command", json!(command))]), &context));

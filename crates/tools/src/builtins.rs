@@ -442,18 +442,22 @@ pub(crate) fn command_category(command: &str) -> &'static str {
 }
 
 fn segment_category(segment: &str) -> Option<&'static str> {
-    let mut words = segment
+    let words: Vec<&str> = segment
         .split_whitespace()
-        .skip_while(|word| word.contains('='));
-    let verb = words.next()?;
-    let verb = verb.rsplit('/').next().unwrap_or(verb);
-    Some(match verb {
+        .skip_while(|word| word.contains('='))
+        .collect();
+    let (verb, rest) = words.split_first()?;
+    Some(verb_category(verb, rest))
+}
+
+pub(crate) fn verb_category(verb: &str, rest: &[&str]) -> &'static str {
+    match verb.rsplit('/').next().unwrap_or(verb) {
         "grep" | "rg" | "ag" => "search",
         "cat" | "head" | "tail" | "less" | "more" | "wc" | "file" | "stat" => "read",
         "ls" | "find" | "fd" | "tree" => "list_files",
         "git" | "jj" => "vcs",
-        "cargo" | "just" => match words.next() {
-            Some("test" | "nextest") => "test",
+        "cargo" | "just" => match rest.first() {
+            Some(&("test" | "nextest")) => "test",
             _ => "build",
         },
         "make" | "npm" | "pnpm" | "yarn" | "go" | "rustc" | "cc" | "gcc" | "tsc" => "build",
@@ -461,14 +465,14 @@ fn segment_category(segment: &str) -> Option<&'static str> {
         "mkdir" | "touch" | "rm" | "mv" | "cp" | "chmod" | "ln" | "tee" => "write",
         // `sed -n 'Np'` is the read tool's clip escape hatch; only `-i` writes.
         "sed" => {
-            if words.any(|word| word.starts_with("-i")) {
+            if rest.iter().any(|word| word.starts_with("-i")) {
                 "write"
             } else {
                 "read"
             }
         }
         _ => "unknown",
-    })
+    }
 }
 
 #[derive(Default)]
