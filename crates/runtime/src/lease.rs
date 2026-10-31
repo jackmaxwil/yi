@@ -14,6 +14,7 @@ use yi_types::subagent::ChildExit;
 
 use crate::args::Args;
 use crate::mail::Draft;
+use crate::plan::timer::Due;
 use crate::subagent::{ChildRecord, Children, PARENT_NAME, Step, SubagentHost};
 
 pub(crate) const LEASE_ENTRY: &str = "lease";
@@ -320,6 +321,18 @@ impl SubagentHost {
     /// The timer's job, run on every wake of the probe loop: each revoked child whose grace is
     /// over and whose run has not ended is repossessed. A pending one is tried again.
     pub async fn expire(self: &Arc<Self>) -> Vec<String> {
+        let now = self.lease_now();
+        self.expire_by(now).await
+    }
+
+    /// The process is exiting: every live child is revoked and repossessed now, since a grace
+    /// that outlives the process is served by no one and its lane would stay held.
+    pub async fn end(self: &Arc<Self>) -> Vec<String> {
+        let _revoked = self.close();
+        self.expire_by(u64::MAX).await
+    }
+
+    async fn expire_by(self: &Arc<Self>, now: u64) -> Vec<String> {
         let first = self
             .grant
             .lock()
@@ -327,7 +340,6 @@ impl SubagentHost {
         if first && let Err(reason) = self.resume_revocations() {
             (self.options.notice)(&format!("[lease resume refused: {reason}]"), None);
         }
-        let now = self.lease_now();
         let due: Vec<String> = self
             .children
             .lock()
@@ -487,71 +499,18 @@ impl SubagentHost {
     }
 }
 
-/// How often the loop wakes with no due time registered, so a pending repossession is retried.
-const IDLE_POLL: Duration = Duration::from_secs(60);
-
-/// The lease clock: the due times a revocation registers, and the loop that runs expiry after
-/// each of them at every depth (a child's grandchild would otherwise never expire).
-pub struct Expiry {
-    due_at: std::sync::Mutex<std::collections::BTreeSet<Instant>>,
-    wake: tokio::sync::Notify,
-}
-
-impl Expiry {
-    /// Registers a due time; one earlier than every other interrupts the loop's sleep.
-    pub fn wake_at(&self, due: Instant) {
-        let earliest = match self.due_at.lock() {
-            Ok(mut dues) => {
-                let earliest = dues.first().is_none_or(|first| due < *first);
-                dues.insert(due);
-                earliest
-            }
-            Err(_) => false,
+/// Invariant: expiry runs off the wall clock on its own task at every session depth, so a slow
+/// repossession never holds the next grace back; the pump ends once its host is gone.
+pub fn spawn_expiry(host: &Arc<SubagentHost>) -> Arc<Due> {
+    let due = Arc::new(Due::default());
+    let (taken, host) = (Arc::clone(&due), Arc::downgrade(host));
+    tokio::spawn(Arc::clone(&due).pump(Arc::new(Instant::now), move || {
+        taken.take_due(Instant::now());
+        let Some(host) = host.upgrade() else {
+            return false;
         };
-        if earliest {
-            self.wake.notify_one();
-        }
-    }
-
-    fn next_wake(&self) -> Duration {
-        let due = self
-            .due_at
-            .lock()
-            .ok()
-            .and_then(|dues| dues.first().copied());
-        due.map_or(IDLE_POLL, |due| {
-            due.saturating_duration_since(Instant::now())
-                .max(Duration::from_secs(1))
-        })
-    }
-
-    fn take_due(&self) {
-        if let Ok(mut dues) = self.due_at.lock() {
-            let now = Instant::now();
-            dues.retain(|due| *due > now);
-        }
-    }
-}
-
-/// Invariant: expiry runs off the wall clock on its own task, so a slow repossession never holds
-/// the next grace's due time back and no session depth depends on the plan timer for it.
-pub fn spawn_expiry(host: Arc<SubagentHost>) -> Arc<Expiry> {
-    let expiry = Arc::new(Expiry {
-        due_at: std::sync::Mutex::new(std::collections::BTreeSet::new()),
-        wake: tokio::sync::Notify::new(),
-    });
-    let looped = Arc::clone(&expiry);
-    tokio::spawn(async move {
-        loop {
-            let wait = looped.next_wake();
-            tokio::select! {
-                () = tokio::time::sleep(wait) => {}
-                () = looped.wake.notified() => {}
-            }
-            looped.take_due();
-            let host = Arc::clone(&host);
-            tokio::spawn(async move { host.expire().await });
-        }
-    });
-    expiry
+        tokio::spawn(async move { host.expire().await });
+        true
+    }));
+    due
 }

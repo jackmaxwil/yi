@@ -3406,24 +3406,14 @@ fn a_conflict_steer_names_the_cap_it_was_cut_at() -> TestResult {
 /// #1571: the exits that are not the ACP handle now close their host, so a live worktree
 /// child is revoked and its slot comes back instead of staying held by a session that ended.
 #[tokio::test]
-async fn a_close_revoking_a_live_worktree_child_returns_its_slot() -> TestResult {
+async fn an_ending_host_repossesses_a_live_worktree_child_inside_its_grace() -> TestResult {
     let rig = Rig::new("close-slot")?;
     let family = writer(&rig, "echo unsaved > draft.txt; sleep 30").await?;
     assert!(
         family.host.cwd_of("writer").is_some(),
         "the child holds a worktree lane"
     );
-    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1_000_000));
-    let clock = std::sync::Arc::clone(&ticks);
-    family.host.set_lease_clock(
-        Some(std::sync::Arc::new(move || {
-            clock.load(std::sync::atomic::Ordering::SeqCst)
-        })),
-        None,
-    );
-    assert_eq!(family.host.close(), ["writer"]);
-    ticks.store(1_030_001, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(family.host.expire().await, ["writer"]);
+    assert_eq!(family.host.end().await, ["writer"]);
     let pool = rig.pool(2)?;
     assert!(
         matches!(&pool.list()?[..], [SlotView::Idle { .. }, ..]),

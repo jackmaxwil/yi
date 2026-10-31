@@ -109,7 +109,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             options,
             drive,
         );
-        let _revoked = closing.close();
+        end_children(&closing);
         leave_lane(&session);
         print_resume_hint(&session, &session_name);
         return code;
@@ -124,7 +124,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         options,
         control,
     );
-    let _revoked = closing.close();
+    end_children(&closing);
     leave_lane(&session);
     print_resume_hint(&session, &session_name);
     code
@@ -440,4 +440,12 @@ pub(crate) fn session_extensions(
             .unwrap_or_default(),
         can_delegate: true,
     })
+}
+
+/// The shell's own runtime is gone with its loop, so the children are ended on a fresh one.
+fn end_children(host: &std::sync::Arc<yi_runtime::subagent::SubagentHost>) {
+    if let Ok(runtime) = crate::current_thread() {
+        let _ended = runtime.block_on(tokio::time::timeout(crate::END_GRACE, host.end()));
+        runtime.shutdown_timeout(crate::END_GRACE);
+    }
 }

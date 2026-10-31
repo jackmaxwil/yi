@@ -910,6 +910,9 @@ fn run_ask(args: &Args) -> i32 {
     ask::run(args)
 }
 
+/// How long an exiting shell waits for its revoked children's repossession and blocking work.
+pub(crate) const END_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn run_rpc(args: &Args) -> i32 {
     let runtime = match current_thread() {
         Ok(runtime) => runtime,
@@ -927,9 +930,10 @@ fn run_rpc(args: &Args) -> i32 {
         cwd: effective_cwd(args),
     };
     let lane = session.lane();
-    let code = rpc::run_rpc(session, &options, runtime);
+    let code = rpc::run_rpc(session, &options, &runtime);
     // A client that hung up ends its children first, so none of their lanes outlives it.
-    let _revoked = host.close();
+    let _ended = runtime.block_on(tokio::time::timeout(END_GRACE, host.end()));
+    runtime.shutdown_timeout(END_GRACE);
     release_lane(lane.as_deref());
     code
 }

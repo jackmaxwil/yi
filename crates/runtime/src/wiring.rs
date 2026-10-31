@@ -778,7 +778,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         });
     }
     let host = subagent_host(session, &wiring, &plans_dir);
-    let expiry = crate::lease::spawn_expiry(Arc::clone(&host));
+    let expiry = crate::lease::spawn_expiry(&host);
     host.set_lease_clock(
         None,
         Some(Arc::new(move |grace| {

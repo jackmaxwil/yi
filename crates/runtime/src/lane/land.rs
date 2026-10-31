@@ -27,6 +27,15 @@ const CONFLICT_FILES_MAX: usize = 20;
 /// Invariant: a landing's refusal reaches the model bounded, its cut row naming the lane's git.
 const LANDING_FAILED_MAX: usize = 2_000;
 
+fn landing_failed(error: &str) -> String {
+    crate::mailbox::clamp(
+        &format!("landing failed: {error}"),
+        LANDING_FAILED_MAX,
+        "LANDING_FAILED_MAX",
+        "run the git command it names in the lane for the rest",
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Forge {
     Forgejo,
@@ -429,12 +438,7 @@ impl LaneHandle {
         let handle = Arc::clone(self);
         std::thread::spawn(move || {
             if let Err(error) = handle.land_blocking(&title) {
-                let text = crate::mailbox::clamp(
-                    &format!("landing failed: {error}"),
-                    LANDING_FAILED_MAX,
-                    "LANDING_FAILED_MAX",
-                    "run the git command it names in the lane for the rest",
-                );
+                let text = landing_failed(&error.to_string());
                 (handle.steer)(
                     crate::session::host_text(yi_types::message::HostSource::Landing, &text),
                     DeliveryMode::Steer,
@@ -841,4 +845,17 @@ pub fn claim_root(pool: &Pool, session: &str) -> Result<(Lane, Option<String>), 
         )
     });
     Ok((lane, notice))
+}
+
+#[cfg(test)]
+mod landing_failed_tests {
+    #[test]
+    fn a_refusal_past_the_bound_ends_in_its_cut_row() {
+        let refusal = "é".repeat(super::LANDING_FAILED_MAX.saturating_mul(2));
+        let steer = super::landing_failed(&refusal);
+        assert!(
+            steer.ends_with("[kept 2000 of 4016 chars · cap LANDING_FAILED_MAX = 2000 · run the git command it names in the lane for the rest]"),
+            "{steer}"
+        );
+    }
 }

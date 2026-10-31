@@ -601,7 +601,7 @@ impl SubagentHost {
         let (mut spawn_dir, child_id) = build::create_child_dir(&self.children_dir())?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
-        let (reserved, lease) = self.reserve(&session_name, spawn_dir.path(), &ask, &standing)?;
+        let (reserved, lease) = self.reserve(&session_name, &ask, &standing)?;
         let stagger = reader::share(self, &kwargs, seed.as_ref(), &mut cast);
         if let Isolation::Container(image) = &isolation {
             crate::node::placeable(&self.options.home, image)?;

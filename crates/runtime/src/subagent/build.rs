@@ -90,7 +90,6 @@ impl SubagentHost {
     pub(super) fn reserve(
         &self,
         session_name: &str,
-        session_dir: &Path,
         ask: &crate::lease::Ask,
         standing: &Standing,
     ) -> Result<(Reservation<'_>, yi_types::lease::Lease), String> {
@@ -136,10 +135,7 @@ impl SubagentHost {
         let lease = match refusal {
             None => self.draw(&children, session_name, ask),
             Some(refusal) => Err(refusal),
-        };
-        let lease = lease.inspect_err(|_| {
-            let _ = std::fs::remove_dir_all(session_dir);
-        })?;
+        }?;
         let tokens = lease.tokens.unwrap_or(0);
         let reader = matches!(standing, Standing::Reader);
         children
