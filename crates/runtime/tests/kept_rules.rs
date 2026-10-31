@@ -708,3 +708,50 @@ async fn a_granted_dir_is_writable_and_its_sibling_is_not() -> TestResult {
     );
     Ok(())
 }
+
+/// A cwd that is no repository denies a planted `.git`, and that deny used to make every ancestor
+/// of the cwd protected: `--allow-write ..` exited 2 on a grant nothing was wrong with.
+#[test]
+fn a_grant_above_a_denied_dot_git_is_taken() -> TestResult {
+    let (root, project, sandbox, _probe) = workspace("yi-grant-above")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let gate = broker(&session, &project, sandbox, refuse);
+    gate.grant_write(&root)?;
+    let profile = gate
+        .sandbox_for(&project, &Wall::default(), &gate.kept_writes())
+        .ok_or("no profile")?;
+    assert!(
+        profile.denies_write(&project.join(".git")),
+        "the planted .git is still out of reach"
+    );
+    Ok(())
+}
+
+/// A repo's own `.git` is already a writable root, so a grant of it is the no-op it is; its
+/// configs stay out of reach, which is what the grant cannot change.
+#[test]
+fn a_grant_of_its_own_git_dir_leaves_the_config_denied() -> TestResult {
+    let (root, project, _sandbox, _probe) = workspace("yi-grant-gitdir")?;
+    let home = root.join("home");
+    std::fs::create_dir_all(project.join(".git"))?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let gate = broker(
+        &session,
+        &project,
+        Sandbox::for_workspace(&project, &home, None),
+        refuse,
+    );
+    gate.grant_write(&project.join(".git"))?;
+    let profile = gate
+        .sandbox_for(&project, &Wall::default(), &gate.kept_writes())
+        .ok_or("no profile")?;
+    assert!(
+        profile.denies_write(&project.join(".git/config")),
+        "a granted .git still cannot write its config"
+    );
+    Ok(())
+}

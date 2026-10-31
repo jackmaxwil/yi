@@ -657,10 +657,11 @@ fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestRes
         std::fs::write(dir.join("f"), text)?;
     }
     std::fs::create_dir_all(state.join("secret"))?;
-    // The spare names the root by another spelling (`/private/var` for `/var`), as a link may.
+    // The spare names the root by the temp dir's own alias (`/private/var` for `/var`), as a link
+    // may; a platform whose temp dir has one spelling keeps the spare at that spelling.
     let spelled = state.canonicalize()?;
-    let state = Path::new("/").join(spelled.strip_prefix("/private")?);
-    assert_ne!(spelled, state, "the scratch dir has one spelling only");
+    let state =
+        (std::env::temp_dir()).join(spelled.strip_prefix(std::env::temp_dir().canonicalize()?)?);
     std::fs::write(state.join("secret/f"), "WALLED")?;
     let sandbox = Sandbox {
         writable: vec![project.clone(), state.clone()],
@@ -906,15 +907,8 @@ fn a_contained_git_commit_succeeds_in_a_linked_worktree() -> TestResult {
     let (root, _project, home) = workspace("commit")?;
     let (_trunk, lane) = linked_worktree(&root)?;
     std::fs::write(lane.join("change.txt"), "from the lane\n")?;
-    let mut sandbox = Sandbox::for_workspace(&lane, &home, None);
     // The scratch dir sits under tmp, a writable root that would hide the trunk's git dir.
-    let scratch = root.canonicalize()?;
-    sandbox.writable.retain(|writable| {
-        writable
-            .canonicalize()
-            .is_ok_and(|resolved| resolved.starts_with(&scratch))
-            || writable == Path::new("/private/tmp")
-    });
+    let sandbox = lane_profile(&root, &lane, &home)?;
     let command = "git checkout -q -b feature && git add -A && \
         GIT_CONFIG_GLOBAL=/dev/null git -c user.email=yi@example.com -c user.name=yi commit -q -m lane";
     let (code, output) = run(command, &lane, Some(&sandbox))?;
@@ -933,14 +927,7 @@ fn a_contained_command_cannot_write_a_hook_or_the_config() -> TestResult {
     seatbelt()?;
     let (root, _project, home) = workspace("hooks")?;
     let (trunk, lane) = linked_worktree(&root)?;
-    let mut sandbox = Sandbox::for_workspace(&lane, &home, None);
-    let scratch = root.canonicalize()?;
-    sandbox.writable.retain(|writable| {
-        writable
-            .canonicalize()
-            .is_ok_and(|resolved| resolved.starts_with(&scratch))
-            || writable == Path::new("/private/tmp")
-    });
+    let sandbox = lane_profile(&root, &lane, &home)?;
     let common = trunk.join(".git");
     for target in [
         common.join("hooks/post-commit"),
@@ -1060,6 +1047,15 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
             target.display()
         );
     }
+    // A module's object store is not host config: `git submodule update` populates it still.
+    let objects = common.join("modules/sub/objects");
+    let command = format!(
+        "mkdir -p {} && printf x > {}/x",
+        objects.display(),
+        objects.display()
+    );
+    let (code, output) = run(&command, &lane, Some(&sandbox))?;
+    assert_eq!(code, 0, "a module's object store is writable: {output}");
     Ok(())
 }
 
@@ -1088,6 +1084,38 @@ fn a_contained_command_cannot_plant_a_dot_git_or_reach_another_lanes_admin() -> 
         Some(&sandbox),
     )?;
     assert_eq!(code, 0, "ordinary work still runs there: {output}");
+    Ok(())
+}
+
+/// The same wall from the other side: the host's next `git status` in a sibling lane reads that
+/// lane's admin, so a command contained in one lane must not write another lane's.
+#[test]
+fn a_contained_command_in_a_lane_cannot_reach_a_sibling_lanes_admin() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("sibling-lane")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let sibling = root.join("sibling");
+    git(
+        &trunk,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &sibling.to_string_lossy(),
+        ],
+    )?;
+    let admin = git(&sibling, &["rev-parse", "--absolute-git-dir"])?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    for leaf in ["config.worktree", "commondir", "gitdir"] {
+        let target = format!("{admin}/{leaf}");
+        let (code, output) = run(&format!("printf x >> {target}"), &lane, Some(&sandbox))?;
+        assert_ne!(code, 0, "{target} must stay out of reach: {output}");
+    }
+    // The lane's own admin dir takes its index, which lives there.
+    std::fs::write(lane.join("change.txt"), "from the lane\n")?;
+    let (code, output) = run("git add -A", &lane, Some(&sandbox))?;
+    assert_eq!(code, 0, "a contained `git add` still works: {output}");
     Ok(())
 }
 

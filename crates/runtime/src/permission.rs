@@ -142,23 +142,23 @@ pub(crate) fn leaves_sandbox(
 }
 
 /// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
-/// daemon socket), a credential store, or a git path the host runs.
+/// daemon socket), a credential store, or a git file the host runs.
 pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let yi = home.iter().map(|home| home.join(".yi"));
+    let spelled = |guarded: &PathBuf| guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
     let overlaps = |guarded: &PathBuf| {
-        let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
-        [guarded, &real]
+        [guarded.clone(), spelled(guarded)]
             .iter()
             .any(|guarded| dir.starts_with(guarded) || guarded.starts_with(dir))
     };
+    let stores = |s: &yi_tools::Sandbox| -> Vec<PathBuf> {
+        s.deny_read.iter().chain(&s.host_owned).cloned().collect()
+    };
     home.as_deref()
         .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
-        || (sandbox.into_iter())
-            .flat_map(|s| s.deny_read.iter().chain(&s.deny_write).chain(&s.host_owned))
-            .cloned()
-            .chain(yi)
-            .any(|guarded| overlaps(&guarded))
+        || sandbox.is_some_and(|s| s.widens_host_run(dir))
+        || (sandbox.into_iter().flat_map(stores).chain(yi)).any(|guarded| overlaps(&guarded))
 }
 
 pub(crate) fn extract_targets(
