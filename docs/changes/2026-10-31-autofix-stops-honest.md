@@ -1,4 +1,6 @@
 ---
+version: 0.841.0
+decisions: D519
 issue: Closes #1926
 raise: crate console +9
 decision: the autofixer tells a red base and a person's call apart from a failure, and settles a lone binary overrun itself | a week of its ledger held 25 failures of which 8 were main's own red test reported as flaky, 9 were calls no model could make, and 8 attempts at $8.80 sent a size no edit could reach to a model; the 45 KB role prefix it kept measuring was its own `TMPDIR` spelled through the checkout with `..` | restore the `RuntimeError` raises, remove the `base-red` and `handoff` verdicts and the `raise_binary` call in scripts/pr_autofix.py, and put the `..` back in autofix.yml
