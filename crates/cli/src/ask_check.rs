@@ -5,10 +5,6 @@ use yi_runtime::goal::{CheckFailure, DEFAULT_CHECK_TIMEOUT_MS};
 
 use super::ask::{Outcome, Screen, stream};
 
-/// The tools that can change what a check reads. A re-prompted run that called only readers
-/// leaves the check red for the same reason, so its rerun is skipped and counted as wasted.
-pub(super) const PROGRESS: [&str; 4] = ["write", "edit", "bash", "ipython"];
-
 /// The re-prompts one run may spend before the check's red is final.
 const REPROMPTS: u32 = 3;
 const EXIT_RED: i32 = 4;
@@ -42,7 +38,6 @@ impl Release {
 struct Tally {
     reds: u32,
     reprompts: u32,
-    wasted: u32,
 }
 
 /// Re-prompts the same session with a red check's evidence until it passes, the run ends, or
@@ -58,26 +53,23 @@ pub(super) async fn chase(
     let mut tally = Tally {
         reds: 0,
         reprompts: 0,
-        wasted: 0,
     };
     let mut evidence = String::new();
     let release = loop {
-        let mut failed = None;
-        if tally.reprompts == 0 || run.acted {
-            if spent(ends) {
-                break Release::Deadline;
-            }
-            match check_all(checks, dir, ends).await {
-                Ok(()) => break Release::Green,
-                Err(failure) => failed = Some(failure),
-            }
-        } else {
-            tally.wasted = tally.wasted.saturating_add(1);
+        if run.code != 0 || run.kind != "stop" {
+            break Release::Ended;
         }
+        if spent(ends) {
+            break Release::Deadline;
+        }
+        let failed = match check_all(checks, dir, ends).await {
+            Ok(()) => break Release::Green,
+            Err(failure) => failure,
+        };
         tally.reds = tally.reds.saturating_add(1);
         match failed {
-            Some(CheckFailure::Red(output)) => evidence = output,
-            Some(other) => {
+            CheckFailure::Red(output) => evidence = output,
+            other => {
                 evidence = other.evidence();
                 break match other {
                     CheckFailure::TimedOut(_) => Release::Timeout,
@@ -85,7 +77,6 @@ pub(super) async fn chase(
                     _ => Release::Ended,
                 };
             }
-            None => {}
         }
         if tally.reds > REPROMPTS {
             break Release::Cap;
@@ -105,15 +96,8 @@ pub(super) async fn chase(
             break Release::Ended;
         }
         run = stream(screen).await;
-        if run.code != 0 || run.kind != "stop" {
-            break Release::Ended;
-        }
     };
-    let code = if tally.reds == 0 || release == Release::Green {
-        run.code
-    } else {
-        EXIT_RED
-    };
+    let code = release_code(release, run.code);
     report(
         release,
         checks,
@@ -129,6 +113,16 @@ pub(super) async fn chase(
     }
 }
 
+fn release_code(release: Release, run_code: i32) -> i32 {
+    match release {
+        Release::Green => run_code,
+        Release::Ended if run_code != 0 => run_code,
+        Release::Cap | Release::Deadline | Release::Ended | Release::Spawn | Release::Timeout => {
+            EXIT_RED
+        }
+    }
+}
+
 fn report(
     release: Release,
     checks: &[String],
@@ -138,13 +132,13 @@ fn report(
     json: bool,
 ) {
     let named = checks.join("`, `");
-    let (reds, reprompts, wasted) = (tally.reds, tally.reprompts, tally.wasted);
+    let (reds, reprompts) = (tally.reds, tally.reprompts);
     let row = match release {
         Release::Green => {
             format!("[check `{named}` green after {reprompts} re-prompt(s); {reds} red run(s)]")
         }
         Release::Cap => format!(
-            "[check `{named}` released red: {reds} red runs, {reprompts} re-prompts (cap {REPROMPTS}); {wasted} re-prompt(s) changed nothing]"
+            "[check `{named}` released red: {reds} red runs, {reprompts} re-prompts (cap {REPROMPTS})]"
         ),
         Release::Deadline => format!(
             "[check `{named}` released red: no time left before the deadline reserve; {reds} red run(s), {reprompts} re-prompt(s)]"
@@ -169,7 +163,6 @@ fn report(
             "commands": checks,
             "reds": reds,
             "reprompts": reprompts,
-            "wasted": wasted,
             "evidence": first_line(evidence),
         });
         println!("{line}");
@@ -240,13 +233,12 @@ mod tests {
         assert_eq!(super::budget_ms(None), super::DEFAULT_CHECK_TIMEOUT_MS);
     }
 
-    /// Dies with a run's read-only turn counted as progress: the rerun it cannot change is
-    /// spent again, and the model is re-prompted for nothing.
     #[test]
-    fn only_a_writing_or_exec_tool_counts_as_progress() {
-        assert!(super::PROGRESS.contains(&"bash"));
-        assert!(super::PROGRESS.contains(&"write"));
-        assert!(!super::PROGRESS.contains(&"read"));
-        assert!(!super::PROGRESS.contains(&"get_context"));
+    fn only_green_can_keep_a_success_exit() {
+        assert_eq!(super::release_code(super::Release::Green, 0), 0);
+        assert_eq!(
+            super::release_code(super::Release::Deadline, 0),
+            super::EXIT_RED
+        );
     }
 }

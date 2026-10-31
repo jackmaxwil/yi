@@ -149,7 +149,6 @@ const UNREAD: &[(&str, &str)] = &[
     ("thinking", "set \"thinking\" in ~/.yi/config.json"),
     ("system", "pass it to `yi ask` or `yi tui`"),
     ("schema", "pass it to `yi ask`"),
-    ("check", "pass it to `yi ask`"),
     ("deadline", "pass it to `yi ask` or a headless drive"),
 ];
 

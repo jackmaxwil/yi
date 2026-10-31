@@ -87,7 +87,10 @@ pub(super) fn run(args: &Args) -> i32 {
     };
     let json = args.json;
     let checks = args.check.clone();
-    let dir = crate::effective_cwd(args);
+    let dir = lane
+        .as_ref()
+        .and_then(|lane| lane.path())
+        .unwrap_or_else(|| crate::effective_cwd(args));
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
@@ -232,11 +235,10 @@ fn patience(holding: bool, ends: Option<Instant>) -> Option<Duration> {
     }
 }
 
-/// One turn: its exit, its final line, and whether a writing or executing tool ran.
+/// One turn: its exit and final line.
 pub(super) struct Outcome {
     pub(super) code: i32,
     pub(super) kind: String,
-    pub(super) acted: bool,
     pub(super) line: serde_json::Value,
 }
 
@@ -261,8 +263,7 @@ pub(super) async fn stream(screen: &Screen<'_>) -> Outcome {
     );
     let held = || host.holds_owner();
     let working = || host.holds_owner() || session.status() != Status::Idle;
-    let (code, line, acted) =
-        follow(session.subscribe(), [&held, &working], modes, schema, ends).await;
+    let (code, line) = follow(session.subscribe(), [&held, &working], modes, schema, ends).await;
     // Incident: nothing drove the runtime after the deadline, so a looping cell outlived it.
     if session.status() != Status::Idle {
         session.abort();
@@ -270,12 +271,7 @@ pub(super) async fn stream(screen: &Screen<'_>) -> Outcome {
             tokio::time::timeout(left(deadline), session.wait_idle()).await;
     }
     let kind = line["kind"].as_str().unwrap_or_default().to_owned();
-    Outcome {
-        code,
-        kind,
-        acted,
-        line,
-    }
+    Outcome { code, kind, line }
 }
 
 struct Family<'a> {
@@ -399,13 +395,12 @@ async fn follow(
     }: Modes,
     schema: Option<&yi_runtime::schema::Schema>,
     ends: Option<Instant>,
-) -> (i32, serde_json::Value, bool) {
+) -> (i32, serde_json::Value) {
     let (mut answer, mut said, mut exit) = (String::new(), Vec::new(), 0);
     let (mut holding, mut ended) = (false, false);
     let (mut last_stop, mut said_anything, mut due) = (None, false, false);
     let (mut last_error, mut finished, mut schema_failed) = (None, false, false);
     let (mut calls, mut denied) = (std::collections::HashMap::new(), None);
-    let mut acted = false;
     loop {
         let next = match patience(holding, ends) {
             None => yi_runtime::next_event(&mut events).await,
@@ -479,11 +474,8 @@ async fn follow(
         }
         match &event {
             AgentEvent::ToolExecutionStart {
-                tool_call_id,
-                tool_name,
-                args,
+                tool_call_id, args, ..
             } => {
-                acted |= super::ask_check::PROGRESS.contains(&tool_name.as_str());
                 calls.insert(tool_call_id.clone(), args.clone());
             }
             AgentEvent::ToolExecutionEnd {
@@ -582,7 +574,7 @@ async fn follow(
     if line["kind"] == "quota" {
         exit = EXIT_QUOTA;
     }
-    (exit, line, acted)
+    (exit, line)
 }
 
 #[cfg(test)]
@@ -885,7 +877,7 @@ mod tests {
             headless: true,
         };
         let run = super::follow(receiver, [&never, &never], modes, Some(&schema), None);
-        let (code, line, _) = runtime.block_on(run);
+        let (code, line) = runtime.block_on(run);
         assert_ne!(code, 0);
         assert_eq!(
             (&line["kind"], &line["class"]),
@@ -958,7 +950,7 @@ mod tests {
             headless: true,
         };
         let run = super::follow(receiver, [&holds_once, &never], modes, None, None);
-        let (code, line, _) = runtime.block_on(run);
+        let (code, line) = runtime.block_on(run);
         assert_eq!((code, &line["kind"]), (0, &"stop".into()));
         Ok(())
     }

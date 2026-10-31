@@ -1962,6 +1962,25 @@ fn console_and_serve_refuse_a_flag_they_would_drop() -> TestResult {
     Ok(())
 }
 
+/// `--check` only drives an ask, so every spelling that would not reach [`crate::run_ask`]
+/// refuses it before it can start a session.
+#[test]
+fn only_ask_accepts_check() -> TestResult {
+    let workspace = Workspace::new("check-ask-only")?;
+    for argv in [
+        &["console", "--check", "true"][..],
+        &["--check", "true", "fix", "this"][..],
+    ] {
+        let refused = workspace.yi(argv)?;
+        assert_eq!(refused.status.code(), Some(2), "{argv:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&refused.stderr).trim(),
+            "error: --check is `yi ask --check <command>`"
+        );
+    }
+    Ok(())
+}
+
 /// Each of these verbs is a server or a fixed report, so a trailing word is a prompt it would
 /// drop; `doctor` is answered before the config loads and must refuse the same way.
 #[test]

@@ -62,10 +62,11 @@ impl Workspace {
     }
 }
 
-/// One scripted turn: a sentence and no work, or one `bash` call and a sentence.
+/// One scripted turn: a sentence, one command, or a provider error.
 enum Turn<'a> {
     Say(&'a str),
     Run(&'a str),
+    Fail,
 }
 
 fn cassette(workspace: &Workspace, turns: &[Turn<'_>]) -> Result<String, Box<dyn Error>> {
@@ -91,6 +92,10 @@ fn cassette(workspace: &Workspace, turns: &[Turn<'_>]) -> Result<String, Box<dyn
                     StopReason::Stop,
                 ))?);
             }
+            Turn::Fail => lines.push(serde_json::to_string(&faux_assistant_message(
+                Vec::new(),
+                StopReason::Error,
+            ))?),
         }
     }
     let path = workspace.project().join("script.jsonl");
@@ -121,10 +126,10 @@ fn log_lines(path: &std::path::Path) -> Result<usize, Box<dyn Error>> {
     }
 }
 
-/// Dies with the rerun spent on a turn that changed nothing: the same red check runs three
-/// times for one run of work, and the model is re-prompted to fix what it never touched.
+/// Dies with a re-prompt that never re-runs the check: a reader-only turn keeps stale evidence
+/// and a later fix cannot release green.
 #[test]
-fn a_re_prompt_that_changed_nothing_spends_no_rerun() -> TestResult {
+fn every_re_prompt_re_runs_the_check() -> TestResult {
     let workspace = Workspace::new("wasted")?;
     let log = workspace.project().join("runs.log");
     let script = cassette(
@@ -146,11 +151,10 @@ fn a_re_prompt_that_changed_nothing_spends_no_rerun() -> TestResult {
         String::from_utf8_lossy(&run.stderr).into_owned(),
     );
     assert_eq!(run.status.code(), Some(0), "{out}{err}");
-    assert_eq!(log_lines(&log)?, 2, "one red run, one green: {err}");
+    assert_eq!(log_lines(&log)?, 3, "two red runs, one green: {err}");
     let rows = check_lines(&run)?;
     let last = rows.last().ok_or("no check line")?;
     assert_eq!(last["kind"], "green", "{out}");
-    assert_eq!(last["wasted"], 1, "{out}");
     assert_eq!(last["reprompts"], 2, "{out}");
     assert!(workspace.project().join("done.txt").exists());
     Ok(())
@@ -171,12 +175,13 @@ fn a_check_that_stays_red_releases_at_the_cap() -> TestResult {
             Turn::Run("touch four.txt"),
         ],
     )?;
-    let check = format!(
+    let first = "true";
+    let second = format!(
         "echo run >> {log}; test -f {done}",
         log = log.display(),
         done = workspace.project().join("done.txt").display()
     );
-    let run = workspace.ask(&script, &[&check])?;
+    let run = workspace.ask(&script, &[first, &second])?;
     let (out, err) = (
         stdout(&run),
         String::from_utf8_lossy(&run.stderr).into_owned(),
@@ -185,13 +190,38 @@ fn a_check_that_stays_red_releases_at_the_cap() -> TestResult {
     assert_eq!(log_lines(&log)?, 4, "four red runs, no fifth: {err}");
     assert!(
         err.contains("cap 3") && err.contains("test -f"),
-        "the release row names the cap and the command: {err}"
+        "the release row names the red second command: {err}"
     );
     let rows = check_lines(&run)?;
     let last = rows.last().ok_or("no check line")?;
     assert_eq!(last["kind"], "cap", "{out}");
     assert_eq!(last["reds"], 4, "{out}");
     assert_eq!(last["reprompts"], 3, "{out}");
+    Ok(())
+}
+
+/// Dies with a failed first turn checked and re-prompted: an ended run must retain its own exit
+/// and must not charge a check that cannot repair its error.
+#[test]
+fn an_ended_first_turn_skips_the_check() -> TestResult {
+    let workspace = Workspace::new("ended")?;
+    let log = workspace.project().join("runs.log");
+    let script = cassette(&workspace, &[Turn::Fail])?;
+    let check = format!("echo run >> {} && false", log.display());
+    let run = workspace.ask(&script, &[&check])?;
+    let (out, err) = (
+        stdout(&run),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
+    );
+    assert_eq!(run.status.code(), Some(1), "{out}{err}");
+    assert_eq!(
+        log_lines(&log)?,
+        0,
+        "an ended turn must not run a check: {err}"
+    );
+    let rows = check_lines(&run)?;
+    let last = rows.last().ok_or("no check line")?;
+    assert_eq!(last["kind"], "ended", "{out}");
     Ok(())
 }
 
@@ -257,6 +287,41 @@ fn a_check_never_holds_the_run_past_its_deadline() -> TestResult {
     let rows = check_lines(&run)?;
     let last = rows.last().ok_or("no check line")?;
     assert_eq!(last["kind"], "timeout", "{out}{err}");
+    Ok(())
+}
+
+/// Dies with the check run in the launch checkout: work created by a lane turn is invisible
+/// there, so a relative check stays red after the model has fixed it.
+#[test]
+fn a_lane_ask_checks_the_lane_worktree() -> TestResult {
+    let workspace = Workspace::new("lane")?;
+    crate::repo::init_repo(&workspace.project())?;
+    let script = cassette(&workspace, &[Turn::Run("touch done.txt")])?;
+    let run = workspace.yi(&[
+        "ask",
+        "--yolo",
+        "--json",
+        "--lanes",
+        "--model",
+        "faux/faux-1",
+        "--faux",
+        &script,
+        "--check",
+        "test -f done.txt",
+        "go",
+    ])?;
+    let (out, err) = (
+        stdout(&run),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
+    );
+    assert_eq!(run.status.code(), Some(0), "{out}{err}");
+    let rows = check_lines(&run)?;
+    assert_eq!(
+        rows.last().map(|row| &row["kind"]),
+        Some(&"green".into()),
+        "{out}"
+    );
+    assert!(!workspace.project().join("done.txt").exists());
     Ok(())
 }
 
