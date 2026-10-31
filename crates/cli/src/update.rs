@@ -638,6 +638,7 @@ pub(crate) fn absolute_home() -> Result<std::path::PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::scratch::Scratch;
 
     #[test]
     fn the_fgj_token_for_this_forge_is_read() {
@@ -662,10 +663,10 @@ mod tests {
     fn the_installed_binary_is_asked_to_sync_its_plugins() -> Result<(), Box<dyn std::error::Error>>
     {
         use std::os::unix::fs::PermissionsExt;
-        let tmp = Tmp::new()?;
-        let argv = tmp.0.join("argv");
+        let tmp = Scratch::new("yi-update-test")?;
+        let argv = tmp.join("argv");
         for (exit, code) in [(0, 0), (3, 1)] {
-            let binary = tmp.0.join(format!("yi-{exit}"));
+            let binary = tmp.join(format!("yi-{exit}"));
             let script = format!(
                 "#!/bin/sh\necho \"$@\" > '{}'\nexit {exit}\n",
                 argv.display()
@@ -676,33 +677,13 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&argv)?, "plugin sync\n");
             std::fs::remove_file(&argv)?;
         }
-        assert_eq!(report(Ok(("installed".to_owned(), tmp.0.join("gone")))), 1);
+        assert_eq!(report(Ok(("installed".to_owned(), tmp.join("gone")))), 1);
         assert_eq!(
             report(Err("the release digest does not match".to_owned())),
             1
         );
         assert!(!argv.exists(), "a failed update asked nothing to sync");
         Ok(())
-    }
-
-    struct Tmp(PathBuf);
-
-    impl Tmp {
-        fn new() -> Result<Self, Box<dyn std::error::Error>> {
-            let path = std::env::temp_dir().join(format!(
-                "yi-update-test-{}-{}",
-                std::process::id(),
-                TICK.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&path)?;
-            Ok(Self(path))
-        }
-    }
-
-    impl Drop for Tmp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
     }
 
     fn layout(tmp: &Path) -> Result<(PathBuf, PathBuf, PathBuf), Box<dyn std::error::Error>> {
@@ -847,10 +828,10 @@ mod tests {
 
     #[test]
     fn a_binary_outside_the_prefix_is_refused() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = Tmp::new()?;
-        let home = tmp.0.join("home");
-        let prefix = tmp.0.join("prefix");
-        let other = tmp.0.join("other");
+        let tmp = Scratch::new("yi-update-test")?;
+        let home = tmp.join("home");
+        let prefix = tmp.join("prefix");
+        let other = tmp.join("other");
         std::fs::create_dir_all(&home)?;
         std::fs::create_dir_all(&prefix)?;
         std::fs::create_dir_all(&other)?;
@@ -865,8 +846,8 @@ mod tests {
 
     #[test]
     fn a_bad_digest_leaves_the_binary() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = Tmp::new()?;
-        let (home, prefix, exe) = layout(&tmp.0)?;
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, prefix, exe) = layout(&tmp)?;
         let packed = archive(b"new", b"skill")?;
         let error = run_job(
             &home,
@@ -891,14 +872,14 @@ mod tests {
 
     #[test]
     fn a_bad_signature_leaves_the_binary() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = Tmp::new()?;
-        let (home, prefix, exe) = layout(&tmp.0)?;
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, prefix, exe) = layout(&tmp)?;
         let packed = archive(b"new", b"skill")?;
         let Signed {
             digest,
             mut signature,
             signers,
-        } = sign(&tmp.0, &packed)?;
+        } = sign(&tmp, &packed)?;
         let mid = signature.len() / 2;
         let byte = signature.get_mut(mid).ok_or("empty signature")?;
         *byte ^= 0x01;
@@ -924,8 +905,8 @@ mod tests {
     #[test]
     fn a_signed_release_replaces_the_prefix_binary_and_skills()
     -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = Tmp::new()?;
-        let (home, prefix, exe) = layout(&tmp.0)?;
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, prefix, exe) = layout(&tmp)?;
         std::fs::create_dir_all(home.join(".yi/skills/yi/grid"))?;
         std::fs::write(home.join(".yi/skills/yi/SKILL.md"), b"stale")?;
         std::fs::write(home.join(".yi/skills/yi/grid/SKILL.md"), b"dropped")?;
@@ -943,7 +924,7 @@ mod tests {
             digest,
             signature,
             signers,
-        } = sign(&tmp.0, &packed)?;
+        } = sign(&tmp, &packed)?;
         let line = run_job(
             &home,
             &prefix,
@@ -994,8 +975,8 @@ mod tests {
 
     #[test]
     fn the_current_version_downloads_nothing() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = Tmp::new()?;
-        let (home, prefix, exe) = layout(&tmp.0)?;
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, prefix, exe) = layout(&tmp)?;
         let line = run_job(&home, &prefix, &exe, "0.2.0", "unused\n", "0.2.0", &[])?;
         assert_eq!(line, "already 0.2.0");
         assert_eq!(std::fs::read(&exe)?, b"old");
@@ -1004,8 +985,8 @@ mod tests {
 
     #[test]
     fn an_entry_that_leaves_the_archive_is_refused() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = Tmp::new()?;
-        let (home, prefix, exe) = layout(&tmp.0)?;
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, prefix, exe) = layout(&tmp)?;
         let mut tar = Vec::new();
         tar_entry(
             &mut tar,
@@ -1019,7 +1000,7 @@ mod tests {
             digest,
             signature,
             signers,
-        } = sign(&tmp.0, &packed)?;
+        } = sign(&tmp, &packed)?;
         let error = run_job(
             &home,
             &prefix,
@@ -1036,22 +1017,22 @@ mod tests {
         .expect_err("escape");
         assert!(error.contains("leaves the archive"), "{error}");
         assert_eq!(std::fs::read(&exe)?, b"old");
-        assert!(!tmp.0.join("escape").exists());
+        assert!(!tmp.join("escape").exists());
         Ok(())
     }
 
     #[test]
     fn a_failed_binary_rename_leaves_the_skills() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = Tmp::new()?;
-        let home = tmp.0.join("home");
+        let tmp = Scratch::new("yi-update-test")?;
+        let home = tmp.join("home");
         std::fs::create_dir_all(home.join(".yi/skills/yi"))?;
         std::fs::write(home.join(".yi/skills/yi/SKILL.md"), b"old skill")?;
         std::fs::write(home.join(".yi/skills/yi/mine.md"), b"mine")?;
-        let dest = tmp.0.join("prefix/yi");
-        std::fs::create_dir_all(tmp.0.join("prefix"))?;
+        let dest = tmp.join("prefix/yi");
+        std::fs::create_dir_all(tmp.join("prefix"))?;
         std::fs::write(&dest, b"old")?;
         let held = format!("yi.old-{}", std::process::id());
-        std::fs::write(tmp.0.join("prefix").join(&held), b"held")?;
+        std::fs::write(tmp.join("prefix").join(&held), b"held")?;
         let skills = [("yi/SKILL.md".to_owned(), b"new skill".to_vec())];
         let error = publish(&dest, b"new", &home, &skills).expect_err("rename");
         assert_eq!(std::fs::read(&dest)?, b"old");
@@ -1065,7 +1046,7 @@ mod tests {
             .map(|entry| entry.map(|entry| entry.file_name()))
             .collect::<Result<_, _>>()?;
         left.extend(
-            std::fs::read_dir(tmp.0.join("prefix"))?
+            std::fs::read_dir(tmp.join("prefix"))?
                 .map(|entry| entry.map(|entry| entry.file_name()))
                 .collect::<Result<Vec<_>, _>>()?,
         );
@@ -1087,8 +1068,8 @@ mod tests {
     #[test]
     fn a_failure_mid_merge_leaves_the_old_binary_and_skills()
     -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = Tmp::new()?;
-        let (home, dest) = old_install(&tmp.0)?;
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, dest) = old_install(&tmp)?;
         let skills = [
             ("a/one.md".to_owned(), b"one".to_vec()),
             ("README.md".to_owned(), b"new readme".to_vec()),
@@ -1105,8 +1086,8 @@ mod tests {
 
     #[test]
     fn a_failed_skills_swap_restores_the_old_binary() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = Tmp::new()?;
-        let (home, dest) = old_install(&tmp.0)?;
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, dest) = old_install(&tmp)?;
         let blocker = home.join(format!(".yi/skills.old-{}", std::process::id()));
         std::fs::create_dir_all(&blocker)?;
         std::fs::write(blocker.join("held"), b"held")?;

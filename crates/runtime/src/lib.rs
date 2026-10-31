@@ -64,6 +64,7 @@ pub mod title;
 pub mod todo;
 pub mod tools;
 pub mod wall;
+pub mod web_search;
 pub mod wiring;
 
 pub use checkpoint::{
@@ -91,7 +92,8 @@ pub use rewind::{BranchStub, Rewound, ensure_idle, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status, next_event};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{
-    ChildBuild, ChildFeed, ChildStatus, ChildUpdate, ChildView, SubagentHost, SubagentHostOptions,
+    ChildBuild, ChildFeed, ChildStatus, ChildUpdate, ChildView, PARENT_CLOSED, SubagentHost,
+    SubagentHostOptions,
 };
 pub use telemetry::Telemetry;
 pub use tools::ToolAdapter;
@@ -100,6 +102,7 @@ pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
 pub use yi_ai::request::ProxyConfig;
 pub use yi_ai::roots;
+pub use yi_ai::search;
 pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
 pub use yi_kernel::tarball;
 
@@ -147,6 +150,7 @@ pub use yi_permission::{
     Class, ConfigRule, ConfigRuleAction, Decision, Grant, PermissionMode, Verdict, mode_fragment,
 };
 pub use yi_session as session_store;
+pub use yi_tools::ignore::Ignore;
 pub use yi_tools::{
     Change, ChangeKind, Converter, Documents, builtin_tools, builtin_tools_with,
     discover_exec_tools, edit_file, list_files,

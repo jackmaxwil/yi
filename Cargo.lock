@@ -2198,6 +2198,7 @@ dependencies = [
  "http",
  "miniz_oxide",
  "serde_json",
+ "thiserror 2.0.20",
  "tokio",
  "ureq",
  "yi-loop",
