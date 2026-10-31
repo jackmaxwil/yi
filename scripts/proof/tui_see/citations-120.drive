@@ -1,0 +1,12 @@
+#! solo --size 120x34 --faux scripts/proof/tui_see/citations.jsonl
+# A run of reads held open mid-turn, so the frame is the row itself: 120 columns.
+wait-frame 5000 faux-1
+tick 1
+hold toolcall_start 9
+type which config files shape a turn
+key enter
+wait-frame 30000 justfile
+tick 8000
+snap row
+release
+quit

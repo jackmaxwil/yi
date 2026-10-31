@@ -47,3 +47,178 @@ binary(ready_check) + binary(request_budget)
 | (package(yi-tools) & binary(integration) & test(/^(orient|tools)::/))
 '''
 test-group = 'subprocess-wide'
+[profile.timing]
+inherits = "local"
+
+[profile.timing.junit]
+path = "timing.xml"
+
+# BEGIN GENERATED QUICK PROFILES
+[profile.quick]
+inherits = "local"
+default-filter = '''
+not (
+  (binary_id(=yi-cli::integration) & test(=acp_protocol::a_prompt_dropped_before_insertion_is_answered_cancelled)) |
+  (binary_id(=yi-cli::integration) & test(=cli_surfaces::a_run_past_its_deadline_answers_and_exits_inside_it)) |
+  (binary_id(=yi-cli::integration) & test(=console_drive::a_recorded_console_reveals_a_reply_over_frames_and_a_headless_one_paints_it_whole)) |
+  (binary_id(=yi-console::integration) & test(=drive::agent_edit_reloads_clean_editor_silently)) |
+  (binary_id(=yi-console::integration) & test(=drive::dirty_editor_shows_reload_bar_and_r_reloads)) |
+  (binary_id(=yi-console::integration) & test(=drive::e_opens_a_relative_path_in_the_sessions_lane)) |
+  (binary_id(=yi-kernel::kernel_e2e) & test(=an_aborted_internal_cell_clears_the_active_slot)) |
+  (binary_id(=yi-orb::stage) & test(=an_exit_and_target_are_solved_once_however_many_avatars_ask)) |
+  (binary_id(=yi-permission::integration) & test(=decide::a_credential_read_is_named_before_it_happens)) |
+  (binary_id(=yi-permission::integration) & test(=decide::a_credential_read_is_named_by_glob_parent_link_and_case)) |
+  (binary_id(=yi-permission::integration) & test(=decide::a_read_of_a_system_path_is_allowed_but_a_key_is_not)) |
+  (binary_id(=yi-permission::integration) & test(=decide::a_tilde_read_is_judged_under_home)) |
+  (binary_id(=yi-runtime) & test(=memory::store::tests::concurrent_saves_keep_every_index_line)) |
+  (binary_id(=yi-runtime) & test(=memory::store::tests::two_lanes_saving_at_once_keep_one_verified_chain)) |
+  (binary_id(=yi-runtime) & test(=plan::store::tests::a_stale_lease_admits_one_taker_under_contention)) |
+  (binary_id(=yi-runtime) & test(=plan::store::tests::stores_opening_at_once_keep_every_ignore_line)) |
+  (binary_id(=yi-runtime) & test(=session::deadline::tests::a_last_word_that_streams_for_twenty_seconds_lands_inside_the_deadline)) |
+  (binary_id(=yi-runtime::integration) & test(=answer_turn::a_host_note_queued_on_the_answer_turn_is_dropped)) |
+  (binary_id(=yi-runtime::integration) & test(=answer_turn::a_refused_answer_is_patched_with_edit_and_shown_once)) |
+  (binary_id(=yi-runtime::integration) & test(=answer_turn::a_text_stop_with_open_work_is_sent_back_once)) |
+  (binary_id(=yi-runtime::integration) & test(=answer_turn::a_turn_ending_answer_persists_its_terminate_flag)) |
+  (binary_id(=yi-runtime::integration) & test(=answer_turn::an_answer_on_the_last_word_is_still_the_answer)) |
+  (binary_id(=yi-runtime::integration) & test(=caps_runtime::the_memory_index_names_what_it_did_not_load)) |
+  (binary_id(=yi-runtime::integration) & test(=channel_e2e::a_red_ci_script_makes_one_todo_and_its_green_message_unblocks_the_fix)) |
+  (binary_id(=yi-runtime::integration) & test(=channel_e2e::a_wait_whose_source_stays_unchanged_backs_off_and_a_change_resets_it)) |
+  (binary_id(=yi-runtime::integration) & test(=documents::a_large_sheet_points_at_a_pandas_route_that_works)) |
+  (binary_id(=yi-runtime::integration) & test(=family_cache::a_later_fan_out_over_the_same_partition_gets_its_own_lead)) |
+  (binary_id(=yi-runtime::integration) & test(=kernel_across_sessions::a_read_of_a_busy_kernel_gives_up_within_its_deadline)) |
+  (binary_id(=yi-runtime::integration) & test(=kernel_across_sessions::a_slow_read_of_an_idle_kernel_is_not_called_busy)) |
+  (binary_id(=yi-runtime::integration) & test(=kernel_data_surface::every_rlm_name_the_model_reads_is_public_in_the_package)) |
+  (binary_id(=yi-runtime::integration) & test(=kernel_data_surface::the_cell_a_cut_traceback_names_prints_the_exception_again)) |
+  (binary_id(=yi-runtime::integration) & test(=lanes::a_red_check_on_a_child_that_changed_nothing_names_no_branch)) |
+  (binary_id(=yi-runtime::integration) & test(=lanes::handing_a_worktree_back_leaves_the_executor_free)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_overwrites_no_key)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_reads_no_key)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_edits_no_key)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_overwrites_no_key)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_reads_no_key)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_rewrites_no_key_by_grep)) |
+  (binary_id(=yi-runtime::integration) & test(=plan_capacity::two_acceptances_verify_at_once_and_a_third_waits)) |
+  (binary_id(=yi-runtime::integration) & test(=plan_declare::every_dogfood_call_lands_or_says_where_it_goes)) |
+  (binary_id(=yi-runtime::integration) & test(=plan_fuzz::random_op_sequences_hold_every_invariant)) |
+  (binary_id(=yi-runtime::integration) & test(=plan_ops::apply_refuses_while_the_store_lease_is_held)) |
+  (binary_id(=yi-runtime::integration) & test(=plan_trace::a_reply_picks_only_when_it_opens_with_one_option_and_names_no_other)) |
+  (binary_id(=yi-runtime::integration) & test(=reader_e2e::a_worker_hears_its_backgrounded_bash_job_finish)) |
+  (binary_id(=yi-runtime::integration) & test(=recursion_e2e::agent_messages_route_by_name_and_broadcast_with_receipts)) |
+  (binary_id(=yi-runtime::integration) & test(=requests_e2e::a_child_going_stuck_wakes_a_wait)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_deadline_kills_a_backgrounded_job)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_job_reports_only_to_the_session_that_started_it)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_job_that_exits_after_the_turn_wakes_the_idle_session)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_job_that_exits_mid_turn_lands_its_view_as_a_poll_reads_it)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_job_that_exits_mid_turn_reports_into_that_turn)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_killed_job_reports_that_timeout_secs_killed_it)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_polled_job_queued_before_the_poll_is_not_announced)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_retired_session_s_job_starts_no_turn)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::every_wait_idle_wakes_when_its_run_settles)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::two_sessions_bare_polls_return_their_own_jobs)) |
+  (binary_id(=yi-runtime::integration) & test(=session_mail::a_full_mailbox_refuses_the_next_letter_and_names_its_cap)) |
+  (binary_id(=yi-runtime::integration) & test(=snapshot_e2e::a_prewarmed_kernel_owns_the_snapshot_its_bootstrap_writes)) |
+  (binary_id(=yi-runtime::integration) & test(=snapshot_e2e::a_second_process_on_one_session_leaves_its_snapshot_alone)) |
+  (binary_id(=yi-runtime::integration) & test(=snapshot_e2e::a_single_file_snapshot_from_before_blobs_restores)) |
+  (binary_id(=yi-runtime::integration) & test(=subagent::a_bare_wait_wakes_once_on_the_reap_of_a_child_it_saw_finish)) |
+  (binary_id(=yi-runtime::integration) & test(=todo_mirror::a_wait_under_constant_plan_churn_never_unblocks_after_the_budget)) |
+  (binary_id(=yi-tools) & test(=jobs::poll::tests::kill_and_poll_share_one_deadline)) |
+  (binary_id(=yi-tools::integration) & test(=orient::the_skeleton_scan_names_where_it_stopped)) |
+  (binary_id(=yi-tools::integration) & test(=program_values::a_backgrounded_command_hands_a_program_its_job_then_its_output)) |
+  (binary_id(=yi-tools::integration) & test(=sandbox::a_contained_jvm_reaches_loopback)) |
+  (binary_id(=yi-tools::integration) & test(=sandbox::the_policy_denies_by_default_and_names_its_roots)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_backgrounded_job_still_dies_at_timeout_secs)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_child_that_leaves_the_group_cannot_hold_the_timeout_open)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_poll_that_gives_up_leaves_the_job_to_its_report)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_polled_job_is_not_reported_again)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_wait_backgrounds_a_command_still_running)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_wait_not_below_timeout_secs_runs_in_the_turn)) |
+  (binary_id(=yi-tools::integration) & test(=tools::an_interrupt_after_backgrounding_kills_the_job)) |
+  (binary_id(=yi-tools::integration) & test(=tools::an_interrupt_ends_a_poll_within_a_second)) |
+  (binary_id(=yi-tools::integration) & test(=tools::the_output_so_far_names_its_cut))
+)
+'''
+
+[profile.quick-ci]
+inherits = "default"
+default-filter = '''
+not (
+  (binary_id(=yi-cli::integration) & test(=acp_protocol::a_prompt_dropped_before_insertion_is_answered_cancelled)) |
+  (binary_id(=yi-cli::integration) & test(=cli_surfaces::a_run_past_its_deadline_answers_and_exits_inside_it)) |
+  (binary_id(=yi-cli::integration) & test(=console_drive::a_recorded_console_reveals_a_reply_over_frames_and_a_headless_one_paints_it_whole)) |
+  (binary_id(=yi-console::integration) & test(=drive::agent_edit_reloads_clean_editor_silently)) |
+  (binary_id(=yi-console::integration) & test(=drive::dirty_editor_shows_reload_bar_and_r_reloads)) |
+  (binary_id(=yi-console::integration) & test(=drive::e_opens_a_relative_path_in_the_sessions_lane)) |
+  (binary_id(=yi-kernel::kernel_e2e) & test(=an_aborted_internal_cell_clears_the_active_slot)) |
+  (binary_id(=yi-orb::stage) & test(=an_exit_and_target_are_solved_once_however_many_avatars_ask)) |
+  (binary_id(=yi-permission::integration) & test(=decide::a_credential_read_is_named_before_it_happens)) |
+  (binary_id(=yi-permission::integration) & test(=decide::a_credential_read_is_named_by_glob_parent_link_and_case)) |
+  (binary_id(=yi-permission::integration) & test(=decide::a_read_of_a_system_path_is_allowed_but_a_key_is_not)) |
+  (binary_id(=yi-permission::integration) & test(=decide::a_tilde_read_is_judged_under_home)) |
+  (binary_id(=yi-runtime) & test(=memory::store::tests::concurrent_saves_keep_every_index_line)) |
+  (binary_id(=yi-runtime) & test(=memory::store::tests::two_lanes_saving_at_once_keep_one_verified_chain)) |
+  (binary_id(=yi-runtime) & test(=plan::store::tests::a_stale_lease_admits_one_taker_under_contention)) |
+  (binary_id(=yi-runtime) & test(=plan::store::tests::stores_opening_at_once_keep_every_ignore_line)) |
+  (binary_id(=yi-runtime) & test(=session::deadline::tests::a_last_word_that_streams_for_twenty_seconds_lands_inside_the_deadline)) |
+  (binary_id(=yi-runtime::integration) & test(=answer_turn::a_host_note_queued_on_the_answer_turn_is_dropped)) |
+  (binary_id(=yi-runtime::integration) & test(=answer_turn::a_refused_answer_is_patched_with_edit_and_shown_once)) |
+  (binary_id(=yi-runtime::integration) & test(=answer_turn::a_text_stop_with_open_work_is_sent_back_once)) |
+  (binary_id(=yi-runtime::integration) & test(=answer_turn::a_turn_ending_answer_persists_its_terminate_flag)) |
+  (binary_id(=yi-runtime::integration) & test(=answer_turn::an_answer_on_the_last_word_is_still_the_answer)) |
+  (binary_id(=yi-runtime::integration) & test(=caps_runtime::the_memory_index_names_what_it_did_not_load)) |
+  (binary_id(=yi-runtime::integration) & test(=channel_e2e::a_red_ci_script_makes_one_todo_and_its_green_message_unblocks_the_fix)) |
+  (binary_id(=yi-runtime::integration) & test(=channel_e2e::a_wait_whose_source_stays_unchanged_backs_off_and_a_change_resets_it)) |
+  (binary_id(=yi-runtime::integration) & test(=documents::a_large_sheet_points_at_a_pandas_route_that_works)) |
+  (binary_id(=yi-runtime::integration) & test(=family_cache::a_later_fan_out_over_the_same_partition_gets_its_own_lead)) |
+  (binary_id(=yi-runtime::integration) & test(=kernel_across_sessions::a_read_of_a_busy_kernel_gives_up_within_its_deadline)) |
+  (binary_id(=yi-runtime::integration) & test(=kernel_across_sessions::a_slow_read_of_an_idle_kernel_is_not_called_busy)) |
+  (binary_id(=yi-runtime::integration) & test(=kernel_data_surface::every_rlm_name_the_model_reads_is_public_in_the_package)) |
+  (binary_id(=yi-runtime::integration) & test(=kernel_data_surface::the_cell_a_cut_traceback_names_prints_the_exception_again)) |
+  (binary_id(=yi-runtime::integration) & test(=lanes::a_red_check_on_a_child_that_changed_nothing_names_no_branch)) |
+  (binary_id(=yi-runtime::integration) & test(=lanes::handing_a_worktree_back_leaves_the_executor_free)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_overwrites_no_key)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_reads_no_key)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_edits_no_key)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_overwrites_no_key)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_reads_no_key)) |
+  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_rewrites_no_key_by_grep)) |
+  (binary_id(=yi-runtime::integration) & test(=plan_capacity::two_acceptances_verify_at_once_and_a_third_waits)) |
+  (binary_id(=yi-runtime::integration) & test(=plan_declare::every_dogfood_call_lands_or_says_where_it_goes)) |
+  (binary_id(=yi-runtime::integration) & test(=plan_fuzz::random_op_sequences_hold_every_invariant)) |
+  (binary_id(=yi-runtime::integration) & test(=plan_ops::apply_refuses_while_the_store_lease_is_held)) |
+  (binary_id(=yi-runtime::integration) & test(=plan_trace::a_reply_picks_only_when_it_opens_with_one_option_and_names_no_other)) |
+  (binary_id(=yi-runtime::integration) & test(=reader_e2e::a_worker_hears_its_backgrounded_bash_job_finish)) |
+  (binary_id(=yi-runtime::integration) & test(=recursion_e2e::agent_messages_route_by_name_and_broadcast_with_receipts)) |
+  (binary_id(=yi-runtime::integration) & test(=requests_e2e::a_child_going_stuck_wakes_a_wait)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_deadline_kills_a_backgrounded_job)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_job_reports_only_to_the_session_that_started_it)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_job_that_exits_after_the_turn_wakes_the_idle_session)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_job_that_exits_mid_turn_lands_its_view_as_a_poll_reads_it)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_job_that_exits_mid_turn_reports_into_that_turn)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_killed_job_reports_that_timeout_secs_killed_it)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_polled_job_queued_before_the_poll_is_not_announced)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::a_retired_session_s_job_starts_no_turn)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::every_wait_idle_wakes_when_its_run_settles)) |
+  (binary_id(=yi-runtime::integration) & test(=session_faux::two_sessions_bare_polls_return_their_own_jobs)) |
+  (binary_id(=yi-runtime::integration) & test(=session_mail::a_full_mailbox_refuses_the_next_letter_and_names_its_cap)) |
+  (binary_id(=yi-runtime::integration) & test(=snapshot_e2e::a_prewarmed_kernel_owns_the_snapshot_its_bootstrap_writes)) |
+  (binary_id(=yi-runtime::integration) & test(=snapshot_e2e::a_second_process_on_one_session_leaves_its_snapshot_alone)) |
+  (binary_id(=yi-runtime::integration) & test(=snapshot_e2e::a_single_file_snapshot_from_before_blobs_restores)) |
+  (binary_id(=yi-runtime::integration) & test(=subagent::a_bare_wait_wakes_once_on_the_reap_of_a_child_it_saw_finish)) |
+  (binary_id(=yi-runtime::integration) & test(=todo_mirror::a_wait_under_constant_plan_churn_never_unblocks_after_the_budget)) |
+  (binary_id(=yi-tools) & test(=jobs::poll::tests::kill_and_poll_share_one_deadline)) |
+  (binary_id(=yi-tools::integration) & test(=orient::the_skeleton_scan_names_where_it_stopped)) |
+  (binary_id(=yi-tools::integration) & test(=program_values::a_backgrounded_command_hands_a_program_its_job_then_its_output)) |
+  (binary_id(=yi-tools::integration) & test(=sandbox::a_contained_jvm_reaches_loopback)) |
+  (binary_id(=yi-tools::integration) & test(=sandbox::the_policy_denies_by_default_and_names_its_roots)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_backgrounded_job_still_dies_at_timeout_secs)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_child_that_leaves_the_group_cannot_hold_the_timeout_open)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_poll_that_gives_up_leaves_the_job_to_its_report)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_polled_job_is_not_reported_again)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_wait_backgrounds_a_command_still_running)) |
+  (binary_id(=yi-tools::integration) & test(=tools::a_wait_not_below_timeout_secs_runs_in_the_turn)) |
+  (binary_id(=yi-tools::integration) & test(=tools::an_interrupt_after_backgrounding_kills_the_job)) |
+  (binary_id(=yi-tools::integration) & test(=tools::an_interrupt_ends_a_poll_within_a_second)) |
+  (binary_id(=yi-tools::integration) & test(=tools::the_output_so_far_names_its_cut))
+)
+'''
+# END GENERATED QUICK PROFILES
