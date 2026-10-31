@@ -1773,7 +1773,7 @@ fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
     for command in [
         "ls -la && git log --oneline -5 2>/dev/null",
         "cat Cargo.toml | grep name",
-        "RUST_LOG=debug rg needle src; wc -l src/lib.rs",
+        "rg needle src; wc -l src/lib.rs",
     ] {
         assert!(
             !tool.irreversible(&args(&[("command", json!(command))])),
@@ -1786,6 +1786,7 @@ fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
         "git status && git commit -m x",
         "echo hi > notes.txt",
         "cat $(rm -rf /tmp/x)",
+        "LD_PRELOAD=x.so rg needle src",
     ] {
         assert!(
             tool.irreversible(&args(&[("command", json!(command))])),
@@ -1989,6 +1990,7 @@ fn a_cell_that_fails_to_finish_keeps_the_calls_it_made() -> TestResult {
     let tool = yi_tools::IpythonTool {
         bridge: Arc::new(DeadKernel),
         calls: Some(Arc::clone(&calls) as Arc<dyn yi_tools::CellCalls>),
+        contained: true,
     };
     let output = tool.execute(
         args(&[("code", json!("1"))]),
