@@ -71,7 +71,7 @@ message points the model at one.
 |---|---|---|
 | `model`, `thinking` | none, `medium` | the session's `provider/id`; `off` to `max` reasoning effort |
 | `models.summarizer`, `.advisor`, `.autoReview` | main model, off, off | compaction and titles; naming a model turns that reviewer on |
-| `models.classifier` | off | the local [Laya](https://huggingface.co/convaiinnovations/laya) permission and skill classifier |
+| `models.classifier` | off | TypeSafe's Jev through OpenRouter (`typesafe/jev-1.13`) as the permission and skill classifier; typed messages and judged commands leave the machine |
 | `routing` | none | OpenRouter's `provider` object, sent as written |
 | `permissions.mode`, `permissions.allow` | `auto`, none | `ask`, `auto` or `yolo`; calls that run unasked, e.g. `"bash cargo test*"` |
 | `tui.pace` | 100 | streaming reveal speed in percent; 0 paints at once |
@@ -173,6 +173,9 @@ A session is an append-only Pi v4 JSONL log you can branch, rewind and resume af
 ## Develop and license
 
 `just dev` builds and starts `yi`; `just check` runs fmt, clippy, the guardrails and the tests;
+`just test-quick` runs the workspace without the tests last measured at 5 seconds or more and
+prints how many it skipped, while `just slow-tests` records fresh JUnit timings and regenerates
+that list;
 `just build-dist` makes the release build. [YI_DESIGN.md](docs/YI_DESIGN.md) is the law and
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) the map. Apache License 2.0, in `LICENSE`; the copyright
 notice (Jack Mazac and AiBridge LLC) is in `NOTICE`. `vendor/` keeps its upstream licenses.
