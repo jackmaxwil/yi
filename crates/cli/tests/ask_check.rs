@@ -325,6 +325,40 @@ fn a_lane_ask_checks_the_lane_worktree() -> TestResult {
     Ok(())
 }
 
+/// Dies with the check probed in the launch checkout: a script only that checkout holds passes
+/// the probe, then exits 127 in the lane and spends every re-prompt on a check that cannot run.
+#[test]
+fn a_lane_ask_probes_the_check_in_the_lane_worktree() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let workspace = Workspace::new("lane-probe")?;
+    crate::repo::init_repo(&workspace.project())?;
+    let gate = workspace.project().join("gate.sh");
+    std::fs::write(&gate, "#!/bin/sh\nexit 0\n")?;
+    std::fs::set_permissions(&gate, std::fs::Permissions::from_mode(0o755))?;
+    let script = cassette(&workspace, &[Turn::Say("it is done")])?;
+    let run = workspace.yi(&[
+        "ask",
+        "--yolo",
+        "--json",
+        "--lanes",
+        "--model",
+        "faux/faux-1",
+        "--faux",
+        &script,
+        "--check",
+        "./gate.sh",
+        "go",
+    ])?;
+    let (out, err) = (
+        stdout(&run),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
+    );
+    assert_eq!(run.status.code(), Some(2), "{out}{err}");
+    assert!(err.contains("`./gate.sh` is not runnable"), "{err}");
+    assert!(check_lines(&run)?.is_empty(), "{out}");
+    Ok(())
+}
+
 struct Check {
     root: PathBuf,
 }

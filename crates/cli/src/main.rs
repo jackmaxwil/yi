@@ -900,17 +900,17 @@ fn run_version(_: &Args) -> i32 {
 }
 
 fn run_ask(args: &Args) -> i32 {
-    let cwd = effective_cwd(args);
-    if let Some(refusal) = args
-        .check
-        .iter()
-        .find_map(|check| yi_runtime::goal::probe(check, &cwd))
-    {
+    if !args.check.is_empty() && args.prompt.is_empty() {
+        let cwd = effective_cwd(args);
+        let Some(refusal) = args
+            .check
+            .iter()
+            .find_map(|check| yi_runtime::goal::probe(check, &cwd))
+        else {
+            return 0;
+        };
         eprintln!("{refusal}");
         return 2;
-    }
-    if !args.check.is_empty() && args.prompt.is_empty() {
-        return 0;
     }
     if args.prompt.is_empty() {
         eprintln!("usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt | ->");

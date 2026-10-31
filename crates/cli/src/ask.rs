@@ -88,6 +88,13 @@ pub(super) fn run(args: &Args) -> i32 {
     let json = args.json;
     let checks = args.check.clone();
     let dir = crate::session_work_dir(&session, args);
+    if let Some(refusal) = checks
+        .iter()
+        .find_map(|check| yi_runtime::goal::probe(check, &dir))
+    {
+        release_lane(lane.as_deref());
+        return refuse(json, 2, &config, &refusal);
+    }
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))

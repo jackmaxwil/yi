@@ -355,7 +355,10 @@ extension system + yard + native voice/method | `ext_e2e::the_yard_is_a_third_bl
 extension system + yard + native voice/method | `session_faux::an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone`
 extension system + yard + native voice/method | `ext_e2e::a_search_over_many_files_escalates_without_a_nudge`
 structured output `--schema` | `cli_surfaces::schema_validates_the_answer`
-`yi ask --check CMD` | `ask_check::a_re_prompt_that_changed_nothing_spends_no_rerun`
+`yi ask --check CMD` | `ask_check::every_re_prompt_re_runs_the_check`
+`yi ask --check CMD` | `ask_check::an_ended_first_turn_skips_the_check`
+`yi ask --check CMD` | `ask_check::a_lane_ask_checks_the_lane_worktree`
+`yi ask --check CMD` | `ask_check::a_lane_ask_probes_the_check_in_the_lane_worktree`
 `yi ask --check CMD` | `ask_check::a_check_that_stays_red_releases_at_the_cap`
 `yi ask --check CMD` | `ask_check::a_check_that_passes_on_the_first_run_prompts_once`
 `yi ask --check CMD` | `ask_check::a_check_never_holds_the_run_past_its_deadline`
