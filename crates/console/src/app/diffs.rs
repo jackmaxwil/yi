@@ -15,6 +15,7 @@ use super::notebook::apply_notebook;
 use super::{App, RequestKind};
 
 pub(crate) const NOTEBOOK_IDLE: Duration = Duration::from_secs(20);
+const NOTEBOOK_SHARE: f32 = 0.4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SideKind {
@@ -163,7 +164,7 @@ impl App {
         let kept = self.state.diffs.get(session).filter(|_| !full);
         let mut turn = kept.map_or(0, |diff| diff.turn);
         if full && self.state.notebooks.remove(session).is_some() {
-            self.redraw_notebooks(session);
+            self.redraw_notebooks(session, true);
         }
         let mut edited = std::collections::BTreeSet::new();
         for entry in entries {
@@ -237,17 +238,19 @@ impl App {
                 update,
             )
         {
-            self.redraw_notebooks(session);
+            self.redraw_notebooks(session, false);
         }
     }
 
-    fn redraw_notebooks(&mut self, session: &SessionId) {
+    fn redraw_notebooks(&mut self, session: &SessionId, reset: bool) {
         for (pane_id, pane) in &mut self.state.panes {
             if pane.session() == Some(session)
                 && let PaneContent::Notebook { drawn, .. } = &mut pane.content
             {
                 *drawn = None;
-                pane.scroll_from_bottom = 0;
+                if reset {
+                    pane.scroll_from_bottom = 0;
+                }
                 if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
                     *seen = Instant::now();
                 }
@@ -351,7 +354,12 @@ impl App {
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(home);
         }
-        self.split_with_anim(Direction::Horizontal);
+        let side = if kind == SideKind::Notebook {
+            NOTEBOOK_SHARE
+        } else {
+            0.5
+        };
+        self.split_share(Direction::Horizontal, 1.0 - side);
         let opened = self.state.focused_pane_id().filter(|id| *id != home);
         if let Some(pane) = self.state.focused_pane_mut() {
             (pane.content, pane.scroll_from_bottom) = match (kind, session) {
@@ -437,6 +445,81 @@ mod tests {
             };
         }
         (app, session)
+    }
+
+    /// The owner found the notebook's half-width default too wide: it opens at two fifths, so at
+    /// a hundred columns it draws 41 wide where a plain split gives 51.
+    #[test]
+    fn a_new_notebook_takes_two_fifths_of_the_pane_area() {
+        let (mut app, session) = app_with_session();
+        app.maybe_open_side(&session, SideKind::Notebook);
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let widths: Vec<u16> = app
+            .state
+            .tab()
+            .expect("a tab")
+            .layout
+            .panes(area)
+            .iter()
+            .map(|pane| pane.rect.width)
+            .collect();
+        assert_eq!(
+            widths,
+            [60, 41],
+            "a fifth under the 51 a half split gives at 100 columns"
+        );
+    }
+
+    #[test]
+    fn the_review_side_keeps_the_half_split() {
+        let (mut app, session) = app_with_session();
+        let home = app.state.focused_pane_id().expect("home");
+        app.open_side(home, Some(session), SideKind::Diff);
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let widths: Vec<u16> = app
+            .state
+            .tab()
+            .expect("a tab")
+            .layout
+            .panes(area)
+            .iter()
+            .map(|pane| pane.rect.width)
+            .collect();
+        assert_eq!(widths, [50, 51], "Review opens at the generic half");
+    }
+
+    #[test]
+    fn a_notebook_update_preserves_the_reader_but_a_full_replay_resets() {
+        let (mut app, session) = app_with_session();
+        app.maybe_open_side(&session, SideKind::Notebook);
+        let opened = *app.auto_notebooks.keys().next().expect("auto-opened");
+        let start = AcpToolCallUpdate {
+            tool_call_id: "c1".to_owned(),
+            title: Some("ipython".to_owned()),
+            raw_input: Some(json!({"code": "x = 1"})),
+            ..AcpToolCallUpdate::default()
+        };
+        app.fill_notebook(&session, &AcpSessionUpdate::ToolCallUpdate(start));
+        app.state
+            .panes
+            .get_mut(&opened)
+            .expect("notebook")
+            .scroll_from_bottom = 7;
+        let end = AcpToolCallUpdate {
+            tool_call_id: "c1".to_owned(),
+            title: Some("ipython".to_owned()),
+            status: Some(AcpToolCallStatus::Completed),
+            raw_output: Some(json!({"stdout": "1\n"})),
+            ..AcpToolCallUpdate::default()
+        };
+        app.fill_notebook(&session, &AcpSessionUpdate::ToolCallUpdate(end));
+        assert_eq!(app.state.panes[&opened].scroll_from_bottom, 7);
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-notebook-scroll-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        app.absorb_history(&outbound, &session, &[], true);
+        assert_eq!(app.state.panes[&opened].scroll_from_bottom, 0);
+        outbound.shutdown();
     }
 
     #[test]
