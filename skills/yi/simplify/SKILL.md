@@ -26,8 +26,8 @@ claim.
 ## The four angles
 
 1. Reuse. For every new type, function or helper: does one already exist
-   in this repository? `grep` for the name and the shape; `grid resolve`
-   where the binary is present. Replace the new one with the existing one.
+   in this repository? `grep` for the name and the shape; `get_context`
+   for the symbol neighborhood. Replace the new one with the existing one.
 2. Dead code. What does nothing read? A field written and never read, a
    function with one caller that could inline it, an `Other` arm that
    cannot occur. Delete it; the orphan gate counts write-only fields.
