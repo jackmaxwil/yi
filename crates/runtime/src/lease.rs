@@ -322,17 +322,17 @@ impl SubagentHost {
     /// over and whose run has not ended is repossessed. A pending one is tried again.
     pub async fn expire(self: &Arc<Self>) -> Vec<String> {
         let now = self.lease_now();
-        self.expire_by(now).await
+        self.expire_by(now, false).await
     }
 
-    /// The process is exiting: every live child is revoked and repossessed now, since a grace
-    /// that outlives the process is served by no one and its lane would stay held.
+    /// The process is exiting: every live child is revoked and repossessed now, side by side,
+    /// since a grace that outlives the process is served by no one and its lane would stay held.
     pub async fn end(self: &Arc<Self>) -> Vec<String> {
         let _revoked = self.close();
-        self.expire_by(u64::MAX).await
+        self.expire_by(u64::MAX, true).await
     }
 
-    async fn expire_by(self: &Arc<Self>, now: u64) -> Vec<String> {
+    async fn expire_by(self: &Arc<Self>, now: u64, together: bool) -> Vec<String> {
         let first = self
             .grant
             .lock()
@@ -354,20 +354,31 @@ impl SubagentHost {
                     .collect()
             })
             .unwrap_or_default();
-        let mut joins = tokio::task::JoinSet::new();
-        for key in due {
-            let host = Arc::clone(self);
-            joins.spawn(async move {
-                let outcome = host.repossess(&key).await;
-                (key, outcome)
-            });
+        let mut outcomes = Vec::new();
+        if together {
+            let mut joins = tokio::task::JoinSet::new();
+            for key in due {
+                let host = Arc::clone(self);
+                joins.spawn(async move {
+                    let outcome = host.repossess(&key).await;
+                    (key, outcome)
+                });
+            }
+            while let Some(joined) = joins.join_next().await {
+                outcomes.extend(joined.ok());
+            }
+        } else {
+            for key in due {
+                let outcome = self.repossess(&key).await;
+                outcomes.push((key, outcome));
+            }
         }
         let mut repossessed = Vec::new();
-        while let Some(joined) = joins.join_next().await {
-            match joined {
-                Ok((_, Ok(Some(name)))) => repossessed.push(name),
-                Ok((_, Ok(None))) | Err(_) => {}
-                Ok((key, Err(reason))) => self.leave_pending(&key, &reason),
+        for (key, outcome) in outcomes {
+            match outcome {
+                Ok(Some(name)) => repossessed.push(name),
+                Ok(None) => {}
+                Err(reason) => self.leave_pending(&key, &reason),
             }
         }
         repossessed
