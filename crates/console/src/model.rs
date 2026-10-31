@@ -470,6 +470,7 @@ pub enum Mode {
     Normal,
     Prefix,
     Navigator { query: String, selected: usize },
+    Files(crate::files::Files),
     Menu(crate::menu::Menu),
 }
 

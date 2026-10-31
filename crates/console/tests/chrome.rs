@@ -688,8 +688,8 @@ fn the_header_row_carries_four_buttons_that_hover_and_open_their_panes() -> Test
     let files = at(Action::OpenEditor)?;
     mouse(&mut app, MouseKind::Down, files.x, files.y);
     assert!(
-        matches!(&app.state.mode, Mode::Navigator { query, .. } if query == "e "),
-        "files did not open the picker"
+        matches!(app.state.mode, Mode::Files(_)),
+        "files did not open the tree"
     );
     app.state.mode = Mode::Normal;
     mouse(&mut app, MouseKind::Down, diff.x, diff.y);
@@ -916,6 +916,128 @@ fn the_sidebar_chord_cycles_three_states_and_never_focuses_a_hidden_one() -> Tes
         app.state.zone,
         Zone::Panes,
         "tab walked into a sidebar nobody draws"
+    );
+    Ok(())
+}
+
+/// The owner's ask (#1738): the Files button opens a tree of the workspace, a folder folds by
+/// click and a file opens in the editor; a gitignored folder never reaches the tree.
+#[test]
+fn the_files_button_opens_a_tree_that_folds_a_folder_and_opens_a_file() -> TestResult {
+    use yi_console::keys::Action;
+    use yi_console::model::Mode;
+    let dir = crate::scratch::Scratch::new("yi-console-files")?;
+    std::fs::create_dir_all(dir.join("crates/inner"))?;
+    std::fs::create_dir_all(dir.join("build"))?;
+    std::fs::write(dir.join("crates/inner/a.rs"), "pub fn a() {}\n")?;
+    std::fs::write(dir.join("readme.md"), "# hi\n")?;
+    std::fs::write(dir.join("build/skip.rs"), "ignored\n")?;
+    std::fs::write(dir.join(".gitignore"), "build/\n")?;
+    let root = dir.display().to_string();
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    let (mut app, pane) = console()?;
+    app.state.upsert_row(SessionRow {
+        root: root.clone(),
+        ..row_of("s-alpha", "alpha")
+    });
+    let slot = app.state.panes.get_mut(&pane).ok_or("no pane")?;
+    slot.content = PaneContent::Session {
+        session: Some(SessionId("s-alpha".to_owned())),
+        chat: None,
+    };
+    draw(&mut app, &mut terminal)?;
+    let files = hits(&app)?
+        .header_buttons
+        .iter()
+        .find(|(_, action)| *action == Action::OpenEditor)
+        .map(|(rect, _)| *rect)
+        .ok_or("no Files button")?;
+    mouse(&mut app, MouseKind::Down, files.x, files.y);
+    assert!(
+        matches!(app.state.mode, Mode::Files(_)),
+        "the Files button opened no tree"
+    );
+    draw(&mut app, &mut terminal)?;
+    let popup = *hits(&app)?.overlays.first().ok_or("no tree popup")?;
+    let leaf = std::path::Path::new(&root)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    let title = row_text(&terminal, popup.y);
+    assert!(
+        title.contains(&leaf),
+        "the tree is not rooted at the focused session's dir: {title}"
+    );
+    let row_of = |terminal: &Terminal<TestBackend>, needle: &str| -> Option<u16> {
+        (popup.y.saturating_add(1)..popup.bottom().saturating_sub(1))
+            .find(|y| row_text(terminal, *y).contains(needle))
+    };
+    let drawn: Vec<String> = (popup.y.saturating_add(1)..popup.bottom().saturating_sub(1))
+        .map(|y| row_text(&terminal, y))
+        .collect();
+    assert!(
+        drawn.iter().any(|row| row.contains("crates")),
+        "no crates row in {drawn:?}"
+    );
+    assert!(
+        drawn.iter().all(|row| !row.contains("skip.rs")),
+        "the gitignored folder reached the tree: {drawn:?}"
+    );
+    let (events, _received) = client::events();
+    let socket = std::env::temp_dir().join("yi-chrome-no-daemon.sock");
+    let (outbound, _threads) = client::spawn(socket, events);
+    let inner = row_of(&terminal, "inner").ok_or("no inner row")?;
+    mouse(&mut app, MouseKind::Down, popup.x.saturating_add(3), inner);
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        row_of(&terminal, "a.rs").is_some(),
+        "the clicked folder did not unfold"
+    );
+    crate::review::press(&mut app, &outbound, KeyCode::Enter);
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        row_of(&terminal, "a.rs").is_none(),
+        "⏎ on a folder did not fold it"
+    );
+    crate::review::press(&mut app, &outbound, KeyCode::Enter);
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        row_of(&terminal, "a.rs").is_some(),
+        "⏎ did not unfold the folder again"
+    );
+    crate::review::press(&mut app, &outbound, KeyCode::Down);
+    crate::review::press(&mut app, &outbound, KeyCode::Enter);
+    assert!(
+        matches!(app.state.mode, Mode::Normal),
+        "⏎ on a file left the tree up"
+    );
+    let editor = app
+        .state
+        .panes
+        .values()
+        .find_map(|pane| match &pane.content {
+            PaneContent::Editor(editor) => Some(editor.path.clone()),
+            _ => None,
+        })
+        .ok_or("no editor pane opened")?;
+    assert!(
+        editor.ends_with("crates/inner/a.rs"),
+        "⏎ opened {editor}, not the chosen file"
+    );
+    draw(&mut app, &mut terminal)?;
+    let files = hits(&app)?
+        .header_buttons
+        .iter()
+        .find(|(_, action)| *action == Action::OpenEditor)
+        .map(|(rect, _)| *rect)
+        .ok_or("no Files button")?;
+    mouse(&mut app, MouseKind::Down, files.x, files.y);
+    crate::review::press(&mut app, &outbound, KeyCode::Esc);
+    outbound.shutdown();
+    assert!(
+        matches!(app.state.mode, Mode::Normal),
+        "Esc left the tree up"
     );
     Ok(())
 }
