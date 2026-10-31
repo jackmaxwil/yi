@@ -42,7 +42,8 @@ pub(crate) struct Args {
     pub(crate) deadline: Option<u64>,
     pub(crate) resume: Resume,
     pub(crate) schema: Option<String>,
-    /// `--check CMD`: after each turn of `yi ask`, re-prompt until this command exits 0.
+    /// `yi ask --check CMD`, repeatable: probed at startup, then re-prompted until each exits 0;
+    /// with no prompt the probe is the whole run.
     pub(crate) check: Vec<String>,
     pub(crate) stats: stats::Query,
     pub(crate) prompt: String,
@@ -204,6 +205,11 @@ pub(super) fn parse_from(
 }
 
 fn inert_flags(args: &Args) -> Result<(), lexopt::Error> {
+    if !args.check.is_empty() && args.command != "ask" {
+        return Err(lexopt::Error::Custom(
+            "--check is `yi ask --check <command>`".into(),
+        ));
+    }
     // Drive-only flags are silently inert outside the headless loop, which
     // reads downstream as a capture that produced nothing.
     if !args.headless

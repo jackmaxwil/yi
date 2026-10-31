@@ -90,11 +90,18 @@ pub fn parse_json_with_repair(json: &str) -> Result<Value, serde_json::Error> {
     })
 }
 
+struct OpenContainer {
+    closer: char,
+    member_start: usize,
+    colon: bool,
+}
+
 fn close_partial(json: &str) -> Option<String> {
-    let mut stack: Vec<char> = Vec::new();
+    let mut stack: Vec<OpenContainer> = Vec::new();
     let mut in_string = false;
     let mut escaped = false;
-    for character in json.chars() {
+    let mut dangling_key = false;
+    for (offset, character) in json.char_indices() {
         if in_string {
             if escaped {
                 escaped = false;
@@ -102,36 +109,76 @@ fn close_partial(json: &str) -> Option<String> {
                 escaped = true;
             } else if character == '"' {
                 in_string = false;
+                dangling_key = stack
+                    .last()
+                    .is_some_and(|open| open.closer == '}' && !open.colon);
             }
             continue;
         }
         match character {
-            '"' => in_string = true,
-            '{' => stack.push('}'),
-            '[' => stack.push(']'),
+            '"' => {
+                in_string = true;
+                dangling_key = false;
+            }
+            '{' | '[' => {
+                let closer = if character == '{' { '}' } else { ']' };
+                stack.push(OpenContainer {
+                    closer,
+                    member_start: offset.saturating_add(1),
+                    colon: false,
+                });
+                dangling_key = false;
+            }
+            ',' => {
+                if let Some(open) = stack.last_mut() {
+                    open.member_start = offset.saturating_add(1);
+                    open.colon = false;
+                }
+                dangling_key = false;
+            }
+            ':' => {
+                if let Some(open) = stack.last_mut() {
+                    open.colon = true;
+                }
+                dangling_key = false;
+            }
             '}' | ']' => {
                 stack.pop();
+                dangling_key = false;
             }
-            _ => {}
+            other => {
+                if !other.is_whitespace() {
+                    dangling_key = false;
+                }
+            }
         }
     }
-    let mut closed = json.trim_end().to_owned();
+    let mut close_string = in_string;
+    let mut end = json.len();
     if in_string {
+        dangling_key = stack
+            .last()
+            .is_some_and(|open| open.closer == '}' && !open.colon);
         if escaped {
-            closed.push('\\');
+            end = end.saturating_sub(1);
         }
-        closed.push('"');
+    } else {
+        end = json.trim_end().len();
     }
-    for pending in [',', ':'] {
-        if closed.ends_with(pending) {
-            closed.pop();
-        }
+    if dangling_key && let Some(open) = stack.last() {
+        end = open.member_start.min(end);
+        close_string = false;
     }
-    if closed.ends_with(':') {
+    let mut closed = String::with_capacity(end.saturating_add(9));
+    closed.push_str(json.get(..end)?);
+    closed.extend(close_string.then_some('"'));
+    if closed.ends_with(',') {
+        closed.pop();
+    } else if closed.ends_with(':') {
         closed.push_str("null");
     }
-    while let Some(closer) = stack.pop() {
-        closed.push(closer);
+    while let Some(open) = stack.pop() {
+        closed.push(open.closer);
     }
     Some(closed)
 }
@@ -179,6 +226,16 @@ mod tests {
     }
 
     #[test]
+    fn a_call_that_ends_inside_its_last_key_keeps_the_completed_ones() {
+        let with_colon = parse_streaming_json(r#"{"path":"a.rs","patch":"#);
+        assert_eq!(with_colon.get("path"), Some(&Value::from("a.rs")));
+        assert_eq!(with_colon.get("patch"), Some(&Value::Null));
+        let bare_key = parse_streaming_json(r#"{"path":"a.rs","pat"#);
+        assert_eq!(bare_key.get("path"), Some(&Value::from("a.rs")));
+        assert_eq!(bare_key.len(), 1);
+    }
+
+    #[test]
     fn truncated_nested_closes() {
         let parsed = parse_streaming_json(r#"{"a":{"b":[1,2"#);
         assert!(parsed.contains_key("a"));
@@ -193,5 +250,16 @@ mod tests {
     #[test]
     fn garbage_yields_empty_object() {
         assert!(parse_streaming_json("not json").is_empty());
+    }
+
+    #[test]
+    fn whitespace_past_a_member_and_a_cut_escape_keep_the_call_readable() {
+        let spaced = parse_streaming_json(r#"{"path":"a.rs",  "pat"#);
+        assert_eq!(spaced.get("path"), Some(&Value::from("a.rs")));
+        assert_eq!(spaced.len(), 1);
+        let colon = parse_streaming_json(r#"{"path":"a.rs",  "patch": "#);
+        assert_eq!(colon.get("patch"), Some(&Value::Null));
+        let cut_escape = parse_streaming_json(r#"{"cmd":"a\"#);
+        assert_eq!(cut_escape.get("cmd"), Some(&Value::from("a")));
     }
 }

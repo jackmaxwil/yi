@@ -87,8 +87,10 @@ struct Scoped {
     not_loaded: usize,
 }
 
-fn scoped(store: &Store, root: &Path) -> Result<Scoped, StoreError> {
-    let index = store.reconcile()?;
+type Index = fn(&Store) -> Result<Vec<IndexLine>, StoreError>;
+
+fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError> {
+    let index = index(store)?;
     let notes = store.notes();
     let (shown, not_loaded) = loaded(&index, &store.usage());
     let mut stale = 0usize;
@@ -122,10 +124,20 @@ fn scoped(store: &Store, root: &Path) -> Result<Scoped, StoreError> {
     })
 }
 
+/// The start block, reconciling each store first: a session start journals hand edits.
 pub fn block(home: &Path, cwd: &Path) -> (String, Summary) {
+    render(home, cwd, Store::reconcile)
+}
+
+/// The start block's summary as the stores stand, written nowhere: `yi memory list` reads.
+pub fn listed(home: &Path, cwd: &Path) -> Summary {
+    render(home, cwd, Store::indexed).1
+}
+
+fn render(home: &Path, cwd: &Path, index: Index) -> (String, Summary) {
     let root = crate::ext::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let repo = scoped(&Store::new(repo_dir(home, cwd)), &root);
-    let global = scoped(&Store::new(global_dir(home)), &root);
+    let repo = scoped(&Store::new(repo_dir(home, cwd)), &root, index);
+    let global = scoped(&Store::new(global_dir(home)), &root, index);
     let mut summary = Summary::default();
     let mut body: Vec<String> = Vec::new();
     for (label, result) in [("repo", &repo), ("global", &global)] {
@@ -206,6 +218,7 @@ impl Extension for MemoryExt {
         let text = yi_context::fit(&text, budget, "await memory.search(\"words\")").text;
         out.push(Effect::AttachExternal {
             source: SOURCE.to_owned(),
+            kind: "memory",
             trust: Trust::Untrusted,
             text,
         });

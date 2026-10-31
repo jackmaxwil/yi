@@ -10,6 +10,19 @@ BASE = ROOT / "scripts/guardrails/baselines"
 # Cargo builds under CARGO_TARGET_DIR when it is set; a fixed target/ path measured a stale binary.
 DIST_BIN = ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "dist/yi"
 
+def dist_source_roots():
+    home = pathlib.Path.home()
+    cargo = pathlib.Path(os.environ.get("CARGO_HOME") or home / ".cargo")
+    rustup = pathlib.Path(os.environ.get("RUSTUP_HOME") or home / ".rustup")
+    return cargo / "registry" / "src", rustup / "toolchains"
+
+def dist_remaps():
+    return [f"--remap-path-prefix={path}={mapped}"
+            for root, mapped in zip(dist_source_roots(), ("/c", "/r")) for path in sorted(root.glob("*/"))]
+
+if __name__ == "__main__":
+    print("\n".join(dist_remaps()))
+
 SRC = re.compile(r"^crates/[^/]+/src/.+\.rs$")
 TESTS = re.compile(r"^crates/[^/]+/tests/.+\.rs$")
 

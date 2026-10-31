@@ -619,20 +619,7 @@ impl Pool {
             .checked_add(LIST_BUDGET)
             .unwrap_or_else(std::time::Instant::now);
         // Invariant: a listing never fetches; `behind` counts against the `main` last seen.
-        let base = probe_git(
-            &self.repo,
-            &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
-            deadline,
-        )
-        .or_else(|_| {
-            probe_git(
-                &self.repo,
-                &["rev-parse", "--verify", "-q", "main^{commit}"],
-                deadline,
-            )
-        })
-        .ok()
-        .and_then(|text| Sha::parse(&text));
+        let base = self.local_main(deadline);
         let mut views = Vec::new();
         for n in 0..self.slots {
             let slot = SlotIndex(n);
@@ -721,38 +708,53 @@ impl Pool {
         });
     }
 
+    fn resolve_commit(&self, candidate: &str) -> Result<String, LaneError> {
+        let spec = format!("{candidate}^{{commit}}");
+        git(&self.repo, &["rev-parse", "--verify", "-q", &spec]).map(|sha| sha.trim().to_owned())
+    }
+
+    fn local_main(&self, deadline: std::time::Instant) -> Option<Sha> {
+        probe_git(
+            &self.repo,
+            &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
+            deadline,
+        )
+        .or_else(|_| {
+            probe_git(
+                &self.repo,
+                &["rev-parse", "--verify", "-q", "main^{commit}"],
+                deadline,
+            )
+        })
+        .ok()
+        .and_then(|text| Sha::parse(&text))
+    }
+
     fn resolve(&self, base: &ClaimBase, background: bool) -> Result<String, LaneError> {
-        let candidates: Vec<String> = match base {
-            ClaimBase::Main => {
-                let known = background.then(|| {
-                    git(
-                        &self.repo,
-                        &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
-                    )
-                });
-                if let Some(Ok(sha)) = &known {
-                    self.refresh_in_background();
-                    return Ok(sha.trim().to_owned());
-                }
-                let fetched = self.fetch_if_stale();
-                let missing = known.is_some() && !fetched;
-                ["origin/main", "main", "HEAD"]
-                    .into_iter()
-                    .filter(|name| !missing || *name != "origin/main")
-                    .map(str::to_owned)
-                    .collect()
+        match base {
+            ClaimBase::Commit(sha) => return self.resolve_commit(sha),
+            ClaimBase::Main => {}
+        }
+        let known = background.then(|| self.resolve_commit("origin/main"));
+        if let Some(Ok(sha)) = &known {
+            self.refresh_in_background();
+            return Ok(sha.clone());
+        }
+        let fetched = self.fetch_if_stale();
+        let missing = known.is_some() && !fetched;
+        if missing {
+            if let Ok(sha) = self.resolve_commit("main") {
+                return Ok(sha);
             }
-            ClaimBase::Commit(sha) => vec![sha.clone()],
-        };
-        let mut last = None;
-        for candidate in candidates {
-            let spec = format!("{candidate}^{{commit}}");
-            match git(&self.repo, &["rev-parse", "--verify", "-q", &spec]) {
-                Ok(sha) => return Ok(sha.trim().to_owned()),
-                Err(error) => last = Some(error),
+        } else {
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(GIT_TIMEOUT_MS))
+                .unwrap_or_else(std::time::Instant::now);
+            if let Some(sha) = self.local_main(deadline) {
+                return Ok(sha.as_str().to_owned());
             }
         }
-        Err(last.unwrap_or(LaneError::NotARepo(self.repo.clone())))
+        self.resolve_commit("HEAD")
     }
 
     /// How many lanes this pool holds, so a caller can size its own share of them.
@@ -762,7 +764,7 @@ impl Pool {
 
     pub fn claim(&self, session: &str, base: ClaimBase) -> Result<Lane, LaneError> {
         let _span = yi_types::trace::span("lane.claim");
-        let _pool = self.lock()?;
+        let pool_lock = self.lock()?;
         let (mut held, mut orphans) = (0_u8, 0_u8);
         let mut free = None;
         // A resumed session's tree holds its only copy of the work, so its gone slot is kept.
@@ -788,37 +790,37 @@ impl Pool {
         }
         for n in 0..self.slots {
             let slot = SlotIndex(n);
-            if !self.slot_path(slot).is_dir() {
-                free = Some((slot, None, true));
-                break;
-            }
+            // Invariant: the guard comes before the directory test, so a slot another claimer
+            // is still creating reads held and two claimers never pick one fresh slot.
             let (guard, holder) = self.probe(slot)?;
             if holder.is_some() {
                 held = held.saturating_add(1);
                 continue;
+            }
+            if !self.slot_path(slot).is_dir() {
+                free = Some((slot, guard, true));
+                break;
             }
             if self.repo_gone(slot) {
                 self.stop_warmer(slot)?;
                 let path = self.slot_path(slot);
                 std::fs::remove_dir_all(&path).map_err(io_error(&path))?;
                 self.write_state(slot, &SlotState::default())?;
-                free = Some((slot, Some(guard), true));
+                free = Some((slot, guard, true));
                 break;
             }
             match self.read_state(slot)?.session {
                 Some(_) if self.abandoned(slot)? => {
                     self.detach(slot, self.branch_of(slot).as_deref())?;
-                    let mut state = self.read_state(slot)?;
-                    state.session = None;
-                    self.write_state(slot, &state)?;
-                    free = Some((slot, Some(guard), false));
+                    self.clear_session(slot)?;
+                    free = Some((slot, guard, false));
                     break;
                 }
                 Some(_) => orphans = orphans.saturating_add(1),
                 // Invariant: a dirty tree with no session is an older binary's quit, never free.
                 None if self.dirty(slot) => orphans = orphans.saturating_add(1),
                 None => {
-                    free = Some((slot, Some(guard), false));
+                    free = Some((slot, guard, false));
                     break;
                 }
             }
@@ -830,10 +832,7 @@ impl Pool {
                 orphans,
             });
         };
-        let guard = match guard {
-            Some(guard) => guard,
-            None => self.probe(slot)?.0,
-        };
+        drop(pool_lock);
         let branch = BranchName::for_session(session)?;
         let sha = self.resolve(&base, true)?;
         let path = self.slot_path(slot);
@@ -895,39 +894,6 @@ impl Pool {
             released: false,
             _held: guard,
         })
-    }
-
-    /// Incident: a killed install leaves half a tree, so the lockfile hash is forgotten too.
-    fn stop_warmer(&self, slot: SlotIndex) -> Result<(), LaneError> {
-        let mut state = self.read_state(slot)?;
-        let Some(pid) = state.warm.as_ref().and_then(|warm| warm.pid) else {
-            return Ok(());
-        };
-        let running = || yi_kernel::bootstrap::process_is_running(pid).map_err(io_error(&self.dir));
-        if !running()? {
-            return Ok(());
-        }
-        let term = ["-c", r#"kill -TERM "$1""#, "kill", &pid.to_string()];
-        let _the_poll_below_sees_a_failed_term =
-            capture(&self.dir, "/bin/sh", &term, probe_deadline());
-        let started = std::time::Instant::now();
-        let _span = yi_types::trace::span("lane.warmer_exit");
-        let mut pace = yi_types::backoff::backoff(std::time::Duration::from_millis(200));
-        while running()? {
-            if started.elapsed().as_millis() >= u128::from(WARMER_EXIT_WAIT_MS) {
-                return Err(LaneError::WarmerStuck {
-                    slot,
-                    pid,
-                    waited_ms: WARMER_EXIT_WAIT_MS,
-                });
-            }
-            std::thread::sleep(pace());
-        }
-        if let Some(warm) = state.warm.as_mut() {
-            warm.pid = None;
-        }
-        state.lockfile = None;
-        self.write_state(slot, &state)
     }
 
     /// Incident: a repository recreated at its path left slots whose `.git` named a gone gitdir.
@@ -994,9 +960,7 @@ impl Drop for Lane {
                 return Ok(());
             }
             self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-            let mut state = self.pool.read_state(self.slot)?;
-            state.session = None;
-            self.pool.write_state(self.slot, &state)
+            self.pool.clear_session(self.slot)
         });
     }
 }
@@ -1079,9 +1043,7 @@ impl Lane {
         } else {
             self.pool.wipe(self.slot)?
         };
-        let mut state = self.pool.read_state(self.slot)?;
-        state.session = None;
-        self.pool.write_state(self.slot, &state)?;
+        self.pool.clear_session(self.slot)?;
         if quit {
             // Invariant: an unseen lockfile stays cold; that is not a failure.
             match toolchain::warm(&self.pool, self.slot) {

@@ -1,4 +1,5 @@
-//! `yi ask --check CMD`: the run's own verdict on work it claims to have finished.
+//! `yi ask --check CMD`: the run's own verdict on work it claims to have finished. Each check
+//! is probed before any provider request: an unrunnable one exits 2, running nothing.
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -220,39 +221,6 @@ fn a_check_that_passes_on_the_first_run_prompts_once() -> TestResult {
     Ok(())
 }
 
-/// Dies with a command that cannot run read as the model's fault: the run re-prompts it four
-/// times and never names the exit the shell gave.
-#[test]
-fn an_unrunnable_check_is_red_four_times() -> TestResult {
-    let workspace = Workspace::new("unrunnable")?;
-    let script = cassette(
-        &workspace,
-        &[
-            Turn::Run("touch one.txt"),
-            Turn::Run("touch two.txt"),
-            Turn::Run("touch three.txt"),
-            Turn::Run("touch four.txt"),
-        ],
-    )?;
-    let run = workspace.ask(&script, &["nosuchprog-1528"])?;
-    let (out, err) = (
-        stdout(&run),
-        String::from_utf8_lossy(&run.stderr).into_owned(),
-    );
-    assert_eq!(run.status.code(), Some(4), "{out}{err}");
-    let rows = check_lines(&run)?;
-    let last = rows.last().ok_or("no check line")?;
-    assert_eq!(last["kind"], "cap", "{out}");
-    assert!(
-        last["evidence"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("127"),
-        "the release names the shell's exit: {out}"
-    );
-    Ok(())
-}
-
 /// Dies with the check's own ten minutes outliving the run's deadline: `--deadline 2` with a
 /// check that never returns would hold the process past the reserve it keeps for shutdown.
 #[test]
@@ -289,5 +257,90 @@ fn a_check_never_holds_the_run_past_its_deadline() -> TestResult {
     let rows = check_lines(&run)?;
     let last = rows.last().ok_or("no check line")?;
     assert_eq!(last["kind"], "timeout", "{out}{err}");
+    Ok(())
+}
+
+struct Check {
+    root: PathBuf,
+}
+
+impl Check {
+    fn new(tag: &str) -> Result<Self, Box<dyn Error>> {
+        let root = std::env::temp_dir().join(format!("yi-ask-check-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("project"))?;
+        std::fs::create_dir_all(root.join("home/.yi"))?;
+        std::fs::write(
+            root.join("home/.yi/config.json"),
+            r#"{"kernel":{"prewarm":false}}"#,
+        )?;
+        std::fs::write(root.join("cassette.jsonl"), "")?;
+        Ok(Self { root })
+    }
+
+    fn run(&self, command: &str) -> Result<std::process::Output, Box<dyn Error>> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the contract is the spawned binary's argv, exit code and stderr"
+        )]
+        let mut process = Command::new(env!("CARGO_BIN_EXE_yi"));
+        process
+            .arg("ask")
+            .arg("--check")
+            .arg(command)
+            .arg("--model")
+            .arg("faux/faux-1")
+            .arg("--faux")
+            .arg(self.root.join("cassette.jsonl"))
+            .arg("--session-dir")
+            .arg(self.root.join("home/sessions"))
+            .arg("--cwd")
+            .arg(self.root.join("project"))
+            .env("HOME", self.root.join("home"))
+            .current_dir(self.root.join("project"));
+        Ok(process.output()?)
+    }
+
+    fn sessions(&self) -> usize {
+        std::fs::read_dir(self.root.join("home/sessions"))
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    }
+}
+
+impl Drop for Check {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn a_check_that_cannot_run_exits_2_before_any_request() -> TestResult {
+    let check = Check::new("jsut")?;
+    let output = check.run("jsut check")?;
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{said}");
+    assert!(said.contains("`jsut` is not runnable"), "{said}");
+    assert_eq!(check.sessions(), 0, "the probe started a session: {said}");
+    Ok(())
+}
+
+#[test]
+fn a_check_the_shell_cannot_parse_exits_2() -> TestResult {
+    let check = Check::new("syntax")?;
+    let output = check.run("if then fi")?;
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{said}");
+    assert!(said.contains("cannot parse"), "{said}");
+    Ok(())
+}
+
+#[test]
+fn a_check_that_can_run_exits_0_without_a_turn() -> TestResult {
+    let check = Check::new("green")?;
+    let output = check.run("cd . && true")?;
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{said}");
+    assert_eq!(check.sessions(), 0, "the probe started a session: {said}");
     Ok(())
 }

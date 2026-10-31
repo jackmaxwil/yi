@@ -3,7 +3,7 @@
 
 use std::cmp::Reverse;
 
-use ratatui::layout::{Direction, Rect};
+use ratatui::layout::{Direction, Margin, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PaneId(u32);
@@ -12,6 +12,11 @@ impl PaneId {
     pub fn raw(self) -> u32 {
         self.0
     }
+}
+
+/// A framed pane keeps one blank column between its border and its text; a terminal's grid fills its box.
+pub(crate) fn pane_margin(framed: bool, fills: bool) -> Margin {
+    Margin::new(if framed && !fills { 2 } else { 1 }, u16::from(framed))
 }
 
 /// Allocator lives on the tab so ids stay deterministic under drive scripts.
