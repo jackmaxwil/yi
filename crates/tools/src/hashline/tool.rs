@@ -999,12 +999,11 @@ impl Tool for HashlineEditTool {
                 &result.after,
                 Path::new(&result.canonical_path),
             );
-            let stats = patch.stats();
             diff.push_str(patch.as_str());
             if result.op != SectionOp::Delete {
                 checked.push((rendered.len(), result.canonical_path.as_str()));
             }
-            rendered.push(super::messages::section_reply(result, snapshots, stats));
+            rendered.push(super::messages::section_reply(result, snapshots));
         }
         let (verdicts, layer) = post_edit_checks(&checked, &results, context);
         let mut syntax: Option<String> = None;

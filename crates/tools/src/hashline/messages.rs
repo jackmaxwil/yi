@@ -564,11 +564,7 @@ of a multi-line construct. For only this statement use `{plain}`.",
 pub const EDIT_REMOVED_CAP: usize = 8;
 pub const EDIT_REMOVED_CLIP: usize = 120;
 
-pub fn section_reply(
-    result: &PatchSectionResult,
-    snapshots: &mut SnapshotStore,
-    counts: (u64, u64),
-) -> String {
+pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore) -> String {
     let mut out = vec![result.header.clone()];
     let op = match result.op {
         SectionOp::Update => "updated",
@@ -580,7 +576,7 @@ pub fn section_reply(
     } else {
         let map = super::rebase::LineMap::between(&result.before, &result.after);
         let removed = map.removed(&result.before);
-        let counts = format!("+{} -{}", counts.0, counts.1);
+        let counts = format!("+{} -{}", map.authored().len(), removed.len());
         let at = map
             .authored()
             .first()

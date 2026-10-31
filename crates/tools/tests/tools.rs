@@ -3449,6 +3449,42 @@ fn an_edit_that_drops_a_kept_line_shows_it() -> TestResult {
     Ok(())
 }
 
+/// A cut `-- ` comment renders as a `--- ` patch row, which a header-prefix count skipped, so
+/// the reply said `+0 -0` over the row it printed as dropped (#1522).
+#[test]
+fn an_edit_of_dash_dash_rows_counts_every_row_it_shows() -> TestResult {
+    let dir = temp_dir("edit-dash-rows")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let written = WriteTool {
+        hashline: Some(Arc::clone(&state)),
+    }
+    .execute(
+        args(&[
+            ("path", json!("query.sql")),
+            ("content", json!("select 1;\n-- old note\nselect 2;\n")),
+        ]),
+        &context,
+    );
+    let tag = tag_of(&output_text(&written)).ok_or("no write tag")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!("[query.sql#{tag}]\nPUT 2.=2:\n+++ access;\n")),
+        )]),
+        &context,
+    );
+    let reply = output_text(&edit);
+    assert!(!edit.is_error, "{reply}");
+    assert!(reply.contains("-before 2:-- old note"), "{reply}");
+    assert!(reply.contains("+1 -1 at line 2"), "{reply}");
+    Ok(())
+}
+
 /// The removed rows are capped at 8, and the ninth trips a loud row naming the cap and the read
 /// that shows what the file holds now (#1522, 045).
 #[test]
