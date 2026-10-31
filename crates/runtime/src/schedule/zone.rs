@@ -1,13 +1,10 @@
-use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
-use std::time::SystemTime;
 
-type Stamp = Option<(u64, u64, Option<SystemTime>)>;
+use crate::file_cache::{Slot, Stamp};
 
-/// Incident: every cron claim re-read and re-parsed the zone file. A replace by rename keeps the
-/// length and can keep the mtime, so the inode is in the key.
-static LOCAL: Mutex<Option<(PathBuf, Stamp, Zone)>> = Mutex::new(None);
+/// Incident: every cron claim re-read and re-parsed the zone file.
+static LOCAL: Mutex<Option<(PathBuf, Slot<Zone>)>> = Mutex::new(None);
 
 /// A zone's UTC offsets over time, read from a compiled tz database file (RFC 8536); the
 /// default is UTC. Cron fields are wall time in the zone this reads.
@@ -83,25 +80,24 @@ impl Zone {
             }
             _ => PathBuf::from("/etc/localtime"),
         };
-        let stamp = std::fs::metadata(&path)
-            .ok()
-            .map(|meta| (meta.len(), meta.ino(), meta.modified().ok()));
-        let mut local = LOCAL.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((seen, seen_stamp, zone)) = local.as_ref()
-            && *seen == path
-            && *seen_stamp == stamp
-        {
-            return zone.clone();
-        }
-        // Invariant: only a parsed zone is cached, so a transient read error cannot pin UTC.
-        let Some(zone) = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| Self::from_tzif(&bytes))
-        else {
+        let Some(stamp) = Stamp::of(&path, None) else {
             return Self::default();
         };
-        *local = Some((path, stamp, zone.clone()));
-        zone
+        let mut local = LOCAL.lock().unwrap_or_else(PoisonError::into_inner);
+        if local.as_ref().is_none_or(|(seen, _)| *seen != path) {
+            *local = Some((path.clone(), Slot::default()));
+        }
+        let Some((_, slot)) = local.as_ref() else {
+            return Self::default();
+        };
+        slot.load(stamp, || {
+            std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| Self::from_tzif(&bytes))
+                .ok_or(())
+        })
+        .map(|zone| (*zone).clone())
+        .unwrap_or_default()
     }
 
     pub fn from_tzif(bytes: &[u8]) -> Option<Self> {

@@ -26,6 +26,7 @@ mod usage_record;
 mod yi_bin;
 
 mod acp_protocol;
+mod ask_check;
 mod browser;
 mod cli_surfaces;
 mod console_drive;

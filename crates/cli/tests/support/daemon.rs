@@ -35,6 +35,7 @@ pub fn spawn_daemon_with(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .env("HOME", home)
         .env_remove("LAYA_API_KEY")
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(5);

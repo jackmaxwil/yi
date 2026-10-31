@@ -204,13 +204,7 @@ fn ctrl_c_closes_the_model_picker_and_other_ctrl_keys_are_not_typed() {
         TuiOptions {
             model: model.clone(),
             session_name: "model-picker".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
+            ..common::options()
         },
         Theme::new(ColorTier::TrueColor, true),
         default_keymap(),
