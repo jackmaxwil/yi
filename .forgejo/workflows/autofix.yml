@@ -48,6 +48,9 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      # A job's HOME starts with no skills. The copy is this checkout's, main's, so a PR cannot write its own rule.
+      - if: steps.queue.outputs.newer == '0'
+        run: mkdir -p ~/.yi/skills && cp -R .ruler/skills/. ~/.yi/skills/ && cp -R skills/yi ~/.yi/skills/yi
       - if: steps.queue.outputs.newer == '0'
         run: rustup show
       - if: steps.queue.outputs.newer == '0'

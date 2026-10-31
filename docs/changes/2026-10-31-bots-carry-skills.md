@@ -1,0 +1,4 @@
+---
+issue: Closes #1928
+---
+The review bot and the autofixer can read the owner's skills, which a job's HOME never held: asked to name its skills, a `yi ask` with the job's HOME and clone answered NONE. `review.yml` and `autofix.yml` copy `.ruler/skills` and `skills/yi` from their main checkout into `~/.yi/skills`, and `.ruler/skills` gains `ponytail`, `caveman`, `har-io` and `har-target` so that main holds them. Each lens and fixer prompt names `har` and `har-api` to read before judging or writing Rust, and the other HAR skills with the trigger the catalog's 60-character clip would cut. The prompts use absolute paths because a PR's `.yi/skills/har` shadows `yi://skills/har` in the bot's checkout. Refuters read no skill: they test whether a claim holds in the code. A round's or a fix's footer now says which skills it read, so a job that lost the install shows `skills read none`.
