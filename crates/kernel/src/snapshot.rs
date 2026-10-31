@@ -12,6 +12,9 @@ use crate::{
 pub const DEFAULT_SNAPSHOT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES: u64 = 16 * 1024 * 1024;
 
+// Incident: a listing that spent its whole budget queued behind the snapshot the previous cell
+// scheduled reported "no names", and the gate reddened on a tree the change never touched.
+const LISTING_ATTEMPTS: u32 = 2;
 const KERNEL_STATE_BASENAME: &str = "kernel-state";
 // Lowercase deliberately: the env-surface guardrail scans for YI_[A-Z_]+ and
 // this marker is a stdout sentinel, not an env var.
@@ -466,17 +469,11 @@ impl KernelManager {
                 parsed
             }
             Ok(result) => {
-                let detail = result
-                    .error
-                    .map(|error| error.evalue)
-                    .unwrap_or(result.stderr);
+                let timed_out = result.status == ExecuteStatus::Aborted;
+                let detail = cell_detail(result);
                 self.inner.diagnostic(&format!(
                     "state snapshot {}: {detail}",
-                    if result.status == ExecuteStatus::Aborted {
-                        "timed out"
-                    } else {
-                        "failed"
-                    }
+                    if timed_out { "timed out" } else { "failed" }
                 ));
                 None
             }
@@ -499,12 +496,8 @@ impl KernelManager {
                 parse_restore_result(&result.stdout, &config.path)
             }
             Ok(result) => {
-                let detail = result
-                    .error
-                    .map(|error| error.evalue)
-                    .unwrap_or(result.stderr);
                 self.inner
-                    .diagnostic(&format!("state restore failed: {detail}"));
+                    .diagnostic(&format!("state restore failed: {}", cell_detail(result)));
                 None
             }
             Err(error) => {
@@ -518,30 +511,39 @@ impl KernelManager {
     /// Live user-defined top-level names, or None if the kernel isn't
     /// running. Never fails a caller; bounded like a snapshot cell.
     pub async fn list_namespace_names(&self) -> Option<Vec<String>> {
+        self.list_namespace_within(LISTING_ATTEMPTS).await
+    }
+
+    /// One attempt only: the listing paid inline after a user cell, where a retry would
+    /// double the stall that cell's result waits on.
+    pub async fn list_namespace_names_once(&self) -> Option<Vec<String>> {
+        self.list_namespace_within(1).await
+    }
+
+    async fn list_namespace_within(&self, attempts: u32) -> Option<Vec<String>> {
         if !self.is_running() {
             return None;
         }
         let _span = yi_types::trace::span("kernel.list_names");
         let code = build_list_names_code();
-        match self
-            .execute_internal(&code, Some(crate::KERNEL_STATE_LISTING_TIMEOUT_MS))
+        match run_listing_attempts(attempts, |budget_ms| self.listing_attempt(&code, budget_ms))
             .await
         {
-            Ok(result) if result.status == ExecuteStatus::Ok => parse_list_names(&result.stdout),
-            Ok(result) => {
-                let detail = result
-                    .error
-                    .map(|error| error.evalue)
-                    .unwrap_or(result.stderr);
-                self.inner
-                    .diagnostic(&format!("namespace listing failed: {detail}"));
+            Ok(names) => Some(names),
+            Err(failure) => {
+                self.inner.diagnostic(&failure);
                 None
             }
-            Err(error) => {
-                self.inner
-                    .diagnostic(&format!("namespace listing error: {error}"));
-                None
+        }
+    }
+
+    async fn listing_attempt(&self, code: &str, budget_ms: u64) -> Result<Vec<String>, String> {
+        match self.execute_internal(code, Some(budget_ms)).await {
+            Ok(result) if result.status == ExecuteStatus::Ok => {
+                parse_list_names(&result.stdout).ok_or_else(|| "unreadable marker".to_owned())
             }
+            Ok(result) => Err(cell_detail(result)),
+            Err(error) => Err(error.to_string()),
         }
     }
 
@@ -576,6 +578,56 @@ impl KernelManager {
     }
 }
 
+// One deadline over every attempt, each capped at the listing budget: a retry may not
+// hand a caller two full budgets plus two graces, and every attempt's cause survives.
+async fn run_listing_attempts<F, Fut>(attempts: u32, mut run: F) -> Result<Vec<String>, String>
+where
+    F: FnMut(u64) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<String>, String>>,
+{
+    let cap = std::time::Duration::from_millis(crate::KERNEL_STATE_LISTING_TIMEOUT_MS);
+    let deadline = tokio::time::Instant::now() + cap * attempts;
+    let mut reasons: Vec<String> = Vec::new();
+    for attempt in 1..=attempts {
+        let remaining = deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .min(cap);
+        let budget_ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX);
+        if budget_ms == 0 {
+            push_listing_reason(
+                &mut reasons,
+                attempt,
+                attempts,
+                "the attempt budget was spent",
+            );
+            break;
+        }
+        match run(budget_ms).await {
+            Ok(names) => return Ok(names),
+            Err(failure) => push_listing_reason(&mut reasons, attempt, attempts, &failure),
+        }
+    }
+    Err(listing_failure(&reasons))
+}
+
+fn listing_failure(reasons: &[String]) -> String {
+    format!("namespace listing failed: {}", reasons.join("; "))
+}
+
+fn cell_detail(result: ExecuteResult) -> String {
+    let detail = result
+        .error
+        .map(|error| error.evalue)
+        .unwrap_or(result.stderr);
+    if detail.is_empty() && result.status == ExecuteStatus::Aborted {
+        return "timed out waiting on the execution queue".to_owned();
+    }
+    detail
+}
+
+fn push_listing_reason(reasons: &mut Vec<String>, attempt: u32, attempts: u32, detail: &str) {
+    reasons.push(format!("attempt {attempt} of {attempts}: {detail}"));
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,6 +695,63 @@ mod tests {
         assert!(
             restore.contains("\"/tmp/out.blobs\""),
             "restore must read the blobs dir the writer derives"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_listing_attempt_reason_reaches_the_diagnostic() -> Result<(), String> {
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let outcome = run_listing_attempts(2, |_| async {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            Err(format!("cause {n}"))
+        })
+        .await;
+        let message = outcome.err().ok_or("both attempts failed")?;
+        assert_eq!(
+            message, "namespace listing failed: attempt 1 of 2: cause 0; attempt 2 of 2: cause 1",
+            "the first attempt's cause must survive the second"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_failed_first_attempt_still_reports_the_second_attempt() -> Result<(), String> {
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let outcome = run_listing_attempts(2, |_| async {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err("timed out waiting on the execution queue".to_owned())
+            } else {
+                Ok(vec!["alpha".to_owned()])
+            }
+        })
+        .await;
+        assert_eq!(outcome.map_err(|e| e.to_string())?, vec!["alpha"]);
+        Ok(())
+    }
+
+    #[test]
+    fn an_aborted_cell_with_no_detail_names_the_queue_timeout() {
+        let aborted = ExecuteResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            result: None,
+            attachments: Vec::new(),
+            status: ExecuteStatus::Aborted,
+            error: None,
+            duration_ms: 0,
+        };
+        assert_eq!(
+            cell_detail(aborted.clone()),
+            "timed out waiting on the execution queue",
+            "an aborted cell with no stderr must not print an empty reason"
+        );
+        let errored = ExecuteResult {
+            status: ExecuteStatus::Error,
+            ..aborted
+        };
+        assert!(
+            cell_detail(errored).is_empty(),
+            "an errored cell with no detail has no queue timeout to name"
         );
     }
 }

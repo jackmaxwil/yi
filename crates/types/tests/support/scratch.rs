@@ -8,9 +8,16 @@ pub struct Scratch(PathBuf);
 
 impl Scratch {
     pub fn new(name: &str) -> std::io::Result<Self> {
+        Self::new_at(&std::env::temp_dir(), name)
+    }
+
+    /// Under `base` instead of the temp dir, for a fixture whose premise no enclosing repo
+    /// may hold; the drop below still removes it.
+    pub fn new_at(base: &Path, name: &str) -> std::io::Result<Self> {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("{name}-{}-{n}", std::process::id()));
+        let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+        let dir = base.join(format!("{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
         Ok(Self(dir))

@@ -11,7 +11,7 @@ use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Attribution, StopReason};
 
 use crate::approval::{ApprovalView, AskChoice, AskRequest};
-use crate::cell::{Cell, TaskCell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
+use crate::cell::{Cell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
 use crate::colors::{Theme, detect_dark, detect_tier};
 use crate::composer::Composer;
 use crate::focus::set_focus;
@@ -63,18 +63,6 @@ pub type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
 pub fn command_channel() -> (CommandSender, CommandReceiver) {
     tokio::sync::mpsc::unbounded_channel()
 }
-pub struct TuiOptions {
-    pub model: yi_types::model::Model,
-    pub session_name: String,
-    pub cwd: String,
-    pub lane: Option<String>,
-    pub context_window: u64,
-    pub session_dir: String,
-    pub keys: Vec<(String, String)>,
-    pub initial_prompt: Option<String>,
-    /// The streamed reveal's speed as a percentage of the default; 0 paints text on arrival.
-    pub pace: u16,
-}
 
 const MIN_VIEWPORT_ROWS: u16 = 3;
 
@@ -82,17 +70,6 @@ pub(crate) const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 10;
 pub(crate) const ORB_ROWS: u16 = 5;
 pub(crate) const ORB_PX: usize = 320;
-pub struct TaskState {
-    pub(crate) cell: TaskCell,
-    pub(crate) streaming: Option<AgentMessage>,
-    pub(crate) started: Instant,
-    /// When the child reached a terminal state, so the strike can sweep.
-    pub(crate) finished: Option<Instant>,
-    /// The call id of the kernel cell that spawned the child, the one a finished card waits on.
-    pub(crate) born_under: Option<String>,
-    pub(crate) session: Option<yi_runtime::ChildFeed>,
-    pub(crate) rows: crate::cell::AnswerRows,
-}
 
 pub struct App {
     pub(crate) theme: Theme,
@@ -158,6 +135,7 @@ pub struct App {
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
     pub(crate) committed_tasks: HashSet<String>,
+    pub(crate) projection: crate::app::children::ChildProjection,
     /// Cards dropped by a reset or the finished-card cap: their late mail stays quiet, and the
     /// roster brings one back only running.
     pub(crate) retired_tasks: HashSet<String>,
@@ -220,6 +198,7 @@ pub struct App {
     pub(crate) rows: usize,
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
     pub(crate) pane_follow: Option<(usize, TranscriptMode, usize, usize)>,
+    pub(crate) follow: yi_types::config::FollowMode,
     /// The last pane paint's top row and each transcript row's cell, `None` on the live turn.
     pub(crate) pane_rows: (u16, Vec<Option<usize>>),
 }
@@ -227,7 +206,9 @@ pub struct App {
 mod asks;
 mod bridge;
 mod children;
+pub use children::TaskState;
 mod clock;
+mod options;
 mod stream;
 mod working;
 
@@ -235,9 +216,11 @@ pub use crate::frame::next_spinner_wake;
 pub(crate) use asks::mail_source;
 pub(crate) use bridge::spawn_runtime_bridge;
 pub use bridge::{forward, submit};
+pub use options::TuiOptions;
 
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {
+        let follow = options.follow;
         let mut app = Self {
             theme,
             keymap,
@@ -291,6 +274,7 @@ impl App {
             tasks: HashMap::new(),
             task_order: Vec::new(),
             committed_tasks: HashSet::new(),
+            projection: crate::app::children::ChildProjection::default(),
             retired_tasks: HashSet::new(),
             dropped_tasks: 0,
             steering: Vec::new(),
@@ -344,6 +328,7 @@ impl App {
             rows: 24,
             pane_hold: None,
             pane_follow: None,
+            follow,
             pane_rows: (0, Vec::new()),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
@@ -543,10 +528,7 @@ impl App {
             return;
         }
         let rows = std::mem::take(&mut self.explored);
-        let cell = match <[ToolCell; 1]>::try_from(rows) {
-            Ok([single]) => Cell::Tool(single),
-            Err(rows) => Cell::Explored(rows),
-        };
+        let cell = crate::cell::explored_cell(rows);
         self.write_cell(&cell);
     }
 
@@ -635,7 +617,7 @@ impl App {
                 self.steering.clear();
                 self.live_tools.clear();
                 self.flush_explored();
-                self.commit_finished_tasks();
+                self.release_child_rows();
                 self.commit_turn_footer();
                 self.open_questions();
                 self.scheduler.request();

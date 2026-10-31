@@ -1,6 +1,6 @@
 ---
 issue: Closes #1487
-raise: crate kernel +12, crate runtime +11, crate tools +29, tests +219, comments +2
+raise: crate kernel +12, crate runtime +11, tests +206
 ---
 The runtime's two remaining silent cuts are named (unit CAPS-runtime, finishing what 0.753.0 left open on #1487). A `rlm.find_models` search that matched more than `limit` already produced a `[… kept of total matching models (limit N); the rest: await rlm.find_models("", limit=T)]` row in the host reply, and the `rlm` shim read only `models`, so the row never reached a cell and the model saw a short list with nothing to say it was short. The shim prints the row now, and its docstring says the list it returns is at most the `limit` asked for.
 

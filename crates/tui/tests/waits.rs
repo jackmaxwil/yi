@@ -16,15 +16,8 @@ type TestResult = Result<(), Box<dyn Error>>;
 fn running() -> App {
     let mut app = App::new(
         TuiOptions {
-            model: common::test_model("faux-1"),
             session_name: "waits".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
+            ..common::options()
         },
         Theme::new(ColorTier::TrueColor, true),
         yi_tui::keymap::default_keymap(),

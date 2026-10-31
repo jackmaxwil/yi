@@ -20,6 +20,7 @@ ureq = { workspace = true }
 h2 = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 yi-loop = { workspace = true }
