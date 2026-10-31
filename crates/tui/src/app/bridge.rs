@@ -4,7 +4,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 use tokio::sync::broadcast::error::RecvError;
-use yi_runtime::{AgentSession, SubagentHost, session::user_input};
+use yi_runtime::{AgentSession, SubagentHost, lease::SHUTDOWN_GRACE, session::user_input};
 use yi_types::event::AgentEvent;
 use yi_types::mail::Delivery;
 
@@ -12,8 +12,6 @@ use super::{AskRequest, Command, UiEvent};
 use crate::port::Reply;
 
 const QUIT_GRACE: Duration = Duration::from_secs(3);
-/// Invariant: a child is ended here, while the runtime its run task lives on still turns.
-const END_GRACE: Duration = Duration::from_secs(10);
 
 /// One bus into the UI queue, the parent's or a child's. A lagged receiver reports the gap
 /// and keeps going, as the ACP forwarder does; only a closed bus or a gone UI ends it.
@@ -116,57 +114,58 @@ pub(crate) fn spawn_runtime_bridge(
     let driver_session = Arc::clone(session);
     let driver_host = Arc::clone(host);
     let reply_tx = ui_tx.clone();
-    let runtime_thread =
-        std::thread::spawn(move || {
-            runtime.block_on(async move {
-                while let Some(command) = cmd_rx.recv().await {
-                    match command {
-                        Command::Prompt(text) => {
-                            if let Some(notice) = submit(&driver_session, &text) {
-                                let _ = reply_tx.send(UiEvent::Reply(Reply::Notice(notice)));
-                            }
-                        }
-                        Command::Steer(text) => driver_session.steer_message(user_input(&text)),
-                        Command::SummarizeBranch(stub) => {
-                            let session = Arc::clone(&driver_session);
-                            tokio::spawn(async move {
-                                yi_runtime::summarize_branch(&session, stub).await
-                            });
-                        }
-                        Command::Slash(line) => {
-                            crate::port::slash_off_thread(&driver_session, line, &reply_tx);
-                        }
-                        Command::Answer {
-                            child_id,
-                            question,
-                            text,
-                        } => {
-                            let told = driver_host.answer_told(&child_id, &question, &text);
-                            let _ = reply_tx.send(UiEvent::Reply(crate::port::Reply::Notice(told)));
-                        }
-                        Command::StopChild(child_id) => {
-                            let _a_gone_child_is_stopped = driver_host.interrupt(&child_id);
-                        }
-                        Command::ChildHistory(child_id) => {
-                            if let Some(child) = crate::port::child_of(&driver_host, &child_id) {
-                                let entries = crate::port::branch_in(child.session.store());
-                                let _ = reply_tx.send(UiEvent::Reply(
-                                    crate::port::Reply::ChildHistory { child_id, entries },
-                                ));
-                            }
-                        }
-                        Command::Abort => driver_session.abort(),
-                        Command::Shutdown => {
-                            driver_session.abort();
-                            let _ended = tokio::time::timeout(END_GRACE, driver_host.end()).await;
-                            break;
+    let runtime_thread = std::thread::spawn(move || {
+        runtime.block_on(async move {
+            while let Some(command) = cmd_rx.recv().await {
+                match command {
+                    Command::Prompt(text) => {
+                        if let Some(notice) = submit(&driver_session, &text) {
+                            let _ = reply_tx.send(UiEvent::Reply(Reply::Notice(notice)));
                         }
                     }
+                    Command::Steer(text) => driver_session.steer_message(user_input(&text)),
+                    Command::SummarizeBranch(stub) => {
+                        let session = Arc::clone(&driver_session);
+                        tokio::spawn(
+                            async move { yi_runtime::summarize_branch(&session, stub).await },
+                        );
+                    }
+                    Command::Slash(line) => {
+                        crate::port::slash_off_thread(&driver_session, line, &reply_tx);
+                    }
+                    Command::Answer {
+                        child_id,
+                        question,
+                        text,
+                    } => {
+                        let told = driver_host.answer_told(&child_id, &question, &text);
+                        let _ = reply_tx.send(UiEvent::Reply(crate::port::Reply::Notice(told)));
+                    }
+                    Command::StopChild(child_id) => {
+                        let _a_gone_child_is_stopped = driver_host.interrupt(&child_id);
+                    }
+                    Command::ChildHistory(child_id) => {
+                        if let Some(child) = crate::port::child_of(&driver_host, &child_id) {
+                            let entries = crate::port::branch_in(child.session.store());
+                            let _ =
+                                reply_tx.send(UiEvent::Reply(crate::port::Reply::ChildHistory {
+                                    child_id,
+                                    entries,
+                                }));
+                        }
+                    }
+                    Command::Abort => driver_session.abort(),
+                    Command::Shutdown => {
+                        driver_session.abort();
+                        let _ended = tokio::time::timeout(SHUTDOWN_GRACE, driver_host.end()).await;
+                        break;
+                    }
                 }
-            });
-            // Incident: a kernel cell running at quit held a blocking thread, and dropping the
-            // runtime waited out the cell (up to its 600 s ceiling) before the process exited.
-            runtime.shutdown_timeout(QUIT_GRACE);
+            }
         });
+        // Incident: a kernel cell running at quit held a blocking thread, and dropping the
+        // runtime waited out the cell (up to its 600 s ceiling) before the process exited.
+        runtime.shutdown_timeout(QUIT_GRACE);
+    });
     (ui_rx, cmd_tx, runtime_thread)
 }

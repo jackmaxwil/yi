@@ -3403,6 +3403,40 @@ fn a_conflict_steer_names_the_cap_it_was_cut_at() -> TestResult {
     Ok(())
 }
 
+/// Dies with a sequential repossession in `end`: each settle commits through a pre-commit hook
+/// that sleeps three seconds, so two children one after the other take six of the grace.
+#[tokio::test]
+async fn an_ending_host_repossesses_its_children_side_by_side() -> TestResult {
+    let rig = Rig::new("close-two")?;
+    let store = support::memory_store("lanes-two");
+    let hold = "echo unsaved > draft.txt; sleep 30";
+    let (dir, repo) = (rig.root.to_path_buf(), rig.repo.clone());
+    let family = support::family_with_slots(dir, repo, store, Some(hold), 3);
+    spawn_writer(&family, "first").await?;
+    spawn_writer(&family, "second").await?;
+    write_hook(&rig, "pre-commit", "#!/bin/sh\nsleep 3\n")?;
+    let started = std::time::Instant::now();
+    let mut ended = family.host.end().await;
+    let took = started.elapsed();
+    ended.sort();
+    assert_eq!(ended, ["first", "second"]);
+    assert!(
+        took < std::time::Duration::from_millis(5_500),
+        "both came back inside one hook's sleep, not two: {took:?}"
+    );
+    let pool = rig.pool(3)?;
+    assert!(
+        pool.list()?
+            .iter()
+            .filter(|slot| matches!(slot, SlotView::Idle { .. }))
+            .count()
+            >= 2,
+        "both slots are back: {:?}",
+        pool.list()?
+    );
+    Ok(())
+}
+
 /// #1571: the exits that are not the ACP handle now close their host, so a live worktree
 /// child is revoked and its slot comes back instead of staying held by a session that ended.
 #[tokio::test]
