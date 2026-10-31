@@ -494,6 +494,7 @@ pub struct ConsoleState {
     pub quit: bool,
     pub sidebar: SidebarMode,
     pub sidebar_cols: usize,
+    sidebar_focus: bool,
     pub cursor_moved: bool,
     pub diffs: BTreeMap<SessionId, SessionDiff>,
     pub notebooks: BTreeMap<SessionId, Vec<NbCell>>,
@@ -543,6 +544,7 @@ impl ConsoleState {
             dropped_frames: 0,
             sidebar: SidebarMode::Rail,
             sidebar_cols: 0,
+            sidebar_focus: false,
             cursor_moved: false,
             diffs: BTreeMap::new(),
             notebooks: BTreeMap::new(),
@@ -906,11 +908,16 @@ impl ConsoleState {
     }
 
     pub(crate) fn cycle_sidebar(&mut self) {
+        let was_hidden = self.sidebar == SidebarMode::Hidden;
+        let focused = self.sidebar_focus;
         self.sidebar = self.sidebar.next();
         self.header = None;
         self.settle_visible();
         if self.sidebar == SidebarMode::Hidden {
+            self.sidebar_focus = self.zone == Zone::Sidebar;
             self.cycle_zone();
+        } else if was_hidden && focused {
+            self.zone = Zone::Sidebar;
         }
     }
 }

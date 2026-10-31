@@ -343,17 +343,19 @@ fn leaving_the_full_sidebar_drops_a_header_cursor() {
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
     );
     assert!(matches!(app.state.cursor(), Slot::Group(_)));
-    key(
-        &mut app,
-        &outbound,
-        KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-    );
+    for _ in 0..2 {
+        key(
+            &mut app,
+            &outbound,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+        );
+        assert!(
+            matches!(app.state.cursor(), Slot::Row(_)),
+            "{:?}",
+            app.state.cursor()
+        );
+    }
     assert_eq!(app.state.sidebar, SidebarMode::Rail);
-    assert!(
-        matches!(app.state.cursor(), Slot::Row(_)),
-        "{:?}",
-        app.state.cursor()
-    );
     let before = name_at(&app).map(str::to_owned);
     key(
         &mut app,

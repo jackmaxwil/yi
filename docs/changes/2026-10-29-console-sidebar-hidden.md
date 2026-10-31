@@ -1,6 +1,6 @@
 ---
 issue: Closes #1713
-raise: tests +167, comments +4, crate cli +2, crate console +92, crate types +9
+raise: tests +169, comments +4, crate cli +2, crate console +99, crate types +9
 ---
 The console's sidebar had two states, the full list and a narrow avatar rail, and no way to
 get it out of the way on a small terminal. ⌥b and ⌘B now walk three: rail, full, hidden. A
