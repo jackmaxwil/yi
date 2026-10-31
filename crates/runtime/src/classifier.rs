@@ -834,21 +834,9 @@ pub fn arm(config: &UserConfig) -> Armed {
 /// Invariant: a configured URL is honoured only where the account key may go, which is the
 /// provider's own host over TLS and this machine.
 fn reachable(url: &str) -> bool {
-    let Some(named) = host(url) else {
-        return false;
-    };
-    (url.starts_with("https://") && host(DEFAULT_URL) == Some(named))
-        || matches!(named, "127.0.0.1" | "localhost" | "::1")
-}
-
-fn host(url: &str) -> Option<&str> {
-    let rest = (url.strip_prefix("https://")).or_else(|| url.strip_prefix("http://"))?;
-    let authority = rest.split('/').next()?;
-    let host = authority.rsplit('@').next()?;
-    match host.strip_prefix('[') {
-        Some(literal) => literal.split(']').next(),
-        None => Some(host.split(':').next()?),
-    }
+    (url.starts_with("https://")
+        && yi_types::url::url_authority(url) == yi_types::url::url_authority(DEFAULT_URL))
+        || yi_types::url::http_loopback_host_and_port(url).is_some()
 }
 
 /// One question with a short deadline: does the endpoint answer at all, or is a row green over a
@@ -1024,6 +1012,18 @@ mod tests {
             r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://openrouter.ai/api"}}"#,
         )?;
         assert!(matches!(super::arm(&plain), super::Armed::Refused(_)));
+        for posing in [
+            r"https://evil.example\@openrouter.ai/api",
+            "https://evil.example#@openrouter.ai/api",
+            r"http://evil.example\@localhost:8080/",
+        ] {
+            let raw = serde_json::json!({"models": {"classifier": "typesafe/jev-1.13"}, "classifier": {"url": posing}});
+            let (config, _) = yi_types::config::parse(&raw.to_string())?;
+            assert!(
+                matches!(super::arm(&config), super::Armed::Refused(_)),
+                "{posing} would hand the key to evil.example"
+            );
+        }
         Ok(())
     }
 

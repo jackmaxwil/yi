@@ -318,10 +318,15 @@ impl AgentSession {
                 .lock()
                 .map(|messages| {
                     let start = messages.len().saturating_sub(tail);
-                    messages
-                        .get(start..)
-                        .map(<[AgentMessage]>::to_vec)
-                        .unwrap_or_default()
+                    let Some((before, window)) = messages.split_at_checked(start) else {
+                        return Vec::new();
+                    };
+                    let typed =
+                        |message: &&AgentMessage| crate::rules::typed_text(message).is_some();
+                    let task = (!window.iter().any(|message| typed(&message)))
+                        .then(|| before.iter().rev().find(typed))
+                        .flatten();
+                    task.into_iter().chain(window).cloned().collect()
                 })
                 .unwrap_or_default()
         })

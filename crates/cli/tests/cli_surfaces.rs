@@ -2075,39 +2075,6 @@ fn doctor_lines(output: &Output) -> Vec<String> {
     stdout(output).lines().map(str::to_owned).collect()
 }
 
-/// Answers one request with `body` and hands back what it read.
-fn answering(body: &'static str) -> std::io::Result<(u16, std::thread::JoinHandle<String>)> {
-    use std::io::{BufRead, BufReader, Read, Write};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let handle = std::thread::spawn(move || {
-        let mut seen = String::new();
-        if let Ok((stream, _)) = listener.accept() {
-            let mut reader = BufReader::new(stream);
-            let mut length = 0usize;
-            loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-            }
-            let mut sent = vec![0; length];
-            let _ = reader.read_exact(&mut sent);
-            seen = String::from_utf8_lossy(&sent).into_owned();
-            let reply = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = reader.get_mut().write_all(reply.as_bytes());
-        }
-        seen
-    });
-    Ok((port, handle))
-}
-
 /// The classifier row answers for the endpoint it names: a stored key and an endpoint that
 /// answers is ok, the same config without the key is a FAIL the user can act on, and the probe
 /// names the model it asked.
@@ -2116,7 +2083,10 @@ fn doctor_answers_for_the_classifier_endpoint() -> TestResult {
     let workspace = Workspace::new("doctor-classifier")?;
     let yi_dir = workspace.0.join("home/.yi");
     std::fs::create_dir_all(&yi_dir)?;
-    let (port, served) = answering(r#"{"answers":{"probe":{"type":"noul","noul":0.9}}}"#)?;
+    let (port, served) = loopback(
+        "application/json",
+        r#"{"answers":{"probe":{"type":"noul","noul":0.9}}}"#,
+    )?;
     std::fs::write(
         yi_dir.join("config.json"),
         format!(
@@ -2146,7 +2116,10 @@ fn doctor_answers_for_the_classifier_endpoint() -> TestResult {
             && line.contains("answered")),
         "{lines:?}"
     );
-    let seen: Value = serde_json::from_str(&served.join().map_err(|_| "the endpoint thread")?)?;
+    let seen = served
+        .try_iter()
+        .find(|body| body.get("model").is_some())
+        .ok_or("the probe sent nothing")?;
     assert_eq!(
         seen["model"], "typesafe/jev-1.13",
         "the probe names the configured model"
@@ -3203,8 +3176,11 @@ fn a_contained_bash_call_cannot_write_the_session_corpus() -> TestResult {
     Ok(())
 }
 
-/// Every request body a loopback proxy standing in for openrouter.ai reads, each answered `ok`.
-fn openrouter_proxy() -> Result<(u16, std::sync::mpsc::Receiver<Value>), Box<dyn Error>> {
+/// Every request body a loopback proxy standing in for openrouter.ai reads, each answered `reply`.
+fn loopback(
+    content_type: &'static str,
+    reply: &'static str,
+) -> Result<(u16, std::sync::mpsc::Receiver<Value>), Box<dyn Error>> {
     use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -3224,10 +3200,9 @@ fn openrouter_proxy() -> Result<(u16, std::sync::mpsc::Receiver<Value>), Box<dyn
             let mut body = vec![0u8; length];
             let _ = reader.read_exact(&mut body);
             let _ = sender.send(serde_json::from_slice(&body).unwrap_or(Value::Null));
-            let reply = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
             let _ = write!(
                 reader.into_inner(),
-                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
                 reply.len()
             );
         }
@@ -3248,7 +3223,10 @@ fn a_root_session_sends_its_id_as_the_openrouter_session() -> TestResult {
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
         "contextWindow": 100000, "maxTokens": 256}}});
     std::fs::write(catalog.join("openrouter.json"), entry.to_string())?;
-    let (port, bodies) = openrouter_proxy()?;
+    let (port, bodies) = loopback(
+        "text/event-stream",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+    )?;
     let proxy = format!("http://127.0.0.1:{port}");
     let answered = workspace.yi_env(
         &["ask", "--model", "openrouter/probe/flash", "--json", "hi"],

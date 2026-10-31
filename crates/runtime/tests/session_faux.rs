@@ -1962,7 +1962,7 @@ async fn an_unset_classifier_threshold_points_at_0_9_through_attach() -> Result<
 async fn attach_sends_the_sessions_project_task_and_answered_calls() -> Result<(), Box<dyn Error>> {
     const SAFE: &str =
         r#"{"model":"typesafe/jev-1.13-20260917","answers":{"safe":{"type":"noul","noul":0.95}}}"#;
-    let (port, served) = crate::classifier_e2e::sidecar(vec![SAFE])?;
+    let (port, served) = crate::classifier_e2e::sidecar(vec![SAFE, SAFE, SAFE])?;
     let asker: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
     let (broker, warnings, session) =
         brokered_session("yi-attach-question", Some(asker), false, "", port)?;
@@ -1975,8 +1975,51 @@ async fn attach_sends_the_sessions_project_task_and_answered_calls() -> Result<(
     args.insert("command".to_owned(), serde_json::json!("cargo publish"));
     let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c9", &args, None);
     assert!(outcome.allowed, "{}", outcome.reason);
+    let mut wrote = crate::classifier_e2e::transcript("tidy the widget code", &[])?;
+    wrote.push(serde_json::from_value(serde_json::json!({
+        "role": "assistant", "content": [{"type": "toolCall", "id": "w1", "name": "write",
+        "arguments": {"path": "src/widget.rs", "content": "fn secret_body() {}"}}],
+        "api": "openai-completions", "provider": "faux", "model": "faux-1",
+        "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 2,
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+        "stopReason": "toolUse", "timestamp": 10
+    }))?);
+    wrote.push(serde_json::from_value(serde_json::json!({
+        "role": "toolResult", "toolCallId": "w1", "toolName": "write",
+        "content": [{"type": "text", "text": "wrote"}], "isError": false, "timestamp": 11
+    }))?);
+    session.seed_messages(wrote);
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c10", &args, None);
+    assert!(outcome.allowed, "{}", outcome.reason);
+    let mut long = crate::classifier_e2e::transcript("tidy the widget code", &[])?;
+    for index in 0..300 {
+        long.push(serde_json::from_value(serde_json::json!({
+            "role": "toolResult", "toolCallId": format!("o{index}"), "toolName": "bash",
+            "content": [{"type": "text", "text": "exit 0"}], "isError": false, "timestamp": 12
+        }))?);
+    }
+    session.seed_messages(long);
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c11", &args, None);
+    assert!(outcome.allowed, "{}", outcome.reason);
     let seen = served.join().map_err(|_| "the endpoint thread panicked")?;
+    let past_tail: serde_json::Value =
+        serde_json::from_str(seen.get(2).ok_or("the third judgement sent nothing")?)?;
+    assert_eq!(
+        past_tail["state"]["user task"], "tidy the widget code",
+        "a task older than the tail still reaches the question"
+    );
     let sent: serde_json::Value = serde_json::from_str(seen.first().ok_or("nothing sent")?)?;
+    let after_write: serde_json::Value =
+        serde_json::from_str(seen.get(1).ok_or("the second judgement sent nothing")?)?;
+    assert_eq!(
+        after_write["state"]["recent commands"],
+        serde_json::json!(["write src/widget.rs"]),
+        "a write call is named by its path, never its body"
+    );
+    assert!(
+        !after_write.to_string().contains("secret_body"),
+        "{after_write}"
+    );
     let state = &sent["state"];
     assert_eq!(state["user task"], "tidy the widget code");
     assert_eq!(

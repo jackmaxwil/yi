@@ -832,6 +832,11 @@ fn setup_saves_jev_as_the_classifier_only_with_an_openrouter_key() -> TestResult
         "{refused:?}"
     );
     assert!(config_of(&journey)?.get("models").is_none());
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::write(
+        &file,
+        r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:8000"}}"#,
+    )?;
     let mut keyed = journey.command(&["setup"]);
     keyed.env("OPENROUTER_API_KEY", "sk-or-journey");
     let saved = feed(keyed, "\n\ny\n")?;
@@ -840,7 +845,19 @@ fn setup_saves_jev_as_the_classifier_only_with_an_openrouter_key() -> TestResult
     assert_eq!(config["models"]["classifier"], "typesafe/jev-1.13");
     assert!(
         config.get("classifier").is_none(),
-        "no URL is written: {config}"
+        "the Laya sidecar's URL is cleared: {config}"
+    );
+    std::fs::write(
+        &file,
+        r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:9000"}}"#,
+    )?;
+    let mut own = journey.command(&["setup"]);
+    own.env("OPENROUTER_API_KEY", "sk-or-journey");
+    assert!(feed(own, "\n\ny\n")?.status.success());
+    assert_eq!(
+        config_of(&journey)?["classifier"]["url"],
+        "http://127.0.0.1:9000",
+        "a URL the user set is kept"
     );
     journey.reclaim();
     Ok(())

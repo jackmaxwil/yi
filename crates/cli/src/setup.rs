@@ -109,7 +109,7 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
         "Turn on the optional classifier? It suggests skills from what you mean and approves ordinary commands in auto mode; typed messages and commands go to TypeSafe's Jev through OpenRouter, about $0.00002 a call. [y/N]: ",
     )?;
     if yes(&classifier) {
-        classifier_step(out, &mut edits)?;
+        classifier_step(home, out, &mut edits)?;
     }
     if edits.is_empty() {
         return say(out, "Nothing to save.");
@@ -160,7 +160,9 @@ fn model_step(
     Ok(())
 }
 
-fn classifier_step(out: &mut dyn Write, edits: &mut Vec<Edit>) -> Result<(), String> {
+const LAYA_URL: &str = "http://127.0.0.1:8000";
+
+fn classifier_step(home: &Path, out: &mut dyn Write, edits: &mut Vec<Edit>) -> Result<(), String> {
     if yi_runtime::auth::api_key("openrouter").is_none() {
         return say(
             out,
@@ -174,7 +176,17 @@ fn classifier_step(out: &mut dyn Write, edits: &mut Vec<Edit>) -> Result<(), Str
         vec!["models", "classifier"],
         json!(yi_runtime::classifier::JEV),
     ));
-    edits.push((vec!["classifier", "url"], Value::Null));
+    let laya = std::fs::read_to_string(yi_runtime::settings::config_path(home))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|config| {
+            let url = config.pointer("/classifier/url")?.as_str()?.to_owned();
+            Some(url.trim_end_matches('/') == LAYA_URL)
+        })
+        .unwrap_or(false);
+    if laya {
+        edits.push((vec!["classifier", "url"], Value::Null));
+    }
     Ok(())
 }
 
