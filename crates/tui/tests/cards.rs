@@ -246,6 +246,20 @@ fn a_failed_calls_reason_is_not_folded_to_two_rows() -> TestResult {
 }
 
 #[test]
+fn a_failed_calls_collapsed_rows_still_fold_to_two() -> TestResult {
+    let mut app = app();
+    ran(&mut app, "c1", &format!("boom\n{}", "e".repeat(600)), true);
+    let rows = flat(&app.reflowed(80));
+    assert_eq!(
+        rows.iter().filter(|r| r.contains("eee")).count(),
+        2,
+        "only the reason is revealed; a collapsed row folds as main folds it: {rows:?}"
+    );
+    assert!(rows.iter().any(|r| r.contains("… 2 of")), "{rows:?}");
+    Ok(())
+}
+
+#[test]
 fn an_oversized_blob_skips_pretty_printing() -> TestResult {
     let blob = format!("{{\"a\":\"{}\"}}", "y".repeat(300 * 1024));
     let rows = verbose_rows(&blob);

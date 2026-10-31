@@ -384,7 +384,7 @@ impl ToolCell {
         spans.extend(self.summary_spans(theme, style));
         let (chips, digest) = self.chips(theme);
         let inner = crate::card::body_width(width);
-        let keep = if expanded || failed {
+        let revealed = if expanded || failed {
             REVEAL_ROWS
         } else {
             ELIDED_ROWS
@@ -423,7 +423,7 @@ impl ToolCell {
                 inner,
                 "  ",
                 theme,
-                keep,
+                revealed,
             ));
         }
         if let Some(patch) = self.patch() {
@@ -440,17 +440,17 @@ impl ToolCell {
                     theme.muted_style()
                 };
                 let row = Line::from(vec![Span::styled(row.clone(), style)]);
-                body.extend(capped(&row, inner, "  ", theme, keep));
+                body.extend(capped(&row, inner, "  ", theme, ELIDED_ROWS));
             }
         } else if expanded {
             for line in self.body(theme) {
-                body.extend(capped(&line, inner, "     ", theme, keep));
+                body.extend(capped(&line, inner, "     ", theme, revealed));
             }
         } else {
             let hidden = self.lines_total().saturating_sub(preview.len());
             let shown = !preview.is_empty();
             for line in preview {
-                body.extend(capped(&line, inner, "     ", theme, keep));
+                body.extend(capped(&line, inner, "     ", theme, ELIDED_ROWS));
             }
             if shown && hidden > 0 {
                 body.push(Line::from(Span::styled(
