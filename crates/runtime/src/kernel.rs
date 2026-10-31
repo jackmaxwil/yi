@@ -631,6 +631,10 @@ impl KernelService {
         self.user_cells.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 
+    pub fn contained(&self) -> bool {
+        self.options.sandbox.is_some() && yi_tools::Sandbox::available()
+    }
+
     async fn restart_note(&self, manager: &KernelManager) -> String {
         let before = self.names.lock().ok().and_then(|names| names.clone());
         let now = manager.list_namespace_names().await.unwrap_or_default();
@@ -704,7 +708,7 @@ impl KernelService {
                         *restarted = None;
                     }
                     if result.status != yi_types::kernel::ExecuteStatus::Aborted
-                        && let Some(names) = manager.list_namespace_names().await
+                        && let Some(names) = manager.list_namespace_names_once().await
                         && let Ok(mut slot) = self.names.lock()
                     {
                         *slot = Some(names);
