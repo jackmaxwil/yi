@@ -1,4 +1,6 @@
 ---
+version: 0.837.0
+decisions: D518
 issue: Closes #1784
 decision: the classifier runs on TypeSafe's Jev (`typesafe/jev-1.13`) at OpenRouter's `/api/v1/systemone`, keyed by the OpenRouter key, and the Laya sidecar Yi started, installed and probed is deleted; with the classifier on, typed messages and judged commands go to TypeSafe through OpenRouter; approval asks the V2 question (task, last two answered calls, project root, writable roots, protected branches, checkpoint note) and allows at P(safe) 0.8, 0.9 for a destructive command (revises D297, D301, D356, D364, D497) | measured on 160 commands (yi-ergo 2026-10-29-jev): Laya allowed dangerous commands at every cut point under every question, Jev with the V2 question allowed none at 0.8 (53 of 80 ordinary) or 0.9 (27 of 80), at about $0.00002 a call | unset `models.classifier`; the old sidecar comes back from git with its D-rows
 raise: crate runtime +308, crate types +10, tests +416, comments +8
