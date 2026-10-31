@@ -1,4 +1,6 @@
 ---
+version: 0.835.0
+decisions: D514, D515, D516, D517
 issue: Closes #1711
 growth: +488 console panes keep one follow paint path, a macOS-only preference reader and the bounded collapsed-card reservation; the duplicated per-mode clamps collapsed into one, the card-answer cache stays where main keeps it, the head's subject spans moved into the card, git_root's canonicalize was reverted to main's, the two temp-dir test helpers became one, and cell.rs keeps its own capped-row elision with the row parsers it reads split out to rows.rs,
 decision: "Hybrid page jumps + streaming text" | "reduce visual movement giving user motion sickness" | reversible via tui.follow: slide
