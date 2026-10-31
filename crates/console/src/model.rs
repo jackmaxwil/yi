@@ -411,6 +411,27 @@ impl Pane {
         }
     }
 
+    pub fn scroll_by(&mut self, delta: isize) -> bool {
+        let mut follows = false;
+        if delta < 0
+            && self.scroll_from_bottom == 0
+            && let PaneContent::Session {
+                chat: Some(chat), ..
+            } = &mut self.content
+            && chat.app.follow() == yi_types::config::FollowMode::Still
+        {
+            chat.app.advance_follow(delta.unsigned_abs());
+            follows = true;
+        }
+        let before = self.scroll_from_bottom;
+        self.scroll_from_bottom = if delta >= 0 {
+            self.scroll_from_bottom.saturating_add(delta.unsigned_abs())
+        } else {
+            self.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
+        };
+        follows || self.scroll_from_bottom != before
+    }
+
     pub fn session(&self) -> Option<&SessionId> {
         match &self.content {
             PaneContent::Session { session, .. } | PaneContent::Notebook { session, .. } => {
@@ -484,6 +505,8 @@ pub struct ConsoleState {
     pub title_frame: Option<std::time::Instant>,
     pub title_cache: yi_tui::title::Cache,
     pub chat_pace: u16,
+    pub chat_follow: yi_types::config::FollowMode,
+    pub follow_fallback: yi_types::config::FollowMode,
     pub open_apps: Vec<String>,
     pub session_options: BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
     pub folded: std::collections::BTreeSet<String>,
@@ -533,6 +556,8 @@ impl ConsoleState {
             title_frame: None,
             title_cache: yi_tui::title::Cache::default(),
             chat_pace: 0,
+            chat_follow: yi_types::config::FollowMode::Page,
+            follow_fallback: yi_types::config::FollowMode::Page,
             open_apps: Vec::new(),
             session_options: BTreeMap::new(),
             folded: std::collections::BTreeSet::new(),
@@ -615,6 +640,23 @@ impl ConsoleState {
             })
             .chain(parked)
             .collect()
+    }
+
+    pub fn set_follow(&mut self, follow: yi_types::config::FollowMode) {
+        self.chat_follow = follow;
+        for chat in self
+            .panes
+            .values_mut()
+            .filter_map(|pane| match &mut pane.content {
+                PaneContent::Session {
+                    chat: Some(chat), ..
+                } => Some(chat.as_mut()),
+                _ => None,
+            })
+            .chain(self.parked.values_mut().map(Box::as_mut))
+        {
+            chat.app.set_follow(follow);
+        }
     }
 
     /// ponytail: evicts the lowest session id, not the least recent; order it if 8 is tight.

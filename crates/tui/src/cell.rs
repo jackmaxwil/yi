@@ -260,6 +260,31 @@ pub(crate) fn subject_of<'a>(name: &str, summary: &'a str) -> &'a str {
 }
 
 const PREVIEW_ROWS: usize = 3;
+const ELIDED_ROWS: usize = 2;
+const REVEAL_ROWS: usize = 24;
+
+/// A row past the kept screen lines is generated, not written: the elision names kept of total.
+fn capped(
+    line: &Line<'static>,
+    width: usize,
+    indent: &str,
+    theme: &Theme,
+    keep: usize,
+) -> Vec<Line<'static>> {
+    let mut rows = wrap_line(line, width, indent);
+    if rows.len() <= keep {
+        return rows;
+    }
+    let total = rows.len();
+    let bytes: usize = line.spans.iter().map(|s| s.content.len()).sum();
+    rows.truncate(keep);
+    let elided = format!(
+        "{indent}… {keep} of {total} rows, {} KB",
+        bytes.div_ceil(1024)
+    );
+    rows.push(Line::styled(elided, theme.dim_style()));
+    rows
+}
 
 pub(crate) fn glyph(tool: &str) -> char {
     match tool {
@@ -277,54 +302,8 @@ pub(crate) fn glyph(tool: &str) -> char {
     }
 }
 
-/// A row past three screen lines is generated, not written: two lines and its size.
-fn capped(line: &Line<'static>, width: usize, indent: &str, theme: &Theme) -> Vec<Line<'static>> {
-    let rows = wrap_line(line, width, indent);
-    if rows.len() <= 3 {
-        return rows;
-    }
-    let bytes: usize = line.spans.iter().map(|s| s.content.len()).sum();
-    let mut out: Vec<Line<'static>> = rows.into_iter().take(2).collect();
-    let size = format!("{indent}… {} KB", bytes.div_ceil(1024));
-    out.push(Line::from(Span::styled(size, theme.dim_style())));
-    out
-}
-
 pub(crate) fn count_label(count: usize, noun: &str) -> String {
-    if count == 1 {
-        format!("{count} {noun}")
-    } else {
-        format!("{count} {noun}s")
-    }
-}
-
-/// The hashline `[path#TAG]` header and the `NN:` row prefixes are anchors the
-/// model edits against, not content the reader asked for.
-fn strip_hashline(line: &str) -> &str {
-    if line.starts_with('[') {
-        return line;
-    }
-    numbered(line).map_or(line, |(_, text)| text)
-}
-
-/// `None` for a line with no number, which is how the hashline header and every
-/// non-file tool fall through to a plain row.
-fn numbered(line: &str) -> Option<(&str, &str)> {
-    let (number, text) = line.split_once(':')?;
-    (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then_some((number, text))
-}
-
-/// Split so consecutive hits in one file print the path once, not once per row.
-fn grep_row(line: &str) -> Option<(&str, &str, &str)> {
-    let (colon, _) = line.match_indices(':').find(|(colon, _)| {
-        let rest = line.get(colon.saturating_add(1)..).unwrap_or_default();
-        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
-        digits > 0 && rest.get(digits..).is_some_and(|tail| tail.starts_with(':'))
-    })?;
-    let path = line.get(..colon)?;
-    let rest = line.get(colon.saturating_add(1)..)?;
-    let (number, text) = rest.split_once(':')?;
-    Some((path, number, text))
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
 pub fn elapsed_label(ms: u64) -> String {
@@ -335,13 +314,6 @@ pub fn elapsed_label(ms: u64) -> String {
     } else {
         format!("{ms}ms")
     }
-}
-
-/// `412 lines`, `3 hits`: a digest that is a count and its noun, nothing else.
-fn counted(digest: &str) -> Option<(&str, &str)> {
-    let (count, noun) = digest.split_once(' ')?;
-    let numeric = !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit());
-    (numeric && !noun.is_empty() && !noun.contains(' ')).then_some((count, noun))
 }
 
 pub(crate) fn subject_spans(
@@ -412,6 +384,11 @@ impl ToolCell {
         spans.extend(self.summary_spans(theme, style));
         let (chips, digest) = self.chips(theme);
         let inner = crate::card::body_width(width);
+        let revealed = if expanded || failed {
+            REVEAL_ROWS
+        } else {
+            ELIDED_ROWS
+        };
         let mut body = Vec::new();
         // `normal` folds every body away and `verbose` opens them all; the default view
         // between them shows the first rows of the result and how many follow.
@@ -441,7 +418,13 @@ impl ToolCell {
             } else {
                 theme.muted_style()
             };
-            body.extend(capped(&Line::styled(digest, detail), inner, "  ", theme));
+            body.extend(capped(
+                &Line::styled(digest, detail),
+                inner,
+                "  ",
+                theme,
+                revealed,
+            ));
         }
         if let Some(patch) = self.patch() {
             let budget = if expanded {
@@ -457,17 +440,17 @@ impl ToolCell {
                     theme.muted_style()
                 };
                 let row = Line::from(vec![Span::styled(row.clone(), style)]);
-                body.extend(capped(&row, inner, "  ", theme));
+                body.extend(capped(&row, inner, "  ", theme, ELIDED_ROWS));
             }
         } else if expanded {
             for line in self.body(theme) {
-                body.extend(capped(&line, inner, "     ", theme));
+                body.extend(capped(&line, inner, "     ", theme, revealed));
             }
         } else {
             let hidden = self.lines_total().saturating_sub(preview.len());
             let shown = !preview.is_empty();
             for line in preview {
-                body.extend(capped(&line, inner, "     ", theme));
+                body.extend(capped(&line, inner, "     ", theme, ELIDED_ROWS));
             }
             if shown && hidden > 0 {
                 body.push(Line::from(Span::styled(
@@ -475,6 +458,15 @@ impl ToolCell {
                     theme.dim_style(),
                 )));
             }
+        }
+        let running = matches!(self.status, ToolStatus::Running | ToolStatus::Awaiting);
+        if mode == TranscriptMode::Thinking
+            && (running || (self.patch().is_none() && !body.is_empty()))
+        {
+            body.resize_with(
+                PREVIEW_ROWS.saturating_add(1).max(body.len()),
+                Line::default,
+            );
         }
         crate::card::card(Line::from(spans), &chips, body, width, theme, self.status)
     }
@@ -493,7 +485,7 @@ impl ToolCell {
         }
         let mut prose = None;
         if let Some(digest) = &self.digest {
-            match counted(digest) {
+            match crate::rows::counted(digest) {
                 Some((count, noun)) => {
                     chips.push(Chip::new(count, noun, Style::default().fg(theme.text)));
                 }
@@ -587,7 +579,11 @@ impl ToolCell {
         let mut lang = subject.and_then(crate::highlight::lang_for);
         let mut expect = 1_u64;
         for raw in &self.preview {
-            let row = if searchy { grep_row(raw) } else { None };
+            let row = if searchy {
+                crate::rows::grep_row(raw)
+            } else {
+                None
+            };
             if let Some((path, number, body)) = row {
                 if last_path.as_deref() != Some(path) {
                     out.push(Line::from(Span::styled(path.to_owned(), dim)));
@@ -599,7 +595,7 @@ impl ToolCell {
                 ]));
                 continue;
             }
-            match numbered(raw) {
+            match crate::rows::numbered(raw) {
                 Some((number, body)) => {
                     let mut spans = vec![Span::styled(format!("{number:>4} "), dim)];
                     // The parse describes only the rows fed to it from line 1, so a preview
@@ -664,7 +660,8 @@ impl ToolCell {
                 .find(|line| !line.trim().is_empty())
         };
         if failed {
-            return first().map(|line| crate::transcript::show_controls(strip_hashline(line)));
+            return first()
+                .map(|line| crate::transcript::show_controls(crate::rows::strip_hashline(line)));
         }
         // Invariant: a typed detail decides the digest wherever the result carries one; the text
         // is read only where none exists, so rewording it moves only those rows.
@@ -674,7 +671,7 @@ impl ToolCell {
         };
         let numbered = || {
             text.lines()
-                .filter(|line| !line.starts_with('[') && strip_hashline(line) != *line)
+                .filter(|line| !line.starts_with('[') && crate::rows::strip_hashline(line) != *line)
                 .count()
         };
         let entries = || {
@@ -700,7 +697,9 @@ impl ToolCell {
             "grep" => match count("hits") {
                 Some(hits) => count_label(hits, "hit"),
                 None => count_label(
-                    text.lines().filter(|l| grep_row(l).is_some()).count(),
+                    text.lines()
+                        .filter(|l| crate::rows::grep_row(l).is_some())
+                        .count(),
                     "hit",
                 ),
             },

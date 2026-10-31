@@ -838,17 +838,6 @@ impl App {
         );
     }
 
-    fn scroll_focused(&mut self, delta: isize) {
-        if let Some(pane) = self.state.focused_pane_mut() {
-            pane.scroll_from_bottom = if delta >= 0 {
-                pane.scroll_from_bottom.saturating_add(delta.unsigned_abs())
-            } else {
-                pane.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
-            };
-            self.dirty = true;
-        }
-    }
-
     fn apply_action(&mut self, outbound: &Outbound, action: Action) {
         match action {
             Action::SplitRight => self.split_share(Direction::Horizontal, 0.5),
