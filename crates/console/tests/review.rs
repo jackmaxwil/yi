@@ -148,7 +148,11 @@ fn multifile_diff() -> SessionDiff {
     diff
 }
 
-fn press(app: &mut yi_console::app::App, outbound: &yi_console::client::Outbound, code: KeyCode) {
+pub(crate) fn press(
+    app: &mut yi_console::app::App,
+    outbound: &yi_console::client::Outbound,
+    code: KeyCode,
+) {
     let key = KeyEvent::new(code, KeyModifiers::NONE);
     app.handle_event(outbound, ratatui::crossterm::event::Event::Key(key));
 }

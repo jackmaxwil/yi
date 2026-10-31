@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 use crate::scratch::Scratch;
 
+#[path = "../../tools/tests/support/seatbelt.rs"]
+mod seatbelt;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct McpHome {
@@ -440,7 +443,7 @@ fn a_relative_server_command_is_not_resolved_in_the_workspace() -> TestResult {
 /// made the unsandboxed host run its command. The store is host-only now (D296).
 #[cfg(target_os = "macos")]
 mod sealed_store {
-    use super::{Scratch, TestResult};
+    use super::{Scratch, TestResult, seatbelt};
     use std::path::PathBuf;
     use std::sync::Arc;
     use yi_runtime::{HostRegistry, KernelService, KernelServiceOptions};
@@ -474,9 +477,7 @@ mod sealed_store {
 
     #[tokio::test]
     async fn a_cell_cannot_plant_a_session_the_host_runs_on_a_fetch() -> TestResult {
-        if !Sandbox::available() {
-            return Ok(());
-        }
+        seatbelt::seatbelt()?;
         let root = Scratch::new("yi-584")?;
         let project = root.join("project");
         std::fs::create_dir_all(&project)?;

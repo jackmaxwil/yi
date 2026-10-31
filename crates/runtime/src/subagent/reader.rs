@@ -297,7 +297,7 @@ pub(crate) fn partition(
             kept.push(numbered);
         }
         let text = crate::ext::sanitize(&kept.join("\n")).into_owned();
-        out.push_str(&crate::ext::fence(raw, "untrusted", &text));
+        out.push_str(&crate::ext::fence(raw, "untrusted", &text, None));
         out.push_str("\n\n");
         if kept.len() < lines.len() {
             let (next, last) = (
