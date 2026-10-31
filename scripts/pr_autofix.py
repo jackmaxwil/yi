@@ -11,6 +11,7 @@ environment, since the merged tree's hooks run the PR's own code; the push is ma
 trusted checkout. Verbs: `just pr autofix` (one pass, oldest PR first), `just pr autofix N`.
 """
 import argparse
+import contextlib
 import datetime
 import itertools
 from collections import Counter
@@ -745,18 +746,30 @@ def run_filtered(cwd, expr):
     return subprocess.run((*TEST_LANE, "-E", expr), cwd=cwd, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
 
 
+@contextlib.contextmanager
+def scratch_worktree(clone, rev):
+    """A detached worktree of `clone` at `rev`, gone when the block ends however it ends."""
+    tree = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-tree-"))
+    try:
+        sh(clone, "git", "worktree", "add", "-q", "--detach", "-f", str(tree), rev)
+        yield tree
+    finally:
+        sh(clone, "git", "worktree", "remove", "--force", str(tree), check=False)
+        shutil.rmtree(tree, ignore_errors=True)
+
+
+def filter_of(pairs):
+    """The nextest filter naming these (binary, test) pairs."""
+    return " | ".join(f"(binary_id({b}) & test(={t}))" for b, t in sorted(pairs))
+
+
 def at_base(clone, base_ref, failed):
     """Which of `failed` also fail at the base, in the same environment: those are the runner's.
     Incident: a spill test on a full /tmp, then a documents test under a disk TMPDIR, failed only
     in the fixer's runs, and #1111's Opus fix was not pushed for a test CI passes."""
-    base = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-base-"))
-    try:
-        sh(clone, "git", "worktree", "add", "-q", "--detach", "-f", str(base), f"origin/{base_ref}")
-        ran = run_filtered(base, " | ".join(f"(binary_id({b}) & test(={t}))" for b, t in sorted(failed)))
-        return failed & failed_tests(ran.stdout + ran.stderr)
-    finally:
-        sh(clone, "git", "worktree", "remove", "--force", str(base), check=False)
-        shutil.rmtree(base, ignore_errors=True)
+    with scratch_worktree(clone, f"origin/{base_ref}") as base:
+        ran = run_filtered(base, filter_of(failed))
+    return failed & failed_tests(ran.stdout + ran.stderr)
 
 
 def lane_failures(clone, lanes, base_ref="main"):
@@ -800,20 +813,16 @@ def base_clears(clone, base_ref, tests):
     Incident: 19 PRs lacked the fix #1927 landed on main, and a model would have been paid to write it again."""
     if not tests or not sh(clone, "git", "merge-base", "--is-ancestor", f"origin/{base_ref}", "HEAD", check=False).returncode:
         return False
-    expr = " | ".join(f"(binary_id({b}) & test(={t}))" for b, t in sorted(tests))
-    trial = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-trial-"))
+    expr = filter_of(tests)
     try:
-        sh(clone, "git", "worktree", "add", "-q", "--detach", "-f", str(trial), "HEAD")
-        if not run_filtered(trial, expr).returncode:
-            return False
-        merged = sh(trial, "git", "-c", "user.name=yi-bot", "-c", "user.email=yi-bot@noreply.example.invalid",
-                    "merge", "--no-edit", "--no-commit", f"origin/{base_ref}", env=scrubbed(), check=False)
-        return not merged.returncode and not run_filtered(trial, expr).returncode
+        with scratch_worktree(clone, "HEAD") as trial:
+            if not run_filtered(trial, expr).returncode:
+                return False
+            merged = sh(trial, "git", "-c", "user.name=yi-bot", "-c", "user.email=yi-bot@noreply.example.invalid",
+                        "merge", "--no-edit", "--no-commit", f"origin/{base_ref}", env=scrubbed(), check=False)
+            return not merged.returncode and not run_filtered(trial, expr).returncode
     except (subprocess.TimeoutExpired, RuntimeError, OSError):
         return False
-    finally:
-        sh(clone, "git", "worktree", "remove", "--force", str(trial), check=False)
-        shutil.rmtree(trial, ignore_errors=True)
 
 
 class BaseHasFix(RuntimeError):

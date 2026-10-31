@@ -732,22 +732,25 @@ impl Supervisor {
         let input = self.input.clone();
         // Incident: saves ran side by side, so a press could overwrite the newer one it raced.
         let before = self.settings_tail.take();
-        let task = tokio::task::spawn_blocking(move || {
+        let task = tokio::spawn(async move {
             if let Some(before) = before {
-                let _ = tokio::runtime::Handle::current().block_on(before);
+                let _ = before.await;
             }
-            let answer = match (save, setting, value) {
-                (false, _, _) => yi_runtime::settings::current(&home),
-                (true, Some(setting), Some(value)) => {
-                    yi_runtime::settings::save(&home, &setting, value)
-                }
-                (true, _, _) => Err("a save names an id and a value; null unsets".to_owned()),
-            };
-            let line = match answer {
-                Ok(rows) => result_frame(id, json!({"rows": rows})),
-                Err(why) => error_frame(id, -32602, &why),
-            };
-            let _ = input.send(Input::Answer(client, line));
+            let _ = tokio::task::spawn_blocking(move || {
+                let answer = match (save, setting, value) {
+                    (false, _, _) => yi_runtime::settings::current(&home),
+                    (true, Some(setting), Some(value)) => {
+                        yi_runtime::settings::save(&home, &setting, value)
+                    }
+                    (true, _, _) => Err("a save names an id and a value; null unsets".to_owned()),
+                };
+                let line = match answer {
+                    Ok(rows) => result_frame(id, json!({"rows": rows})),
+                    Err(why) => error_frame(id, -32602, &why),
+                };
+                let _ = input.send(Input::Answer(client, line));
+            })
+            .await;
         });
         self.settings_tail = Some(task);
     }
