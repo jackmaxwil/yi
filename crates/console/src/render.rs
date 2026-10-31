@@ -38,7 +38,7 @@ pub struct PaneView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hit {
     Tab(usize),
-    Settings(PaneId, usize),
+    Settings(PaneId, crate::settings::Target),
     Button(keys::Action),
     Gear,
     Title(PaneId),
@@ -60,7 +60,7 @@ pub struct Hits {
     pub tabs: Vec<(Rect, usize)>,
     pub closers: Vec<(PaneId, Rect)>,
     pub titles: Vec<(PaneId, Rect)>,
-    pub settings_tabs: Vec<(Rect, PaneId, usize)>,
+    pub settings_targets: Vec<(Rect, PaneId, crate::settings::Target)>,
     /// Popups over the panes, outermost first: they take every click and hide kitty images.
     pub overlays: Vec<Rect>,
     pub dismiss: Option<Rect>,
@@ -104,10 +104,10 @@ impl Hits {
             .find(|(rect, _)| rect.contains(at))
             .map(|(rect, index)| (*rect, Hit::Tab(*index)))
             .or_else(|| {
-                self.settings_tabs
+                self.settings_targets
                     .iter()
                     .find(|(rect, ..)| rect.contains(at))
-                    .map(|(rect, pane, tab)| (*rect, Hit::Settings(*pane, *tab)))
+                    .map(|(rect, pane, target)| (*rect, Hit::Settings(*pane, *target)))
             })
             .or_else(|| {
                 (self.hint_buttons.iter().chain(&self.header_buttons))
@@ -344,7 +344,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
         splits: split_borders.clone(),
         tabs: tab_hits,
-        settings_tabs: settings_hits(app, &panes),
+        settings_targets: crate::settings::hits(app, &panes),
         gear: (gear.height > 0).then_some(gear),
         header_buttons: header_buttons(header, taken),
         ..Hits::default()
@@ -386,23 +386,6 @@ fn frames_panes(app: &App) -> bool {
             || !lone
             || !chat.is_some_and(|pane| matches!(pane.content, PaneContent::Session { .. }))
     })
-}
-
-fn settings_hits(app: &App, panes: &[PaneView]) -> Vec<(Rect, PaneId, usize)> {
-    let mut hits = Vec::new();
-    for view in panes {
-        let Some(PaneContent::Settings(settings)) =
-            app.state.panes.get(&view.id).map(|p| &p.content)
-        else {
-            continue;
-        };
-        let inner = view.rect.inner(view.margin);
-        for (x, width, tab) in crate::settings::tab_targets(settings, usize::from(inner.width)) {
-            let rect = Rect::new(inner.x.saturating_add(x), inner.y, width, 1);
-            hits.push((rect.intersection(inner), view.id, tab));
-        }
-    }
-    hits
 }
 
 type SidebarHits = (
@@ -669,12 +652,8 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
             continue;
         }
         let body = Paragraph::new(pane.lines.clone());
-        let body = if dim {
-            body.style(Style::default().add_modifier(Modifier::DIM))
-        } else {
-            body
-        };
-        frame.render_widget(body, inner);
+        let dim_style = Style::default().add_modifier(Modifier::DIM);
+        frame.render_widget(if dim { body.style(dim_style) } else { body }, inner);
     }
     if view.framed {
         render_borders(app, frame, view, theme);
@@ -691,6 +670,7 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         lift(frame.buffer_mut(), rect, theme);
     }
     let popup = match &app.state.mode {
+        Mode::Files(files) => Some(crate::files::render(files, frame, view.panes_area, theme)),
         Mode::Navigator { .. } => crate::palette::render_navigator(app, frame, view, theme),
         Mode::Menu(menu) => {
             let rects = crate::menu::rects(menu, frame.area());

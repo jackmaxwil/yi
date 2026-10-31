@@ -77,10 +77,13 @@ impl App {
     }
 
     fn scroll_pane_under(&mut self, x: u16, y: u16, delta: isize) {
-        let target = self.hits.as_ref().and_then(|hits| hits.pane_at(x, y));
-        if let Some(pane_id) = target
-            && let Some(pane) = self.state.panes.get_mut(&pane_id)
-        {
+        let Some(pane_id) = self.hits.as_ref().and_then(|hits| hits.pane_at(x, y)) else {
+            return;
+        };
+        if self.settings_wheel(pane_id, delta) {
+            return;
+        }
+        if let Some(pane) = self.state.panes.get_mut(&pane_id) {
             if let PaneContent::Editor(editor) = &mut pane.content {
                 editor.scroll_top = if delta >= 0 {
                     editor.scroll_top.saturating_sub(delta.unsigned_abs())
@@ -131,14 +134,8 @@ impl App {
                 self.dirty = true;
                 return;
             }
-            Some((_, crate::render::Hit::Settings(pane, tab))) => {
-                self.focus_pane(pane);
-                if let Some(settings) = self.settings_pane(pane) {
-                    (settings.tab, settings.cursor) = (tab, 0);
-                    (settings.edit, settings.status) = (None, None);
-                }
-                self.dirty = true;
-                return;
+            Some((_, crate::render::Hit::Settings(pane, target))) => {
+                return self.settings_press(outbound, pane, target);
             }
             Some((_, crate::render::Hit::Button(action))) => {
                 return self.apply_action(outbound, action);
@@ -236,18 +233,21 @@ impl App {
     }
 
     /// Incident: a click with the palette open reached the pane under it. A popup takes every
-    /// press now: outside it, or on its close mark, the press dismisses it and goes no further.
-    fn overlay_press(&mut self, kind: MouseKind, x: u16, y: u16) {
-        if !matches!(kind, MouseKind::Down | MouseKind::RightDown) {
-            return;
-        }
+    /// press: outside it, or on its close mark, the press dismisses it and goes no further.
+    pub(super) fn overlay_press(&mut self, kind: MouseKind, x: u16, y: u16) -> bool {
+        let press = matches!(kind, MouseKind::Down | MouseKind::RightDown);
         let at = Position::new(x, y);
-        let Some(hits) = &self.hits else { return };
-        let inside = hits.overlays.iter().any(|rect| rect.contains(at));
-        if !inside || hits.dismiss.is_some_and(|rect| rect.contains(at)) {
+        let Some(hits) = &self.hits else { return press };
+        if hits.overlays.iter().any(|rect| rect.contains(at))
+            && !hits.dismiss.is_some_and(|rect| rect.contains(at))
+        {
+            return false;
+        }
+        if press {
             self.state.mode = Mode::Normal;
             self.dirty = true;
         }
+        true
     }
 
     /// Clicks and drags resolve against the last draw's hit table, so the
@@ -260,7 +260,12 @@ impl App {
             }
             Mode::Navigator { .. } => {
                 self.release_browser_presses();
-                return self.overlay_press(kind, x, y);
+                self.overlay_press(kind, x, y);
+                return;
+            }
+            Mode::Files(_) => {
+                self.release_browser_presses();
+                return self.files_mouse(kind, x, y);
             }
             Mode::Normal | Mode::Prefix => {}
         }
