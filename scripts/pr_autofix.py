@@ -250,7 +250,7 @@ def make_clone(repo, into, sha):
 def resolve_prompt(pr, base_ref, conflicted):
     listed = "\n".join(f"- {path}" for path in conflicted)
     return (
-        f"Your working directory is a merge of `origin/{base_ref}` into pull request #{pr['number']} "
+        f"{pr_review.har_first(any(path.endswith('.rs') for path in conflicted))}Your working directory is a merge of `origin/{base_ref}` into pull request #{pr['number']} "
         f"({pr['title']!r}), stopped on conflicts. These files still hold conflict markers:\n{listed}\n\n"
         "Resolve every marker so the result keeps both sides' intent: the base's side has landed and been "
         "reviewed, so adapt the PR's code to it rather than undoing it. Then make the tree build and the "
@@ -266,7 +266,7 @@ def resolve_prompt(pr, base_ref, conflicted):
 
 def hook_prompt(pr, refused):
     return (
-        f"Your working directory holds a merge into pull request #{pr['number']} ({pr['title']!r}), staged and "
+        f"{pr_review.har_first('.rs' in refused)}Your working directory holds a merge into pull request #{pr['number']} ({pr['title']!r}), staged and "
         "ready, and the repository's commit hook refused it with these failures:\n\n"
         f"{refused}\n\n"
         "Fix exactly what they name without undoing the merge: a file past a line cap is trimmed without "
@@ -521,7 +521,7 @@ def findings_prompt(pr, n, todo):
                                + (f" (open since round {f['since']}; its line may have moved)" if f.get("since") else "")
                                + (f" — suggested: {f['fix']}" if f.get("fix") else "")) for i, f in enumerate(todo, 1))
     return (
-        f"Your working directory is pull request #{pr['number']} ({fenced(pr['title'])!r}). Review round {n} left it "
+        f"{pr_review.har_first(any(str(f.get('path')).endswith('.rs') for f in todo))}Your working directory is pull request #{pr['number']} ({fenced(pr['title'])!r}). Review round {n} left it "
         "with the findings below. Fix every one, high and medium, with the smallest change that does it. A finding "
         "you can show is wrong after reading the code: change nothing for it and decline it in `declined`, naming "
         "the file:line that shows why; a person decides those. Scope is no reason to decline: these are the work.\n"
@@ -721,7 +721,7 @@ class Flaky(RuntimeError):
 
 def gate_prompt(pr, lanes, refused):
     return (
-        f"Your working directory is pull request #{pr['number']} ({pr['title']!r}) at its head, whose CI gate failed "
+        f"{pr_review.har_first('.rs' in refused)}Your working directory is pull request #{pr['number']} ({pr['title']!r}) at its head, whose CI gate failed "
         f"the {', '.join(lanes)} lane(s). The host ran them here and they fail with:\n\n{refused}\n\n"
         "Fix the code so they pass. A test is fixed, never deleted or weakened; change what a test asserts only when "
         "this PR deliberately changed the behaviour it pins, and say so. Do not touch .forgejo/, .github/, "
@@ -1249,6 +1249,19 @@ def gate_selfcheck():
 
 def selfcheck():
     errs = gate_selfcheck()
+    installed, pr_review.SKILLS = pr_review.SKILLS, pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-skills-"))
+    (pr_review.SKILLS / "har").mkdir()
+    (pr_review.SKILLS / "har/SKILL.md").write_text("---\nname: har\ndescription: d\n---\n")
+    pr = {"number": 1, "title": "t"}
+    for prompt, rust in ((resolve_prompt(pr, "main", ["a.rs"]), True), (resolve_prompt(pr, "main", ["a.md"]), False),
+                         (hook_prompt(pr, "a.rs:1: lint"), True), (hook_prompt(pr, "docs/a.md: long"), False),
+                         (findings_prompt(pr, 1, [{"lens": "l", "severity": "high", "claim": "c", "path": "a.rs"}]), True),
+                         (findings_prompt(pr, 1, [{"lens": "l", "severity": "high", "claim": "c", "path": "a.md"}]), False),
+                         (gate_prompt(pr, ["test"], "panicked at a.rs:1"), True), (gate_prompt(pr, ["test"], "title refused"), False)):
+        if prompt.startswith("This change touches Rust.") != rust:
+            errs.append(f"a fix's opening does not follow its Rust: {prompt[:80]!r}")
+    shutil.rmtree(pr_review.SKILLS)
+    pr_review.SKILLS = installed
     states = {1072: "closed", 1076: "open", 1077: "open"}.get
     body = "Closes #1076. Refs #1072. Stacked on #1098.\nRefs #1077."
     if tidied(body, states) != "Closes #1076. Stacked on #1098.\nRefs #1077.":

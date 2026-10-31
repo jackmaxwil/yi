@@ -79,6 +79,14 @@ SKILLS = pathlib.Path.home() / ".yi/skills"
 RUST_FILE = re.compile(r"^\+\+\+ b/.*\.rs$", re.M)
 
 
+def har_first(rust):
+    """Incident: named further down as a condition, 12 lens prompts on #1890 read neither skill."""
+    if not rust or not (SKILLS / "har/SKILL.md").is_file():
+        return ""
+    return (f"This change touches Rust. Your first two tool calls, before anything else, are read on {SKILLS}/har/SKILL.md "
+            f"and read on {SKILLS}/har-api/SKILL.md.\n")
+
+
 def har_note():
     """The HAR skills by path: two always, the rest with the trigger the catalog's clip would cut."""
     if not (SKILLS / "har/SKILL.md").is_file():
@@ -550,11 +558,8 @@ def lens_prompt(probe, pr, diff, base, sha, full_read, memory=()):
     cut = f"\n[diff cut at {DIFF_MAX} bytes; read the files for the rest]" if len(diff) > DIFF_MAX else ""
     note = har_note()
     note += "A HAR breach is a finding only when it meets the severity above.\n" if note else ""
-    # Incident: named further down as a condition, 14 lens prompts on #1890 read neither skill.
-    first = (f"This diff changes Rust. Your first two tool calls, before anything else, are read on {SKILLS}/har/SKILL.md "
-             f"and read on {SKILLS}/har-api/SKILL.md.\n") if note and RUST_FILE.search(diff) else ""
     return (
-        f"{first}You review pull request #{pr['number']} ({pr['title']!r}) as its {lens} lens. {brief}\n"
+        f"{har_first(RUST_FILE.search(diff))}You review pull request #{pr['number']} ({pr['title']!r}) as its {lens} lens. {brief}\n"
         f"Severity: {scale}\n"
         f"Your working directory is a checkout of the PR's head {sha[:8]}; the diff is the PR's own change {base[:8]}..{sha[:8]}"
         f"{', limited to the files changed since the last round' if not full_read else ''}. "
