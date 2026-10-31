@@ -523,7 +523,7 @@ fn a_toggle_back_into_an_all_folded_sidebar_lands_on_a_painted_header() -> Resul
         key(&mut app, &outbound, KeyEvent::new(code, KeyModifiers::NONE));
     }
     assert_eq!(app.state.folded.len(), 1, "{:?}", app.state.folded);
-    for _ in 0..2 {
+    for _ in 0..3 {
         key(
             &mut app,
             &outbound,
