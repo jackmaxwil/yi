@@ -21,6 +21,8 @@ pub(super) type LedgerFold = dyn FnMut(&str, &[Entry], &SessionStats) + Send;
 struct Task {
     at: Option<(usize, AgentMessage)>,
     seen: usize,
+    #[cfg(test)]
+    examined: std::cell::Cell<usize>,
 }
 
 impl Task {
@@ -32,9 +34,11 @@ impl Task {
         if moved || messages.len() < self.seen {
             *self = Task::default();
         }
-        let found = (self.seen..messages.len())
-            .rev()
-            .find(|index| messages.get(*index).is_some_and(is_typed));
+        let found = (self.seen..messages.len()).rev().find(|index| {
+            #[cfg(test)]
+            self.examined.set(self.examined.get().saturating_add(1));
+            messages.get(*index).is_some_and(is_typed)
+        });
         if let Some(index) = found {
             self.at = messages.get(index).cloned().map(|message| (index, message));
         }
@@ -816,6 +820,55 @@ mod tests {
             crate::rules::typed_text(&seen[255]).as_deref(),
             Some("ship it"),
             "a typed message appended after the first read did not replace the task"
+        );
+        let mut rewritten = vec![crate::session::user_input("tidy the vault")];
+        rewritten.extend((0..300).map(result).collect::<Result<Vec<_>, _>>()?);
+        rewritten.push(result(301)?);
+        rewritten[2] = crate::session::user_input("start over");
+        session.seed_messages(rewritten);
+        let seen = history();
+        assert_eq!(
+            seen.len(),
+            257,
+            "a rewritten transcript kept the stale task"
+        );
+        assert_eq!(
+            crate::rules::typed_text(&seen[0]).as_deref(),
+            Some("start over"),
+            "the task was not re-read after the history was rewritten under it"
+        );
+        Ok(())
+    }
+
+    /// Invariant: the second judgement searches the appended messages only, not the session.
+    #[test]
+    fn a_second_judgement_rescans_no_message_it_already_searched()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut task = super::Task::default();
+        let mut messages = vec![crate::session::user_input("tidy the vault")];
+        messages.extend((0..300).map(result).collect::<Result<Vec<_>, _>>()?);
+        assert_eq!(
+            task.latest(&messages).map(|(index, _)| index),
+            Some(0),
+            "the first judgement missed the only typed message"
+        );
+        task.examined.set(0);
+        assert_eq!(
+            task.latest(&messages).map(|(index, _)| index),
+            Some(0),
+            "the task was lost between two judgements over one transcript"
+        );
+        assert_eq!(
+            task.examined.get(),
+            0,
+            "a judgement read messages the last one had already searched"
+        );
+        messages.push(crate::session::user_input("ship it"));
+        assert_eq!(task.latest(&messages).map(|(index, _)| index), Some(301));
+        assert_eq!(
+            task.examined.get(),
+            1,
+            "the appended message was not the only one read"
         );
         Ok(())
     }

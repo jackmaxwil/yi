@@ -65,21 +65,8 @@ fn offers(first_arg: Option<&str>, has_config: bool, terminal: bool) -> bool {
 }
 
 fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), String> {
-    let path = yi_runtime::settings::config_path(home);
-    let stored = match std::fs::read_to_string(&path) {
-        Ok(raw) => Some(
-            yi_types::config::parse(&raw)
-                .map_err(|error| {
-                    format!(
-                        "{}: {error}; fix it, then run `yi setup` again",
-                        path.display()
-                    )
-                })?
-                .0,
-        ),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(format!("{}: {error}", path.display())),
-    };
+    let (stored, _) = crate::user_config::read_config(home)
+        .map_err(|error| format!("{error}; fix it, then run `yi setup` again"))?;
     yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
     let mut edits: Vec<Edit> = Vec::new();
     let provider = ask(
@@ -88,7 +75,7 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
         "Provider for the main model (anthropic, openai, openrouter; blank skips): ",
     )?;
     if !provider.is_empty() {
-        model_step(&provider, stored.as_ref(), input, out, &mut edits)?;
+        model_step(&provider, &stored, input, out, &mut edits)?;
     }
     let mode = ask(
         input,
@@ -111,7 +98,7 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
         "Turn on the optional classifier? It suggests skills from what you mean and approves ordinary commands in auto mode; typed messages and commands go to TypeSafe's Jev through OpenRouter, about $0.00002 a call. [y/N]: ",
     )?;
     if yes(&classifier) {
-        classifier_step(out, stored.as_ref(), &mut edits)?;
+        classifier_step(out, &stored, &mut edits)?;
     }
     if edits.is_empty() {
         return say(out, "Nothing to save.");
@@ -122,7 +109,7 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
 
 fn model_step(
     provider: &str,
-    stored: Option<&yi_types::config::UserConfig>,
+    stored: &yi_types::config::UserConfig,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     edits: &mut Vec<Edit>,
@@ -149,12 +136,10 @@ fn model_step(
             &format!("unknown model {model}; the model is left as it is"),
         );
     }
-    let primary = stored.is_some_and(|config| {
-        config
-            .models
-            .as_ref()
-            .is_some_and(|models| models.primary.is_some())
-    });
+    let primary = stored
+        .models
+        .as_ref()
+        .is_some_and(|models| models.primary.is_some());
     let key = if primary {
         vec!["models", "primary"]
     } else {
@@ -168,7 +153,7 @@ const LAYA_URL: &str = "http://127.0.0.1:8000";
 
 fn classifier_step(
     out: &mut dyn Write,
-    stored: Option<&yi_types::config::UserConfig>,
+    stored: &yi_types::config::UserConfig,
     edits: &mut Vec<Edit>,
 ) -> Result<(), String> {
     if yi_runtime::auth::api_key("openrouter").is_none() {
@@ -185,7 +170,8 @@ fn classifier_step(
         json!(yi_runtime::classifier::JEV),
     ));
     let laya = stored
-        .and_then(|config| config.classifier.as_ref())
+        .classifier
+        .as_ref()
         .and_then(|classifier| classifier.url.as_deref())
         .is_some_and(|url| url.trim_end_matches('/') == LAYA_URL);
     if laya {
