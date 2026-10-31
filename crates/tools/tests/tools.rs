@@ -588,6 +588,57 @@ fn a_capture_leaves_out_a_shadow_that_lives_inside_the_project() -> TestResult {
     Ok(())
 }
 
+/// Dies with a probe home inside the work tree stored in the shadow on every turn: `yi --here`
+/// in a scratch dir whose HOME sat under it wrote the home's churn into `~/.yi/checkpoints`.
+#[test]
+fn a_capture_leaves_out_a_home_that_lives_inside_the_project() -> TestResult {
+    let project = temp_dir("checkpoint-home-inside-project")?;
+    let home = project.join("home");
+    fs::create_dir_all(home.join(".cache/uv"))?;
+    fs::write(project.join("notes.txt"), "alpha\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&home.join(".yi/checkpoints"), &project)?;
+    let first = checkpoints.capture()?;
+    fs::write(home.join(".cache/uv/wheel.bin"), "churn\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a change under the session home moved the tree"
+    );
+    assert_eq!(checkpoints.show(&first, "notes.txt")?, "alpha\n");
+    Ok(())
+}
+
+/// Dies with the exclusion narrowed back to the store: `yi` in `~` jumps to its shadow and back,
+/// and a venv rebuilt under `~/.cache` is stored again on every turn.
+#[test]
+fn a_capture_keeps_the_project_when_the_project_is_the_home() -> TestResult {
+    let home = temp_dir("checkpoint-project-is-home")?;
+    fs::write(home.join("notes.txt"), "alpha\n")?;
+    fs::create_dir_all(home.join(".yi/sessions"))?;
+    fs::create_dir_all(home.join(".cache/uv"))?;
+    let checkpoints = yi_tools::Checkpoints::open(&home.join(".yi/checkpoints"), &home)?;
+    let first = checkpoints.capture()?;
+    fs::write(home.join(".yi/sessions/churn.jsonl"), "{}\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a change under the state dir of a home that is the tree moved the tree"
+    );
+    fs::write(home.join(".cache/uv/wheel.bin"), "churn\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a venv rebuilt under the caches of a home that is the tree moved the tree"
+    );
+    fs::write(home.join("notes.txt"), "beta\n")?;
+    assert_ne!(
+        checkpoints.capture()?,
+        first,
+        "an edited file in a home that is the tree left the tree still"
+    );
+    Ok(())
+}
+
 #[test]
 fn checkpoint_restore_undoes_a_rename() -> TestResult {
     let project = temp_dir("checkpoint-rename-project")?;
