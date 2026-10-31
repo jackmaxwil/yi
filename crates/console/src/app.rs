@@ -1084,23 +1084,16 @@ impl App {
         match self.state.zone {
             Zone::Sidebar => match key.code {
                 KeyCode::Up | KeyCode::Down => {
-                    let rows = self.state.visible_rows();
-                    let at = rows
-                        .iter()
-                        .position(|i| *i == self.state.selected)
-                        .unwrap_or(0);
-                    let next = if key.code == KeyCode::Up {
-                        at.saturating_sub(1)
-                    } else {
-                        at.saturating_add(1).min(rows.len().saturating_sub(1))
-                    };
-                    if let Some(index) = rows.get(next) {
-                        self.state.selected = *index;
-                    }
-                    self.state.cursor_moved = true;
+                    self.state.move_cursor(key.code == KeyCode::Down);
                     self.dirty = true;
                 }
-                KeyCode::Enter => self.open_selected(outbound),
+                KeyCode::Enter => match self.state.header.clone() {
+                    Some(root) => {
+                        self.state.fold_from_header(&root);
+                        self.dirty = true;
+                    }
+                    None => self.open_selected(outbound),
+                },
                 _ => {}
             },
             Zone::Panes if self.on_editor() => self.editor_key(key),
