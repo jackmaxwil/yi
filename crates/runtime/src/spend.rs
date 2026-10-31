@@ -12,6 +12,8 @@ use crate::rollup::{DAY_MS, now_ms};
 
 /// The one [`yi_types::record::LaneRecord::Usage`] row a call's spend lands on, always on the
 /// main lane so the session's cost total cannot undercount it.
+pub(crate) const TOOL_USAGE_PREFIX: &str = "tool:";
+
 pub(crate) fn append_main_usage(
     store: &yi_session::SharedSession,
     cause: String,
@@ -162,6 +164,18 @@ impl SpendAlarm {
         let grown = match event {
             AgentEvent::MessageEnd {
                 message: AgentMessage::Assistant { usage, .. },
+            } => {
+                self.unpriced |= usage.unknown;
+                match measure {
+                    Measure::Tokens => u64::try_from(usage.total_tokens).unwrap_or(0) as f64,
+                    Measure::Usd => usage.cost.total.as_f64().unwrap_or(0.0),
+                }
+            }
+            AgentEvent::MessageEnd {
+                message:
+                    AgentMessage::ToolResult {
+                        usage: Some(usage), ..
+                    },
             } => {
                 self.unpriced |= usage.unknown;
                 match measure {

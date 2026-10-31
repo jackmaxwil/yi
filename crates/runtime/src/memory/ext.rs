@@ -218,6 +218,7 @@ impl Extension for MemoryExt {
         let text = yi_context::fit(&text, budget, "await memory.search(\"words\")").text;
         out.push(Effect::AttachExternal {
             source: SOURCE.to_owned(),
+            kind: "memory",
             trust: Trust::Untrusted,
             text,
         });
