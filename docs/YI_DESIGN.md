@@ -1131,8 +1131,9 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   session starts, since the console's settings page saves it while workers run; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
   `models{primary,summarizer,advisor,autoReview,classifier,selector,webSearch}`, `webSearch{engine}`,
-  `bash{autoBackgroundMs}`, `plans{dir}`,
-  `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
+  `bash{autoBackgroundMs}`, `plans{dir}`, `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`,
+  `kernel{prewarm}`, `console{autoSide}`,
+  `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace,follow}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
   `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode,allowWrite,allow}`,
   `mail{hopLimit}`, `open[{name,command}]`.
@@ -1194,6 +1195,13 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   regions of two rows or more, a full-screen scroll and a repaint where none fits. Streaming text
   commits by byte cursor over stable slices; a thought commits before its prose; a reveal cursor
   paces the painted tail.
+- `tui.follow` selects terminal-text following: `slide` keeps the existing one-row-per-frame
+  movement and proportional catch-up; `page` jumps half the pane height (at least one row) when
+  the live tail would cross the bottom; `still` never follows autonomously and shows
+  `↓ N more rows · PgDn` above the composer. PageDown moves explicitly, and submitting a prompt
+  returns to bottom. A held view keeps its anchor in every mode. Explicit config wins over the
+  macOS Reduce Motion probe, which is read once at startup and selects `still`; unset otherwise
+  defaults to `page`. The reveal and `tui.pace` are unchanged.
 - Resize and mode change rebuild scrollback from the transcript; text wraps at width less 2; a
   frame draws only on change.
 - A child commits one `Rule` at admission and one `Rule` per run's end: role and task first, then
@@ -1203,7 +1211,9 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   settlement, and a late end appends at finish. Entry-zero replay rebuilds the same rows without
   creating live cards; eviction, resize and every transcript mode preserve them.
 - A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, 3 result
-  rows then `… N more lines` when collapsed.
+  rows then `… N more lines` when collapsed. Running tool cards reserve that bounded preview
+  region and its elision row, so a collapsed result fills in place; child cards use a bounded
+  four-row answer window, and verbose rows still use the existing row pacing.
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block
   `Todos done/total`; `ctrl+t` hides it), composer or bottom view, status row (model, effort,
   lane row, landing, cost, `used / window`, session name).
@@ -1260,7 +1270,8 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   landing, and `l` runs `/land` under the session's title. ↑/↓ selects a file and `w` asks the
   worker (`_yi/why`) for each hunk's `yi why` chain: blame, commit, todo, goal. A resumed
   session's replay fills Review's edits and reads, and the notebook's cells, as live frames do; a
-  replay from entry 0 counts the turns itself and restarts the notebook.
+  replay from entry 0 counts the turns itself and restarts the notebook. Ordinary cell updates
+  preserve a reader's scroll position; only opening or a full replay resets it to bottom.
 - ⌘Y (⌥y) opens a terminal pane beside the focused one, running `$SHELL` in the focused
   session's working directory (its lane worktree once `_yi/workdir` names one), else the
   console's root. The PTY is the console's own: no daemon state, nothing on the socket. The

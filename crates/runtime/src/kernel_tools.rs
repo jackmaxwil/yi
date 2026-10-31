@@ -275,6 +275,7 @@ pub fn ipython_tool(
         service.cell_calls.get_or_init(|| Arc::clone(calls));
     }
     Arc::new(yi_tools::IpythonTool {
+        contained: service.contained(),
         bridge: service,
         calls,
     })

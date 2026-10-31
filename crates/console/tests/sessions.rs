@@ -343,17 +343,19 @@ fn leaving_the_full_sidebar_drops_a_header_cursor() {
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
     );
     assert!(matches!(app.state.cursor(), Slot::Group(_)));
-    key(
-        &mut app,
-        &outbound,
-        KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-    );
+    for _ in 0..2 {
+        key(
+            &mut app,
+            &outbound,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+        );
+        assert!(
+            matches!(app.state.cursor(), Slot::Row(_)),
+            "{:?}",
+            app.state.cursor()
+        );
+    }
     assert_eq!(app.state.sidebar, SidebarMode::Rail);
-    assert!(
-        matches!(app.state.cursor(), Slot::Row(_)),
-        "{:?}",
-        app.state.cursor()
-    );
     let before = name_at(&app).map(str::to_owned);
     key(
         &mut app,
@@ -523,7 +525,7 @@ fn a_toggle_back_into_an_all_folded_sidebar_lands_on_a_painted_header() -> Resul
         key(&mut app, &outbound, KeyEvent::new(code, KeyModifiers::NONE));
     }
     assert_eq!(app.state.folded.len(), 1, "{:?}", app.state.folded);
-    for _ in 0..2 {
+    for _ in 0..3 {
         key(
             &mut app,
             &outbound,
@@ -539,5 +541,136 @@ fn a_toggle_back_into_an_all_folded_sidebar_lands_on_a_painted_header() -> Resul
             "the cursor is not on the folded header: {cursor:?}"
         ));
     }
+    Ok(())
+}
+
+/// Owner, 2026-10-28: "Reduce visual weight of the sidebar". A session with nothing to
+/// report is one row; the state line stays for a session that needs you or is working.
+#[test]
+fn a_quiet_session_draws_one_row() -> Result<(), String> {
+    use yi_console::app::App;
+    use yi_console::model::SidebarMode;
+    use yi_console::sidebar::sidebar_lines;
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::Ansi16, true);
+    let mut app = App::new("/w/yi".to_owned(), theme);
+    app.state.sidebar = SidebarMode::Full;
+    let rows = [
+        ("quiet", SessionStatus::Idle),
+        ("silent", SessionStatus::Unknown),
+        ("asks", SessionStatus::Blocked),
+        ("works", SessionStatus::Working),
+    ];
+    for (id, status) in rows {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: "/w/yi".to_owned(),
+            status,
+            attached: false,
+            name: Some(id.to_owned()),
+            created_ms: 0,
+            last_ms: 1_000,
+            pinned: None,
+        });
+    }
+    let lines = sidebar_lines(&app, &theme, 60);
+    let drawn = |id: &str| -> Option<usize> {
+        let index = app.state.order.iter().position(|row| row.0 == id)?;
+        Some(lines.iter().filter(|row| row.index == Some(index)).count())
+    };
+    for id in ["quiet", "silent"] {
+        assert_eq!(drawn(id), Some(1), "{id} takes one row");
+    }
+    for id in ["asks", "works"] {
+        assert_eq!(drawn(id), Some(2), "{id} keeps its state line");
+    }
+    Ok(())
+}
+
+/// The sidebar's chrome reads quieter than its sessions: the New and Search rows and a
+/// workspace's header are dimmed, and a session's name is neither bold nor dim.
+#[test]
+fn the_sidebars_chrome_is_dimmer_than_a_session_name() -> Result<(), String> {
+    use ratatui::style::Modifier;
+    use yi_console::app::App;
+    use yi_console::model::{PaneContent, SidebarMode};
+    use yi_console::render::Hit;
+    use yi_console::sidebar::sidebar_lines;
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::Ansi16, true);
+    let mut app = App::new("/w/yi".to_owned(), theme);
+    app.state.sidebar = SidebarMode::Full;
+    app.state.upsert_row(SessionRow {
+        id: SessionId("quiet".to_owned()),
+        root: "/w/yi".to_owned(),
+        status: SessionStatus::Idle,
+        attached: false,
+        name: Some("quiet".to_owned()),
+        created_ms: 0,
+        last_ms: 1_000,
+        pinned: None,
+    });
+    let lines = sidebar_lines(&app, &theme, 60);
+    let dim = Modifier::DIM;
+    let chrome = |kind: &dyn Fn(&Hit) -> bool| -> Result<bool, String> {
+        let row = lines
+            .iter()
+            .find(|row| row.control.as_ref().is_some_and(kind))
+            .ok_or("no control row")?;
+        Ok(row
+            .line
+            .spans
+            .iter()
+            .filter(|span| !span.content.trim().is_empty())
+            .all(|span| row.line.style.patch(span.style).add_modifier.contains(dim)))
+    };
+    assert!(
+        chrome(&|hit| matches!(hit, Hit::New(_)))?,
+        "the New row dims"
+    );
+    assert!(
+        chrome(&|hit| matches!(hit, Hit::Search))?,
+        "the Search row dims"
+    );
+    assert!(
+        chrome(&|hit| matches!(hit, Hit::Fold(_)))?,
+        "the workspace header dims"
+    );
+    app.state.upsert_row(SessionRow {
+        id: SessionId("pinned".to_owned()),
+        root: "/w/yi".to_owned(),
+        status: SessionStatus::Idle,
+        attached: false,
+        name: Some("pinned".to_owned()),
+        created_ms: 0,
+        last_ms: 1_000,
+        pinned: Some(1),
+    });
+    if let Some(pane) = app.state.focused_pane_mut() {
+        pane.content = PaneContent::Session {
+            session: Some(SessionId("quiet".to_owned())),
+            chat: None,
+        };
+    }
+    let lines = sidebar_lines(&app, &theme, 60);
+    let weight = |needle: &str| -> Result<Modifier, String> {
+        lines
+            .iter()
+            .find_map(|row| {
+                let span = row.line.spans.iter().find(|s| s.content.contains(needle))?;
+                Some(row.line.style.patch(span.style).add_modifier)
+            })
+            .ok_or_else(|| format!("no {needle} span"))
+    };
+    let focused = weight("quiet")?;
+    assert!(
+        !focused.intersects(Modifier::BOLD | dim),
+        "the focused name is neither bold nor dim: {focused:?}"
+    );
+    let pinned = weight("PINNED")?;
+    assert!(
+        pinned.contains(dim) && !pinned.contains(Modifier::BOLD),
+        "PINNED is dim, not bold: {pinned:?}"
+    );
     Ok(())
 }
