@@ -824,8 +824,21 @@ pub fn lane_line(view: &SlotView, ledger: Option<&DaemonLedger>) -> String {
     }
 }
 
-pub fn claim_root(pool: &Pool, session: &str) -> Result<Lane, LaneError> {
+/// A failed toolchain sync starts the session unsynced, and the notice says so.
+pub fn claim_root(pool: &Pool, session: &str) -> Result<(Lane, Option<String>), LaneError> {
     let lane = pool.claim(session, ClaimBase::Main)?;
-    lane.sync()?;
-    Ok(lane)
+    let notice = lane.sync().err().map(|error| {
+        let text = error.to_string();
+        let reason: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        format!(
+            "lane {}: toolchain sync failed, the session starts unsynced: {}",
+            lane.slot(),
+            reason.join(" · ")
+        )
+    });
+    Ok((lane, notice))
 }

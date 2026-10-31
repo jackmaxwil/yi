@@ -33,6 +33,58 @@ impl Drop for Reservation<'_> {
 }
 
 impl SubagentHost {
+    /// A child lane branches from the parent's own HEAD, so its merge lands back in
+    /// the parent's checkout rather than on `main`.
+    pub(super) fn claim_child_lane(
+        &self,
+        child_id: &str,
+    ) -> Result<
+        (
+            crate::lane::Lane,
+            crate::plan::capacity::Permit,
+            Option<String>,
+        ),
+        String,
+    > {
+        // The worker share, never the whole pool: a lane the workers take here is one the
+        // engine cannot verify a candidate in (plan section 7.6).
+        let permit = self
+            .capacity
+            .reserve(crate::plan::capacity::Purpose::Worker)
+            .map_err(|error| error.to_string())?;
+        let pool = crate::lane::Pool::open(
+            &self.options.home,
+            &self.options.cwd,
+            self.options.lane_slots,
+        )
+        .map_err(|error| error.to_string())?;
+        let head = crate::lane::git(
+            &self.options.cwd,
+            &["rev-parse", "--verify", "HEAD^{commit}"],
+        )
+        .map_err(|error| error.to_string())?;
+        let head = crate::lane::Sha::parse(&head)
+            .ok_or_else(|| format!("git rev-parse printed a HEAD that is not a sha: {head}"))?;
+        let lane = pool
+            .claim(
+                child_id,
+                crate::lane::ClaimBase::Commit(head.as_str().to_owned()),
+            )
+            .map_err(|error| error.to_string())?;
+        // Invariant: a child is cut at the commit, so the parent's uncommitted edits are not in it.
+        let short = head.short();
+        let left_out = match crate::lane::reap::Uncommitted::read_briefly(&self.options.cwd) {
+            Ok(dirt) if dirt.is_empty() => None,
+            Ok(dirt) => Some(format!(
+                "the child starts at HEAD {short}, without {dirt} in your checkout: pass them as local:// context or spawn without a worktree"
+            )),
+            Err(why) => Some(format!(
+                "the child starts at HEAD {short}; uncommitted paths not counted: {why}"
+            )),
+        };
+        Ok((lane, permit, left_out))
+    }
+
     /// Invariant: the roster lock is never held across a build, so `states` and `list` answer
     /// while a factory runs; the name and the slot are reserved under it instead.
     pub(super) fn reserve(

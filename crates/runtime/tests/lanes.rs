@@ -1294,6 +1294,7 @@ mod accept {
     use std::sync::{Arc, Mutex};
 
     use serde_json::json;
+    use yi_runtime::journal::{Journal, RealFs};
     use yi_runtime::lane::settle::Candidate;
     use yi_runtime::plan::acceptance::{
         Candidate as Proven, KIND_ACCEPTED, KIND_CANDIDATE_SUBMITTED, KIND_DISPOSITION,
@@ -1301,7 +1302,6 @@ mod accept {
         KIND_INTEGRATION_VERIFIED, Phase, Quiescence, Verified, phase_of,
     };
     use yi_runtime::plan::capacity::Purpose;
-    use yi_runtime::plan::journal::{Journal, RealFs};
     use yi_runtime::plan::ops::{
         Actor, Delegate, Op, OpRequest, Outcome, OutputResolve, PlanEngine, PlanOpError,
     };
@@ -2742,13 +2742,17 @@ async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dy
 /// A `name` hook in the rig's repository that sleeps two seconds the first time git runs it
 /// and leaves `hook-ran` behind.
 fn slow_hook(rig: &Rig, name: &str) -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
     let mark = rig.root.join("hook-ran");
-    let hook = rig.repo.join(".git/hooks").join(name);
     let script = format!(
         "#!/bin/sh\n[ -e '{0}' ] && exit 0\n: > '{0}'\nsleep 2\n",
         mark.display()
     );
+    write_hook(rig, name, &script)
+}
+
+fn write_hook(rig: &Rig, name: &str, script: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = rig.repo.join(".git/hooks").join(name);
     std::fs::write(&hook, script)?;
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
@@ -3307,6 +3311,54 @@ fn a_dirty_lane_refused_the_merge_of_main_names_gits_reason() -> TestResult {
     Ok(())
 }
 
+/// A `post-checkout` hook that sleeps `seconds`, so every fresh slot's `worktree add` takes it.
+fn sleeping_checkout(rig: &Rig, seconds: u32) -> TestResult {
+    write_hook(
+        rig,
+        "post-checkout",
+        &format!("#!/bin/sh\nsleep {seconds}\n"),
+    )
+}
+
+fn claim_at_once(pool: &Pool, sessions: usize) -> Vec<Result<Lane, LaneError>> {
+    let start = std::sync::Barrier::new(sessions);
+    std::thread::scope(|scope| {
+        let claims: Vec<_> = (0..sessions)
+            .map(|n| {
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    pool.claim(&format!("s-par-{n}"), ClaimBase::Main)
+                })
+            })
+            .collect();
+        claims
+            .into_iter()
+            .map(|claim| claim.join().unwrap_or(Err(LaneError::Deadline)))
+            .collect()
+    })
+}
+
+/// Dies with a pool that checks parallel worktree children out one at a time.
+#[test]
+fn parallel_claims_check_out_side_by_side() -> TestResult {
+    let rig = Rig::new("par-claim")?;
+    sleeping_checkout(&rig, 1)?;
+    let pool = rig.pool(4)?;
+    let started = std::time::Instant::now();
+    let lanes = claim_at_once(&pool, 4)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    let took = started.elapsed();
+    let slots: std::collections::BTreeSet<_> = lanes.iter().map(Lane::slot).collect();
+    assert_eq!(slots.len(), 4, "four claims hold four slots");
+    assert!(
+        took < std::time::Duration::from_millis(2_500),
+        "four claims over a 1 s checkout hook took {took:?}"
+    );
+    Ok(())
+}
+
 /// #1571: the conflict steer cut its list at twenty files and said nothing about the cut; a
 /// model reading it believed it had every conflict.
 #[test]
@@ -3378,5 +3430,517 @@ async fn a_close_revoking_a_live_worktree_child_returns_its_slot() -> TestResult
         "the closed session's child gave its slot back: {:?}",
         pool.list()?
     );
+    Ok(())
+}
+/// Dies with `judge` or `remove` deleted: a dry run removes nothing, `--fix` takes only the
+/// merged clean tree and its `target/`, and each kept tree says why.
+#[test]
+fn gc_removes_only_the_merged_clean_worktree_and_says_why_it_kept_the_rest() -> TestResult {
+    let rig = Rig::new("gc")?;
+    let root = rig.root.canonicalize()?;
+    let tree = |name: &str| root.join(format!("wt-{name}"));
+    std::fs::write(rig.repo.join(".gitignore"), "target/\n")?;
+    git(&rig.repo, &["add", ".gitignore"])?;
+    git(&rig.repo, &["commit", "-qm", "ignore target"])?;
+    for name in ["merged", "dirty", "unmerged", "locked"] {
+        let path = tree(name);
+        git(
+            &rig.repo,
+            &["worktree", "add", "-q", "-b", name, &path.to_string_lossy()],
+        )?;
+        std::fs::write(path.join(format!("{name}.txt")), "work\n")?;
+        git(&path, &["add", "."])?;
+        git(&path, &["commit", "-qm", name])?;
+    }
+    for name in ["merged", "dirty", "locked"] {
+        git(&rig.repo, &["merge", "-q", "--no-ff", "-m", name, name])?;
+    }
+    git(&rig.repo, &["branch", "atbase"])?;
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            &tree("atbase").to_string_lossy(),
+            "atbase",
+        ],
+    )?;
+    git(
+        &rig.repo,
+        &["worktree", "lock", &tree("locked").to_string_lossy()],
+    )?;
+    std::fs::write(tree("dirty").join("scratch.txt"), "unsaved\n")?;
+    std::fs::create_dir_all(tree("merged").join("target"))?;
+    std::fs::write(tree("merged").join("target/big"), "x")?;
+    let pool = rig.pool(2)?;
+
+    let preview = pool.gc(&rig.repo, true)?.join("\n");
+    assert!(preview.contains("would remove"), "{preview}");
+    assert!(tree("merged").is_dir(), "a dry run removes nothing");
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(!tree("merged").exists(), "{report}");
+    assert!(
+        tree("dirty").is_dir() && tree("unmerged").is_dir(),
+        "{report}"
+    );
+    let kept = |name: &str| format!("kept {}", tree(name).display());
+    assert!(
+        report.contains(&format!("{}: 1 uncommitted path", kept("dirty"))),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!(
+            "{}: unmerged is not merged into",
+            kept("unmerged")
+        )),
+        "{report}"
+    );
+    let base = git(&rig.repo, &["rev-parse", "main"])?;
+    for (name, why) in [
+        ("locked", "locked, a session holds it".to_owned()),
+        (
+            "atbase",
+            format!("atbase is at {base}, no commits of its own"),
+        ),
+    ] {
+        assert!(tree(name).is_dir(), "{report}");
+        assert!(
+            report.contains(&format!("{}: {why}", kept(name))),
+            "{report}"
+        );
+    }
+    assert!(git(&rig.repo, &["rev-parse", "--verify", "-q", "merged"]).is_ok());
+    Ok(())
+}
+
+/// Dies with the `.held` probe removed from `gc`: a resumed lane is unlocked in git, merged
+/// and clean, and only the live session's flock keeps `--fix` from deleting its directory.
+#[test]
+fn gc_keeps_a_slot_a_live_session_holds_even_when_git_sees_it_merged() -> TestResult {
+    let rig = Rig::new("gc-held")?;
+    let pool = rig.pool(2)?;
+    let lane = pool.claim("s-held", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("w.txt"), "work\n")?;
+    git(lane.path(), &["add", "."])?;
+    git(lane.path(), &["commit", "-qm", "w"])?;
+    git(
+        &rig.repo,
+        &["merge", "-q", "--no-ff", "-m", "m", lane.branch().as_str()],
+    )?;
+    git(
+        &rig.repo,
+        &["worktree", "unlock", &lane.path().to_string_lossy()],
+    )?;
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(lane.path().is_dir(), "{report}");
+    assert!(report.contains("a live session holds the slot"), "{report}");
+    Ok(())
+}
+
+/// Dies when `judge` refuses a detached HEAD: release leaves merged and unmerged lanes alike
+/// detached, and only the commit's ancestry says which tree still holds work.
+#[test]
+fn gc_judges_a_released_lane_by_its_detached_head() -> TestResult {
+    let rig = Rig::new("gc-detached")?;
+    let pool = rig.pool(2)?;
+    let merged = pool.claim("s-merged", ClaimBase::Main)?;
+    let unmerged = pool.claim("s-unmerged", ClaimBase::Main)?;
+    for (lane, name) in [(&merged, "merged"), (&unmerged, "unmerged")] {
+        std::fs::write(lane.path().join(format!("{name}.txt")), "work\n")?;
+        git(lane.path(), &["add", "."])?;
+        git(lane.path(), &["commit", "-qm", name])?;
+    }
+    git(
+        &rig.repo,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            "merged",
+            merged.branch().as_str(),
+        ],
+    )?;
+    let merged_path = merged.path().to_path_buf();
+    let unmerged_path = unmerged.path().to_path_buf();
+    merged.release()?;
+    unmerged.release()?;
+    assert!(matches!(head(&merged_path)?, Head::Detached(_)));
+    assert!(matches!(head(&unmerged_path)?, Head::Detached(_)));
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(!merged_path.exists(), "{report}");
+    assert!(unmerged_path.is_dir(), "{report}");
+    assert!(
+        report.contains("detached HEAD is not merged into"),
+        "{report}"
+    );
+    Ok(())
+}
+
+/// Dies with two claimers handed one fresh slot once the pool lock no longer covers the add.
+#[test]
+fn an_oversubscribed_pool_never_hands_one_slot_out_twice() -> TestResult {
+    let rig = Rig::new("par-full")?;
+    let pool = rig.pool(4)?;
+    let (mut lanes, mut full) = (Vec::new(), 0);
+    for claim in claim_at_once(&pool, 8) {
+        match claim {
+            Ok(lane) => lanes.push(lane),
+            Err(LaneError::PoolFull { slots: 4, .. }) => full += 1,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let slots: std::collections::BTreeSet<_> = lanes.iter().map(Lane::slot).collect();
+    assert_eq!((lanes.len(), slots.len(), full), (4, 4, 4));
+    Ok(())
+}
+
+/// Dies with a claim that signals whatever process reuses a stale warm receipt's pid.
+#[test]
+fn a_claim_leaves_a_process_that_is_not_the_warmer_alive() -> TestResult {
+    let rig = Rig::new("warm-pid")?;
+    std::fs::write(rig.repo.join("Cargo.lock"), "# lock\n")?;
+    git(&rig.repo, &["add", "Cargo.lock"])?;
+    git(&rig.repo, &["commit", "-qm", "lock"])?;
+    let pool = rig.pool(1)?;
+    let slot = pool.claim("s-first", ClaimBase::Main)?.slot();
+    let (cargo, _) = fake_warmer(&rig)?;
+    let stranger = yi_tools::command("/bin/sh")
+        .arg("-c")
+        .arg(r#"/bin/sh "$1" build >/dev/null 2>&1 & echo $!"#)
+        .arg("sh")
+        .arg(&cargo)
+        .output()?;
+    let pid = String::from_utf8(stranger.stdout)?.trim().to_owned();
+    let path = pool.dir().join(format!("{slot}.json"));
+    let mut state: yi_types::lane::SlotState = serde_json::from_slice(&std::fs::read(&path)?)?;
+    state.warm = Some(yi_types::lane::WarmReceipt {
+        base: String::new(),
+        lockfile: String::new(),
+        pid: Some(pid.parse()?),
+        exit_code: None,
+        started_ms: 0,
+        extra: Default::default(),
+    });
+    std::fs::write(&path, serde_json::to_vec(&state)?)?;
+    let claimed = pool.claim("s-next", ClaimBase::Main);
+    let survived = yi_kernel::bootstrap::process_is_running(pid.parse()?)?;
+    let _ = yi_tools::command("/bin/sh")
+        .args(["-c", r#"kill -KILL "$1""#, "kill", &pid])
+        .status();
+    assert_eq!(claimed?.slot(), slot);
+    assert!(
+        survived,
+        "the claim signalled pid {pid}, a `cargo build`, not the warmer"
+    );
+    Ok(())
+}
+
+/// Dies with a `seen.json` that a concurrent sync tore or that lost another sync's hash.
+#[test]
+fn concurrent_syncs_keep_every_seen_lockfile() -> TestResult {
+    let rig = Rig::new("seen")?;
+    let pool = rig.pool(8)?;
+    let lanes = (0..8)
+        .map(|n| pool.claim(&format!("s-seen-{n}"), ClaimBase::Main))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (n, lane) in lanes.iter().enumerate() {
+        std::fs::write(lane.path().join("Cargo.lock"), format!("# lock {n}\n"))?;
+    }
+    let start = std::sync::Barrier::new(lanes.len());
+    std::thread::scope(|scope| {
+        for lane in &lanes {
+            let start = &start;
+            scope.spawn(move || {
+                start.wait();
+                lane.sync()
+            });
+        }
+    });
+    let seen: yi_types::lane::SeenLockfiles =
+        serde_json::from_slice(&std::fs::read(pool.dir().join("seen.json"))?)?;
+    let hashes: std::collections::BTreeSet<_> = seen.hashes.iter().collect();
+    assert_eq!(hashes.len(), 8, "{:?}", seen.hashes);
+    Ok(())
+}
+
+/// Dies with a sync that runs only the first lockfile's toolchain and leaves `uv.lock` unsynced.
+#[test]
+fn a_tree_with_two_lockfiles_syncs_both() -> TestResult {
+    let rig = Rig::new("two-locks")?;
+    std::fs::write(rig.repo.join("Cargo.lock"), "# lock\n")?;
+    std::fs::write(rig.repo.join("uv.lock"), "not a lockfile\n")?;
+    git(&rig.repo, &["add", "Cargo.lock", "uv.lock"])?;
+    git(&rig.repo, &["commit", "-qm", "locks"])?;
+    let lane = rig.pool(1)?.claim("s-two", ClaimBase::Main)?;
+    let synced = lane.sync();
+    let message = synced.err().ok_or("uv.lock was never synced")?.to_string();
+    assert!(message.contains("uv sync --frozen --offline"), "{message}");
+    Ok(())
+}
+
+/// Dies with a session refused outright because its toolchain sync failed.
+#[test]
+fn a_failed_sync_starts_the_session_with_a_notice() -> TestResult {
+    let rig = Rig::new("soft-sync")?;
+    std::fs::write(rig.repo.join("uv.lock"), "not a lockfile\n")?;
+    git(&rig.repo, &["add", "uv.lock"])?;
+    git(&rig.repo, &["commit", "-qm", "lock"])?;
+    let pool = rig.pool(1)?;
+    let (lane, notice) = yi_runtime::lane::land::claim_root(&pool, "s-soft")?;
+    let notice = notice.ok_or("a failed sync said nothing")?;
+    assert!(
+        notice.starts_with(&format!("lane {}: toolchain sync failed", lane.slot())),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("uv sync --frozen --offline --quiet"),
+        "{notice}"
+    );
+    assert!(!notice.contains('\n'), "one line: {notice}");
+    Ok(())
+}
+
+async fn spawn_reply(rig: &Rig) -> Result<(String, Vec<String>), Box<dyn Error>> {
+    let store = support::memory_store("lanes-base");
+    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, None);
+    let mut asked = serde_json::Map::new();
+    asked.insert("name".to_owned(), "kid".into());
+    asked.insert("role".to_owned(), "root".into());
+    asked.insert("isolation".to_owned(), "worktree".into());
+    let reply = family.host.spawn("look".to_owned(), asked)?;
+    let next = reply["next"].as_str().unwrap_or_default().to_owned();
+    let notices = family.notices.lock().map_err(|_| "poisoned")?.clone();
+    family.reaches("kid", "finished").await;
+    Ok((next, notices))
+}
+
+/// Dies with a worktree child cut at HEAD while nothing tells the parent its edits stay behind.
+#[tokio::test]
+async fn a_worktree_spawn_names_the_edits_its_child_starts_without() -> TestResult {
+    let dirty = Rig::new("base-dirty")?;
+    std::fs::write(dirty.repo.join("README.md"), "edited\n")?;
+    let head = git(&dirty.repo, &["rev-parse", "--short=8", "HEAD"])?;
+    let (next, notices) = spawn_reply(&dirty).await?;
+    let row = format!("the child starts at HEAD {head}, without 1 uncommitted path");
+    assert!(next.starts_with(&row), "{next}");
+    assert!(
+        notices.iter().any(|notice| notice.contains(&row)),
+        "{notices:?}"
+    );
+
+    let clean = Rig::new("base-clean")?;
+    let (next, notices) = spawn_reply(&clean).await?;
+    assert!(!next.contains("uncommitted"), "{next}");
+    assert!(
+        !notices.iter().any(|notice| notice.contains("uncommitted")),
+        "{notices:?}"
+    );
+    Ok(())
+}
+
+/// Dies with a worktree child whose parent's status read failed and so was told nothing at all.
+#[tokio::test]
+async fn a_worktree_spawn_whose_status_fails_still_names_the_head() -> TestResult {
+    let rig = Rig::new("base-unread")?;
+    std::fs::write(rig.repo.join(".git/index"), "not an index\n")?;
+    let head = git(&rig.repo, &["rev-parse", "--short=8", "HEAD"])?;
+    let (next, _) = spawn_reply(&rig).await?;
+    let row = format!("the child starts at HEAD {head}; uncommitted paths not counted: git status");
+    assert!(next.starts_with(&row), "{next}");
+    assert!(next.contains("index"), "git's own cause is dropped: {next}");
+    Ok(())
+}
+
+fn fake_warmer(rig: &Rig) -> Result<(PathBuf, &'static [&'static str]), Box<dyn Error>> {
+    let cargo = rig.root.join("cargo");
+    std::fs::write(&cargo, "sleep 30\n")?;
+    let warm = yi_runtime::lane::toolchain::TOOLCHAINS
+        .iter()
+        .find(|toolchain| toolchain.lockfile == "Cargo.lock")
+        .ok_or("no Cargo.lock toolchain")?
+        .warm;
+    Ok((cargo, warm.get(1..).unwrap_or_default()))
+}
+
+fn merged_crashed_slot(
+    rig: &Rig,
+    pool: &Pool,
+) -> Result<(PathBuf, PathBuf, yi_types::lane::SlotState), Box<dyn Error>> {
+    let lane = pool.claim("s-crashed", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("work.txt"), "work\n")?;
+    git(lane.path(), &["add", "."])?;
+    git(lane.path(), &["commit", "-qm", "work"])?;
+    git(
+        &rig.repo,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            "merged",
+            lane.branch().as_str(),
+        ],
+    )?;
+    let path = lane.path().canonicalize()?;
+    let slot = lane.slot();
+    drop(lane);
+    let state_path = pool.dir().join(format!("{slot}.json"));
+    let mut state: yi_types::lane::SlotState =
+        serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    state.session = Some("s-crashed".to_owned());
+    std::fs::write(&state_path, serde_json::to_vec(&state)?)?;
+    Ok((path, state_path, state))
+}
+
+/// Dies when a stale git lock outranks the free `.held` flock: a crashed session leaves no
+/// live holder, so its merged lane can be unlocked and removed.
+#[test]
+fn gc_removes_a_merged_slot_with_a_stale_git_lock() -> TestResult {
+    let rig = Rig::new("gc-stale-lock")?;
+    std::fs::write(rig.repo.join("Cargo.lock"), "# lock\n")?;
+    git(&rig.repo, &["add", "Cargo.lock"])?;
+    git(&rig.repo, &["commit", "-qm", "lock"])?;
+    let pool = rig.pool(1)?;
+    let (path, state_path, mut state) = merged_crashed_slot(&rig, &pool)?;
+    let (cargo, warm) = fake_warmer(&rig)?;
+    let mut warmer = yi_tools::command("/bin/sh")
+        .arg(&cargo)
+        .args(warm)
+        .current_dir(&path)
+        .spawn()?;
+    let warmer_pid = warmer.id();
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = stopped_tx.send(warmer.wait());
+    });
+    state.warm = Some(yi_types::lane::WarmReceipt {
+        pid: Some(warmer_pid),
+        ..Default::default()
+    });
+    std::fs::write(&state_path, serde_json::to_vec(&state)?)?;
+    git(&rig.repo, &["worktree", "lock", &path.to_string_lossy()])?;
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    let stopped = stopped_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .is_ok();
+    if !stopped {
+        yi_tools::command("kill")
+            .arg(warmer_pid.to_string())
+            .output()?;
+    }
+    let state: yi_types::lane::SlotState = serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    assert!(!path.exists(), "{report}");
+    assert!(stopped, "gc removed the tree under its live warmer");
+    assert!(state.session.is_none(), "gc left a session on a gone slot");
+    assert!(state.warm.is_some_and(|warm| warm.pid.is_none()));
+    assert!(
+        report.contains(&format!("removed {}", path.display())),
+        "{report}"
+    );
+    Ok(())
+}
+
+/// Dies with slot cleanup before `git worktree remove`: a refused removal keeps the tree and
+/// the session record that a later claim or reap uses to identify its orphan.
+#[test]
+fn gc_keeps_slot_state_when_worktree_removal_fails() -> TestResult {
+    let rig = Rig::new("gc-remove-fails")?;
+    let pool = rig.pool(1)?;
+    let (path, state_path, _) = merged_crashed_slot(&rig, &pool)?;
+
+    let shim = Scratch::new("gc-remove-failure-shim")?;
+    let path_env = std::env::var_os("PATH").ok_or("no PATH")?;
+    let real_git = std::env::split_paths(&path_env)
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .ok_or("no git on PATH")?;
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = remove ]; then\n  echo forced-remove-failure >&2\n  exit 1\nfi\nexec '{}' \"$@\"\n",
+        real_git.display()
+    );
+    std::fs::write(shim.join("git"), script)?;
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(shim.join("git"), std::fs::Permissions::from_mode(0o755))?;
+    let joined = std::env::join_paths(
+        std::iter::once(shim.to_path_buf()).chain(std::env::split_paths(&path_env)),
+    )?;
+    // nextest isolates this test process, so its failing git reaches no other test.
+    unsafe { std::env::set_var("PATH", joined) };
+
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    let state: yi_types::lane::SlotState = serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    assert!(path.is_dir(), "{report}");
+    assert!(report.contains("forced-remove-failure"), "{report}");
+    assert_eq!(state.session.as_deref(), Some("s-crashed"), "{report}");
+    Ok(())
+}
+
+/// Dies when gc judges against HEAD after both main names vanish: a feature checkout is not
+/// evidence that another worktree merged, so the tree stays with the base refusal named.
+#[test]
+fn gc_without_a_main_ref_keeps_a_tree_its_head_contains() -> TestResult {
+    let rig = Rig::new("gc-no-main")?;
+    let tree = rig.root.join("tree");
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "merged",
+            &tree.to_string_lossy(),
+        ],
+    )?;
+    std::fs::write(tree.join("work.txt"), "work\n")?;
+    git(&tree, &["add", "."])?;
+    git(&tree, &["commit", "-qm", "work"])?;
+    git(
+        &rig.repo,
+        &["merge", "-q", "--no-ff", "-m", "merged", "merged"],
+    )?;
+    git(&rig.repo, &["branch", "-m", "feature"])?;
+
+    let report = rig.pool(1)?.gc(&rig.repo, false)?.join("\n");
+    assert!(tree.is_dir(), "{report}");
+    assert!(report.contains("no main or origin/main"), "{report}");
+    Ok(())
+}
+
+/// Dies when gc refreshes its base: even a dry run with no linked worktrees must leave
+/// the aged FETCH_HEAD untouched instead of dialing origin before it prints a report.
+#[test]
+fn gc_never_fetches_the_remote_main() -> TestResult {
+    let rig = Rig::new("gc-no-fetch")?;
+    let remote = rig.root.join("remote");
+    git(
+        &rig.repo,
+        &[
+            "clone",
+            "-q",
+            &rig.repo.to_string_lossy(),
+            &remote.to_string_lossy(),
+        ],
+    )?;
+    git(
+        &rig.repo,
+        &["remote", "add", "origin", &remote.to_string_lossy()],
+    )?;
+    git(&rig.repo, &["fetch", "-q", "origin"])?;
+    let fetch_head = rig.repo.join(".git/FETCH_HEAD");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture ages FETCH_HEAD so a gc fetch is observable"
+    )]
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    std::fs::File::open(&fetch_head)?.set_modified(old)?;
+
+    rig.pool(1)?.gc(&rig.repo, true)?;
+    assert_eq!(std::fs::metadata(fetch_head)?.modified()?, old);
     Ok(())
 }

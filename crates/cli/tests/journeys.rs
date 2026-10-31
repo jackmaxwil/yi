@@ -467,6 +467,29 @@ fn an_ask_in_a_repository_runs_on_a_lane_and_hands_it_back() -> TestResult {
     Ok(())
 }
 
+/// A lockfile whose sync fails starts the session anyway and says so in one stderr warning.
+#[test]
+fn a_failed_lane_sync_warns_on_stderr_and_the_ask_still_runs() -> TestResult {
+    let journey = Journey::new("lane-sync")?;
+    let project = trunk(&journey)?;
+    std::fs::write(project.join("uv.lock"), "not a lockfile\n")?;
+    git_in(&project, &["add", "uv.lock"])?;
+    git_in(&project, &["commit", "-qm", "lock"])?;
+    let output = journey
+        .command(&["ask", "hello"])
+        .stderr(Stdio::piped())
+        .output()?;
+    let said = String::from_utf8_lossy(&output.stderr).into_owned();
+    succeeded(&output, "ask on an unsynced lane")?;
+    assert!(
+        said.lines()
+            .any(|line| line.starts_with("warning: lane 0: toolchain sync failed")),
+        "{said}"
+    );
+    journey.reclaim();
+    Ok(())
+}
+
 /// An orphaned lane with nothing to keep is what `doctor --fix` reaps; the pool reads idle after.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
@@ -965,5 +988,170 @@ fn a_session_start_sweeps_an_aged_orphan_without_yi_gc() -> TestResult {
         "the orphan a session start was meant to sweep stayed"
     );
     journey.reclaim();
+    Ok(())
+}
+
+const SEARCH_RESPONSE: &str =
+    include_str!("../../ai/tests/fixtures/openrouter-web-search-deepseek-q0.response.json");
+
+fn search_case(primary: &str, explicit_role: bool) -> TestResult {
+    use std::io::BufReader;
+    use std::net::TcpListener;
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+
+    let journey = Journey::new("web-search")?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let served = std::thread::spawn(move || -> std::io::Result<String> {
+        let (stream, _) = listener.accept()?;
+        let mut reader = BufReader::new(stream);
+        let request = crate::loopback::read_request(&mut reader);
+        write!(
+            reader.into_inner(),
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{SEARCH_RESPONSE}",
+            SEARCH_RESPONSE.len()
+        )?;
+        Ok(request)
+    });
+    let search_id = if explicit_role {
+        "openai/gpt-5-nano"
+    } else {
+        "deepseek/deepseek-v4-flash"
+    };
+    let mut model = yi_runtime::resolve_model("openrouter", search_id)
+        .ok_or("the bundled search model is missing")?;
+    model.base_url = format!("http://127.0.0.1:{port}/api/v1");
+    let mut renamed = model.clone();
+    renamed.id = "deepseek/deepseek-v4-flash-search".to_owned();
+    std::fs::create_dir_all(journey.root.join("home/.yi/catalog"))?;
+    std::fs::write(
+        journey.root.join("home/.yi/catalog/openrouter.json"),
+        serde_json::to_string(&json!({
+            "schema": 2,
+            "openai-completions": {
+                model.id.clone(): serde_json::to_value(model)?,
+                renamed.id.clone(): serde_json::to_value(renamed)?,
+            }
+        }))?,
+    )?;
+    let mut config = json!({"kernel": {"prewarm": false}});
+    if explicit_role {
+        config["models"] = json!({"webSearch": "openrouter/deepseek/deepseek-v4-flash-search"});
+        config["webSearch"] = json!({"engine": "non-default-engine"});
+    }
+    std::fs::write(
+        journey.root.join("home/.yi/config.json"),
+        serde_json::to_string(&config)?,
+    )?;
+    let call = faux_tool_call(
+        "search-1",
+        "web_search",
+        json!({"query": "latest Rust", "count": 5})
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let script = journey.project().join("search.jsonl");
+    std::fs::write(
+        &script,
+        [
+            serde_json::to_string(&faux_assistant_message(vec![call], StopReason::ToolUse))?,
+            serde_json::to_string(&faux_assistant_message(
+                vec![faux_text("done")],
+                StopReason::Stop,
+            ))?,
+        ]
+        .join("\n"),
+    )?;
+    let output = journey
+        .command(&[
+            "ask",
+            "--json",
+            "--faux",
+            &script.display().to_string(),
+            "search",
+        ])
+        .arg("--model")
+        .arg(primary)
+        .env("OPENROUTER_API_KEY", "x")
+        .stderr(Stdio::piped())
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let shown = succeeded(&output, "web search ask")?;
+    assert!(shown.contains("<<<yi-external"), "{shown}\n{stderr}");
+    assert!(
+        shown.contains("https://doc.rust-lang.org/stable/releases.html"),
+        "{shown}"
+    );
+    let stored = crate::session_files::session_text(&journey.root.join("home/sessions"))?;
+    assert_eq!(
+        stored.matches("\"cause\":\"tool:web_search\"").count(),
+        1,
+        "{stored}"
+    );
+    assert!(stored.contains("\"toolName\":\"web_search\""), "{stored}");
+    assert!(stored.contains("0.007516407500000001"), "{stored}");
+
+    let request = served.join().map_err(|_| "search server panicked")??;
+    let body = crate::loopback::json_body(&request)?;
+    let (model_id, engine) = if explicit_role {
+        ("deepseek/deepseek-v4-flash-search", "non-default-engine")
+    } else {
+        ("deepseek/deepseek-v4-flash", "exa")
+    };
+    assert_eq!(body["model"], model_id);
+    assert_eq!(body["stream"], false);
+    assert_eq!(body["tools"][0]["type"], "openrouter:web_search");
+    let parameters = &body["tools"][0]["parameters"];
+    assert_eq!(parameters["engine"], engine);
+    assert_eq!(parameters["mode"], "auto");
+    assert_eq!(parameters["max_results"], 5);
+    assert_eq!(parameters["max_total_results"], 5);
+    assert_eq!(parameters["max_uses"], 1);
+    journey.reclaim();
+    Ok(())
+}
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn web_search_offline_citations_and_cost() -> TestResult {
+    search_case("openrouter/deepseek/deepseek-v4-flash", false)?;
+    search_case("faux/faux-1", true)
+}
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn invalid_web_search_config_is_refused_with_an_actionable_reason() -> TestResult {
+    for (name, config, setting, fix) in [
+        (
+            "model",
+            json!({"kernel": {"prewarm": false}, "models": {"webSearch": "faux/faux-1"}}),
+            "models.webSearch",
+            "choose an OpenRouter model or remove the setting",
+        ),
+        (
+            "engine",
+            json!({"kernel": {"prewarm": false}, "webSearch": {"engine": ""}}),
+            "webSearch.engine",
+            "choose a non-empty engine or remove the setting",
+        ),
+    ] {
+        let journey = Journey::new(&format!("web-search-invalid-{name}"))?;
+        std::fs::write(
+            journey.root.join("home/.yi/config.json"),
+            serde_json::to_string(&config)?,
+        )?;
+        let output = journey
+            .command(&["ask", "hello"])
+            .env("OPENROUTER_API_KEY", "x")
+            .stderr(Stdio::piped())
+            .output()?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{name}: {stderr}");
+        assert_eq!(stderr.matches(setting).count(), 1, "{name}: {stderr}");
+        assert!(stderr.contains(fix), "{name}: {stderr}");
+        journey.reclaim();
+    }
     Ok(())
 }

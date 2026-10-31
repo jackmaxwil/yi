@@ -10,6 +10,7 @@ pub mod browser;
 mod chrome;
 pub mod client;
 mod editor_view;
+pub mod files;
 mod header;
 pub mod keys;
 pub mod kitty;
@@ -574,7 +575,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
                         .iter()
                         .find(|(id, _)| focused.is_some_and(|pane| id == &pane))
                         .map(|(_, rect)| {
-                            let inner = rect.inner(render::pane_margin(true));
+                            let inner = rect.inner(crate::layout::pane_margin(true, false));
                             ratatui::layout::Rect {
                                 height: inner.height / 2,
                                 ..inner
