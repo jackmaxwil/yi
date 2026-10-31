@@ -12,6 +12,8 @@ mod recorded;
 mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+#[path = "../../tools/tests/support/seatbelt.rs"]
+mod seatbelt_support;
 #[path = "support/family.rs"]
 mod support;
 #[path = "support/upstream.rs"]
@@ -31,6 +33,7 @@ mod breakpoints;
 mod cache_miss;
 mod caps_runtime;
 mod channel_e2e;
+mod check_probe;
 mod child_trail;
 mod child_transcript;
 mod claims;
@@ -59,7 +62,9 @@ mod kernel_sandbox;
 mod kernel_tools;
 mod lanes;
 mod levers;
+mod memory_journal;
 mod node;
+mod permission_auto;
 mod permission_scope;
 mod plan_arms;
 mod plan_authority;
@@ -112,6 +117,7 @@ mod todo_e2e;
 mod todo_mirror;
 mod undo_to;
 mod wall_e2e;
+mod web_search;
 mod worker_prompt;
 
 /// A real `pytest -v` run (#1153): 32,955 B, its FAILED row at line 223 of 419 and the verdict

@@ -115,17 +115,52 @@ pub struct Group {
     pub folded: bool,
 }
 
+/// Where the sidebar's cursor rests: a group's fold header, or a session's row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Slot {
+    Group(String),
+    Row(usize),
+}
+
+/// One entry of the painted order: a header carries the group it heads, a row the group it is
+/// drawn under, so the painter reads both without a second traversal.
+pub(crate) enum Painted<'a> {
+    Header(&'a str, &'a Group),
+    Row(&'a Group, usize),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarMode {
     Rail,
     Full,
+    Hidden,
 }
 
 impl SidebarMode {
     pub fn next(self) -> Self {
         match self {
             Self::Rail => Self::Full,
-            Self::Full => Self::Rail,
+            Self::Full => Self::Hidden,
+            Self::Hidden => Self::Rail,
+        }
+    }
+
+    /// The name `console.sidebar` carries in config.json.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Rail => "rail",
+            Self::Full => "full",
+            Self::Hidden => "hidden",
+        }
+    }
+}
+
+impl From<yi_types::config::SidebarState> for SidebarMode {
+    fn from(state: yi_types::config::SidebarState) -> Self {
+        match state {
+            yi_types::config::SidebarState::Rail => Self::Rail,
+            yi_types::config::SidebarState::Full => Self::Full,
+            yi_types::config::SidebarState::Hidden => Self::Hidden,
         }
     }
 }
@@ -397,6 +432,27 @@ impl Pane {
         }
     }
 
+    pub fn scroll_by(&mut self, delta: isize) -> bool {
+        let mut follows = false;
+        if delta < 0
+            && self.scroll_from_bottom == 0
+            && let PaneContent::Session {
+                chat: Some(chat), ..
+            } = &mut self.content
+            && chat.app.follow() == yi_types::config::FollowMode::Still
+        {
+            chat.app.advance_follow(delta.unsigned_abs());
+            follows = true;
+        }
+        let before = self.scroll_from_bottom;
+        self.scroll_from_bottom = if delta >= 0 {
+            self.scroll_from_bottom.saturating_add(delta.unsigned_abs())
+        } else {
+            self.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
+        };
+        follows || self.scroll_from_bottom != before
+    }
+
     pub fn session(&self) -> Option<&SessionId> {
         match &self.content {
             PaneContent::Session { session, .. } | PaneContent::Notebook { session, .. } => {
@@ -410,6 +466,10 @@ impl Pane {
             | PaneContent::Settings(_)
             | PaneContent::Browser(_) => None,
         }
+    }
+
+    pub(crate) fn fills_frame(&self) -> bool {
+        matches!(self.content, PaneContent::Terminal(_))
     }
 
     pub fn take_ask(&mut self) -> Option<PendingAsk> {
@@ -431,6 +491,7 @@ pub enum Mode {
     Normal,
     Prefix,
     Navigator { query: String, selected: usize },
+    Files(crate::files::Files),
     Menu(crate::menu::Menu),
 }
 
@@ -440,6 +501,9 @@ pub struct ConsoleState {
     pub sessions: BTreeMap<SessionId, SessionRow>,
     pub order: Vec<SessionId>,
     pub selected: usize,
+    /// Invariant: the cursor rests on a header or a session, never both, so landing on a
+    /// folded group's header leaves the session it came from in `selected`.
+    pub header: Option<String>,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
     pub panes: BTreeMap<PaneId, Pane>,
@@ -452,6 +516,7 @@ pub struct ConsoleState {
     pub quit: bool,
     pub sidebar: SidebarMode,
     pub sidebar_cols: usize,
+    sidebar_focus: bool,
     pub cursor_moved: bool,
     pub diffs: BTreeMap<SessionId, SessionDiff>,
     pub notebooks: BTreeMap<SessionId, Vec<NbCell>>,
@@ -462,6 +527,8 @@ pub struct ConsoleState {
     pub title_frame: Option<std::time::Instant>,
     pub title_cache: yi_tui::title::Cache,
     pub chat_pace: u16,
+    pub chat_follow: yi_types::config::FollowMode,
+    pub follow_fallback: yi_types::config::FollowMode,
     pub open_apps: Vec<String>,
     pub session_options: BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
     pub folded: std::collections::BTreeSet<String>,
@@ -486,6 +553,7 @@ impl ConsoleState {
             sessions: BTreeMap::new(),
             order: Vec::new(),
             selected: 0,
+            header: None,
             tabs: vec![Tab {
                 layout,
                 zoomed: false,
@@ -500,6 +568,7 @@ impl ConsoleState {
             dropped_frames: 0,
             sidebar: SidebarMode::Rail,
             sidebar_cols: 0,
+            sidebar_focus: false,
             cursor_moved: false,
             diffs: BTreeMap::new(),
             notebooks: BTreeMap::new(),
@@ -510,6 +579,8 @@ impl ConsoleState {
             title_frame: None,
             title_cache: yi_tui::title::Cache::default(),
             chat_pace: 0,
+            chat_follow: yi_types::config::FollowMode::Page,
+            follow_fallback: yi_types::config::FollowMode::Page,
             open_apps: Vec::new(),
             session_options: BTreeMap::new(),
             folded: std::collections::BTreeSet::new(),
@@ -594,6 +665,23 @@ impl ConsoleState {
             .collect()
     }
 
+    pub fn set_follow(&mut self, follow: yi_types::config::FollowMode) {
+        self.chat_follow = follow;
+        for chat in self
+            .panes
+            .values_mut()
+            .filter_map(|pane| match &mut pane.content {
+                PaneContent::Session {
+                    chat: Some(chat), ..
+                } => Some(chat.as_mut()),
+                _ => None,
+            })
+            .chain(self.parked.values_mut().map(Box::as_mut))
+        {
+            chat.app.set_follow(follow);
+        }
+    }
+
     /// ponytail: evicts the lowest session id, not the least recent; order it if 8 is tight.
     pub fn park(&mut self, id: SessionId, chat: Box<Chat>) {
         if !self.parked.contains_key(&id) && self.parked.len() >= 8 {
@@ -636,6 +724,91 @@ impl ConsoleState {
             self.selected = *first;
         } else if self.selected >= self.order.len() {
             self.selected = self.order.len().saturating_sub(1);
+        }
+    }
+
+    pub fn cursor(&self) -> Slot {
+        match &self.header {
+            Some(root) => Slot::Group(root.clone()),
+            None => Slot::Row(self.selected),
+        }
+    }
+
+    /// The painted order: a full sidebar heads a group with its fold header, a folded group
+    /// paints no row under it, and the rail paints no header.
+    pub(crate) fn painted<'a>(&self, groups: &'a [Group]) -> Vec<Painted<'a>> {
+        let mut painted = Vec::new();
+        for group in groups {
+            if let Some(root) = group.root.as_deref()
+                && self.sidebar == SidebarMode::Full
+            {
+                painted.push(Painted::Header(root, group));
+            }
+            if !group.folded {
+                painted.extend(group.rows.iter().map(|index| Painted::Row(group, *index)));
+            }
+        }
+        painted
+    }
+
+    /// The slots in the order the sidebar paints them.
+    pub fn slots(&self) -> Vec<Slot> {
+        self.painted(&self.groups())
+            .into_iter()
+            .map(|painted| match painted {
+                Painted::Header(root, _) => Slot::Group(root.to_owned()),
+                Painted::Row(_, index) => Slot::Row(index),
+            })
+            .collect()
+    }
+
+    /// Invariant: the cursor steps over the painted order, header or session, so a folded
+    /// group's header is reachable without a mouse, and `enter` there folds or unfolds it.
+    pub fn move_cursor(&mut self, down: bool) {
+        let slots = self.slots();
+        let at = slots
+            .iter()
+            .position(|slot| *slot == self.cursor())
+            .unwrap_or(0);
+        let next = if down {
+            at.saturating_add(1)
+        } else {
+            at.saturating_sub(1)
+        };
+        if let Some(slot) = slots.get(next) {
+            match slot {
+                Slot::Group(root) => self.header = Some(root.clone()),
+                Slot::Row(index) => {
+                    self.header = None;
+                    self.selected = *index;
+                }
+            }
+        }
+        self.cursor_moved = true;
+    }
+
+    /// A folded group keeps its header, so the cursor stays on the one it folded.
+    pub fn fold_from_header(&mut self, root: &str) {
+        self.toggle_fold(root);
+        self.header = Some(root.to_owned());
+    }
+
+    pub(crate) fn settle_visible(&mut self) {
+        let slots = self.slots();
+        if slots.contains(&self.cursor()) {
+            return;
+        }
+        match slots
+            .iter()
+            .find(|slot| matches!(slot, Slot::Row(_)))
+            .or_else(|| slots.first())
+        {
+            Some(Slot::Row(index)) => {
+                self.header = None;
+                self.selected = *index;
+            }
+            Some(Slot::Group(root)) => self.header = Some(root.clone()),
+            None => self.header = None,
         }
     }
 
@@ -705,17 +878,6 @@ impl ConsoleState {
         if !self.folded.remove(root) {
             self.folded.insert(root.to_owned());
         }
-        let rows = self.visible_rows();
-        if rows.contains(&self.selected) {
-            return;
-        }
-        let next = rows
-            .iter()
-            .find(|index| **index >= self.selected)
-            .or_else(|| rows.first());
-        if let Some(next) = next {
-            self.selected = *next;
-        }
     }
 
     pub fn roots(&self) -> Vec<String> {
@@ -729,6 +891,14 @@ impl ConsoleState {
             }
         }
         roots
+    }
+
+    pub fn split_focused_at(&mut self, direction: Direction, ratio: f32) -> Option<Vec<bool>> {
+        let new_id = self.split_focused(direction)?;
+        let tab = self.tabs.get_mut(self.active_tab)?;
+        let path = tab.layout.split_path_of_second(new_id)?;
+        tab.layout.set_ratio_at(&path, ratio);
+        Some(path)
     }
 
     pub fn split_focused(&mut self, direction: Direction) -> Option<PaneId> {
@@ -767,6 +937,37 @@ impl ConsoleState {
     pub fn select_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active_tab = index;
+        }
+    }
+}
+
+impl ConsoleState {
+    pub fn cycle_zone(&mut self) {
+        match self.zone {
+            Zone::Sidebar => self.focus_panes(),
+            Zone::Panes if self.sidebar == SidebarMode::Hidden => self.focus_panes(),
+            Zone::Panes => self.zone = Zone::Sidebar,
+        }
+    }
+
+    pub fn focus_panes(&mut self) {
+        self.zone = Zone::Panes;
+        self.sidebar_focus = false;
+    }
+
+    pub(crate) fn cycle_sidebar(&mut self) {
+        let was_hidden = self.sidebar == SidebarMode::Hidden;
+        let held = self.zone == Zone::Sidebar;
+        let return_focus = self.sidebar_focus;
+        self.sidebar = self.sidebar.next();
+        self.header = None;
+        self.settle_visible();
+        if self.sidebar == SidebarMode::Hidden {
+            self.focus_panes();
+            self.sidebar_focus = held;
+        } else if was_hidden && return_focus {
+            self.zone = Zone::Sidebar;
+            self.sidebar_focus = false;
         }
     }
 }

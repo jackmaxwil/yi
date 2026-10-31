@@ -1,0 +1,3 @@
+{"kind":"header","version":4,"id":"01a18690-6f19-7e03-95e7-9933d4e41fda","createdAt":1793258975001,"cwd":"/tmp/yi-fixture"}
+{"kind":"entry","lane":"main","type":"message","id":"01a18690-6f19-744f-9a90-f56b5f9cb63e","message":{"role":"user","content":"open the plan","timestamp":1765000000001},"parentId":null,"seq":1,"timestamp":1793258975001}
+{"kind":"fact","seq":2,"fact":"plan","plan":{"version":1,"tasks":[],"created":1787544431477,"updated":1787544431478,"doc":"pointed-at"}}

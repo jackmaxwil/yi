@@ -76,6 +76,57 @@ fn a_window_keeps_replies_by_their_own_timestamp() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn every_tool_usage_record_reaches_the_rollup_inside_its_time_window() -> TestResult {
+    use yi_types::message::Usage;
+    use yi_types::record::LaneRecord;
+    use yi_types::wire::Mutation;
+
+    let dir = laid_out("yi-rollup-tool-usage")?;
+    let usage_line =
+        |id: &str, cause: &str, at: u64, cost: f64| -> Result<String, Box<dyn Error>> {
+            let mut usage = Usage::zero();
+            usage.cost.total = serde_json::Number::from_f64(cost).ok_or("invalid fixture cost")?;
+            let record = LaneRecord::Usage {
+                id: id.to_owned(),
+                lane: "main".to_owned(),
+                usage,
+                cause: cause.to_owned(),
+                run_id: None,
+                entry_id: None,
+                attempt: None,
+                stop_reason: None,
+                tool_call_id: None,
+                details: Some(
+                    serde_json::json!({"provider": "openrouter", "model": "search-model"}),
+                ),
+                seq: 0,
+                timestamp: at,
+            };
+            Ok(serde_json::to_string(&Mutation::Record { record })?)
+        };
+    let root = format!(
+        "{ROOT}\n{}\n{}\n",
+        usage_line("search-usage", "tool:web_search", 2_000, 0.0075)?,
+        usage_line("other-usage", "tool:other", 1_000, 0.002)?
+    );
+    put(&dir, "tool-usage.jsonl", &root)?;
+    let all = scan(&dir, 0);
+    assert!(all.requests.iter().any(|request| {
+        request.at_ms == 1_000 && request.provider == "openrouter" && request.billed() == 0.002
+    }));
+    let recent = scan(&dir, 1_500);
+    let search = recent
+        .requests
+        .iter()
+        .find(|request| request.at_ms == 2_000)
+        .ok_or("web search usage missing from the window")?;
+    assert_eq!(search.model, "search-model");
+    assert_eq!(search.billed(), 0.0075);
+    assert!(!recent.requests.iter().any(|request| request.at_ms == 1_000));
+    Ok(())
+}
+
 /// One bad part among good ones: an empty file with no header and a torn assistant line are
 /// named, and the rest still count.
 #[test]
@@ -256,7 +307,7 @@ fn a_window_keeps_plan_ops_by_their_own_stamp() -> TestResult {
 /// the journal unreadable whole, as plan recovery does, and a torn tail is one bad line.
 #[test]
 fn a_journal_the_engine_refuses_counts_no_op_and_a_torn_tail_is_one_bad_line() -> TestResult {
-    use yi_runtime::plan::journal::RECORD_CAP;
+    use yi_runtime::journal::RECORD_CAP;
     use yi_runtime::plan::ops::PlanEngine;
     use yi_runtime::plan::store::{JOURNAL_NAME, PlanStore};
     use yi_runtime::rollup::{Scan, fold_journals};
@@ -295,5 +346,29 @@ fn a_journal_the_engine_refuses_counts_no_op_and_a_torn_tail_is_one_bad_line() -
         );
         assert_eq!(got, (ops, bad, unreadable), "{case}");
     }
+    Ok(())
+}
+
+/// Dies when the scan drops a tool's booked usage record, by its line filter or its cause guard.
+#[test]
+fn a_tool_usage_record_is_one_request_inside_its_window() -> TestResult {
+    let dir = Scratch::new("rollup-tool-usage")?;
+    let header = ROOT.lines().next().ok_or("empty fixture")?;
+    let record = r#"{"kind":"record","type":"usage","id":"u1","lane":"main","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":15,"cost":{"input":0.001,"output":0.002,"cacheRead":0,"cacheWrite":0,"total":0.003}},"cause":"tool:read","details":{"provider":"openrouter","model":"deepseek/deepseek-v4-flash"},"seq":3,"timestamp":1790000000500}"#;
+    put(
+        &dir,
+        "--proj--/1787905015970_01a04771-80a2-727b-a35d-9a0bfe11023b.jsonl",
+        &format!("{header}\n{record}\n"),
+    )?;
+    let found = scan(&dir, 1_790_000_000_000);
+    assert_eq!(
+        (found.bad_lines, found.unreadable, found.requests.len()),
+        (0, 0, 1)
+    );
+    let request = found.requests.first().ok_or("no request")?;
+    assert_eq!(request.provider, "openrouter");
+    assert_eq!(request.model, "deepseek/deepseek-v4-flash");
+    assert!((request.usage.cost.total.as_f64().unwrap_or(0.0) - 0.003).abs() < 1e-12);
+    assert!(scan(&dir, 1_790_000_001_000).requests.is_empty());
     Ok(())
 }

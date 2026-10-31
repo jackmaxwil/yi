@@ -15,12 +15,10 @@ set -euo pipefail
 # Incident: a forge run that restored no cache had no registry sources to remap yet, and the same
 # tree measured 24,576 bytes more; fetching first unpacks every source the lockfile names.
 cargo fetch -q
+remap_text=$(python3 scripts/guardrails/_common.py)
 remap=()
-for dir in "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/; do
-  [ -d "$dir" ] && remap+=("--remap-path-prefix=${dir%/}=/c")
-done
-for dir in "${RUSTUP_HOME:-$HOME/.rustup}"/toolchains/*/; do
-  [ -d "$dir" ] && remap+=("--remap-path-prefix=${dir%/}=/r")
-done
+while IFS= read -r flag; do
+  [ -n "$flag" ] && remap+=("$flag")
+done <<< "$remap_text"
 
 exec env RUSTFLAGS="${RUSTFLAGS:-} ${remap[*]}" cargo build --profile dist -p yi-cli "$@"
