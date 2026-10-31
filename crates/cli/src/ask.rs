@@ -100,7 +100,7 @@ pub(super) fn run(args: &Args) -> i32 {
         stream(&session, &host, modes, schema.as_ref(), (ends, deadline)).await
     });
     let grace = left(deadline);
-    let _ended = runtime.block_on(tokio::time::timeout(grace, closing.end()));
+    let _ended = runtime.block_on(async { tokio::time::timeout(grace, closing.end()).await });
     runtime.shutdown_timeout(left(deadline));
     release_lane(lane.as_deref());
     yi_runtime::spend::drain_settled(deadline);

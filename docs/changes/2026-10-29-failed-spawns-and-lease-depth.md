@@ -1,6 +1,6 @@
 ---
 issue: Closes #1571
-raise: crate cli +23, crate runtime +98, tests +183, over-cap +1, comments +13
+raise: crate cli +24, crate runtime +98, tests +189, over-cap +1, comments +13
 ---
 A spawn refused after its directory was made leaves nothing behind. The directory is created before the container placement, the lane claim and the build, and each of those can refuse; a guard removes it unless the child's record is listed, so the family names only children that ran, and a refused second worker in a one-lane pool leaves no `sub-*` in the parent's `children/`.
 

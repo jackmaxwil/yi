@@ -16,7 +16,6 @@ mod roles;
 mod rpc;
 mod sessions;
 mod setup;
-mod sidecar;
 mod stats;
 mod todo;
 mod trace_sink;
@@ -932,7 +931,7 @@ fn run_rpc(args: &Args) -> i32 {
     let lane = session.lane();
     let code = rpc::run_rpc(session, &options, &runtime);
     // A client that hung up ends its children first, so none of their lanes outlives it.
-    let _ended = runtime.block_on(tokio::time::timeout(END_GRACE, host.end()));
+    let _ended = runtime.block_on(async { tokio::time::timeout(END_GRACE, host.end()).await });
     runtime.shutdown_timeout(END_GRACE);
     release_lane(lane.as_deref());
     code

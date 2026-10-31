@@ -36,6 +36,7 @@ pub mod question;
 pub mod reflow;
 pub mod render;
 pub mod reveal;
+pub mod rows;
 pub mod status;
 pub mod table;
 pub mod term;
