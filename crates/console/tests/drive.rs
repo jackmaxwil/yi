@@ -4418,9 +4418,9 @@ fn a_press_on_a_settings_row_saves_the_control_it_names() -> TestResult {
          key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
          wait-frame 3000 Open Review beside\n\
          mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\n\
-         mouse down 110 8\nmouse up 110 8\nwait-frame 3000 ▌\n\
+         mouse down 110 9\nmouse up 110 9\nwait-frame 3000 ▌\n\
          type firefox\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
-         mouse down 110 10\nmouse up 110 10\nwait-frame 3000 ▌\n\
+         mouse down 110 11\nmouse up 110 11\nwait-frame 3000 ▌\n\
          type 40\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
          mouse down 116 3\nmouse up 116 3\nwait-frame 3000 Permissions\n\
          mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
