@@ -159,10 +159,7 @@ pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> S
             .iter()
             .map(|failure| failure.name.clone())
             .collect();
-        let next = format!(
-            "dill.load(open({}, \"rb\"))[\"_skips\"]",
-            serde_json::to_string(&restore.path).unwrap_or_else(|_| "\"\"".to_owned())
-        );
+        let next = "globals().get(\"_yi_restore_failures\", list())";
         lines.push(format!(
             "These could not be restored and must be recreated if needed: {}.",
             crate::listed::listed(
@@ -170,7 +167,7 @@ pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> S
                 "names not revived",
                 "RESTORE_FAILED_SHOWN",
                 RESTORE_FAILED_SHOWN,
-                &next
+                next
             )
         ));
     }

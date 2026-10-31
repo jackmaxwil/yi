@@ -293,6 +293,7 @@ pub fn build_restore_code(in_path: &Path) -> String {
         if _b.isinstance(name, _b.str) and name not in ns:
             reason = entry.get("reason")
             failed.append({{"name": name, "reason": reason if _b.isinstance(reason, _b.str) else ""}})
+    ns["_yi_restore_failures"] = failed
     _b.print({marker} + json.dumps({{"restored": _b.sorted(restored), "failed": failed}}))
 
 

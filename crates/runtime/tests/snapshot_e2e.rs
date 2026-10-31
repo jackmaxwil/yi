@@ -452,7 +452,6 @@ async fn a_cell_that_changes_one_name_writes_only_that_name() -> TestResult {
     std::fs::remove_file(added.first().ok_or("no new blob")?)?;
     let third = service(&dir, &notices);
     let outcome = cell(&third, "print(len(big))").await?;
-    third.dispose().await;
     assert!(
         outcome.result.stdout.contains("10000000"),
         "{}",
@@ -464,8 +463,20 @@ async fn a_cell_that_changes_one_name_writes_only_that_name() -> TestResult {
         .unwrap_or_default();
     assert!(
         announced.contains("could not be restored and must be recreated if needed: small"),
-        "a missing blob must be named, not dropped: {announced}"
+        "a missing blob must be named without its reason: {announced}"
     );
+    assert!(
+        !announced.contains("small (") && !announced.contains("FileNotFoundError"),
+        "the restore notice must omit failure reasons: {announced}"
+    );
+    let failures = cell(&third, "print(_yi_restore_failures)").await?;
+    assert!(
+        failures.result.stdout.contains("small")
+            && failures.result.stdout.contains("FileNotFoundError"),
+        "the continuation list must hold the omitted failure and its reason: {}",
+        failures.result.stdout
+    );
+    third.dispose().await;
     Ok(())
 }
 
