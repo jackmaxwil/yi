@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.834.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.835.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -223,6 +223,10 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D517 | "Console panes only" | "the owner's console-first direction puts the solo inline view out of #1711, and a second follow engine there cost every finding this branch paid for" | reversible by painting the inline viewport through the same follow path |
+| D516 | "Yes, hold three rows" | "No I am only talking about the terminal text stream" | reversible via removing the bounded collapsed-card reservation |
+| D515 | "Yes, use Still" | "No I am only talking about the terminal text stream" | reversible via an explicit tui.follow setting |
+| D514 | "Hybrid page jumps + streaming text" | "reduce visual movement giving user motion sickness" | reversible via tui.follow: slide |
 | D513 | a console sidebar session's second line is drawn only when it carries news (a state that is not idle, a red gate, a todo list, a claimed question) or when the pane behind it shows that session, so an idle row is one line and the workspace headers and control rows wear the muted style instead of the text one | the owner asked on 2026-10-28 to "Reduce visual weight of the sidebar": two lines per session doubled its height, and every idle session carried a state line reading "idle · 7s" over bright chrome | restore the unconditional second line in `crates/console/src/sidebar.rs::session_rows` and the `text` style on the control rows and the bold workspace header |
 | D512 | Subagents should be persistent in their two locations in the scrollback: at start and end | One shared formatter projects the durable spawn and end records into two concise rows, so the live card no longer needs to become the permanent end record | Remove the replay projection and restore the committed full Task cell; the added optional wire fields remain additive and old readers ignore them |
 | D511 | `just test-quick` is an opt-in local loop that excludes tests measured at 5 seconds or more, while `just check`, prepush and CI keep the complete suite; `just slow-tests` regenerates the exact binary-and-test filter from a fresh nextest JUnit report | the owner approved skipping the measured slow tests for the inner loop: "Yes (Recommended)" | remove the quick profiles and recipes; the full suite is unchanged |
