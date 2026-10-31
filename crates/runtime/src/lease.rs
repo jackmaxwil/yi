@@ -354,12 +354,20 @@ impl SubagentHost {
                     .collect()
             })
             .unwrap_or_default();
-        let mut repossessed = Vec::new();
+        let mut joins = tokio::task::JoinSet::new();
         for key in due {
-            match self.repossess(&key).await {
-                Ok(Some(name)) => repossessed.push(name),
-                Ok(None) => {}
-                Err(reason) => self.leave_pending(&key, &reason),
+            let host = Arc::clone(self);
+            joins.spawn(async move {
+                let outcome = host.repossess(&key).await;
+                (key, outcome)
+            });
+        }
+        let mut repossessed = Vec::new();
+        while let Some(joined) = joins.join_next().await {
+            match joined {
+                Ok((_, Ok(Some(name)))) => repossessed.push(name),
+                Ok((_, Ok(None))) | Err(_) => {}
+                Ok((key, Err(reason))) => self.leave_pending(&key, &reason),
             }
         }
         repossessed

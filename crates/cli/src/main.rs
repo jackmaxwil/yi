@@ -28,7 +28,7 @@ use std::sync::Arc;
 use yi_types::config::{DEFAULT_MAX_DEPTH, RlmConfig};
 
 use args::{Args, Resume, parse_args};
-use lanes::{claim_lane, configured_lanes, release_lane};
+use lanes::{SHUTDOWN_GRACE, claim_lane, configured_lanes, end_host, release_lane};
 use user_config::{
     config, configured_auto_background, configured_roles, home, load_config, refreshed,
     reload_config,
@@ -909,9 +909,6 @@ fn run_ask(args: &Args) -> i32 {
     ask::run(args)
 }
 
-/// How long an exiting shell waits for its revoked children's repossession and blocking work.
-pub(crate) const END_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
-
 fn run_rpc(args: &Args) -> i32 {
     let runtime = match current_thread() {
         Ok(runtime) => runtime,
@@ -931,8 +928,7 @@ fn run_rpc(args: &Args) -> i32 {
     let lane = session.lane();
     let code = rpc::run_rpc(session, &options, &runtime);
     // A client that hung up ends its children first, so none of their lanes outlives it.
-    let _ended = runtime.block_on(async { tokio::time::timeout(END_GRACE, host.end()).await });
-    runtime.shutdown_timeout(END_GRACE);
+    end_host(runtime, &host, SHUTDOWN_GRACE);
     release_lane(lane.as_deref());
     code
 }

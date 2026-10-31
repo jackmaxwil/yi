@@ -127,6 +127,19 @@ pub(crate) fn release_lane(lane: Option<&yi_runtime::lane::land::LaneHandle>) {
     }
 }
 
+/// How long an exiting shell waits for its revoked children's repossession and blocking work.
+pub(crate) const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Every live child is repossessed, then the runtime stops, each bounded by `grace`.
+pub(crate) fn end_host(
+    runtime: tokio::runtime::Runtime,
+    host: &std::sync::Arc<yi_runtime::subagent::SubagentHost>,
+    grace: std::time::Duration,
+) {
+    let _ended = runtime.block_on(async { tokio::time::timeout(grace, host.end()).await });
+    runtime.shutdown_timeout(grace);
+}
+
 pub(crate) fn run_lanes(args: &Args) -> i32 {
     let pool = match yi_runtime::lane::Pool::open(crate::home(), &effective_cwd(args), lane_slots())
     {

@@ -278,6 +278,16 @@ fn a_hidden_sidebar_is_still_hidden_in_the_console_opened_next() -> TestResult {
             drawn.contains("⌥b  sidebar"),
             "the next console started without the way back:\n{drawn}"
         );
+        let railed = drawn.lines().find(|line| {
+            line.trim_start_matches('"')
+                .chars()
+                .nth(7)
+                .is_some_and(|cell| cell == '│' || cell == '┃')
+        });
+        assert!(
+            railed.is_none(),
+            "the next console drew the rail's edge: {railed:?}"
+        );
         Ok(())
     })();
     let _ = daemon.kill();

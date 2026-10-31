@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+use crate::SHUTDOWN_GRACE;
+
 use yi_runtime::Status;
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
@@ -12,7 +14,6 @@ use super::{
 
 const HOLD_POLL: Duration = Duration::from_millis(500);
 const EXIT_DENIED: i32 = 4;
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 pub(super) fn run(args: &Args) -> i32 {
     use std::io::IsTerminal;
@@ -99,9 +100,7 @@ pub(super) fn run(args: &Args) -> i32 {
         }
         stream(&session, &host, modes, schema.as_ref(), (ends, deadline)).await
     });
-    let grace = left(deadline);
-    let _ended = runtime.block_on(async { tokio::time::timeout(grace, closing.end()).await });
-    runtime.shutdown_timeout(left(deadline));
+    crate::end_host(runtime, &closing, left(deadline));
     release_lane(lane.as_deref());
     yi_runtime::spend::drain_settled(deadline);
     code

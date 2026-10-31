@@ -12,6 +12,8 @@ use super::{AskRequest, Command, UiEvent};
 use crate::port::Reply;
 
 const QUIT_GRACE: Duration = Duration::from_secs(3);
+/// Invariant: a child is ended here, while the runtime its run task lives on still turns.
+const END_GRACE: Duration = Duration::from_secs(10);
 
 /// One bus into the UI queue, the parent's or a child's. A lagged receiver reports the gap
 /// and keeps going, as the ACP forwarder does; only a closed bus or a gone UI ends it.
@@ -156,6 +158,7 @@ pub(crate) fn spawn_runtime_bridge(
                         Command::Abort => driver_session.abort(),
                         Command::Shutdown => {
                             driver_session.abort();
+                            let _ended = tokio::time::timeout(END_GRACE, driver_host.end()).await;
                             break;
                         }
                     }
