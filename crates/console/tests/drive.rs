@@ -2149,7 +2149,7 @@ fn a_workspace_headers_plus_starts_a_session_there() -> TestResult {
             Step::Expect("session/new", new_in_other_root),
         ],
         "wait-frame 5000 s-beta\n\
-         mouse down 16 7\n\
+         mouse down 16 5\n\
          wait-frame 3000 SN  untitled\n\
          quit\n",
     )?;
@@ -2209,7 +2209,7 @@ fn pin_from_the_menu_moves_a_session_under_pinned() -> TestResult {
             Step::Expect("_yi/pin", pinned_at),
         ],
         "wait-frame 5000 s-beta\n\
-         mouse right 3 5\n\
+         mouse right 3 4\n\
          wait-frame 3000 Pin\n\
          key down\nkey down\nkey enter\n\
          wait-frame 3000 PINNED\n\
@@ -2949,8 +2949,8 @@ fn the_rail_stops_at_its_numbered_slots() -> TestResult {
     Ok(())
 }
 
-/// Rows carry the session's name and age, newest first, and the row behind the
-/// focused pane wears the focus bar once it opens.
+/// Rows carry the session's name, newest first; an idle row with nothing to report is
+/// one line, and the row behind the focused pane carries its age once it opens.
 #[test]
 fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
     run(
@@ -2964,12 +2964,13 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
         ],
         "wait-frame 5000 1 RE  release notes\n\
          wait-frame 3000 2 FI  fix login bug\n\
-         wait-frame 3000 idle · 5m\n\
-         wait-frame 3000 idle · 3h\n\
+         wait-frame 3000 !idle · 5m\n\
+         wait-frame 3000 !idle · 3h\n\
          key down\n\
          key up\n\
          key enter\n\
          wait-frame 5000 resumed s-beta\n\
+         wait-frame 3000 idle · 5m\n\
          wait-frame 3000 RE · release\n\
          quit\n",
     )
@@ -4369,6 +4370,65 @@ fn the_menu_answers_the_mouse() -> TestResult {
     Ok(())
 }
 
+/// The daemon's half of a save: it answers only the edit the press should have sent.
+fn save_browser_path(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"id": "browser.path", "value": "firefox"}) {
+        return refuse(frame, &format!("unexpected {}", frame["params"]));
+    }
+    vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
+}
+
+fn save_pace(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"id": "tui.pace", "value": 40}) {
+        return refuse(frame, &format!("unexpected {}", frame["params"]));
+    }
+    vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
+}
+
+fn save_permissions_mode(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"id": "permissions.mode", "value": "auto"}) {
+        return refuse(frame, &format!("unexpected {}", frame["params"]));
+    }
+    vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
+}
+
+/// Incident: the page's rows carried no click target, so every setting but a tab needed the
+/// keyboard; a press on a toggle, a choice, a text row and a number row each saves its change.
+#[test]
+fn a_press_on_a_settings_row_saves_the_control_it_names() -> TestResult {
+    let frame = run_frames_with(
+        "settings-mouse",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("_yi/settings", settings_rows),
+            Step::Expect("_yi/set_default", save_auto_side),
+            Step::Expect("_yi/set_default", save_browser_path),
+            Step::Expect("_yi/set_default", save_pace),
+            Step::Expect("_yi/set_default", save_permissions_mode),
+        ],
+        "wait-frame 5000 s-alpha\nkey alt-,\nwait-frame 3000 Models\n\
+         key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
+         wait-frame 3000 Open Review beside\n\
+         mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\n\
+         mouse down 110 8\nmouse up 110 8\nwait-frame 3000 ▌\n\
+         type firefox\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
+         mouse down 110 10\nmouse up 110 10\nwait-frame 3000 ▌\n\
+         type 40\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
+         mouse down 116 3\nmouse up 116 3\nwait-frame 3000 Permissions\n\
+         mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
+         quit\n",
+        SidebarMode::Full,
+        160,
+    )?;
+    assert!(
+        frame.contains("⼃") || frame.contains("⚙  settings"),
+        "the page went away: {frame}"
+    );
+    Ok(())
+}
+
 fn settings_rows(frame: &Value) -> Vec<Value> {
     let rows = yi_types::settings::rows();
     vec![ok(frame, json!({"rows": rows}))]
@@ -4518,6 +4578,35 @@ fn save_thinking(frame: &Value) -> Vec<Value> {
         ];
     }
     vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
+}
+
+/// A press on a live option steps it, so the tab a settings pane opens on answers the pointer.
+#[test]
+fn a_press_on_a_session_option_steps_it_and_sends_the_change() -> TestResult {
+    let frame = run_frames_with(
+        "session-click",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_with_efforts),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("_yi/settings", settings_rows),
+            Step::Expect("session/set_config_option", set_high),
+        ],
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-,\nwait-frame 3000 Thinking level\n\
+         mouse down 110 5\nmouse up 110 5\n\
+         wait-frame 3000 Thinking level\nquit\n",
+        SidebarMode::Full,
+        160,
+    )?;
+    let row = frame.lines().find(|line| line.contains("Thinking level"));
+    assert!(
+        row.is_some_and(|line| line.contains("high")),
+        "the press left the option alone: {frame}"
+    );
+    Ok(())
 }
 
 /// The Session tab changes this session through the worker and `d` keeps its value as the
