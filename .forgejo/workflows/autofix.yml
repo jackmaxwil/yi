@@ -82,6 +82,8 @@ jobs:
           ./target/debug/yi catalog refresh openrouter
           # Incident: /tmp is the job's 2 GB tmpfs, and the fixer's clones and the lanes it runs there
           # filled it: #1111's fix died "Out of diskspace", and a 64 MB spill test failed in the clone.
-          export TMPDIR="$GITHUB_WORKSPACE/../autofix-tmp"
+          # Incident: a `..` here walked lexically through the checkout, so a head without the dotted-path
+          # fix found its `.git` and priced its AGENTS.md into every bare role prefix, 45 KB (#1805).
+          export TMPDIR="$(dirname "$GITHUB_WORKSPACE")/autofix-tmp"
           mkdir -p "$TMPDIR"
           just pr autofix
