@@ -26,19 +26,7 @@ def runs():
 
 
 def verdict(rows):
-    """One table per family, scored from the run directories the rows name; a family short of ten
-    scored tasks is open, so its KEEP never fires even when the tasks that ran held both figures."""
-    empty = {"retries": 0, "failed": 0, "tasks": 0}
-    tables, counted = {}, {}
-    for row in rows:
-        if not row.get("run"):
-            continue
-        scored = worker_mode.scored(row)
-        cell = tables.setdefault(row["family"], {}).setdefault(scored["arm"], dict(empty))
-        cell["retries"] += scored["retries"]
-        cell["failed"] += 1 if scored["failed"] else 0
-        cell["tasks"] += 1
-        counted.setdefault(row["family"], set()).add(scored["task"])
-    complete = all(len(counted.get(family, ())) == len(worker_mode.TASKS) for family in tables)
-    return worker_mode.verdict({family: {arm: table.get(arm, dict(empty)) for arm in worker_mode.ARMS}
-                                for family, table in tables.items()}, complete)
+    """One table per family, scored from the run directories the rows name; a family or arm short of
+    ten scored tasks is open, so it neither keeps nor withdraws the drop."""
+    scored = [{**worker_mode.scored(row), "family": row["family"]} for row in rows if row.get("run")]
+    return worker_mode.verdict(*worker_mode.rollup(scored, FAMILIES))

@@ -803,7 +803,9 @@ async fn role_bodies(
         tools,
         max_depth,
     )?;
-    if !matches!(workspace, Workspace::Bare) {
+    if matches!(workspace, Workspace::Bare) {
+        upstream::git(&ws, &["init", "-q", "-b", "main"])?;
+    } else {
         std::fs::copy(checkout().join("AGENTS.md"), ws.join("AGENTS.md"))?;
         std::fs::write(ws.join("Cargo.toml"), "[workspace]\n")?;
         upstream::git(&ws, &["init", "-q", "-b", "main"])?;

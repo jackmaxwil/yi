@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FIXTURES = ROOT / "evals/fixtures/worker_mode"
+sys.path.insert(0, str(ROOT / "evals"))
+import axes  # noqa: E402
+import stops_on_fail  # noqa: E402
+
 ARMS = ("with-mode", "without-mode")
 # The arm's build: a fragment is Rust-side prompt text, so the two arms are two binaries.
 ARM_BINARY_ENV = "EVAL_KILL_ARM_BINARY"
@@ -57,17 +61,9 @@ def task_of(spec_id):
 
 def entries(path):
     """A session file's message entries; every other line is a record the counter never reads."""
-    out = []
-    for line in Path(path).read_text(errors="replace").splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if record.get("type") == "message" and isinstance(record.get("message"), dict):
-            out.append(record["message"])
-    return out
+    _header, records, _corrupt = axes.extract.read_session(Path(path))
+    return [record["message"] for record in records
+            if record.get("type") == "message" and isinstance(record.get("message"), dict)]
 
 
 def signature(tool, arguments):
@@ -116,12 +112,13 @@ def retries(messages):
 
 
 def worker_sessions(run_dir):
-    """Every worker's session file under one run's session directory, by lane."""
-    return sorted(Path(run_dir).glob("sessions/*/*/children/*/*.jsonl"))
+    """Every worker's session file under one run's session directory: the sessions whose header names a parent."""
+    return [path for path in axes.scored_sessions(Path(run_dir) / "sessions") if not stops_on_fail.is_root(path)]
 
 
 def score(run_dir, spec_id):
-    """One run's rows: its workers' denied-call retries, and whether the task's report was written."""
+    """One run's rows: its workers' denied-call retries, and whether the task's report was written.
+    The clone is gone once a run settles, so the report is the copy the spec's `keep` left in the run."""
     base = Path(run_dir)
     files = worker_sessions(base) if (base / "sessions").is_dir() else []
     told = [entries(path) for path in files]
@@ -131,21 +128,26 @@ def score(run_dir, spec_id):
         "workers": len(files),
         "denied": sum(len(denials(messages)) for messages in told),
         "retries": sum(len(retries(messages)) for messages in told),
-        "failed": not (base / "repo" / REPORT).is_file(),
+        "failed": not (base / REPORT).is_file(),
     }
 
 
-def summarize(rows):
-    """{arm: {"retries", "failed", "tasks"}} over the rows that ran, so a family's line is arithmetic."""
-    out = {arm: {"retries": 0, "failed": 0, "tasks": 0} for arm in ARMS}
+def rollup(rows, families):
+    """({family: {arm: {"retries", "failed", "tasks"}}}, complete) over scored rows carrying their family;
+    complete only when every family and arm of the grid scored every task."""
+    tables, seen = {family: {} for family in families}, {}
     for row in rows:
         arm = row.get("arm") or ""
-        if arm not in out:
+        if arm not in ARMS:
             continue
-        out[arm]["retries"] += int(row.get("retries") or 0)
-        out[arm]["failed"] += 1 if row.get("failed") else 0
-        out[arm]["tasks"] += 1
-    return out
+        cell = tables.setdefault(row["family"], {}).setdefault(arm, {"retries": 0, "failed": 0, "tasks": 0})
+        cell["retries"] += int(row.get("retries") or 0)
+        cell["failed"] += 1 if row.get("failed") else 0
+        tasks = seen.setdefault((row["family"], arm), set())
+        tasks.add(row["task"])
+        cell["tasks"] = len(tasks)
+    complete = all(len(seen.get((family, arm), ())) == len(TASKS) for family in families for arm in ARMS)
+    return tables, complete
 
 
 def run_specs():
@@ -171,6 +173,7 @@ def run_specs():
                 "deadline": 480,
                 "repo": str(ROOT),
                 "args": ["--auto"],
+                "keep": [REPORT],
             }
             if arm == "with-mode":
                 spec["binary"] = arm_binary
@@ -180,19 +183,23 @@ def run_specs():
 
 def scored(row):
     """A settled row's figures, from the run directory the row names."""
-    from axes import runs_root  # noqa: PLC0415 - the harness import is only needed when scoring
-
-    return score(runs_root("EVAL_KILL_ROOT") / row["test"] / row["run"], row["id"])
+    return score(axes.runs_root("EVAL_KILL_ROOT") / row["test"] / row["run"], row["id"])
 
 
 def verdict(tables, complete):
-    """The pre-registered withdrawal: neither figure may rise in either family for the drop to stay."""
-    lines, worse = [], False
+    """The pre-registered withdrawal: neither figure may rise in either family for the drop to stay.
+    A family with an arm short of every task is never compared, so an unmeasured arm cannot withdraw."""
+    lines, worse, short = [], False, False
     for family, table in tables.items():
+        missing = [arm for arm in ARMS if (table.get(arm) or {}).get("tasks", 0) < len(TASKS)]
+        if missing:
+            short = True
+            lines.append(f"{family} {' and '.join(missing)} short of {len(TASKS)} scored tasks")
+            continue
         with_, without = table["with-mode"], table["without-mode"]
         rose = (without["retries"] > with_["retries"]) or (without["failed"] > with_["failed"])
         worse = worse or rose
         lines.append(f"{family} retries {with_['retries']}->{without['retries']} failed "
                      f"{with_['failed']}->{without['failed']} over {without['tasks']} tasks")
-    word = "WITHDRAW" if worse else ("KEEP" if complete else "UNRESOLVED")
+    word = "WITHDRAW" if worse else ("KEEP" if complete and not short else "UNRESOLVED")
     return f"{word}: " + ", ".join(lines)

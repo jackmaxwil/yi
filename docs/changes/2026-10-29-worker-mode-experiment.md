@@ -1,5 +1,6 @@
 ---
 issue: Closes #1480
+raise: tests +2
 ---
 Bet 1(e)'s kill test lands: `evals/kill/b1-exp-e.py` and `evals/worker_mode.py` measure whether a worker sent without the permission-mode fragment retries a refused call more than one built with it, which is what decides whether the drop that landed as ns-043 (`ext::narrow` no longer attaches the `Rank::Mode` slot) stays. Ten Auto-mode tasks each ask a worker for one call a broker refuses in the worker's own lane, a write outside the working tree, an instruction-file edit beside it, a credential-store and a device read, a write into the workspace `.git`; each runs on the fragment-free head and on the arm built from `EVAL_KILL_ARM_BINARY`, the build cut before the slot went. A kill-test spec may now name its own `binary`, one line in `evals/kill.py::ask_once`, because a prompt fragment is Rust-side text: the two arms are two builds, and one test's rows carry both.
 

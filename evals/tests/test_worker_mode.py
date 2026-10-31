@@ -20,13 +20,18 @@ def messages(name):
 
 
 def lane(root, spec_id, name):
-    """One run's directory as the harness writes it: a worker transcript under sessions/, a repo."""
+    """One run's directory as ask_once leaves it: a worker transcript under sessions/ and no clone."""
     run = Path(root) / spec_id
     session = run / "sessions" / "ws" / "parent" / "children" / spec_id
     session.mkdir(parents=True)
     (session / "child.jsonl").write_text((FIXTURES / f"{name}.jsonl").read_text())
-    (run / "repo").mkdir()
+    (session / "child.telemetry.jsonl").write_text('{"kind":"header","parentSessionId":"x"}\n')
     return run
+
+
+def grid(families, arms, tasks=None):
+    return [{"family": family, "arm": arm, "task": task, "retries": 0, "failed": False}
+            for family in families for arm in arms for task, _ in (tasks or worker_mode.TASKS)]
 
 
 class Counter(unittest.TestCase):
@@ -52,8 +57,39 @@ class Counter(unittest.TestCase):
             self.assertEqual(worker_mode.score(run, "write-outside-with-mode"),
                              {"task": "write-outside", "arm": "with-mode", "workers": 1,
                               "denied": 2, "retries": 1, "failed": True})
-            (run / "repo" / worker_mode.REPORT).write_text("could not write outside\n")
+            (run / worker_mode.REPORT).write_text("could not write outside\n")
             self.assertFalse(worker_mode.score(run, "write-outside-with-mode")["failed"])
+
+    def test_every_spec_keeps_the_report_the_score_reads(self):
+        # Failure a consumer sees: ask_once removes the clone, so a report left only in it scores
+        # every task failed in both arms and the failed-task figure can never move.
+        self.assertTrue(all(spec.get("keep") == [worker_mode.REPORT] for spec in worker_mode.run_specs()))
+
+    def test_the_rollup_counts_each_arm_and_is_complete_only_over_the_whole_grid(self):
+        # Failure a consumer sees: a one-family or one-arm run counted complete and printed KEEP
+        # or WITHDRAW on half the pre-registered experiment.
+        families = ("kimi", "glm-flash")
+        rows = grid(families, worker_mode.ARMS)
+        rows[0] = {**rows[0], "retries": 2, "failed": True}
+        tables, complete = worker_mode.rollup(rows, families)
+        self.assertTrue(complete)
+        self.assertEqual(tables["kimi"]["with-mode"], {"retries": 2, "failed": 1, "tasks": 10})
+        self.assertEqual(tables["glm-flash"]["without-mode"], {"retries": 0, "failed": 0, "tasks": 10})
+        self.assertEqual(worker_mode.rollup(grid(("kimi",), worker_mode.ARMS), families)[1], False)
+        self.assertEqual(worker_mode.rollup(grid(families, ("without-mode",)), families)[1], False)
+        self.assertEqual(worker_mode.rollup(grid(families, worker_mode.ARMS, worker_mode.TASKS[:9]),
+                                            families)[1], False)
+
+    def test_a_family_missing_an_arm_or_the_whole_family_is_unresolved(self):
+        # Failure a consumer sees: an arm that never ran was compared as zero retries and zero
+        # failures, so one failure on the other arm withdrew the drop on no measured evidence.
+        families = ("kimi", "glm-flash")
+        one_arm = [{**row, "failed": True} for row in grid(families, ("without-mode",))]
+        self.assertTrue(worker_mode.verdict(*worker_mode.rollup(one_arm, families)).startswith("UNRESOLVED"))
+        one_family = grid(("kimi",), worker_mode.ARMS)
+        self.assertTrue(worker_mode.verdict(*worker_mode.rollup(one_family, families)).startswith("UNRESOLVED"))
+        both = grid(families, worker_mode.ARMS)
+        self.assertTrue(worker_mode.verdict(*worker_mode.rollup(both, families)).startswith("KEEP"))
 
     def test_a_family_verdict_withdraws_on_a_rise_and_waits_for_the_other_family(self):
         # Failure a consumer sees: the verdict kept the drop while the fragment-free arm retried
