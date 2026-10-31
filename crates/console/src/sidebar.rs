@@ -4,14 +4,11 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use serde_json::json;
 use unicode_width::UnicodeWidthStr;
 use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 
 use crate::app::App;
-use crate::app::RequestKind;
 use crate::avatar::Placement;
-use crate::client::Outbound;
 use crate::keys::{self, Action};
 use crate::model::{
     Group, Mode, Painted, SessionId, SessionRow, SessionStatus, SidebarMode, Slot, Zone, now_ms,
@@ -661,23 +658,5 @@ pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme
                 cell.set_style(style);
             }
         }
-    }
-}
-
-impl App {
-    /// The state a press lands on is the config's, so the next console starts there.
-    pub(crate) fn toggle_sidebar(&mut self, outbound: &Outbound) {
-        self.state.sidebar = self.state.sidebar.next();
-        self.state.header = None;
-        self.state.settle_visible();
-        if self.state.sidebar == SidebarMode::Hidden {
-            self.state.cycle_zone();
-        }
-        self.send_request(
-            outbound,
-            RequestKind::Sidebar,
-            "_yi/set_default",
-            json!({"id": "console.sidebar", "value": self.state.sidebar.key()}),
-        );
     }
 }

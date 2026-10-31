@@ -184,7 +184,7 @@ impl App {
         }
     }
 
-    pub(crate) fn send_request(
+    fn send_request(
         &mut self,
         outbound: &Outbound,
         kind: RequestKind,
@@ -913,7 +913,11 @@ impl App {
             Action::StopDaemon => self.stop_daemon_and_quit(outbound),
             Action::Keys => self.open_settings(outbound, crate::settings::KEYS),
             Action::Settings => self.open_settings(outbound, crate::settings::SESSION),
-            Action::ToggleSidebar => self.toggle_sidebar(outbound),
+            Action::ToggleSidebar => {
+                self.state.cycle_sidebar();
+                let value = json!({"id": "console.sidebar", "value": self.state.sidebar.key()});
+                self.send_request(outbound, RequestKind::Sidebar, "_yi/set_default", value);
+            }
             Action::Menu => self.open_menu_for_focus(),
             Action::Pin => self.pin_focus(outbound),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),

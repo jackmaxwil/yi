@@ -904,4 +904,13 @@ impl ConsoleState {
             Zone::Panes => Zone::Sidebar,
         };
     }
+
+    pub(crate) fn cycle_sidebar(&mut self) {
+        self.sidebar = self.sidebar.next();
+        self.header = None;
+        self.settle_visible();
+        if self.sidebar == SidebarMode::Hidden {
+            self.cycle_zone();
+        }
+    }
 }
