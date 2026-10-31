@@ -30,6 +30,23 @@ fn a_config_with_nothing_to_migrate_keeps_the_strict_errors() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn follow_modes_parse_and_an_unknown_mode_is_refused() -> TestResult {
+    for mode in ["slide", "page", "still"] {
+        let raw = format!(r#"{{"tui":{{"follow":"{mode}"}}}}"#);
+        let (config, _) = parse(&raw)?;
+        assert_eq!(
+            config.tui.and_then(|tui| tui.follow).map(|_| mode),
+            Some(mode)
+        );
+    }
+    let refused = parse(r#"{"tui":{"follow":"instant"}}"#)
+        .err()
+        .ok_or("an unknown follow mode must fail the strict parse")?;
+    assert!(refused.to_string().contains("instant"), "{refused}");
+    Ok(())
+}
+
 /// The sentence `yi` and `yi doctor` print for the dropped key.
 const GATES: &str =
     "the config's `gates` key is ignored: the artifact and closure stop gates are gone; delete it";

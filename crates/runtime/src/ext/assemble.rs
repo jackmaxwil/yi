@@ -81,10 +81,16 @@ impl Trust {
 const FENCE_SENTINEL: &str = "<<<";
 const FENCE_ESCAPE: &str = "<\\<<";
 
+#[derive(Debug, Clone, PartialEq)]
+struct Yard {
+    text: String,
+    screen: Option<f64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PromptState {
     slots: BTreeMap<Slot, String>,
-    yard: BTreeMap<(Trust, String), String>,
+    yard: BTreeMap<(Trust, String), Yard>,
     built: BTreeSet<Slot>,
 }
 
@@ -111,11 +117,20 @@ impl PromptState {
         self.slots.get(slot).map(String::as_str)
     }
 
-    pub fn attach_external(&mut self, source: &str, trust: Trust, text: &str) -> bool {
+    pub fn attach_external(
+        &mut self,
+        source: &str,
+        trust: Trust,
+        text: &str,
+        screen: Option<f64>,
+    ) -> bool {
         let key = (trust, source.to_owned());
-        let clean = sanitize(text).into_owned();
-        let changed = self.yard.get(&key).is_none_or(|current| current != &clean);
-        self.yard.insert(key, clean);
+        let yard = Yard {
+            text: sanitize(text).into_owned(),
+            screen,
+        };
+        let changed = self.yard.get(&key) != Some(&yard);
+        self.yard.insert(key, yard);
         changed
     }
 
@@ -157,11 +172,11 @@ impl PromptState {
 
     fn render_yard(&self) -> String {
         let mut out = String::new();
-        for ((trust, source), text) in &self.yard {
+        for ((trust, source), yard) in &self.yard {
             if !out.is_empty() {
                 out.push_str("\n\n");
             }
-            out.push_str(&fence(source, trust.label(), text));
+            out.push_str(&fence(source, trust.label(), &yard.text, yard.screen));
         }
         out
     }
@@ -196,8 +211,16 @@ impl PromptState {
         let yard: Vec<Value> = self
             .yard
             .iter()
-            .map(|((trust, source), text)| {
-                json!({"trust": trust.label(), "source": source, "text": text})
+            .map(|((trust, source), yard)| {
+                let mut entry = json!({
+                    "trust": trust.label(),
+                    "source": source,
+                    "text": yard.text,
+                });
+                if let (Some(screen), Value::Object(map)) = (yard.screen, &mut entry) {
+                    map.insert("screen".into(), json!(screen));
+                }
+                entry
             })
             .collect();
         json!({"version": 2, "slots": slots, "yard": yard})
@@ -240,8 +263,9 @@ impl PromptState {
                 Some("granted") => Trust::Granted,
                 _ => Trust::Untrusted,
             };
+            let screen = entry.get("screen").and_then(Value::as_f64);
             if let (Some(source), Some(text)) = (source, text) {
-                self.attach_external(source, trust, text);
+                self.attach_external(source, trust, text, screen);
             }
         }
         late
@@ -272,11 +296,12 @@ pub(crate) fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
 
 /// Invariant: the fence id is the text's own hash, which the text cannot contain, so two
 /// sessions over the same text share the bytes and the cache behind them.
-pub(crate) fn fence(source: &str, trust: &str, text: &str) -> String {
+pub(crate) fn fence(source: &str, trust: &str, text: &str, screen: Option<f64>) -> String {
     let digest = crate::fetch::content_hash(text);
     let id = digest.get(..16).unwrap_or(&digest);
+    let mark = crate::classifier::screen_attr(screen);
     format!(
-        "{FENCE_SENTINEL}yi-external {id} source=\"{}\" trust=\"{trust}\">>>\n{text}\n{FENCE_SENTINEL}end-yi-external {id}>>>",
+        "{FENCE_SENTINEL}yi-external {id} source=\"{}\" trust=\"{trust}\"{mark}>>>\n{text}\n{FENCE_SENTINEL}end-yi-external {id}>>>",
         sanitize(source),
     )
 }

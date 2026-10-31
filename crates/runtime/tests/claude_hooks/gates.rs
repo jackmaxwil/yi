@@ -117,11 +117,10 @@ async fn a_write_under_the_projects_claude_dir_is_asked_and_refused_headless() -
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn contained_bash_cannot_write_the_projects_claude_dir() -> TestResult {
-    if !yi_tools::Sandbox::available() {
-        return Ok(());
-    }
+    crate::kernel_sandbox::seatbelt()?;
     let case = Case::new("claude-dir-bash", json!({}), true)?;
     let gate = Gate {
         sandbox: true,
@@ -170,11 +169,10 @@ fn a_goal_check_passes_the_bash_hooks_before_it_runs() -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_hook_allow_keeps_an_already_granted_write() -> TestResult {
-    if !yi_tools::Sandbox::available() {
-        return Ok(());
-    }
+    crate::kernel_sandbox::seatbelt()?;
     let allow = settings("PreToolUse", "Write", vec![decision("allow")]);
     let case = Case::new("allow-kept-write", allow, true)?;
     let granted = case.home.join("granted");
