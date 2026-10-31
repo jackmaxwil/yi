@@ -95,11 +95,12 @@ fn leaves() -> Vec<String> {
             fields!(ConsoleConfig {
                 auto_side,
                 title_intro,
-                title_weights
+                title_weights,
+                sidebar
             }),
         ),
         ("browser", fields!(BrowserConfig { path })),
-        ("tui", fields!(TuiConfig { pace })),
+        ("tui", fields!(TuiConfig { pace, follow })),
         (
             "lanes",
             fields!(LanesConfig {
@@ -140,6 +141,8 @@ fn leaves() -> Vec<String> {
                 allow_destructive_at,
                 ask_at,
                 ask_timeout_secs,
+                screen_at,
+                screen_max_chars,
             }),
         ),
         (
@@ -203,6 +206,22 @@ fn every_config_leaf_has_exactly_one_row() {
     assert_eq!(ids, want);
 }
 
+#[test]
+fn follow_is_a_live_choice_with_page_as_the_unset_default() {
+    let row = rows()
+        .into_iter()
+        .find(|row| row.id == "tui.follow")
+        .expect("a tui.follow settings row");
+    assert_eq!(row.applies, yi_types::settings::Applies::Live);
+    assert_eq!(row.default, json!("page"));
+    assert_eq!(
+        row.kind,
+        SettingKind::Choice {
+            options: ["slide", "page", "still"].map(str::to_owned).to_vec()
+        }
+    );
+}
+
 /// A row is only as good as the config it writes: every row's own sample, saved at its path,
 /// must be a config the strict parse loads.
 #[test]
@@ -252,6 +271,27 @@ fn a_value_past_a_bound_or_of_the_wrong_type_is_refused_with_the_rule() -> Resul
         Some("permissions.mode takes one of auto, ask, yolo")
     );
     assert_eq!(refusal(mode, &Value::Null), None, "unset is always allowed");
+    Ok(())
+}
+
+/// #1713: the third state ⌥b lands on is one the row takes and the strict parse loads.
+#[test]
+fn the_sidebar_row_takes_the_hidden_state_it_saves() -> Result<(), Box<dyn std::error::Error>> {
+    let row = rows()
+        .into_iter()
+        .find(|row| row.id == "console.sidebar")
+        .ok_or("no console.sidebar row")?;
+    assert_eq!(refusal(&row, &json!("hidden")), None);
+    assert_eq!(
+        refusal(&row, &json!("wide")).as_deref(),
+        Some("console.sidebar takes one of rail, full, hidden")
+    );
+    let (config, _) =
+        yi_types::config::parse(&json!({"console": {"sidebar": "hidden"}}).to_string())?;
+    assert_eq!(
+        config.console.and_then(|console| console.sidebar),
+        Some(yi_types::config::SidebarState::Hidden)
+    );
     Ok(())
 }
 

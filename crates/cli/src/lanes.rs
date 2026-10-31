@@ -51,14 +51,18 @@ pub(crate) fn claim_lane(
         .map(str::to_owned)
         .or_else(|| resume_id(args))
         .unwrap_or_else(|| format!("pid-{}", std::process::id()));
-    let lane = match claim_root(&pool, &session) {
-        Ok(lane) => lane,
+    let claimed = match claim_root(&pool, &session) {
+        Ok(claimed) => claimed,
         Err(LaneError::PoolFull { .. }) if interactive() && !args.headless => {
             offer_left_slot(&pool)?;
             claim_root(&pool, &session).map_err(|error| error.to_string())?
         }
         Err(error) => return Err(error.to_string()),
     };
+    let (lane, unsynced) = claimed;
+    if let Some(notice) = unsynced {
+        eprintln!("warning: {notice}");
+    }
     Ok((Some(lane), Some(pool)))
 }
 

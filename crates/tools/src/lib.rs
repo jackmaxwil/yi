@@ -7,7 +7,7 @@ mod document;
 mod exec;
 mod grep;
 pub mod hashline;
-mod ignore;
+pub mod ignore;
 mod ipython;
 pub mod jobs;
 mod orient;

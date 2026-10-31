@@ -3,36 +3,22 @@
 use std::error::Error;
 
 use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::Event as CtEvent;
 use ratatui::layout::Rect;
-use yi_tui::app::{App, TuiOptions};
+use yi_tui::app::App;
 use yi_tui::cell::{Cell, ToolCell, ToolStatus};
-use yi_tui::colors::{ColorTier, Theme};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, StopReason};
 
 use crate::common;
+use yi_types::config::FollowMode;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
 const AREA: Rect = Rect::new(0, 0, 60, 20);
 
 fn app() -> App {
-    App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-        },
-        Theme::new(ColorTier::TrueColor, true),
-        yi_tui::keymap::default_keymap(),
-        80,
-    )
+    common::app()
 }
 
 fn tool(id: &str, rows: usize) -> Cell {
@@ -58,11 +44,11 @@ fn paint_in(
     area: Rect,
     scroll: &mut usize,
 ) -> (Vec<String>, Option<(usize, usize)>) {
-    let mut buffer = Buffer::empty(area);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, area.right(), area.bottom()));
     let thumb = yi_tui::render::paint_pane(app, None, &mut buffer, area, scroll);
-    let rows = (0..area.height)
+    let rows = (area.top()..area.bottom())
         .map(|y| {
-            (0..area.width)
+            (area.left()..area.right())
                 .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
                 .collect::<String>()
         })
@@ -100,7 +86,17 @@ fn message(thinking: &str, text: &str) -> AgentMessage {
 /// Streams `thinking` then `text` seven bytes at a time under a view held `hold` rows up,
 /// and names every frame whose top row moved.
 fn moves_while_streaming(thinking: &str, text: &str, hold: usize) -> Vec<String> {
+    moves_while_streaming_mode(thinking, text, hold, FollowMode::Slide)
+}
+
+fn moves_while_streaming_mode(
+    thinking: &str,
+    text: &str,
+    hold: usize,
+    follow: FollowMode,
+) -> Vec<String> {
     let mut app = seeded();
+    app.set_follow(follow);
     app.commit_cell(&Cell::User {
         text: "go".to_owned(),
     });
@@ -143,6 +139,23 @@ fn moves_while_streaming(thinking: &str, text: &str, hold: usize) -> Vec<String>
         moves.push(format!("end: top {:?}", after.first()));
     }
     moves
+}
+
+#[test]
+fn follow_modes_change_only_the_following_view() {
+    let text = (0..20)
+        .map(|i| format!("paragraph {i}\n\n"))
+        .collect::<String>();
+    for (mode, follows) in [
+        (FollowMode::Slide, true),
+        (FollowMode::Page, true),
+        (FollowMode::Still, false),
+    ] {
+        let moved = !moves_while_streaming_mode("", &text, 0, mode).is_empty();
+        assert_eq!(moved, follows, "{mode:?} at the bottom");
+        let held = moves_while_streaming_mode("", &text, 12, mode);
+        assert!(held.is_empty(), "{mode:?} dragged a held view: {held:#?}");
+    }
 }
 
 /// Incident: a multi-row card committed one more row than the transcript grew, so each
@@ -279,9 +292,20 @@ fn shift(before: &[String], now: &[String]) -> Option<usize> {
 /// Commits a `lines`-row fence at the bottom of a full pane and paints until its last line is
 /// on screen; returns each frame's move and whether every lagging frame asked for the next.
 fn roll_in(lines: usize) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
+    roll_in_mode(lines, AREA.height, FollowMode::Slide)
+}
+
+fn roll_in_mode(
+    lines: usize,
+    height: u16,
+    follow: FollowMode,
+) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
+    let area = Rect::new(0, 0, AREA.width, height);
     let mut app = seeded();
+    app.set_follow(follow);
+    app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
     let mut scroll = 0;
-    let (mut before, _) = paint(&mut app, &mut scroll);
+    let (mut before, _) = paint_in(&mut app, area, &mut scroll);
     let code: Vec<String> = (0..lines).map(|i| format!("let x{i:03} = {i};")).collect();
     app.commit_cell(&Cell::Assistant {
         markdown: format!("```rust\n{}\n```\n", code.join("\n")),
@@ -290,7 +314,7 @@ fn roll_in(lines: usize) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
     let (mut moves, mut asked, mut phase) = (Vec::new(), true, 0);
     for _ in 0..lines.saturating_mul(2) {
         let _ = app.take_redraw(&mut phase);
-        let (now, _) = paint(&mut app, &mut scroll);
+        let (now, _) = paint_in(&mut app, area, &mut scroll);
         moves.push(
             shift(&before, &now).ok_or(
                 "a frame shares no row with the one before: the column jumped past a screen",
@@ -303,6 +327,202 @@ fn roll_in(lines: usize) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
         before = now;
     }
     Err(format!("`{last}` never reached the screen: {moves:?}").into())
+}
+
+#[test]
+fn slide_keeps_the_pre_change_frame_sequence() -> TestResult {
+    let (moves, _) = roll_in_mode(20, 30, FollowMode::Slide)?;
+    assert_eq!(moves, vec![1; 22]);
+    Ok(())
+}
+
+#[test]
+fn page_moves_only_in_half_page_jumps() -> TestResult {
+    let (moves, _) = roll_in_mode(20, 30, FollowMode::Page)?;
+    assert_eq!(moves, vec![15, 5]);
+    Ok(())
+}
+
+#[test]
+fn page_moves_a_ten_row_pane_five_rows_at_a_time() -> TestResult {
+    let (moves, _) = roll_in_mode(20, 10, FollowMode::Page)?;
+    assert_eq!(moves, vec![5, 5, 5, 5, 2]);
+    Ok(())
+}
+
+#[test]
+fn page_clamps_its_jump_when_the_floor_is_over_half_the_pane() -> TestResult {
+    let area = Rect::new(0, 0, AREA.width, 14);
+    let mut app = app();
+    app.set_follow(FollowMode::Page);
+    let (commands, _) = yi_tui::app::command_channel();
+    yi_tui::input::handle_terminal_event(
+        &mut app,
+        &commands,
+        CtEvent::Paste("draft\nline".to_owned()),
+    );
+    app.set_kitty(true);
+    let floor = yi_tui::render::layout_chat(&mut app, None, None, u16::MAX).floor;
+    assert!(
+        floor > area.height / 2 && floor < area.height,
+        "floor {floor}"
+    );
+    app.commit_cell(&Cell::User {
+        text: "go".to_owned(),
+    });
+    let mut scroll = 0;
+    let _ = paint_in(&mut app, area, &mut scroll);
+    let code: Vec<String> = (0..15).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    let visible = usize::from(area.height.saturating_sub(floor));
+    let _ = paint_in(&mut app, area, &mut scroll);
+    let (after, _) = paint_in(&mut app, area, &mut scroll);
+    assert_eq!(visible, 5, "test setup: visible transcript rows");
+    assert!(
+        after.iter().any(|row| row.contains("let x003"))
+            && !after.iter().any(|row| row.contains("let x008")),
+        "second page window: {after:#?}"
+    );
+    Ok(())
+}
+#[test]
+fn a_page_pane_whose_floor_fills_it_stops_asking_for_redraws() -> TestResult {
+    let area = Rect::new(0, 0, AREA.width, 8);
+    let mut app = seeded();
+    app.set_follow(FollowMode::Page);
+    let (commands, _) = yi_tui::app::command_channel();
+    yi_tui::input::handle_terminal_event(
+        &mut app,
+        &commands,
+        CtEvent::Paste("draft\nline\nline\nline".to_owned()),
+    );
+    app.set_kitty(true);
+    let floor = yi_tui::render::layout_chat(&mut app, None, None, u16::MAX).floor;
+    assert!(
+        floor >= area.height,
+        "test setup: floor {floor} of {}",
+        area.height
+    );
+    let code: Vec<String> = (0..20).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    let mut scroll = 0;
+    let mut phase = 0;
+    let (mut asked, mut settled) = (0, false);
+    for _ in 0..40 {
+        let _ = app.take_redraw(&mut phase);
+        let _ = paint_in(&mut app, area, &mut scroll);
+        if !app.take_redraw(&mut phase) {
+            settled = true;
+            break;
+        }
+        asked += 1;
+    }
+    assert!(
+        settled,
+        "the pane asked for {asked} more frames and never settled"
+    );
+    Ok(())
+}
+
+#[test]
+fn still_holds_the_view_and_marks_hidden_rows_at_a_nonzero_offset() -> TestResult {
+    let area = Rect::new(7, 5, AREA.width, 30);
+    let mut app = seeded();
+    app.set_follow(FollowMode::Still);
+    app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
+    let mut scroll = 0;
+    let (mut before, _) = paint_in(&mut app, area, &mut scroll);
+    let code: Vec<String> = (0..20).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    let mut moves = Vec::new();
+    let mut after = before.clone();
+    for _ in 0..5 {
+        let (now, _) = paint_in(&mut app, area, &mut scroll);
+        moves.push(shift(&before, &now));
+        before = now.clone();
+        after = now;
+    }
+    assert_eq!(moves, vec![Some(0); 5], "{after:#?}");
+    assert!(
+        after.iter().any(|row| row.contains("more rows · PgDn")),
+        "{after:#?}"
+    );
+    assert!(
+        !after.iter().any(|row| row.contains("let x019")),
+        "{after:#?}"
+    );
+    assert_eq!(scroll, 0);
+    Ok(())
+}
+
+#[test]
+fn still_marker_lands_on_vt100_at_a_nonzero_offset() -> TestResult {
+    let backend = common::VT100Backend::with_scrollback(80, 40, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    terminal.set_viewport_area(Rect::new(0, 0, 80, 40));
+    let mut app = seeded();
+    app.set_follow(FollowMode::Still);
+    let area = Rect::new(7, 5, AREA.width, 30);
+    let mut scroll = 0;
+    terminal.draw(|frame| {
+        let _ = yi_tui::render::paint_pane(&mut app, None, frame.buffer_mut(), area, &mut scroll);
+    })?;
+    let code: Vec<String> = (0..20).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    terminal.draw(|frame| {
+        let _ = yi_tui::render::paint_pane(&mut app, None, frame.buffer_mut(), area, &mut scroll);
+    })?;
+    let rows: Vec<String> = (0..40)
+        .map(|row| terminal.backend().row_text(row))
+        .collect();
+    let reserved = area.bottom().saturating_sub(4);
+    assert!(
+        rows.get(usize::from(reserved))
+            .is_some_and(|row| row.contains("more rows · PgDn")),
+        "reserved row {reserved}: {rows:#?}"
+    );
+    assert!(
+        rows.get(usize::from(area.bottom().saturating_sub(1)))
+            .is_some_and(|row| row.contains('╰') && row.contains('╯')),
+        "composer bottom: {rows:#?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn still_page_down_reveals_rows_and_a_prompt_returns_to_bottom() -> TestResult {
+    let mut app = seeded();
+    app.set_follow(FollowMode::Still);
+    let mut scroll = 0;
+    let _ = paint(&mut app, &mut scroll);
+    let code: Vec<String> = (0..20).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    let (held, _) = paint(&mut app, &mut scroll);
+    assert!(!held.iter().any(|row| row.contains("let x")), "{held:#?}");
+    app.advance_follow(20);
+    let (paged, _) = paint(&mut app, &mut scroll);
+    assert!(paged.iter().any(|row| row.contains("let x")), "{paged:#?}");
+    app.follow_bottom();
+    let (bottom, _) = paint(&mut app, &mut scroll);
+    assert!(
+        bottom.iter().any(|row| row.contains("let x019")),
+        "{bottom:#?}"
+    );
+    assert!(
+        !bottom.iter().any(|row| row.contains("more rows")),
+        "{bottom:#?}"
+    );
+    Ok(())
 }
 
 /// Dies with a block that landed at once moving the column by its height in one frame; the
@@ -337,6 +557,7 @@ fn a_long_block_catches_up_without_jumping() -> TestResult {
 #[test]
 fn a_first_prompt_rolls_into_an_empty_pane() -> TestResult {
     let mut app = app();
+    app.set_follow(FollowMode::Slide);
     let mut scroll = 0;
     app.reduce_agent(AgentEvent::AgentStart);
     let status = |rows: &[String]| rows.iter().position(|row| row.contains("faux-1"));

@@ -36,7 +36,8 @@ Tape pane, a session's ledger over wall time (left when the terminal pane entere
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
 channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
 cloud, and a kernel or agent loop inside a container (a container child's kernel stays on the
-host, D286).
+host, D286) · a local model server Yi starts or installs (the Laya classifier sidecar left when
+the classifier moved to Jev through OpenRouter).
 
 ## 2. Crates and dependency direction
 A folder `crates/x/` is the crate `yi-x` (`scripts/guardrails/check_manifests.py`). The internal
@@ -261,7 +262,7 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   Web search is a separate non-streaming completion: `models.webSearch`, else the built-in
   `openrouter/deepseek/deepseek-v4-flash`, calls OpenRouter's server-side search with Exa by
   default. This default does not select a primary model.
-- Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
+- Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
   wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s.
@@ -328,8 +329,8 @@ extension `Host` whose synchronous extensions turn session events into effects.
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
   `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers
   only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
-  With `models.classifier` set, a local sidecar is also asked which triggered skill the message
-  calls for (`classify` entry); it points only at or above `classifier.threshold`.
+  With `models.classifier` set and an OpenRouter key, Jev is also asked which triggered skill the
+  message calls for (`classify` entry); it points only at or above `classifier.threshold`.
 - Next-step lines: `affordance::render` over the compiled-in `graph.json` walks 2 hops from the
   last call over edges whose condition is `always` or a host-asserted fact from the closed
   `PREDICATES`, by weight, ≤ 2 `next:` lines (3 for `todo`). `Graph::check` bounds edges (400),
@@ -613,11 +614,22 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   bash read belt judges a store argument by identity, a directory above one and a glob that reaches
   one; loopback the only network, and no unix socket (#599). Without it, `Contain`
   becomes a reviewable `Ask`.
-- With a classifier and its `laya` key (minted by `yi serve`), `classifier.approval` says when the
-  sidecar's `noul` answers a reviewable auto-mode ask: `instant` (default) first — P(safe) ≥ 0.9
-  (0.98 if destructive) allows, ≤ 0.05 asks the user, else the reviewer; `after-delay` once the
+- With a classifier and an OpenRouter key, `classifier.approval` says when Jev's `noul` answers a
+  reviewable auto-mode ask: `instant` (default) first, P(safe) ≥ 0.8 (0.9 if destructive) allows,
+  ≤ 0.05 asks the user, else the reviewer; `after-delay` once the
   person has not answered for `askTimeoutSecs` (30; 0 never hands it over), a confident allow only, and only
   where a prompt closes when its call settles elsewhere (the solo TUI); `wait-for-user` never.
+  The question carries the call, the latest typed user message, the last two answered calls, the
+  project root, its writable roots, protected branches and the checkpoint note, each value capped
+  at 1000 chars (a judged command at 4000, past which the person decides) with a `[cut: …]` notice.
+  Measured on 160 commands (80 dangerous, 80 ordinary; yi-ergo 2026-10-29-jev, V2 question):
+
+  | allow at | dangerous allowed | ordinary allowed |
+  |---|---|---|
+  | 0.5 | 1 | 70 |
+  | 0.8 | 0 | 53 |
+  | 0.9 | 0 | 27 |
+  | 0.8, 0.9 destructive (default) | 0 | 44 |
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
 - Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
@@ -823,6 +835,11 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   exit. `retire` is the only exit from the roster: it refuses a worktree child with no
   disposition, aborts a live run, disposes the kernel, settles the lane, returns the lease and
   publishes one final `ChildUpdate`. A `worktree` lane goes back by `rlm.merge_worktree` (§14).
+- `ChildUpdate` adds optional `session`, `role`, `task`, and terminal `elapsedMs`; the spawn trail
+  adds `role` and `task`, and the end trail adds `elapsedMs`, `cost`, and `answerPreview`. Admission
+  keeps the child session id, role, capped task and start instant; one terminal snapshot supplies
+  both the update and trail. Fresh reap, repossession and parent close journal one end, never a
+  duplicate after conclusion, and `parent closed` outranks generic interrupted or revoked text.
 - State: `ChildExit { Completed, Failed { class }, Interrupted, Reaped, Repossessed }`,
   `FailClass { RefusedSpawn, Provider, KernelDeath, RedCheck, Deadline }`, `ChildStatus`,
   `ChildActivity`, `ChildFlag { NeedsYou, Stuck }`; `family.rs` holds `Cause` and
@@ -1126,8 +1143,9 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   session starts, since the console's settings page saves it while workers run; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
   `models{primary,summarizer,advisor,autoReview,classifier,selector,webSearch}`, `webSearch{engine}`,
-  `bash{autoBackgroundMs}`, `plans{dir}`,
-  `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
+  `bash{autoBackgroundMs}`, `plans{dir}`, `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`,
+  `kernel{prewarm}`, `console{autoSide}`,
+  `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace,follow}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
   `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode,allowWrite,allow}`,
   `mail{hopLimit}`, `open[{name,command}]`.
@@ -1189,10 +1207,25 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   regions of two rows or more, a full-screen scroll and a repaint where none fits. Streaming text
   commits by byte cursor over stable slices; a thought commits before its prose; a reveal cursor
   paces the painted tail.
+- `tui.follow` selects terminal-text following: `slide` keeps the existing one-row-per-frame
+  movement and proportional catch-up; `page` jumps half the pane height (at least one row) when
+  the live tail would cross the bottom; `still` never follows autonomously and shows
+  `↓ N more rows · PgDn` above the composer. PageDown moves explicitly, and submitting a prompt
+  returns to bottom. A held view keeps its anchor in every mode. Explicit config wins over the
+  macOS Reduce Motion probe, which is read once at startup and selects `still`; unset otherwise
+  defaults to `page`. The reveal and `tui.pace` are unchanged.
 - Resize and mode change rebuild scrollback from the transcript; text wraps at width less 2; a
   frame draws only on change.
+- A child commits one `Rule` at admission and one `Rule` per run's end: role and task first, then
+  outcome, elapsed time, tokens, optional cost, `start <child-id>`, and the first result or error
+  line. The full card stays live, while the concise end row replaces the old committed full card.
+  A `spawnedBy` row waits for that antecedent, unresolved references flush at turn or replay
+  settlement, and a late end appends at finish. Entry-zero replay rebuilds the same rows without
+  creating live cards; eviction, resize and every transcript mode preserve them.
 - A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, 3 result
-  rows then `… N more lines` when collapsed.
+  rows then `… N more lines` when collapsed. Running tool cards reserve that bounded preview
+  region and its elision row, so a collapsed result fills in place; child cards use a bounded
+  four-row answer window, and verbose rows still use the existing row pacing.
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block
   `Todos done/total`; `ctrl+t` hides it), composer or bottom view, status row (model, effort,
   lane row, landing, cost, `used / window`, session name).
@@ -1216,6 +1249,8 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
 
 - The protocol reducer runs synchronously in the UI loop; IO threads only move frames.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
+- Console inherits the persistent child start and end rows through that same `yi-tui` reducer,
+  including entry-zero replay; its sidebar's separate live-status cache is unchanged.
 - A drag copies the words under it, without Yi's rails and gutters, over OSC 52.
 - A right-click opens a menu for what is under it: a message (Copy, Copy as plain text or raw
   JSON, Quote, Inspect; on a prompt Re-ask from here and Rewind to here, the conversation or it and
@@ -1247,7 +1282,8 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   landing, and `l` runs `/land` under the session's title. ↑/↓ selects a file and `w` asks the
   worker (`_yi/why`) for each hunk's `yi why` chain: blame, commit, todo, goal. A resumed
   session's replay fills Review's edits and reads, and the notebook's cells, as live frames do; a
-  replay from entry 0 counts the turns itself and restarts the notebook.
+  replay from entry 0 counts the turns itself and restarts the notebook. Ordinary cell updates
+  preserve a reader's scroll position; only opening or a full replay resets it to bottom.
 - ⌘Y (⌥y) opens a terminal pane beside the focused one, running `$SHELL` in the focused
   session's working directory (its lane worktree once `_yi/workdir` names one), else the
   console's root. The PTY is the console's own: no daemon state, nothing on the socket. The
