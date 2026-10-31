@@ -532,8 +532,7 @@ impl App {
             RequestKind::Open(name) => self.note(&format!("launched {name}")),
             RequestKind::Slash(session) => {
                 if let Some(text) = result.get("text").and_then(Value::as_str) {
-                    let text = text.to_owned();
-                    self.fan_out(&session, || UiEvent::Reply(Reply::Notice(text.clone())));
+                    self.fan_out(&session, || UiEvent::Reply(Reply::Notice(text.to_owned())));
                 }
             }
             RequestKind::Rewind(session) => self.absorb_rewind(&session, &result),
@@ -926,7 +925,7 @@ impl App {
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
             Action::OpenTerminal => self.open_terminal(),
-            Action::OpenEditor => self.open_navigator("e "),
+            Action::OpenEditor => self.open_files(),
             Action::OpenBrowser => self.open_browser(),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
@@ -1034,11 +1033,11 @@ impl App {
         if key.modifiers.contains(KeyModifiers::SUPER) {
             self.cmd_hints = true;
         }
-        if matches!(self.state.mode, Mode::Navigator { .. }) {
-            return self.handle_navigator_key(outbound, key);
-        }
-        if matches!(self.state.mode, Mode::Menu(_)) {
-            return self.menu_key(outbound, key);
+        match self.state.mode {
+            Mode::Navigator { .. } => return self.handle_navigator_key(outbound, key),
+            Mode::Files(_) => return self.files_key(key),
+            Mode::Menu(_) => return self.menu_key(outbound, key),
+            Mode::Normal | Mode::Prefix => {}
         }
         if matches!(self.state.mode, Mode::Prefix) {
             self.state.mode = Mode::Normal;
@@ -1125,6 +1124,7 @@ mod browser;
 mod chat;
 mod diffs;
 mod editor;
+mod files;
 pub(crate) mod ids;
 mod menu;
 mod mouse;

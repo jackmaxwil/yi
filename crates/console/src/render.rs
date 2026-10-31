@@ -652,12 +652,8 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
             continue;
         }
         let body = Paragraph::new(pane.lines.clone());
-        let body = if dim {
-            body.style(Style::default().add_modifier(Modifier::DIM))
-        } else {
-            body
-        };
-        frame.render_widget(body, inner);
+        let dim_style = Style::default().add_modifier(Modifier::DIM);
+        frame.render_widget(if dim { body.style(dim_style) } else { body }, inner);
     }
     if view.framed {
         render_borders(app, frame, view, theme);
@@ -674,6 +670,7 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         lift(frame.buffer_mut(), rect, theme);
     }
     let popup = match &app.state.mode {
+        Mode::Files(files) => Some(crate::files::render(files, frame, view.panes_area, theme)),
         Mode::Navigator { .. } => crate::palette::render_navigator(app, frame, view, theme),
         Mode::Menu(menu) => {
             let rects = crate::menu::rects(menu, frame.area());
