@@ -583,3 +583,4 @@ lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an e
 web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
 web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)
 console settings pane | `drive::a_press_on_a_settings_row_saves_the_control_it_names`
+console run chip | `drive::pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not`

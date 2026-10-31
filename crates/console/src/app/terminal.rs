@@ -70,6 +70,41 @@ impl App {
         }
     }
 
+    /// A shell block the person pressed Run on goes to a live terminal pane of this tab, or to a
+    /// new one, as typed text they can watch run; the agent never sees it.
+    pub(super) fn run_in_terminal(&mut self, code: &str) {
+        let live = |app: &Self, id: &crate::layout::PaneId| {
+            matches!(
+                app.state.panes.get(id).map(|pane| &pane.content),
+                Some(PaneContent::Terminal(pty)) if !pty.exited()
+            )
+        };
+        let mut open = self
+            .state
+            .tab()
+            .and_then(|tab| tab.layout.pane_ids().into_iter().find(|id| live(self, id)));
+        if open.is_none() {
+            self.open_terminal();
+            open = self.state.focused_pane_id().filter(|id| live(self, id));
+        }
+        let Some(id) = open else { return };
+        if let Some(tab) = self.state.tab_mut() {
+            tab.layout.focus_pane(id);
+        }
+        self.state.focus_panes();
+        if let Some(PaneContent::Terminal(pty)) =
+            self.state.panes.get_mut(&id).map(|p| &mut p.content)
+        {
+            let typed = pty
+                .paste(code.trim_end_matches('\n'))
+                .and_then(|()| pty.send(b"\r"));
+            if let Err(error) = typed {
+                self.note(&format!("terminal: {error}"));
+            }
+        }
+        self.dirty = true;
+    }
+
     /// A live terminal takes every key but ⌘ chords and ⌥ arrows, which stay the console's
     /// (ctrl+b's table is matched before this).
     pub(super) fn terminal_key(&mut self, key: &KeyEvent) -> bool {
@@ -113,5 +148,42 @@ impl App {
                 self.dirty |= pty.poll();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+    use crate::model::PaneContent;
+
+    /// Dies with a Run that lands in the chat's composer instead of the shell, that types a
+    /// command and never presses enter, or that leaves the terminal unfocused so the person
+    /// cannot answer a prompt the command raises.
+    #[test]
+    fn a_shell_block_is_typed_into_the_live_terminal_and_entered()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        let chat = app.state.focused_pane_id().ok_or("a pane")?;
+        let shell = app
+            .state
+            .split_focused(ratatui::layout::Direction::Horizontal)
+            .ok_or("no split")?;
+        let (pty, written) = crate::pty::tests::queued_terminal()?;
+        if let Some(pane) = app.state.panes.get_mut(&shell) {
+            pane.content = PaneContent::Terminal(Box::new(pty));
+        }
+        if let Some(tab) = app.state.tab_mut() {
+            tab.layout.focus_pane(chat);
+        }
+        let code = "cd ~/Development/yi && git pull --ff-only origin main && \\\n  scripts/build_dist.sh\n";
+        app.run_in_terminal(code);
+        let typed: Vec<u8> = written.try_iter().flatten().collect();
+        assert_eq!(
+            String::from_utf8_lossy(&typed),
+            "cd ~/Development/yi && git pull --ff-only origin main && \\\n  scripts/build_dist.sh\r"
+        );
+        assert_eq!(app.state.focused_pane_id(), Some(shell));
+        Ok(())
     }
 }

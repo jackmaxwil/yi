@@ -161,6 +161,10 @@ impl App {
             Some((_, crate::render::Hit::Search)) => {
                 return self.apply_action(outbound, Action::Navigator);
             }
+            Some((_, crate::render::Hit::Run(code))) => {
+                self.pending_close = None;
+                return self.run_in_terminal(&code);
+            }
             Some((_, crate::render::Hit::Fold(root))) => {
                 self.state.fold_from_header(&root);
                 self.state.zone = Zone::Sidebar;

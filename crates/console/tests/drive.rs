@@ -5787,3 +5787,60 @@ fn a_resumed_sessions_tracked_edit_does_not_open_review_by_itself() -> TestResul
     assert!(!frame.contains("Review"), "{frame}");
     Ok(())
 }
+
+const FENCED_REPLY: &str =
+    "Run this from the main checkout:\n\n```bash\ngit pull --ff-only origin main\n```\n";
+
+fn resume_fenced(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("how do I update")),
+                entry("e2", Some("e1"), 2, &assistant(FENCED_REPLY)),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 2})),
+    ]
+}
+
+fn opened_fenced() -> Vec<Step> {
+    vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_fenced),
+        Step::Expect("_yi/seen", seen_ok),
+    ]
+}
+
+/// Dies with a chip nothing answers: the press on it must open a terminal beside the chat, and
+/// a press on the fence's own label, one cell left of the chip, must not.
+#[test]
+fn pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not() -> TestResult {
+    let open = |click: &str| {
+        run_frames(
+            "run-chip",
+            opened_fenced(),
+            &format!("wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 ▶ run\n{click}\nquit\n"),
+        )
+    };
+    let terminal = |frame: &str| {
+        frame
+            .lines()
+            .any(|row| row.contains(">_ ") && row.contains(" · demo-root"))
+    };
+    let pressed = open("mouse down 31 8\nmouse up 31 8\nwait-frame 5000 · demo-root")?;
+    assert!(
+        terminal(&pressed),
+        "no terminal pane after the press: {pressed}"
+    );
+    let label = open("mouse down 25 8\nmouse up 25 8")?;
+    assert!(
+        !terminal(&label),
+        "the fence label opened a terminal: {label}"
+    );
+    Ok(())
+}
