@@ -16,7 +16,11 @@ pub struct Uncommitted {
 
 impl Uncommitted {
     pub(crate) fn read(tree: &Path) -> Result<Self, LaneError> {
-        Ok(Self::counted(&git_capture(tree, &STATUS)?))
+        Ok(Self::counted(&git_capture(
+            tree,
+            &STATUS,
+            yi_tools::OUTPUT_CAP,
+        )?))
     }
 
     /// One status read bounded by [`LIST_BUDGET`]; the error names why the paths went uncounted.
@@ -207,7 +211,11 @@ impl Pool {
     /// Invariant: nothing is removed that holds work; a live lane is flocked, an outside tree is
     /// locked, a commit `main` lacks or a dirty tree stays, and every kept tree says why. Dry run is read-only.
     pub fn gc(&self, cwd: &Path, dry_run: bool) -> Result<Vec<String>, LaneError> {
-        let listing = git_capture(&self.repo, &["worktree", "list", "--porcelain"])?;
+        let listing = git_capture(
+            &self.repo,
+            &["worktree", "list", "--porcelain"],
+            super::PLUMBING_CAP,
+        )?;
         let deadline = std::time::Instant::now()
             .checked_add(LIST_BUDGET)
             .unwrap_or_else(std::time::Instant::now);
@@ -224,8 +232,8 @@ impl Pool {
         let mut lines = Vec::new();
         if let Some((kept, total)) = listing.cut {
             lines.push(format!(
-                "[worktree list cut: read {kept} of {total} bytes, OUTPUT_CAP {}; later worktrees not judged]",
-                yi_tools::OUTPUT_CAP
+                "[worktree list cut: read {kept} of {total} bytes, lane.plumbing_cap {}; later worktrees not judged]",
+                super::PLUMBING_CAP
             ));
         }
         for tree in parse(&listing.stdout).into_iter().skip(1) {

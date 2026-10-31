@@ -587,3 +587,27 @@ fn a_busy_event_stream_does_not_invalidate_an_unchanged_tree() -> TestResult {
     assert_eq!(status_runs(&shim), 1, "unchanged tree stays cached");
     Ok(())
 }
+
+/// Incident: the host resolved `git` through PATH, so a tree's `bin` on it, as direnv or an
+/// activated venv leaves it, ran a contained process's `bin/git` on the next environment block.
+#[test]
+fn a_git_inside_the_tree_on_path_never_runs_on_the_host() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (dir, _shim) = counted_repo("yi-env-tree-on-path", 0)?;
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin)?;
+    let marker = dir.join("ran-on-host");
+    std::fs::write(
+        bin.join("git"),
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )?;
+    std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755))?;
+    let path = std::env::var_os("PATH").ok_or("no PATH")?;
+    let joined = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path)))?;
+    // nextest runs each test in its own process, so this PATH reaches no other test.
+    unsafe { std::env::set_var("PATH", joined) };
+    let summary = yi_runtime::environment::git_summary(&dir);
+    assert!(!marker.exists(), "a contained write ran on the host");
+    assert!(summary.is_some(), "the real git still answers");
+    Ok(())
+}

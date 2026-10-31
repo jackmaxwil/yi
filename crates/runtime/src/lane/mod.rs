@@ -3,12 +3,14 @@
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use yi_types::lane::SlotState;
 
 use reap::Uncommitted;
 
+pub(crate) use hostgit::{PLUMBING_CAP, capture, capture_named, git, git_capture};
+
+pub mod hostgit;
 pub mod land;
 pub mod reap;
 pub mod settle;
@@ -207,6 +209,17 @@ pub enum LaneError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("git {}: output cut at {kept} of {total} bytes (lane.plumbing_cap {cap}); nothing read past it", args.join(" "))]
+    Cut {
+        args: Vec<String>,
+        kept: usize,
+        total: usize,
+        cap: usize,
+    },
+    #[error(
+        "HEAD names {head}, trunk or a branch checked out elsewhere; the host commits nothing there"
+    )]
+    ForeignHead { head: String },
     #[error("{0} is not inside a git repository")]
     NotARepo(PathBuf),
     #[error("{path}: HEAD unreadable: {reason}")]
@@ -236,88 +249,6 @@ fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> LaneError + '_ {
         path: path.to_path_buf(),
         source,
     }
-}
-
-pub(crate) fn capture(
-    cwd: &Path,
-    program: &str,
-    args: &[&str],
-    deadline: std::time::Duration,
-) -> Result<String, String> {
-    let label = format!("{program} {}", args.join(" "));
-    capture_named(
-        cwd,
-        &label,
-        program,
-        args,
-        deadline,
-        yi_tools::OUTPUT_CAP,
-        None,
-    )
-    .map(|capture| capture.stdout)
-}
-
-/// Incident: the lane sync ran under the sandbox wrapper and its refusal quoted the wrapper's
-/// whole argv, 17 KB of profile before the one line saying why; `label` is what the caller meant.
-pub(crate) fn capture_named(
-    cwd: &Path,
-    label: &str,
-    program: &str,
-    args: &[&str],
-    deadline: std::time::Duration,
-    cap: usize,
-    sandbox: Option<&yi_tools::Sandbox>,
-) -> Result<yi_tools::CommandCapture, String> {
-    let _span = yi_types::trace::span("lane.capture").arg("program", program);
-    let mut command = yi_tools::keyless_command(program);
-    command.current_dir(cwd).args(args);
-    let deadline = std::time::Instant::now()
-        .checked_add(deadline)
-        .unwrap_or_else(std::time::Instant::now);
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, cap)
-        .map_err(|error| format!("{label}: {error}"))?;
-    if capture.exit_code == Some(0) {
-        return Ok(capture);
-    }
-    let output = format!("{}{}", capture.stdout, capture.stderr);
-    let denied = sandbox
-        .and_then(|sandbox| {
-            yi_tools::sandbox_refusal(sandbox, cwd, capture.exit_code, &output, label)
-        })
-        .map(|refusal| format!("\n{}\n", yi_tools::denial_hint(&refusal)))
-        .unwrap_or_default();
-    Err(format!("{label} failed:\n{output}{denied}"))
-}
-
-pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
-    git_capture(cwd, args).map(|capture| capture.stdout)
-}
-
-fn git_capture(cwd: &Path, args: &[&str]) -> Result<yi_tools::CommandCapture, LaneError> {
-    let _span = yi_types::trace::span("lane.git").arg("args", args.join(" "));
-    let mut command = yi_tools::command("git");
-    command.current_dir(cwd).args(args);
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_millis(GIT_TIMEOUT_MS))
-        .unwrap_or_else(std::time::Instant::now);
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
-    let owned: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-    let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP).map_err(
-        |error| LaneError::Git {
-            args: owned.clone(),
-            exit_code: None,
-            output: error,
-        },
-    )?;
-    if capture.exit_code == Some(0) {
-        return Ok(capture);
-    }
-    Err(LaneError::Git {
-        args: owned,
-        exit_code: capture.exit_code,
-        output: format!("{}{}", capture.stdout, capture.stderr),
-    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -690,7 +621,8 @@ impl Pool {
         {
             return false;
         }
-        let _ = git(&self.repo, &["fetch", "-q", "origin", "main"]);
+        let trunk = hostgit::trunk(&self.repo);
+        let _ = git(&self.repo, &["fetch", "-q", "origin", trunk.as_str()]);
         true
     }
 
@@ -714,15 +646,20 @@ impl Pool {
     }
 
     fn local_main(&self, deadline: std::time::Instant) -> Option<Sha> {
+        let trunk = hostgit::trunk(&self.repo);
+        let (remote, local) = (
+            format!("origin/{trunk}^{{commit}}"),
+            format!("{trunk}^{{commit}}"),
+        );
         probe_git(
             &self.repo,
-            &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
+            &["rev-parse", "--verify", "-q", &remote],
             deadline,
         )
         .or_else(|_| {
             probe_git(
                 &self.repo,
-                &["rev-parse", "--verify", "-q", "main^{commit}"],
+                &["rev-parse", "--verify", "-q", &local],
                 deadline,
             )
         })
@@ -735,7 +672,8 @@ impl Pool {
             ClaimBase::Commit(sha) => return self.resolve_commit(sha),
             ClaimBase::Main => {}
         }
-        let known = background.then(|| self.resolve_commit("origin/main"));
+        let trunk = hostgit::trunk(&self.repo);
+        let known = background.then(|| self.resolve_commit(&format!("origin/{trunk}")));
         if let Some(Ok(sha)) = &known {
             self.refresh_in_background();
             return Ok(sha.clone());
@@ -743,7 +681,7 @@ impl Pool {
         let fetched = self.fetch_if_stale();
         let missing = known.is_some() && !fetched;
         if missing {
-            if let Ok(sha) = self.resolve_commit("main") {
+            if let Ok(sha) = self.resolve_commit(trunk.as_str()) {
                 return Ok(sha);
             }
         } else {

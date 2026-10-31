@@ -9,9 +9,11 @@ use serde_json::{Map, Value, json};
 pub use yi_types::plan::acceptance::{Conflict, Published, Quiescence};
 use yi_types::plan::op::Choice;
 
+pub use super::hostgit::candidate_of;
+use super::hostgit::{identity, whole};
 use super::{
-    BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, SlotView,
-    capture_named,
+    BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, PLUMBING_CAP, Pool, Sha,
+    SlotView, capture_named,
 };
 use crate::subagent::{ChildRecord, SubagentHost};
 
@@ -28,7 +30,7 @@ pub fn quiescence_of_jobs(root: &Path) -> Quiescence {
     }
 }
 
-fn quiet(quiescence: &Quiescence) -> Result<(), LaneError> {
+pub(super) fn quiet(quiescence: &Quiescence) -> Result<(), LaneError> {
     if quiescence.is_quiet() {
         return Ok(());
     }
@@ -94,11 +96,15 @@ fn past(deadline: Option<Instant>) -> Result<(), LaneError> {
 
 /// `git` under the caller's deadline as well as the lane's own: a settle step cannot outlive
 /// the run it belongs to (D177).
-fn git_by(cwd: &Path, args: &[&str], deadline: Option<Instant>) -> Result<String, LaneError> {
-    git_capped(cwd, args, deadline, yi_tools::OUTPUT_CAP)
+pub(super) fn git_by(
+    cwd: &Path,
+    args: &[&str],
+    deadline: Option<Instant>,
+) -> Result<String, LaneError> {
+    git_capped(cwd, args, deadline, PLUMBING_CAP)
 }
 
-fn git_capped(
+pub(super) fn git_capped(
     cwd: &Path,
     args: &[&str],
     deadline: Option<Instant>,
@@ -110,16 +116,17 @@ fn git_capped(
         own.min(at.saturating_duration_since(Instant::now()))
     });
     let label = format!("git {}", args.join(" "));
-    capture_named(cwd, &label, "git", args, budget, cap, None)
-        .map(|capture| capture.stdout)
-        .map_err(|output| LaneError::Git {
+    let capture = capture_named(cwd, &label, "git", args, budget, cap, None).map_err(|output| {
+        LaneError::Git {
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
             exit_code: None,
             output,
-        })
+        }
+    })?;
+    whole(capture, args, cap)
 }
 
-fn sha_of(text: &str) -> Result<Sha, LaneError> {
+pub(super) fn sha_of(text: &str) -> Result<Sha, LaneError> {
     Sha::parse(text).ok_or_else(|| LaneError::Git {
         args: vec!["rev-parse".to_owned()],
         exit_code: None,
@@ -127,45 +134,7 @@ fn sha_of(text: &str) -> Result<Sha, LaneError> {
     })
 }
 
-const UNTRACKED_NOISE: [&str; 3] = [
-    ":(exclude,glob)**/__pycache__/**",
-    ":(exclude,glob)**/*.pyc",
-    ":(exclude,glob)**/.pytest_cache/**",
-];
-
 const KEPT_YOURS: &str = "Your uncommitted edits to the kept_yours paths stay in the working copy without the child's change to them, so `git diff HEAD` shows that change as removed and committing them would undo it; `git show HEAD:<path>` is the merged version to fold them into; a kept path missing from HEAD is one the child deleted, and it is untracked here.";
-
-/// Incident: uncommitted child work merged as nothing, so it is committed first. Free of the
-/// `Lane`, so a host reads it with the path cloned and no lock held across the git calls.
-pub fn candidate_of(
-    path: &Path,
-    session: &str,
-    branch: &BranchName,
-    base: Option<Sha>,
-    quiescence: &Quiescence,
-    deadline: Option<Instant>,
-) -> Result<Candidate, LaneError> {
-    quiet(quiescence)?;
-    let status = git_by(path, &super::STATUS, deadline)?;
-    if !status.trim().is_empty() {
-        git_by(
-            path,
-            &[&["add", "-A", "--", "."][..], &UNTRACKED_NOISE].concat(),
-            deadline,
-        )?;
-        let staged = git_by(path, &["diff", "--cached", "--name-only"], deadline)?;
-        let message = format!("session {session} work");
-        if !staged.trim().is_empty() {
-            git_by(path, &["commit", "-q", "-m", &message], deadline)?;
-        }
-    }
-    let commit = sha_of(&git_by(path, &["rev-parse", "HEAD"], deadline)?)?;
-    Ok(Candidate {
-        branch: branch.clone(),
-        commit,
-        base,
-    })
-}
 
 /// A settle that did not release: the lane comes back with the error when nothing was
 /// detached yet, so the slot stays held; a release that failed midway is `Lost`.
@@ -415,16 +384,17 @@ pub fn prepare(
         candidate.short(),
         generation.base.short()
     );
+    let merge = [
+        "merge",
+        "--no-ff",
+        "--no-edit",
+        "-m",
+        &message,
+        candidate.as_str(),
+    ];
     let merged = git_by(
         lane.path(),
-        &[
-            "merge",
-            "--no-ff",
-            "--no-edit",
-            "-m",
-            &message,
-            candidate.as_str(),
-        ],
+        &[&identity(lane.path())[..], &merge[..]].concat(),
         deadline,
     );
     if let Err(error) = merged {

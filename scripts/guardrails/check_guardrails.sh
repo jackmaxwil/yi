@@ -58,6 +58,7 @@ run "$PY" scripts/guardrails/check_commit_style.py
 run "$PY" scripts/guardrails/check_glob_reexport.py
 run "$PY" scripts/guardrails/check_orphans.py
 run "$PY" scripts/guardrails/check_panic.py
+run "$PY" scripts/guardrails/check_host_git.py
 run "$PY" scripts/guardrails/check_changes.py
 run "$PY" scripts/guardrails/check_comments.py
 run "$PY" scripts/guardrails/check_file_size.py
@@ -158,6 +159,7 @@ run "$PY" scripts/bot_meter.py --selfcheck
 # judge anything at all: each scan is disabled in turn and the selfcheck must fail
 # for that scan's own reason (D109).
 run "$PY" scripts/guardrails/check_orphans.py --selfcheck
+run "$PY" scripts/guardrails/check_host_git.py --selfcheck
 # The public surface is what the mirror publishes, modelled on filter-repo's own
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
