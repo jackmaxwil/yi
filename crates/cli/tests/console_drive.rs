@@ -349,6 +349,7 @@ fn terminal_run(name: &str, script: &str) -> Result<Scratch, Box<dyn Error>> {
         .arg("--socket")
         .arg(dir.join("no-daemon.sock"))
         .env_clear()
+        .env("HOME", dir.home()?)
         .env("PATH", "/usr/bin:/bin")
         .env("SHELL", "/bin/sh")
         .env("PS1", "$ ")
@@ -359,6 +360,12 @@ fn terminal_run(name: &str, script: &str) -> Result<Scratch, Box<dyn Error>> {
         return Err(format!("console exited {}: {stderr}", output.status).into());
     }
     Ok(dir)
+}
+
+#[test]
+fn terminal_run_keeps_the_scratch_home_after_its_clean_environment() -> TestResult {
+    terminal_run("yi-term-home", "quit\n")?;
+    Ok(())
 }
 
 /// Every pane cell of a snap frame, one per bordered segment of each row, untrimmed.

@@ -35,6 +35,29 @@ fn run(program: &str, args: &[&str], dir: &std::path::Path) -> Result<String, Bo
     Ok(String::from_utf8(out.stdout)?)
 }
 
+fn run_client(
+    dir: &Scratch,
+    program: &std::path::Path,
+    repo: &std::path::Path,
+    script: &std::path::Path,
+) -> Result<String, Box<dyn Error>> {
+    let yi = crate::yi_bin::yi_command(&dir.home()?);
+    run(
+        "python3",
+        &[
+            &program.display().to_string(),
+            CLIENT_DIR,
+            yi.get_program()
+                .to_str()
+                .ok_or("yi binary path is not UTF-8")?,
+            &repo.display().to_string(),
+            &script.display().to_string(),
+            &dir.join("sessions").display().to_string(),
+        ],
+        dir,
+    )
+}
+
 const CLIENT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../python");
 
 const PROGRAM: &str = r#"
@@ -307,18 +330,7 @@ fn a_permission_ask_is_refused_and_the_client_continues() -> TestResult {
     std::fs::write(&script, turns.join("\n"))?;
     let program = dir.join("program.py");
     std::fs::write(&program, PERMISSION_PROGRAM)?;
-    let out = run(
-        "python3",
-        &[
-            &program.display().to_string(),
-            CLIENT_DIR,
-            crate::yi_bin::BIN,
-            &repo.display().to_string(),
-            &script.display().to_string(),
-            &dir.join("sessions").display().to_string(),
-        ],
-        &dir,
-    )?;
+    let out = run_client(&dir, &program, &repo, &script)?;
     let report: Value = serde_json::from_str(out.trim())?;
     assert_eq!(
         report["wrote"], false,
@@ -358,18 +370,7 @@ fn a_python_program_fans_out_readers_with_no_model_turn_at_the_root() -> TestRes
     std::fs::write(&script, replies.join("\n"))?;
     let program = dir.join("program.py");
     std::fs::write(&program, PROGRAM)?;
-    let out = run(
-        "python3",
-        &[
-            &program.display().to_string(),
-            CLIENT_DIR,
-            crate::yi_bin::BIN,
-            &repo.display().to_string(),
-            &script.display().to_string(),
-            &dir.join("sessions").display().to_string(),
-        ],
-        &dir,
-    )?;
+    let out = run_client(&dir, &program, &repo, &script)?;
     let report: Value = serde_json::from_str(out.trim())?;
     let mut answers: Vec<&str> = report["answers"]
         .as_array()

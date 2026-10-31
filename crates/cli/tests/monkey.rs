@@ -18,6 +18,7 @@ const RUNS: &str = "5";
 fn monkey_seeds_play_without_a_crash_hang_or_control_cell() -> TestResult {
     let dir = Scratch::new("yi-monkey")?;
     let home = dir.home()?;
+    let yi = crate::yi_bin::yi_command(&home);
     #[expect(
         clippy::disallowed_methods,
         reason = "the journey's contract is the monkey runner driving the spawned binary"
@@ -28,7 +29,8 @@ fn monkey_seeds_play_without_a_crash_hang_or_control_cell() -> TestResult {
             "/../../scripts/tui_see.py"
         ))
         .args(["monkey", "--runs", RUNS, "--seed", SEEDS])
-        .args(["--bin", crate::yi_bin::BIN])
+        .arg("--bin")
+        .arg(yi.get_program())
         .arg("--out")
         .arg(dir.join("monkey"))
         .env("HOME", home)

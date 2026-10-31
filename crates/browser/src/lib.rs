@@ -152,7 +152,7 @@ pub struct Browser {
 impl Browser {
     /// Starts `chrome` through `shim __fds`, which hands it this pipe pair on fds 3 and 4.
     pub fn launch(
-        shim: &Path,
+        mut command: std::process::Command,
         chrome: &Path,
         pinned: Option<&Path>,
         profile: &Path,
@@ -162,11 +162,7 @@ impl Browser {
     ) -> std::io::Result<Self> {
         let mut profile_flag = OsString::from("--user-data-dir=");
         profile_flag.push(profile);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "Chrome is the user's own program, started by the console that shows it"
-        )]
-        let mut child = std::process::Command::new(shim)
+        let mut child = command
             .arg("__fds")
             .arg(chrome)
             .args(flags(no_sandbox(

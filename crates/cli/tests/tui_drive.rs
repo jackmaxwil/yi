@@ -8,9 +8,10 @@ use crate::yi_bin::yi_command;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// The headless drive every scene runs: its session dir, its script's keys and its frame dump.
-fn drive(home: &Path, sessions: &Path, keys: &Path, frames: &Path) -> Command {
-    let mut command = yi_command(home);
+/// The headless drive every scene runs from its scratch home and session dir.
+fn drive(dir: &Scratch, keys: &Path, frames: &Path) -> std::io::Result<Command> {
+    let home = dir.home()?;
+    let mut command = yi_command(&home);
     command
         .args([
             "tui",
@@ -19,18 +20,17 @@ fn drive(home: &Path, sessions: &Path, keys: &Path, frames: &Path) -> Command {
             "faux/faux-1",
             "--session-dir",
         ])
-        .arg(sessions)
+        .arg(dir.join("sessions"))
         .arg("--keys")
         .arg(keys)
         .arg("--frames")
         .arg(frames);
-    command
+    Ok(command)
 }
 
 #[test]
 fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     let dir = Scratch::new("yi-tui-drive")?;
-    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -41,9 +41,7 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     )?;
     let frames = dir.join("frames");
 
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
-        .arg("ping")
-        .output()?;
+    let output = drive(&dir, &keys, &frames)?.arg("ping").output()?;
     assert!(
         output.status.success(),
         "drive run must exit 0: {}",
@@ -65,7 +63,6 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
 #[test]
 fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     let dir = Scratch::new("yi-tui-rewind")?;
-    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -78,7 +75,7 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     )?;
     let frames = dir.join("frames");
 
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .arg("--cwd")
         .arg(&dir)
         .args(["--size", "160x30", "first question"])
@@ -124,7 +121,6 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
 #[test]
 fn the_at_picker_over_101_files_reaches_the_last_by_typing_its_name() -> TestResult {
     let dir = Scratch::new("yi-tui-picker")?;
-    let home = dir.home()?;
     let tree = dir.join("tree");
     std::fs::create_dir_all(&tree)?;
     for n in 0..101 {
@@ -139,7 +135,7 @@ fn the_at_picker_over_101_files_reaches_the_last_by_typing_its_name() -> TestRes
     )?;
     let frames = dir.join("frames");
 
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .arg("--cwd")
         .arg(&tree)
         .arg("ping")
@@ -155,7 +151,6 @@ fn the_at_picker_over_101_files_reaches_the_last_by_typing_its_name() -> TestRes
 #[test]
 fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
     let dir = Scratch::new("yi-tui-new")?;
-    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -167,9 +162,7 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
     let frames = dir.join("frames");
     let sessions = dir.join("sessions");
 
-    let output = drive(&home, &sessions, &keys, &frames)
-        .arg("ping")
-        .output()?;
+    let output = drive(&dir, &keys, &frames)?.arg("ping").output()?;
     assert!(
         output.status.success(),
         "drive run must exit 0: {}",
@@ -205,7 +198,6 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
 #[test]
 fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     let dir = Scratch::new("yi-tui-surfaces")?;
-    let home = dir.home()?;
     let work = dir.join("work");
     std::fs::create_dir_all(&work)?;
     let keys = dir.join("script.keys");
@@ -220,7 +212,7 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     )?;
     let frames = dir.join("frames");
 
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .arg("--cwd")
         .arg(&work)
         .arg("ping")
@@ -268,7 +260,6 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
 #[test]
 fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
     let dir = Scratch::new("yi-tui-isearch")?;
-    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -279,9 +270,7 @@ fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
     )?;
     let frames = dir.join("frames");
 
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
-        .arg("ping")
-        .output()?;
+    let output = drive(&dir, &keys, &frames)?.arg("ping").output()?;
     assert!(
         output.status.success(),
         "drive run must exit 0: {}",
@@ -359,7 +348,7 @@ fn a_headless_drive_renders_at_the_size_it_is_given() -> TestResult {
     let keys = dir.join("keys");
     std::fs::write(&keys, "wait-frame 5000 faux-1\nquit\n")?;
     let frames = dir.join("frames");
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .args(["--size", "254x30"])
         .output()?;
     assert!(
@@ -407,7 +396,7 @@ fn a_snap_keeps_the_frame_of_its_own_step() -> TestResult {
         "wait-frame 5000 faux-1\ntype first\nsnap early\ntype  second\nsnap late\nquit\n",
     )?;
     let frames = dir.join("frames");
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames).output()?;
+    let output = drive(&dir, &keys, &frames)?.output()?;
     assert!(
         output.status.success(),
         "{}",
@@ -447,7 +436,6 @@ fn a_snap_keeps_the_frame_of_its_own_step() -> TestResult {
 #[test]
 fn a_frozen_scene_moves_only_when_it_ticks() -> TestResult {
     let dir = Scratch::new("yi-tui-frozen")?;
-    let home = dir.home()?;
     let cassette = dir.join("cassette.jsonl");
     std::fs::write(
         &cassette,
@@ -461,7 +449,7 @@ fn a_frozen_scene_moves_only_when_it_ticks() -> TestResult {
     )?;
     let frames = dir.join("frames");
     let run = |script: &std::path::Path| -> std::io::Result<std::process::Output> {
-        drive(&home, &dir.join("sessions"), script, &frames)
+        drive(&dir, script, &frames)?
             .args(["--faux"])
             .arg(&cassette)
             .output()
@@ -500,7 +488,6 @@ fn a_frozen_scene_moves_only_when_it_ticks() -> TestResult {
 #[test]
 fn a_recorded_reply_streams_over_its_recorded_time_on_the_frozen_clock() -> TestResult {
     let dir = Scratch::new("yi-tui-paced")?;
-    let home = dir.home()?;
     let cassette = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../scripts/proof/tui_see/paced.jsonl");
     let keys = dir.join("keys");
@@ -511,7 +498,7 @@ fn a_recorded_reply_streams_over_its_recorded_time_on_the_frozen_clock() -> Test
          tick 3000\nsnap middle\ntick 20000\nwait-idle 10000\nsnap done\nquit\n",
     )?;
     let run = |frames: &std::path::Path| -> std::io::Result<std::process::Output> {
-        drive(&home, &dir.join("sessions"), &keys, frames)
+        drive(&dir, &keys, frames)?
             .args(["--faux"])
             .arg(&cassette)
             .output()
@@ -571,6 +558,7 @@ fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult
     use std::io::{BufRead, Write};
     let dir = Scratch::new("yi-tui-control")?;
     let home = dir.home()?;
+    let yi = yi_command(&home);
     let cassette = dir.join("cassette.jsonl");
     let held = "The rail is calmer now. ".repeat(6);
     std::fs::write(
@@ -590,7 +578,9 @@ fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult
             "/../../scripts/tui_pty.py"
         ))
         .args(["--seconds", "60", "--stdin"])
-        .args(["--binary", crate::yi_bin::BIN, "--home"])
+        .arg("--binary")
+        .arg(yi.get_program())
+        .arg("--home")
         .arg(&home)
         .args(["--", "tui", "--model", "faux/faux-1", "--faux"])
         .arg(&cassette)
@@ -791,7 +781,6 @@ fn a_cassette_run_with_a_routed_model_stays_offline() -> TestResult {
 #[test]
 fn a_todo_row_wider_than_the_screen_ends_in_an_ellipsis_at_the_edge() -> TestResult {
     let dir = Scratch::new("yi-tui-hud-fit")?;
-    let home = dir.home()?;
     let label = "Put a check that cannot run here to the classifier via accepted_by_user";
     let cassette = dir.join("cassette.jsonl");
     std::fs::write(
@@ -813,7 +802,7 @@ fn a_todo_row_wider_than_the_screen_ends_in_an_ellipsis_at_the_edge() -> TestRes
     let keys = dir.join("script.keys");
     std::fs::write(&keys, "wait-idle 20000\nquit\n")?;
     let frames = dir.join("frames");
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .args(["--here", "--faux"])
         .arg(&cassette)
         .arg("--cwd")
@@ -976,14 +965,13 @@ fn a_cassette_run_in_a_repo_with_an_origin_and_a_classifier_stays_offline() -> T
 #[test]
 fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
     let dir = Scratch::new("yi-tui-paced")?;
-    let home = dir.home()?;
     let keys = dir.join("keys");
     let frames = dir.join("frames");
     // 40 characters at 100 ms is 4 s of typing against a 1 s deadline, so at
     // most a quarter of them may reach the screen.
     let typed = "x".repeat(40);
     std::fs::write(&keys, format!("type-ms 100\ntype {typed}\nquit\n"))?;
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .args(["--deadline", "1"])
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -1118,7 +1106,7 @@ fn a_lane_session_commits_contained() -> TestResult {
     std::fs::write(&keys, "wait-idle 30000\nquit\n")?;
     let frames = dir.join("frames");
 
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .args(["--lanes", "--faux"])
         .arg(&cassette)
         .arg("commit it")
@@ -1168,7 +1156,7 @@ fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResu
     )?;
     let frames = dir.join("frames");
 
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .args(["--faux"])
         .arg(&cassette)
         .arg("make the dirs")
@@ -1196,7 +1184,6 @@ fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResu
 #[test]
 fn an_always_allowed_directory_edits_without_a_second_prompt() -> TestResult {
     let dir = Scratch::new("yi-tui-grant")?;
-    let home = dir.home()?;
     let write = |path: &str, text: &str| {
         (
             "write",
@@ -1222,7 +1209,7 @@ fn an_always_allowed_directory_edits_without_a_second_prompt() -> TestResult {
     )?;
     let frames = dir.join("frames");
 
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .args(["--confirm", "--faux"])
         .arg(&cassette)
         .arg("write the notes")
@@ -1306,11 +1293,10 @@ fn quitting_during_a_running_kernel_cell_exits_promptly() -> TestResult {
 #[test]
 fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult {
     let dir = Scratch::new("yi-tui-paste-slash")?;
-    let home = dir.home()?;
     let keys = dir.join("keys");
     std::fs::write(&keys, "type /tree\ntype x\u{1b}[31mredy\nquit\n")?;
     let frames = dir.join("frames");
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames).output()?;
+    let output = drive(&dir, &keys, &frames)?.output()?;
     assert!(
         output.status.success(),
         "{}",
@@ -1329,7 +1315,6 @@ fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult 
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_long_bash_call_backgrounds_in_the_tui_drive_at_the_default() -> TestResult {
     let dir = Scratch::new("yi-tui-background")?;
-    let home = dir.home()?;
     let calls = [("bash", serde_json::json!({ "command": "sleep 65" }))];
     let cassette = dir.join("cassette.jsonl");
     std::fs::write(&cassette, cassette_lines(&calls, "done"))?;
@@ -1339,7 +1324,7 @@ fn a_long_bash_call_backgrounds_in_the_tui_drive_at_the_default() -> TestResult 
         "wait-frame 5000 faux-1\ntype run a long command\nkey enter\nwait-frame 90000 still running\nquit\n",
     )?;
     let frames = dir.join("frames");
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .args(["--deadline", "300", "--yolo", "--faux"])
         .arg(&cassette)
         .output()?;
@@ -1362,7 +1347,6 @@ fn a_long_bash_call_backgrounds_in_the_tui_drive_at_the_default() -> TestResult 
 #[test]
 fn a_typo_and_pr_answer_locally_without_a_model_turn() -> TestResult {
     let dir = Scratch::new("yi-tui-slash-local")?;
-    let home = dir.home()?;
     let keys = dir.join("keys");
     std::fs::write(
         &keys,
@@ -1370,7 +1354,7 @@ fn a_typo_and_pr_answer_locally_without_a_model_turn() -> TestResult {
          type /pr\nkey enter\nwait-frame 10000 /pr: \nquit\n",
     )?;
     let frames = dir.join("frames");
-    let output = drive(&home, &dir.join("sessions"), &keys, &frames)
+    let output = drive(&dir, &keys, &frames)?
         .arg("--cwd")
         .arg(&dir)
         .output()?;

@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 
-pub const BIN: &str = env!("CARGO_BIN_EXE_yi");
+const BIN: &str = env!("CARGO_BIN_EXE_yi");
 
 #[expect(
     clippy::disallowed_methods,

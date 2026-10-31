@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use yi_browser::{Browser, Update};
@@ -75,8 +74,8 @@ fn frames(seen: &[Update]) -> usize {
 )]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_click_on_a_served_link_brings_its_page_and_a_new_frame() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-browser-journey-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
+    let dir = crate::scratch::Scratch::new("yi-browser-journey")?;
+    let home = dir.home()?;
     std::fs::write(
         dir.join("index.html"),
         "<body style=margin:0><a href=next.html style='display:block;width:100vw;\
@@ -115,7 +114,7 @@ fn a_click_on_a_served_link_brings_its_page_and_a_new_frame() -> TestResult {
         .map_err(|looked| format!("no Chrome: looked in {}", looked.join(", ")))?;
     let url = format!("http://127.0.0.1:{port}/");
     let mut browser = Browser::launch(
-        Path::new(crate::yi_bin::BIN),
+        crate::yi_bin::yi_command(&home),
         &chrome,
         pinned_chrome().as_deref(),
         &dir.join("profile"),
