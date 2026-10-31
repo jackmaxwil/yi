@@ -476,6 +476,7 @@ fn ready_marker(sidebar: SidebarMode) -> &'static str {
     match sidebar {
         SidebarMode::Full => "s-alpha",
         SidebarMode::Rail => "1 SA",
+        SidebarMode::Hidden => "s-alpha",
     }
 }
 
@@ -1626,6 +1627,8 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
          wait-frame 3000 s-beta\n\
          cmd-b\n\
          wait-frame 3000 !s-beta\n\
+         cmd-b\n\
+         wait-frame 3000 1 SA\n\
          cmd-b\n\
          wait-frame 3000 s-beta\n\
          quit\n",
@@ -3381,6 +3384,9 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
          wait-frame 3000 2 SA  s-alpha\n\
          wait-frame 3000 demo-root 2 ▾\n\
          cmd-b\n\
+         wait-frame 3000 !s-alpha\n\
+         wait-frame 3000 !1 SB\n\
+         cmd-b\n\
          wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 !s-alpha\n\
          quit\n",
@@ -4473,9 +4479,9 @@ fn a_press_on_a_settings_row_saves_the_control_it_names() -> TestResult {
          key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
          wait-frame 3000 Open Review beside\n\
          mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\n\
-         mouse down 110 8\nmouse up 110 8\nwait-frame 3000 ▌\n\
+         mouse down 110 9\nmouse up 110 9\nwait-frame 3000 ▌\n\
          type firefox\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
-         mouse down 110 10\nmouse up 110 10\nwait-frame 3000 ▌\n\
+         mouse down 110 11\nmouse up 110 11\nwait-frame 3000 ▌\n\
          type 40\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
          mouse down 116 3\nmouse up 116 3\nwait-frame 3000 Permissions\n\
          mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\

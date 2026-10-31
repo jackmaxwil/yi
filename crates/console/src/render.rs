@@ -346,7 +346,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         tabs: tab_hits,
         settings_targets: crate::settings::hits(app, &panes),
         gear: (gear.height > 0).then_some(gear),
-        header_buttons: header_buttons(header, taken),
+        header_buttons: header_buttons(app, header, taken),
         ..Hits::default()
     });
 

@@ -482,7 +482,9 @@ pub fn run_console_command(args: &Args) -> i32 {
             .flatten()
             .map(|app| app.name.clone())
             .collect(),
-        sidebar: yi_console::model::SidebarMode::Rail,
+        sidebar: console
+            .sidebar
+            .map_or(yi_console::model::SidebarMode::Rail, Into::into),
         pace: reveal_pace(args),
         follow: configured_follow(),
         browser: config()

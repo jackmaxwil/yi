@@ -3,7 +3,7 @@ use std::path::Path;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Direction;
 
-use crate::model::{PaneContent, Zone};
+use crate::model::PaneContent;
 use crate::pty::Pty;
 
 use super::App;
@@ -66,7 +66,7 @@ impl App {
         let opened = self.state.focused_pane_id().filter(|id| Some(*id) != home);
         if let Some(pane) = opened.and_then(|id| self.state.panes.get_mut(&id)) {
             pane.content = PaneContent::Terminal(Box::new(pty));
-            self.state.zone = Zone::Panes;
+            self.state.focus_panes();
         }
     }
 

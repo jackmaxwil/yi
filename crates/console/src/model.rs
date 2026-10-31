@@ -133,13 +133,34 @@ pub(crate) enum Painted<'a> {
 pub enum SidebarMode {
     Rail,
     Full,
+    Hidden,
 }
 
 impl SidebarMode {
     pub fn next(self) -> Self {
         match self {
             Self::Rail => Self::Full,
-            Self::Full => Self::Rail,
+            Self::Full => Self::Hidden,
+            Self::Hidden => Self::Rail,
+        }
+    }
+
+    /// The name `console.sidebar` carries in config.json.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Rail => "rail",
+            Self::Full => "full",
+            Self::Hidden => "hidden",
+        }
+    }
+}
+
+impl From<yi_types::config::SidebarState> for SidebarMode {
+    fn from(state: yi_types::config::SidebarState) -> Self {
+        match state {
+            yi_types::config::SidebarState::Rail => Self::Rail,
+            yi_types::config::SidebarState::Full => Self::Full,
+            yi_types::config::SidebarState::Hidden => Self::Hidden,
         }
     }
 }
@@ -495,6 +516,7 @@ pub struct ConsoleState {
     pub quit: bool,
     pub sidebar: SidebarMode,
     pub sidebar_cols: usize,
+    sidebar_focus: bool,
     pub cursor_moved: bool,
     pub diffs: BTreeMap<SessionId, SessionDiff>,
     pub notebooks: BTreeMap<SessionId, Vec<NbCell>>,
@@ -546,6 +568,7 @@ impl ConsoleState {
             dropped_frames: 0,
             sidebar: SidebarMode::Rail,
             sidebar_cols: 0,
+            sidebar_focus: false,
             cursor_moved: false,
             diffs: BTreeMap::new(),
             notebooks: BTreeMap::new(),
@@ -914,6 +937,37 @@ impl ConsoleState {
     pub fn select_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active_tab = index;
+        }
+    }
+}
+
+impl ConsoleState {
+    pub fn cycle_zone(&mut self) {
+        match self.zone {
+            Zone::Sidebar => self.focus_panes(),
+            Zone::Panes if self.sidebar == SidebarMode::Hidden => self.focus_panes(),
+            Zone::Panes => self.zone = Zone::Sidebar,
+        }
+    }
+
+    pub fn focus_panes(&mut self) {
+        self.zone = Zone::Panes;
+        self.sidebar_focus = false;
+    }
+
+    pub(crate) fn cycle_sidebar(&mut self) {
+        let was_hidden = self.sidebar == SidebarMode::Hidden;
+        let held = self.zone == Zone::Sidebar;
+        let return_focus = self.sidebar_focus;
+        self.sidebar = self.sidebar.next();
+        self.header = None;
+        self.settle_visible();
+        if self.sidebar == SidebarMode::Hidden {
+            self.focus_panes();
+            self.sidebar_focus = held;
+        } else if was_hidden && return_focus {
+            self.zone = Zone::Sidebar;
+            self.sidebar_focus = false;
         }
     }
 }

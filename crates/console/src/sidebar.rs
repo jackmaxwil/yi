@@ -165,6 +165,7 @@ fn name_cols(app: &App) -> usize {
 
 pub fn width(app: &mut App) -> u16 {
     match app.state.sidebar {
+        SidebarMode::Hidden => 0,
         SidebarMode::Rail => 8,
         SidebarMode::Full => {
             // Incident: narrowing as a turn's children cleared re-wrapped every pane mid-turn.
@@ -261,6 +262,9 @@ pub(crate) fn plus_split(line: &Line<'_>) -> (usize, usize) {
 }
 
 pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
+    if app.state.sidebar == SidebarMode::Hidden {
+        return Vec::new();
+    }
     let mut rows = Vec::new();
     let rail = app.state.sidebar == SidebarMode::Rail;
     let mut beyond = 0_usize;
