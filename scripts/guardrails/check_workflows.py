@@ -108,7 +108,7 @@ def unread_lane(text, off=""):
 
 
 def no_skills(text, off=""):
-    return off != "skills" and not re.search(r"^\s*(- )?run: just bot-skills$", text, re.M)
+    return off != "skills" and not re.search(r"^\s*(- )?run: just install-skills$", text, re.M)
 
 
 def selfcheck(off=""):
@@ -145,7 +145,7 @@ def selfcheck(off=""):
         bad.append("a `runs-on` that is an expression is dropped instead of refused")
     if not no_skills("steps:\n  - run: rustup show\n", off):
         bad.append("a bot job that installs no skills is not refused")
-    if no_skills("steps:\n  - run: just bot-skills\n", "") or no_skills("steps:\n  - if: x\n    run: just bot-skills\n", ""):
+    if no_skills("steps:\n  - run: just install-skills\n", "") or no_skills("steps:\n  - if: x\n    run: just install-skills\n", ""):
         bad.append("a bot job that installs the skills is refused")
     return bad
 
@@ -173,7 +173,7 @@ if __name__ == "__main__":
     errs += [f".forgejo/workflows/{name}: job {job}'s `runs-on` `{value}` is not a lane this check reads; "
              "an expression there is a review lane nobody compared, so name the label"
              for name, text in (("pr.yml", gate), ("review.yml", review)) for job, value in unread_lane(text)]
-    errs += [f".forgejo/workflows/{name}: no `run: just bot-skills` step; the job's HOME then holds no skills and its "
+    errs += [f".forgejo/workflows/{name}: no `run: just install-skills` step; the job's HOME then holds no skills and its "
              "footer says `skills read none`"
              for name in ("review.yml", "autofix.yml") if no_skills((ROOT / ".forgejo/workflows" / name).read_text())]
     fail(errs, "workflows")

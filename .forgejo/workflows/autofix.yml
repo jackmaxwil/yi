@@ -48,9 +48,10 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      # A job's HOME starts with no skills. The copy is this checkout's, main's, never the PR's tree.
+      # A job's HOME starts with no skills, and this copy is main's, not the PR's tree.
+      # The PR's code this job runs can still write here, as it can the yi binary under target/.
       - if: steps.queue.outputs.newer == '0'
-        run: just bot-skills
+        run: just install-skills
       - if: steps.queue.outputs.newer == '0'
         run: rustup show
       - if: steps.queue.outputs.newer == '0'

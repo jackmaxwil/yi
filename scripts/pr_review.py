@@ -550,7 +550,8 @@ def lens_prompt(probe, pr, diff, base, sha, full_read, memory=()):
     body = pr.get("body") or ""
     claims = "\n\n".join(f"## {name}\n{(section(body, name) or '').strip()}" for name in dict.fromkeys(("Why needed", probe["claim"])))
     cut = f"\n[diff cut at {DIFF_MAX} bytes; read the files for the rest]" if len(diff) > DIFF_MAX else ""
-    har = har_note(" ".join(added_at(diff)))
+    # Not added_at: a change that only deletes Rust adds no line and is still Rust to judge.
+    har = har_note(" ".join(re.findall(r"^(?:---|\+\+\+) \S+$", diff, re.M)))
     return (
         f"{har}You review pull request #{pr['number']} ({pr['title']!r}) as its {lens} lens. {brief}\n"
         f"Severity: {scale}\n"
@@ -1166,6 +1167,7 @@ def selfcheck():
     rust_lens = {"id": "correctness", "brief": "b", "severity": {"high": "h"}, "claim": "Risk and rollback"}
     lensed = lambda diff: lens_prompt(rust_lens, {"number": 1, "title": "t", "body": ""}, diff, "a" * 8, "b" * 8, True)
     assert lensed("+++ b/crates/a/src/lib.rs\n+x\n").startswith(note) and "A HAR breach" in lensed("+++ b/a.rs\n+x\n"), "a Rust lens opens on the skills"
+    assert lensed("--- a/crates/a/src/lib.rs\n+++ b/crates/a/src/lib.rs\n-gone\n").startswith(note), "a change that only deletes Rust opens on the skills too"
     assert lensed("+++ b/docs/a.md\n+x.rs\n").startswith("You review") and "HAR" not in lensed("+++ b/docs/a.md\n+x.rs\n"), "a diff with no Rust spends no read"
     shutil.rmtree(SKILLS)
     SKILLS = installed
