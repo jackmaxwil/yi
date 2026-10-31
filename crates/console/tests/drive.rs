@@ -476,6 +476,7 @@ fn ready_marker(sidebar: SidebarMode) -> &'static str {
     match sidebar {
         SidebarMode::Full => "s-alpha",
         SidebarMode::Rail => "1 SA",
+        SidebarMode::Hidden => "s-alpha",
     }
 }
 
@@ -619,19 +620,30 @@ fn run_opts(
     frames: Option<PathBuf>,
     size: (u16, u16),
 ) -> TestResult {
-    let console = (autostart, sidebar, Vec::new());
+    let console = (
+        autostart,
+        sidebar,
+        Vec::new(),
+        yi_types::config::FollowMode::Page,
+    );
     run_console(name, fixture, script, console, frames, size)
 }
 
-/// `console` is (autostart, sidebar, the Open in apps the config lists).
+/// `console` is (autostart, sidebar, Open in apps, terminal-text follow mode).
 fn run_console(
     name: &str,
     fixture: Option<Vec<Step>>,
     script: &str,
-    (autostart, sidebar, open_apps): (bool, SidebarMode, Vec<String>),
+    (autostart, sidebar, open_apps, follow): (
+        bool,
+        SidebarMode,
+        Vec<String>,
+        yi_types::config::FollowMode,
+    ),
     frames: Option<PathBuf>,
-    (width, height): (u16, u16),
+    size: (u16, u16),
 ) -> TestResult {
+    let (width, height) = size;
     let (dir, socket) = scratch_socket(name)?;
     let server = fixture.map(|fixture| spawn_fixture(socket.clone(), fixture));
     let steps = parse_script(script)?;
@@ -648,6 +660,7 @@ fn run_console(
             open_apps,
             sidebar,
             pace: 0,
+            follow,
             browser: None,
             chrome_pin: None,
             home: Some(drive_home().display().to_string()),
@@ -691,6 +704,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             open_apps: Vec::new(),
             sidebar: SidebarMode::Rail,
             pace: 0,
+            follow: yi_types::config::FollowMode::Page,
             browser: None,
             chrome_pin: None,
             home: Some(drive_home().display().to_string()),
@@ -755,6 +769,24 @@ fn resume_alpha(frame: &Value) -> Vec<Value> {
     vec![
         replay("s-alpha", &alpha_branch(), 0, None),
         session_result(frame, "s-alpha", None, json!({"replayedTo": 2})),
+    ]
+}
+
+fn resume_child_rows(frame: &Value) -> Vec<Value> {
+    let mut entries = alpha_branch();
+    entries.extend([
+        json!({"type":"custom","id":"child-spawn","customType":"child","data":{
+            "event":"spawned","name":"scout","id":"sub-5c90b1bb","session":"child-session",
+            "path":"children/sub-5c90b1bb/session.jsonl","brief":"hash","spawnedBy":"call-child",
+            "role":"reader","task":"Inspect replay ordering"},"parentId":null,"seq":3,"timestamp":3}),
+        json!({"type":"custom","id":"child-end","customType":"child","data":{
+            "event":"ended","name":"scout","id":"sub-5c90b1bb","exit":{"kind":"completed"},
+            "tokens":0,"elapsedMs":0,"answerPreview":"The child has two persistent rows."},
+            "parentId":"child-spawn","seq":4,"timestamp":4}),
+    ]);
+    vec![
+        replay("s-alpha", &entries, 0, None),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": entries.len()})),
     ]
 }
 
@@ -919,20 +951,20 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
     )
 }
 
-fn lane_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("yi-console-lane-{}", std::process::id()))
+fn lane_dir(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("yi-console-lane-{}-{name}", std::process::id()))
 }
 
-fn resume_alpha_in_a_lane_dir(frame: &Value) -> Vec<Value> {
+fn resume_alpha_in_a_lane_dir(name: &str, frame: &Value) -> Vec<Value> {
     let mut frames = resume_alpha(frame);
-    let cwd = lane_dir().display().to_string();
+    let cwd = lane_dir(name).display().to_string();
     let workdir = json!({"sessionUpdate": "_yi/workdir", "cwd": cwd, "lane": "yi"});
     frames.insert(0, update("s-alpha", workdir));
     frames
 }
 
-fn agent_rewrites_the_lane_file() -> Vec<Value> {
-    let path = lane_dir().join("a.txt");
+fn agent_rewrites_the_lane_file(name: &str) -> Vec<Value> {
+    let path = lane_dir(name).join("a.txt");
     let _write = std::fs::write(&path, "rewritten in the lane\n");
     vec![update(
         "s-alpha",
@@ -947,17 +979,19 @@ fn agent_rewrites_the_lane_file() -> Vec<Value> {
 /// the agent's patch, which names the lane's file, never refreshed the open editor either.
 #[test]
 fn e_opens_a_relative_path_in_the_sessions_lane() -> TestResult {
-    let lane = lane_dir();
+    let lane = lane_dir("editor");
     std::fs::create_dir_all(&lane)?;
     std::fs::write(lane.join("a.txt"), "lane copy\n")?;
     let fixture = vec![
         Step::Expect("initialize", init_reply),
         Step::Expect("session/list", two_session_list),
         Step::Expect("session/list", empty_list),
-        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("session/resume", |frame| {
+            resume_alpha_in_a_lane_dir("editor", frame)
+        }),
         Step::Expect("_yi/seen", seen_ok),
         Step::Expect("session/list", empty_list),
-        Step::Push(agent_rewrites_the_lane_file),
+        Step::Push(|| agent_rewrites_the_lane_file("editor")),
         Step::Expect("_yi/tracked", tracked_no_then_answer),
     ];
     let ran = run(
@@ -975,7 +1009,7 @@ fn e_opens_a_relative_path_in_the_sessions_lane() -> TestResult {
 /// first one opened holds no session, so the next relative path fell back to the root.
 #[test]
 fn each_path_opened_from_a_file_pane_stays_in_the_sessions_lane() -> TestResult {
-    let lane = lane_dir();
+    let lane = lane_dir("panes");
     std::fs::create_dir_all(&lane)?;
     std::fs::write(lane.join("a.txt"), "lane copy a\n")?;
     std::fs::write(lane.join("b.txt"), "lane copy b\n")?;
@@ -984,7 +1018,9 @@ fn each_path_opened_from_a_file_pane_stays_in_the_sessions_lane() -> TestResult 
         Step::Expect("initialize", init_reply),
         Step::Expect("session/list", two_session_list),
         Step::Expect("session/list", empty_list),
-        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("session/resume", |frame| {
+            resume_alpha_in_a_lane_dir("panes", frame)
+        }),
         Step::Expect("_yi/seen", seen_ok),
     ];
     let ran = run(
@@ -1592,6 +1628,8 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
          cmd-b\n\
          wait-frame 3000 !s-beta\n\
          cmd-b\n\
+         wait-frame 3000 1 SA\n\
+         cmd-b\n\
          wait-frame 3000 s-beta\n\
          quit\n",
     )
@@ -2075,14 +2113,38 @@ fn a_click_on_a_workspace_header_folds_it() -> TestResult {
             Step::Expect("session/list", other_root_ledger),
         ],
         "wait-frame 5000 s-beta\n\
-         wait-frame 3000 demo-root ▾\n\
+         wait-frame 3000 demo-root 2 ▾\n\
          mouse down 3 2\n\
-         wait-frame 3000 demo-root ▸\n\
+         wait-frame 3000 demo-root 2 ▸\n\
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 s-gamma\n\
          mouse down 3 2\n\
          wait-frame 3000 s-alpha\n\
-         wait-frame 3000 demo-root ▾\n\
+         wait-frame 3000 demo-root 2 ▾\n\
+         quit\n",
+    )
+}
+
+/// An arrow reaches a workspace's header and `enter` folds it, so a folded group is not
+/// mouse-only; the rows come back the same way.
+#[test]
+fn an_arrow_and_enter_reach_a_workspace_header_and_fold_it() -> TestResult {
+    run(
+        "keyboard-fold",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", other_root_ledger),
+        ],
+        "wait-frame 5000 s-beta\n\
+         wait-frame 3000 demo-root 2 ▾\n\
+         key up\n\
+         key enter\n\
+         wait-frame 3000 demo-root 2 ▸\n\
+         wait-frame 3000 !s-alpha\n\
+         key enter\n\
+         wait-frame 3000 s-alpha\n\
+         wait-frame 3000 demo-root 2 ▾\n\
          quit\n",
     )
 }
@@ -2107,11 +2169,11 @@ fn a_workspace_headers_plus_starts_a_session_there() -> TestResult {
             Step::Expect("session/new", new_in_other_root),
         ],
         "wait-frame 5000 s-beta\n\
-         mouse down 16 7\n\
+         mouse down 16 5\n\
          wait-frame 3000 SN  untitled\n\
          quit\n",
     )?;
-    let at = sidebar_order(&frame, &["demo-root ▾", "other-root ▾", "SN  untitled"])?;
+    let at = sidebar_order(&frame, &["demo-root 2 ▾", "other-root 2 ▾", "SN  untitled"])?;
     assert!(at.is_sorted(), "{at:?}\n{frame}");
     Ok(())
 }
@@ -2167,7 +2229,7 @@ fn pin_from_the_menu_moves_a_session_under_pinned() -> TestResult {
             Step::Expect("_yi/pin", pinned_at),
         ],
         "wait-frame 5000 s-beta\n\
-         mouse right 3 5\n\
+         mouse right 3 4\n\
          wait-frame 3000 Pin\n\
          key down\nkey down\nkey enter\n\
          wait-frame 3000 PINNED\n\
@@ -2177,7 +2239,7 @@ fn pin_from_the_menu_moves_a_session_under_pinned() -> TestResult {
          wait-frame 3000 !Unpin\n\
          quit\n",
     )?;
-    let at = sidebar_order(&frame, &["PINNED", "s-beta", "demo-root ▾", "s-alpha"])?;
+    let at = sidebar_order(&frame, &["PINNED", "s-beta", "demo-root 1 ▾", "s-alpha"])?;
     assert!(at.is_sorted(), "{at:?}\n{frame}");
     assert_eq!(
         frame.matches("s-beta").count(),
@@ -2206,6 +2268,45 @@ fn subagent_rows_render_under_parent() -> TestResult {
          wait-frame 5000 └GR grep-bot-sub-1a2b3c4 ◐\n\
          quit\n",
     )
+}
+
+#[test]
+fn replayed_child_rows_render_in_the_shared_console_reducer() -> TestResult {
+    let frame = run_frames(
+        "child-rows-replay",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_child_rows),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 · reader · Inspect replay ordering\n\
+         wait-frame 5000 · done · 0ms · 0 tokens · start sub-5c90b1bb\n\
+         quit\n",
+    )?;
+    let start = frame
+        .find("· reader · Inspect replay ordering")
+        .ok_or("no start")?;
+    let end = frame
+        .find("· done · 0ms · 0 tokens · start sub-5c90b1bb")
+        .ok_or("no end")?;
+    assert!(start < end, "{frame}");
+    assert_eq!(
+        frame.matches("· reader · Inspect replay ordering").count(),
+        1,
+        "{frame}"
+    );
+    assert_eq!(
+        frame
+            .matches("· done · 0ms · 0 tokens · start sub-5c90b1bb")
+            .count(),
+        1,
+        "{frame}"
+    );
+    Ok(())
 }
 
 fn editor_file(name: &str) -> PathBuf {
@@ -2782,10 +2883,10 @@ fn rows_group_by_workspace_and_rank_by_need_inside_it() -> TestResult {
          quit\n",
     )?;
     let needles = [
-        "demo-root ▾",
+        "demo-root 2 ▾",
         "1 RE  release notes",
         "2 FI  fix login bug",
-        "other-root ▾",
+        "other-root 1 ▾",
         "3 SG  s-gamma",
     ];
     let at = sidebar_order(&frame, &needles)?;
@@ -2868,8 +2969,8 @@ fn the_rail_stops_at_its_numbered_slots() -> TestResult {
     Ok(())
 }
 
-/// Rows carry the session's name and age, newest first, and the row behind the
-/// focused pane wears the focus bar once it opens.
+/// Rows carry the session's name, newest first; an idle row with nothing to report is
+/// one line, and the row behind the focused pane carries its age once it opens.
 #[test]
 fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
     run(
@@ -2883,12 +2984,13 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
         ],
         "wait-frame 5000 1 RE  release notes\n\
          wait-frame 3000 2 FI  fix login bug\n\
-         wait-frame 3000 idle · 5m\n\
-         wait-frame 3000 idle · 3h\n\
+         wait-frame 3000 !idle · 5m\n\
+         wait-frame 3000 !idle · 3h\n\
          key down\n\
          key up\n\
          key enter\n\
          wait-frame 5000 resumed s-beta\n\
+         wait-frame 3000 idle · 5m\n\
          wait-frame 3000 RE · release\n\
          quit\n",
     )
@@ -3280,7 +3382,10 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
          wait-frame 3000 !demo-root\n\
          cmd-b\n\
          wait-frame 3000 2 SA  s-alpha\n\
-         wait-frame 3000 demo-root ▾\n\
+         wait-frame 3000 demo-root 2 ▾\n\
+         cmd-b\n\
+         wait-frame 3000 !s-alpha\n\
+         wait-frame 3000 !1 SB\n\
          cmd-b\n\
          wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 !s-alpha\n\
@@ -4017,6 +4122,50 @@ fn only_a_sent_prompt_returns_a_scrolled_pane_to_the_bottom() -> TestResult {
     )
 }
 
+fn long_follow_turn(frame: &Value) -> Vec<Value> {
+    let text: String = (0..60).map(|row| format!("new row {row}\n\n")).collect();
+    let mut frames = vec![ok(frame, json!({}))];
+    frames.extend(turn("s-alpha", 10, "more", &assistant(&text)));
+    frames
+}
+
+#[test]
+fn still_page_down_and_submit_work_through_the_console_key_path() -> TestResult {
+    run_console(
+        "still-scroll-send",
+        Some(vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_long),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("session/prompt", long_follow_turn),
+            Step::Expect("session/prompt", seen_ok),
+        ]),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 row 59\n\
+         type more\n\
+         key enter\n\
+         wait-frame 5000 more rows · PgDn\n\
+         wait-frame 2000 !new row 59\n\
+         key pagedown\n\
+         wait-frame 2000 new row 0\n\
+         type again\n\
+         key enter\n\
+         wait-frame 2000 new row 59\n\
+         quit\n",
+        (
+            false,
+            SidebarMode::Full,
+            Vec::new(),
+            yi_types::config::FollowMode::Still,
+        ),
+        None,
+        (100, 30),
+    )
+}
+
 /// Dies with the sidebar gone and `X` typed at the end: Ghostty sends Option+Left as alt+b,
 /// the console's sidebar chord, so word-left over a draft hid the sidebar instead.
 #[test]
@@ -4064,8 +4213,8 @@ fn a_fitted_sidebar_still_tells_sibling_workspaces_apart() -> TestResult {
             Step::Expect("session/list", empty_list),
             Step::Expect("session/list", sibling_roots_ledger),
         ],
-        "wait-frame 5000 yi-feature-auth-fix ▾\n\
-         wait-frame 3000 yi-feature-auth-ui ▾\n\
+        "wait-frame 5000 yi-feature-auth-fix 1 ▾\n\
+         wait-frame 3000 yi-feature-auth-ui 1 ▾\n\
          quit\n",
     )
 }
@@ -4100,7 +4249,7 @@ fn the_sidebar_does_not_narrow_when_children_clear() -> TestResult {
          wait-frame 5000 grep-bot-sub-1a2b\n\
          type go\n\
          key enter\n\
-         wait-frame 5000 !grep-bot\n\
+         wait-frame 5000 !└GR\n\
          quit\n",
     )?;
     let top = frame.lines().nth(1).ok_or("no frame")?;
@@ -4288,6 +4437,65 @@ fn the_menu_answers_the_mouse() -> TestResult {
     Ok(())
 }
 
+/// The daemon's half of a save: it answers only the edit the press should have sent.
+fn save_browser_path(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"id": "browser.path", "value": "firefox"}) {
+        return refuse(frame, &format!("unexpected {}", frame["params"]));
+    }
+    vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
+}
+
+fn save_pace(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"id": "tui.pace", "value": 40}) {
+        return refuse(frame, &format!("unexpected {}", frame["params"]));
+    }
+    vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
+}
+
+fn save_permissions_mode(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"id": "permissions.mode", "value": "auto"}) {
+        return refuse(frame, &format!("unexpected {}", frame["params"]));
+    }
+    vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
+}
+
+/// Incident: the page's rows carried no click target, so every setting but a tab needed the
+/// keyboard; a press on a toggle, a choice, a text row and a number row each saves its change.
+#[test]
+fn a_press_on_a_settings_row_saves_the_control_it_names() -> TestResult {
+    let frame = run_frames_with(
+        "settings-mouse",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("_yi/settings", settings_rows),
+            Step::Expect("_yi/set_default", save_auto_side),
+            Step::Expect("_yi/set_default", save_browser_path),
+            Step::Expect("_yi/set_default", save_pace),
+            Step::Expect("_yi/set_default", save_permissions_mode),
+        ],
+        "wait-frame 5000 s-alpha\nkey alt-,\nwait-frame 3000 Models\n\
+         key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
+         wait-frame 3000 Open Review beside\n\
+         mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\n\
+         mouse down 110 9\nmouse up 110 9\nwait-frame 3000 ▌\n\
+         type firefox\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
+         mouse down 110 11\nmouse up 110 11\nwait-frame 3000 ▌\n\
+         type 40\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
+         mouse down 116 3\nmouse up 116 3\nwait-frame 3000 Permissions\n\
+         mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
+         quit\n",
+        SidebarMode::Full,
+        160,
+    )?;
+    assert!(
+        frame.contains("⼃") || frame.contains("⚙  settings"),
+        "the page went away: {frame}"
+    );
+    Ok(())
+}
+
 fn settings_rows(frame: &Value) -> Vec<Value> {
     let rows = yi_types::settings::rows();
     vec![ok(frame, json!({"rows": rows}))]
@@ -4437,6 +4645,35 @@ fn save_thinking(frame: &Value) -> Vec<Value> {
         ];
     }
     vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
+}
+
+/// A press on a live option steps it, so the tab a settings pane opens on answers the pointer.
+#[test]
+fn a_press_on_a_session_option_steps_it_and_sends_the_change() -> TestResult {
+    let frame = run_frames_with(
+        "session-click",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_with_efforts),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("_yi/settings", settings_rows),
+            Step::Expect("session/set_config_option", set_high),
+        ],
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-,\nwait-frame 3000 Thinking level\n\
+         mouse down 110 5\nmouse up 110 5\n\
+         wait-frame 3000 Thinking level\nquit\n",
+        SidebarMode::Full,
+        160,
+    )?;
+    let row = frame.lines().find(|line| line.contains("Thinking level"));
+    assert!(
+        row.is_some_and(|line| line.contains("high")),
+        "the press left the option alone: {frame}"
+    );
+    Ok(())
 }
 
 /// The Session tab changes this session through the worker and `d` keeps its value as the
@@ -4824,7 +5061,12 @@ fn open_in_sends_the_reply_to_the_app_picked() -> TestResult {
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
          mouse right 30 5\nwait-frame 3000 Open in\nkey up\nkey up\nkey right\n\
          wait-frame 3000 Second\nkey down\nkey enter\nwait-frame 3000 launched Second\nquit\n",
-        (false, SidebarMode::Full, apps),
+        (
+            false,
+            SidebarMode::Full,
+            apps,
+            yi_types::config::FollowMode::Page,
+        ),
         None,
         (100, 30),
     )
@@ -5031,11 +5273,11 @@ fn a_paste_into_the_palette_lands_in_its_query() -> TestResult {
         "paste-into-palette",
         session_fixture(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
-         key alt-e\npaste docs/Yi's Next\u{7} Shape.md\n\
+         key alt-/\npaste docs/Yi's Next\u{7} Shape.md\n\
          wait-frame 3000 Shape.md\nquit\n",
     )?;
-    let row = row_holding(&frame, "› e docs")?;
-    assert_eq!(row, "› e docs/Yi's Next Shape.md▌");
+    let row = row_holding(&frame, "› docs")?;
+    assert_eq!(row, "› docs/Yi's Next Shape.md▌");
     Ok(())
 }
 
@@ -5177,7 +5419,7 @@ fn a_resumed_sessions_kernel_cells_fill_the_notebook() -> TestResult {
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 Tooling works\ncmd-i\n\
          wait-frame 3000 ● [6]\nquit\n",
         SidebarMode::Full,
-        (180, 100),
+        (220, 100),
     )?;
     let cells = kernel_cells(KERNEL_SESSION);
     assert_eq!(cells.len(), 6, "the recording holds six kernel calls");
