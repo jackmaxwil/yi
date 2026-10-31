@@ -3911,8 +3911,9 @@ async fn untracked_build_output_stays_out_and_source_named_alike_goes_in() -> Te
     std::fs::write(rig.repo.join("build/keep.txt"), "old\n")?;
     git(&rig.repo, &["add", "build"])?;
     git(&rig.repo, &["commit", "-qm", "track a build file"])?;
-    let hold = "mkdir -p target/debug src/build node_modules/x; echo o > target/debug/x; \
-        echo o > node_modules/x/y; echo s > src/build/gen.rs; echo new > build/keep.txt";
+    let hold = "mkdir -p target/debug src/build node_modules/x .venv/lib dist; \
+        echo o > target/debug/x; echo o > node_modules/x/y; echo o > .venv/lib/z; echo o > dist/a; \
+        echo o > build/out; echo s > src/build/gen.rs; echo new > build/keep.txt";
     let family = writer(&rig, hold).await?;
     assert!(family.reaches("writer", "finished").await);
     family.host.merge_worktree("writer", None)?;
@@ -3923,6 +3924,9 @@ async fn untracked_build_output_stays_out_and_source_named_alike_goes_in() -> Te
     );
     assert!(!names.contains("target/"), "{names}");
     assert!(!names.contains("node_modules/"), "{names}");
+    assert!(!names.contains(".venv/"), "{names}");
+    assert!(!names.contains("dist/"), "{names}");
+    assert!(!names.contains("build/out"), "{names}");
     assert_eq!(
         git(&rig.repo, &["show", "HEAD:build/keep.txt"])?.trim(),
         "new"

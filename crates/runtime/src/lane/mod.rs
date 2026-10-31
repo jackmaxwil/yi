@@ -10,7 +10,7 @@ use reap::Uncommitted;
 
 pub(crate) use hostgit::{PLUMBING_CAP, capture, capture_named, git, git_capture};
 
-pub mod hostgit;
+pub(crate) mod hostgit;
 pub mod land;
 pub mod reap;
 pub mod settle;

@@ -1030,6 +1030,7 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
     let common = trunk.join(".git");
     std::fs::create_dir_all(common.join("modules/sub"))?;
     std::fs::write(common.join("modules/sub/config"), "")?;
+    std::fs::create_dir_all(common.join("refs/remotes/origin"))?;
     let sandbox = lane_profile(&root, &lane, &home)?;
     for target in [
         common.join("config.worktree"),
@@ -1037,6 +1038,7 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
         common.join("info/exclude"),
         common.join("modules/sub/config"),
         common.join("objects/info/alternates"),
+        common.join("refs/remotes/origin/HEAD"),
     ] {
         let command = format!("printf x >> {}", target.display());
         let (code, output) = run(&command, &lane, Some(&sandbox))?;

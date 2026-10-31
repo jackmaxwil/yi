@@ -9,12 +9,9 @@ use serde_json::{Map, Value, json};
 pub use yi_types::plan::acceptance::{Conflict, Published, Quiescence};
 use yi_types::plan::op::Choice;
 
-pub use super::hostgit::candidate_of;
-use super::hostgit::{identity, whole};
-use super::{
-    BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, PLUMBING_CAP, Pool, Sha,
-    SlotView, capture_named,
-};
+pub use super::hostgit::{Candidate, candidate_of};
+use super::hostgit::{git_by, git_capped, identity, past, sha_of};
+use super::{BranchName, ClaimBase, Head, Lane, LaneError, Pool, Sha, SlotView};
 use crate::subagent::{ChildRecord, SubagentHost};
 
 /// Invariant: held from the generation read through publication, so two hand-backs in this
@@ -27,39 +24,6 @@ pub fn quiescence_of_jobs(root: &Path) -> Quiescence {
     Quiescence {
         at: crate::session_store::now_ms(),
         running: yi_tools::jobs::registry().running_under(root),
-    }
-}
-
-pub(super) fn quiet(quiescence: &Quiescence) -> Result<(), LaneError> {
-    if quiescence.is_quiet() {
-        return Ok(());
-    }
-    Err(LaneError::Busy {
-        running: quiescence.running.clone(),
-    })
-}
-
-/// The immutable output references a settled lane hands on: the candidate commit and the
-/// branch that holds it, and the base the branch was cut from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Candidate {
-    pub branch: BranchName,
-    pub commit: Sha,
-    pub base: Option<Sha>,
-}
-
-impl Candidate {
-    pub fn as_reply(&self) -> Map<String, Value> {
-        let mut reply = Map::new();
-        reply.insert(
-            "branch".to_owned(),
-            Value::String(self.branch.as_str().to_owned()),
-        );
-        reply.insert(
-            "candidate".to_owned(),
-            Value::String(self.commit.as_str().to_owned()),
-        );
-        reply
     }
 }
 
@@ -85,53 +49,6 @@ impl Settled {
         }
         Ok(self.candidate)
     }
-}
-
-fn past(deadline: Option<Instant>) -> Result<(), LaneError> {
-    match deadline {
-        Some(at) if Instant::now() >= at => Err(LaneError::Deadline),
-        _ => Ok(()),
-    }
-}
-
-/// `git` under the caller's deadline as well as the lane's own: a settle step cannot outlive
-/// the run it belongs to (D177).
-pub(super) fn git_by(
-    cwd: &Path,
-    args: &[&str],
-    deadline: Option<Instant>,
-) -> Result<String, LaneError> {
-    git_capped(cwd, args, deadline, PLUMBING_CAP)
-}
-
-pub(super) fn git_capped(
-    cwd: &Path,
-    args: &[&str],
-    deadline: Option<Instant>,
-    cap: usize,
-) -> Result<String, LaneError> {
-    past(deadline)?;
-    let own = Duration::from_millis(GIT_TIMEOUT_MS);
-    let budget = deadline.map_or(own, |at| {
-        own.min(at.saturating_duration_since(Instant::now()))
-    });
-    let label = format!("git {}", args.join(" "));
-    let capture = capture_named(cwd, &label, "git", args, budget, cap, None).map_err(|output| {
-        LaneError::Git {
-            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-            exit_code: None,
-            output,
-        }
-    })?;
-    whole(capture, args, cap)
-}
-
-pub(super) fn sha_of(text: &str) -> Result<Sha, LaneError> {
-    Sha::parse(text).ok_or_else(|| LaneError::Git {
-        args: vec!["rev-parse".to_owned()],
-        exit_code: None,
-        output: format!("not a commit id: {text:?}"),
-    })
 }
 
 const KEPT_YOURS: &str = "Your uncommitted edits to the kept_yours paths stay in the working copy without the child's change to them, so `git diff HEAD` shows that change as removed and committing them would undo it; `git show HEAD:<path>` is the merged version to fold them into; a kept path missing from HEAD is one the child deleted, and it is untracked here.";

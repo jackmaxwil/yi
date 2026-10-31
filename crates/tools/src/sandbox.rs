@@ -31,9 +31,10 @@ const NETWORK_POLICY: &str = "; loopback only, and no unix socket\n\
     (allow network-bind network-inbound (local ip \"localhost:*\"))\n\
     (allow network-outbound (remote ip \"localhost:*\"))\n";
 
-/// A git dir's escape hatches: `hooks` and both configs run under the host's next git, `info`
-/// and an alternate add what it reads, the pointers are what the next policy is built from.
-const HOST_RUN_BY_GIT: [&str; 7] = [
+/// What the host's next git runs or reads from a git dir: `hooks` and both configs, `info` and an
+/// alternate; the pointers its policy is built from; origin's `HEAD`, which names trunk.
+const HOST_RUN_BY_GIT: [&str; 8] = [
+    "refs/remotes/origin/HEAD",
     "hooks",
     "config",
     "config.worktree",

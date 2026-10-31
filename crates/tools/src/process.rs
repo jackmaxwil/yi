@@ -78,7 +78,8 @@ pub fn host_command(program: &str, cwd: &Path) -> Result<Command, HostProgramMis
 /// The first executable `program` on PATH outside a tree a contained process writes. Temp roots
 /// stay searched: nothing puts one on PATH in the field, and every git shim in the suite lives there.
 fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
-    if Path::new(program).is_absolute() {
+    // A path the person configured (`lanes.land`) is no PATH lookup: it runs as they named it.
+    if program.contains('/') {
         return Some(PathBuf::from(program));
     }
     let home = crate::plugin::home();
@@ -101,15 +102,10 @@ fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
         .map(|dir| dir.join(program))
         .find(|found| {
             found.canonicalize().is_ok_and(|real| {
-                is_executable(&real) && !trees.iter().any(|tree| real.starts_with(tree))
+                crate::exec::is_executable_file(&real)
+                    && !trees.iter().any(|tree| real.starts_with(tree))
             })
         })
-}
-
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 /// Config the host's git never takes from a repository: each of these runs code, and a contained

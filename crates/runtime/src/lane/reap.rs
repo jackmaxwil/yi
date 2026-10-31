@@ -19,6 +19,7 @@ impl Uncommitted {
         Ok(Self::counted(&git_capture(
             tree,
             &STATUS,
+            None,
             yi_tools::OUTPUT_CAP,
         )?))
     }
@@ -214,6 +215,7 @@ impl Pool {
         let listing = git_capture(
             &self.repo,
             &["worktree", "list", "--porcelain"],
+            None,
             super::PLUMBING_CAP,
         )?;
         let deadline = std::time::Instant::now()

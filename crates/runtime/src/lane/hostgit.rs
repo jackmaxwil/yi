@@ -3,12 +3,12 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use serde_json::{Map, Value};
 use yi_types::plan::acceptance::Quiescence;
 
-use super::settle::{Candidate, git_by, quiet, sha_of};
-use super::{BranchName, GIT_TIMEOUT_MS, LaneError, Sha};
+use super::{BranchName, GIT_TIMEOUT_MS, Head, LaneError, Sha};
 
 /// Plumbing a caller parses is read whole: past this the runner errors rather than cut its middle.
 pub(crate) const PLUMBING_CAP: usize = 8 << 20;
@@ -67,12 +67,12 @@ pub(crate) fn capture_named(
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
-    whole(git_capture(cwd, args, PLUMBING_CAP)?, args, PLUMBING_CAP)
+    git_capped(cwd, args, None, PLUMBING_CAP)
 }
 
 /// Incident: a long `status -z` lost its middle, a dirty file with it, and a restore overwrote
 /// that file. A caller that parses plumbing reads all of it or gets this error.
-pub(super) fn whole(
+fn whole(
     capture: yi_tools::CommandCapture,
     args: &[&str],
     cap: usize,
@@ -91,9 +91,11 @@ pub(super) fn whole(
 pub(crate) fn git_capture(
     cwd: &Path,
     args: &[&str],
+    deadline: Option<Instant>,
     cap: usize,
 ) -> Result<yi_tools::CommandCapture, LaneError> {
     let _span = yi_types::trace::span("lane.git").arg("args", args.join(" "));
+    past(deadline)?;
     let owned: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
     let mut command = yi_tools::host_command("git", cwd).map_err(|error| LaneError::Git {
         args: owned.clone(),
@@ -101,10 +103,11 @@ pub(crate) fn git_capture(
         output: error.to_string(),
     })?;
     command.current_dir(cwd).args(args);
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_millis(GIT_TIMEOUT_MS))
-        .unwrap_or_else(std::time::Instant::now);
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
+    let own = Instant::now()
+        .checked_add(Duration::from_millis(GIT_TIMEOUT_MS))
+        .unwrap_or_else(Instant::now);
+    let until = deadline.map_or(own, |at| own.min(at));
+    let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= until);
     let capture =
         yi_tools::run_captured(command, None, &cancelled, cap).map_err(|error| LaneError::Git {
             args: owned.clone(),
@@ -119,6 +122,73 @@ pub(crate) fn git_capture(
         exit_code: capture.exit_code,
         output: format!("{}{}", capture.stdout, capture.stderr),
     })
+}
+
+/// `git` under the caller's deadline as well as the lane's own: a settle step cannot outlive
+/// the run it belongs to (D177).
+pub(super) fn git_by(
+    cwd: &Path,
+    args: &[&str],
+    deadline: Option<Instant>,
+) -> Result<String, LaneError> {
+    git_capped(cwd, args, deadline, PLUMBING_CAP)
+}
+
+pub(super) fn git_capped(
+    cwd: &Path,
+    args: &[&str],
+    deadline: Option<Instant>,
+    cap: usize,
+) -> Result<String, LaneError> {
+    whole(git_capture(cwd, args, deadline, cap)?, args, cap)
+}
+
+pub(super) fn past(deadline: Option<Instant>) -> Result<(), LaneError> {
+    match deadline {
+        Some(at) if Instant::now() >= at => Err(LaneError::Deadline),
+        _ => Ok(()),
+    }
+}
+
+pub(super) fn sha_of(text: &str) -> Result<Sha, LaneError> {
+    Sha::parse(text).ok_or_else(|| LaneError::Git {
+        args: vec!["rev-parse".to_owned()],
+        exit_code: None,
+        output: format!("not a commit id: {text:?}"),
+    })
+}
+
+pub(super) fn quiet(quiescence: &Quiescence) -> Result<(), LaneError> {
+    if quiescence.is_quiet() {
+        return Ok(());
+    }
+    Err(LaneError::Busy {
+        running: quiescence.running.clone(),
+    })
+}
+
+/// The immutable output references a settled lane hands on: the candidate commit and the
+/// branch that holds it, and the base the branch was cut from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub branch: BranchName,
+    pub commit: Sha,
+    pub base: Option<Sha>,
+}
+
+impl Candidate {
+    pub fn as_reply(&self) -> Map<String, Value> {
+        let mut reply = Map::new();
+        reply.insert(
+            "branch".to_owned(),
+            Value::String(self.branch.as_str().to_owned()),
+        );
+        reply.insert(
+            "candidate".to_owned(),
+            Value::String(self.commit.as_str().to_owned()),
+        );
+        reply
+    }
 }
 
 /// Build output a child leaves untracked. Tracked changes under these names still commit, and only
@@ -171,14 +241,11 @@ pub(super) fn identity(tree: &Path) -> Vec<&'static str> {
 /// Invariant: a tree's admin `HEAD` is contained-writable, so a planted one would walk the host's
 /// next commit or merge onto trunk or a sibling's branch; a detached `HEAD` commits to no branch.
 pub(super) fn own_head(tree: &Path) -> Result<(), LaneError> {
-    let head = match git(tree, &["symbolic-ref", "-q", "--short", "HEAD"]) {
-        Ok(head) => head,
-        Err(LaneError::Git {
-            exit_code: Some(1), ..
-        }) => return Ok(()),
-        Err(error) => return Err(error),
+    let branch = match super::head(tree)? {
+        Head::Branch(branch) => branch,
+        Head::Detached(_) => return Ok(()),
     };
-    let head = head.trim();
+    let head = branch.as_str();
     let repo =
         super::canonical_repo(tree).ok_or_else(|| LaneError::NotARepo(tree.to_path_buf()))?;
     let here = tree.canonicalize().unwrap_or_else(|_| tree.to_path_buf());
@@ -244,7 +311,7 @@ mod tests {
 
     #[test]
     fn output_past_the_cap_is_an_error_naming_it() {
-        let cut = super::super::settle::git_capped(Path::new("."), &["--version"], None, 8);
+        let cut = super::git_capped(Path::new("."), &["--version"], None, 8);
         assert!(matches!(cut, Err(LaneError::Cut { cap: 8, .. })), "{cut:?}");
     }
 }
