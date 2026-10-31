@@ -895,7 +895,9 @@ impl SubagentHost {
                 .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
             (key, record)
         };
-        if record.exit.is_none() {
+        let journal = !record.rows.end_journaled;
+        let fresh = record.exit.is_none();
+        if fresh {
             record.session.stop();
             // A lane refusal stays the cause of a plain removal; a repossession names itself.
             let cause = match exit {
@@ -915,6 +917,12 @@ impl SubagentHost {
             return Err(reason);
         }
         drop(record.lane_permit.take());
+        if journal {
+            record.finish();
+            let last = record.exit.unwrap_or(exit);
+            let line = record.ended(&key, last);
+            self.trail_ended(record.trail.as_ref(), line);
+        }
         self.return_lease(&record);
         let update = record.update(&key);
         let _ = self.options.events.send(AgentEvent::ChildUpdate { update });
