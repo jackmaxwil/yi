@@ -85,6 +85,8 @@ pub trait CellCalls: Send + Sync {
 pub struct IpythonTool {
     pub bridge: Arc<dyn KernelBridge>,
     pub calls: Option<Arc<dyn CellCalls>>,
+    /// Invariant: true only when the kernel runs in the platform sandbox; else auto asks first.
+    pub contained: bool,
 }
 
 fn shell_cell(code: &str) -> Option<String> {
@@ -127,14 +129,14 @@ impl Tool for IpythonTool {
     }
 
     /// A shell cell reads through the same classifier as `bash`; Python is not
-    /// statically readable, and the sandbox is what closes that residual.
+    /// statically readable, so only the sandbox makes it reversible.
     fn irreversible(&self, input: &Map<String, Value>) -> bool {
         let Some(code) = input.get("code").and_then(Value::as_str) else {
             return true;
         };
         match shell_cell(code) {
             Some(command) => yi_permission::verdict(&command) != yi_permission::Verdict::Allow,
-            None => false,
+            None => !self.contained,
         }
     }
 

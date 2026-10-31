@@ -2,7 +2,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::client::Outbound;
 use crate::keys::CHORDS;
-use crate::model::{Mode, PaneContent, SessionId, Zone};
+use crate::model::{Mode, PaneContent, SessionId};
 
 use super::App;
 
@@ -83,7 +83,7 @@ impl App {
                         let session = session.clone();
                         if let Some(pane_id) = self.state.focused_pane_id() {
                             self.resume_into(outbound, pane_id, &session);
-                            self.state.zone = Zone::Panes;
+                            self.state.focus_panes();
                         }
                     }
                     None => {}

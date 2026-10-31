@@ -387,6 +387,59 @@ pub fn test_model(id: &str) -> yi_types::model::Model {
     }
 }
 
+#[allow(dead_code, reason = "the shared harness serves several test binaries")]
+pub fn options() -> yi_tui::app::TuiOptions {
+    yi_tui::app::TuiOptions {
+        model: test_model("faux-1"),
+        session_name: "s".to_owned(),
+        cwd: "/tmp".to_owned(),
+        lane: None,
+        context_window: 128_000,
+        session_dir: String::new(),
+        keys: Vec::new(),
+        initial_prompt: None,
+        pace: 0,
+        follow: yi_types::config::FollowMode::default(),
+    }
+}
+
+#[allow(dead_code, reason = "the shared harness serves several test binaries")]
+pub fn app() -> yi_tui::app::App {
+    yi_tui::app::App::new(
+        options(),
+        yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true),
+        yi_tui::keymap::default_keymap(),
+        80,
+    )
+}
+
+pub fn child_host_options(
+    dir: &crate::scratch::Scratch,
+    max_children: usize,
+    store: yi_runtime::goal::StoreHandle,
+    factory: Arc<yi_runtime::subagent::ChildFactory>,
+) -> yi_runtime::SubagentHostOptions {
+    yi_runtime::SubagentHostOptions {
+        provider: Arc::new(yi_runtime::ProviderStream::new(None)),
+        depth: 0,
+        max_depth: 1,
+        max_children,
+        parent_session_dir: dir.to_path_buf(),
+        cwd: dir.to_path_buf(),
+        home: dir.join("home"),
+        lane_slots: 1,
+        defaults: Arc::new(|| (test_model("faux-1"), yi_types::model::Effort::Medium)),
+        factory,
+        notice: Arc::new(|_, _| {}),
+        events: tokio::sync::broadcast::channel(64).0,
+        parent_messages: Arc::new(Vec::new),
+        report: Arc::new(|_, _| {}),
+        attribute: Arc::new(|_| {}),
+        store,
+        plans_dir: dir.join(".yi/plans"),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
+    }
+}
 /// Replay a recorded session as the event stream the reducer sees live: each
 /// assistant entry re-streamed through `stream_with_deltas`, each tool result
 /// paired with the call it answers, and every turn a typed prompt opens is
@@ -499,15 +552,30 @@ pub fn rows_at(
     rows_sized(app, 80, height)
 }
 
+const SETTLE_DRAWS: usize = 32;
+
 pub fn rows_sized(
     app: &mut yi_tui::app::App,
     width: u16,
     height: u16,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut terminal = yi_tui::terminal::Terminal::new(VT100Backend::new(width, height), 4)?;
-    yi_tui::render::draw(app, &mut terminal, None);
-    let backend = terminal.backend();
-    Ok((0..height)
-        .map(|row| backend.row_text(row).trim_end().to_owned())
-        .collect())
+    let mut rows = vec![String::new(); usize::from(height)];
+    for _ in 0..SETTLE_DRAWS {
+        yi_tui::render::draw(app, &mut terminal, None);
+        let backend = terminal.backend();
+        let now: Vec<String> = (0..height)
+            .map(|row| backend.row_text(row).trim_end().to_owned())
+            .collect();
+        if now == rows {
+            return Ok(rows);
+        }
+        rows = now;
+    }
+    if app.has_pending_commit() {
+        return Err(
+            format!("the paced queue never drained in {SETTLE_DRAWS} draws: {rows:#?}").into(),
+        );
+    }
+    Ok(rows)
 }

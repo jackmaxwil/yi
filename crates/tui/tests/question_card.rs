@@ -20,15 +20,8 @@ fn app() -> App {
 fn app_at(width: usize) -> App {
     App::new(
         TuiOptions {
-            model: common::test_model("faux-1"),
             session_name: "question".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
+            ..common::options()
         },
         Theme::new(ColorTier::TrueColor, true),
         default_keymap(),

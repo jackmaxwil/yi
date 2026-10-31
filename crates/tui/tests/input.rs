@@ -4,7 +4,6 @@ use crate::common;
 use std::error::Error;
 
 use crate::scratch::Scratch;
-use common::test_model;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use yi_tui::Command;
@@ -23,15 +22,9 @@ fn app() -> App {
 
 fn app_in(cwd: &str) -> App {
     let options = TuiOptions {
-        model: test_model("faux-1"),
         session_name: "input".to_owned(),
         cwd: cwd.to_owned(),
-        lane: None,
-        context_window: 128_000,
-        session_dir: String::new(),
-        keys: Vec::new(),
-        initial_prompt: None,
-        pace: 0,
+        ..common::options()
     };
     App::new(
         options,
