@@ -1,4 +1,5 @@
 ---
+version: 0.832.0
 issue: Closes #1540
 raise: crate permission +55, crate runtime +5, tests +143, comments +3
 ---
