@@ -354,7 +354,7 @@ pub(crate) fn hint_parts(action: Action, cmd: bool) -> (&'static str, &'static s
     (chord_for(action, cmd), what)
 }
 
-fn hint_label(action: Action, cmd: bool) -> String {
+pub(crate) fn hint_label(action: Action, cmd: bool) -> String {
     let (chord, what) = hint_parts(action, cmd);
     format!("{chord} {what}")
 }
