@@ -817,52 +817,47 @@ fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
     Ok(())
 }
 
-/// The classifier is saved only once one answers at its URL; a dead URL saves nothing.
+/// The classifier is saved as Jev only when an OpenRouter key exists; with none it saves nothing.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
-fn setup_saves_the_classifier_only_once_one_answers() -> TestResult {
-    use std::io::{BufRead, BufReader, Read};
+fn setup_saves_jev_as_the_classifier_only_with_an_openrouter_key() -> TestResult {
     let journey = Journey::new("setup-classifier")?;
-    let closed = std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()?
-        .port();
-    let dead = setup(&journey, &format!("\n\ny\nn\nhttp://127.0.0.1:{closed}\n"))?;
+    let mut keyless = journey.command(&["setup"]);
+    keyless
+        .env_remove("OPENROUTER_API_KEY")
+        .stderr(Stdio::piped());
+    let refused = feed(keyless, "\n\ny\n")?;
     assert!(
-        String::from_utf8_lossy(&dead.stderr).contains("nothing saved for it"),
-        "{dead:?}"
+        String::from_utf8_lossy(&refused.stderr).contains("the classifier is not saved"),
+        "{refused:?}"
     );
     assert!(config_of(&journey)?.get("models").is_none());
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let sidecar = std::thread::spawn(move || -> std::io::Result<()> {
-        let (stream, _) = listener.accept()?;
-        let mut reader = BufReader::new(stream);
-        let mut length = 0usize;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line)? == 0 || line == "\r\n" {
-                break;
-            }
-            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                length = value.trim().parse().unwrap_or(0);
-            }
-        }
-        reader.read_exact(&mut vec![0; length])?;
-        let body = r#"{"answers":{"probe":{"choice":"yes","answer_confidence":0.9}},"routing":{"model":"english"}}"#;
-        let reply = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
-            body.len()
-        );
-        reader.get_mut().write_all(reply.as_bytes())
-    });
-    let live = setup(&journey, &format!("\n\ny\nn\nhttp://127.0.0.1:{port}\n"))?;
-    assert!(live.status.success(), "{live:?}");
-    sidecar.join().map_err(|_| "sidecar thread")??;
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::write(
+        &file,
+        r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:8000"}}"#,
+    )?;
+    let mut keyed = journey.command(&["setup"]);
+    keyed.env("OPENROUTER_API_KEY", "sk-or-journey");
+    let saved = feed(keyed, "\n\ny\n")?;
+    assert!(saved.status.success(), "{saved:?}");
     let config = config_of(&journey)?;
-    assert_eq!(config["models"]["classifier"], "english");
+    assert_eq!(config["models"]["classifier"], "typesafe/jev-1.13");
+    assert!(
+        config.get("classifier").is_none(),
+        "the Laya sidecar's URL is cleared: {config}"
+    );
+    std::fs::write(
+        &file,
+        r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:9000"}}"#,
+    )?;
+    let mut own = journey.command(&["setup"]);
+    own.env("OPENROUTER_API_KEY", "sk-or-journey");
+    assert!(feed(own, "\n\ny\n")?.status.success());
     assert_eq!(
-        config["classifier"]["url"],
-        format!("http://127.0.0.1:{port}")
+        config_of(&journey)?["classifier"]["url"],
+        "http://127.0.0.1:9000",
+        "a URL the user set is kept"
     );
     journey.reclaim();
     Ok(())
@@ -921,32 +916,6 @@ fn setup_writes_through_a_dangling_config_link() -> TestResult {
         journey.root.join("home/dotfiles/yi.json"),
     )?)?;
     assert_eq!(config["permissions"]["mode"], "ask");
-    journey.reclaim();
-    Ok(())
-}
-
-/// A failed laya install still saves the answers given before it.
-#[test]
-#[ignore = "tier-2 journey: `just journeys`"]
-fn setup_keeps_the_earlier_answers_when_the_install_fails() -> TestResult {
-    let journey = Journey::new("setup-install")?;
-    let closed = std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()?
-        .port();
-    let mut command = journey.command(&["setup"]);
-    command.env("PATH", "");
-    let saved = feed(
-        command,
-        &format!("\nask\ny\ny\nhttp://127.0.0.1:{closed}\n"),
-    )?;
-    assert!(saved.status.success(), "{saved:?}");
-    assert!(
-        String::from_utf8_lossy(&saved.stderr).contains("laya-serve did not install"),
-        "{saved:?}"
-    );
-    let config = config_of(&journey)?;
-    assert_eq!(config["permissions"]["mode"], "ask");
-    assert!(config.get("models").is_none(), "{config}");
     journey.reclaim();
     Ok(())
 }

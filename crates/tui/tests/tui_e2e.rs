@@ -125,13 +125,7 @@ fn options() -> TuiOptions {
     TuiOptions {
         model: faux_model(),
         session_name: "e2e".to_owned(),
-        cwd: "/tmp".to_owned(),
-        lane: None,
-        context_window: 128_000,
-        session_dir: String::new(),
-        keys: Vec::new(),
-        initial_prompt: None,
-        pace: 0,
+        ..common::options()
     }
 }
 
@@ -2918,7 +2912,7 @@ fn the_chat_paints_into_a_rectangle_and_stays_inside_it() -> TestResult {
     }
     let _ = app.take_commits();
     let rect = Rect::new(10, 5, 60, 12);
-    let layout = yi_tui::render::layout_chat(&mut app, None, None, rect.height);
+    let layout = yi_tui::render::layout_chat(&mut app, None, None, u16::MAX);
     let used = layout.rows().min(rect.height);
     let above = rect.height.saturating_sub(used);
     let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
@@ -3581,7 +3575,7 @@ fn solo_session_verbs_answer_as_the_console_does() -> TestResult {
 
 fn painted(app: &mut App) -> ratatui::buffer::Buffer {
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    let layout = yi_tui::render::layout_chat(app, None, None, area.height);
+    let layout = yi_tui::render::layout_chat(app, None, None, u16::MAX);
     let used = layout.rows().min(area.height);
     let mut buffer = ratatui::buffer::Buffer::empty(area);
     let at = ratatui::layout::Rect::new(0, area.height - used, area.width, used);

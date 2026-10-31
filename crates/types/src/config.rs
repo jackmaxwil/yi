@@ -119,8 +119,8 @@ pub enum ModeName {
     Yolo,
 }
 
-/// `classifier`: the sidecar's URL, one decision's deadline, and the confidence it points at
-/// (0.9 when unset). The bearer is `LAYA_API_KEY`.
+/// `classifier`: the endpoint's URL, one decision's deadline, and the confidence it points at
+/// (0.9 when unset). The bearer is the OpenRouter key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClassifierConfig {
@@ -242,12 +242,24 @@ impl RlmConfig {
     }
 }
 
+/// `tui.follow`: `slide` keeps one-row following, `page` jumps half a pane, and `still`
+/// holds the view while text arrives. Unset resolves to `page` unless macOS asks for `still`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FollowMode {
+    Slide,
+    #[default]
+    Page,
+    Still,
+}
+
 /// `tui.pace`: the streamed reveal's speed as a percentage of the default (100); `0` paints
 /// text the instant it arrives, as before the reveal existed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TuiConfig {
     pub pace: Option<u16>,
+    pub follow: Option<FollowMode>,
 }
 
 /// `telemetry.enabled`: write one span per request, tool call, turn and compaction to
@@ -275,14 +287,23 @@ pub struct CatalogConfig {
     pub refresh_hours: Option<u64>,
 }
 
-/// `console.titleIntro`: draw the title field at console start (on);
-/// `console.titleWeights`: scene name to weight, the draw's odds; absent or empty, Kali 8, every other scene 2.
+/// `console.titleIntro`: draw the title field at console start (on); `console.titleWeights`: scene
+/// name to weight; `console.sidebar`: the state the console starts in, which ⌥b writes as it cycles.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConsoleConfig {
     pub auto_side: Option<bool>,
     pub title_intro: Option<bool>,
     pub title_weights: Option<std::collections::BTreeMap<String, u32>>,
+    pub sidebar: Option<SidebarState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarState {
+    Rail,
+    Full,
+    Hidden,
 }
 
 /// `kernel.prewarm`: boot the IPython kernel in the background at session open so the first

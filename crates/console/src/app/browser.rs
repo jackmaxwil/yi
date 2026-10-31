@@ -3,7 +3,7 @@ use ratatui::layout::Direction;
 
 use super::{App, MouseKind};
 use crate::browser::BrowserPane;
-use crate::model::{PaneContent, Zone};
+use crate::model::PaneContent;
 
 impl App {
     fn focused_browser(&mut self) -> Option<&mut BrowserPane> {
@@ -33,7 +33,7 @@ impl App {
         if let Some(pane) = self.state.focused_pane_mut() {
             pane.content = PaneContent::Browser(Box::new(BrowserPane::new(url)));
         }
-        self.state.zone = Zone::Panes;
+        self.state.focus_panes();
     }
 
     /// Only the panes the screen shows: a hidden pane's frames wait in Chrome's unacked queue.
@@ -102,7 +102,7 @@ impl App {
             if let Some(tab) = self.state.tab_mut() {
                 tab.layout.focus_pane(id);
             }
-            self.state.zone = Zone::Panes;
+            self.state.focus_panes();
             self.dirty = true;
         }
         true

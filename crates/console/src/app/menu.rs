@@ -208,7 +208,7 @@ impl App {
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(pane);
         }
-        self.state.zone = Zone::Panes;
+        self.state.focus_panes();
     }
 
     fn run_verb(&mut self, outbound: &Outbound, target: Target, verb: Verb) {
