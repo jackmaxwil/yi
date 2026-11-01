@@ -199,8 +199,7 @@ pub struct App {
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
     pub(crate) pane_follow: Option<(usize, TranscriptMode, usize, usize)>,
     pub(crate) follow: yi_types::config::FollowMode,
-    /// The last pane paint's top row and each transcript row's cell, `None` on the live turn.
-    pub(crate) pane_rows: (u16, Vec<Option<usize>>),
+    pub(crate) pane_rows: PaneRows,
 }
 
 mod asks;
@@ -208,6 +207,8 @@ mod bridge;
 mod children;
 pub use children::TaskState;
 mod clock;
+mod pane;
+pub(crate) use pane::PaneRows;
 mod options;
 mod stream;
 mod working;
@@ -329,7 +330,7 @@ impl App {
             pane_hold: None,
             pane_follow: None,
             follow,
-            pane_rows: (0, Vec::new()),
+            pane_rows: PaneRows::default(),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
         app.scheduler.request();
@@ -566,12 +567,6 @@ impl App {
 
     pub(crate) fn retain(&mut self, cell: Cell) {
         self.history.retain(cell);
-    }
-
-    pub fn pane_row(&self, y: u16) -> Option<Option<(usize, Option<&str>)>> {
-        let (top, rows) = &self.pane_rows;
-        let owner = *rows.get(usize::from(y.checked_sub(*top)?))?;
-        Some(owner.map(|index| (index, self.history.source(index))))
     }
 
     /// The source of transcript cell `index`, for rows a drag read before they scrolled away.
