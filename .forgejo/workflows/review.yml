@@ -41,6 +41,8 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      # A job's HOME starts with no skills, and this copy is main's, not the PR's tree.
+      - run: just install-skills
       - run: rustup show
       # The same dev build the live job reads from postmerge's `test` cache.
       - uses: Swatinem/rust-cache@v2

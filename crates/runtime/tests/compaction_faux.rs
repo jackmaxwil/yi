@@ -1212,7 +1212,10 @@ async fn text_after_the_last_usage_counts_at_bytes_per_three() -> Result<(), Box
             &yi_loop::interrupt::InterruptSignal::default(),
         )
         .await?;
-    assert!(replaced.is_some(), "1,110 of a 1,000-token budget is due");
+    assert!(
+        matches!(replaced, yi_runtime::compaction::Compacted::Applied(_)),
+        "1,110 of a 1,000-token budget is due"
+    );
     Ok(())
 }
 
@@ -1350,7 +1353,10 @@ async fn a_cold_attempt_on_anthropic_sends_no_tool_block_without_tools()
             &yi_loop::interrupt::InterruptSignal::default(),
         )
         .await?;
-    assert!(replaced.is_some(), "the cold attempt's summary applies");
+    assert!(
+        matches!(replaced, yi_runtime::compaction::Compacted::Applied(_)),
+        "the cold attempt's summary applies"
+    );
     let bodies = served.join().map_err(|_| "the stand-in panicked")?;
     let [warm, cold] = bodies.as_slice() else {
         return Err(format!("expected two requests, got {}", bodies.len()).into());
@@ -1711,6 +1717,12 @@ async fn rescue(
             &yi_loop::interrupt::InterruptSignal::default(),
         )
         .await
+        .map(|compacted| match compacted {
+            yi_runtime::compaction::Compacted::Applied(replacement) => Some(replacement),
+            yi_runtime::compaction::Compacted::NotDue | yi_runtime::compaction::Compacted::Busy => {
+                None
+            }
+        })
 }
 
 /// What the next request sends, charged as the rescue charges it: bytes/3.
@@ -2357,6 +2369,53 @@ async fn the_retention_floor_keeps_the_users_typed_words_and_drops_host_text()
             "second ask with enough characters to keep recent"
         ],
         "the kept tail is the user's typed words only"
+    );
+    Ok(())
+}
+
+/// #553: a compaction mid-summarization holds the session's one slot, so a second request is
+/// refused instead of making its own summarizer call and its own write of the history.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_compaction_while_one_is_in_flight_is_refused() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-in-flight")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-test");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-in-flight".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("long body {}", "y".repeat(400)), 100, 5_000),
+        faux_assistant_message(vec![faux_text("## Goal\nHeld summary")], StopReason::Stop),
+    ]);
+    let session = Arc::new(session_for_compaction(Arc::clone(&provider)));
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("please do the thing with sufficient text here")?;
+    session.wait_idle().await;
+
+    provider.faux_hold.arm("text_delta", 1);
+    let first = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move { session.compact_now().await }
+    });
+    while !provider.faux_hold.reached() {
+        tokio::task::yield_now().await;
+    }
+    let second = session.compact_now().await;
+    assert!(
+        matches!(second, Ok(yi_runtime::compaction::CompactOutcome::Busy)),
+        "a compaction already in flight says so: {second:?}"
+    );
+    assert!(provider.faux_hold.release(), "the stream never held");
+    let first = first.await??;
+    assert!(
+        matches!(first, yi_runtime::compaction::CompactOutcome::Summarized),
+        "the compaction that held the slot applied: {first:?}"
+    );
+    assert_eq!(
+        compaction_entries(&store).len(),
+        1,
+        "one summarizer call, one entry"
     );
     Ok(())
 }
