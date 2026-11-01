@@ -156,7 +156,7 @@ impl PermissionBroker {
         let real = dir
             .canonicalize()
             .map_err(|error| format!("{}: {error}", dir.display()))?;
-        if protected(self.sandbox.as_ref(), &real) {
+        if ungrantable(self.sandbox.as_ref(), &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
@@ -225,16 +225,30 @@ impl PermissionBroker {
 /// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
 /// daemon socket), a credential store, or a git path the host runs.
 pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
+    guarded(sandbox, dir, |_| true)
+}
+
+/// Invariant: a `.git` pointer guards itself; a grant of the tree around it opens no store and the
+/// deny still outranks it. An approval widening judges `protected`, which keeps the stricter word.
+fn ungrantable(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
+    guarded(sandbox, dir, |guard| {
+        guard.file_name() != Some(".git".as_ref()) || guard.is_dir()
+    })
+}
+
+fn guarded(
+    sandbox: Option<&yi_tools::Sandbox>,
+    dir: &Path,
+    guards_above: impl Fn(&Path) -> bool,
+) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let yi = home.iter().map(|home| home.join(".yi"));
-    let overlaps = |guarded: &PathBuf| {
-        let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
-        // Invariant: a `.git` pointer guards itself; granting the tree around it opens no store,
-        // and the deny still outranks the grant.
-        let pointer = guarded.file_name() == Some(".git".as_ref()) && !guarded.is_dir();
-        [guarded, &real]
+    let overlaps = |guard: &PathBuf| {
+        let real = guard.canonicalize().unwrap_or_else(|_| guard.clone());
+        let above = guards_above(guard);
+        [guard, &real]
             .iter()
-            .any(|guarded| dir.starts_with(guarded) || (!pointer && guarded.starts_with(dir)))
+            .any(|guard| dir.starts_with(guard) || (above && guard.starts_with(dir)))
     };
     home.as_deref()
         .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
@@ -242,12 +256,12 @@ pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool
             .flat_map(|s| s.deny_read.iter().chain(&s.deny_write).chain(&s.host_owned))
             .cloned()
             .chain(yi)
-            .any(|guarded| overlaps(&guarded))
+            .any(|guard| overlaps(&guard))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::protected;
+    use super::{protected, ungrantable};
     use std::path::{Path, PathBuf};
 
     fn profile(tree: &str) -> yi_tools::Sandbox {
@@ -255,18 +269,23 @@ mod tests {
     }
 
     /// Dies with a `.git` that is no directory guarding every directory above it: `--allow-write`
-    /// on a parent of a non-repository cwd exited 2 naming protection that was not real.
+    /// on a parent of a non-repository cwd exited 2 naming protection that was not real. An
+    /// approval's widening still reads the pointer as a guard, since no approval can write it.
     #[test]
-    fn a_pointer_guards_itself_and_not_the_trees_above_it() {
+    fn a_pointer_guards_a_grant_only_at_itself() {
         let sandbox = profile("/nonexistent-tree/sub");
-        assert!(!protected(Some(&sandbox), Path::new("/nonexistent-tree")));
-        assert!(!protected(
+        assert!(!ungrantable(Some(&sandbox), Path::new("/nonexistent-tree")));
+        assert!(!ungrantable(
             Some(&sandbox),
             Path::new("/nonexistent-tree/sub")
         ));
-        assert!(protected(
+        assert!(ungrantable(
             Some(&sandbox),
             &PathBuf::from("/nonexistent-tree/sub/.git/x")
+        ));
+        assert!(protected(
+            Some(&sandbox),
+            Path::new("/nonexistent-tree/sub")
         ));
     }
 }

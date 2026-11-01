@@ -5,7 +5,7 @@ no skip keyword, which starts no workflow at all for that push, and a review job
 gate job's runner lane.
 Incident: `if: ... startsWith(title, 'WIP: ')` failed three review runs before any job existed
 ("mapping values are not allowed in this context"); the stdlib has no YAML parser."""
-import re, sys, pathlib
+import re, shutil, subprocess, sys, pathlib, tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail
 
@@ -107,6 +107,23 @@ def unread_lane(text, off=""):
     return [] if off == "lane" else lanes(text)[1]
 
 
+def no_skills(text, off=""):
+    return off != "skills" and not re.search(r"^\s*(- )?run: just install-skills$", text, re.M)
+
+
+def shipped():
+    """Where the install puts each skill: `.ruler/skills` at the root, the bot's own under `yi/`."""
+    return sorted([p.name for p in (ROOT / ".ruler/skills").iterdir() if (p / "SKILL.md").is_file()]
+                  + [f"yi/{p.name}" for p in (ROOT / "skills/yi").iterdir() if (p / "SKILL.md").is_file()])
+
+
+def skill_gaps(dest, off=""):
+    """Skills the install left out of `dest`, at the depth a prompt opens them: `dest/<name>/SKILL.md`."""
+    if off == "install":
+        return []
+    return [name for name in shipped() if not (dest / name / "SKILL.md").is_file()]
+
+
 def selfcheck(off=""):
     incident = "jobs:\n  review:\n    if: github.head == github.repo && startsWith(github.title, 'WIP: ')\n"
     fixed = "jobs:\n  review:\n    if: >-\n      startsWith(github.title, 'WIP: ')\n"
@@ -139,13 +156,31 @@ def selfcheck(off=""):
         bad.append("a review job on a lane of its own is refused")
     if not unread_lane(expr, off):
         bad.append("a `runs-on` that is an expression is dropped instead of refused")
+    if not no_skills("steps:\n  - run: rustup show\n", off):
+        bad.append("a bot job that installs no skills is not refused")
+    if no_skills("steps:\n  - run: just install-skills\n", "") or no_skills("steps:\n  - if: x\n    run: just install-skills\n", ""):
+        bad.append("a bot job that installs the skills is refused")
+    short = pathlib.Path(tempfile.mkdtemp(prefix="yi-workflows-skills-"))
+    try:
+        if not skill_gaps(short, off):
+            bad.append("an install that lands no skill at all is refused by nothing")
+        for name in shipped():
+            (short / name).mkdir(parents=True)
+            (short / name / "SKILL.md").write_text("---\n")
+        if skill_gaps(short, off):
+            bad.append("an install that lands every skill the repository ships is refused")
+        (short / "har/SKILL.md").unlink()
+        if not skill_gaps(short, off):
+            bad.append("an install whose skill lands one level off is refused by nothing")
+    finally:
+        shutil.rmtree(short, ignore_errors=True)
     return bad
 
 
 if __name__ == "__main__":
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
-        for off in ("plain", "blocks", "comments", "silenced", "lane"):
+        for off in ("plain", "blocks", "comments", "silenced", "lane", "skills", "install"):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} check disabled, so it refutes nothing")
         fail(errs, "workflows selfcheck")
@@ -165,4 +200,19 @@ if __name__ == "__main__":
     errs += [f".forgejo/workflows/{name}: job {job}'s `runs-on` `{value}` is not a lane this check reads; "
              "an expression there is a review lane nobody compared, so name the label"
              for name, text in (("pr.yml", gate), ("review.yml", review)) for job, value in unread_lane(text)]
+    errs += [f".forgejo/workflows/{name}: no `run: just install-skills` step; the job's HOME then holds no skills and its "
+             "footer says `skills read none`"
+             for name in ("review.yml", "autofix.yml") if no_skills((ROOT / ".forgejo/workflows" / name).read_text())]
+    dest = pathlib.Path(tempfile.mkdtemp(prefix="yi-install-skills-"))
+    try:
+        ran = subprocess.run(["just", "install-skills", str(dest)], cwd=ROOT, capture_output=True, text=True)
+        gaps = skill_gaps(dest)
+        errs += ([f"`just install-skills` exited {ran.returncode}: {(ran.stdout + ran.stderr).strip()[-400:]}"]
+                 if ran.returncode else
+                 [f"`just install-skills <dest>` landed no {name}/SKILL.md; a bot's prompt then reads no skills "
+                  f"and its footer says `skills read none`" for name in gaps])
+    except OSError as err:
+        errs.append(f"`just install-skills <dest>` did not run: {err}")
+    finally:
+        shutil.rmtree(dest, ignore_errors=True)
     fail(errs, "workflows")
