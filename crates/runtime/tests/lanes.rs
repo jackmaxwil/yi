@@ -791,6 +791,40 @@ fn a_slot_an_older_binary_released_dirty_is_never_wiped() -> TestResult {
     Ok(())
 }
 
+/// Dies with a listing that reads only the parent's status: the submodule's edit is invisible to
+/// it, so the row said clean while the claim refused the slot as dirty.
+#[test]
+fn a_listing_counts_work_inside_a_submodule() -> TestResult {
+    let rig = Rig::new("list-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = lane.path().join("sub");
+    std::fs::create_dir_all(&sub)?;
+    git(&sub, &["init", "-q", "-b", "main"])?;
+    git(&sub, &["config", "user.email", "t@example.invalid"])?;
+    git(&sub, &["config", "user.name", "t"])?;
+    std::fs::write(sub.join("file.txt"), "one\n")?;
+    git(&sub, &["add", "file.txt"])?;
+    git(&sub, &["commit", "-q", "-m", "first"])?;
+    let head = git(&sub, &["rev-parse", "HEAD"])?;
+    std::fs::write(
+        lane.path().join(".gitmodules"),
+        "[submodule \"sub\"]\n\tpath = sub\n\turl = ./nowhere\n",
+    )?;
+    let link = format!("160000,{},sub", head.trim());
+    git(
+        lane.path(),
+        &["update-index", "--add", "--cacheinfo", &link],
+    )?;
+    git(lane.path(), &["add", ".gitmodules"])?;
+    git(lane.path(), &["commit", "-q", "-m", "a submodule"])?;
+    std::fs::write(sub.join("file.txt"), "edited\n")?;
+    let text = format_lanes(&pool.list()?, None);
+    let line = text.lines().next().unwrap_or_default();
+    assert!(line.contains("1 modified"), "the listing counts it: {text}");
+    Ok(())
+}
+
 #[test]
 fn reap_discards_a_dirty_tree_and_says_how_much() -> TestResult {
     let rig = Rig::new("reap-dirty")?;

@@ -21,31 +21,13 @@ impl Uncommitted {
     }
 
     /// Invariant: host git never enters a submodule, whose config it cannot trust, so `status` is
-    /// blind to work inside one. Each is read through the same door; what cannot be read counts as dirty.
+    /// blind to work inside one. A listing reads the same count, so no lane is clean in one place.
     fn with_submodules(mut self, tree: &Path) -> Self {
         // One budget for the whole read: a hung git in one submodule must not stall every spawn.
         let until = std::time::Instant::now().checked_add(LIST_BUDGET);
-        let Ok(stage) = super::hostgit::git_capped(
-            tree,
-            &["ls-files", "--stage", "-z"],
-            until,
-            super::PLUMBING_CAP,
-        ) else {
-            self.paths = self.paths.saturating_add(1);
-            return self;
-        };
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let sandbox = home
-            .as_deref()
-            .filter(|_| yi_tools::Sandbox::available())
-            .map(|home| yi_tools::Sandbox::for_workspace(tree, home, None));
-        let links = (stage.split('\0'))
-            .filter_map(|row| row.split_once('\t'))
-            .filter(|(meta, _)| meta.starts_with("160000 "))
-            .filter_map(|(_, path)| gitlink(tree, path))
-            .filter(|dir| std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some()))
-            .filter(|dir| !submodule_is_clean(tree, dir, until, sandbox.as_ref()));
-        self.paths = self.paths.saturating_add(links.count());
+        self.paths = self
+            .paths
+            .saturating_add(dirty_submodules(tree, until).unwrap_or(1));
         self
     }
 
@@ -88,6 +70,30 @@ impl Uncommitted {
         }
         format!("; {self} discarded")
     }
+}
+
+/// The populated gitlinks with work inside them, `None` when the index cannot be read; the claim
+/// decision and a listing both read it, so one answer exists for whether a lane is dirty.
+pub(crate) fn dirty_submodules(tree: &Path, until: Option<std::time::Instant>) -> Option<usize> {
+    let stage = super::hostgit::git_capped(
+        tree,
+        &["ls-files", "--stage", "-z"],
+        until,
+        super::PLUMBING_CAP,
+    )
+    .ok()?;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let sandbox = home
+        .as_deref()
+        .filter(|_| yi_tools::Sandbox::available())
+        .map(|home| yi_tools::Sandbox::for_workspace(tree, home, None));
+    let links = (stage.split('\0'))
+        .filter_map(|row| row.split_once('\t'))
+        .filter(|(meta, _)| meta.starts_with("160000 "))
+        .filter_map(|(_, path)| gitlink(tree, path))
+        .filter(|dir| std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some()))
+        .filter(|dir| !submodule_is_clean(tree, dir, until, sandbox.as_ref()));
+    Some(links.count())
 }
 
 impl std::fmt::Display for Uncommitted {

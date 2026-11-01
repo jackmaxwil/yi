@@ -373,6 +373,12 @@ fn tree_state(
             modified = modified.saturating_add(1);
         }
     }
+    // The same count `Uncommitted` reads, so a lane is never clean in a listing and dirty to its
+    // claim. Only a repository that carries submodules pays the index read.
+    if path.join(".gitmodules").is_file() {
+        let dirty = reap::dirty_submodules(path, Some(deadline)).unwrap_or(1);
+        modified = modified.saturating_add(u32::try_from(dirty).unwrap_or(u32::MAX));
+    }
     let Some(base) = base else {
         return TreeState::Unread { step: "main" };
     };
