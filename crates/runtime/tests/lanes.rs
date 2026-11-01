@@ -723,6 +723,12 @@ fn a_clean_submodule_frees_its_lane_and_an_edit_in_it_keeps_it() -> TestResult {
     let back = pool.claim("s-one", ClaimBase::Main)?;
     std::fs::write(back.path().join("sub/file.txt"), "one\n")?;
     assert_eq!(back.release()?.to_string(), "0 uncommitted paths");
+    let again = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = again.path().join("sub");
+    // The incident the parent's own status read names: a config that hides new files reads clean.
+    git(&sub, &["config", "status.showUntrackedFiles", "no"])?;
+    std::fs::write(sub.join("new.txt"), "work\n")?;
+    assert_eq!(again.release()?.to_string(), "1 uncommitted path");
     Ok(())
 }
 

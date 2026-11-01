@@ -599,8 +599,7 @@ fn start(
         if let (Ok(capture), Some(sweep)) = (&capture, &sweep)
             && capture.cancelled
         {
-            let _swept_or_gone_with_the_container =
-                command(interpreter()).arg("-c").arg(sweep).output();
+            run_sweep(sweep);
         }
         if let Ok(capture) = &capture {
             registry().finish(id, capture.clone());
@@ -608,6 +607,19 @@ fn start(
         let _receiver_may_be_gone = sender.send(capture);
     });
     Ok((id, receiver))
+}
+
+/// What a killed `docker exec` left behind, under a bound of its own. Incident shape: an engine
+/// asleep answers nothing, so an unbounded sweep held a check past the deadline it had just hit.
+pub fn run_sweep(sweep: &str) {
+    const BOUND: Duration = Duration::from_secs(5);
+    let mut process = command(interpreter());
+    process.arg("-c").arg(sweep);
+    let until = std::time::Instant::now().checked_add(BOUND);
+    let past: CancelFlag =
+        Arc::new(move || until.is_none_or(|until| std::time::Instant::now() >= until));
+    let _swept_or_gone_with_the_container =
+        crate::process::run_captured(process, None, &past, OUTPUT_CAP);
 }
 
 /// `docker exec` of `command` under `sh -c` in `cwd` inside `container`, quoted for the host

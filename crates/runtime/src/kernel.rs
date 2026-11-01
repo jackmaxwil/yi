@@ -368,9 +368,10 @@ impl KernelService {
             .extend(self.own_paths.iter().flat_map(|own| own(state)));
         let family = self.options.family_dir.as_deref().map(make_board);
         let lane = (self.holder.as_ref()).and_then(|_| self.git_lane());
-        let assign = lane.as_ref().map_or(&[][..], |lane| lane.assign());
+        let assign = crate::lane::remote::GitLane::assign_for(lane.as_deref(), &self.options.cwd);
         Some(
-            kernel_profile(&sandbox, family.as_deref()).kernel_prefix(&self.connection_dir, assign),
+            kernel_profile(&sandbox, family.as_deref())
+                .kernel_prefix(&self.connection_dir, &assign),
         )
     }
 
