@@ -223,3 +223,75 @@ mod one_store {
         Ok(())
     }
 }
+
+mod deadline {
+    use crate::scratch::Scratch;
+    use std::error::Error;
+    use std::time::Duration;
+    use yi_tools::{CheckpointError, Checkpoints};
+
+    /// A git ahead of the real one on PATH, slow only for `add`. nextest gives each test its own
+    /// process, so it reaches no other test.
+    fn slow_add(dir: &Scratch) -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::var_os("PATH").ok_or("no PATH")?;
+        let real = (std::env::split_paths(&path).map(|dir| dir.join("git")))
+            .find(|candidate| candidate.is_file())
+            .ok_or("no git on PATH")?;
+        let marker = dir.join("slow");
+        let body = format!(
+            "#!/bin/sh\nif [ -e '{}' ]; then case \"$*\" in *' add '*) touch \"$GIT_INDEX_FILE.lock\"; sleep 30;; esac; fi\nexec '{}' \"$@\"\n",
+            marker.display(),
+            real.display()
+        );
+        let shim = dir.join("git");
+        std::fs::write(&shim, body)?;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))?;
+        let joined = std::env::join_paths(
+            std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&path)),
+        )?;
+        unsafe { std::env::set_var("PATH", joined) };
+        Ok(())
+    }
+
+    /// Dies with the lock left behind: every capture after a kill would fail on `index.lock`.
+    #[test]
+    fn a_killed_capture_clears_its_lock_and_the_next_one_works() -> Result<(), Box<dyn Error>> {
+        let (root, shim) = (
+            Scratch::new("yi-capture-kill")?,
+            Scratch::new("yi-capture-shim")?,
+        );
+        let project = root.join("project");
+        std::fs::create_dir_all(&project)?;
+        std::fs::write(project.join("a.txt"), "a\n")?;
+        slow_add(&shim)?;
+        let checkpoints = Checkpoints::open(&root.join("store"), &project)?;
+        std::fs::write(shim.join("slow"), "")?;
+        let begun = std::time::Instant::now();
+        let killed = checkpoints.capture_within(Duration::from_millis(200));
+        assert!(
+            matches!(killed, Err(CheckpointError::Deadline { .. })),
+            "{killed:?}"
+        );
+        assert!(
+            begun.elapsed() < Duration::from_secs(20),
+            "the kill did not end it"
+        );
+        std::fs::remove_file(shim.join("slow"))?;
+        assert!(checkpoints.capture_within(Duration::from_secs(30)).is_ok());
+        assert!(checkpoints.capture().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn within_its_deadline_a_capture_is_the_plain_one() -> Result<(), Box<dyn Error>> {
+        let root = Scratch::new("yi-capture-within")?;
+        let project = root.join("project");
+        std::fs::create_dir_all(&project)?;
+        std::fs::write(project.join("a.txt"), "a\n")?;
+        let checkpoints = Checkpoints::open(&root.join("store"), &project)?;
+        let bound = checkpoints.capture_within(Duration::from_secs(30))?;
+        assert_eq!(bound, checkpoints.capture()?);
+        Ok(())
+    }
+}
