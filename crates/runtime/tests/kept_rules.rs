@@ -748,7 +748,8 @@ fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
             above.display()
         );
     }
-    // With no profile there is nothing to widen, so the flag is taken wherever it points.
+    // With no profile a grant widens nothing, so the flag is taken wherever it points: a Linux
+    // host has no Seatbelt profile, and `--allow-write ~` there starts instead of refusing.
     let (refuse, _) = answering(AskOutcome::Reject);
     let provider = Arc::new(ProviderStream::new(None));
     let session = new_session(&provider);
@@ -760,10 +761,7 @@ fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
         session.events_sender(),
     );
     bare.grant_write(Path::new("/"))?;
-    assert!(
-        bare.grant_write(&home).is_err(),
-        "home is refused with no profile too"
-    );
+    bare.grant_write(Path::new(&home))?;
     let denied = gate
         .grant_write(&repo.join(".git/hooks"))
         .err()

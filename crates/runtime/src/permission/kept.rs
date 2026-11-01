@@ -167,14 +167,15 @@ impl PermissionBroker {
         if holds {
             return Ok(());
         }
+        // With no profile a grant widens nothing, so the flag is taken wherever it points.
+        if self.sandbox.is_none() {
+            return Ok(());
+        }
         if protected_from_grant(self.sandbox.as_ref(), &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
             ));
-        }
-        if self.sandbox.is_none() {
-            return Ok(());
         }
         let grant = yi_permission::write_grant(&real);
         self.keep_grant(
@@ -331,6 +332,48 @@ mod tests {
             Some(&sandbox),
             &PathBuf::from("/nonexistent-tree/sub/.git/x")
         ));
+    }
+
+    /// A lane-shaped profile: a worktree whose `.git` is a pointer into a common dir's admin dir.
+    fn lane_profile(root: &Path) -> Option<yi_tools::Sandbox> {
+        let common = root.join("common");
+        let admin = common.join("worktrees/lane");
+        std::fs::create_dir_all(&admin).ok()?;
+        std::fs::write(admin.join("HEAD"), "ref: refs/heads/yi/s-one\n").ok()?;
+        std::fs::write(admin.join("commondir"), "../..\n").ok()?;
+        std::fs::write(common.join("HEAD"), "ref: refs/heads/main\n").ok()?;
+        let lane = root.join("lane");
+        std::fs::create_dir_all(&lane).ok()?;
+        std::fs::write(lane.join(".git"), format!("gitdir: {}\n", admin.display())).ok()?;
+        Some(yi_tools::Sandbox::for_workspace(
+            &lane,
+            &root.join("home"),
+            None,
+        ))
+    }
+
+    /// Dies with the closed-git-dir arm untested on `protected`: a refusal under a lane's common
+    /// git dir is then offered as an approval, and the widening hands back the refs it took away.
+    #[test]
+    fn a_lanes_common_git_dir_is_protected() {
+        let root = std::env::temp_dir().join(format!("yi-kept-lane-{}", std::process::id()));
+        let Some(sandbox) = lane_profile(&root) else {
+            return;
+        };
+        let common = root.join("common");
+        assert!(
+            protected(Some(&sandbox), &common.join("refs/heads/main")),
+            "a path inside the closed common dir is protected"
+        );
+        assert!(
+            protected(Some(&sandbox), &common),
+            "and so is the directory that holds it"
+        );
+        assert!(
+            !protected(Some(&sandbox), &root.join("lane")),
+            "the lane's own worktree is not"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Dies with a grant judged from both sides: `--allow-write .` in a checkout exited 2 naming

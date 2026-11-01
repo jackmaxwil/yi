@@ -64,11 +64,39 @@ impl Uncommitted {
         self.paths == 0 && self.cut.is_none()
     }
 
-    pub(crate) fn discarded(&self) -> String {
+    /// What a wipe removed: the read before it less what the same read says survived it.
+    fn without(&self, after: &Self) -> Self {
+        Self {
+            paths: self.paths.saturating_sub(after.paths),
+            cut: self.cut,
+        }
+    }
+
+    fn discarded(&self) -> String {
         if self.is_empty() {
             return String::new();
         }
         format!("; {self} discarded")
+    }
+}
+
+/// What a wipe removed and what it could not reach: git never enters a submodule without being
+/// asked, so its worktree holds edits the parent's checkout and clean leave in place.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Wiped {
+    lost: Uncommitted,
+    kept: Uncommitted,
+}
+
+impl Wiped {
+    /// The sentence a reap or a discard adds: the paths it dropped, and the ones that survived.
+    pub fn discarded(&self) -> String {
+        let kept = if self.kept.is_empty() {
+            String::new()
+        } else {
+            format!("; {} kept inside a submodule", self.kept)
+        };
+        format!("{}{kept}", self.lost.discarded())
     }
 }
 
@@ -82,17 +110,23 @@ pub(crate) fn dirty_submodules(tree: &Path, until: Option<std::time::Instant>) -
         super::PLUMBING_CAP,
     )
     .ok()?;
+    let links: Vec<PathBuf> = (stage.split('\0'))
+        .filter_map(|row| row.split_once('\t'))
+        .filter(|(meta, _)| meta.starts_with("160000 "))
+        .filter_map(|(_, path)| gitlink(tree, path))
+        .filter(|dir| std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some()))
+        .collect();
+    // Invariant: a tree with no populated gitlink pays one index read, never a profile build.
+    if links.is_empty() {
+        return Some(0);
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let sandbox = home
         .as_deref()
         .filter(|_| yi_tools::Sandbox::available())
         .map(|home| yi_tools::Sandbox::for_workspace(tree, home, None));
-    let links = (stage.split('\0'))
-        .filter_map(|row| row.split_once('\t'))
-        .filter(|(meta, _)| meta.starts_with("160000 "))
-        .filter_map(|(_, path)| gitlink(tree, path))
-        .filter(|dir| std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some()))
-        .filter(|dir| !submodule_is_clean(tree, dir, until, sandbox.as_ref()));
+    let links =
+        (links.iter()).filter(|dir| !submodule_is_clean(tree, dir, until, sandbox.as_ref()));
     Some(links.count())
 }
 
@@ -202,14 +236,19 @@ impl Pool {
     }
 
     /// Invariant: the only wipe of a session's work; a claim checks out only over a clean tree.
-    pub(super) fn wipe(&self, slot: SlotIndex) -> Result<Uncommitted, LaneError> {
+    pub(super) fn wipe(&self, slot: SlotIndex) -> Result<Wiped, LaneError> {
         let path = self.slot_path(slot);
         let lost = Uncommitted::read(&path)?;
         if !lost.is_empty() {
             git(&path, &["checkout", "-q", "-f"])?;
             git(&path, &["clean", "-qfd"])?;
         }
-        Ok(lost)
+        // What the same read says now: the paths a wipe leaves are the ones it did not drop.
+        let kept = Uncommitted::read(&path).unwrap_or_default();
+        Ok(Wiped {
+            lost: lost.without(&kept),
+            kept,
+        })
     }
 }
 
@@ -241,17 +280,17 @@ fn submodule_is_clean(
     if !dir.join(".git").exists() {
         return false;
     }
-    // The flag as the parent's own read has it: a user's `showUntrackedFiles=no` would hide work.
-    let argv = [
-        "git",
-        "--no-optional-locks",
-        "-C",
-        &path.to_string_lossy(),
-        "status",
-        "--porcelain",
-        "--untracked-files=normal",
-    ];
-    let Some((program, args)) = super::toolchain::wrapped(&argv, sandbox) else {
+    // The flags the parent's own read carries, from the constant that holds them.
+    let argv: Vec<String> = [
+        "git".to_owned(),
+        "-C".to_owned(),
+        path.to_string_lossy().into_owned(),
+    ]
+    .into_iter()
+    .chain(STATUS.iter().map(|arg| (*arg).to_owned()))
+    .collect();
+    let named: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let Some((program, args)) = super::toolchain::wrapped(&named, sandbox) else {
         return false;
     };
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();

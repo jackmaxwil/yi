@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use yi_types::lane::SlotState;
 
-use reap::Uncommitted;
+use reap::{Uncommitted, Wiped};
 
 pub(crate) use hostgit::{PLUMBING_CAP, capture, capture_named, git, git_capture};
 
@@ -374,11 +374,9 @@ fn tree_state(
         }
     }
     // The same count `Uncommitted` reads, so a lane is never clean in a listing and dirty to its
-    // claim. Only a repository that carries submodules pays the index read.
-    if path.join(".gitmodules").is_file() {
-        let dirty = reap::dirty_submodules(path, Some(deadline)).unwrap_or(1);
-        modified = modified.saturating_add(u32::try_from(dirty).unwrap_or(u32::MAX));
-    }
+    // claim; one index read decides both, whatever the repository carries.
+    let dirty = reap::dirty_submodules(path, Some(deadline)).unwrap_or(1);
+    modified = modified.saturating_add(u32::try_from(dirty).unwrap_or(u32::MAX));
     let Some(base) = base else {
         return TreeState::Unread { step: "main" };
     };
@@ -959,34 +957,31 @@ impl Lane {
         Ok(())
     }
 
-    pub fn discard(self) -> Result<Uncommitted, LaneError> {
+    pub fn discard(self) -> Result<Wiped, LaneError> {
         let branch = self.branch.as_str().to_owned();
         let repo = self.pool.repo.clone();
-        let dropped = self.release_inner(false)?;
+        let wiped = self.take_slot(true)?;
         let _ = git(&repo, &["branch", "-q", "-D", &branch]);
-        Ok(dropped)
+        Ok(wiped)
     }
 
     /// A non-empty answer is the work that kept the slot as this session's orphan.
     pub fn release(self) -> Result<Uncommitted, LaneError> {
-        self.release_inner(true)
+        let mut lane = self;
+        lane.released = true;
+        let kept = Uncommitted::read(&lane.path)?;
+        if !kept.is_empty() {
+            return Ok(kept);
+        }
+        let _ = lane.take_slot(true)?;
+        Ok(Uncommitted::default())
     }
 
-    fn release_inner(mut self, quit: bool) -> Result<Uncommitted, LaneError> {
+    pub(super) fn take_slot(mut self, quit: bool) -> Result<Wiped, LaneError> {
         self.released = true;
         let _pool = self.pool.lock()?;
-        if quit {
-            let kept = Uncommitted::read(&self.path)?;
-            if !kept.is_empty() {
-                return Ok(kept);
-            }
-        }
         self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-        let dropped = if quit {
-            Uncommitted::default()
-        } else {
-            self.pool.wipe(self.slot)?
-        };
+        let wiped = self.pool.wipe(self.slot)?;
         self.pool.clear_session(self.slot)?;
         if quit {
             // Invariant: an unseen lockfile stays cold; that is not a failure.
@@ -995,7 +990,7 @@ impl Lane {
                 Err(error) => return Err(error),
             }
         }
-        Ok(dropped)
+        Ok(wiped)
     }
 
     pub fn sync(&self) -> Result<Option<String>, LaneError> {
