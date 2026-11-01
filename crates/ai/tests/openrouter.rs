@@ -854,3 +854,71 @@ fn the_tool_call_keeps_geminis_thought_signature_on_the_next_request() -> TestRe
     );
     Ok(())
 }
+
+/// A turn whose reasoning arrived only as an encrypted detail: no prose field ever opens the
+/// thinking block, so the sealed details have to place it.
+#[test]
+fn an_encrypted_detail_with_no_reasoning_text_still_opens_the_thinking_block() -> TestResult {
+    let model = target_model()?;
+    let mut mapper = ChunkMapper::new(&model);
+    mapper.push_chunk(&json!({
+        "id": "gen-1526",
+        "choices": [{"index": 0, "delta": {
+            "reasoning_details": [{
+                "type": "reasoning.encrypted",
+                "data": "ZW5jcnlwdGVk",
+                "index": 0,
+            }],
+        }}],
+    }));
+    mapper.push_chunk(&json!({
+        "choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"},
+        }]}, "finish_reason": "tool_calls"}],
+    }));
+    let events = mapper.finish();
+    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+        return Err(format!("expected a done turn: {events:?}").into());
+    };
+    let AgentMessage::Assistant { content, .. } = message else {
+        return Err(format!("expected an assistant turn: {message:?}").into());
+    };
+    let sealed = content.iter().find_map(|block| match block {
+        Content::Thinking {
+            thinking,
+            thinking_signature,
+            ..
+        } => Some((thinking, thinking_signature)),
+        _ => None,
+    });
+    let Some((thinking, Some(signature))) = sealed else {
+        return Err(format!("expected a sealed thinking block: {message:?}").into());
+    };
+    assert!(thinking.is_empty());
+    let carry: serde_json::Value = serde_json::from_str(signature)?;
+    assert_eq!(
+        carry["details"],
+        json!([{"type": "reasoning.encrypted", "data": "ZW5jcnlwdGVk", "index": 0}])
+    );
+    let mut context = history_context();
+    context.messages.push(message.clone());
+    let params = build_params(&model, &context, &OpenAiOptions::default());
+    let assistant = params["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find(|message| message.get("tool_calls").is_some())
+        })
+        .cloned()
+        .ok_or_else(|| format!("no assistant tool-call message in {params}"))?;
+    assert_eq!(
+        assistant["reasoning_details"],
+        json!([{"type": "reasoning.encrypted", "data": "ZW5jcnlwdGVk", "index": 0}]),
+        "{params}"
+    );
+    Ok(())
+}

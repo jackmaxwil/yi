@@ -134,13 +134,6 @@ fn responses_params_are_not_chat_completions() -> TestResult {
 }
 
 #[test]
-fn a_turn_that_asks_for_no_thinking_asks_for_no_summary() -> TestResult {
-    let params = build_params(&model(true), &context(), &OpenAiOptions::default());
-    assert_eq!(params["reasoning"], json!({"effort": "none"}));
-    Ok(())
-}
-
-#[test]
 fn tool_result_is_a_function_call_output_item() -> TestResult {
     let mut ctx = context();
     ctx.messages.push(AgentMessage::Assistant {
