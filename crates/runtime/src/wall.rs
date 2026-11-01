@@ -53,6 +53,20 @@ fn parse_prefixes(value: Option<&Value>) -> Result<Vec<String>, String> {
 }
 
 impl Wall {
+    /// Whether a tunnel to `host` could reach what `deny_url` walls. A tunnel shows no path, so an
+    /// entry naming a path on the host closes the host, and a bare `https://` closes every host.
+    pub fn denies_host(&self, host: &str) -> bool {
+        self.deny_url.iter().any(|prefix| {
+            let named = prefix
+                .split_once("://")
+                .map_or(prefix.as_str(), |(_, rest)| rest);
+            let named = named.split(['/', ':']).next().unwrap_or_default();
+            named.eq_ignore_ascii_case(host)
+                || walls(prefix, &format!("https://{host}"))
+                || walls(prefix, &format!("http://{host}"))
+        })
+    }
+
     /// Invariant: the resolver's refusal and the spawn brief both ask the wall whether it
     /// denies history, so no copy of the rule can tell a child what its wall then refuses.
     pub fn denies_history(&self) -> bool {
