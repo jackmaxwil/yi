@@ -137,9 +137,10 @@ fn an_exec_source_the_gate_allows_is_still_admitted() {
         yi_runtime::tools::refuse_armed("git status", false, Some(&broker), ""),
         None
     );
-    assert!(
-        yi_runtime::tools::refuse_armed("touch x", false, Some(&broker), "").is_some(),
-        "a source the gate only contains is still refused"
+    assert_eq!(
+        yi_runtime::tools::refuse_armed("touch x", false, Some(&broker), ""),
+        None,
+        "a source the gate only contains runs contained, so it is admitted"
     );
 }
 
@@ -451,10 +452,7 @@ fn a_passed_command_refused_on_a_path_asks_to_widen() -> TestResult {
     let retry = decide("c2");
     assert_eq!(
         retry.containment,
-        Containment::Contained {
-            widen: vec![lane],
-            gate_allowed: false
-        }
+        Containment::Contained { widen: vec![lane] }
     );
     assert_eq!(
         *asks.lock().map_err(|_| "poisoned")?,
@@ -523,10 +521,7 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
             Some(dir) => {
                 assert_eq!(
                     outcome.containment,
-                    Containment::Contained {
-                        widen: vec![dir],
-                        gate_allowed: false
-                    }
+                    Containment::Contained { widen: vec![dir] }
                 );
                 assert!(text.contains("approving widens this run by"), "{text}");
             }
@@ -581,7 +576,6 @@ fn always_on_a_widened_retry_keeps_the_dir_and_the_sandbox() -> TestResult {
     };
     let widened = Containment::Contained {
         widen: vec![lane.clone()],
-        gate_allowed: false,
     };
     assert_eq!(touch("c1", "x").containment, widened);
     assert_eq!(

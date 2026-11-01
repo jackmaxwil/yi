@@ -3816,10 +3816,10 @@ async fn a_walled_check_is_refused_at_every_spawn() -> TestResult {
     Ok(())
 }
 
-/// A sandboxed auto session runs a command it would only contain inside the sandbox, and a check
-/// runs on the host, so the broker's leg of the gate refuses it at spawn and names the way out.
+/// Dies with a check the gate only contains being refused at spawn, since a check ran on the host:
+/// it now runs in the sandbox, so a project's own `just check` can be one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_sandboxed_session_refuses_a_check_it_would_only_contain() -> TestResult {
+async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResult {
     let root = gate_rule_root("yi-check-sandboxed", None)?;
     let sandbox = yi_tools::Sandbox {
         writable: vec![root.join("project")],
@@ -3835,16 +3835,7 @@ async fn a_sandboxed_session_refuses_a_check_it_would_only_contain() -> TestResu
         "land the fix".to_owned(),
         protocol_kwargs("contained", &[("check", check)]),
     );
-    let refusal = spawned
-        .err()
-        .ok_or("a check the sandbox only contains must not spawn")?;
-    assert!(
-        refusal.contains("refused before it runs on the host")
-            && refusal.contains("runs later outside the sandbox, which allows it only contained")
-            && refusal.contains("run it yourself with bash, or allow it by a permission rule"),
-        "the refusal names the containment and the way out: {refusal}"
-    );
-    assert!(!marker.exists(), "the refused check never ran");
+    assert!(spawned.is_ok(), "{spawned:?}");
     Ok(())
 }
 

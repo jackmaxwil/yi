@@ -1086,7 +1086,7 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   (`~/.yi/adapters/`, then `PATH`) over JSON lines (`adapters/README.md`), one per channel per
   process, restarted within `rlm.service`'s intensity and past it stopped with its subscriptions
   paused and told; `/heartbeat halt` stops them all. An `exec://` command a tool call or the
-  kernel arms is judged as the bash call it amounts to, never contained; a source only waits
+  kernel arms is judged as the bash call it amounts to, and runs contained outside yolo; a source only waits
   read backs off to `plan.probe_max_s` while its level holds. A wake shows at most 32 KiB.
 - Surfaces: RPC `heartbeat`, ACP `_yi/heartbeat` and slash `/heartbeat` (default `every 5m`, one
   per session, reaching the solo TUI, the console and ACP `_yi/slash`); kernel
