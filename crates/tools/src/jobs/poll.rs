@@ -5,6 +5,11 @@ use serde_json::{Map, Value, json};
 use super::{JobId, JobReport, JobState, Jobs, Outcome};
 use crate::tool::{ToolContext, ToolOutput, error_output, text_output};
 
+/// The source a job's words belong to when the program it ran is not Yi's own, so the runtime fences
+/// what it printed even when the poll names no command.
+fn external(command: &str) -> Option<&'static str> {
+    yi_permission::runs(command).then_some(yi_permission::DESKTOP_SOURCE)
+}
 pub(crate) fn poll_job(input: &Map<String, Value>, context: &ToolContext) -> ToolOutput {
     let jobs = super::registry();
     let requested = input.get("job").and_then(Value::as_u64).map(JobId);
@@ -42,7 +47,11 @@ pub(crate) fn poll_job(input: &Map<String, Value>, context: &ToolContext) -> Too
             let exit_code = report.exit_code.unwrap_or(-1);
             let text = format!("{}\n{}", report.headline(), report.view());
             let killed = report.state == JobState::Settled(Outcome::Killed);
-            let details = json!({ "job": id.0, "exitCode": exit_code });
+            let details = json!({
+                "job": id.0,
+                "exitCode": exit_code,
+                "externalSource": external(&report.command),
+            });
             let value = context
                 .program
                 .then(|| crate::values::polled(id, report.exit_code, &report.output, killed));
@@ -91,7 +100,11 @@ fn running(jobs: &Jobs, id: JobId, report: &JobReport, context: &ToolContext) ->
         sections.push(viewed.text);
     }
     let mut output = text_output(sections.join("\n"));
-    output.result.details = json!({ "job": id.0, "running": true });
+    output.result.details = json!({
+        "job": id.0,
+        "running": true,
+        "externalSource": external(&report.command),
+    });
     output.value = context.program.then(|| crate::values::job(id));
     output
 }
@@ -139,6 +152,33 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(7),
             "returned after {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// Incident: a backgrounded desktop command's poll came back with the app's own words unfenced,
+    /// because a poll's arguments name no command for the fence to read.
+    #[test]
+    fn a_poll_of_a_desktop_job_says_whose_words_it_prints() -> Result<(), Box<dyn Error>> {
+        let cwd = Path::new("/yi-jobs-test/poll-source");
+        let owner = JobOwner::mint();
+        let id = registry().insert(
+            "agent-desktop snapshot --app Calculator",
+            (cwd, None),
+            Reaper::Poller {
+                reported: false,
+                owner: Some(owner),
+            },
+            Arc::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let input = serde_json::Map::from_iter([("job".to_owned(), serde_json::json!(id.0))]);
+        let mut context = crate::ToolContext::new(cwd.to_path_buf());
+        context.job_owner = Some(owner);
+        let output = crate::BashTool::default().execute(input, &context);
+        assert_eq!(
+            output.result.details["externalSource"], "agent-desktop",
+            "{output:?}"
         );
         Ok(())
     }
