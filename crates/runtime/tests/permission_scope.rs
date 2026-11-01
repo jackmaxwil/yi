@@ -1033,14 +1033,7 @@ fn sandboxed_broker(asker: Asker) -> PermissionBroker {
         Some(asker),
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        sealed: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }))
+    .with_sandbox(Some(sandbox(vec![project])))
 }
 
 /// A broker in auto mode holding a sandbox, which answers every ask with `answer` and counts them.
