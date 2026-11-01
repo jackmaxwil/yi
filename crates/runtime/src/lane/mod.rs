@@ -361,6 +361,7 @@ fn tree_state(
     status: Result<String, String>,
     base: Option<&Sha>,
     deadline: std::time::Instant,
+    home: &Path,
 ) -> TreeState {
     let Ok(status) = status else {
         return TreeState::Unread { step: "status" };
@@ -373,9 +374,9 @@ fn tree_state(
             modified = modified.saturating_add(1);
         }
     }
-    // The same count `Uncommitted` reads, so a lane is never clean in a listing and dirty to its
-    // claim; one index read decides both, whatever the repository carries.
-    let dirty = reap::dirty_submodules(path, Some(deadline)).unwrap_or(1);
+    // The same count `Uncommitted` reads, through the one helper that keeps its budget and its
+    // unreadable-index default: a lane is never clean in a listing and dirty to its claim.
+    let dirty = reap::submodule_paths(0, path, Some(deadline), Some(home));
     modified = modified.saturating_add(u32::try_from(dirty).unwrap_or(u32::MAX));
     let Some(base) = base else {
         return TreeState::Unread { step: "main" };
@@ -569,7 +570,7 @@ impl Pool {
                 let branch = head(&path).ok().and_then(|head| head.branch().cloned());
                 Holder {
                     session,
-                    tree: tree_state(&path, status, base.as_ref(), deadline),
+                    tree: tree_state(&path, status, base.as_ref(), deadline, &self.home),
                     age: branch
                         .as_ref()
                         .and_then(|branch| age_of(&path, branch, deadline)),
@@ -960,7 +961,8 @@ impl Lane {
     pub fn discard(self) -> Result<Wiped, LaneError> {
         let branch = self.branch.as_str().to_owned();
         let repo = self.pool.repo.clone();
-        let wiped = self.take_slot(true)?;
+        // Invariant: only a release warms; a discard deletes the branch a warmer would build for.
+        let wiped = self.take_slot(false)?;
         let _ = git(&repo, &["branch", "-q", "-D", &branch]);
         Ok(wiped)
     }
@@ -969,19 +971,28 @@ impl Lane {
     pub fn release(self) -> Result<Uncommitted, LaneError> {
         let mut lane = self;
         lane.released = true;
-        let kept = Uncommitted::read(&lane.path)?;
+        let kept = Uncommitted::read(&lane.path, Some(lane.pool.home()))?;
         if !kept.is_empty() {
             return Ok(kept);
         }
-        let _ = lane.take_slot(true)?;
+        // The read above said the tree is clean, so the hand-back pays no second one.
+        let _ = lane.finish(true, Some(Wiped::default()))?;
         Ok(Uncommitted::default())
     }
 
-    pub(super) fn take_slot(mut self, quit: bool) -> Result<Wiped, LaneError> {
+    pub(super) fn take_slot(self, quit: bool) -> Result<Wiped, LaneError> {
+        self.finish(quit, None)
+    }
+
+    /// `wiped` is the measurement a caller already made of a tree it found clean; `None` wipes now.
+    fn finish(mut self, quit: bool, wiped: Option<Wiped>) -> Result<Wiped, LaneError> {
         self.released = true;
         let _pool = self.pool.lock()?;
         self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-        let wiped = self.pool.wipe(self.slot)?;
+        let wiped = match wiped {
+            Some(wiped) => wiped,
+            None => self.pool.wipe(self.slot)?,
+        };
         self.pool.clear_session(self.slot)?;
         if quit {
             // Invariant: an unseen lockfile stays cold; that is not a failure.

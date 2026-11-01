@@ -7,32 +7,38 @@ use super::{
     ClaimBase, Head, LIST_BUDGET, LaneError, Pool, STATUS, Sha, SlotIndex, git, git_capture, head,
 };
 
-/// Uncommitted paths one status read named; past the capture cap the count is a floor.
+/// Uncommitted paths one status read named; past the capture cap the count is a floor, and
+/// `submodules` is how many of them a gitlink read attributed, so a survivor can name its cause.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Uncommitted {
     paths: usize,
     cut: Option<(usize, usize)>,
+    submodules: usize,
 }
 
 impl Uncommitted {
-    pub(crate) fn read(tree: &Path) -> Result<Self, LaneError> {
+    pub(crate) fn read(tree: &Path, home: Option<&Path>) -> Result<Self, LaneError> {
         let status = git_capture(tree, &STATUS, None, yi_tools::OUTPUT_CAP)?;
-        Ok(Self::counted(&status).with_submodules(tree))
+        Ok(Self::counted(&status).with_submodules(tree, home, None))
     }
 
     /// Invariant: host git never enters a submodule, whose config it cannot trust, so `status` is
     /// blind to work inside one. A listing reads the same count, so no lane is clean in one place.
-    fn with_submodules(mut self, tree: &Path) -> Self {
+    fn with_submodules(
+        mut self,
+        tree: &Path,
+        home: Option<&Path>,
+        until: Option<std::time::Instant>,
+    ) -> Self {
         // One budget for the whole read: a hung git in one submodule must not stall every spawn.
-        let until = std::time::Instant::now().checked_add(LIST_BUDGET);
-        self.paths = self
-            .paths
-            .saturating_add(dirty_submodules(tree, until).unwrap_or(1));
+        let until = until.or_else(|| std::time::Instant::now().checked_add(LIST_BUDGET));
+        self.submodules = dirty_submodules(tree, until, home).unwrap_or(1);
+        self.paths = self.paths.saturating_add(self.submodules);
         self
     }
 
     /// One status read bounded by [`LIST_BUDGET`]; the error names why the paths went uncounted.
-    pub(crate) fn read_briefly(tree: &Path) -> Result<Self, String> {
+    pub(crate) fn read_briefly(tree: &Path, home: Option<&Path>) -> Result<Self, String> {
         let started = std::time::Instant::now();
         let capture = super::capture_named(
             tree,
@@ -44,7 +50,7 @@ impl Uncommitted {
             None,
         );
         capture
-            .map(|capture| Self::counted(&capture).with_submodules(tree))
+            .map(|capture| Self::counted(&capture).with_submodules(tree, home, None))
             .map_err(|error| {
                 if started.elapsed() >= LIST_BUDGET {
                     format!("git status past LIST_BUDGET ({} s)", LIST_BUDGET.as_secs())
@@ -53,11 +59,16 @@ impl Uncommitted {
                 }
             })
     }
+
     fn counted(status: &yi_tools::CommandCapture) -> Self {
         let (rows, cut) = (status.stdout.lines().count(), status.cut);
         // Invariant: a cut list is a head and a tail around a marker row; three lines may be no path.
         let paths = rows.saturating_sub(if cut.is_some() { 3 } else { 0 });
-        Self { paths, cut }
+        Self {
+            paths,
+            cut,
+            submodules: 0,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -69,6 +80,19 @@ impl Uncommitted {
         Self {
             paths: self.paths.saturating_sub(after.paths),
             cut: self.cut,
+            submodules: after.submodules.min(self.submodules),
+        }
+    }
+
+    /// A survivor says what held it, never a cause nothing read: a gitlink count is what a
+    /// checkout cannot reach, and the rest is in place because `clean -fd` left it there.
+    fn described(&self) -> String {
+        let inside = self.submodules.min(self.paths);
+        let outside = self.paths.saturating_sub(inside);
+        match (inside, outside) {
+            (0, _) => format!("{self} kept in place, outside git's reach"),
+            (_, 0) => format!("{self} kept inside a submodule"),
+            (_, _) => format!("{self} kept: {inside} inside a submodule, {outside} in place"),
         }
     }
 
@@ -94,15 +118,30 @@ impl Wiped {
         let kept = if self.kept.is_empty() {
             String::new()
         } else {
-            format!("; {} kept inside a submodule", self.kept)
+            format!("; {}", self.kept.described())
         };
         format!("{}{kept}", self.lost.discarded())
     }
 }
 
+/// The count a status read adds for the gitlinks holding work, one path for an unreadable index:
+/// the claim decision and a listing take it from here, so one budget and one default decide both.
+pub(crate) fn submodule_paths(
+    paths: usize,
+    tree: &Path,
+    until: Option<std::time::Instant>,
+    home: Option<&Path>,
+) -> usize {
+    paths.saturating_add(dirty_submodules(tree, until, home).unwrap_or(1))
+}
+
 /// The populated gitlinks with work inside them, `None` when the index cannot be read; the claim
 /// decision and a listing both read it, so one answer exists for whether a lane is dirty.
-pub(crate) fn dirty_submodules(tree: &Path, until: Option<std::time::Instant>) -> Option<usize> {
+pub(crate) fn dirty_submodules(
+    tree: &Path,
+    until: Option<std::time::Instant>,
+    home: Option<&Path>,
+) -> Option<usize> {
     let stage = super::hostgit::git_capped(
         tree,
         &["ls-files", "--stage", "-z"],
@@ -120,11 +159,14 @@ pub(crate) fn dirty_submodules(tree: &Path, until: Option<std::time::Instant>) -
     if links.is_empty() {
         return Some(0);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    // Invariant: one builder for a lane's profile, from the home the pool holds; a caller with no
+    // pool reads the host's own, so a seal added to `profile` reaches a submodule read too.
+    let home = home
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
     let sandbox = home
         .as_deref()
-        .filter(|_| yi_tools::Sandbox::available())
-        .map(|home| yi_tools::Sandbox::for_workspace(tree, home, None));
+        .and_then(|home| super::toolchain::profile(tree, home));
     let links =
         (links.iter()).filter(|dir| !submodule_is_clean(tree, dir, until, sandbox.as_ref()));
     Some(links.count())
@@ -232,19 +274,26 @@ impl Pool {
 
     /// Whether `git status` names a path in a slot's tree; an unreadable status counts as dirty.
     pub(super) fn dirty(&self, slot: SlotIndex) -> bool {
-        !Uncommitted::read(&self.slot_path(slot)).is_ok_and(|tree| tree.is_empty())
+        !Uncommitted::read(&self.slot_path(slot), Some(&self.home))
+            .is_ok_and(|tree| tree.is_empty())
     }
 
     /// Invariant: the only wipe of a session's work; a claim checks out only over a clean tree.
     pub(super) fn wipe(&self, slot: SlotIndex) -> Result<Wiped, LaneError> {
         let path = self.slot_path(slot);
-        let lost = Uncommitted::read(&path)?;
-        if !lost.is_empty() {
-            git(&path, &["checkout", "-q", "-f"])?;
-            git(&path, &["clean", "-qfd"])?;
+        let lost = Uncommitted::read(&path, Some(&self.home))?;
+        // Nothing to drop: the answer is the same, and a clean hand-back pays no confirming read.
+        if lost.is_empty() {
+            return Ok(Wiped {
+                lost,
+                kept: Uncommitted::default(),
+            });
         }
-        // What the same read says now: the paths a wipe leaves are the ones it did not drop.
-        let kept = Uncommitted::read(&path).unwrap_or_default();
+        git(&path, &["checkout", "-q", "-f"])?;
+        git(&path, &["clean", "-qfd"])?;
+        // What the same read says now: the paths a wipe leaves are the ones it did not drop, and a
+        // tree it cannot read is not one it emptied, so the failure is the caller's, never a zero.
+        let kept = Uncommitted::read(&path, Some(&self.home))?;
         Ok(Wiped {
             lost: lost.without(&kept),
             kept,
@@ -464,7 +513,8 @@ impl Pool {
         if !status {
             return Ok(());
         }
-        let dirty = Uncommitted::read(&tree.path).map_err(|e| format!("status unreadable: {e}"))?;
+        let dirty = Uncommitted::read(&tree.path, Some(&self.home))
+            .map_err(|e| format!("status unreadable: {e}"))?;
         match dirty.is_empty() {
             true => Ok(()),
             false => Err(dirty.to_string()),

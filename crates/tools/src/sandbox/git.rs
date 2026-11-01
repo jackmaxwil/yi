@@ -79,7 +79,11 @@ pub struct Sealed {
 /// admin dir and the module dirs it already has, and a name created after the build is sealed.
 pub(super) fn sealed(git_dirs: &[PathBuf]) -> Vec<Sealed> {
     let mut dirs: Vec<PathBuf> = git_dirs.to_vec();
-    dirs.extend((git_dirs.iter()).flat_map(|dir| module_dirs(&dir.join("modules"))));
+    dirs.extend(
+        (git_dirs.iter())
+            .filter(|dir| dir.join("modules").is_dir())
+            .flat_map(|dir| module_dirs(&dir.join("modules"))),
+    );
     let keeper = |parent: &Path| -> Vec<PathBuf> {
         (dirs.iter())
             .filter(|dir| dir.starts_with(parent))

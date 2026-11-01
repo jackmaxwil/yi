@@ -160,6 +160,12 @@ pub(super) fn wrapped(
     })
 }
 
+/// A lane's own profile, from the home the pool holds: the one builder every contained lane git
+/// takes, so a seal added here reaches the submodule read too.
+pub(super) fn profile(tree: &Path, home: &Path) -> Option<yi_tools::Sandbox> {
+    yi_tools::Sandbox::available().then(|| yi_tools::Sandbox::for_workspace(tree, home, None))
+}
+
 /// Seatbelt-contained like a bash call: slot and scratch writable, credentials unreadable.
 /// The sandbox rides along so a failed sync can carry the real refusal, not a guess from its text.
 fn contained(
@@ -167,8 +173,7 @@ fn contained(
     home: &Path,
     argv: &[&str],
 ) -> Option<(String, Vec<String>, Option<yi_tools::Sandbox>)> {
-    let sandbox =
-        yi_tools::Sandbox::available().then(|| yi_tools::Sandbox::for_workspace(tree, home, None));
+    let sandbox = profile(tree, home);
     let (program, args) = wrapped(argv, sandbox.as_ref())?;
     Some((program, args, sandbox))
 }

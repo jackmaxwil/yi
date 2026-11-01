@@ -718,16 +718,7 @@ fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
         .ok_or("HOME is unset")?;
     let root = Scratch::new("yi-grant-root")?;
     let repo = root.join("repo");
-    std::fs::create_dir_all(&repo)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the checkout under test is built by the real git"
-    )]
-    let init = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(&repo)
-        .status()?;
-    assert!(init.success(), "git init");
+    crate::repo::init_repo(&repo)?;
     let sandbox = Sandbox::for_workspace(&repo, &home, None);
     let provider = Arc::new(ProviderStream::new(None));
     let session = new_session(&provider);
@@ -748,8 +739,9 @@ fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
             above.display()
         );
     }
-    // With no profile a grant widens nothing, so the flag is taken wherever it points: a Linux
-    // host has no Seatbelt profile, and `--allow-write ~` there starts instead of refusing.
+    // Invariant: a guarded directory is refused whatever the host carries. Dies with the no-profile
+    // shortcut ahead of the guard: `permissions.allowWrite` on `$HOME` then starts on Linux and
+    // exits 2 on a Mac, and the CLI surface that pins both spells the same flag.
     let (refuse, _) = answering(AskOutcome::Reject);
     let provider = Arc::new(ProviderStream::new(None));
     let session = new_session(&provider);
@@ -761,7 +753,11 @@ fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
         session.events_sender(),
     );
     bare.grant_write(Path::new("/"))?;
-    bare.grant_write(Path::new(&home))?;
+    let bare_home = bare.grant_write(Path::new(&home)).err().unwrap_or_default();
+    assert!(
+        bare_home.contains("protected"),
+        "a profile-less broker refuses HOME too: {bare_home}"
+    );
     let denied = gate
         .grant_write(&repo.join(".git/hooks"))
         .err()
@@ -782,19 +778,8 @@ fn a_grant_around_a_lanes_closed_git_dir_is_refused() -> TestResult {
         .ok_or("HOME is unset")?;
     let root = Scratch::new("yi-grant-lane")?;
     let (trunk, lane) = (root.join("trunk"), root.join("lane"));
-    std::fs::create_dir_all(&trunk)?;
-    let git = |dir: &Path, args: &[&str]| -> TestResult {
-        let status = yi_tools::keyless_command("git")
-            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
-            .args(args)
-            .current_dir(dir)
-            .status()?;
-        assert!(status.success(), "git {args:?}");
-        Ok(())
-    };
-    git(&trunk, &["init", "-q", "-b", "main"])?;
-    git(&trunk, &["commit", "-q", "--allow-empty", "-m", "first"])?;
-    git(
+    crate::repo::init_repo(&trunk)?;
+    crate::worktree::git(
         &trunk,
         &["worktree", "add", "-q", "--detach", &lane.to_string_lossy()],
     )?;

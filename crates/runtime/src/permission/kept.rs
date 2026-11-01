@@ -167,15 +167,16 @@ impl PermissionBroker {
         if holds {
             return Ok(());
         }
-        // With no profile a grant widens nothing, so the flag is taken wherever it points.
-        if self.sandbox.is_none() {
-            return Ok(());
-        }
+        // With no profile a grant widens nothing, so the flag is taken wherever it points; a
+        // guarded directory is refused whatever the host carries, or the same flag exits 2 on one.
         if protected_from_grant(self.sandbox.as_ref(), &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
             ));
+        }
+        if self.sandbox.is_none() {
+            return Ok(());
         }
         let grant = yi_permission::write_grant(&real);
         self.keep_grant(
