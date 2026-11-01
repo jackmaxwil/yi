@@ -4,7 +4,7 @@ use crate::account::{Tokens, estimate_message};
 
 pub const RETENTION_FLOOR_BUDGET: Tokens = Tokens(64_000);
 
-/// Invariant: the floor holds the requester's words and the letter that wakes it, never a host notice.
+/// Invariant: the floor holds the requester's words and every letter that wakes the session.
 fn floor_text(message: &AgentMessage) -> Option<&str> {
     let AgentMessage::User {
         content: UserContent::Text(text),
@@ -14,7 +14,10 @@ fn floor_text(message: &AgentMessage) -> Option<&str> {
     else {
         return None;
     };
-    let wakes = matches!(attribution, Attribution::Host(HostSource::Mail));
+    let wakes = matches!(
+        attribution,
+        Attribution::Host(HostSource::Mail | HostSource::Lifecycle | HostSource::Job)
+    );
     (attribution.reads_as_typed(*timestamp) || wakes).then_some(text.as_str())
 }
 

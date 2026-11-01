@@ -496,6 +496,22 @@ fn a_host_notice_leaves_the_floor_and_a_waking_letter_stays() -> TestResult {
     assert_eq!(survivors, vec![mail, typed]);
     Ok(())
 }
+/// Dies when the news that woke an idle session, a child's completion or a job's report, is lost.
+#[test]
+fn every_letter_that_wakes_an_idle_session_survives_the_floor() -> TestResult {
+    use yi_types::message::HostSource;
+    let typed = user("count the rows");
+    for kind in [HostSource::Lifecycle, HostSource::Job] {
+        let news = AgentMessage::host_text(kind, "child fi-2 finished: 3 rows", 1);
+        let survivors = retain_floor(&[news.clone(), typed.clone()], Tokens(64_000));
+        assert_eq!(
+            survivors,
+            vec![news, typed.clone()],
+            "{kind:?} woke the session"
+        );
+    }
+    Ok(())
+}
 
 /// Dies when a kind nobody registered is dropped at compaction, or a raise-once notice dies
 /// before the reply that reads it.

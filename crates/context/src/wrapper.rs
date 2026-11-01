@@ -86,13 +86,13 @@ pub fn internal_source(message: &AgentMessage) -> Option<&str> {
 
 /// A custom entry's lifetime: dropped with its window, dropped once a reply read it, or durable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lifetime {
+pub(crate) enum Lifetime {
     Wrapped(&'static str),
     OnceRead,
     Durable,
 }
 
-pub fn lifetime_of(custom_type: &str) -> Lifetime {
+pub(crate) fn lifetime_of(custom_type: &str) -> Lifetime {
     match custom_type {
         "heartbeat_prompt" => Lifetime::Wrapped("heartbeat"),
         "advisory" => Lifetime::Wrapped("advisory"),
