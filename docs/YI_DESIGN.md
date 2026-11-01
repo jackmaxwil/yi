@@ -604,8 +604,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   verb and a later use asks. "Always allow" keeps a `Grant` (directory, tree root, program+verb),
   in memory, ≤ 1024 rules.
 - Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, git dirs minus
-  `hooks config config.worktree info modules commondir gitdir objects/info/alternates`, a `.git`
-  that is no directory, and every other lane's admin dir, session dir, tmp; reads deny the credential stores the read gate
+  `hooks config config.worktree info commondir gitdir objects/info/alternates` in each git dir and
+  submodule, `<git>/worktrees` and `<git>/modules` closed whole (a lane keeps its own admin dir and
+  the module dirs it already has), a `.git` that is no directory, session dir, tmp; reads deny the credential stores the read gate
   refuses (`~/.ssh ~/.gnupg ~/.aws ~/.kube ~/.docker ~/.yi/mcp/tokens ~/.yi/providers/tokens
   ~/.yi/oauth ~/.config/{gh,fgj,gcloud} ~/.netrc ~/.git-credentials ~/.npmrc ~/.pypirc
   ~/.cargo/credentials[.toml] ~/.password-store`, `credential_stores`, D323, D324) and the wall's `deny_read`, each
