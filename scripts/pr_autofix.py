@@ -1929,15 +1929,15 @@ def selfcheck():
         errs.append("a body citing only closed issues, or none, was rewritten")
     statuses, real_api, patched = [("gate (test)", "failure"), ("gate (lint)", "pending"), ("title", "failure")], forge_pr.fgj_api, []
     forge_pr.fgj_api = lambda method, path, payload=None: patched.append(path) if method != "GET" else (
-        {"state": "closed"} if "/issues/" in path else {"statuses": [{"context": f"pr / {job} (pull_request)", "status": state} for job, state in statuses]})
-    real_repo, forge_pr.repo = forge_pr.repo, lambda: "o/r"
+        {"state": "closed" if path.endswith("/issues/2") else "open"} if "/issues/" in path else {"statuses": [{"context": f"pr / {job} (pull_request)", "status": state} for job, state in statuses]})
+    real_repo, forge_pr.repo, real_rerun, forge_pr.cmd_rerun = forge_pr.repo, lambda: "o/r", forge_pr.cmd_rerun, lambda ns: None
     try:
         if red_lanes("o/r", "abc") != ["test"]:
             errs.append(f"the status route's red lanes read {red_lanes('o/r', 'abc')}")
         if tidy("o/r", {"number": 1, "body": "Closes #1. Refs #2.", "head": {"sha": "abc"}}) or patched:
             errs.append(f"a body was edited while its rerun would be refused: {patched}")
     finally:
-        forge_pr.fgj_api, forge_pr.repo = real_api, real_repo
+        forge_pr.fgj_api, forge_pr.repo, forge_pr.cmd_rerun = real_api, real_repo, real_rerun
     fresh = {"n": 3, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness"}]}
     if owed_mediums(fresh) or not owed_mediums(dict(fresh, n=2)) or not owed_mediums(dict(fresh, findings=[dict(fresh["findings"][0], since=2)])):
         errs.append("a fresh medium from round 3 on is owed a fix, or a round-2 or carried one is not")
