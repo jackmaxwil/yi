@@ -2,8 +2,9 @@
 //! (`u32 LE` path length, path, `u32 LE` content length, content, repeated), so a `yi`
 //! installed away from its checkout still has a runtime to unpack under `~/.yi/python`. The
 //! test suites stay out: they run from the checkout, never from the unpacked copy.
-use std::io::Write;
 use std::path::{Path, PathBuf};
+
+include!("../runtime/pack.rs");
 
 type BuildResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -42,6 +43,7 @@ fn walk(dir: &Path, root: &Path, out: &mut Vec<u8>) -> BuildResult<()> {
 }
 
 fn main() -> BuildResult<()> {
+    println!("cargo::rerun-if-changed=../runtime/pack.rs");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR unset")?);
     let root =
         PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR unset")?)
@@ -54,7 +56,5 @@ fn main() -> BuildResult<()> {
         println!("cargo::rerun-if-changed={}", dir.display());
         walk(&dir, &root, &mut stream)?;
     }
-    let packed = miniz_oxide::deflate::compress_to_vec_zlib(&stream, 9);
-    std::fs::File::create(out.join("python.zz"))?.write_all(&packed)?;
-    Ok(())
+    pack_bytes(&stream, &out, "python")
 }

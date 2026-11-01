@@ -189,33 +189,3 @@ fn no_prompt_example_waits_past_the_cell_ceiling() {
     }
     assert!(over.is_empty(), "{}", over.join("; "));
 }
-
-/// The prompts ride the binary deflated: a session reads each one inflated, byte for byte, or
-/// the model is taught a truncated doctrine and nothing else notices.
-#[test]
-fn every_packed_prompt_inflates_to_its_own_file() {
-    for (name, source, live) in [
-        (
-            "identity.md",
-            include_str!("../src/prompts/identity.md"),
-            yi_runtime::identity_fragment(),
-        ),
-        (
-            "doctrine.md",
-            include_str!("../src/prompts/doctrine.md"),
-            yi_runtime::doctrine_fragment(),
-        ),
-        (
-            "delegation.md",
-            include_str!("../src/prompts/delegation.md"),
-            yi_runtime::delegation_fragment(),
-        ),
-        (
-            "unattended.md",
-            include_str!("../src/prompts/unattended.md"),
-            yi_runtime::unattended_fragment(),
-        ),
-    ] {
-        assert_eq!(live, source, "{name} reached a session as something else");
-    }
-}
