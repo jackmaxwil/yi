@@ -792,6 +792,11 @@ impl Swap {
             Swap::Parent => {
                 if at("d").is_symlink() {
                     std::fs::remove_file(at("d"))?;
+                }
+                // Incident: a write landing mid-swap recreates `d`, and every later swap's rename
+                // then failed on the leftover, so the rest of the run raced nothing.
+                if at("dir.tmp").exists() {
+                    let _ = std::fs::remove_dir_all(at("d"));
                     std::fs::rename(at("dir.tmp"), at("d"))?;
                 }
                 std::fs::write(at("d/id_rsa"), benign)
@@ -800,14 +805,15 @@ impl Swap {
     }
 }
 
-/// Swaps that must land inside a checked call, and the calls allowed to get them.
+/// Swaps that must land between the broker's check and the tool's open, and the calls allowed
+/// to get them.
 #[cfg(unix)]
 const INSIDE: usize = 200;
 #[cfg(unix)]
 const ROUNDS: usize = 4_000;
 
 /// Runs checked calls, each with the swap timed to land at a different point of the call, until
-/// [`INSIDE`] swaps landed inside one; returns that count and how many calls reached the key.
+/// [`INSIDE`] swaps landed in the window; returns that count and how many calls reached the key.
 #[cfg(unix)]
 fn race(
     tool: &str,
@@ -843,13 +849,21 @@ fn race(
         .ok_or("no read tool")?;
     let args = args(read.as_ref(), &context);
     let (kind, irreversible) = (tool_impl.kind_for(&args), tool_impl.irreversible(&args));
-    let mut span = std::time::Duration::MAX;
-    for _ in 0..5 {
+    let (mut checks, mut calls, mut calm) = (Vec::new(), Vec::new(), String::new());
+    for _ in 0..9 {
         swap.disarm(&workspace, benign)?;
         let timed = std::time::Instant::now();
-        tool_impl.execute(args.clone(), &context);
-        span = span.min(timed.elapsed());
+        broker.decide_call(tool, kind, irreversible, "c1", &args, None);
+        checks.push(timed.elapsed());
+        let timed = std::time::Instant::now();
+        calm = format!("{:?}", tool_impl.execute(args.clone(), &context).result);
+        calls.push(timed.elapsed());
     }
+    let median = |spans: &mut Vec<std::time::Duration>| {
+        spans.sort();
+        spans.get(spans.len() / 2).copied().unwrap_or_default()
+    };
+    let (check, call) = (median(&mut checks), median(&mut calls));
     let (arm, armed) = std::sync::mpsc::channel::<std::time::Instant>();
     let (land, landed) = std::sync::mpsc::channel::<std::time::Instant>();
     let swapper = {
@@ -880,14 +894,17 @@ fn race(
             break;
         }
         swap.disarm(&workspace, benign)?;
-        if !(broker.decide_call(tool, kind, irreversible, "c1", &args, None)).allowed {
-            continue;
-        }
         let step = u32::try_from(round.wrapping_mul(61) % 64).unwrap_or(0);
-        arm.send(std::time::Instant::now() + span * step / 64)?;
-        let output = tool_impl.execute(args.clone(), &context);
-        let ended = std::time::Instant::now();
-        if landed.recv_timeout(std::time::Duration::from_secs(10))? <= ended {
+        arm.send(std::time::Instant::now() + check / 2 + (check / 2 + call) * step / 64)?;
+        let allowed = (broker.decide_call(tool, kind, irreversible, "c1", &args, None)).allowed;
+        let checked = std::time::Instant::now();
+        let output = allowed.then(|| tool_impl.execute(args.clone(), &context));
+        let at = landed.recv_timeout(std::time::Duration::from_secs(10))?;
+        let Some(output) = output else {
+            continue;
+        };
+        // Invariant: a swap landing after the tool's open leaves the undisturbed output.
+        if at >= checked && format!("{:?}", output.result) != calm {
             inside += 1;
         }
         if reached(&output, &key) {
@@ -931,11 +948,11 @@ fn assert_no_leak(tool: &str, swap: Swap, (inside, leaks): (usize, usize)) {
     };
     assert!(
         inside >= INSIDE,
-        "{tool}: only {inside} of {ROUNDS} swaps landed inside a checked call"
+        "{tool}: only {inside} of {ROUNDS} swaps landed between the check and the open"
     );
     assert_eq!(
         leaks, 0,
-        "{tool}, {swapped} swap: {leaks} of {inside} swaps inside a call reached the key"
+        "{tool}, {swapped} swap: {leaks} of {inside} swaps in the window reached the key"
     );
 }
 
@@ -1005,7 +1022,9 @@ fn a_parent_swapped_after_the_check_edits_no_key() -> TestResult {
         args.insert("patch".to_owned(), json!(patch));
         args
     };
-    let tried = race("edit", Swap::Parent, "ordinary\n", &args, &changes_key)?;
+    // A long file widens the gap between the edit's read and its write.
+    let benign = format!("ordinary\n{}", "filler\n".repeat(20_000));
+    let tried = race("edit", Swap::Parent, &benign, &args, &changes_key)?;
     assert_no_leak("edit", Swap::Parent, tried);
     Ok(())
 }
