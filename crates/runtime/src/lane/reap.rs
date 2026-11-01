@@ -21,24 +21,30 @@ impl Uncommitted {
     }
 
     /// Invariant: host git never enters a submodule, whose config it cannot trust, so `status` is
-    /// blind to work inside one. Each is read in the sandbox; what cannot be read counts as dirty.
+    /// blind to work inside one. Each is read through the same door; what cannot be read counts as dirty.
     fn with_submodules(mut self, tree: &Path) -> Self {
-        let Ok(stage) =
-            super::hostgit::git_capped(tree, &["ls-files", "--stage"], None, super::PLUMBING_CAP)
-        else {
+        // One budget for the whole read: a hung git in one submodule must not stall every spawn.
+        let until = std::time::Instant::now().checked_add(LIST_BUDGET);
+        let Ok(stage) = super::hostgit::git_capped(
+            tree,
+            &["ls-files", "--stage", "-z"],
+            until,
+            super::PLUMBING_CAP,
+        ) else {
             self.paths = self.paths.saturating_add(1);
             return self;
         };
-        // One budget for the whole read: a hung git in one submodule must not stall every spawn.
-        let until = std::time::Instant::now().checked_add(LIST_BUDGET);
-        let links = (stage.lines())
-            .filter(|row| row.starts_with("160000 "))
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let sandbox = home
+            .as_deref()
+            .filter(|_| yi_tools::Sandbox::available())
+            .map(|home| yi_tools::Sandbox::for_workspace(tree, home, None));
+        let links = (stage.split('\0'))
             .filter_map(|row| row.split_once('\t'))
-            .filter(|(_, path)| {
-                let populated =
-                    std::fs::read_dir(tree.join(path)).is_ok_and(|mut dir| dir.next().is_some());
-                populated && !submodule_is_clean(tree, path, until)
-            });
+            .filter(|(meta, _)| meta.starts_with("160000 "))
+            .filter_map(|(_, path)| gitlink(tree, path))
+            .filter(|dir| std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some()))
+            .filter(|dir| !submodule_is_clean(tree, dir, until, sandbox.as_ref()));
         self.paths = self.paths.saturating_add(links.count());
         self
     }
@@ -201,37 +207,58 @@ impl Pool {
     }
 }
 
-/// `status` under the tree's own profile, so a clean filter a child planted runs contained. A
-/// directory with no `.git` would read the parent's status instead, so it is never clean.
-fn submodule_is_clean(tree: &Path, path: &str, until: Option<std::time::Instant>) -> bool {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let (Some(home), true) = (home, yi_tools::Sandbox::available()) else {
+/// A gitlink's working tree, never a path out of it: the index sits in a lane's contained-writable
+/// admin dir, so an entry naming `..` or an absolute directory would point host code at another tree.
+fn gitlink(tree: &Path, path: &str) -> Option<PathBuf> {
+    let rel = Path::new(path);
+    let normal = |part: std::path::Component<'_>| matches!(part, std::path::Component::Normal(_));
+    if rel.is_absolute() || !rel.components().all(normal) {
+        return None;
+    }
+    Some(tree.join(rel))
+}
+
+/// `status` under the tree's own profile, so a clean filter a child planted runs contained, and
+/// without Seatbelt still with hooks and fsmonitor off. A dir with no `.git` is never clean.
+fn submodule_is_clean(
+    tree: &Path,
+    dir: &Path,
+    until: Option<std::time::Instant>,
+    sandbox: Option<&yi_tools::Sandbox>,
+) -> bool {
+    let Some(until) = until.filter(|at| std::time::Instant::now() < *at) else {
         return false;
     };
-    let Ok(git) = yi_tools::host_command("git", tree) else {
+    let Ok(path) = dir.strip_prefix(tree) else {
         return false;
     };
-    if !tree.join(path).join(".git").exists() {
+    if !dir.join(".git").exists() {
         return false;
     }
-    let sandbox = yi_tools::Sandbox::for_workspace(tree, &home, None);
-    let program = git.get_program().to_string_lossy().into_owned();
     // The flag as the parent's own read has it: a user's `showUntrackedFiles=no` would hide work.
-    let args = [
+    let argv = [
+        "git",
         "--no-optional-locks",
         "-C",
-        path,
+        &path.to_string_lossy(),
         "status",
         "--porcelain",
         "--untracked-files=normal",
     ];
-    let (program, args) = sandbox.wrap(&program, &args);
-    let mut command = yi_tools::keyless_command(program);
-    command.args(args).current_dir(tree);
-    let cancelled: yi_tools::CancelFlag =
-        std::sync::Arc::new(move || until.is_none_or(|until| std::time::Instant::now() >= until));
-    yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP)
-        .is_ok_and(|capture| capture.exit_code == Some(0) && capture.stdout.trim().is_empty())
+    let Some((program, args)) = super::toolchain::wrapped(&argv, sandbox) else {
+        return false;
+    };
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    super::capture_named(
+        tree,
+        "git status in a submodule",
+        &program,
+        &borrowed,
+        until.saturating_duration_since(std::time::Instant::now()),
+        yi_tools::OUTPUT_CAP,
+        sandbox,
+    )
+    .is_ok_and(|capture| capture.stdout.trim().is_empty())
 }
 
 pub(super) struct Tree {
@@ -413,10 +440,22 @@ mod tests {
             two,
             "git status failed: error: bad signature 0x00000000 fatal: index file corrupt"
         );
+
         let many = briefly("git status failed:\nwarning: a\nfatal: b\nhint: c\nhint: d\n");
         assert_eq!(many, "git status failed: warning: a fatal: b [… 2 more]");
         let bare = briefly("git status: No such file or directory (os error 2)");
         assert_eq!(bare, "git status: No such file or directory (os error 2)");
+    }
+
+    /// Dies with an index entry naming a path out of the tree: the admin dir that holds the index is
+    /// contained-writable, so `..` or an absolute path would point host code at another tree.
+    #[test]
+    fn a_gitlink_outside_the_tree_is_no_link() {
+        let tree = Path::new("/lane");
+        assert_eq!(gitlink(tree, "sub"), Some(PathBuf::from("/lane/sub")));
+        assert_eq!(gitlink(tree, "../other"), None);
+        assert_eq!(gitlink(tree, "/etc"), None);
+        assert_eq!(gitlink(tree, "a/../b"), None);
     }
 
     #[test]

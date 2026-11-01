@@ -61,7 +61,9 @@ impl PermissionBroker {
                 walled.deny_read.extend_from_slice(&wall.deny_read);
                 // A directory swapped for a link since it was kept is judged where it leads.
                 let real = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-                !protected(Some(&walled), &dir) && !protected(Some(&walled), &real)
+                // The word `grant_write` accepted it with: a deny outranks the grant around it.
+                !protected_from_grant(Some(&walled), &dir)
+                    && !protected_from_grant(Some(&walled), &real)
             });
         }
         wall.is_empty() || !yi_permission::is_exact_command(rule)
@@ -249,15 +251,19 @@ fn never_widened(sandbox: Option<&yi_tools::Sandbox>) -> Vec<PathBuf> {
     yi.chain(sandboxed).collect()
 }
 
-/// A lane's profile leaves the common git dir out, so a grant around or inside it would hand back
-/// the refs it took away; a main checkout's git dir is writable already.
+/// A lane's profile leaves the common git dir out, so a grant at, around or inside it would hand
+/// back the refs it took away; a main checkout's git dir is a writable root already, module dirs with it.
 fn holds_a_closed_git_dir(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
-    (sandbox.sealed.iter()).any(|sealed| {
-        let closed = sealed
-            .denied
-            .parent()
-            .filter(|git| !sandbox.writable.iter().any(|root| root == git));
-        closed.is_some_and(|git| git.starts_with(dir) || dir.starts_with(git))
+    let gits: Vec<&Path> = (sandbox.sealed.iter())
+        .filter_map(|sealed| sealed.denied.parent())
+        .collect();
+    (gits.iter()).any(|git| {
+        // A scratch root every profile carries grants no git dir: only a root at or below a git
+        // dir this profile knows writes it whole.
+        let open = (sandbox.writable.iter()).any(|root| {
+            root.as_path() == *git || (**git).starts_with(root) && gits.contains(&root.as_path())
+        });
+        !open && (git.starts_with(dir) || dir.starts_with(git))
     })
 }
 

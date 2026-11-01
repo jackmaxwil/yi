@@ -816,3 +816,39 @@ fn a_grant_around_a_lanes_closed_git_dir_is_refused() -> TestResult {
     }
     Ok(())
 }
+
+/// Dies with a checkout that has a submodule refusing its own root: the module git dirs are sealed
+/// but `<repo>/.git` is a writable root, so nothing in that checkout is inside a closed git dir.
+#[test]
+fn a_checkout_with_a_submodule_grants_its_own_root() -> TestResult {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let root = Scratch::new("yi-grant-modules")?;
+    let repo = root.join("repo");
+    std::fs::create_dir_all(repo.join(".git/modules/sub"))?;
+    std::fs::create_dir_all(repo.join(".git/worktrees"))?;
+    std::fs::write(repo.join(".git/modules/sub/HEAD"), "ref: refs/heads/main\n")?;
+    let sandbox = Sandbox::for_workspace(&repo, &home, None);
+    assert!(
+        sandbox
+            .sealed
+            .iter()
+            .any(|sealed| sealed.denied.ends_with("modules")),
+        "the fixture is a checkout with a module git dir"
+    );
+    // Dies if the `modules` seal goes: a checkout's git dir is writable whole, so only the seal
+    // stops a container from rewriting the module's config, which runs code on the host's git.
+    assert!(
+        sandbox.denies_write(&repo.join(".git/modules/sub/config")),
+        "a module's config is denied inside a writable git dir"
+    );
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let gate = broker(&session, &repo, sandbox, refuse);
+    let refused = gate.grant_write(&repo).err().unwrap_or_default();
+    assert_eq!(refused, "", "the checkout's own root is grantable");
+    gate.grant_write(root.as_ref())?;
+    Ok(())
+}

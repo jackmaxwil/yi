@@ -696,9 +696,6 @@ fn work_inside_a_submodule_keeps_its_lane() -> TestResult {
 /// the pool full in any repository that uses them.
 #[test]
 fn a_clean_submodule_frees_its_lane_and_an_edit_in_it_keeps_it() -> TestResult {
-    if !yi_tools::Sandbox::available() {
-        return Ok(());
-    }
     let rig = Rig::new("clean-submodule")?;
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-one", ClaimBase::Main)?;
@@ -728,6 +725,34 @@ fn a_clean_submodule_frees_its_lane_and_an_edit_in_it_keeps_it() -> TestResult {
     git(&sub, &["config", "status.showUntrackedFiles", "no"])?;
     std::fs::write(sub.join("new.txt"), "work\n")?;
     assert_eq!(again.release()?.to_string(), "1 uncommitted path");
+    Ok(())
+}
+
+/// Dies with a quoted gitlink path read as no directory: `ls-files` escapes a name beyond ASCII, so
+/// a submodule full of edits was skipped and its lane went back to the pool.
+#[test]
+fn an_edited_submodule_named_beyond_ascii_keeps_its_lane() -> TestResult {
+    let rig = Rig::new("quit-submodule-utf8")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = lane.path().join("sub-é");
+    std::fs::create_dir_all(&sub)?;
+    git(&sub, &["init", "-q", "-b", "main"])?;
+    git(&sub, &["config", "user.email", "t@example.invalid"])?;
+    git(&sub, &["config", "user.name", "t"])?;
+    std::fs::write(sub.join("file.txt"), "one\n")?;
+    git(&sub, &["add", "file.txt"])?;
+    git(&sub, &["commit", "-q", "-m", "first"])?;
+    let head = git(&sub, &["rev-parse", "HEAD"])?;
+    let link = format!("160000,{},sub-é", head.trim());
+    git(
+        lane.path(),
+        &["update-index", "--add", "--cacheinfo", &link],
+    )?;
+    git(lane.path(), &["commit", "-q", "-m", "a submodule"])?;
+    std::fs::write(sub.join("file.txt"), "edited\n")?;
+    assert_eq!(lane.release()?.to_string(), "1 uncommitted path");
+    assert!(sub.join("file.txt").is_file(), "the work survived");
     Ok(())
 }
 
@@ -3961,6 +3986,21 @@ async fn a_repository_with_no_identity_still_hands_back() -> TestResult {
     git(&rig.repo, &["config", "--unset", "user.name"])?;
     git(&rig.repo, &["config", "user.useConfigOnly", "true"])?;
     // nextest gives each test its own process, so this empty global config reaches no other.
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
+    hand_back_commits(&rig).await
+}
+
+/// Dies with an identity probe keyed on `user.email` alone: with the name unset and `useConfigOnly`
+/// on, git refuses the hand-back with `empty ident name … not allowed`.
+#[tokio::test]
+async fn a_repository_with_only_an_email_still_hands_back() -> TestResult {
+    let rig = Rig::new("email-only-identity")?;
+    git(&rig.repo, &["config", "--unset", "user.name"])?;
+    git(&rig.repo, &["config", "user.email", "t@example.invalid"])?;
+    git(&rig.repo, &["config", "user.useConfigOnly", "true"])?;
     unsafe {
         std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
         std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");

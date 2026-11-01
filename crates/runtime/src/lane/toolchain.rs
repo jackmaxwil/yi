@@ -144,6 +144,22 @@ pub(super) fn mark_seen(pool: &Pool, hash: &str) -> Result<(), LaneError> {
     yi_session::replace_file(&path, &bytes).map_err(|source| LaneError::Io { path, source })
 }
 
+/// The same argv under the same profile: `contained` for a call that builds one, `wrapped` for a
+/// caller that reads several entries under one profile.
+pub(super) fn wrapped(
+    argv: &[&str],
+    sandbox: Option<&yi_tools::Sandbox>,
+) -> Option<(String, Vec<String>)> {
+    let (program, args) = argv.split_first()?;
+    Some(match sandbox {
+        Some(sandbox) => sandbox.wrap(program, args),
+        None => (
+            (*program).to_owned(),
+            args.iter().map(|arg| (*arg).to_owned()).collect(),
+        ),
+    })
+}
+
 /// Seatbelt-contained like a bash call: slot and scratch writable, credentials unreadable.
 /// The sandbox rides along so a failed sync can carry the real refusal, not a guess from its text.
 fn contained(
@@ -151,17 +167,10 @@ fn contained(
     home: &Path,
     argv: &[&str],
 ) -> Option<(String, Vec<String>, Option<yi_tools::Sandbox>)> {
-    let (program, args) = argv.split_first()?;
-    if yi_tools::Sandbox::available() {
-        let sandbox = yi_tools::Sandbox::for_workspace(tree, home, None);
-        let (program, args) = sandbox.wrap(program, args);
-        return Some((program, args, Some(sandbox)));
-    }
-    Some((
-        (*program).to_owned(),
-        args.iter().map(|arg| (*arg).to_owned()).collect(),
-        None,
-    ))
+    let sandbox =
+        yi_tools::Sandbox::available().then(|| yi_tools::Sandbox::for_workspace(tree, home, None));
+    let (program, args) = wrapped(argv, sandbox.as_ref())?;
+    Some((program, args, sandbox))
 }
 
 /// Invariant: a matching lockfile hash makes the claim git-only; every lockfile present syncs.
