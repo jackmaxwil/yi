@@ -17,7 +17,6 @@ pub enum Rung {
     Ancestor,
     EmptyDiff,
     SameTree,
-    MergeAddsNothing,
     PatchId,
 }
 
@@ -28,7 +27,6 @@ impl std::fmt::Display for Rung {
             Self::Ancestor => "ancestor",
             Self::EmptyDiff => "no changes",
             Self::SameTree => "same tree",
-            Self::MergeAddsNothing => "a merge adds nothing",
             Self::PatchId => "patch-id",
         })
     }
@@ -40,47 +38,53 @@ pub fn integrated(repo: &Path, tip: &str, trunk: &str) -> Result<Option<Rung>, L
     integrated_within(repo, tip, trunk, INTEGRATED_WALK_MAX)
 }
 
-/// # Errors
-/// A [`LaneError::Git`] naming the cap past `walk_max` commits, and any git failure.
-pub fn integrated_within(
+/// A slot handed back: its branch went with `main`, or stayed and this says what git answered.
+pub(super) enum Handback {
+    Deleted,
+    Kept(String),
+}
+
+/// Invariant: the cap counts both sides, because `git cherry` patch-ids trunk's commits too.
+fn integrated_within(
     repo: &Path,
     tip: &str,
     trunk: &str,
     walk_max: usize,
 ) -> Result<Option<Rung>, LaneError> {
-    let id = |rev: String| git(repo, &["rev-parse", "--verify", "-q", &rev]);
-    if id(format!("{tip}^{{commit}}"))?.trim() == id(format!("{trunk}^{{commit}}"))?.trim() {
-        return Ok(Some(Rung::SameCommit));
-    }
     if !super::no(git(repo, &["merge-base", "--is-ancestor", tip, trunk]))? {
-        return Ok(Some(Rung::Ancestor));
+        let commits = (format!("{tip}^{{commit}}"), format!("{trunk}^{{commit}}"));
+        let ids = git(repo, &["rev-parse", &commits.0, &commits.1])?;
+        let mut ids = ids.lines().map(str::trim);
+        let rung = match (ids.next(), ids.next()) {
+            (Some(tip_id), Some(trunk_id)) if tip_id == trunk_id => Rung::SameCommit,
+            _ => Rung::Ancestor,
+        };
+        return Ok(Some(rung));
     }
-    let three_dot = format!("{trunk}...{tip}");
-    if !super::no(git(repo, &["diff", "--quiet", "--no-ext-diff", &three_dot]))? {
+    let range = format!("{trunk}...{tip}");
+    if !super::no(git(repo, &["diff", "--quiet", "--no-ext-diff", &range]))? {
         return Ok(Some(Rung::EmptyDiff));
     }
-    let trunk_tree = id(format!("{trunk}^{{tree}}"))?;
-    if id(format!("{tip}^{{tree}}"))?.trim() == trunk_tree.trim() {
+    let trees = (format!("{tip}^{{tree}}"), format!("{trunk}^{{tree}}"));
+    let trees = git(repo, &["rev-parse", &trees.0, &trees.1])?;
+    let mut trees = trees.lines().map(str::trim);
+    if let (Some(tip_tree), Some(trunk_tree)) = (trees.next(), trees.next())
+        && tip_tree == trunk_tree
+    {
         return Ok(Some(Rung::SameTree));
     }
-    // Exit 1 from a merge is a conflict, so that merge adds something; any other failure is an `Err`.
-    match git(repo, &["merge-tree", "--write-tree", trunk, tip]) {
-        Ok(tree) if tree.trim() == trunk_tree.trim() => return Ok(Some(Rung::MergeAddsNothing)),
-        Ok(_)
-        | Err(LaneError::Git {
-            exit_code: Some(1), ..
-        }) => {}
-        Err(error) => return Err(error),
-    }
-    let range = format!("{trunk}..{tip}");
-    let commits = git(repo, &["rev-list", "--count", &range])?;
-    let commits: usize = commits.trim().parse().unwrap_or(usize::MAX);
-    if commits > walk_max {
+    let counts = git(repo, &["rev-list", "--count", "--left-right", &range])?;
+    let mut counts = counts
+        .split_whitespace()
+        .map(|count| count.parse::<usize>().unwrap_or(usize::MAX));
+    let behind = counts.next().unwrap_or(usize::MAX);
+    let ahead = counts.next().unwrap_or(usize::MAX);
+    if ahead > walk_max || behind > walk_max {
         return Err(LaneError::Git {
             args: vec!["cherry".to_owned(), trunk.to_owned(), tip.to_owned()],
             exit_code: None,
             output: format!(
-                "[not judged: {commits} commits on this branch past gc.integrated_walk {walk_max}; compare it with trunk by hand, or rebase it]"
+                "[not judged: {ahead} commits on this branch and {behind} on {trunk} past the {walk_max}-commit patch-id walk; compare it with trunk by hand, or rebase it]"
             ),
         });
     }
@@ -190,7 +194,20 @@ impl Pool {
         };
         let branch = branch.as_str();
         let base = self.resolve(&ClaimBase::Main, false)?;
-        Ok(git(&self.repo, &["merge-base", "--is-ancestor", branch, &base]).is_ok())
+        Ok(matches!(integrated(&self.repo, branch, &base), Ok(Some(_))))
+    }
+
+    /// `Deleted` when git dropped a branch `main` already holds; `Kept` says what git answered.
+    pub(super) fn settle_branch(&self, branch: &str) -> Result<Handback, LaneError> {
+        let base = self.resolve(&ClaimBase::Main, false)?;
+        match integrated(&self.repo, branch, &base) {
+            Ok(Some(_)) => {
+                git(&self.repo, &["branch", "-q", "-D", branch])?;
+                Ok(Handback::Deleted)
+            }
+            Ok(None) => Ok(Handback::Kept("unmerged".to_owned())),
+            Err(why) => Ok(Handback::Kept(why.to_string())),
+        }
     }
 
     /// Invariant: an orphan's branch is the only copy of its work; it goes only once `main` has it.
@@ -232,10 +249,10 @@ impl Pool {
         self.clear_session(slot)?;
         drop(guard);
         Ok(match (branch, kept) {
-            (Some(branch), true) => {
-                format!("lane {slot} freed{lost}; branch {branch} kept (unmerged)")
+            (Some(branch), Handback::Kept(why)) => {
+                format!("lane {slot} freed{lost}; branch {branch} kept ({why})")
             }
-            (Some(branch), false) => {
+            (Some(branch), Handback::Deleted) => {
                 format!("lane {slot} freed{lost}; branch {branch} deleted (merged)")
             }
             (None, _) => format!("lane {slot} freed{lost}"),
@@ -474,6 +491,47 @@ mod tests {
         assert!(
             verdict.is_err(),
             "stale listing HEAD authorized removing new work"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_walk_cap_holds_at_its_limit_and_is_loud_one_past()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("yi-gc-walk-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo)?;
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "lanes@test"][..],
+            &["config", "user.name", "lanes"][..],
+        ] {
+            git(&repo, args)?;
+        }
+        std::fs::write(repo.join("base.txt"), "base\n")?;
+        git(&repo, &["add", "."])?;
+        git(&repo, &["commit", "-qm", "base"])?;
+        git(&repo, &["switch", "-qc", "work"])?;
+        std::fs::write(repo.join("work.txt"), "work\n")?;
+        git(&repo, &["add", "."])?;
+        git(&repo, &["commit", "-qm", "work"])?;
+        git(&repo, &["switch", "-q", "main"])?;
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "moved on"])?;
+        git(&repo, &["cherry-pick", "work"])?;
+        std::fs::write(repo.join("work.txt"), "changed since\n")?;
+        git(&repo, &["commit", "-qam", "changed since"])?;
+        assert_eq!(
+            integrated_within(&repo, "work", "main", 3)?,
+            Some(Rung::PatchId)
+        );
+        let past = integrated_within(&repo, "work", "main", 2)
+            .err()
+            .ok_or("no refusal past the cap")?
+            .to_string();
+        assert!(
+            past.contains("1 commits on this branch and 3 on main past the 2-commit patch-id walk"),
+            "{past}"
         );
         Ok(())
     }

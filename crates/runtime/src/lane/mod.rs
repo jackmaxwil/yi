@@ -902,20 +902,14 @@ impl Pool {
         path.join(".git").is_file() && yi_permission::git_dirs(&path).is_empty()
     }
 
-    fn detach(&self, slot: SlotIndex, branch: Option<&str>) -> Result<bool, LaneError> {
+    fn detach(&self, slot: SlotIndex, branch: Option<&str>) -> Result<reap::Handback, LaneError> {
         let path = self.slot_path(slot);
         let text = path.to_string_lossy().into_owned();
         let _ = git(&self.repo, &["worktree", "unlock", &text]);
         git(&path, &["checkout", "-q", "--detach"])?;
-        let Some(branch) = branch else {
-            return Ok(false);
-        };
-        let base = self.resolve(&ClaimBase::Main, false)?;
-        let merged = matches!(reap::integrated(&self.repo, branch, &base), Ok(Some(_)));
-        if merged {
-            git(&self.repo, &["branch", "-q", "-D", branch])?;
-        }
-        Ok(!merged)
+        branch.map_or(Ok(reap::Handback::Deleted), |branch| {
+            self.settle_branch(branch)
+        })
     }
 }
 

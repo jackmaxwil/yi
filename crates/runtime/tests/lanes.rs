@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 use yi_runtime::lane::land::{
     LaneHandle, bounded_name, format_lanes, host_of, open_pr_in, owner_repo, parse_jobs, pr_number,
 };
-use yi_runtime::lane::reap::{Rung, integrated, integrated_within};
+use yi_runtime::lane::reap::{Rung, integrated};
 use yi_runtime::lane::settle::{
     Held, Prepared, Publish, Published, Quiescence, Unsettled, generation_of, prepare, publish,
 };
@@ -3904,12 +3904,13 @@ fn each_rung_of_the_ladder_reads_its_own_shape() -> TestResult {
     squash(&rig)?;
     assert_eq!(rung(&rig)?, Some(Rung::SameTree));
 
+    // Trunk took the patch and moved on, so only the patch-id rung recognizes the content.
     let rig = ladder("rung-merge")?;
     squash(&rig)?;
     std::fs::write(rig.repo.join("later.txt"), "later\n")?;
     git(&rig.repo, &["add", "later.txt"])?;
     git(&rig.repo, &["commit", "-qm", "later"])?;
-    assert_eq!(rung(&rig)?, Some(Rung::MergeAddsNothing));
+    assert_eq!(rung(&rig)?, Some(Rung::PatchId));
 
     // Trunk took the patch, then changed the same line, so a merge conflicts and only the patch matches.
     let rig = ladder("rung-patch")?;
@@ -3942,24 +3943,6 @@ fn a_failed_question_keeps_the_branch_and_never_reads_as_no() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn the_walk_cap_holds_at_its_limit_and_is_loud_one_past() -> TestResult {
-    let rig = ladder("rung-cap")?;
-    pick(&rig)?;
-    std::fs::write(rig.repo.join("work.txt"), "changed since\n")?;
-    git(&rig.repo, &["commit", "-qam", "changed since"])?;
-    assert_eq!(
-        integrated_within(&rig.repo, "work", "main", 1)?,
-        Some(Rung::PatchId)
-    );
-    let past = integrated_within(&rig.repo, "work", "main", 0)
-        .err()
-        .ok_or("no refusal past the cap")?
-        .to_string();
-    assert!(past.contains("past gc.integrated_walk 0"), "{past}");
-    Ok(())
-}
-
 /// A squash merge left no ancestry, so gc kept these worktrees and their disk forever.
 #[test]
 fn gc_removes_a_squash_merged_worktree_and_says_how_it_knew() -> TestResult {
@@ -3975,4 +3958,33 @@ fn gc_removes_a_squash_merged_worktree_and_says_how_it_knew() -> TestResult {
     assert!(!tree.exists(), "{report}");
     assert!(report.contains("(merged: same tree)"), "{report}");
     Ok(())
+}
+/// Dies with `detach` asking ancestry alone: a squash-merged lane's branch outlived its lane.
+#[test]
+fn a_released_lane_deletes_the_branch_its_squash_merge_landed() -> TestResult {
+    let rig = rig_with_trunk("release-squash")?;
+    let pool = rig.pool(2)?;
+    let lane = pool.claim("s-squash", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("w.txt"), "work\n")?;
+    git(lane.path(), &["add", "."])?;
+    git(lane.path(), &["commit", "-qm", "w"])?;
+    let branch = lane.branch().as_str().to_owned();
+    git(&rig.repo, &["merge", "-q", "--squash", &branch])?;
+    git(&rig.repo, &["commit", "-qm", "squashed"])?;
+    lane.release()?;
+    assert_eq!(
+        git(&rig.repo, &["branch", "--list", &branch])?,
+        "",
+        "the squash-merged branch {branch} survived its lane"
+    );
+    Ok(())
+}
+
+/// A repository whose `main` has a commit of its own, so a lane branches from a real base.
+fn rig_with_trunk(tag: &str) -> Result<Rig, Box<dyn Error>> {
+    let rig = Rig::new(tag)?;
+    std::fs::write(rig.repo.join("base.txt"), "base\n")?;
+    git(&rig.repo, &["add", "base.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "base"])?;
+    Ok(rig)
 }
