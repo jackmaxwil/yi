@@ -55,6 +55,28 @@ async fn cell(
     .map_err(|error| error.to_string())?
 }
 
+fn service(cwd: PathBuf, home: PathBuf, host: HostRegistry) -> Arc<KernelService> {
+    Arc::new(KernelService::new(KernelServiceOptions {
+        cwd,
+        home,
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(host),
+        on_restore: None,
+        on_boot: None,
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling: None,
+    }))
+}
+
+fn env_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
 #[tokio::test]
 async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
     let provider = Arc::new(ProviderStream::new(None));
@@ -124,21 +146,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         &yi_runtime::Wall::default(),
     );
 
-    let service = Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: std::env::temp_dir(),
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
-        session_dir: None,
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }));
+    let service = service(std::env::temp_dir(), env_home(), registry);
 
     let status_cell = cell(
         &service,
@@ -515,21 +523,7 @@ async fn save_read_forget_through_the_kernel() -> TestResult {
         base.join("cwd"),
         true,
     );
-    let service = Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: base.join("cwd"),
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
-        session_dir: None,
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }));
+    let service = service(base.join("cwd"), env_home(), registry);
     let out = cell(
         &service,
         "r = await memory.save(\"\"\"---\nname: harbor-json-stderr\ndescription: harbor exec merges stderr; parse --json from the first [ line\ntype: project\nscpe: repo\n---\nA --json command under harbor arrives with its stderr first.\n\"\"\")\nprint(r['name'], r['scope'], r['updated'], r['warnings'])\nn = await memory.read('harbor exec merges stderr; parse --json from the first [ line')\nprint(n['text'])\nprint((await memory.forget('harbor-json-stderr'))['name'])\ntry:\n    await memory.read('harbor-json-stderr')\nexcept Exception as error:\n    print('gone:', error)",
@@ -689,6 +683,12 @@ async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> Te
     assert!(whole.contains("name: checker"), "{whole}");
 
     let snippet = python_block(&text).ok_or("the checker skill ships no python snippet")?;
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere)?;
+    let task = "Print \"\"\"done\"\"\" then\n\"\"\"\nprint(\"INJECTED\")\n\"\"\"";
+    let snippet = bind(&snippet, "task_text", task)
+        .and_then(|snippet| bind(&snippet, "workspace", &project.to_string_lossy()))
+        .ok_or("the snippet binds no task_text or workspace placeholder")?;
     let seen: Arc<std::sync::Mutex<Option<Value>>> = Arc::new(std::sync::Mutex::new(None));
     let mut registry = HostRegistry::default();
     registry.register_mcp_stubs();
@@ -707,19 +707,7 @@ async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> Te
             })
         });
     }
-    let service = Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: project.clone(),
-        home: home.clone(),
-        session_dir: None,
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }));
+    let service = service(elsewhere, home.clone(), registry);
     let out = cell(&service, snippet)
         .await
         .map_err(|error| error.to_string())?;
@@ -729,6 +717,10 @@ async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> Te
         stdout.contains("worker-1"),
         "the snippet must spawn its child and name it: {stdout} {}",
         out.result.stderr
+    );
+    assert!(
+        !stdout.contains("INJECTED"),
+        "a triple quote in the task text ran as Python: {stdout}"
     );
 
     let payload = seen
@@ -757,6 +749,10 @@ async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> Te
         .map(std::path::PathBuf::from)
         .ok_or("the snippet must print its checks_dir")?;
     let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or("");
+    assert!(
+        prompt.contains(task),
+        "the brief must carry the task text unchanged: {prompt}"
+    );
     assert!(
         prompt.contains(&format!("{}/checks.py", checks_dir.display())),
         "the brief must name the bound checks_dir: {prompt}"
@@ -801,4 +797,14 @@ async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> Te
 fn python_block(text: &str) -> Option<String> {
     let fenced = text.split("```python\n").nth(1)?;
     Some(fenced.split("\n```").next()?.to_owned())
+}
+
+/// Fills the `<…>` placeholder on the snippet's `name = ` line with `value` as a JSON string.
+fn bind(snippet: &str, name: &str, value: &str) -> Option<String> {
+    let head = format!("{name} = ");
+    let line = snippet.lines().find(|line| line.starts_with(&head))?;
+    let (open, close) = (line.find('<')?, line.rfind('>')?);
+    let placeholder = line.get(open..=close)?;
+    let filled = line.replacen(placeholder, &serde_json::to_string(value).ok()?, 1);
+    Some(snippet.replacen(line, &filled, 1))
 }
