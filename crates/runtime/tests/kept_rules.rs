@@ -734,6 +734,20 @@ fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
     let (refuse, _) = answering(AskOutcome::Reject);
     let gate = broker(&session, &repo, sandbox, refuse);
     gate.grant_write(&repo)?;
+    // A directory the profile does not hold, around the checkout's denials: their denies outrank it.
+    gate.grant_write(repo.parent().ok_or("no parent")?)?;
+    // Above `$HOME`, whose files no deny covers, a grant would open every one of them.
+    for above in [
+        Path::new("/").to_path_buf(),
+        PathBuf::from(&home).join(".."),
+    ] {
+        let refused = gate.grant_write(&above).err().unwrap_or_default();
+        assert!(
+            refused.contains("protected"),
+            "{}: {refused}",
+            above.display()
+        );
+    }
     let denied = gate
         .grant_write(&repo.join(".git/hooks"))
         .err()
