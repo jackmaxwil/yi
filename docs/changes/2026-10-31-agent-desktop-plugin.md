@@ -1,12 +1,12 @@
 ---
 issue: Refs #1958
-growth: +828 about 260 lines are desktop.rs's test module and 170 the verb, app and input tables; weighed deleting the find, wait and list-surfaces rows, the x86_64 asset (deleted, never run) and a generic gate across plugins (not built, one program), and kept the tables since a missing row only asks more often
-raise: comments +43
-raise: tests +220
+growth: +971 about 260 lines are desktop.rs's test module and 170 the verb, app and input tables; weighed deleting the find, wait and list-surfaces rows, the x86_64 asset (deleted, never run) and a generic gate across plugins (not built, one program), and kept the tables since a missing row only asks more often
+raise: comments +48
+raise: tests +321
 raise: crate cli +26
-raise: crate permission +714
-raise: crate runtime +17
-raise: crate tools +29
+raise: crate permission +783
+raise: crate runtime +51
+raise: crate tools +69
 raise: crate types +42
 decision: computer use and browser automation enter scope through plugins, paid for by deleting the Python client, and a plugin that drives this machine leaves the sandbox only through a table of its verbs | the owner, 2026-10-31: "Any app on my Mac", "remove the design doc ban"; a typed command in Terminal gets around the sandbox, so the gate is the feature | delete the row and the table, restore the §1.2 clause
 ledger-: Python client (`python/yi_client.py`)
