@@ -196,34 +196,45 @@ fn state_root() -> Option<PathBuf> {
 
 /// The app a qualified ref was snapshotted in. Invariant: a contained command cannot write under the
 /// state root, and an env prefix never reaches here, so the model cannot forge this record.
-fn ref_app(token: &str, cache: &mut Snapshots, root: &Path) -> Option<String> {
+fn ref_app(token: &str, root: &Path) -> Option<String> {
     let (snapshot, element) = token.strip_prefix('@')?.split_once(':')?;
     // An id with anything but alphanumerics would otherwise be a path the model chose.
     if snapshot.is_empty() || !snapshot.chars().all(|c| c.is_ascii_alphanumeric()) {
         return None;
     }
-    let refs = cache.entry(snapshot.to_owned()).or_insert_with(|| {
-        let path = root.join("snapshots").join(snapshot).join("refmap.json");
-        std::fs::read(path)
-            .ok()
-            .and_then(|json| yi_types::desktop::Refs::parse(&json))
-    });
-    refs.as_ref()?
-        .app(&format!("@{element}"))
-        .map(str::to_owned)
+    let path = root.join("snapshots").join(snapshot).join("refmap.json");
+    refs(&path)?.app(&format!("@{element}")).map(str::to_owned)
 }
 
-/// The snapshots one judgement has read, so a command naming four refs reads the record once.
-type Snapshots = std::collections::HashMap<String, Option<yi_types::desktop::Refs>>;
+type Snapshot = (Vec<u8>, Option<std::sync::Arc<yi_types::desktop::Refs>>);
+
+/// Invariant: `decide` judges one command three to five times, so a snapshot's record is kept with
+/// the bytes it was parsed from and re-parsed the moment those bytes differ.
+fn refs(path: &Path) -> Option<std::sync::Arc<yi_types::desktop::Refs>> {
+    const CAP: usize = 16;
+    static MEMO: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, Snapshot>>,
+    > = std::sync::OnceLock::new();
+    let bytes = std::fs::read(path).ok()?;
+    let memo = MEMO.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let Ok(mut seen) = memo.lock() else {
+        return yi_types::desktop::Refs::parse(&bytes).map(std::sync::Arc::new);
+    };
+    if let Some((held, parsed)) = seen.get(path)
+        && *held == bytes
+    {
+        return parsed.clone();
+    }
+    let parsed = yi_types::desktop::Refs::parse(&bytes).map(std::sync::Arc::new);
+    if seen.len() >= CAP {
+        seen.clear();
+    }
+    seen.insert(path.to_path_buf(), (bytes, parsed.clone()));
+    parsed
+}
 
 /// The apps a command's words name, or None where a word cannot be judged.
-fn targets(
-    verb: &str,
-    flags: &[&str],
-    words: &[String],
-    cache: &mut Snapshots,
-    root: &Path,
-) -> Option<Vec<String>> {
+fn targets(verb: &str, flags: &[&str], words: &[String], root: &Path) -> Option<Vec<String>> {
     let positional = matches!(verb, "launch" | "close-app");
     let mut apps = Vec::new();
     let mut words = words.iter();
@@ -233,7 +244,7 @@ fn targets(
             return None;
         }
         if word.starts_with('@') {
-            apps.push(ref_app(word, cache, root)?);
+            apps.push(ref_app(word, root)?);
         } else if word.starts_with('-') {
             let (flag, inline) = word
                 .split_once('=')
@@ -242,7 +253,7 @@ fn targets(
                 return None;
             }
             if let Some(reference) = inline.filter(|value| value.starts_with('@')) {
-                apps.push(ref_app(reference, cache, root)?);
+                apps.push(ref_app(reference, root)?);
             } else if flag == "--app" {
                 let app = inline.or_else(|| words.next().map(String::as_str))?;
                 apps.push(app.to_owned());
@@ -337,7 +348,7 @@ fn judge_at(argv: &[String], root: &Path) -> Option<Judged> {
     let Some((_, flags)) = VERBS.iter().find(|(name, _)| *name == verb) else {
         return Some(Judged::EachTime);
     };
-    let Some(apps) = targets(verb, flags, words, &mut Snapshots::new(), root) else {
+    let Some(apps) = targets(verb, flags, words, root) else {
         return Some(Judged::EachTime);
     };
     let apps: Vec<String> = apps.iter().map(|app| app.to_lowercase()).collect();
@@ -366,13 +377,14 @@ pub fn drives(command: &str) -> bool {
         .any(|argv| matches!(judge(argv), Some(judged) if judged != Judged::Free))
 }
 
-/// Whether a segment names the program at all, `./agent-desktop` included: its words are an app's,
-/// so they are fenced whatever it did, `skills get` and `list-apps` included.
+/// Whether a segment runs the program, `./agent-desktop` and an `env` or `X=1` prefix included: its
+/// words are an app's, so they are fenced whatever it did, `skills get` and `list-apps` included.
 pub fn runs(command: &str) -> bool {
-    crate::safety::command_segments(command)
-        .iter()
-        .flatten()
-        .any(|word| crate::safety::program(word) == PROGRAM)
+    crate::safety::command_segments(command).iter().any(|argv| {
+        let argv = crate::safety::unwrapped(argv).unwrap_or(argv);
+        argv.first()
+            .is_some_and(|word| crate::safety::program(word) == PROGRAM)
+    })
 }
 
 /// Why no mode runs a segment: a browser, which the user routes elsewhere, or their own input.
@@ -669,5 +681,62 @@ mod tests {
             !drives("./agent-desktop status"),
             "the plain name is the one judged"
         );
+    }
+
+    #[test]
+    fn a_command_that_merely_names_the_program_is_not_its_output() {
+        for command in [
+            "grep -rn agent-desktop crates/",
+            "cat docs/changes/2026-10-31-agent-desktop-plugin.md",
+            "echo agent-desktop",
+            "ls ~/.yi/plugins/agent-desktop",
+            "git log --oneline -- agent-desktop",
+        ] {
+            assert!(!runs(command), "{command}");
+        }
+        for command in [
+            "agent-desktop skills get desktop",
+            "agent-desktop list-apps",
+            "./agent-desktop status",
+            "/Users/u/.yi/plugins/agent-desktop/1.0.2/agent-desktop version",
+            "X=1 agent-desktop version",
+            "env AGENT_DESKTOP_HOME=/tmp/x agent-desktop status",
+            "cd /tmp && agent-desktop status",
+        ] {
+            assert!(runs(command), "{command}");
+        }
+    }
+
+    /// Invariant: a record's bytes are what the memo answers from, so a rewritten record is read
+    /// again even when its timestamp is put back.
+    #[test]
+    fn a_record_rewritten_under_one_timestamp_is_read_again() -> TestResult {
+        let root = root("stale")?;
+        let path = root.join("snapshots/real/refmap.json");
+        assert_eq!(judged(&root, &["click", "@real:e7"]), app("calculator"));
+        let stamp = std::fs::metadata(&path)?.modified()?;
+        let rewritten = std::fs::read_to_string(&path)?.replace("\"Calculator\"", "\"Terminal\"");
+        std::fs::write(&path, rewritten)?;
+        std::fs::File::options()
+            .write(true)
+            .open(&path)?
+            .set_modified(stamp)?;
+        assert_eq!(
+            judged(&root, &["click", "@real:e7"]),
+            Some(Judged::EachTime)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn eight_threads_reading_one_new_record_all_find_the_app() -> TestResult {
+        let root = root("threads")?;
+        let judge = |_| assert_eq!(judged(&root, &["click", "@real:e7"]), app("calculator"));
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| judge(()));
+            }
+        });
+        Ok(())
     }
 }

@@ -674,7 +674,7 @@ const VERB_PROGRAMS: [&str; 16] = [
 ];
 
 /// `argv` past the wrappers that run another program (`timeout`, `nice`, `env`, assignments).
-fn unwrapped(argv: &[String]) -> Option<&[String]> {
+pub(crate) fn unwrapped(argv: &[String]) -> Option<&[String]> {
     let mut argv: &[String] = argv;
     // A wrapper runs another program, so the scope is that program, not `timeout` or `nice`.
     while let Some(first) = argv.first() {
