@@ -35,7 +35,6 @@ pub fn read_connection_info(path: &Path) -> Option<ConnectionInfo> {
 }
 
 pub struct Connection {
-    pub info: ConnectionInfo,
     pub path: PathBuf,
     pub temp_dir: PathBuf,
 }
@@ -91,11 +90,7 @@ pub fn make_connection(home: &Path, dir: Option<&Path>) -> Result<Connection, St
     let path = temp_dir.join("connection.json");
     let text = serde_json::to_string_pretty(&info).map_err(|error| error.to_string())?;
     write_new_600(&path, text.as_bytes())?;
-    Ok(Connection {
-        info,
-        path,
-        temp_dir,
-    })
+    Ok(Connection { path, temp_dir })
 }
 
 /// Directories named `<pid>-…` whose yi died without disposing its kernel; a live pid's stay.
