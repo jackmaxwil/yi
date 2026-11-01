@@ -260,6 +260,31 @@ fn skill_dir(root: &std::path::Path, name: &str, frontmatter: &str) -> TestResul
     Ok(())
 }
 
+fn install_shipped(home: &std::path::Path, name: &str) -> Result<String, Box<dyn Error>> {
+    let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
+    let text = std::fs::read_to_string(shipped.join(name).join("SKILL.md"))?;
+    skill_dir(&home.join(".yi/skills"), name, &text)?;
+    Ok(text)
+}
+
+fn catalog_text(project: &std::path::Path, home: &std::path::Path) -> String {
+    yi_runtime::skills_catalog(project, home, yi_runtime::Bytes(16_384))
+        .map(|catalog| catalog.text)
+        .unwrap_or_default()
+}
+
+fn read_skill(
+    cwd: &std::path::Path,
+    home: &std::path::Path,
+    name: &str,
+) -> Result<String, Box<dyn Error>> {
+    let resolver = yi_runtime::fetch::Resolver::new(cwd.to_path_buf(), yi_runtime::Wall::default())
+        .with_home(home.to_path_buf());
+    Ok(resolver
+        .fetch(&format!("yi://skills/{name}").parse()?)?
+        .text)
+}
+
 #[test]
 fn the_catalog_lists_both_roots_and_the_project_shadows_the_global() -> TestResult {
     let root = Scratch::new("yi-skills-catalog")?;
@@ -534,15 +559,8 @@ fn the_ripwire_index_is_the_one_line_for_an_installed_plugins_skills() -> TestRe
     let root = Scratch::new("yi-skills-plugin")?;
     let (project, home) = (root.join("project"), root.join("home"));
     std::fs::create_dir_all(&project)?;
-    let index = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi/ripwire");
-    let shipped = home.join(".yi/skills/yi/ripwire");
-    std::fs::create_dir_all(&shipped)?;
-    std::fs::copy(index.join("SKILL.md"), shipped.join("SKILL.md"))?;
-    let catalog = || {
-        yi_runtime::skills_catalog(&project, &home, yi_runtime::Bytes(16_384))
-            .map(|catalog| catalog.text)
-            .unwrap_or_default()
-    };
+    install_shipped(&home, "yi/ripwire")?;
+    let catalog = || catalog_text(&project, &home);
     assert!(!catalog().contains("- ripwire:"), "{}", catalog());
     let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
     std::fs::create_dir_all(ripwire.dir(&home))?;
@@ -622,14 +640,8 @@ fn the_installed_ripwire_skills_match_the_recorded_release() -> TestResult {
         let bytes = std::fs::read(dir.join(relative))?;
         assert_eq!(yi_runtime::tarball::sha256_hex(&bytes), sha256, "{path}");
     }
-    let resolver =
-        yi_runtime::fetch::Resolver::new(home.clone(), yi_runtime::Wall::default()).with_home(home);
-    let orient = resolver.fetch(&"yi://skills/ripwire-orient".parse()?)?;
-    assert!(
-        orient.text.contains("name: ripwire-orient"),
-        "{}",
-        orient.text
-    );
+    let orient = read_skill(&home, &home, "ripwire-orient")?;
+    assert!(orient.contains("name: ripwire-orient"), "{orient}");
     Ok(())
 }
 
@@ -666,24 +678,15 @@ async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> Te
     let root = Scratch::new("yi-skills-checker")?;
     let (project, home) = (root.join("project"), root.join("home"));
     std::fs::create_dir_all(&project)?;
-    let shipped =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi/checker/SKILL.md");
-    let text = std::fs::read_to_string(&shipped)?;
-    let installed = home.join(".yi/skills/yi/checker/SKILL.md");
-    std::fs::create_dir_all(installed.parent().ok_or("no parent")?)?;
-    std::fs::write(&installed, &text)?;
+    let text = install_shipped(&home, "yi/checker")?;
 
-    let catalog = yi_runtime::skills_catalog(&project, &home, yi_runtime::Bytes(16_384))
-        .ok_or("no catalog")?;
+    let catalog = catalog_text(&project, &home);
     assert!(
-        catalog.text.contains("- checker: "),
-        "the checker skill must be a catalog line: {}",
-        catalog.text
+        catalog.contains("- checker: "),
+        "the checker skill must be a catalog line: {catalog}"
     );
-    let resolver = yi_runtime::fetch::Resolver::new(project.clone(), yi_runtime::Wall::default())
-        .with_home(home.clone());
-    let whole = resolver.fetch(&"yi://skills/checker".parse()?)?;
-    assert!(whole.text.contains("name: checker"), "{}", whole.text);
+    let whole = read_skill(&project, &home, "checker")?;
+    assert!(whole.contains("name: checker"), "{whole}");
 
     let snippet = python_block(&text).ok_or("the checker skill ships no python snippet")?;
     let seen: Arc<std::sync::Mutex<Option<Value>>> = Arc::new(std::sync::Mutex::new(None));
@@ -747,6 +750,50 @@ async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> Te
         .check_url(&url, &project)
         .ok_or("the wall must refuse a history read")?;
     assert!(refusal.contains("deny_url"), "{refusal}");
+
+    let checks_dir = stdout
+        .split_whitespace()
+        .nth(1)
+        .map(std::path::PathBuf::from)
+        .ok_or("the snippet must print its checks_dir")?;
+    let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or("");
+    assert!(
+        prompt.contains(&format!("{}/checks.py", checks_dir.display())),
+        "the brief must name the bound checks_dir: {prompt}"
+    );
+    let canonical = std::fs::canonicalize(&project)?;
+    assert!(
+        !checks_dir.starts_with(&project) && !checks_dir.starts_with(&canonical),
+        "checks_dir must lie outside the workspace: {}",
+        checks_dir.display()
+    );
+    let target = |path: &std::path::Path| {
+        let mut args = serde_json::Map::new();
+        args.insert("path".to_owned(), json!(path.to_string_lossy()));
+        args
+    };
+    let attempt = project.join("src/lib.rs");
+    for (tool, kind) in [
+        ("read", yi_tools::ToolKind::Read),
+        ("write", yi_tools::ToolKind::Write),
+    ] {
+        assert!(
+            wall.check(tool, kind, &target(&attempt), &project)
+                .is_some(),
+            "the snippet's spawn must wall {tool} on the workspace: {payload}"
+        );
+    }
+    let checks = checks_dir.join("checks.py");
+    assert_eq!(
+        wall.check(
+            "write",
+            yi_tools::ToolKind::Write,
+            &target(&checks),
+            &project
+        ),
+        None,
+        "checks_dir must stay writable"
+    );
     Ok(())
 }
 
