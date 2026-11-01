@@ -870,6 +870,32 @@ fn the_tool_call_keeps_geminis_thought_signature_on_the_next_request() -> TestRe
     Ok(())
 }
 
+#[test]
+fn a_stored_reasoning_turn_keeps_one_copy_and_still_carries_its_details() -> TestResult {
+    let model = target_model()?;
+    let mut mapper = ChunkMapper::new(&model);
+    for chunk in reasoning_chunks() {
+        mapper.push_chunk(&chunk);
+    }
+    let events = mapper.finish();
+    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+        return Err(format!("expected a done turn: {events:?}").into());
+    };
+    let stored = serde_json::to_string(message)?;
+    assert_eq!(
+        stored.matches("I should list the files").count(),
+        2,
+        "{stored}"
+    );
+    let loaded: AgentMessage = serde_json::from_str(&stored)?;
+    let assistant = second_request_for(&model, &loaded, None)?;
+    assert_eq!(
+        assistant["reasoning_details"].to_string(),
+        reasoning_details().to_string()
+    );
+    Ok(())
+}
+
 /// A turn whose reasoning arrived only as an encrypted detail: no prose field ever opens the
 /// thinking block, so the sealed details have to place it.
 #[test]

@@ -23,9 +23,9 @@ pub enum Content {
         thinking_signature: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         redacted: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(skip)]
         reasoning_field: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(skip)]
         reasoning_details: Option<Value>,
     },
     #[serde(rename_all = "camelCase")]
