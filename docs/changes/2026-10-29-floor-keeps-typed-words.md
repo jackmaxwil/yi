@@ -1,4 +1,5 @@
 ---
+version: 0.845.0
 issue: Closes #1758
 raise: crate context +1, tests +97
 ---
