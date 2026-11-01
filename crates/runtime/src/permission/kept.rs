@@ -250,6 +250,18 @@ fn never_widened(sandbox: Option<&yi_tools::Sandbox>) -> Vec<PathBuf> {
     yi.chain(sandboxed).collect()
 }
 
+/// A lane's profile leaves the common git dir out, so a grant around it would hand back the refs
+/// and objects it took away; a main checkout's git dir is writable already.
+fn holds_a_closed_git_dir(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
+    (sandbox.sealed.iter()).any(|sealed| {
+        let closed = sealed
+            .denied
+            .parent()
+            .filter(|git| !sandbox.writable.iter().any(|root| root == git));
+        closed.is_some_and(|git| git.starts_with(dir))
+    })
+}
+
 fn above_home(dir: &Path) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     home.is_some_and(|home| {
@@ -281,6 +293,7 @@ pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool
 /// `~/.yi` carry no deny, so a directory above them is refused, or `--allow-write /` opens all home.
 pub(crate) fn protected_from_grant(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
     above_home(dir)
+        || (sandbox.into_iter()).any(|sandbox| holds_a_closed_git_dir(sandbox, dir))
         || never_widened(sandbox).iter().any(|guarded| {
             let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
             dir.starts_with(guarded) || dir.starts_with(&real)
