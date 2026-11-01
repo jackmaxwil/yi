@@ -170,11 +170,19 @@ fn restore_tree(
         Ok(checkpoints) => checkpoints,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
+    let since = since.map(TreeId::new);
+    // A session across the one-store upgrade: its old start in the old store, its newest end in the
+    // new. "What the agent moved" has no answer across two stores, so nothing moves.
+    if since
+        .as_ref()
+        .is_some_and(|since| !checkpoints.holds(since))
+    {
+        return UndoOutcome::NoCheckpoint;
+    }
     let replaced = match checkpoints.capture() {
         Ok(tree) => tree,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
-    let since = since.map(TreeId::new);
     let restored = match checkpoints.restore(&tree, since.as_ref()) {
         Ok(changes) => changes,
         Err(error) => return UndoOutcome::Failed(error.to_string()),

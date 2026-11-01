@@ -143,7 +143,8 @@ impl Checkpoints {
         }
     }
 
-    fn holds(&self, tree: &TreeId) -> bool {
+    #[must_use]
+    pub fn holds(&self, tree: &TreeId) -> bool {
         self.git(&["cat-file", "-e", tree.as_str()]).is_ok()
     }
 
