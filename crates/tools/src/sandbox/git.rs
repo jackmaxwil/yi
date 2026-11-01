@@ -73,6 +73,10 @@ fn own_branches(cwd: &Path, admin: &Path, common: &Path, home: &Path) -> Vec<Str
         .chain([common.to_path_buf()])
         .filter_map(|dir| named_by(&dir))
         .collect();
+    // A tree with a host-owned record holds that branch; `HEAD` speaks only where nothing else can.
+    if record.is_some() {
+        return record.into_iter().collect();
+    }
     let trunk = yi_permission::trunk_of(common);
     let head = named_by(admin).filter(|branch| {
         *branch != trunk
@@ -80,7 +84,7 @@ fn own_branches(cwd: &Path, admin: &Path, common: &Path, home: &Path) -> Vec<Str
             && !taken.contains(branch)
             && !branch.contains("..")
     });
-    record.into_iter().chain(head).collect()
+    head.into_iter().collect()
 }
 
 /// Module git dirs one profile build opens; past it none is, which only narrows what a submodule

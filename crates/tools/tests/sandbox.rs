@@ -1301,7 +1301,8 @@ fn a_planted_head_grants_nothing_on_the_next_spawn() -> TestResult {
     let (trunk, lane, _sandbox) = held_lane(&root, &home)?;
     let admin = git(&lane, &["rev-parse", "--absolute-git-dir"])?;
     let tip = git(&trunk, &["rev-parse", "main"])?;
-    for planted in ["main", "yi/other"] {
+    git(&trunk, &["branch", "release"])?;
+    for planted in ["main", "yi/other", "release"] {
         std::fs::write(
             Path::new(&admin).join("HEAD"),
             format!("ref: refs/heads/{planted}\n"),
@@ -1311,6 +1312,7 @@ fn a_planted_head_grants_nothing_on_the_next_spawn() -> TestResult {
         assert_ne!(code, 0, "{planted}: {output}");
     }
     assert_eq!(git(&trunk, &["rev-parse", "main"])?, tip);
+    assert_eq!(git(&trunk, &["rev-parse", "release"])?, tip);
     Ok(())
 }
 

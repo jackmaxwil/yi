@@ -770,3 +770,44 @@ fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
     );
     Ok(())
 }
+
+/// A lane's profile leaves the common git dir out. Dies with a grant around it accepted: `--allow-write
+/// ..` from a lane handed back the trunk's refs that the profile had just taken away.
+#[test]
+fn a_grant_around_a_lanes_closed_git_dir_is_refused() -> TestResult {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let root = Scratch::new("yi-grant-lane")?;
+    let (trunk, lane) = (root.join("trunk"), root.join("lane"));
+    std::fs::create_dir_all(&trunk)?;
+    let git = |dir: &Path, args: &[&str]| -> TestResult {
+        let status = yi_tools::keyless_command("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .current_dir(dir)
+            .status()?;
+        assert!(status.success(), "git {args:?}");
+        Ok(())
+    };
+    git(&trunk, &["init", "-q", "-b", "main"])?;
+    git(&trunk, &["commit", "-q", "--allow-empty", "-m", "first"])?;
+    git(
+        &trunk,
+        &["worktree", "add", "-q", "--detach", &lane.to_string_lossy()],
+    )?;
+    let sandbox = Sandbox::for_workspace(&lane, &home, None);
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let gate = broker(&session, &lane, sandbox, refuse);
+    for around in [root.to_path_buf(), trunk.clone()] {
+        let refused = gate.grant_write(&around).err().unwrap_or_default();
+        assert!(
+            refused.contains("protected"),
+            "{}: {refused}",
+            around.display()
+        );
+    }
+    Ok(())
+}
