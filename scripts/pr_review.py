@@ -423,8 +423,9 @@ def review_diff(git, merge_base, base, sha):
 def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, unanswered=(), meter=None, status="", cleared=0):
     counts = {s: sum(f["severity"] == s for f in findings) for s in SEVERITIES}
     said = verdict(findings, overridden)
+    unread = [who for who in unanswered if who.endswith(" lens")]
     meta = " ".join([f"pr={pr}", f"sha={sha}", f"base={base}", f"verdict={said}", f"mode={mode}"]
-                    + [f"{s}={counts[s]}" for s in SEVERITIES] + ([f"skipped={len(unanswered)}"] if unanswered else [])
+                    + [f"{s}={counts[s]}" for s in SEVERITIES] + ([f"skipped={len(unread)}"] if unread else [])
                     + ([bot_meter.meta(meter.fields())] if meter else []))
     note = "shadow: nothing blocks yet" if mode == "shadow" else "a blocked round keeps this draft"
     lines = [
@@ -444,7 +445,6 @@ def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, una
     else:
         lines.append("No finding survived.")
     if unanswered:
-        unread = any(who.endswith(" lens") for who in unanswered)
         lines += ["", f"No answer after retries from: {', '.join(unanswered)}. This round blocks on what it read"
                   + (", and only the lost lens reads this head again." if unread else "; every lens read the head, so it is not read again.")]
     if dropped:
@@ -910,7 +910,8 @@ def lost_only(probes, attempts, head, holds=on_head):
     full re-read is a fresh draw that adds findings no fix caused (#1043, #1951's mediums, 10 to 55)."""
     last = attempts[-1] if attempts else {}
     lost = last.get("lost_lenses") if holds(last.get("sha", "-"), head) else None
-    return {name: p for name, p in probes.items() if p["id"] in lost} if lost else probes
+    # Invariant: an id no probe carries any more narrows to nothing, and no lens is no read.
+    return {name: p for name, p in probes.items() if p["id"] in (lost or ())} or probes
 
 
 def read_pr(repo, number, allowed):
@@ -1314,6 +1315,10 @@ def selfcheck():
     assert lost_only(named, [both, {"kind": "void", "sha": "abc1234"}], "abc1234ff") == named, "a void read nothing, so all of them read"
     assert lost_only(named, [both], "def5678") == named, "a new head is read whole"
     assert lost_only(named, [seat], "abc1234ff") == named and lost_only(named, [], "abc1234ff") == named
+    assert lost_only(named, [dict(both, lost_lenses=["gone"])], "abc1234ff") == named, "a lost lens no probe names any more reads the whole head"
+    seat_said, both_said = (render(1, 1, "abc1234", "abcdef0", [], 0, None, "blocking", 0, who) for who in (["refuter on x finding at a.rs:1"], ["refuter on x finding at a.rs:1", "perf lens"]))
+    assert "every lens read the head, so it is not read again" in seat_said and "only the lost lens" not in seat_said and "skipped=" not in seat_said, seat_said
+    assert "only the lost lens reads this head again" in both_said and "not read again" not in both_said and "skipped=1" in both_said, both_said
 
     assert survives([{"refuted": False}]) and not survives([{"refuted": True}])
     assert survives([{"refuted": False}, {"refuted": True}, {"refuted": False}])
@@ -1470,7 +1475,10 @@ def selfcheck():
             if schema is REFUTE_SCHEMA:
                 raise Unanswered("exit 3")
             return answer(prompt, schema, cwd)
-        kept, dropped, outside, skipped, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, no_refuter, probes)
+        job_log = io.StringIO()
+        with contextlib.redirect_stdout(job_log):
+            kept, dropped, outside, skipped, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, no_refuter, probes)
+        assert all(f"{who}: exit 3" in job_log.getvalue() for who in skipped), job_log.getvalue()
         assert [f["claim"] for f in kept] == ["(unverified: no refuter answered) " + finding["claim"]] and len(skipped) == 3, (kept, skipped)
         lone = [{"refuted": False, "reason": "holds"}, {"refuted": True, "reason": "no"}]
 
