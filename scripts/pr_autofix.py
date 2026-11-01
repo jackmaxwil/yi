@@ -13,6 +13,7 @@ trusted checkout, by root, from a bundle. Verbs: `just pr autofix` (one pass, ol
 import argparse
 import contextlib
 import datetime
+import io
 import itertools
 from collections import Counter
 import json
@@ -24,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from unittest import mock
 import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1962,7 +1964,12 @@ sys.exit(7)
             errs.append("the PR's code changed what the next fix trusts")
         for err in (Missed("m"), Handoff("h"), Flaky("f"), pr_review.Unanswered("u"), Declined("r", [[1, "f", "w"]]),
                     BaseRed("main", {("b", "t")}), subprocess.TimeoutExpired("yi", 1)):
-            wire = json.loads(json.dumps(sent(err)))
+            def raises(err=err):
+                raise err
+            with mock.patch.dict(OPS, raises=raises), mock.patch("sys.stdin", io.StringIO('{"op": "raises", "args": {}}')), \
+                    contextlib.redirect_stdout(io.StringIO()) as said:
+                worker()
+            wire = json.loads(said.getvalue())
             back = rebuilt(wire["raised"], wire["args"])
             if type(back) is not type(err) or str(back) != str(err) or vars(back) != vars(err):
                 errs.append(f"a worker's {type(err).__name__} came back as {back!r}")
