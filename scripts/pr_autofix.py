@@ -748,26 +748,38 @@ def run_filtered(cwd, expr):
     return subprocess.run((*TEST_LANE, "-E", expr), cwd=cwd, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
 
 
+@contextlib.contextmanager
+def scratch_worktree(clone, rev):
+    """A detached worktree of `clone` at `rev`, gone when the block ends however it ends."""
+    tree = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-tree-"))
+    try:
+        sh(clone, "git", "worktree", "add", "-q", "--detach", "-f", str(tree), rev)
+        yield tree
+    finally:
+        sh(clone, "git", "worktree", "remove", "--force", str(tree), check=False)
+        shutil.rmtree(tree, ignore_errors=True)
+
+
+def filter_of(pairs):
+    """The nextest filter naming these (binary, test) pairs."""
+    return " | ".join(f"(binary_id({b}) & test(={t}))" for b, t in sorted(pairs))
+
+
 def at_base(clone, base_ref, failed):
     """Which of `failed` also fail at the base, in the same environment: those are the runner's.
     Incident: a spill test on a full /tmp, then a documents test under a disk TMPDIR, failed only
     in the fixer's runs, and #1111's Opus fix was not pushed for a test CI passes."""
-    base = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-base-"))
-    try:
-        sh(clone, "git", "worktree", "add", "-q", "--detach", "-f", str(base), f"origin/{base_ref}")
-        ran = run_filtered(base, " | ".join(f"(binary_id({b}) & test(={t}))" for b, t in sorted(failed)))
-        return failed & failed_tests(ran.stdout + ran.stderr)
-    finally:
-        sh(clone, "git", "worktree", "remove", "--force", str(base), check=False)
-        shutil.rmtree(base, ignore_errors=True)
+    with scratch_worktree(clone, f"origin/{base_ref}") as base:
+        ran = run_filtered(base, filter_of(failed))
+    return failed & failed_tests(ran.stdout + ran.stderr)
 
 
 def lane_failures(clone, lanes, base_ref="main"):
     """Each lane run in the clone the way CI runs it, by the host, not inside the model's sandbox:
     the model's own test runs met the wall and read eight passing tests as failures (#1110). A
     failing test that fails at the base too is left out, and the lane passes when nothing else fails.
-    Returns the refusal text and those (binary, test) pairs."""
-    found, shared = [], set()
+    Returns the refusal text, those (binary, test) pairs, and the ones only the head fails."""
+    found, shared, own = [], set(), set()
     for lane in lanes:
         command = TEST_LANE if lane == "test" else ["just", "lane", lane]
         ran = subprocess.run(command, cwd=clone, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
@@ -779,6 +791,7 @@ def lane_failures(clone, lanes, base_ref="main"):
         failed = failed_tests(output) if lane == "test" else set()
         theirs = at_base(clone, base_ref, failed) if failed else set()
         shared |= theirs
+        own |= failed - theirs
         if failed and failed == theirs:
             continue
         mine = {t for _, t in failed - theirs}
@@ -792,7 +805,29 @@ def lane_failures(clone, lanes, base_ref="main"):
         text = "\n".join(rows[:80]) + (f"\n[… {len(rows) - 80} more lines cut at 80; the lane's own run holds them]" if len(rows) > 80 else "")
         skipped = f"\n[{len(theirs)} failing test(s) left out: they fail at origin/{base_ref} here too: {', '.join(sorted(t for _, t in theirs))}]" if theirs else ""
         found.append(f"`just lane {lane}` failed:\n" + (text if rows else failures(output)) + skipped)
-    return "\n\n".join(found), shared
+    return "\n\n".join(found), shared, own
+
+
+def base_clears(clone, base_ref, tests):
+    """Whether merging the base is what turns `tests` green: red in a scratch worktree of the head, green
+    once the base is merged there, and nothing pushed. Only that says so: main moves on most merges, and a
+    head merely behind it, or a flake, must not earn merge after merge. A trial that cannot run says no.
+    Incident: 19 PRs lacked the fix #1927 landed on main, and a model would have been paid to write it again."""
+    if not tests or not sh(clone, "git", "merge-base", "--is-ancestor", f"origin/{base_ref}", "HEAD", check=False).returncode:
+        return False
+    expr = filter_of(tests)
+    try:
+        with scratch_worktree(clone, "HEAD") as trial:
+            if not run_filtered(trial, expr).returncode:
+                return False
+            merged = sh(trial, "git", "-c", "user.name=yi-bot", "-c", "user.email=yi-bot@noreply.example.invalid",
+                        "merge", "--no-edit", "--no-commit", f"origin/{base_ref}", env=scrubbed(), check=False)
+            return not merged.returncode and not run_filtered(trial, expr).returncode
+    except (subprocess.TimeoutExpired, RuntimeError, OSError):
+        return False
+
+
+
 
 
 class Flaky(RuntimeError):
@@ -814,16 +849,21 @@ def gate_prompt(pr, lanes, refused):
 
 def gate_in(clone, pr, lanes, answer, tried=0):
     """Make the red lanes pass in the clone, the deterministic repairs first; a model only for what
-    they leave. Returns (summary, model, touched)."""
+    they leave. Returns (summary, model, touched, merged), `merged` when the base's own merge is what
+    clears them: that merge is made here, on the clone this gate already built."""
     reprice(clone, f"origin/{pr['base']['ref']}")
     measured(clone)
-    refused, shared = lane_failures(clone, lanes, pr["base"]["ref"])
+    refused, shared, own = lane_failures(clone, lanes, pr["base"]["ref"])
+    if base_clears(clone, pr["base"]["ref"], own):
+        # Incident: 19 PRs red only on what main had landed, and a model would be paid to write it again.
+        summary, model, touched = resolve_in(clone, pr, pr["base"]["ref"], answer, tried)
+        return summary, model, touched, True
     staged = sh(clone, "git", "diff", "--cached", "--name-only").stdout.split()
     if not refused:
         moved = sh(clone, "git", "diff", "--name-only", "HEAD", "--", "scripts/guardrails/baselines").stdout.split()
         if staged or moved:
             return ("The change files' raises, growth memo and baselines were repaired to what the gates measure.", None,
-                    sorted(set(staged) | set(moved)))
+                    sorted(set(staged) | set(moved)), False)
         if shared:
             raise BaseRed(pr["base"]["ref"], shared)
         raise Flaky(f"the {', '.join(lanes)} lane(s) pass in the fixer's clone at this head")
@@ -843,9 +883,9 @@ def gate_in(clone, pr, lanes, answer, tried=0):
         reprice(clone, f"origin/{pr['base']['ref']}")
         measured(clone)
         summary = ((said.get("summary") or "").strip() or "the model gave no summary") + note
-        refused, _ = lane_failures(clone, lanes, pr["base"]["ref"])
+        refused, _, _ = lane_failures(clone, lanes, pr["base"]["ref"])
         if not refused:
-            return summary, model, touched
+            return summary, model, touched, False
     raise Missed("the lanes still fail after the fix and one more turn:\n" + refused)
 
 
@@ -1073,8 +1113,12 @@ def attempt_fix(work, pr, ask, meter, kind, rnd, tried, stopped, lanes):
     elif kind == "gate":
         if prior_fixes(clone, sha, stopped, GATE_SIGNED) >= GATE_STREAK:
             raise Handoff(f"{GATE_STREAK} fixes in a row did not clear the gate")
-        summary, model, touched = gate_in(clone, pr, lanes, answer, tried)
-        subject, signed = f"Fix what the {' and '.join(lanes)} gate refused", f"{GATE_SIGNED} {sha[:12]} of #{pr['number']}.\n"
+        summary, model, touched, merged = gate_in(clone, pr, lanes, answer, tried)
+        if merged:
+            kind, rnd = "conflict", None
+            subject, signed = f"Merge {base_ref} into this branch and resolve its conflicts", ""
+        else:
+            subject, signed = f"Fix what the {' and '.join(lanes)} gate refused", f"{GATE_SIGNED} {sha[:12]} of #{pr['number']}.\n"
     else:
         before = prior_fixes(clone, sha, stopped)
         if before >= STOP_AT:
@@ -1669,6 +1713,54 @@ def gate_selfcheck():
             got = err
         if asked or not isinstance(got, Handoff):
             errs.append(f"a lane's commit_style refusal asked {len(asked)} model turn(s) and read {got!r}")
+        # A test the base's merge clears takes the merge; one it does not clear goes to the model.
+        TEST_LANE = ["sh", "owned.sh"]
+        git("checkout", "-q", "-f", "main")
+        (tmp / "owned.sh").write_text("if [ -f fixed.txt ] && [ ! -f bug.txt ]; then exit 0; fi\n"
+                                      "echo '        FAIL [   0.1s] (1/1) yi t::moved'; echo \"    thread 't::moved' panicked at m.rs:1:1:\"; exit 1\n")
+        git("add", "-A"); git("commit", "-qm", "owned"); git("push", "-q", "origin", "main")
+        git("checkout", "-q", "-b", "healed"); (tmp / "head.txt").write_text("h\n"); git("add", "-A")
+        git("commit", "-qm", "healed"); git("push", "-q", "origin", "healed")
+        git("checkout", "-q", "-b", "harmed"); (tmp / "bug.txt").write_text("x\n"); git("add", "-A"); git("commit", "-qm", "harm")
+        git("push", "-q", "origin", "harmed")
+        git("checkout", "-q", "main"); (tmp / "fixed.txt").write_text("x\n"); git("add", "-A"); git("commit", "-qm", "fix")
+        git("push", "-q", "origin", "main"); git("fetch", "-q", "origin")
+        asked.clear()
+        healed = run("healed", "ok\n")
+        parents = sh(tmp, "git", "rev-list", "--parents", "-1", "origin/healed").stdout.split()
+        subject = sh(tmp, "git", "log", "-1", "--format=%s", "origin/healed").stdout.strip()
+        if asked or not (isinstance(healed, dict) and healed["kind"] == "conflict" and healed["model"] == "none"):
+            errs.append(f"a test the base's merge clears read {healed!r} after {len(asked)} model turn(s)")
+        elif len(parents) != 3 or subject != "Merge main into this branch and resolve its conflicts":
+            errs.append(f"the base's merge landed {subject!r} with {len(parents) - 1} parent(s)")
+        harmed = run("harmed", "ok\n")
+        if not asked or not isinstance(harmed, Missed):
+            errs.append(f"a test the base's merge does not clear read {harmed!r} with {len(asked)} model turn(s)")
+        # The trial's own answers: a flake, a head holding the base, a conflict, a run that cannot start.
+        real_filtered, answers = run_filtered, []
+
+        def scripted(cwd, expr):
+            answers.append(expr)
+            return subprocess.CompletedProcess((), script.pop(0))
+        globals()["run_filtered"] = scripted
+        try:
+            pair = {("yi", "t::moved")}
+            script = [0, 0]
+            if base_clears(tmp, "main", pair) or answers:
+                errs.append(f"a head holding the base ran a trial: {answers}")
+            git("checkout", "-q", "-f", "--detach", "origin/harmed")
+            script = [0, 0]
+            if base_clears(tmp, "main", pair) or len(answers) != 1:
+                errs.append("a test that passes before the merge was credited to the merge")
+            git("checkout", "-q", "-f", "-b", "clashing", "origin/harmed"); (tmp / "fixed.txt").write_text("mine\n")
+            git("add", "-A"); git("commit", "-qm", "clash")
+            answers.clear()
+            script = [1, 0]
+            if base_clears(tmp, "main", pair) or len(answers) != 1:
+                errs.append("a merge that conflicts was credited with clearing the test")
+        finally:
+            globals()["run_filtered"] = real_filtered
+        TEST_LANE = ["sh", "lane.sh"]
         # Past the hard cap, or a history no fix rewrites: a hand-off before any model is paid.
         capped = "FAIL binary_size (x)\n  " + check_binary_size.problems(15000000, 13575360, 14680064)[0]
         for text in (capped, "FAIL commit_style (50 commits)\n  9a31c18a seed\nFAIL comments (1)\n  x"):
@@ -1823,8 +1915,28 @@ def waits_selfcheck():
             errs.append("a person's issue of the same title was taken for the bot's")
         if not re.search(r"labels=area:forge-ci.*created_by=", seen_paths[-1]):
             errs.append(f"the red issue is looked up by {seen_paths[-1]}")
+        # A head lacking what the base landed comes back from the gate's own clone as its merge: one
+        # fix call, no failure, and the comment names the merge it made.
         calls.clear(); notes[:] = []
-        forge["issues"].clear()
+        merged = {"kind": "conflict", "from": "a", "to": "b", "base": "main", "model": "none", "tier": "none",
+                  "round": "", "files": 0, "summary": "git merged it without a conflict", "touched": [], "declined": []}
+
+        def lacks_base(pr, **kw):
+            calls.append((kw["kind"], kw.get("stopped")))
+            return merged
+        module.fix = lacks_base
+        said = attempt("o/r", pr, {})
+        if said != "pushed" or [k for k, _ in calls] != ["gate"] or "merged `origin/main`" not in posted[-1]:
+            errs.append(f"a head lacking the base's fix read {said} through {calls}")
+        # A merge that hands off is held under the gate kind the next pass reads.
+        module.fix = raising(Handoff("FAIL commit_style"))
+        calls.clear()
+        attempt("o/r", pr, {})
+        row = re.search(r"yi-autofix-meta[^\n]*", posted[-1]).group(0)
+        notes[:] = [meta(now - 60, "handoff", extra=" " + re.search(r"stop=\w+", row).group(0))]
+        calls.clear()
+        if attempt("o/r", pr, {}) != "waiting" or calls or "stop=gate" not in row:
+            errs.append(f"a hand-off on the gate's own merge was not held: {row[:120]}, then {calls}")
         calls.clear(); posted[:] = []; labelled[:] = []
         notes[:] = []
         module.fix = raising(Handoff("6 fixes in a row did not clear the review"))
