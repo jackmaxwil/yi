@@ -8,8 +8,9 @@ fn user_text(message: &AgentMessage) -> Option<&str> {
     match message {
         AgentMessage::User {
             content: UserContent::Text(text),
-            ..
-        } => Some(text),
+            timestamp,
+            attribution,
+        } if attribution.reads_as_typed(*timestamp) => Some(text),
         _ => None,
     }
 }
@@ -30,8 +31,8 @@ fn middle_truncate(text: &str, budget: Tokens) -> String {
     )
 }
 
-/// Every real user message survives compaction verbatim, newest first within the budget; the
-/// oldest that partially fits is middle-truncated. Survivors come back in original order.
+/// Every message the user typed (or a child's task) survives verbatim, newest first within the
+/// budget; host and wrapped context text is not the user's words and is left to the summary.
 pub fn retain_floor(summarized: &[AgentMessage], budget: Tokens) -> Vec<AgentMessage> {
     let mut remaining = budget;
     let mut survivors_reversed: Vec<AgentMessage> = Vec::new();
