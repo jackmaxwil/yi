@@ -17,8 +17,8 @@ import datetime, os, pathlib, re, shutil, subprocess, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "scripts/guardrails")]
 import adr
-from _common import BLOB_ALLOW as ALLOW, BLOB_CAP as CAP
-from check_changes import DECISIONS, DIR, VERSION, changelog_rows, parse, table
+from _common import BLOB_ALLOW as ALLOW, BLOB_CAP as CAP, row_key, table_rows
+from check_changes import DECISIONS, DIR, LEDGER_FROM, VERSION, apply_ledger, changelog_rows, parse, table
 
 ARCH, LOG, INDEX = "docs/ARCHITECTURE.md", "docs/CHANGELOG.md", "docs/solutions/README.md"
 LOG_HEADER = "| ver | date | change |"
@@ -100,6 +100,13 @@ def record(views, todo):
             arch = insert_row(arch, DECISIONS, f"| D{number} | {' | '.join(cells)} |")
             writes[f"docs/solutions/adr/d{number}.md"] = adr.render(number, *cells)
             index = adr.index_lines(index, number, adr.title_of(cells[0])) or index
+        for op, cells in fields["ledger"]:
+            arch, errs = apply_ledger(arch, [(op, cells)])
+            if errs:
+                # Invariant: a landed file never wedges the recorder, and its text is not lost.
+                kept = {"ledger~": cells[-1], "ledger=": cells[-1]}.get(op)
+                arch = apply_ledger(arch, [("ledger+", [cells[0], kept])])[0] if kept else arch
+                plan.append(f"record: {name}: ledger line not applied: {errs[0]}")
         cited = [", ".join(numbers)] if numbers else []
         cited += [fields["issue"]] if fields.get("issue") and fields["issue"] not in fields["body"] else []
         prose = re.sub(r"(?<!\\)\|", r"\\|", fields["body"]) + (f" ({'; '.join(cited)})" if cited else "")
@@ -254,6 +261,55 @@ def verify(tmp, recorded, bad):
     return views, dict((v[2:], d) for v, d in rows)
 
 
+def ledger_selfcheck(tmp, sh, run, gate, bad):
+    """Two files on one row record in landing order, a stale `~` keeps its text, and a row edit is
+    judged by when it was committed."""
+    rows = table_rows((tmp / ARCH).read_text(), "Feature ledger")
+    key, first = row_key(rows[0]), rows[0]
+    sh("checkout", "-q", "main")
+    for name, line, day in ((f"2026-10-11-b.md", f"ledger+: {key} | clause from b", "2026-10-11"),
+                            (f"2026-10-12-a.md", f"ledger+: {key} | clause from a", "2026-10-12"),
+                            (f"2026-10-13-c.md", f"ledger~: {key} | text no row holds | kept from c", "2026-10-13")):
+        (tmp / DIR / name).write_text(f"---\n{line}\n---\nProse {name}.\n")
+        sh("add", "-A")
+        sh("commit", "-q", "-m", name, date=day)
+    sh("checkout", "-q", "-b", "lines")
+    done = run("scripts/record_changes.py")
+    want = f"{first[:-2]}; clause from b; clause from a; kept from c |"
+    now = table_rows((tmp / ARCH).read_text(), "Feature ledger")[0]
+    if done.returncode or now != want or "2026-10-13-c.md: ledger line not applied:" not in done.stdout:
+        bad.append(f"three lines on one row exited {done.returncode}, read {now[-90:]!r}: {done.stdout[-200:]!r}")
+    sh("checkout", "-q", "-f", "main")
+    sh("clean", "-fdq", DIR)
+    keys = [row_key(row) for row in rows]
+    (tmp / "docs/ledger-journeys.txt").write_text("".join(f"{k} | `t::t`\n" for k in keys))
+    (tmp / DIR / "2026-10-14-new.md").write_text("---\nledger=: fresh | 1 | core | H | L | n\n---\nProse.\n")
+    journeys = lambda: run("scripts/guardrails/check_ledger_journeys.py").stdout
+    if "row `fresh` names no journey test" not in journeys():
+        bad.append("a pending new row with no journey line was not refused")
+    with open(tmp / "docs/ledger-journeys.txt", "a") as f:
+        f.write("fresh | `t::fresh`\n")
+    if "fresh" in journeys():
+        bad.append("a journey line for a pending new row was refused as stale")
+    sh("add", "-A")
+    sh("commit", "-q", "-m", "fresh", date="2026-10-14")
+    run("scripts/record_changes.py")
+    sh("add", "-A")
+    sh("commit", "-q", "-m", "record lines")
+    sh("checkout", "-q", "-b", "old-edit")
+    arch = (tmp / ARCH).read_text()
+    (tmp / ARCH).write_text(arch.replace("clause from b", "clause edited"))
+    sh("commit", "-qam", "old edit", date="2026-10-20")
+    if gate().returncode:
+        bad.append(f"an edit committed before LEDGER_FROM was refused: {gate().stdout.strip()}")
+    (tmp / ARCH).write_text((tmp / ARCH).read_text().replace("clause from a", "another edit"))
+    sh("commit", "-qam", "new edit", date=LEDGER_FROM)
+    refused = gate()
+    if not refused.returncode or "ledger~:" not in refused.stdout and "ledger+:" not in refused.stdout:
+        bad.append(f"a new edit batched with an old one read {refused.returncode}: {refused.stdout[-200:]!r}")
+    sh("checkout", "-q", "-f", "main")
+
+
 def selfcheck():
     if subprocess.run(("git", "-C", str(ROOT), "cat-file", "-e", PIN), capture_output=True).returncode:
         print(f"FAIL record selfcheck\n  the fixture commit {PIN[:9]} is missing; fetch main's full history")
@@ -379,6 +435,7 @@ def selfcheck():
             bad.append(f"check_changes refused the second record: {gate().stdout.strip()}")
         judged([own], 0)
         judged([(f"{DIR}/2026-10-01-change-files.md", "\n---\n", "\n---\nEdited. ", "an edit to a stamped file main holds")], 1)
+        ledger_selfcheck(tmp, sh, run, gate, bad)
     finally:
         shutil.rmtree(tmp)
     if bad:

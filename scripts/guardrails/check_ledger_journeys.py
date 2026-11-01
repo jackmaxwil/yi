@@ -6,6 +6,7 @@ feature conflicted on it and were merged by hand. One `feature | test` line each
 import re, subprocess, sys, tempfile, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail, row_key, table_rows
+from check_changes import unapplied_ledger
 
 FILE, ARCH = "docs/ledger-journeys.txt", "docs/ARCHITECTURE.md"
 
@@ -85,4 +86,4 @@ if __name__ == "__main__":
             errs.append("the merge fixture passes without the union rule, so it refutes nothing")
         fail(errs, "ledger_journeys selfcheck")
         sys.exit(0)
-    fail(problems((ROOT / ARCH).read_text(), (ROOT / FILE).read_text()), "ledger_journeys")
+    fail(problems(unapplied_ledger((ROOT / ARCH).read_text())[0], (ROOT / FILE).read_text()), "ledger_journeys")
