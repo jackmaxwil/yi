@@ -75,6 +75,7 @@ fn checkpoint_fate(dir: &Path, idle: Duration) -> Fate {
 }
 
 fn trim_checkpoint(dir: &Path) -> bool {
+    yi_tools::checkpoint::drop_old_indexes(dir, ORPHAN_AFTER);
     yi_tools::checkpoint::prune(dir, SNAPSHOTS_KEPT).is_ok()
 }
 

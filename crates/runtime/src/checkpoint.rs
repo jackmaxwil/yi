@@ -165,7 +165,8 @@ fn restore_tree(
     since: Option<String>,
     rewind: impl FnOnce() -> Result<(), String>,
 ) -> UndoOutcome {
-    let checkpoints = match Checkpoints::open(&checkpoint_root(home), project) {
+    let tree = TreeId::new(data.tree.clone());
+    let checkpoints = match Checkpoints::open_holding(&checkpoint_root(home), project, &tree) {
         Ok(checkpoints) => checkpoints,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
@@ -174,7 +175,7 @@ fn restore_tree(
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
     let since = since.map(TreeId::new);
-    let restored = match checkpoints.restore(&TreeId::new(data.tree.clone()), since.as_ref()) {
+    let restored = match checkpoints.restore(&tree, since.as_ref()) {
         Ok(changes) => changes,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
