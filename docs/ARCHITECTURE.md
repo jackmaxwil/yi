@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.854.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.855.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -247,6 +247,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D523 | reply style is measured, not described — the identity prompt states nine rules (short sentences, list-first, two short paragraphs of prose, answer first, detail on request, no restating the question, no closing summary, no rule talk, brevity never drops an error, a warning or an undone item) and `evals/prose.py` scores a saved answer set on sentence length, list share, paragraph count, the tells and rule mentions | the prompt already banned the tells after #1400 and answers were still long and paragraph-shaped, so a ban list alone was not a contract | revert `evals/prose.py --gate` and the prompt text in one commit; no schema, no wire shape and no config key moves |
 | D522 | contained traffic leaves through a per-spawn CONNECT proxy, and named package caches are writable with their poisoning accepted | installs failed silently, and the owner left containment over it | remove the Spawn seam, the proxy and with_caches; amends D87, D205 and D331 |
 | D521 | config.worktree, info, alternates, a submodule's host-read files, a .git that is no directory and every other lane's admin dir are never writable to a contained process | a planted core.fsmonitor in config.worktree ran on the host's next git status, and a repointed .git reached the same place | drop the entries from Sandbox::for_workspace |
 | D520 | goal checks, child checks, plan verifiers and exec:// sources run in the sandbox outside yolo | an allowed `cargo test` as a check ran a child's build.rs on the host under a green gate | set Checker's profile to None |
