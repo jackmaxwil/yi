@@ -87,11 +87,20 @@ mod linux {
             .map_err(reason)?
             .restrict_self()
             .map_err(reason)?;
-        match status.ruleset {
+        enforced(status.ruleset)
+    }
+
+    /// Invariant: partial counts as not contained. Below ABI 3 the crate drops the truncate right
+    /// with no error, and a contained process could then empty a file it may only read.
+    fn enforced(status: RulesetStatus) -> Result<(), String> {
+        match status {
+            RulesetStatus::FullyEnforced => Ok(()),
+            RulesetStatus::PartiallyEnforced => {
+                Err("this kernel enforces only part of Landlock ABI 3".to_owned())
+            }
             RulesetStatus::NotEnforced => {
                 Err("this kernel enforces no Landlock ruleset".to_owned())
             }
-            RulesetStatus::FullyEnforced | RulesetStatus::PartiallyEnforced => Ok(()),
         }
     }
 
@@ -120,5 +129,19 @@ mod linux {
         )]
         let error = std::process::Command::new(program).args(rest).exec();
         fail(&format!("{}: {error}", program.to_string_lossy()))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{RulesetStatus, enforced};
+
+        /// Dies with partial counted as contained: a kernel below ABI 3 passes the probe, and
+        /// every contained command there can truncate what it was only allowed to read.
+        #[test]
+        fn only_a_full_ruleset_counts_as_contained() {
+            assert_eq!(enforced(RulesetStatus::FullyEnforced), Ok(()));
+            assert!(enforced(RulesetStatus::PartiallyEnforced).is_err());
+            assert!(enforced(RulesetStatus::NotEnforced).is_err());
+        }
     }
 }
