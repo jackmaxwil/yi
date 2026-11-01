@@ -386,7 +386,7 @@ fn paste_text(text: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{Pty, SCROLLBACK_ROWS, WRITE_QUEUE, encode, lock, paste_text};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::error::Error;
@@ -427,9 +427,9 @@ mod tests {
         }
     }
 
-    type Queued = (Pty, mpsc::Receiver<Vec<u8>>);
+    pub(crate) type Queued = (Pty, mpsc::Receiver<Vec<u8>>);
 
-    fn queued_terminal() -> Result<Queued, Box<dyn Error>> {
+    pub(crate) fn queued_terminal() -> Result<Queued, Box<dyn Error>> {
         let (writes, pending) = mpsc::sync_channel(WRITE_QUEUE);
         let pty = Pty {
             // `send` never reaches the master; the queue is the whole contract here.
