@@ -71,7 +71,7 @@ fn service(cwd: PathBuf, home: PathBuf, host: HostRegistry) -> Arc<KernelService
     }))
 }
 
-fn env_home() -> PathBuf {
+fn home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default()
@@ -146,7 +146,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         &yi_runtime::Wall::default(),
     );
 
-    let service = service(std::env::temp_dir(), env_home(), registry);
+    let service = service(std::env::temp_dir(), home(), registry);
 
     let status_cell = cell(
         &service,
@@ -523,7 +523,7 @@ async fn save_read_forget_through_the_kernel() -> TestResult {
         base.join("cwd"),
         true,
     );
-    let service = service(base.join("cwd"), env_home(), registry);
+    let service = service(base.join("cwd"), home(), registry);
     let out = cell(
         &service,
         "r = await memory.save(\"\"\"---\nname: harbor-json-stderr\ndescription: harbor exec merges stderr; parse --json from the first [ line\ntype: project\nscpe: repo\n---\nA --json command under harbor arrives with its stderr first.\n\"\"\")\nprint(r['name'], r['scope'], r['updated'], r['warnings'])\nn = await memory.read('harbor exec merges stderr; parse --json from the first [ line')\nprint(n['text'])\nprint((await memory.forget('harbor-json-stderr'))['name'])\ntry:\n    await memory.read('harbor-json-stderr')\nexcept Exception as error:\n    print('gone:', error)",
@@ -620,7 +620,7 @@ fn the_ripwire_index_names_every_published_skill_and_no_other() -> TestResult {
 #[ignore = "tier-2 journey: `just journeys`"]
 fn the_installed_ripwire_skills_match_the_recorded_release() -> TestResult {
     let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
-    let home = std::path::PathBuf::from(std::env::var_os("HOME").ok_or("no HOME")?);
+    let home = home();
     let dir = ripwire
         .skill_root(&home)
         .ok_or("ripwire's skills are not installed: run `yi plugin add ripwire`")?;
