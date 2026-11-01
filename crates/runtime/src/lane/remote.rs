@@ -76,23 +76,39 @@ impl GitLane {
 
     /// What a contained git gets where a repository has an origin and no lane: no transport at all.
     /// Without it, git reads a credential from the URL and lands on main through a seeded host, asked
-    /// by nobody. Its refusal then asks, and an approval runs outside.
+    /// by nobody. A git that cannot say whether there is an origin gets the same: never fail open.
     pub(crate) fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
+        static NO_LANE: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
         if let Some(lane) = lane {
             return lane.assign.clone();
         }
-        if git(cwd, &["config", "--get", "remote.origin.url"]).is_err() {
-            return Vec::new();
-        }
-        [
-            "GIT_CONFIG_COUNT=2",
-            "GIT_CONFIG_KEY_0=maintenance.auto",
-            "GIT_CONFIG_VALUE_0=false",
-            "GIT_CONFIG_KEY_1=protocol.allow",
-            "GIT_CONFIG_VALUE_1=never",
-        ]
-        .map(str::to_owned)
-        .to_vec()
+        // Once a tree: a kernel asks per cell, and a changed answer would restart it.
+        let mut memo = NO_LANE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let memo = memo.get_or_insert_with(HashMap::new);
+        (memo.entry(cwd.to_path_buf()).or_insert_with(|| {
+            let origin = git(cwd, &["config", "--get", "remote.origin.url"]);
+            if matches!(
+                origin,
+                Err(LaneError::Git {
+                    exit_code: Some(1),
+                    ..
+                })
+            ) {
+                return Vec::new();
+            }
+            [
+                "GIT_CONFIG_COUNT=2",
+                "GIT_CONFIG_KEY_0=maintenance.auto",
+                "GIT_CONFIG_VALUE_0=false",
+                "GIT_CONFIG_KEY_1=protocol.allow",
+                "GIT_CONFIG_VALUE_1=never",
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        }))
+        .clone()
     }
 
     /// One repository's lane, its pushes cut at `forward_timeout`.
