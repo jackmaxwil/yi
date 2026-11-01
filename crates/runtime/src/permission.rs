@@ -17,6 +17,7 @@ use yi_types::permission::{
     Answerer, PermissionRecord, RuleDecision, RuleKind, SessionPermissionRule,
 };
 
+mod egress;
 mod hooked;
 pub(crate) use hooked::claude_dir;
 mod kept;
@@ -97,6 +98,7 @@ pub struct PermissionBroker {
     unattended: bool,
     /// Loaded once from the root's tree and shared down: a lane child reads the root's project.
     claude_hooks: std::sync::OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
+    egress: egress::Named,
 }
 
 pub struct CallOutcome {
@@ -210,6 +212,7 @@ impl PermissionBroker {
             walled: false,
             unattended: false,
             claude_hooks: std::sync::OnceLock::new(),
+            egress: egress::Named::default(),
         }
     }
 
@@ -408,6 +411,7 @@ impl PermissionBroker {
                 deny_read: base.deny_read.clone(),
                 host_owned: base.host_owned.clone(),
                 ..yi_tools::Sandbox::for_workspace(cwd, Path::new(&home), None)
+                    .with_caches(Path::new(&home))
             },
             None => base.clone(),
         };

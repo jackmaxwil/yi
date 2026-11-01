@@ -123,20 +123,25 @@ impl Checker {
         broker.sandbox_for(cwd, &self.wall, &broker.kept_writes())
     }
 
-    /// `shell -c script` in `cwd`, inside the sandbox where one holds.
+    /// `shell -c script` in `cwd`, inside the sandbox where one holds, and that spawn's proxy lease:
+    /// past a failed lease the check runs with no network, which its own output says.
     pub(crate) fn shell(
         &self,
         shell: &str,
         script: &str,
         cwd: &std::path::Path,
-    ) -> std::process::Command {
-        let (program, args) = match self.profile(cwd) {
+    ) -> (std::process::Command, Option<crate::egress::Lease>) {
+        let profile = self.profile(cwd);
+        let lease = (profile.as_ref().and(self.broker.as_ref()))
+            .and_then(|broker| broker.egress_lease(self.wall.clone()).ok());
+        let (program, args) = match profile {
             Some(sandbox) => sandbox.wrap(shell, &["-c", script]),
             None => (shell.to_owned(), vec!["-c".to_owned(), script.to_owned()]),
         };
         let mut command = yi_tools::keyless_command(program);
         command.args(args).current_dir(cwd);
-        command
+        command.envs(lease.iter().flat_map(crate::egress::Lease::env));
+        (command, lease)
     }
 
     /// What the sandbox stopped in this run, in the words a contained bash failure gets.
@@ -164,12 +169,12 @@ pub(crate) fn run_check(
     if let Some(refusal) = probe(check, cwd) {
         return Err(refusal);
     }
-    let command = checker.shell("sh", check, cwd);
+    let (command, lease) = checker.shell("sh", check, cwd);
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP)
+    let capture = captured(command, lease, None, &cancelled)
         .map_err(|error| format!("goal check failed to run: {error}"))?;
     if capture.cancelled {
         return Err(format!("goal check timed out after {timeout_ms} ms"));
@@ -274,8 +279,9 @@ pub(crate) fn run_check_in(
     checker: &Checker,
 ) -> Result<yi_tools::CommandCapture, String> {
     checker.guard(command, cwd)?;
-    let mut shell = checker.shell("/bin/sh", command, cwd);
+    let (mut shell, lease) = checker.shell("/bin/sh", command, cwd);
     shell.env_clear();
+    shell.envs(lease.iter().flat_map(crate::egress::Lease::env));
     for name in CHECKER_ENV_BASE
         .iter()
         .map(|name| (*name).to_owned())
@@ -288,7 +294,19 @@ pub(crate) fn run_check_in(
     let stop = stop.cloned();
     let cancelled: yi_tools::CancelFlag =
         Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
-    yi_tools::run_captured(shell, stdin, &cancelled, yi_tools::OUTPUT_CAP)
+    captured(shell, lease, stdin, &cancelled)
+}
+
+/// Holds a check's proxy lease until its capture ends, and hands what the proxy said to the view.
+pub(crate) fn captured(
+    command: std::process::Command,
+    lease: Option<crate::egress::Lease>,
+    stdin: Option<Vec<u8>>,
+    cancelled: &yi_tools::CancelFlag,
+) -> Result<yi_tools::CommandCapture, String> {
+    let mut capture = yi_tools::run_captured(command, stdin, cancelled, yi_tools::OUTPUT_CAP)?;
+    capture.rows = lease.map(crate::egress::Lease::revoke).unwrap_or_default();
+    Ok(capture)
 }
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
@@ -913,5 +931,35 @@ mod checker_tests {
         let evidence = refused.err().ok_or("the refused check passed")?;
         assert!(evidence.starts_with("[contained: "), "{evidence}");
         run_check("true", &std::env::temp_dir(), 30_000, &checker).map_err(|error| error.into())
+    }
+
+    /// Dies with no lease on a check: `cargo test` as one could not fetch a seeded crate, or, on
+    /// the second path, with the environment clear running after the proxy was set.
+    #[test]
+    fn a_check_is_handed_its_proxy_on_both_paths() -> Result<(), Box<dyn std::error::Error>> {
+        if !yi_tools::Sandbox::available() {
+            return Ok(());
+        }
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .ok_or("no HOME")?;
+        let tree = std::env::temp_dir();
+        let broker = crate::permission::PermissionBroker::new(
+            yi_permission::PermissionMode::Auto,
+            tree.clone(),
+            Vec::new(),
+            None,
+            tokio::sync::broadcast::channel(8).0,
+        )
+        .with_sandbox(Some(yi_tools::Sandbox::for_workspace(&tree, &home, None)));
+        let checker = Checker::new(None, Some(Arc::new(broker)), crate::wall::Wall::default());
+        let script = "test -n \"$HTTPS_PROXY\"";
+        run_check(script, &tree, 30_000, &checker).map_err(|error| error.to_string())?;
+        let deadline = Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .ok_or("no deadline")?;
+        let capture = run_check_in(&tree, script, &[], None, deadline, None, &checker)?;
+        assert_eq!(capture.exit_code, Some(0));
+        Ok(())
     }
 }

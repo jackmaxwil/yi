@@ -334,12 +334,12 @@ fn exec(command: &str, cwd: &Path, checker: &crate::goal::Checker) -> Value {
     if let Err(refused) = checker.guard(command, cwd) {
         return json!({"ok": false, "output": refused});
     }
-    let shell = checker.shell("sh", command, cwd);
+    let (shell, lease) = checker.shell("sh", command, cwd);
     let deadline = Instant::now()
         .checked_add(Duration::from_millis(EXEC_TIMEOUT_MS))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    match yi_tools::run_captured(shell, None, &cancelled, yi_tools::OUTPUT_CAP) {
+    match crate::goal::captured(shell, lease, None, &cancelled) {
         Ok(capture) if capture.exit_code == Some(0) => json!({"ok": true, "exit": 0}),
         Ok(capture) => {
             let output = crate::goal::check_view(command, cwd, None, &capture);

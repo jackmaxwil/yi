@@ -739,7 +739,7 @@ fn wire_kernel(
             }));
         }),
     );
-    let service = crate::kernel::KernelService::new(options);
+    let service = crate::kernel::KernelService::new(options).with_holder(wiring);
     Arc::new(service.with_own_paths(wiring.own_paths(session)))
 }
 
@@ -759,7 +759,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
-    registry.register_exec(wiring.cwd.clone(), job_profile(&wiring, session));
+    registry.register_exec(wiring.exec_home(), job_profile(&wiring, session));
     crate::kernel_state::register_host_stores(&mut registry, &wiring);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort

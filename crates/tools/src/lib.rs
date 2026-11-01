@@ -23,6 +23,7 @@ pub mod sandbox;
 #[cfg(test)]
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+mod spawn;
 mod spill;
 mod syntax;
 mod tool;
@@ -49,6 +50,7 @@ pub use sandbox::{
     Sandbox, SandboxRefusal, denial_hint, exit_zero_note, kernel_cell_note, nested_sandbox_note,
     sandbox_refusal,
 };
+pub use spawn::{Spawn, SpawnFn, SpawnRefused};
 /// The spill root's name under `~/.yi`, one dir per session inside it, before spills moved into
 /// the family board; walled sessions still may not read it (D340).
 pub const SPILLS: &str = "spills";

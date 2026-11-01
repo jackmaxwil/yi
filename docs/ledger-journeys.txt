@@ -583,3 +583,5 @@ lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an e
 web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
 web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)
 console settings pane | `drive::a_press_on_a_settings_row_saves_the_control_it_names`
+contained network: a per-spawn egress proxy | `sandbox_seam::a_contained_bash_leaves_through_its_proxy_and_hears_what_it_refused`
+contained network: a per-spawn egress proxy | `kernel_sandbox::a_contained_kernel_leaves_through_its_proxy_and_hears_what_it_refused`

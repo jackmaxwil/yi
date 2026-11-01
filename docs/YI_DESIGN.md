@@ -614,7 +614,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   unrenamable; the kernel and its `bash()` take the wall too; a contained process starts through
   `env -u` for every inherited variable a name heuristic marks as a secret (D324); in auto mode the
   bash read belt judges a store argument by identity, a directory above one and a glob that reaches
-  one; loopback the only network, and no unix socket (#599). Without it, `Contain`
+  one; no unix socket (#599), and the only network is loopback, where a per-spawn CONNECT proxy
+  decides by host name: the seed, `sandbox.egress`, a kept grant, then a person (#601). Package caches
+  are writable, never `.cargo/bin` or a config. Without it, `Contain`
   becomes a reviewable `Ask`.
 - With a classifier and an OpenRouter key, `classifier.approval` says when Jev's `noul` answers a
   reviewable auto-mode ask: `instant` (default) first, P(safe) ≥ 0.8 (0.9 if destructive) allows,
