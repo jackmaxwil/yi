@@ -1,4 +1,6 @@
 ---
+version: 0.855.0
+decisions: D523
 issue: Refs #1862
 decision: reply style is measured, not described — the identity prompt states nine rules (short sentences, list-first, two short paragraphs of prose, answer first, detail on request, no restating the question, no closing summary, no rule talk, brevity never drops an error, a warning or an undone item) and `evals/prose.py` scores a saved answer set on sentence length, list share, paragraph count, the tells and rule mentions | the prompt already banned the tells after #1400 and answers were still long and paragraph-shaped, so a ban list alone was not a contract | revert `evals/prose.py --gate` and the prompt text in one commit; no schema, no wire shape and no config key moves
 ---
