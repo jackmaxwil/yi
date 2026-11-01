@@ -91,6 +91,35 @@ pub struct Checker {
     wall: crate::wall::Wall,
 }
 
+/// A check's command, its proxy lease, and what kills what a killed `docker exec` left running.
+pub(crate) struct CheckShell {
+    pub(crate) command: std::process::Command,
+    lease: Option<crate::egress::Lease>,
+    sweep: Option<String>,
+}
+
+/// Runs a check to its capture, holding its lease until then. Invariant: a check past its deadline
+/// is swept before it reads as settled, or what it started goes on writing the tree.
+pub(crate) fn captured(
+    shell: CheckShell,
+    stdin: Option<Vec<u8>>,
+    cancelled: &yi_tools::CancelFlag,
+) -> Result<yi_tools::CommandCapture, String> {
+    let mut capture =
+        yi_tools::run_captured(shell.command, stdin, cancelled, yi_tools::OUTPUT_CAP)?;
+    capture.rows = shell
+        .lease
+        .map(crate::egress::Lease::revoke)
+        .unwrap_or_default();
+    if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
+        let _swept_or_gone_with_the_container = yi_tools::keyless_command("sh")
+            .arg("-c")
+            .arg(sweep)
+            .output();
+    }
+    Ok(capture)
+}
+
 impl Checker {
     pub(crate) fn new(
         hooks: Option<Arc<crate::claude_hooks::Hooks>>,
@@ -123,21 +152,17 @@ impl Checker {
         broker.sandbox_for(cwd, &self.wall, &broker.kept_writes())
     }
 
-    /// `shell -c script` in `cwd`, inside the sandbox where one holds, and that spawn's proxy lease:
-    /// past a failed lease the check runs with no network, which its own output says.
-    pub(crate) fn shell(
-        &self,
-        shell: &str,
-        script: &str,
-        cwd: &std::path::Path,
-    ) -> (std::process::Command, Option<crate::egress::Lease>) {
+    /// `shell -c script` in `cwd`: in the session's container, else in the sandbox where one holds,
+    /// with that spawn's proxy lease. Past a failed lease a check has no network, as its output says.
+    pub(crate) fn shell(&self, shell: &str, script: &str, cwd: &std::path::Path) -> CheckShell {
         // Invariant: a container child's commands never run on the host, a check included.
         let placed = (self.wall.container.as_deref())
-            .map(|container| yi_tools::jobs::in_container(container, cwd, script).0);
-        let profile = placed.is_none().then(|| self.profile(cwd)).flatten();
+            .map(|container| yi_tools::jobs::in_container(container, cwd, script));
+        let (run, sweep) = placed.map_or((None, None), |(run, sweep)| (Some(run), Some(sweep)));
+        let profile = run.is_none().then(|| self.profile(cwd)).flatten();
         let lease = (profile.as_ref().and(self.broker.as_ref()))
             .and_then(|broker| broker.egress_lease(self.wall.clone()).ok());
-        let (program, args) = match (placed, profile) {
+        let (program, args) = match (run, profile) {
             (Some(run), _) => (shell.to_owned(), vec!["-c".to_owned(), run]),
             (None, Some(sandbox)) => sandbox.wrap(shell, &["-c", script]),
             (None, None) => (shell.to_owned(), vec!["-c".to_owned(), script.to_owned()]),
@@ -145,7 +170,11 @@ impl Checker {
         let mut command = yi_tools::keyless_command(program);
         command.args(args).current_dir(cwd);
         command.envs(lease.iter().flat_map(crate::egress::Lease::env));
-        (command, lease)
+        CheckShell {
+            command,
+            lease,
+            sweep,
+        }
     }
 
     /// What the sandbox stopped in this run, in the words a contained bash failure gets.
@@ -173,12 +202,12 @@ pub(crate) fn run_check(
     if let Some(refusal) = probe(check, cwd) {
         return Err(refusal);
     }
-    let (command, lease) = checker.shell("sh", check, cwd);
+    let command = checker.shell("sh", check, cwd);
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = captured(command, lease, None, &cancelled)
+    let capture = captured(command, None, &cancelled)
         .map_err(|error| format!("goal check failed to run: {error}"))?;
     if capture.cancelled {
         return Err(format!("goal check timed out after {timeout_ms} ms"));
@@ -283,34 +312,24 @@ pub(crate) fn run_check_in(
     checker: &Checker,
 ) -> Result<yi_tools::CommandCapture, String> {
     checker.guard(command, cwd)?;
-    let (mut shell, lease) = checker.shell("/bin/sh", command, cwd);
-    shell.env_clear();
-    shell.envs(lease.iter().flat_map(crate::egress::Lease::env));
+    let mut shell = checker.shell("/bin/sh", command, cwd);
+    shell.command.env_clear();
+    let proxy = shell.lease.iter().flat_map(crate::egress::Lease::env);
+    let proxy: Vec<(String, String)> = proxy.collect();
+    shell.command.envs(proxy);
     for name in CHECKER_ENV_BASE
         .iter()
         .map(|name| (*name).to_owned())
         .chain(env_names.iter().cloned())
     {
         if let Some(value) = std::env::var_os(&name) {
-            shell.env(name, value);
+            shell.command.env(name, value);
         }
     }
     let stop = stop.cloned();
     let cancelled: yi_tools::CancelFlag =
         Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
-    captured(shell, lease, stdin, &cancelled)
-}
-
-/// Holds a check's proxy lease until its capture ends, and hands what the proxy said to the view.
-pub(crate) fn captured(
-    command: std::process::Command,
-    lease: Option<crate::egress::Lease>,
-    stdin: Option<Vec<u8>>,
-    cancelled: &yi_tools::CancelFlag,
-) -> Result<yi_tools::CommandCapture, String> {
-    let mut capture = yi_tools::run_captured(command, stdin, cancelled, yi_tools::OUTPUT_CAP)?;
-    capture.rows = lease.map(crate::egress::Lease::revoke).unwrap_or_default();
-    Ok(capture)
+    captured(shell, stdin, &cancelled)
 }
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
@@ -911,9 +930,10 @@ mod checker_tests {
             ..crate::wall::Wall::default()
         };
         let checker = Checker::new(None, None, wall);
-        let (shell, lease) = checker.shell("sh", "cargo test", std::path::Path::new("/work"));
-        assert!(lease.is_none());
-        let args: Vec<String> = (shell.get_args())
+        let shell = checker.shell("sh", "cargo test", std::path::Path::new("/work"));
+        assert!(shell.lease.is_none());
+        assert!(shell.sweep.is_some(), "a killed check must be swept");
+        let args: Vec<String> = (shell.command.get_args())
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         let run = args.join(" ");
