@@ -1,4 +1,5 @@
 ---
+version: 0.848.0
 issue: Closes #1949
 growth: +398 reuses the fence renderer, the hit table and the terminal pane, so no new pane or protocol; deleting the chip leaves the offer to a copy-paste, and about 40 lines are the split `markdown.rs`, `app.rs` and `render.rs` needed to stay under their file ceilings
 raise: comments +21
