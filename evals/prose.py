@@ -156,8 +156,12 @@ def prompt_problems(text):
                  for name, n in sorted(strayed.items())]
     if not banned:
         problems.append(f"{PROMPT.name} carries no {BAN_SECTION!r} section")
+    listed = re.search(r"- AI vocabulary:([^.]*)\.", banned)
+    words = re.findall(r"[a-z]+", listed.group(1).lower()) if listed else []
     problems += [f"{PROMPT.name}'s ban list names no {stem}* word: ban it, or stop scoring it"
-                 for stem in AI_VOCABULARY if stem not in banned.lower()]
+                 for stem in AI_VOCABULARY if not any(word.startswith(stem) for word in words)]
+    problems += [f"{PROMPT.name} bans {word} and nothing scores it: add its stem to AI_VOCABULARY"
+                 for word in words if not word.startswith(AI_VOCABULARY)]
     return problems
 
 
@@ -205,8 +209,9 @@ def selfcheck():
     assert any("states no list-first rule" in p for p in problems), problems
     assert any("spells the ai-vocabulary tell" in p for p in problems), problems
     assert any("carries no" in p for p in problems), "a prompt with no ban list must fail"
-    assert any("names no pivotal*" in p for p in prompt_problems(f"{BAN_SECTION}\n- crucial\n")), \
-        "a scored word the ban list drops must fail"
+    thin = prompt_problems(f"{BAN_SECTION}\n- AI vocabulary: crucial, garner.\n- pivotal\n")
+    assert any("names no pivotal*" in p for p in thin), "a scored word the ban list drops must fail"
+    assert any("bans garner" in p for p in thin), "a banned word nothing scores must fail"
     assert score("Rather than a fix, this functions as a stopgap.")["tell_hits"] == 0, \
         "words the ban list does not name are not tells"
     assert prompt_problems(PROMPT.read_text()) == [], prompt_problems(PROMPT.read_text())
