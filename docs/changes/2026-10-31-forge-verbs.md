@@ -1,7 +1,7 @@
 ---
 issue: Closes #1934
 growth: +236 is the origin gate, the pinned recipe with its ask, and the config. Weighed for deletion: leaving recipes out, which leaves `just pr` asking on every call the owner makes; a list of known forge verbs, cut because the flags that aim a call are what decide it.
-raise: tests +223, comments +14, crate cli +5, crate permission +9, crate runtime +180, crate types +10
+raise: tests +223, comments +13, crate cli +5, crate permission +9, crate runtime +179, crate types +10
 decision: forge commands leave by home config and tree recipes by pin | a contained forge CLI has no route to its login | drop the class and sandbox.hostRecipes
 ---
 `fgj` and `gh` now ask and an approval runs outside the sandbox, since a contained one has no login. An allow rule in `permissions.allow` runs them outside unasked, unless the call aims `-R`, `--repo`, `--hostname` or `--config` somewhere that is not this project's origin, which asks whatever the rule says.

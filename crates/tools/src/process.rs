@@ -95,21 +95,19 @@ fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
         .collect();
     // A path someone configured (`lanes.land`) is no PATH lookup, and is held to the same rule: a
     // relative one resolves in the lane, where a contained process rewrites it.
+    let outside = |real: &Path| {
+        crate::exec::is_executable_file(real) && !trees.iter().any(|tree| real.starts_with(tree))
+    };
     if program.contains('/') {
         let real = cwd.join(program).canonicalize().ok()?;
-        let outside = crate::exec::is_executable_file(&real)
-            && !trees.iter().any(|tree| real.starts_with(tree));
         // The path judged, never the spelling: a link in the lane could be repointed before the exec.
-        return outside.then_some(real);
+        return outside(&real).then_some(real);
     }
     // The path judged here too: a link in a tree's `bin` could be repointed before the exec.
     std::env::split_paths(&search)
         .filter(|dir| dir.is_absolute())
         .filter_map(|dir| dir.join(program).canonicalize().ok())
-        .find(|real| {
-            crate::exec::is_executable_file(real)
-                && !trees.iter().any(|tree| real.starts_with(tree))
-        })
+        .find(|real| outside(real))
 }
 
 /// Config the host's git never takes from a repository: each of these runs code, and a contained

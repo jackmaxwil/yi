@@ -732,7 +732,7 @@ fn refused_path(
 const NETWORK_DENIALS: [&str; 4] = [
     // curl, git and cargo: `Could not resolve host`, `Couldn't resolve host name`.
     "resolve host",
-    // git under the transport block a repository with no lane gets: `transport 'file' not allowed`.
+    // git under the transport block a repository with no lane gets.
     "transport '",
     // getaddrinfo's EAI_NONAME, as Python and ssh print it.
     "nodename nor servname",
