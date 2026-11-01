@@ -805,7 +805,8 @@ fn a_grant_around_a_lanes_closed_git_dir_is_refused() -> TestResult {
     let session = new_session(&provider);
     let (refuse, _) = answering(AskOutcome::Reject);
     let gate = broker(&session, &lane, sandbox, refuse);
-    for around in [root.to_path_buf(), trunk.clone()] {
+    let inside = trunk.join(".git/refs/heads");
+    for around in [root.to_path_buf(), trunk.clone(), inside] {
         let refused = gate.grant_write(&around).err().unwrap_or_default();
         assert!(
             refused.contains("protected"),

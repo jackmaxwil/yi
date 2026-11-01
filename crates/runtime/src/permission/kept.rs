@@ -249,15 +249,15 @@ fn never_widened(sandbox: Option<&yi_tools::Sandbox>) -> Vec<PathBuf> {
     yi.chain(sandboxed).collect()
 }
 
-/// A lane's profile leaves the common git dir out, so a grant around it would hand back the refs
-/// and objects it took away; a main checkout's git dir is writable already.
+/// A lane's profile leaves the common git dir out, so a grant around or inside it would hand back
+/// the refs it took away; a main checkout's git dir is writable already.
 fn holds_a_closed_git_dir(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
     (sandbox.sealed.iter()).any(|sealed| {
         let closed = sealed
             .denied
             .parent()
             .filter(|git| !sandbox.writable.iter().any(|root| root == git));
-        closed.is_some_and(|git| git.starts_with(dir))
+        closed.is_some_and(|git| git.starts_with(dir) || dir.starts_with(git))
     })
 }
 
@@ -277,6 +277,7 @@ fn is_home(dir: &Path) -> bool {
 /// for `<trunk>/.git/config` widens the run by `<trunk>/.git`.
 pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
     is_home(dir)
+        || (sandbox.into_iter()).any(|sandbox| holds_a_closed_git_dir(sandbox, dir))
         || never_widened(sandbox).iter().any(|guarded| {
             let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
             // Invariant: a `.git` pointer guards itself; granting the tree around it opens no
