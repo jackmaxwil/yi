@@ -1,11 +1,14 @@
 ---
 issue: Closes #1931
 growth: +314 includes #1945's lines beneath it; `Checker` carries the sandbox to every check site in place of the hooks handle, and its tests sit in its crate. One placement function serves bash and a check (`jobs::place`) and one sweep rule serves both (`jobs::swept`), so the precedence and the sweep have one owner each. Weighed: a parameter beside `hooks` at each of nine sites, more lines; a global profile, which a family of sessions could not share; a second copy of the placement in the goal module, which is where the drift came from
-raise: tests +359, comments +26, crate runtime +241, crate tools +81
+raise: tests +420, comments +27, crate runtime +249, crate tools +81
 ---
 A check now runs where the same command would run in bash: inside the sandbox, outside yolo. Before, a goal check, a child's `check=`, a plan verifier and a schedule's `exec://` source all ran on the host, so `cargo test` as a check ran a child's `build.rs` outside the sandbox. A check the gate would only contain used to be refused at spawn; it now runs contained, so `just check` can be one.
 
 A contained check has no unix sockets, no writes outside its tree and, until the egress proxy lands, no network past loopback. What the sandbox stopped is named: a goal or child check opens its evidence with a `[contained: …]` row, and a plan verifier abstains with the same words instead of failing.
+
+A plan verifier's case runner reads the same refusal before the cap that cuts its output, and a
+refusal that ends a run does not unsay a case the product already failed.
 
 The placement itself is `jobs::place`'s: the container, else the sandbox, else plain, the same order bash takes, so a `container:<image>` child's check runs in its container and never under the host's profile. A check placed in a container keeps the variables its host client finds that daemon by, which `env_clear()` had been taking away, and is probed for syntax only: a program the image carries and the host does not is not a refusal.
 

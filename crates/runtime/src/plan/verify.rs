@@ -402,7 +402,7 @@ pub(super) fn protecting(
 }
 
 /// A refusal is not the product's answer, so a contained item abstains and asks the owner.
-fn contained(why: &str) -> String {
+pub(super) fn contained(why: &str) -> String {
     format!("{why}; run it by hand, then accepted_by_user with its exit line as note")
 }
 
@@ -463,10 +463,10 @@ fn verdict_of(
         Err(reason) => return abstain(reason),
     };
     if capture.cancelled {
-        return abstain(format!(
-            "checker timed out (deadline {} ms); run it by hand, then accepted_by_user with its exit line as note",
+        return abstain(contained(&format!(
+            "checker timed out (deadline {} ms)",
             manifest.timeout_ms
-        ));
+        )));
     }
     match capture.exit_code {
         Some(0) => ItemVerdict::Pass,
@@ -524,17 +524,25 @@ fn run_examples(
     checker: &crate::goal::Checker,
 ) -> ItemVerdict {
     let mut failed: Vec<(usize, &'static str)> = Vec::new();
+    let mut refused: Option<String> = None;
     for (index, case) in cases.iter().enumerate() {
         match run_case(manifest, case, root, item_deadline, checker) {
             Ok(()) => {}
             Err(CaseError::Case(why)) => failed.push((index, why)),
-            Err(CaseError::Contained(why)) => return abstain(why),
             Err(CaseError::Host(reason)) => return abstain(reason),
+            Err(CaseError::Contained(why)) => {
+                refused = Some(format!("case {index} not run: {why}"));
+                break;
+            }
         }
     }
-    if failed.is_empty() {
-        return ItemVerdict::Pass;
-    }
+    // A refusal ends the run; it never unsays a case the product already failed.
+    let refused = match refused {
+        Some(why) if failed.is_empty() => return abstain(why),
+        Some(why) => format!("; {why}"),
+        None if failed.is_empty() => return ItemVerdict::Pass,
+        None => String::new(),
+    };
     let indexes: Vec<String> = failed.iter().map(|(index, _)| index.to_string()).collect();
     let reasons: Vec<String> = failed
         .iter()
@@ -542,7 +550,7 @@ fn run_examples(
         .collect();
     ItemVerdict::Fail {
         detail: format!(
-            "cases {} failed: {}",
+            "cases {} failed: {}{refused}",
             indexes.join(", "),
             reasons.join(", ")
         ),
@@ -574,11 +582,11 @@ fn run_case(
     if capture.cancelled {
         return Err(CaseError::Case("timeout"));
     }
-    if capture.truncated {
-        return Err(CaseError::Case("output_overflow"));
-    }
     if let Some(why) = checker.refusal(&manifest.workdir(root), &manifest.command, &capture) {
         return Err(CaseError::Contained(contained(&why)));
+    }
+    if capture.truncated {
+        return Err(CaseError::Case("output_overflow"));
     }
     if capture.exit_code != Some(0) {
         return Err(CaseError::Case("nonzero_exit"));
