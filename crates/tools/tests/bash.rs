@@ -185,3 +185,12 @@ mod fresh_tree {
         Ok(())
     }
 }
+
+/// Dies with the sweep's old `.output()`: a docker engine that stopped answering held a check past
+/// the deadline it had just hit, so the goal or plan verifier hung where it should have answered.
+#[test]
+fn a_hung_sweep_ends_at_its_own_bound() {
+    let begun = std::time::Instant::now();
+    yi_tools::jobs::run_sweep("sleep 30");
+    assert!(begun.elapsed() < std::time::Duration::from_secs(20));
+}

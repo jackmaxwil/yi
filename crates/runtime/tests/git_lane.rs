@@ -455,6 +455,27 @@ mod contained {
         Ok(())
     }
 
+    /// A credential in origin's URL means no lane. Dies with the transport open: a seeded host would
+    /// take the push through the proxy, onto main, with nobody asked.
+    #[tokio::test]
+    async fn a_repository_with_no_lane_has_no_transport_and_its_refusal_says_so() -> TestResult {
+        seatbelt()?;
+        let repo = Repo::new("e2e-no-lane")?;
+        let url = "https://user:s3cret@github.com/x/y.git";
+        git(&repo.project, &["remote", "set-url", "origin", url])?;
+        let results = run_contained(
+            &repo.project,
+            profile(&repo.project)?,
+            &["git push origin HEAD:main; echo \"push=$?\""],
+        )
+        .await?;
+        let text = results.join("\n");
+        assert!(text.contains("transport 'https' not allowed"), "{text}");
+        assert!(text.contains("push=128"), "{text}");
+        assert!(!text.contains("s3cret"), "{text}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn a_contained_push_to_main_waits_for_a_person() -> TestResult {
         seatbelt()?;
