@@ -20,8 +20,9 @@ SERDE = re.compile(r"\bSerialize\b|\bDeserialize\b")
 READ = re.compile(r"\.(\w+)\b(?!\s*\()(?!\s*=[^=])")
 LITERAL = re.compile(r"\b(?:\w+::)*[A-Z]\w*\s*\{")
 NOT_LITERAL = re.compile(r"(?:->|\b(?:struct|enum|impl|for|trait|union|dyn|mod))\s*$")
-PATTERN_BEFORE = re.compile(r"\bmatches!\([^;]*,\s*$")
-PATTERN_AFTER = re.compile(r"[)\]}\s,]*(?:=>|=(?!=)|\|(?!\|)|:(?!:)|if\b|in\b)")
+PATTERN_BEFORE = re.compile(r"\bmatches!\([^;,()]*(?:\([^()]*\)[^;,()]*)*,\s*(?:[\w:]+\()*$")
+# A guard stays on the pattern's line: past a newline, `if` opens the next statement.
+PATTERN_AFTER = re.compile(r"[)\]}\s,]*(?:=>|=(?!=)|\|(?!\|)|:(?!:)|in\b)|[)\]}, \t]*if\b")
 FOR_PATTERN = re.compile(r"\s*in\b")
 NEVER = re.compile(r"(?!)")
 REST_PATTERN = re.compile(r"\.\.\s*(?:,|$)")
@@ -146,9 +147,11 @@ SELF_BOUND = {
     "guard": "match s { S { guard } if guard => 1 }",
     "walk": "for S { walk } in xs {}",
     "flag": "matches!(s, S { flag })",
+    "wrapped": "matches!(f(s), Some(S { wrapped }))",
     "rest": "takes(S { rest, .. });",
 }
-SELF_UNBOUND = ["fn g() -> S { let t = S { set }; t }", "S { cmp } == s;", "impl T for S { held, .. }\n"]
+SELF_UNBOUND = ["fn g() -> S { let t = S { set }; t }", "S { cmp } == s;", "impl T for S { held, .. }\n",
+                "fn f() { if a { return S { early } }\n if b {} }", "let ok = matches!(x, Y) && foo(1, S { late });"]
 SELF_SHAPES = {
     "crates/types/src/tape.rs": "pub struct Tape {\n    pub rows: u8,\n}\npub struct Used {\n    pub n: u8,\n}\n",
     "crates/runtime/src/use.rs": "fn f(u: Used) -> u8 { u.n }",
