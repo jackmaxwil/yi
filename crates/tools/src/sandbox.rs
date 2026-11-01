@@ -30,24 +30,22 @@ const NETWORK_POLICY: &str = "; loopback only, and no unix socket\n\
     (allow network-bind network-inbound (local ip \"localhost:*\"))\n\
     (allow network-outbound (remote ip \"localhost:*\"))\n";
 
-/// What the host's next git runs or reads from a git dir: `hooks` and both configs, `info` and an
-/// alternate; the pointers its policy is built from; origin's `HEAD`, which names trunk.
-const HOST_RUN_BY_GIT: [&str; 8] = [
+/// What the host's next git runs or reads from a git dir: `hooks` and both configs, `info`, `modules`
+/// and an alternate; the pointers its policy is built from; origin's `HEAD`, which names trunk.
+const HOST_RUN_BY_GIT: [&str; 9] = [
     "refs/remotes/origin/HEAD",
     "hooks",
     "config",
     "config.worktree",
     "info",
+    "modules",
     "objects/info/alternates",
     "commondir",
     "gitdir",
 ];
 
-/// Directories one profile build walks under `modules`; past it the whole of `modules` is denied.
-const MODULE_WALK_MAX: usize = 256;
-
-/// Every path under `git_dirs` the host's git reads as authority. A submodule keeps its objects and
-/// index writable, so work inside it still commits. Invariant: a sibling lane's admin dir is denied.
+/// Every path under `git_dirs` the host's git reads as authority. Invariant: a sibling lane's admin
+/// dir is denied too; one made after this profile stays open until a lane loses the common dir.
 fn host_read_paths(git_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let leaves = |dir: &Path| HOST_RUN_BY_GIT.map(|leaf| dir.join(leaf));
     let mut paths: Vec<PathBuf> = git_dirs.iter().flat_map(|dir| leaves(dir)).collect();
@@ -58,23 +56,6 @@ fn host_read_paths(git_dirs: &[PathBuf]) -> Vec<PathBuf> {
                 .filter(|sibling| sibling.file_name() != own.file_name()),
         ),
         [] => {}
-    }
-    let mut walk: Vec<PathBuf> = git_dirs.iter().map(|dir| dir.join("modules")).collect();
-    let mut visited = 0usize;
-    while let Some(parent) = walk.pop() {
-        for child in directories(&parent) {
-            visited = visited.saturating_add(1);
-            if visited > MODULE_WALK_MAX {
-                paths.extend(git_dirs.iter().map(|dir| dir.join("modules")));
-                return paths;
-            }
-            if child.join("HEAD").is_file() {
-                paths.extend(leaves(&child));
-                walk.push(child.join("modules"));
-            } else {
-                walk.push(child);
-            }
-        }
     }
     paths
 }

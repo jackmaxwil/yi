@@ -627,13 +627,7 @@ fn a_planted_submodule_never_runs_on_the_host() -> TestResult {
         format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
     )?;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
-    let git = |cwd: &std::path::Path, args: &[&str]| -> Result<String, Box<dyn Error>> {
-        let out = yi_tools::command("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()?;
-        Ok(String::from_utf8(out.stdout)?.trim().to_owned())
-    };
+    use crate::worktree::git;
     let evil = dir.join("evil");
     std::fs::create_dir_all(&evil)?;
     git(&evil, &["init", "-q", "-b", "main"])?;
@@ -663,5 +657,25 @@ fn a_planted_submodule_never_runs_on_the_host() -> TestResult {
         "a planted submodule's config ran on the host"
     );
     assert!(summary.is_some(), "the real git still answers");
+    Ok(())
+}
+
+/// Dies with a path that holds a separator skipping the tree rule: a relative `lanes.land` ran the
+/// copy a contained child had rewritten, on the host, at the next `/land`.
+#[test]
+fn a_configured_program_in_the_tree_is_refused_and_one_outside_runs() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (tree, outside) = (
+        Scratch::new("yi-env-land-tree")?,
+        Scratch::new("yi-env-land")?,
+    );
+    crate::repo::init_repo(&tree)?;
+    for dir in [&*tree, &*outside] {
+        std::fs::write(dir.join("land.sh"), "#!/bin/sh\n")?;
+        std::fs::set_permissions(dir.join("land.sh"), std::fs::Permissions::from_mode(0o755))?;
+    }
+    assert!(yi_tools::host_command("./land.sh", &tree).is_err());
+    assert!(yi_tools::host_command(&tree.join("land.sh").to_string_lossy(), &tree).is_err());
+    assert!(yi_tools::host_command(&outside.join("land.sh").to_string_lossy(), &tree).is_ok());
     Ok(())
 }

@@ -1053,13 +1053,6 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
             target.display()
         );
     }
-    let index = common.join("modules/nested/sub/index");
-    let (code, output) = run(
-        &format!("printf x > {}", index.display()),
-        &lane,
-        Some(&sandbox),
-    )?;
-    assert_eq!(code, 0, "work inside a submodule still commits: {output}");
     Ok(())
 }
 
