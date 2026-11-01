@@ -423,9 +423,8 @@ def review_diff(git, merge_base, base, sha):
 def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, unanswered=(), meter=None, status="", cleared=0):
     counts = {s: sum(f["severity"] == s for f in findings) for s in SEVERITIES}
     said = verdict(findings, overridden)
-    unread = [who for who in unanswered if who.endswith(" lens")]
     meta = " ".join([f"pr={pr}", f"sha={sha}", f"base={base}", f"verdict={said}", f"mode={mode}"]
-                    + [f"{s}={counts[s]}" for s in SEVERITIES] + ([f"skipped={len(unread)}"] if unread else [])
+                    + [f"{s}={counts[s]}" for s in SEVERITIES]
                     + ([bot_meter.meta(meter.fields())] if meter else []))
     note = "shadow: nothing blocks yet" if mode == "shadow" else "a blocked round keeps this draft"
     lines = [
@@ -445,6 +444,7 @@ def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, una
     else:
         lines.append("No finding survived.")
     if unanswered:
+        unread = any(who.endswith(" lens") for who in unanswered)
         lines += ["", f"No answer after retries from: {', '.join(unanswered)}. This round blocks on what it read"
                   + (", and only the lost lens reads this head again." if unread else "; every lens read the head, so it is not read again.")]
     if dropped:
@@ -774,7 +774,7 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
     raise Unanswered(f"yi ask exited {out.returncode}: {out.stderr.strip()[-600:]}")
 
 
-def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=None, carry=(), fix_note="", memory=()):
+def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=None, carry=(), fix_note="", memory=(), narrow=lambda fit: fit):
     body = pr.get("body") or ""
     """Every probe that applies at once, each lens's findings through the host's quote and scope
     checks and on to their refuters as it answers; `carry` (see `carried`) meets refuters from the start. `own` is
@@ -783,7 +783,7 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
     `unanswered` and the round goes on; only every lens silent raises, no round."""
     added = added_at(diff)
     own = added if own is None else own
-    chosen = [p for p in probes.values() if applies(p, added, full_read)]
+    chosen = list(narrow({name: p for name, p in probes.items() if applies(p, added, full_read)}).values())
     unanswered = []
 
     def tried(what, *call):
@@ -910,7 +910,8 @@ def lost_only(probes, attempts, head, holds=on_head):
     full re-read is a fresh draw that adds findings no fix caused (#1043, #1951's mediums, 10 to 55)."""
     last = attempts[-1] if attempts else {}
     lost = last.get("lost_lenses") if holds(last.get("sha", "-"), head) else None
-    # Invariant: an id no probe carries any more narrows to nothing, and no lens is no read.
+    # Invariant: a lost lens gone from the probes, or one this diff's paths rule out, narrows to
+    # nothing, and no lens is no read.
     return {name: p for name, p in probes.items() if p["id"] in (lost or ())} or probes
 
 
@@ -943,8 +944,8 @@ def read_pr(repo, number, allowed):
         else:
             kept, dropped, outside, unanswered, cleared = read_round(
                 pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd, thinking=REVIEW_THINKING, until=JOB_ENDS),
-                lost_only(load_probes(), attempts_of(notes, allowed, number), sha, holds_for(number, pr["base"]["ref"])),
-                full_read=base == merge_base, own=own, carry=carried(rounds, mine), fix_note=fix_note, memory=earlier(rounds))
+                load_probes(), full_read=base == merge_base, own=own, carry=carried(rounds, mine), fix_note=fix_note, memory=earlier(rounds),
+                narrow=lambda fit: lost_only(fit, attempts_of(notes, allowed, number), sha, holds_for(number, pr["base"]["ref"])))
     finally:
         discard(tree)
     # A second round on an unchanged head is a second independent read, which a draft needs.
@@ -1300,8 +1301,7 @@ def selfcheck():
     assert ready_problems([{"n": 1, "sha": "abc1234", "verdict": "clean"}, {"n": 2, "sha": "abc1234", "verdict": "clean", "skipped": "1"}], "abc1234ff"), \
         "a last round that lost a lens is not ready"
     lost = render(1, 1, "abcdef1", "abcdef0", [], 0, None, "blocking", 0, ["x lens"])
-    assert parse_round({"id": 1, "user": {"login": "me"}, "body": lost}, {"me"}, 1)["skipped"] == "1", "the meta line carries the loss"
-    assert "skipped=" not in render(1, 1, "abcdef1", "abcdef0", [], 0, None, "blocking")
+    assert parse_round({"id": 1, "user": {"login": "me"}, "body": lost}, {"me"}, 1)["skipped"] == "1", "the round carries the loss"
     seat = parse_round({"id": 1, "user": {"login": "me"}, "body": render(1, 1, "abc1234", "abcdef0", [], 0, None, "blocking", 0, ["refuter on x finding at a.rs:1, line 2"])}, {"me"}, 1)
     assert not lost_attempt(seat) and seat["skipped"] == "0" and not ready_problems([dict(seat, n=0), seat], "abc1234ff"), "a lost refuter seat left no part of the head unread"
     assert skip_reason([dict(seat, n=0), seat], "abc1234ff"), "a lost refuter seat reads nothing again"
@@ -1317,8 +1317,8 @@ def selfcheck():
     assert lost_only(named, [seat], "abc1234ff") == named and lost_only(named, [], "abc1234ff") == named
     assert lost_only(named, [dict(both, lost_lenses=["gone"])], "abc1234ff") == named, "a lost lens no probe names any more reads the whole head"
     seat_said, both_said = (render(1, 1, "abc1234", "abcdef0", [], 0, None, "blocking", 0, who) for who in (["refuter on x finding at a.rs:1"], ["refuter on x finding at a.rs:1", "perf lens"]))
-    assert "every lens read the head, so it is not read again" in seat_said and "only the lost lens" not in seat_said and "skipped=" not in seat_said, seat_said
-    assert "only the lost lens reads this head again" in both_said and "not read again" not in both_said and "skipped=1" in both_said, both_said
+    assert "every lens read the head, so it is not read again" in seat_said and "only the lost lens" not in seat_said, seat_said
+    assert "only the lost lens reads this head again" in both_said and "not read again" not in both_said, both_said
 
     assert survives([{"refuted": False}]) and not survives([{"refuted": True}])
     assert survives([{"refuted": False}, {"refuted": True}, {"refuted": False}])
@@ -1496,6 +1496,12 @@ def selfcheck():
         lone[:] = [{"refuted": False, "reason": "holds"}]
         kept, _, _, skipped, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, partial(lambda v: v), probes)
         assert [f["claim"] for f in kept] == [finding["claim"]], "one holding vote with two silent seats confirms it"
+        prompts = []
+        ruled_out = [{"sha": "abc1234", "lost_lenses": ["perf"]}]
+        read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,
+                   lambda p, sch, cwd: (prompts.append(p), answer(p, sch, cwd))[1], {"perf": probes["perf"], "bloat": probes["bloat"]},
+                   narrow=lambda fit: lost_only(fit, ruled_out, "abc1234ff"))
+        assert any(" as its bloat lens" in p for p in prompts), "a lost lens this diff's paths rule out still leaves a lens reading the head"
         prompts = []
         read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,
                    lambda p, sch, cwd: (prompts.append(p), answer(p, sch, cwd))[1], probes, full_read=False)
