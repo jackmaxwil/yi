@@ -810,12 +810,12 @@ impl Swap {
 
 #[cfg(unix)]
 const BENIGN: &str = "ordinary\n";
-/// Swaps a run stops at: a broken guard leaks a few times in a thousand. A run fails below a
-/// fifth of this, and the calls allowed to get them are [`ROUNDS`].
+/// Swaps a run stops at: a broken guard leaks once or twice in a thousand on its narrowest
+/// path, so fewer lets a run miss it. A run fails below half this, within [`ROUNDS`] calls.
 #[cfg(unix)]
-const INSIDE: usize = 1_000;
+const INSIDE: usize = 5_000;
 #[cfg(unix)]
-const ROUNDS: usize = 4_000;
+const ROUNDS: usize = 20_000;
 
 /// Runs checked calls, each with the swap timed to land at a different point of the call, until
 /// [`INSIDE`] swaps landed in the window; returns that count and how many calls reached the key.
@@ -953,7 +953,7 @@ fn assert_no_leak(tool: &str, swap: Swap, (inside, leaks): (usize, usize)) {
         Swap::Parent => "parent",
     };
     assert!(
-        inside >= INSIDE / 5,
+        inside >= INSIDE / 2,
         "{tool}: only {inside} of {ROUNDS} swaps landed between the check and the open"
     );
     assert_eq!(
