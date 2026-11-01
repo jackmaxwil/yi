@@ -736,11 +736,15 @@ impl ToolAdapter {
                 ));
             }
             let (cwd, hook_args) = (context.cwd.clone(), args.clone());
+            let mutating = !matches!(kind, yi_tools::ToolKind::Read | yi_tools::ToolKind::Ledger);
             let output = tokio::task::spawn_blocking(move || {
                 let _span = yi_types::trace::span("tool.execute").arg("tool", tool.name());
                 tool.execute(args, &context)
             })
             .await;
+            if mutating && let Some(store) = ledger.as_ref() {
+                crate::checkpoint::note_mutating_call(&cwd, tool_call_id, store.clone());
+            }
             match output {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
