@@ -20,8 +20,7 @@ impl Uncommitted {
         Ok(Self::counted(&status).with_submodules(tree))
     }
 
-    /// Invariant: host git never enters a submodule, whose config it cannot trust, so `status` is
-    /// blind to work inside one. Each is read in the sandbox; what cannot be read counts as dirty.
+    /// Invariant: `status` is blind to work inside a gitlink, and what cannot be read counts as dirty.
     fn with_submodules(mut self, tree: &Path) -> Self {
         let Ok(stage) =
             super::hostgit::git_capped(tree, &["ls-files", "--stage"], None, super::PLUMBING_CAP)
@@ -205,25 +204,26 @@ impl Pool {
     }
 }
 
-/// `status` under the tree's own profile, so a clean filter a child planted runs contained. A
-/// directory with no `.git` would read the parent's status instead, so it is never clean.
+/// The lane's own status read, one directory down: under the tree's profile where one exists, and
+/// by the host's hardened git where none does — a host with no sandbox contains nothing to guard.
 fn submodule_is_clean(
     tree: &Path,
     path: &str,
     until: Option<std::time::Instant>,
     profile: Option<&yi_tools::Sandbox>,
 ) -> bool {
-    let Some(sandbox) = profile else {
+    if !tree.join(path).join(".git").exists() {
         return false;
+    }
+    let args = [&["-C", path][..], &super::STATUS[..]].concat();
+    let Some(sandbox) = profile else {
+        return super::git_capture(tree, &args, until, yi_tools::OUTPUT_CAP)
+            .is_ok_and(|capture| capture.cut.is_none() && capture.stdout.trim().is_empty());
     };
     let Ok(git) = yi_tools::host_command("git", tree) else {
         return false;
     };
-    if !tree.join(path).join(".git").exists() {
-        return false;
-    }
     let program = git.get_program().to_string_lossy().into_owned();
-    let args = [&["-C", path][..], &super::STATUS[..]].concat();
     let (program, args) = sandbox.wrap(&program, &args);
     let mut command = yi_tools::keyless_command(program);
     command.args(args).current_dir(tree);
@@ -456,6 +456,44 @@ mod tests {
         assert!(
             verdict.is_err(),
             "stale listing HEAD authorized removing new work"
+        );
+        Ok(())
+    }
+
+    /// Dies with a populated submodule counted dirty wherever no sandbox profile exists: the read
+    /// falls back to the lane's own runner, one directory down, and must still see work inside it.
+    #[test]
+    fn a_submodule_read_with_no_profile_sees_the_work_inside_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("yi-submodule-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (tree, sub) = (root.join("tree"), root.join("tree/sub"));
+        std::fs::create_dir_all(&sub)?;
+        for (dir, args) in [
+            (&tree, &["init", "-q", "-b", "main"][..]),
+            (&sub, &["init", "-q", "-b", "main"][..]),
+        ] {
+            git(dir, args)?;
+            git(dir, &["config", "user.email", "lanes@test"])?;
+            git(dir, &["config", "user.name", "lanes"])?;
+        }
+        std::fs::write(sub.join("file.txt"), "one\n")?;
+        git(&sub, &["add", "."])?;
+        git(&sub, &["commit", "-qm", "first"])?;
+
+        assert!(
+            submodule_is_clean(&tree, "sub", None, None),
+            "clean reads clean"
+        );
+        assert!(
+            !submodule_is_clean(&tree, "no-such-link", None, None),
+            "no .git is never clean"
+        );
+        git(&sub, &["config", "status.showUntrackedFiles", "no"])?;
+        std::fs::write(sub.join("new.txt"), "work\n")?;
+        assert!(
+            !submodule_is_clean(&tree, "sub", None, None),
+            "a config cannot hide work"
         );
         Ok(())
     }
