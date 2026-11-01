@@ -4,6 +4,10 @@ use std::error::Error;
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn yi() -> std::process::Command {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the contract under test is the spawned binary's hidden verb"
+    )]
     std::process::Command::new(env!("CARGO_BIN_EXE_yi"))
 }
 
