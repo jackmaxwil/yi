@@ -697,9 +697,6 @@ fn work_inside_a_submodule_keeps_its_lane() -> TestResult {
 /// the pool full in any repository that uses them.
 #[test]
 fn a_clean_submodule_frees_its_lane_and_an_edit_in_it_keeps_it() -> TestResult {
-    if !yi_tools::Sandbox::available() {
-        return Ok(());
-    }
     let rig = Rig::new("clean-submodule")?;
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-one", ClaimBase::Main)?;

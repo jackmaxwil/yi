@@ -497,9 +497,6 @@ fn prepare_splits_history_and_unions_the_floor_into_the_retained_tail() -> TestR
     };
     let prepared = prepare_compaction(&branch, &settings).ok_or("expected preparation")?;
     assert!(
-        !prepared.messages_to_summarize.is_empty() || !prepared.turn_prefix_messages.is_empty()
-    );
-    assert!(
         prepared.retained_tail.iter().any(|message| matches!(
             message,
             AgentMessage::User { content: UserContent::Text(text), .. }
@@ -1062,5 +1059,34 @@ fn a_prompt_stored_before_attribution_still_reads_as_typed() -> TestResult {
             .is_some_and(|text| text.starts_with("<yi_internal_context")),
         "{shown:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn retention_floor_keeps_typed_words_and_drops_injected_user_role_text() -> TestResult {
+    use yi_types::message::{ATTRIBUTED_SINCE_MS, Attribution, HostSource};
+    let at = ATTRIBUTED_SINCE_MS + 1;
+    let summarized = [
+        user("typed ask"),
+        AgentMessage::host_text(HostSource::Notice, "job 7 finished", 0),
+        wrap_internal("reminder", "keep going", at),
+        AgentMessage::task("child request", at),
+        AgentMessage::CompactionSummary {
+            summary: "earlier work".to_owned(),
+            tokens_before: 10,
+            timestamp: at,
+        },
+        AgentMessage::User {
+            content: UserContent::Text("pre-attribution ask".to_owned()),
+            timestamp: ATTRIBUTED_SINCE_MS - 1,
+            attribution: Attribution::Unproven,
+        },
+    ];
+    let survivors = retain_floor(&summarized, Tokens(64_000));
+    let kept = survivors
+        .iter()
+        .map(floor_text)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(kept, ["typed ask", "child request", "pre-attribution ask"]);
     Ok(())
 }

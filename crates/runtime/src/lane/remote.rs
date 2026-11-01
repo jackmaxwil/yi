@@ -74,25 +74,38 @@ impl GitLane {
             .clone()
     }
 
-    /// What a contained git gets where a repository has an origin and no lane: no transport at all.
-    /// Without it, git reads a credential from the URL and lands on main through a seeded host, asked
-    /// by nobody. Its refusal then asks, and an approval runs outside.
+    /// What a contained git gets where a repository has an origin and no lane: no transport but a
+    /// local path. Without it, git reads a credential from the URL and lands on main through a
+    /// seeded host, asked by nobody. Any remote counts, by whatever name; a git that cannot say
+    /// whether one exists gets the same, never fail open.
     pub(crate) fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
+        static NO_LANE: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
         if let Some(lane) = lane {
             return lane.assign.clone();
         }
-        if git(cwd, &["config", "--get", "remote.origin.url"]).is_err() {
-            return Vec::new();
-        }
-        [
-            "GIT_CONFIG_COUNT=2",
-            "GIT_CONFIG_KEY_0=maintenance.auto",
-            "GIT_CONFIG_VALUE_0=false",
-            "GIT_CONFIG_KEY_1=protocol.allow",
-            "GIT_CONFIG_VALUE_1=never",
-        ]
-        .map(str::to_owned)
-        .to_vec()
+        // Once a tree: a kernel asks per cell, and a changed answer would restart it.
+        let mut memo = NO_LANE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let memo = memo.get_or_insert_with(HashMap::new);
+        (memo.entry(cwd.to_path_buf()).or_insert_with(|| {
+            let remote = git(cwd, &["remote"]).map_or(true, |list| !list.trim().is_empty());
+            if !remote {
+                return Vec::new();
+            }
+            [
+                "GIT_CONFIG_COUNT=3",
+                "GIT_CONFIG_KEY_0=maintenance.auto",
+                "GIT_CONFIG_VALUE_0=false",
+                "GIT_CONFIG_KEY_1=protocol.allow",
+                "GIT_CONFIG_VALUE_1=never",
+                "GIT_CONFIG_KEY_2=protocol.file.allow",
+                "GIT_CONFIG_VALUE_2=always",
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        }))
+        .clone()
     }
 
     /// One repository's lane, its pushes cut at `forward_timeout`.
@@ -116,7 +129,7 @@ impl GitLane {
         let outbox = admin.join("yi-outbox");
         let objects = common.join("objects");
         init_store(pool.repo(), &mirror, &objects).ok()?;
-        init_outbox(&outbox, &objects).ok()?;
+        yi_permission::outbox::init_store(&outbox, &objects).ok()?;
         let mut rules = vec![
             ("maintenance.auto".to_owned(), "false".to_owned()),
             (
@@ -167,8 +180,7 @@ impl GitLane {
     /// Before a spawn whose text reads origin. A script that fetches gets what the last refresh
     /// saw: nothing here reads a script.
     pub(crate) fn refresh(&self, command: &str) -> Vec<String> {
-        let reads = ["fetch", "pull", "ls-remote"];
-        if !command.contains("git ") || !reads.iter().any(|verb| command.contains(verb)) {
+        if !reads_a_remote(command) {
             return Vec::new();
         }
         let repo = self.pool.repo();
@@ -220,7 +232,21 @@ impl GitLane {
                 "[{OUTBOX_REFS_MAX} refs forwarded, the rest wait in the outbox (outbox.refs {OUTBOX_REFS_MAX}); any next command forwards them]"
             ));
         }
+        if taken.past_names {
+            let cap = yi_permission::outbox::NAMES_PER_DIR_MAX;
+            rows.push(format!(
+                "[{cap} names read from one outbox directory that holds more, the rest wait (outbox.names {cap}); any next command reads them]"
+            ));
+        }
         rows
+    }
+
+    /// Off the executor: a cell's push takes up to its timeout per ref, and a held main waits on a
+    /// person, whose answer a current-thread front end has to be free to deliver.
+    pub async fn sweep_off_executor(self: Arc<Self>, broker: Arc<PermissionBroker>) -> Vec<String> {
+        crate::lease::off_executor("outbox sweep", move || Ok(self.sweep(&broker)))
+            .await
+            .unwrap_or_else(|error| vec![format!("[outbox not swept: {error}]")])
     }
 
     fn forward(&self, wanted: &Wanted, sha: &Sha, broker: &PermissionBroker) -> String {
@@ -372,19 +398,67 @@ fn init_store(repo: &Path, store: &Path, objects: &Path) -> Result<(), LaneError
     write_alternates(store, objects)
 }
 
-/// By hand: git never runs in here, on the host, once a contained process could have written it.
-fn init_outbox(outbox: &Path, objects: &Path) -> Result<(), LaneError> {
-    let io = |error| super::io_error(outbox)(error);
-    std::fs::create_dir_all(outbox.join("refs/heads")).map_err(io)?;
-    std::fs::create_dir_all(outbox.join("refs/tags")).map_err(io)?;
-    std::fs::write(outbox.join("HEAD"), "ref: refs/heads/main\n").map_err(io)?;
-    std::fs::write(outbox.join("config"), "[core]\n\tbare = true\n").map_err(io)?;
-    write_alternates(outbox, objects)
+fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
+    let io = |error| super::io_error(store)(error);
+    std::fs::create_dir_all(store.join("objects/info")).map_err(io)?;
+    let alternates = store.join("objects/info/alternates");
+    std::fs::write(alternates, format!("{}\n", objects.display())).map_err(io)
 }
 
-fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
-    let info = store.join("objects/info");
-    let io = |error| super::io_error(store)(error);
-    std::fs::create_dir_all(&info).map_err(io)?;
-    std::fs::write(info.join("alternates"), format!("{}\n", objects.display())).map_err(io)
+/// Invariant: a word of the command is `git` and another is the remote read, so a file named
+/// `fetch.log` or a `grep pull` pays for no fetch it never asked for.
+fn reads_a_remote(command: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let git = words
+        .iter()
+        .any(|word| *word == "git" || word.ends_with("/git"));
+    let read = words
+        .iter()
+        .any(|word| matches!(*word, "fetch" | "pull" | "ls-remote"));
+    git && read
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GitLane, git};
+
+    /// Dies with the origin-only key: a fork whose remote is `upstream` gets no transport either,
+    /// and the block still permits a local path, which reaches no network.
+    #[test]
+    fn any_remote_closes_the_transport() -> Result<(), String> {
+        let bare = std::env::temp_dir().join("yi-assign-no-remote");
+        let forked = std::env::temp_dir().join("yi-assign-upstream");
+        for dir in [&bare, &forked] {
+            let _ = std::fs::remove_dir_all(dir);
+            std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+            git(dir, &["init", "-q"]).map_err(|error| error.to_string())?;
+        }
+        git(
+            &forked,
+            &["remote", "add", "upstream", "https://example.invalid/r"],
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(GitLane::assign_for(None, &bare), Vec::<String>::new());
+        let assign = GitLane::assign_for(None, &forked);
+        assert!(
+            assign.contains(&"GIT_CONFIG_VALUE_1=never".to_owned()),
+            "{assign:?}"
+        );
+        assert!(
+            assign.contains(&"GIT_CONFIG_KEY_2=protocol.file.allow".to_owned()),
+            "{assign:?}"
+        );
+        Ok(())
+    }
+
+    /// Dies with the substring test: a file whose name holds the verb costs no fetch.
+    #[test]
+    fn only_a_git_word_fetches() {
+        assert!(super::reads_a_remote("git fetch origin"));
+        assert!(super::reads_a_remote("cargo nextest && git pull --ff-only"));
+        assert!(!super::reads_a_remote(
+            "grep -n pull crates/runtime/src/lane/mod.rs"
+        ));
+        assert!(!super::reads_a_remote("tail -20 git fetch.log"));
+    }
 }
