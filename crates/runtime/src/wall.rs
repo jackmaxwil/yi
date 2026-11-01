@@ -57,10 +57,7 @@ impl Wall {
     /// entry naming a path on the host closes the host, and a bare `https://` closes every host.
     pub fn denies_host(&self, host: &str) -> bool {
         self.deny_url.iter().any(|prefix| {
-            let named = prefix
-                .split_once("://")
-                .map_or(prefix.as_str(), |(_, rest)| rest);
-            let named = named.split(['/', ':']).next().unwrap_or_default();
+            let named = yi_types::url::url_authority(prefix).unwrap_or(prefix);
             named.eq_ignore_ascii_case(host)
                 || walls(prefix, &format!("https://{host}"))
                 || walls(prefix, &format!("http://{host}"))

@@ -36,9 +36,15 @@ pub(crate) fn check_view(
     let producer = yi_tools::Involuntary::Job(&rerun);
     let view = yi_tools::view(producer, stdout, stderr, exit, None, spill);
     let text = view.text.trim();
+    let rows = capture.rows.join("\n");
+    let body = if rows.is_empty() {
+        text.to_owned()
+    } else {
+        format!("{text}\n{rows}")
+    };
     capture
         .cut_row()
-        .map_or_else(|| text.to_owned(), |row| format!("{text}\n{row}"))
+        .map_or_else(|| body.clone(), |row| format!("{body}\n{row}"))
 }
 
 /// The rerun a cut row names: `command` from `dir`, where the check ran. The reader's own bash
@@ -112,9 +118,14 @@ pub(crate) fn captured(
         .map(crate::egress::Lease::revoke)
         .unwrap_or_default();
     if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
-        yi_tools::jobs::run_sweep(sweep);
+        yi_tools::jobs::run_sweep_within(sweep, Some(yi_tools::jobs::SWEEP_BOUND));
     }
     Ok(capture)
+}
+
+/// The lease's proxy variables: the one place a spawned check learns the proxy's address.
+fn lease_env(lease: Option<&crate::egress::Lease>) -> impl Iterator<Item = (String, String)> + '_ {
+    lease.into_iter().flat_map(crate::egress::Lease::env)
 }
 
 impl Checker {
@@ -166,7 +177,7 @@ impl Checker {
         };
         let mut command = yi_tools::keyless_command(program);
         command.args(args).current_dir(cwd);
-        command.envs(lease.iter().flat_map(crate::egress::Lease::env));
+        command.envs(lease_env(lease.as_ref()));
         CheckShell {
             command,
             lease,
@@ -196,7 +207,11 @@ pub(crate) fn run_check(
     checker: &Checker,
 ) -> Result<(), String> {
     checker.guard(check, cwd)?;
-    if let Some(refusal) = probe(check, cwd) {
+    // Invariant: a check placed in a container is judged there, so its first word is not on the
+    // host's PATH and the host probe would refuse a program the image has.
+    if checker.wall.container.is_none()
+        && let Some(refusal) = probe(check, cwd)
+    {
         return Err(refusal);
     }
     let command = checker.shell("sh", check, cwd);
@@ -311,8 +326,7 @@ pub(crate) fn run_check_in(
     checker.guard(command, cwd)?;
     let mut shell = checker.shell("/bin/sh", command, cwd);
     shell.command.env_clear();
-    let proxy = shell.lease.iter().flat_map(crate::egress::Lease::env);
-    let proxy: Vec<(String, String)> = proxy.collect();
+    let proxy: Vec<(String, String)> = lease_env(shell.lease.as_ref()).collect();
     shell.command.envs(proxy);
     for name in CHECKER_ENV_BASE
         .iter()
@@ -1002,6 +1016,36 @@ mod checker_tests {
             .ok_or("no deadline")?;
         let capture = run_check_in(&tree, script, &[], None, deadline, None, &checker)?;
         assert_eq!(capture.exit_code, Some(0));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::{CheckShell, captured};
+    use std::sync::Arc;
+
+    /// Dies with `captured` dropping its sweep: a cancelled check leaves what it started in the
+    /// container writing the tree, which is the invariant `jobs::run_sweep` exists for.
+    #[test]
+    fn a_cancelled_check_is_swept() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("yi-swept-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let marker = dir.join("swept");
+        let mut command = yi_tools::keyless_command("sh");
+        command.args(["-c", "sleep 5"]);
+        let shell = CheckShell {
+            command,
+            lease: None,
+            sweep: Some(format!("touch '{}'", marker.display())),
+        };
+        let cancelled: yi_tools::CancelFlag = Arc::new(|| true);
+        let capture = captured(shell, None, &cancelled)?;
+        assert!(
+            capture.cancelled,
+            "the flag trips a check that never finishes"
+        );
+        assert!(marker.exists(), "a cancelled check's sweep ran");
         Ok(())
     }
 }

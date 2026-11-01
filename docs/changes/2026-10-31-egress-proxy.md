@@ -2,7 +2,7 @@
 issue: Closes #601
 decision: contained traffic leaves through a per-spawn CONNECT proxy, and named package caches are writable with their poisoning accepted | installs failed silently, and the owner left containment over it | remove the Spawn seam, the proxy and with_caches; amends D87, D205 and D331
 growth: +1039 is the proxy (egress.rs: the head parser, the holder table, caps with rows, the relay), the broker's decision table, the Spawn seam through jobs, the kernel and checks, and the cache roots. Weighed for deletion: tokio for the proxy, refused since front ends run current_thread and attach_runtime is at its line cap; a dialer through an upstream proxy, cut until someone sits behind one; derivation of the allow-list from a lockfile, cut because a contained process writes the lockfile.
-raise: tests +967, comments +70, crate cli +5, crate permission +9, crate runtime +916, crate tools +111, crate types +85
+raise: tests +999, comments +78, crate cli +5, crate permission +9, crate runtime +968, crate tools +117, crate types +85
 ---
 A contained command now has the network, through a loopback proxy that decides by host name. Registries and GitHub are seeded, `sandbox.egress` in the home config adds to them, "always" keeps a grant, and any other host asks a person once per spawn; headless, it is refused. The proxy reads no traffic: it tunnels, so TLS stays end to end. A raw connect is still refused by the sandbox, so a client that ignores the proxy variables fails rather than leaving unseen.
 

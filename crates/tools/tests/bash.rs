@@ -58,8 +58,11 @@ fn read_only_searches_stay_reads() {
 /// Dies with the sweep's old `.output()`: a docker engine that stopped answering held a check past
 /// the deadline it had just hit, so the goal or plan verifier hung where it should have answered.
 #[test]
+#[ignore = "tier-2 journey: `just journeys`"]
 fn a_hung_sweep_ends_at_its_own_bound() {
+    let bound = yi_tools::jobs::SWEEP_BOUND;
     let begun = std::time::Instant::now();
-    yi_tools::jobs::run_sweep("sleep 30");
-    assert!(begun.elapsed() < std::time::Duration::from_secs(20));
+    yi_tools::jobs::run_sweep_within("sleep 30", Some(bound));
+    let took = begun.elapsed();
+    assert!(took < bound + std::time::Duration::from_secs(1), "{took:?}");
 }

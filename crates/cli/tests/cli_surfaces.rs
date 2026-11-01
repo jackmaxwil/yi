@@ -422,11 +422,13 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
 #[test]
 fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> TestResult {
     let workspace = Workspace::new("allow-write")?;
-    let (home, missing) = (
-        workspace.0.join("home"),
+    let (yi_dir, missing) = (
+        workspace.0.join("home").join(".yi"),
         workspace.project().join("no-such-dir"),
     );
-    for dir in [home.to_string_lossy(), missing.to_string_lossy()] {
+    // `$HOME` itself is refused only where a containment profile exists, so the case with no
+    // profile is pinned at kept_rules.rs instead; `~/.yi` is refused everywhere.
+    for dir in [yi_dir.to_string_lossy(), missing.to_string_lossy()] {
         let run = ask(&workspace, "look", &["--allow-write", &dir])?;
         let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
         assert_eq!(run.status.code(), Some(2), "{dir}: {stderr}");
