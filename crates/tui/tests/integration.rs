@@ -30,6 +30,7 @@ mod pycell;
 mod question_card;
 mod resume;
 mod reveal;
+mod run_chip;
 mod settled;
 mod streaming;
 mod title;
