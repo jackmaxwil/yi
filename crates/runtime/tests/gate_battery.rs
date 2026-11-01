@@ -54,9 +54,9 @@ const BATTERY: [(&str, &str); 129] = [
     // git, everything that changes something.
     ("git add -A", "contain"),
     ("git commit -m wip", "contain"),
-    ("git push origin main", "ask"),
-    ("git fetch origin", "ask"),
-    ("git pull --rebase", "ask"),
+    ("git push origin main", "contain"),
+    ("git fetch origin", "contain"),
+    ("git pull --rebase", "contain"),
     ("git switch main", "contain"),
     ("git checkout -b feature", "contain"),
     ("git worktree add ../wt br", "contain"),
@@ -101,7 +101,7 @@ const BATTERY: [(&str, &str); 129] = [
     ("rm -rf target && cargo test", "ask"),
     ("cargo build && ./target/debug/yi --version", "contain"),
     ("git add -A && git commit -m wip", "contain"),
-    ("cargo check && git commit -am wip && git push", "ask"),
+    ("cargo check && git commit -am wip && git push", "contain"),
     ("rg TODO crates && rm -rf tmp", "ask"),
     (
         "cargo fmt && cargo clippy && git commit -am style",
@@ -111,7 +111,7 @@ const BATTERY: [(&str, &str); 129] = [
         "cargo build --release && cp target/release/yi /usr/local/bin/yi",
         "contain",
     ),
-    ("git checkout main && git pull && cargo test", "ask"),
+    ("git checkout main && git pull && cargo test", "contain"),
     // Runners and unknown verbs: the repository authors what they execute.
     ("just check", "contain"),
     ("make test", "contain"),

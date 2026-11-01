@@ -102,7 +102,7 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
     );
 
     let own = Path::new("/home/user/.yi/kernel-connections/1-0");
-    let (program, prefix) = sandbox.kernel_prefix(own);
+    let (program, prefix) = sandbox.kernel_prefix(own, &[]);
     assert_eq!(program, "/usr/bin/sandbox-exec");
     assert!(
         prefix
@@ -1597,10 +1597,11 @@ fn a_store_at_home_or_above_it_adds_no_root() -> TestResult {
 }
 
 fn spawn_with(env: Vec<(String, String)>, rows: Vec<String>) -> yi_tools::SpawnFn {
-    Arc::new(move || {
+    Arc::new(move |_command: &str| {
         let rows = rows.clone();
         Ok(yi_tools::Spawn {
             env: env.clone(),
+            assign: Vec::new(),
             after: Box::new(move || rows),
         })
     })
@@ -1652,7 +1653,7 @@ fn a_refused_spawn_never_starts_and_says_why() -> TestResult {
     let (_root, project, home) = workspace("spawn-refused")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
     let marker = project.join("ran");
-    let refused: yi_tools::SpawnFn = Arc::new(|| {
+    let refused: yi_tools::SpawnFn = Arc::new(|_command: &str| {
         Err(yi_tools::SpawnRefused::Egress {
             why: "the egress proxy cannot listen".to_owned(),
         })

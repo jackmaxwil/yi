@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 /// What the host's next git runs or reads from a git dir: `hooks` and both configs, `info` and an
 /// alternate; the pointers its policy is built from; origin's `HEAD`, which names trunk.
 pub(super) const HOST_RUN_BY_GIT: [&str; 8] = [
-    "refs/remotes/origin/HEAD",
+    "refs/remotes/origin",
     "hooks",
     "config",
     "config.worktree",

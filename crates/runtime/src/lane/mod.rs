@@ -13,6 +13,7 @@ pub(crate) use hostgit::{PLUMBING_CAP, capture, capture_named, git, git_capture}
 pub(crate) mod hostgit;
 pub mod land;
 pub mod reap;
+pub mod remote;
 pub mod settle;
 pub mod toolchain;
 

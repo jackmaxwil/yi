@@ -271,16 +271,16 @@ impl Sandbox {
 
     /// The kernel's prefix: its profile plus read and write of `connection_dir`, which every
     /// other profile hides under the connection root (#599).
-    pub fn kernel_prefix(&self, connection_dir: &Path) -> (String, Vec<String>) {
+    pub fn kernel_prefix(&self, connection_dir: &Path, assign: &[String]) -> (String, Vec<String>) {
         (
             SEATBELT.to_owned(),
-            self.seatbelt_args(Some(connection_dir), true),
+            self.seatbelt_args(Some(connection_dir), true, assign),
         )
     }
 
     /// `-p <policy> -DKEY=value ... -- env -u …`: the rules and their bindings come from one
     /// reading of the filesystem, so a link swapped between the two cannot unbind a rule.
-    fn seatbelt_args(&self, own: Option<&Path>, network: bool) -> Vec<String> {
+    fn seatbelt_args(&self, own: Option<&Path>, network: bool, assign: &[String]) -> Vec<String> {
         let parents = self.denied_parents();
         let mut wrapped = vec![
             "-p".to_owned(),
@@ -291,6 +291,7 @@ impl Sandbox {
         }
         wrapped.push("--".to_owned());
         wrapped.extend(scrubbed_env());
+        wrapped.extend_from_slice(assign);
         wrapped
     }
 
@@ -439,18 +440,34 @@ impl Sandbox {
 
     /// `sandbox-exec -p <policy> -DKEY=value ... -- <program> <args>`.
     pub fn wrap(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
-        self.wrap_with(true, program, args)
+        self.wrap_with(true, &[], program, args)
+    }
+
+    /// [`Self::wrap`] with `assign` on `env`'s argv past the scrub, later than its own settings.
+    pub fn wrap_assigning(
+        &self,
+        assign: &[String],
+        program: &str,
+        args: &[&str],
+    ) -> (String, Vec<String>) {
+        self.wrap_with(true, assign, program, args)
     }
 
     /// [`Self::wrap`] with no network at all, loopback included: the document converter parses
     /// untrusted files and needs none.
     pub fn wrap_offline(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
-        self.wrap_with(false, program, args)
+        self.wrap_with(false, &[], program, args)
     }
 
-    fn wrap_with(&self, network: bool, program: &str, args: &[&str]) -> (String, Vec<String>) {
+    fn wrap_with(
+        &self,
+        network: bool,
+        assign: &[String],
+        program: &str,
+        args: &[&str],
+    ) -> (String, Vec<String>) {
         let _span = yi_types::trace::span("sandbox.wrap");
-        let mut wrapped = self.seatbelt_args(None, network);
+        let mut wrapped = self.seatbelt_args(None, network, assign);
         wrapped.push(program.to_owned());
         wrapped.extend(args.iter().map(|arg| (*arg).to_owned()));
         (SEATBELT.to_owned(), wrapped)

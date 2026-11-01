@@ -1116,3 +1116,45 @@ print("imported", yi_wheel_probe.value)"#,
     );
     Ok(())
 }
+
+/// A cell's `!git push` is caught at the cell's end, since a kernel shells out with nothing to hook.
+#[tokio::test]
+async fn a_contained_kernels_push_is_forwarded_and_named() -> TestResult {
+    seatbelt()?;
+    let repo = crate::git_lane::Repo::new("kernel")?;
+    let home = PathBuf::from(std::env::var_os("HOME").ok_or("no HOME")?);
+    let broker = yi_runtime::permission::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        repo.project.clone(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    );
+    let rlm = repo.root.join("rlm");
+    let session = root_session(
+        &repo.project,
+        &home,
+        &rlm,
+        None,
+        Some(Arc::new(broker)),
+        None,
+    );
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let code = r#"import subprocess
+print(subprocess.run(["git", "push", "origin", "HEAD:refs/heads/from-kernel"], capture_output=True, text=True).returncode)"#;
+    let ran = cell(&kernel, code.to_owned()).await;
+    kernel.dispose().await;
+    let ran = ran?;
+    assert!(
+        ran.notes
+            .iter()
+            .any(|note| note.contains("[pushed from-kernel to origin")),
+        "{:?} {:?}",
+        ran.notes,
+        ran.result
+    );
+    assert_eq!(repo.at_origin("refs/heads/from-kernel"), Some(repo.head()?));
+    Ok(())
+}

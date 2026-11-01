@@ -135,7 +135,11 @@ impl Tool for IpythonTool {
             return true;
         };
         match shell_cell(code) {
-            Some(command) => yi_permission::verdict(&command) != yi_permission::Verdict::Allow,
+            Some(command) => match yi_permission::verdict(&command) {
+                yi_permission::Verdict::Allow => false,
+                yi_permission::Verdict::Contain { .. } => !self.contained,
+                yi_permission::Verdict::Ask { .. } => true,
+            },
             None => !self.contained,
         }
     }

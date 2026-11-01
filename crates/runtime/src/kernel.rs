@@ -367,7 +367,15 @@ impl KernelService {
             .spared
             .extend(self.own_paths.iter().flat_map(|own| own(state)));
         let family = self.options.family_dir.as_deref().map(make_board);
-        Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix(&self.connection_dir))
+        let lane = (self.holder.as_ref()).and_then(|_| self.git_lane());
+        let assign = lane.as_ref().map_or(&[][..], |lane| lane.assign());
+        Some(
+            kernel_profile(&sandbox, family.as_deref()).kernel_prefix(&self.connection_dir, assign),
+        )
+    }
+
+    fn git_lane(&self) -> Option<Arc<crate::lane::remote::GitLane>> {
+        crate::lane::remote::GitLane::for_tree(&self.options.cwd)
     }
 
     /// `holder`'s proxy credentials on a contained kernel's boot: past a failure it refuses to
@@ -775,6 +783,9 @@ impl KernelService {
                             .map(crate::egress::Lease::take_rows)
                             .unwrap_or_default(),
                     );
+                    if let (Some((broker, _)), Some(lane)) = (&self.holder, self.git_lane()) {
+                        notes.extend(lane.sweep(broker));
+                    }
                     return Ok(KernelCellOutcome {
                         result,
                         kernel_restarted,

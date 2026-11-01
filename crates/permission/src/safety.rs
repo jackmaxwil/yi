@@ -364,6 +364,8 @@ fn git_class(argv: &[String]) -> Class {
                 || given(argv, "-f")
                 || has("--delete")
                 || has("--prune")
+                // `+x` forces and `:x` deletes, neither of which the outbox can carry.
+                || argv.iter().skip(1).any(|word| word.starts_with(['+', ':']))
         }
         "branch" | "tag" => given(argv, "-D") || given(argv, "-d") || has("--delete"),
         "stash" => matches!(
@@ -399,7 +401,7 @@ fn git_class(argv: &[String]) -> Class {
 /// runs `uploadpack` from `-c` on the host, which a proof must never send out unasked.
 fn git_network(argv: &[String]) -> bool {
     match git_subcommand(argv) {
-        Some("clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule") => true,
+        Some("submodule") => true,
         Some("remote") => (argv.iter())
             .skip_while(|token| *token != "remote")
             .skip(1)
@@ -908,7 +910,12 @@ pub fn command_segments(command: &str) -> Vec<Vec<String>> {
 pub fn host_need(argv: &[String]) -> Option<&'static str> {
     let scope = scope(argv)?;
     let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
-    let git_network = name == "git" && unwrapped(argv).is_some_and(git_network);
+    // A forced push or a delete is what the outbox cannot carry, so its approval goes out.
+    let forced = |argv: &[String]| {
+        git_subcommand(argv) == Some("push") && git_class(argv) == Class::Destructive
+    };
+    let git_network =
+        name == "git" && unwrapped(argv).is_some_and(|argv| git_network(argv) || forced(argv));
     if HOST_PROGRAMS.contains(&name) || git_network {
         return Some("network");
     }

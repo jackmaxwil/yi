@@ -3,6 +3,7 @@
 
 mod catastrophic;
 mod decide;
+pub mod outbox;
 mod review;
 mod rules;
 mod safety;
