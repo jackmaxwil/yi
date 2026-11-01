@@ -257,16 +257,21 @@ def scrubbed():
     return {**env, **({"TMPDIR": os.path.realpath(env["TMPDIR"])} if env.get("TMPDIR") else {})}
 
 
+UNTRUSTED_HOMES = []
+
+
 def untrusted():
     """`scrubbed()` for the clone's own code, whose HOME holds no skills: a run's HOME is the bot's
-    instruction, so the PR's build and tests get one they own. Toolchains and caches stay readable.
-    Incident: a PR's test could write ~/.yi/skills/har/SKILL.md, and the next fixer prompt named it."""
+    instruction, so the PR's build and tests get a fresh one nobody else has held. Incident: a PR's
+    test could rewrite ~/.yi/skills/har/SKILL.md, or plant a symlink where the next run's HOME lands."""
     env = scrubbed()
     real = pathlib.Path(os.environ.get("HOME") or pathlib.Path.home())
-    home = pathlib.Path(env.get("TMPDIR") or tempfile.gettempdir()) / "yi-untrusted-home"
-    home.mkdir(parents=True, exist_ok=True)
+    home = pathlib.Path(tempfile.mkdtemp(prefix="yi-untrusted-home-", dir=env.get("TMPDIR") or None))
+    UNTRUSTED_HOMES.append(home)
+    # scripts/wt_home.sh composes the same three caches for a lane; RUSTUP_AUTO_INSTALL there says
+    # why a missing toolchain must fail instead of installing into the shared rustup home.
     keep = {"CARGO_HOME": real / ".cargo", "RUSTUP_HOME": real / ".rustup", "UV_CACHE_DIR": real / ".cache/uv"}
-    return {**env, "HOME": str(home), **{k: env.get(k) or str(v) for k, v in keep.items()}}
+    return {**env, "HOME": str(home), "RUSTUP_AUTO_INSTALL": "0", **{k: env.get(k) or str(v) for k, v in keep.items()}}
 
 
 def sh(cwd, *args, env=None, input=None, check=True):
@@ -1780,11 +1785,20 @@ def selfcheck():
         bot_home = pathlib.Path(os.environ.get("HOME") or pathlib.Path.home())
         if (bot_home / marker).exists():
             errs.append("the PR's own gate script wrote the bot's HOME, where the next prompt reads its rule")
-        if not (pathlib.Path(untrusted()["HOME"]) / marker).is_dir():
+        landed = [home for home in UNTRUSTED_HOMES if (home / marker).is_dir()]
+        if not landed:
             errs.append("the PR's own gate script did not run under the untrusted HOME")
+        if len(set(UNTRUSTED_HOMES)) != len(UNTRUSTED_HOMES):
+            errs.append("two PR-code runs share one HOME, so the first can plant the symlink the next follows")
+        run = untrusted()
+        if run.get("RUSTUP_AUTO_INSTALL") != "0" or not run.get("CARGO_HOME") or not run.get("RUSTUP_HOME"):
+            errs.append("a PR-code run may install a toolchain into the shared rustup home, or lost its build cache")
     finally:
         shutil.rmtree(probe, ignore_errors=True)
         shutil.rmtree(pathlib.Path(os.environ.get("HOME") or pathlib.Path.home()) / marker, ignore_errors=True)
+        for home in UNTRUSTED_HOMES:
+            shutil.rmtree(home, ignore_errors=True)
+        UNTRUSTED_HOMES.clear()
     pr_review.SKILLS = installed
     states = {1072: "closed", 1076: "open", 1077: "open"}.get
     body = "Closes #1076. Refs #1072. Stacked on #1098.\nRefs #1077."
