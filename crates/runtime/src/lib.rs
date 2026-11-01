@@ -12,6 +12,7 @@ pub mod checkpoint;
 pub mod classifier;
 pub mod claude_hooks;
 pub mod compaction;
+pub mod egress;
 pub mod environment;
 pub mod ext;
 pub mod family;
@@ -112,7 +113,8 @@ pub fn workspace_sandbox(
     home: &std::path::Path,
     session_dir: Option<&std::path::Path>,
 ) -> Option<yi_tools::Sandbox> {
-    yi_tools::Sandbox::available().then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir))
+    yi_tools::Sandbox::available()
+        .then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir).with_caches(home))
 }
 
 pub fn identity_fragment() -> &'static str {

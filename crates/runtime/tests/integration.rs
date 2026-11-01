@@ -42,6 +42,7 @@ mod claude_hooks;
 mod compaction_faux;
 mod documents;
 mod effort_session;
+mod egress;
 mod environment;
 mod ext_e2e;
 mod family;
