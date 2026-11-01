@@ -16,12 +16,28 @@ pub struct Uncommitted {
 
 impl Uncommitted {
     pub(crate) fn read(tree: &Path) -> Result<Self, LaneError> {
-        Ok(Self::counted(&git_capture(
-            tree,
-            &STATUS,
-            None,
-            yi_tools::OUTPUT_CAP,
-        )?))
+        let status = git_capture(tree, &STATUS, None, yi_tools::OUTPUT_CAP)?;
+        Ok(Self::counted(&status).with_submodules(tree))
+    }
+
+    /// Invariant: host git never enters a submodule, whose config it cannot trust, so `status` is
+    /// blind to work inside one. A populated gitlink counts as dirty: reading work as clean wipes it.
+    fn with_submodules(mut self, tree: &Path) -> Self {
+        let stage = git_capture(tree, &["ls-files", "--stage"], None, yi_tools::OUTPUT_CAP);
+        let populated = stage
+            .iter()
+            .flat_map(|stage| stage.stdout.lines())
+            .filter(|row| {
+                let path = row
+                    .starts_with("160000 ")
+                    .then(|| row.split_once('\t'))
+                    .flatten();
+                path.is_some_and(|(_, path)| {
+                    std::fs::read_dir(tree.join(path)).is_ok_and(|mut dir| dir.next().is_some())
+                })
+            });
+        self.paths = self.paths.saturating_add(populated.count());
+        self
     }
 
     /// One status read bounded by [`LIST_BUDGET`]; the error names why the paths went uncounted.
@@ -37,7 +53,7 @@ impl Uncommitted {
             None,
         );
         capture
-            .map(|capture| Self::counted(&capture))
+            .map(|capture| Self::counted(&capture).with_submodules(tree))
             .map_err(|error| {
                 if started.elapsed() >= LIST_BUDGET {
                     format!("git status past LIST_BUDGET ({} s)", LIST_BUDGET.as_secs())
