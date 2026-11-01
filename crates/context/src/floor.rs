@@ -34,8 +34,8 @@ fn middle_truncate(text: &str, budget: Tokens) -> String {
     )
 }
 
-/// Every message that reads as its requester's own words, and every waking letter, survives
-/// verbatim, newest first within the budget; the oldest that partially fits is middle-truncated.
+/// Every message the requester typed (or a child's task), and every letter that wakes the session,
+/// survives verbatim; other host and wrapped context text is left to the summary.
 pub fn retain_floor(summarized: &[AgentMessage], budget: Tokens) -> Vec<AgentMessage> {
     let mut remaining = budget;
     let mut survivors_reversed: Vec<AgentMessage> = Vec::new();
