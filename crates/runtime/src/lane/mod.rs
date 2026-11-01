@@ -85,7 +85,7 @@ impl BranchName {
     }
 
     pub fn for_session(session: &str) -> Result<Self, LaneError> {
-        Self::parse(&format!("yi/{session}"))
+        Self::parse(&yi_types::lane::branch_for_session(session))
     }
 
     pub fn as_str(&self) -> &str {

@@ -204,29 +204,13 @@ const NOT_WORK: [&str; 8] = [
     ":(exclude,glob)build/**",
 ];
 
-/// Origin's `HEAD` when set, else `master` when only that exists, else `main`: from the ref files,
-/// since a claim and every turn ask. ponytail: a reftable repository reads as `main`.
+/// The branch this repository lands on.
 pub fn trunk(repo: &Path) -> BranchName {
-    let Some(common) = yi_permission::git_dirs(repo).pop() else {
-        return BranchName("main".to_owned());
-    };
-    let origin_head = std::fs::read_to_string(common.join("refs/remotes/origin/HEAD"));
-    let named = origin_head.ok().and_then(|text| {
-        let name = text
-            .trim()
-            .strip_prefix("ref: refs/remotes/origin/")?
-            .to_owned();
-        BranchName::parse(&name).ok()
-    });
-    if let Some(named) = named {
-        return named;
-    }
-    let packed = std::fs::read_to_string(common.join("packed-refs")).unwrap_or_default();
-    let exists =
-        |name: &str| common.join(name).is_file() || packed.lines().any(|line| line.ends_with(name));
-    let main = exists("refs/heads/main") || exists("refs/remotes/origin/main");
-    let master = exists("refs/heads/master") || exists("refs/remotes/origin/master");
-    BranchName(if master && !main { "master" } else { "main" }.to_owned())
+    let name = yi_permission::git_dirs(repo).pop().map_or_else(
+        || "main".to_owned(),
+        |common| yi_permission::trunk_of(&common),
+    );
+    BranchName::parse(&name).unwrap_or_else(|_| BranchName("main".to_owned()))
 }
 
 /// `-c` for a repository with no identity: a host commit must not fail for want of a name.

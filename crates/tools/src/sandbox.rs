@@ -44,8 +44,75 @@ const HOST_RUN_BY_GIT: [&str; 8] = [
     "objects/info/alternates",
 ];
 
+/// A linked worktree's git writes its admin dir, the objects, its own branch and the stash, and
+/// locks `packed-refs` to delete a ref. Incident: with the whole common dir, a lane deleted a sibling's.
+fn lane_writes(cwd: &Path, git_dirs: &[PathBuf], home: &Path) -> Vec<PathBuf> {
+    let [admin, common, ..] = git_dirs else {
+        return git_dirs.to_vec();
+    };
+    let refs = |name: &str| {
+        [
+            common.join(name),
+            common.join(format!("{name}.lock")),
+            common.join("logs").join(name),
+            common.join("logs").join(format!("{name}.lock")),
+        ]
+    };
+    let branches = own_branches(cwd, admin, common, home);
+    let leaves: Vec<PathBuf> = (branches.iter())
+        .map(|branch| format!("refs/heads/{branch}"))
+        .chain(["refs/stash".to_owned()])
+        .flat_map(|name| refs(&name))
+        .collect();
+    for parent in leaves.iter().filter_map(|leaf| leaf.parent()) {
+        let _best_effort = std::fs::create_dir_all(parent);
+    }
+    (leaves.into_iter())
+        .chain([
+            admin.clone(),
+            common.join("objects"),
+            common.join("packed-refs.lock"),
+        ])
+        .collect()
+}
+
+/// The branch a host-owned record gives this tree, and the one its `HEAD` names unless that is
+/// trunk, a sibling's or another lane's. Invariant: `HEAD` is contained-writable, so it alone grants none of those.
+fn own_branches(cwd: &Path, admin: &Path, common: &Path, home: &Path) -> Vec<String> {
+    let record = [home.join(".yi/lanes"), home.join(".yi/forks")]
+        .iter()
+        .any(|pool| cwd.starts_with(pool))
+        .then(|| std::fs::read(cwd.with_extension("json")).ok())
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice::<yi_types::lane::SlotState>(&bytes).ok())
+        .and_then(|state| state.session)
+        .map(|session| yi_types::lane::branch_for_session(&session));
+    let named_by = |dir: &Path| {
+        let head = std::fs::read_to_string(dir.join("HEAD")).ok()?;
+        Some(head.trim().strip_prefix("ref: refs/heads/")?.to_owned())
+    };
+    let siblings = (std::fs::read_dir(common.join("worktrees"))
+        .into_iter()
+        .flatten()
+        .flatten())
+    .map(|entry| entry.path())
+    .filter(|dir| dir != admin);
+    let taken: Vec<String> = siblings
+        .chain([common.to_path_buf()])
+        .filter_map(|dir| named_by(&dir))
+        .collect();
+    let trunk = yi_permission::trunk_of(common);
+    let head = named_by(admin).filter(|branch| {
+        *branch != trunk
+            && !branch.starts_with("yi/")
+            && !taken.contains(branch)
+            && !branch.contains("..")
+    });
+    record.into_iter().chain(head).collect()
+}
+
 impl Sandbox {
-    /// The worktree, its git dirs (a lane's index lives in the trunk's), and build scratch.
+    /// The worktree, what its git writes, and build scratch.
     pub fn for_workspace(cwd: &Path, home: &Path, session_dir: Option<&Path>) -> Self {
         let mut writable = vec![cwd.to_path_buf()];
         let git_dirs = yi_permission::git_dirs(cwd);
@@ -63,7 +130,7 @@ impl Sandbox {
         if !cwd.join(".git").is_dir() {
             deny_write.push(cwd.join(".git"));
         }
-        writable.extend(git_dirs);
+        writable.extend(lane_writes(cwd, &git_dirs, home));
         if let Some(dir) = session_dir {
             writable.push(dir.to_path_buf());
         }
@@ -478,8 +545,16 @@ fn scrubbed_env() -> Vec<String> {
     std::iter::once("/usr/bin/env".to_owned())
         .chain(unset)
         .chain(std::iter::once(java_ipv4()))
+        .chain(NO_GIT_MAINTENANCE.map(str::to_owned))
         .collect()
 }
+
+/// A lane cannot write `packed-refs`, and `git commit`'s auto maintenance printed that error.
+const NO_GIT_MAINTENANCE: [&str; 3] = [
+    "GIT_CONFIG_COUNT=1",
+    "GIT_CONFIG_KEY_0=maintenance.auto",
+    "GIT_CONFIG_VALUE_0=false",
+];
 
 /// A JVM's dual-stack socket dials 127.0.0.1 as `::ffff:127.0.0.1`, which Seatbelt refuses; IPv4
 /// sockets keep Gradle, Maven and sbt on loopback. Appended to the value the run inherits.
@@ -717,7 +792,14 @@ pub fn sandbox_refusal(
         "deny file-write",
     ];
     if let Some(path) = refused_path(sandbox, cwd, exit_code, output, command) {
-        return Some(SandboxRefusal::Path(path));
+        // Git's own bookkeeping, which the command never named: no approval widens a git dir, so
+        // the next call asks and an approval runs it outside.
+        let bookkeeping = (yi_permission::git_dirs(cwd).iter()).any(|dir| path.starts_with(dir))
+            && !command.contains(".git");
+        return Some(match bookkeeping {
+            true => SandboxRefusal::Scopes(yi_permission::refused_scopes(command)),
+            false => SandboxRefusal::Path(path),
+        });
     }
     let code = exit_code?;
     let lower = output.to_lowercase();
