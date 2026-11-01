@@ -114,6 +114,10 @@ mod linux {
         let Some((program, rest)) = plan.argv.split_first() else {
             return fail("no command after --");
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the exec replaces this process with the contained command"
+        )]
         let error = std::process::Command::new(program).args(rest).exec();
         fail(&format!("{}: {error}", program.to_string_lossy()))
     }

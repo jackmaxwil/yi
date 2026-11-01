@@ -409,7 +409,11 @@ mod kernel {
         assert!(run(&["init", "-q", "-b", "main"])?.success());
         let before = std::fs::read(repo.join(".git/config"))?;
         let sandbox = Sandbox::for_workspace(&repo, &root, None);
-        let planted = sh(&sandbox, "git config core.sshCommand ./evil")?;
+        let script = format!(
+            "cd '{}' && git config core.sshCommand ./evil",
+            repo.display()
+        );
+        let planted = sh(&sandbox, &script)?;
         assert!(
             planted.status.success(),
             "a writable root cannot deny a file inside it: {planted:?}"
