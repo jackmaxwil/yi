@@ -1,4 +1,5 @@
 ---
+version: 0.853.0
 issue: Closes #1955
 ---
 The autofixer's model and the PR code it runs now work as a throwaway user, one per fix, and root only pushes. Before, a PR's build, test or hook and the model's `--yolo` commands ran as root beside the fixer: on the real runner that code read the parent's environment, which holds the forge token, and wrote the fixer's `~/.yi/skills` and its target dir, so one PR could steer the next PR's fix. `pr_autofix.in_worker` re-runs the script under a numeric uid that owns only its own workspace, with copies of the warm target dir, the cargo downloads (never its credentials) and `~/.yi`, and with no variable named like a token. A commit comes back as a bundle that root fetches as data and pushes, an exception comes back as JSON read through a table, and when the worker ends everything left under its uid is killed. `lock_job` first closes the checkout's `.git/config` and the runner's mode-666 step files. A job that is not root refuses to run in CI. Outside CI, `just pr autofix` keeps the user that ran it. The OpenRouter key stays in the worker, because the model needs it, so PR code can still read that key.
