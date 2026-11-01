@@ -46,12 +46,6 @@ pub(super) enum Handback {
     Deleted,
     Kept(String),
 }
-
-pub(super) enum Landing {
-    Merged,
-    Kept(String),
-}
-
 fn integrated_within(
     repo: &Path,
     tip: &str,
@@ -83,29 +77,34 @@ fn integrated_within(
     let listing = [
         "diff",
         "--name-only",
+        "-z",
         "--no-ext-diff",
         "--no-renames",
         &range,
     ];
     let touched = git(repo, &listing)?;
     let touched = touched
-        .lines()
+        .split('\0')
         .filter(|path| !path.is_empty())
         .collect::<Vec<_>>();
-    if touched.len() > INTEGRATED_PATHS_MAX {
-        return Err(LaneError::Git {
-            args: vec!["diff".to_owned()],
-            exit_code: None,
-            output: format!(
-                "[not judged: {} paths changed on this branch past the {INTEGRATED_PATHS_MAX}-path content comparison; compare it with trunk by hand, or rebase it]",
-                touched.len()
-            ),
-        });
-    }
-    if !touched.is_empty() {
-        let mut scoped = vec!["diff", "--quiet", "--no-ext-diff", "--no-renames", tip];
-        scoped.extend([trunk, "--"]);
-        scoped.extend(touched);
+    // Invariant: a list past the cap skips this rung, not the ladder; the cap is loud only when
+    // no later rung can answer either.
+    let past_paths = touched.len() > INTEGRATED_PATHS_MAX;
+    if !past_paths && !touched.is_empty() {
+        let paths = touched
+            .iter()
+            .map(|path| format!(":(literal){path}"))
+            .collect::<Vec<_>>();
+        let mut scoped = vec![
+            "diff",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-renames",
+            tip,
+            trunk,
+            "--",
+        ];
+        scoped.extend(paths.iter().map(String::as_str));
         if !super::no(git(repo, &scoped))? {
             return Ok(Some(Rung::SameContent));
         }
@@ -117,11 +116,19 @@ fn integrated_within(
     let behind = counts.next().unwrap_or(usize::MAX);
     let ahead = counts.next().unwrap_or(usize::MAX);
     if ahead > walk_max || behind > walk_max {
+        let past = if past_paths {
+            format!(
+                "{} paths changed past the {INTEGRATED_PATHS_MAX}-path content comparison, and ",
+                touched.len()
+            )
+        } else {
+            String::new()
+        };
         return Err(LaneError::Git {
             args: vec!["cherry".to_owned(), trunk.to_owned(), tip.to_owned()],
             exit_code: None,
             output: format!(
-                "[not judged: {ahead} commits on this branch and {behind} on {trunk} past the {walk_max}-commit patch-id walk; compare it with trunk by hand, or rebase it]"
+                "[not judged: {past}{ahead} commits on this branch and {behind} on {trunk} past the {walk_max}-commit patch-id walk; compare it with trunk by hand, or rebase it]"
             ),
         });
     }
@@ -218,29 +225,30 @@ fn briefly(error: &str) -> String {
 impl Pool {
     /// Incident: three lanes left by dead `pid-` drives held nothing and still filled the pool.
     /// An orphan with a clean tree and a branch `main` already contains has nothing to lose.
-    pub(super) fn abandoned(&self, slot: SlotIndex) -> Result<bool, LaneError> {
+    pub(super) fn abandoned(&self, slot: SlotIndex) -> Result<Option<Handback>, LaneError> {
         let path = self.slot_path(slot);
         if self.dirty(slot) {
-            return Ok(false);
+            return Ok(None);
         }
         // Invariant: an unreadable HEAD is not a free slot; only a detached one is.
         let branch = match head(&path) {
-            Ok(Head::Detached(_)) => return Ok(true),
+            Ok(Head::Detached(_)) => return Ok(Some(Handback::Deleted)),
             Ok(Head::Branch(branch)) => branch,
-            Err(_) => return Ok(false),
+            Err(_) => return Ok(None),
         };
-        let branch = branch.as_str();
-        let base = self.resolve(&ClaimBase::Main, false)?;
-        Ok(matches!(integrated(&self.repo, branch, &base), Ok(Some(_))))
+        match self.land(branch.as_str())? {
+            Handback::Deleted => Ok(Some(Handback::Deleted)),
+            Handback::Kept(_) => Ok(None),
+        }
     }
 
     /// Invariant: read-only, so the caller can ask before taking the lock a delete serializes on.
-    pub(super) fn land(&self, branch: &str) -> Result<Landing, LaneError> {
+    pub(super) fn land(&self, branch: &str) -> Result<Handback, LaneError> {
         let base = self.resolve(&ClaimBase::Main, false)?;
         match integrated(&self.repo, branch, &base) {
-            Ok(Some(_)) => Ok(Landing::Merged),
-            Ok(None) => Ok(Landing::Kept("unmerged".to_owned())),
-            Err(why) => Ok(Landing::Kept(why.to_string())),
+            Ok(Some(_)) => Ok(Handback::Deleted),
+            Ok(None) => Ok(Handback::Kept("unmerged".to_owned())),
+            Err(why) => Ok(Handback::Kept(why.to_string())),
         }
     }
 
@@ -249,25 +257,18 @@ impl Pool {
         &self,
         slot: SlotIndex,
         branch: Option<&str>,
-        landed: Option<Landing>,
+        landed: Handback,
     ) -> Result<Handback, LaneError> {
         let path = self.slot_path(slot);
         let text = path.to_string_lossy().into_owned();
         let _ = git(&self.repo, &["worktree", "unlock", &text]);
         git(&path, &["checkout", "-q", "--detach"])?;
-        let Some(branch) = branch else {
-            return Ok(Handback::Deleted);
-        };
-        let landing = match landed {
-            Some(landing) => landing,
-            None => self.land(branch)?,
-        };
-        match landing {
-            Landing::Merged => {
+        match (branch, landed) {
+            (Some(branch), Handback::Deleted) => {
                 git(&self.repo, &["branch", "-q", "-D", branch])?;
                 Ok(Handback::Deleted)
             }
-            Landing::Kept(why) => Ok(Handback::Kept(why)),
+            (Some(_), kept) | (None, kept) => Ok(kept),
         }
     }
 
@@ -289,6 +290,11 @@ impl Pool {
     }
 
     fn reap_if(&self, slot: SlotIndex, expected: Option<&str>) -> Result<String, LaneError> {
+        let branch = self.branch_of(slot);
+        let landed = match branch.as_deref() {
+            Some(branch) => self.land(branch)?,
+            None => Handback::Deleted,
+        };
         let _pool = self.lock()?;
         let (guard, holder) = self.probe(slot)?;
         if let Some(session) = holder {
@@ -304,8 +310,7 @@ impl Pool {
                 });
             }
         }
-        let branch = self.branch_of(slot);
-        let kept = self.detach(slot, branch.as_deref(), None)?;
+        let kept = self.detach(slot, branch.as_deref(), landed)?;
         let lost = self.wipe(slot)?.discarded();
         self.clear_session(slot)?;
         drop(guard);
@@ -594,6 +599,42 @@ mod tests {
             past.contains("1 commits on this branch and 3 on main past the 2-commit patch-id walk"),
             "{past}"
         );
+        Ok(())
+    }
+
+    /// Dies with the path cap refusing the ladder: both caps are named when neither rung answers.
+    #[test]
+    fn a_path_list_past_its_cap_still_names_the_walk_that_refused()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("yi-gc-path-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo)?;
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "lanes@test"][..],
+            &["config", "user.name", "lanes"][..],
+        ] {
+            git(&repo, args)?;
+        }
+        std::fs::write(repo.join("base.txt"), "base\n")?;
+        git(&repo, &["add", "."])?;
+        git(&repo, &["commit", "-qm", "base"])?;
+        git(&repo, &["switch", "-qc", "wide"])?;
+        for n in 0..1025 {
+            std::fs::write(repo.join(format!("f{n:04}.txt")), format!("{n}\n"))?;
+        }
+        git(&repo, &["add", "."])?;
+        git(&repo, &["commit", "-qm", "wide"])?;
+        let past = integrated_within(&repo, "wide", "main", 0)
+            .err()
+            .ok_or("no refusal with both caps past")?
+            .to_string();
+        assert!(
+            past.contains("1025 paths changed past the 1024-path content comparison"),
+            "{past}"
+        );
+        assert!(past.contains("past the 0-commit patch-id walk"), "{past}");
         Ok(())
     }
 }

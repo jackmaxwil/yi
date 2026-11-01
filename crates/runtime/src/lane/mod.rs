@@ -810,14 +810,16 @@ impl Pool {
                 break;
             }
             match self.read_state(slot)?.session {
-                Some(_) if self.abandoned(slot)? => {
-                    let branch = self.branch_of(slot);
-                    self.detach(slot, branch.as_deref(), Some(reap::Landing::Merged))?;
-                    self.clear_session(slot)?;
-                    free = Some((slot, guard, false));
-                    break;
-                }
-                Some(_) => orphans = orphans.saturating_add(1),
+                Some(_) => match self.abandoned(slot)? {
+                    Some(landed) => {
+                        let branch = self.branch_of(slot);
+                        self.detach(slot, branch.as_deref(), landed)?;
+                        self.clear_session(slot)?;
+                        free = Some((slot, guard, false));
+                        break;
+                    }
+                    None => orphans = orphans.saturating_add(1),
+                },
                 // Invariant: a dirty tree with no session is an older binary's quit, never free.
                 None if self.dirty(slot) => orphans = orphans.saturating_add(1),
                 None => {
@@ -940,19 +942,23 @@ impl Drop for Lane {
             return;
         }
         self.released = true;
-        let landing = self.pool.land(self.branch.as_str()).ok();
-        let _ = self.pool.lock().and_then(|_pool| {
-            if self.pool.dirty(self.slot) {
-                return Ok(());
-            }
-            self.pool
-                .detach(self.slot, Some(self.branch.as_str()), landing)?;
-            self.pool.clear_session(self.slot)
-        });
+        let _ = self.handback();
     }
 }
 
 impl Lane {
+    /// Invariant: read-only until the lock, so a dirty tree costs one status read.
+    fn handback(&self) -> Result<(), LaneError> {
+        if self.pool.dirty(self.slot) {
+            return Ok(());
+        }
+        let landed = self.pool.land(self.branch.as_str())?;
+        let _pool = self.pool.lock()?;
+        self.pool
+            .detach(self.slot, Some(self.branch.as_str()), landed)?;
+        self.pool.clear_session(self.slot)
+    }
+
     pub fn slot(&self) -> SlotIndex {
         self.slot
     }
@@ -1026,7 +1032,7 @@ impl Lane {
         let landing = self.pool.land(self.branch.as_str())?;
         let _pool = self.pool.lock()?;
         self.pool
-            .detach(self.slot, Some(self.branch.as_str()), Some(landing))?;
+            .detach(self.slot, Some(self.branch.as_str()), landing)?;
         let dropped = if quit {
             Uncommitted::default()
         } else {

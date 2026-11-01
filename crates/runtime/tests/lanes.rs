@@ -3949,6 +3949,25 @@ fn each_rung_of_the_ladder_reads_its_own_shape() -> TestResult {
     Ok(())
 }
 
+/// Dies with `git diff --name-only`'s quoted name passed back as a pathspec: an unmerged branch
+/// read as landed content.
+#[test]
+fn a_non_ascii_path_is_not_read_as_landed_content() -> TestResult {
+    let rig = ladder("rung-quoted")?;
+    git(&rig.repo, &["switch", "-q", "-c", "accents", "main"])?;
+    std::fs::write(rig.repo.join("notes-é.txt"), "only here\n")?;
+    git(&rig.repo, &["add", "."])?;
+    git(&rig.repo, &["commit", "-qm", "accents"])?;
+    git(&rig.repo, &["switch", "-q", "main"])?;
+    moves_on(&rig)?;
+    assert_eq!(
+        integrated(&rig.repo, "accents", "main")?,
+        None,
+        "a path git quotes read as no change at all"
+    );
+    Ok(())
+}
+
 /// Dies with the last rung reading "any commit matches": one commit left unmerged is the only copy.
 #[test]
 fn one_unmerged_commit_among_squashed_ones_keeps_the_branch() -> TestResult {
@@ -4045,26 +4064,32 @@ fn an_orphan_whose_branch_squash_merged_is_a_free_slot() -> TestResult {
 fn a_question_git_could_not_answer_keeps_the_branch_and_says_why() -> TestResult {
     let rig = ladder("rung-kept")?;
     let pool = rig.pool(1)?;
-    let lane = pool.claim("s-wide", ClaimBase::Main)?;
+    let lane = pool.claim("s-long", ClaimBase::Main)?;
     let slot = lane.slot();
     let branch = lane.branch().as_str().to_owned();
-    wide(lane.path(), 1025)?;
+    std::fs::write(lane.path().join("counter.txt"), "0\n")?;
+    git(lane.path(), &["add", "counter.txt"])?;
+    for n in 1..258 {
+        std::fs::write(lane.path().join("counter.txt"), format!("{n}\n"))?;
+        git(lane.path(), &["commit", "-qam", "count"])?;
+    }
     lane.release()?;
     assert_ne!(
         git(&rig.repo, &["branch", "--list", &branch])?,
         "",
-        "a branch past the content comparison was deleted"
+        "a branch past the patch-id walk was deleted"
     );
-    orphan(&pool, slot, "s-wide")?;
+    orphan(&pool, slot, "s-long")?;
     let line = pool.reap(slot)?;
     assert!(line.contains("kept ("), "{line}");
-    assert!(line.contains("not judged: 1025 paths"), "{line}");
+    assert!(line.contains("past the 256-commit patch-id walk"), "{line}");
     Ok(())
 }
 
-/// Dies with the content comparison taking any list: at the cap it answers, one path past it refuses.
+/// Dies with the content comparison taking any list: at the cap it answers, one path past it
+/// falls through to the walk.
 #[test]
-fn the_content_comparison_holds_at_its_path_limit_and_is_loud_one_past() -> TestResult {
+fn the_content_comparison_holds_at_its_path_limit_and_steps_aside_one_past() -> TestResult {
     let rig = ladder("rung-paths")?;
     git(&rig.repo, &["switch", "-q", "-c", "at-cap", "main"])?;
     wide(&rig.repo, 1024)?;
@@ -4081,10 +4106,10 @@ fn the_content_comparison_holds_at_its_path_limit_and_is_loud_one_past() -> Test
     git(&rig.repo, &["switch", "-q", "-c", "past-cap", "main"])?;
     wide(&rig.repo, 1025)?;
     git(&rig.repo, &["switch", "-q", "main"])?;
-    let past = integrated(&rig.repo, "past-cap", "main")
-        .err()
-        .ok_or("no refusal past the path cap")?
-        .to_string();
-    assert!(past.contains("1025 paths"), "{past}");
+    assert_eq!(
+        integrated(&rig.repo, "past-cap", "main")?,
+        None,
+        "a path list past the cap took away the walk's own answer"
+    );
     Ok(())
 }
