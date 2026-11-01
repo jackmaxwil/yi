@@ -165,14 +165,15 @@ impl PermissionBroker {
         if holds {
             return Ok(());
         }
+        // No profile to widen, so a refusal would only kill the start on a platform with none.
+        if self.sandbox.is_none() {
+            return Ok(());
+        }
         if protected_from_grant(self.sandbox.as_ref(), &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
             ));
-        }
-        if self.sandbox.is_none() {
-            return Ok(());
         }
         let grant = yi_permission::write_grant(&real);
         self.keep_grant(
