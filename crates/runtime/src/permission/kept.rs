@@ -165,15 +165,14 @@ impl PermissionBroker {
         if holds {
             return Ok(());
         }
-        // No profile to widen, so a refusal would only kill the start on a platform with none.
-        if self.sandbox.is_none() {
-            return Ok(());
-        }
         if protected_from_grant(self.sandbox.as_ref(), &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
             ));
+        }
+        if self.sandbox.is_none() {
+            return Ok(());
         }
         let grant = yi_permission::write_grant(&real);
         self.keep_grant(
@@ -280,7 +279,9 @@ pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool
 /// A grant asks only at or below: a deny outranks the grant around it. Invariant: `$HOME` and
 /// `~/.yi` carry no deny, so a directory above them is refused, or `--allow-write /` opens all home.
 pub(crate) fn protected_from_grant(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
-    above_home(dir)
+    // With no profile a directory above home widens nothing, so refusing it only kills the start.
+    is_home(dir)
+        || (sandbox.is_some() && above_home(dir))
         || never_widened(sandbox).iter().any(|guarded| {
             let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
             dir.starts_with(guarded) || dir.starts_with(&real)
