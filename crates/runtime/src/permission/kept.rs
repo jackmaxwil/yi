@@ -165,15 +165,14 @@ impl PermissionBroker {
         if holds {
             return Ok(());
         }
-        // No profile to widen, so a refusal would only kill the start on a platform with none.
-        if self.sandbox.is_none() {
-            return Ok(());
-        }
         if protected_from_grant(self.sandbox.as_ref(), &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
             ));
+        }
+        if self.sandbox.is_none() {
+            return Ok(());
         }
         let grant = yi_permission::write_grant(&real);
         self.keep_grant(
@@ -250,15 +249,15 @@ fn never_widened(sandbox: Option<&yi_tools::Sandbox>) -> Vec<PathBuf> {
     yi.chain(sandboxed).collect()
 }
 
-/// A lane's profile leaves the common git dir out, so a grant around it would hand back the refs
-/// and objects it took away; a main checkout's git dir is writable already.
+/// A lane's profile leaves the common git dir out, so a grant around or inside it would hand back
+/// the refs it took away; a main checkout's git dir is writable already.
 fn holds_a_closed_git_dir(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
     (sandbox.sealed.iter()).any(|sealed| {
         let closed = sealed
             .denied
             .parent()
             .filter(|git| !sandbox.writable.iter().any(|root| root == git));
-        closed.is_some_and(|git| git.starts_with(dir))
+        closed.is_some_and(|git| git.starts_with(dir) || dir.starts_with(git))
     })
 }
 
@@ -278,6 +277,7 @@ fn is_home(dir: &Path) -> bool {
 /// for `<trunk>/.git/config` widens the run by `<trunk>/.git`.
 pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
     is_home(dir)
+        || (sandbox.into_iter()).any(|sandbox| holds_a_closed_git_dir(sandbox, dir))
         || never_widened(sandbox).iter().any(|guarded| {
             let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
             // Invariant: a `.git` pointer guards itself; granting the tree around it opens no
@@ -292,7 +292,9 @@ pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool
 /// A grant asks only at or below: a deny outranks the grant around it. Invariant: `$HOME` and
 /// `~/.yi` carry no deny, so a directory above them is refused, or `--allow-write /` opens all home.
 pub(crate) fn protected_from_grant(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
-    above_home(dir)
+    // With no profile a directory above home widens nothing, so refusing it only kills the start.
+    is_home(dir)
+        || (sandbox.is_some() && above_home(dir))
         || (sandbox.into_iter()).any(|sandbox| holds_a_closed_git_dir(sandbox, dir))
         || never_widened(sandbox).iter().any(|guarded| {
             let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
