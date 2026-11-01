@@ -44,17 +44,18 @@ macro_rules! levers {
             /// Invariant: an override is refused, never clamped: an unknown key, a lever that
             /// is not tunable, a value that is not an integer, a value outside the range.
             fn set(&mut self, key: &str, value: &Value) -> Result<(), String> {
+                let Some(spec) = Self::SPECS.iter().find(|spec| spec.key == key) else {
+                    return Err(format!("unknown lever {key}"));
+                };
+                if !spec.tunable {
+                    return Err(format!("{key} is not tunable"));
+                }
+                let number = value
+                    .as_i64()
+                    .filter(|number| (spec.min..=spec.max).contains(number))
+                    .ok_or_else(|| format!("{key} wants an integer in {}..={}, not {value}", spec.min, spec.max))?;
                 match key {
-                    $($key => {
-                        if !$tunable {
-                            return Err(format!("{key} is not tunable"));
-                        }
-                        let number = value
-                            .as_i64()
-                            .filter(|number| ($min..=$max).contains(number))
-                            .ok_or_else(|| format!("{key} wants an integer in {}..={}, not {value}", $min, $max))?;
-                        self.$field = <$ty>::try_from(number).map_err(|error| format!("{key}: {error}"))?;
-                    })*
+                    $($key => self.$field = <$ty>::try_from(number).map_err(|error| format!("{key}: {error}"))?,)*
                     _ => return Err(format!("unknown lever {key}")),
                 }
                 Ok(())
