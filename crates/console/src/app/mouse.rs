@@ -163,7 +163,7 @@ impl App {
             }
             Some((_, crate::render::Hit::Run(pane, cell, ordinal))) => {
                 self.pending_close = None;
-                self.focus_pane(pane);
+                let looking = self.state.focused_pane_id();
                 let code = match self.state.panes.get(&pane).map(|pane| &pane.content) {
                     Some(crate::model::PaneContent::Session {
                         chat: Some(chat), ..
@@ -171,7 +171,7 @@ impl App {
                     _ => None,
                 };
                 let Some(code) = code else { return };
-                return self.run_in_terminal(&code);
+                return self.run_in_terminal(looking, pane, &code);
             }
             Some((_, crate::render::Hit::Fold(root))) => {
                 self.state.fold_from_header(&root);

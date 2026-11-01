@@ -3,6 +3,7 @@ use std::path::Path;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Direction;
 
+use crate::layout::PaneId;
 use crate::model::PaneContent;
 use crate::pty::Pty;
 
@@ -28,15 +29,34 @@ impl App {
         }
     }
 
-    pub(super) fn session_dir(&self) -> String {
-        let session = match self.state.focused_pane().map(|pane| &pane.content) {
+    fn live_terminal(&self, pane: PaneId) -> bool {
+        self.state.tab().is_some_and(|tab| {
+            tab.layout.pane_ids().contains(&pane)
+                && matches!(
+                    self.state.panes.get(&pane).map(|pane| &pane.content),
+                    Some(PaneContent::Terminal(pty)) if !pty.exited()
+                )
+        })
+    }
+
+    fn chip_terminal(&self) -> Option<PaneId> {
+        self.state.tab()?.chip_terminal
+    }
+
+    pub(super) fn dir_of(&self, pane: PaneId) -> String {
+        let session = match self.state.panes.get(&pane).map(|pane| &pane.content) {
             Some(
                 PaneContent::Editor(crate::model::Editor { workdir, .. })
                 | PaneContent::Markdown { workdir, .. }
                 | PaneContent::Diff { workdir, .. },
             ) => return workdir.clone(),
             Some(PaneContent::SessionDiff { session, .. }) => Some(session.clone()),
-            _ => self.state.focused_session(),
+            _ => self
+                .state
+                .panes
+                .get(&pane)
+                .and_then(|pane| pane.session())
+                .cloned(),
         };
         let workdir = session
             .as_ref()
@@ -53,14 +73,31 @@ impl App {
             .unwrap_or_else(|| self.state.root.clone())
     }
 
+    pub(super) fn session_dir(&self) -> String {
+        let Some(pane) = self.state.focused_pane_id() else {
+            return self.state.root.clone();
+        };
+        self.dir_of(pane)
+    }
+
     pub(super) fn open_terminal(&mut self) {
-        let cwd = self.session_dir();
+        if let Some(pane) = self.state.focused_pane_id() {
+            self.open_terminal_beside(pane);
+        }
+    }
+
+    fn open_terminal_beside(&mut self, from: PaneId) -> Option<PaneId> {
+        let cwd = self.dir_of(from);
         let spawned = std::env::current_exe()
             .and_then(|exe| Pty::spawn(&exe, &shell(), &cwd, self.wake.clone()));
         let pty = match spawned {
             Ok(pty) => pty,
-            Err(error) => return self.note(&format!("terminal: {error}")),
+            Err(error) => {
+                self.note(&format!("terminal: {error}"));
+                return None;
+            }
         };
+        self.focus_pane(from);
         let home = self.state.focused_pane_id();
         self.split_share(Direction::Horizontal, 0.5);
         let opened = self.state.focused_pane_id().filter(|id| Some(*id) != home);
@@ -68,14 +105,29 @@ impl App {
             pane.content = PaneContent::Terminal(Box::new(pty));
             self.state.focus_panes();
         }
+        opened
     }
 
-    /// A shell block is typed into the terminal the person is looking at, or a new one beside the
-    /// chat; Incident: the tab's first live pane took it, so a chip typed into an ssh session.
-    pub(super) fn run_in_terminal(&mut self, code: &str) {
-        if self.focused_pty().is_none() {
-            self.open_terminal();
+    /// Incident: the tab's first live pane took the block, so a chip typed into an ssh session;
+    /// now the terminal the person looks at, else the one a chip of this tab fed last.
+    pub(super) fn run_in_terminal(&mut self, looking: Option<PaneId>, from: PaneId, code: &str) {
+        let target = looking
+            .filter(|pane| self.live_terminal(*pane))
+            .or_else(|| {
+                self.chip_terminal()
+                    .filter(|pane| self.live_terminal(*pane))
+            });
+        let fed = match target {
+            Some(pane) => {
+                self.focus_pane(pane);
+                Some(pane)
+            }
+            None => self.open_terminal_beside(from),
+        };
+        if let Some(tab) = self.state.tab_mut() {
+            tab.chip_terminal = fed;
         }
+        self.dirty = true;
         let Some(pty) = self.focused_pty() else {
             return;
         };
@@ -85,7 +137,6 @@ impl App {
         if let Err(error) = typed {
             self.note(&format!("terminal: {error}"));
         }
-        self.dirty = true;
     }
 
     /// A live terminal takes every key but ⌘ chords and ⌥ arrows, which stay the console's
@@ -136,17 +187,18 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc::Receiver;
+
     use super::App;
+    use crate::layout::PaneId;
     use crate::model::PaneContent;
 
-    /// Dies with a Run that lands in the chat's composer instead of the shell, that types a
-    /// command and never presses enter, or that leaves the terminal unfocused so the person
-    /// cannot answer a prompt the command raises.
-    #[test]
-    fn a_shell_block_is_typed_into_the_live_terminal_and_entered()
-    -> Result<(), Box<dyn std::error::Error>> {
+    type Fixture = (App, PaneId, PaneId, Receiver<Vec<u8>>);
+
+    fn app_with_terminal(root: &str) -> Result<Fixture, Box<dyn std::error::Error>> {
         let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
-        let mut app = App::new("/r".to_owned(), theme);
+        let mut app = App::new(root.to_owned(), theme);
+        let chat = app.state.focused_pane_id().ok_or("a pane")?;
         let shell = app
             .state
             .split_focused(ratatui::layout::Direction::Horizontal)
@@ -155,11 +207,24 @@ mod tests {
         if let Some(pane) = app.state.panes.get_mut(&shell) {
             pane.content = PaneContent::Terminal(Box::new(pty));
         }
+        Ok((app, chat, shell, written))
+    }
+
+    fn typed(written: &Receiver<Vec<u8>>) -> String {
+        String::from_utf8_lossy(&written.try_iter().flatten().collect::<Vec<u8>>()).into_owned()
+    }
+
+    /// Dies with a Run that lands in the chat's composer instead of the shell, that types a
+    /// command and never presses enter, or that leaves the terminal unfocused so the person
+    /// cannot answer a prompt the command raises.
+    #[test]
+    fn a_shell_block_is_typed_into_the_live_terminal_and_entered()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, chat, shell, written) = app_with_terminal("/r")?;
         let code = "cd ~/Development/yi && git pull --ff-only origin main && \\\n  scripts/build_dist.sh\n";
-        app.run_in_terminal(code);
-        let typed: Vec<u8> = written.try_iter().flatten().collect();
+        app.run_in_terminal(Some(shell), chat, code);
         assert_eq!(
-            String::from_utf8_lossy(&typed),
+            typed(&written),
             "cd ~/Development/yi && git pull --ff-only origin main && \\\n  scripts/build_dist.sh\r"
         );
         assert_eq!(app.state.focused_pane_id(), Some(shell));
@@ -171,25 +236,56 @@ mod tests {
     #[test]
     fn a_shell_block_is_not_typed_into_a_terminal_the_person_is_not_looking_at()
     -> Result<(), Box<dyn std::error::Error>> {
-        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
-        let mut app = App::new("/r".to_owned(), theme);
-        let chat = app.state.focused_pane_id().ok_or("a pane")?;
-        let shell = app
+        let (mut app, chat, _shell, written) = app_with_terminal("/nonexistent-yi-terminal-root")?;
+        app.focus_pane(chat);
+        let panes = app.state.panes.len();
+        app.run_in_terminal(Some(chat), chat, "rm -rf ~");
+        assert_eq!(typed(&written), "", "the unfocused terminal took the block");
+        assert_eq!(app.state.panes.len(), panes, "a pane was opened anyway");
+        Ok(())
+    }
+
+    /// Dies with a second Run press splitting another pane and spawning another shell, until the
+    /// chat is a sliver and three commands have three terminal panes.
+    #[test]
+    fn a_second_press_feeds_the_terminal_the_first_one_fed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, chat, shell, written) = app_with_terminal("/nonexistent-yi-terminal-root")?;
+        let panes = app.state.panes.len();
+        app.run_in_terminal(Some(shell), chat, "cargo build");
+        app.focus_pane(chat);
+        app.run_in_terminal(Some(chat), chat, "cargo test");
+        assert_eq!(typed(&written), "cargo build\rcargo test\r");
+        assert_eq!(
+            app.state.panes.len(),
+            panes,
+            "a second terminal pane was opened"
+        );
+        assert_eq!(app.state.focused_pane_id(), Some(shell));
+        Ok(())
+    }
+
+    /// Dies with a chip's terminal opening in the session of whichever pane held focus when the
+    /// press landed, instead of the session whose answer carries the block.
+    #[test]
+    fn a_panes_directory_is_resolved_from_that_pane_not_from_the_focus()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, chat, _shell, _written) = app_with_terminal("/r")?;
+        let notes = app
             .state
             .split_focused(ratatui::layout::Direction::Horizontal)
             .ok_or("no split")?;
-        let (pty, written) = crate::pty::tests::queued_terminal()?;
-        if let Some(pane) = app.state.panes.get_mut(&shell) {
-            pane.content = PaneContent::Terminal(Box::new(pty));
+        if let Some(pane) = app.state.panes.get_mut(&notes) {
+            pane.content = PaneContent::Markdown {
+                path: "/tmp/NOTES.md".to_owned(),
+                source: String::new(),
+                workdir: "/tmp".to_owned(),
+                drawn: None,
+            };
         }
-        app.focus_pane(chat);
-        app.run_in_terminal("rm -rf ~");
-        let typed: Vec<u8> = written.try_iter().flatten().collect();
-        assert!(
-            typed.is_empty(),
-            "the unfocused terminal took {:?}",
-            String::from_utf8_lossy(&typed)
-        );
+        app.focus_pane(notes);
+        assert_eq!(app.session_dir(), "/tmp");
+        assert_eq!(app.dir_of(chat), "/r");
         Ok(())
     }
 }

@@ -5810,6 +5810,8 @@ fn resume_fenced(frame: &Value) -> Vec<Value> {
 /// a press on the fence's own label, one cell left of the chip, must not.
 #[test]
 fn pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not() -> TestResult {
+    // Invariant: a shell opens only in a directory that exists; no machine is born with /tmp/demo-root.
+    std::fs::create_dir_all("/tmp/demo-root")?;
     let open = |click: &str| {
         run_frames(
             "run-chip",

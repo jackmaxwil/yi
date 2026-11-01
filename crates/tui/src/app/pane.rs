@@ -15,8 +15,8 @@ pub(crate) struct PaneRows {
 impl App {
     pub fn pane_row(&self, y: u16) -> Option<Option<(usize, Option<&str>)>> {
         let rows = &self.pane_rows;
-        let (cell, _) = (*rows.rows.get(usize::from(y.checked_sub(rows.top)?))?)?;
-        Some(Some((cell, self.history.source(cell))))
+        let row = rows.rows.get(usize::from(y.checked_sub(rows.top)?))?;
+        Some(row.as_ref().map(|row| (row.0, self.history.source(row.0))))
     }
 
     /// Each run chip on the last paint: where it stands, and the cell and ordinal naming the
