@@ -13,7 +13,6 @@ use yi_runtime::plan::store::PlanStore;
 use yi_runtime::plan::{CanonicalPlanError, PlanService};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::plan::PlanVersion;
 use yi_types::plan::doc::{
     GoalText, Plan, PlanId, PlanTier, Todo, TodoLabel, TodoState, TouchCount,
 };
@@ -54,18 +53,6 @@ fn doc_plan(id: &str, touched: u64, todos: Vec<Todo>) -> Result<Plan, Box<dyn Er
 
 fn write_plan(dir: &Path, plan: Plan) -> TestResult {
     PlanStore::open(dir.to_path_buf())?.write(&plan)?;
-    Ok(())
-}
-
-fn point_fact_at(store: &yi_session::SharedSession, id: &str) -> TestResult {
-    yi_session::lock_session(store).set_plan(yi_types::plan::Plan {
-        version: PlanVersion(1),
-        tasks: Vec::new(),
-        created: 0,
-        updated: 0,
-        doc: Some(id.to_owned()),
-        extra: serde_json::Map::new(),
-    })?;
     Ok(())
 }
 
@@ -113,24 +100,28 @@ fn reminder_count(delivered: &Arc<Mutex<Vec<AgentMessage>>>) -> usize {
         .unwrap_or(0)
 }
 
+/// Dies with a resumed session following an older build's plan fact to a stale plan: the fact
+/// is recorded by the store before the typed DAG left, and the session's own root wins.
 #[test]
-fn the_doc_pointer_resolves_to_the_canonical_file() -> TestResult {
-    let dir = Scratch::new("yi-plan-view-pointer")?;
-    let store = memory_store();
+fn a_legacy_plan_fact_falls_through_to_the_plan_this_session_owns() -> TestResult {
+    let dir = Scratch::new("yi-plan-view-legacy-fact")?;
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../types/tests/fixtures/v4-plan-pointer.jsonl");
+    let file = dir.join("session.jsonl");
+    std::fs::copy(fixture, &file)?;
+    let store: yi_session::SharedSession = Arc::new(Mutex::new(yi_session::load_session(&file)?));
+    let plans = dir.join("plans");
     write_plan(
-        &dir,
-        doc_plan("pointed-at", 3, vec![todo("cut", TodoState::Pending)?])?,
+        &plans,
+        doc_plan("pointed-at", 3, vec![todo("stale", TodoState::Pending)?])?,
     )?;
-    // A second Active root proves the pointer wins over the scan.
     write_plan(
-        &dir,
-        doc_plan("a-decoy", 1, vec![todo("noise", TodoState::Pending)?])?,
+        &plans,
+        doc_plan("only-root", 2, vec![todo("cut", TodoState::Pending)?])?,
     )?;
-    point_fact_at(&store, "pointed-at")?;
-    let (service, _delivered) = harness(&dir, &store, 12);
-    let plan = service.read_plan()?;
-    assert_eq!(plan.id.as_str(), "pointed-at");
-    assert_eq!(plan.touched, TouchCount(3));
+    own(&store, "only-root")?;
+    let (service, _delivered) = harness(&plans, &store, 12);
+    assert_eq!(service.read_plan()?.id.as_str(), "only-root");
     Ok(())
 }
 
@@ -160,29 +151,6 @@ fn a_fresh_session_never_inherits_another_sessions_active_plan() -> TestResult {
     let (fresh, _delivered) = harness(&dir, &memory_store(), 12);
     match fresh.read_plan() {
         Err(CanonicalPlanError::NoPlanOpen { dir: named }) => assert_eq!(named, *dir),
-        other => return Err(format!("expected no-plan, got {other:?}").into()),
-    }
-    Ok(())
-}
-
-#[test]
-fn a_bad_pointer_is_a_typed_refusal_and_no_plan_is_named() -> TestResult {
-    let dir = Scratch::new("yi-plan-view-bad-pointer")?;
-    let store = memory_store();
-    write_plan(
-        &dir,
-        doc_plan("real-plan", 1, vec![todo("cut", TodoState::Pending)?])?,
-    )?;
-    point_fact_at(&store, "NOT_a.plan.id")?;
-    let (service, _delivered) = harness(&dir, &store, 12);
-    match service.read_plan() {
-        Err(CanonicalPlanError::Pointer { id, .. }) => assert_eq!(id, "NOT_a.plan.id"),
-        other => return Err(format!("expected a pointer refusal, got {other:?}").into()),
-    }
-    let empty = Scratch::new("yi-plan-view-bad-pointer-empty")?;
-    let (unpointed, _delivered) = harness(&empty, &memory_store(), 12);
-    match unpointed.read_plan() {
-        Err(CanonicalPlanError::NoPlanOpen { dir }) => assert_eq!(dir, *empty),
         other => return Err(format!("expected no-plan, got {other:?}").into()),
     }
     Ok(())
