@@ -71,6 +71,13 @@ impl Rig {
     }
 }
 
+/// `merge-tree` on two snapshots needs 2.43, and one forge runner has 2.34: a fold refuses there by
+/// name, and nothing on that git can answer these.
+fn folds(rig: &Rig) -> Result<bool, Box<dyn Error>> {
+    let version = git(&rig.repo, &["--version"])?;
+    Ok(yi_runtime::lane::stage::git_version(&version).is_some_and(|at| at >= (2, 43)))
+}
+
 fn read(path: &Path) -> Result<String, Box<dyn Error>> {
     Ok(std::fs::read_to_string(path)?)
 }
@@ -162,6 +169,9 @@ async fn a_diff_names_eight_files_cuts_at_nine_and_says_how_to_read_the_rest() -
 #[tokio::test]
 async fn would_conflict_names_the_path_and_is_empty_when_nothing_would() -> TestResult {
     let rig = rig("radar")?;
+    if !folds(&rig)? {
+        return Ok(());
+    }
     let at = rig.fork("radar").await?;
     std::fs::write(at.join("f0.txt"), "theirs\n")?;
     let clear = rig.ask("tree.diff", json!({"tree": "radar"})).await?;
@@ -178,6 +188,9 @@ async fn would_conflict_names_the_path_and_is_empty_when_nothing_would() -> Test
 #[tokio::test]
 async fn a_merge_folds_what_it_can_names_what_it_cannot_and_commits_nothing() -> TestResult {
     let rig = rig("merge")?;
+    if !folds(&rig)? {
+        return Ok(());
+    }
     let (clean, clash) = (rig.fork("clean").await?, rig.fork("clash").await?);
     std::fs::write(clean.join("f1.txt"), "clean's\n")?;
     std::fs::write(clash.join("f0.txt"), "clash's\n")?;
@@ -318,6 +331,9 @@ async fn a_discard_removes_a_free_tree_and_a_childs_is_refused() -> TestResult {
 #[tokio::test]
 async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> TestResult {
     let rig = rig("given")?;
+    if !folds(&rig)? {
+        return Ok(());
+    }
     std::fs::write(rig.repo.join("f0.txt"), "a person's\n")?;
     let at = rig.fork("given").await?;
     let mut asked = Map::new();
