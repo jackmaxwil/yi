@@ -60,14 +60,24 @@ impl HostRegistry {
                 let cancelled: CancelFlag = Arc::new(|| false);
                 // A fork's first command carries its units and syncs its toolchain, which blocks.
                 let command = command.to_owned();
+                let tree = payload.str_of("tree").map(str::to_owned);
                 let id = tokio::task::spawn_blocking(move || {
-                    yi_tools::jobs::spawn_job(
-                        &command,
-                        &cwd,
-                        &cancelled,
-                        sandbox.as_ref(),
-                        spawn.as_ref(),
-                    )
+                    let Some(name) = tree else {
+                        let (sandbox, spawn) = (sandbox.as_ref(), spawn.as_ref());
+                        return yi_tools::jobs::spawn_job(
+                            &command, &cwd, &cancelled, sandbox, spawn,
+                        );
+                    };
+                    let at =
+                        crate::subagent::tree::free_tree_path(&cwd, &name).ok_or_else(|| {
+                            format!("no free tree named \"{name}\": a child runs its own bash")
+                        })?;
+                    // No proxy or lane of its own: a fork's `bash` reaches loopback and no further.
+                    let sandbox = sandbox.map(|mut sandbox| {
+                        sandbox.writable.push(at.clone());
+                        sandbox
+                    });
+                    yi_tools::jobs::spawn_job(&command, &at, &cancelled, sandbox.as_ref(), None)
                 })
                 .await
                 .map_err(|error| error.to_string())??;

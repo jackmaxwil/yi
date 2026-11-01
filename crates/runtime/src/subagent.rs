@@ -16,6 +16,7 @@ use crate::schedule::GateFn;
 use crate::session::AgentSession;
 
 mod build;
+pub(crate) mod tree;
 pub use build::{Fork, Isolation};
 use build::{parse_fork, parse_isolation};
 pub mod models;
@@ -1042,6 +1043,11 @@ impl SubagentHost {
 
 impl crate::fetch::MemberTrees for SubagentHost {
     fn cwd_of(&self, agent: &str) -> Option<PathBuf> {
-        SubagentHost::cwd_of(self, agent)
+        (SubagentHost::cwd_of(self, agent))
+            .or_else(|| tree::free_tree_path(&self.options.cwd, agent))
+    }
+
+    fn diff_rows(&self, agent: &str) -> Result<Vec<String>, String> {
+        self.tree_rows(agent)
     }
 }
