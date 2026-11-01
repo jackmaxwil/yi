@@ -3954,6 +3954,17 @@ fn a_planted_head_cannot_walk_the_host_commit_onto_trunk() -> TestResult {
         matches!(refused, Err(LaneError::ForeignHead { .. })),
         "{refused:?}"
     );
+    let kept = git(&rig.repo, &["branch", "yi/kept-by-a-gone-lane"]);
+    assert!(kept.is_ok(), "{kept:?}");
+    std::fs::write(
+        Path::new(admin.trim()).join("HEAD"),
+        "ref: refs/heads/yi/kept-by-a-gone-lane\n",
+    )?;
+    let refused = candidate_of(lane.path(), "s-planted", &branch, None, &quiet(), None);
+    assert!(
+        matches!(refused, Err(LaneError::ForeignHead { .. })),
+        "{refused:?}"
+    );
     assert_eq!(git(&rig.repo, &["rev-parse", "main"])?, trunk_before);
     Ok(())
 }

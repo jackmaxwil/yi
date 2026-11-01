@@ -182,21 +182,25 @@ impl Pool {
     }
 }
 
-struct Tree {
-    path: PathBuf,
+pub(super) struct Tree {
+    pub(super) path: PathBuf,
     locked: bool,
+    pub(super) branch: Option<String>,
 }
 
-fn parse(listing: &str) -> Vec<Tree> {
+pub(super) fn parse(listing: &str) -> Vec<Tree> {
     let mut trees = Vec::new();
     for block in listing.split("\n\n") {
         let mut tree = Tree {
             path: PathBuf::new(),
             locked: false,
+            branch: None,
         };
         for line in block.lines() {
             if let Some(path) = line.strip_prefix("worktree ") {
                 tree.path = PathBuf::from(path);
+            } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+                tree.branch = Some(branch.to_owned());
             } else if line == "locked" || line.starts_with("locked ") {
                 tree.locked = true;
             }

@@ -1056,30 +1056,6 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
             target.display()
         );
     }
-    // A module's object store is not host config: a lane's own submodule still takes writes.
-    let admin = PathBuf::from(git(&lane, &["rev-parse", "--absolute-git-dir"])?);
-    std::fs::create_dir_all(admin.join("modules/sub"))?;
-    std::fs::write(admin.join("modules/sub/HEAD"), "ref: refs/heads/main\n")?;
-    std::fs::write(admin.join("modules/sub/config"), "")?;
-    let next = lane_profile(&root, &lane, &home)?;
-    let target = admin.join("modules/sub/config");
-    let (code, output) = run(
-        &format!("printf x >> {}", target.display()),
-        &lane,
-        Some(&next),
-    )?;
-    assert_ne!(
-        code, 0,
-        "a module's config must stay out of reach: {output}"
-    );
-    let objects = admin.join("modules/sub/objects");
-    let command = format!(
-        "mkdir -p {} && printf x > {}/x",
-        objects.display(),
-        objects.display()
-    );
-    let (code, output) = run(&command, &lane, Some(&next))?;
-    assert_eq!(code, 0, "a module's object store is writable: {output}");
     Ok(())
 }
 

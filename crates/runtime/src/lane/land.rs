@@ -463,7 +463,7 @@ impl LaneHandle {
     fn merge_main(&self) -> Result<(), LaneError> {
         self.with_lane(|lane| {
             let trunk = super::hostgit::trunk(lane.pool().repo());
-            super::hostgit::own_head(lane.path())?;
+            super::hostgit::own_head(lane.path(), lane.branch())?;
             let _ = git(lane.pool().repo(), &["fetch", "-q", "origin", trunk.as_str()]);
             let merge = ["merge", "--no-edit", &format!("origin/{trunk}")].map(str::to_owned);
             let merge: Vec<&str> = merge.iter().map(String::as_str).collect();

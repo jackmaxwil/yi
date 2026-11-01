@@ -213,40 +213,34 @@ pub fn trunk(repo: &Path) -> BranchName {
     BranchName::parse(&name).unwrap_or_else(|_| BranchName("main".to_owned()))
 }
 
-/// `-c` for a repository with no identity: a host commit must not fail for want of a name.
+/// `-c` for what a repository's identity lacks: a host commit must not fail for want of a name.
 pub(super) fn identity(tree: &Path) -> Vec<&'static str> {
-    let named = git(tree, &["config", "user.email"]).is_ok_and(|email| !email.trim().is_empty());
-    match named {
-        true => Vec::new(),
-        false => vec!["-c", "user.name=yi", "-c", "user.email=yi@localhost"],
-    }
+    let has = |key| git(tree, &["config", key]).is_ok_and(|value| !value.trim().is_empty());
+    let name = (!has("user.name")).then_some(["-c", "user.name=yi"]);
+    let email = (!has("user.email")).then_some(["-c", "user.email=yi@localhost"]);
+    name.into_iter().chain(email).flatten().collect()
 }
 
 /// Invariant: a tree's admin `HEAD` is contained-writable, so a planted one would walk the host's
-/// next commit or merge onto trunk or a sibling's branch; a detached `HEAD` commits to no branch.
-pub(super) fn own_head(tree: &Path) -> Result<(), LaneError> {
+/// next commit or merge onto trunk, a sibling's branch or another lane's kept one.
+pub(super) fn own_head(tree: &Path, own: &BranchName) -> Result<(), LaneError> {
     let branch = match super::head(tree)? {
         Head::Branch(branch) => branch,
         Head::Detached(_) => return Ok(()),
     };
+    if branch == *own {
+        return Ok(());
+    }
     let head = branch.as_str();
     let repo =
         super::canonical_repo(tree).ok_or_else(|| LaneError::NotARepo(tree.to_path_buf()))?;
     let here = tree.canonicalize().unwrap_or_else(|_| tree.to_path_buf());
     let listing = git(&repo, &["worktree", "list", "--porcelain"])?;
-    let wanted = format!("branch refs/heads/{head}");
-    let elsewhere = listing.split("\n\n").any(|block| {
-        let path = block
-            .lines()
-            .find_map(|line| line.strip_prefix("worktree "));
-        let other = path.is_some_and(|path| {
-            Path::new(path)
-                .canonicalize()
-                .map_or(true, |path| path != here)
-        });
-        other && block.lines().any(|line| line == wanted)
+    let elsewhere = super::reap::parse(&listing).iter().any(|other| {
+        other.branch.as_deref() == Some(head)
+            && other.path.canonicalize().map_or(true, |path| path != here)
     });
-    if head == trunk(&repo).as_str() || elsewhere {
+    if head == trunk(&repo).as_str() || head.starts_with("yi/") || elsewhere {
         return Err(LaneError::ForeignHead {
             head: head.to_owned(),
         });
@@ -267,7 +261,7 @@ pub fn candidate_of(
     quiet(quiescence)?;
     let status = git_by(path, &super::STATUS, deadline)?;
     if !status.trim().is_empty() {
-        own_head(path)?;
+        own_head(path, branch)?;
         git_by(path, &["add", "-u"], deadline)?;
         git_by(
             path,

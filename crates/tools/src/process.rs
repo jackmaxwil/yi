@@ -78,10 +78,6 @@ pub fn host_command(program: &str, cwd: &Path) -> Result<Command, HostProgramMis
 /// The first executable `program` on PATH outside a tree a contained process writes. Temp roots
 /// stay searched: nothing puts one on PATH in the field, and every git shim in the suite lives there.
 fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
-    // A path the person configured (`lanes.land`) is no PATH lookup: it runs as they named it.
-    if program.contains('/') {
-        return Some(PathBuf::from(program));
-    }
     let home = crate::plugin::home();
     let search = (home.as_deref())
         .and_then(crate::plugin::search_path)
@@ -97,6 +93,16 @@ fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
         .filter_map(|tree| tree.canonicalize().ok())
         .filter(|tree| tree.parent().is_some())
         .collect();
+    // A path someone configured (`lanes.land`) is no PATH lookup, and is held to the same rule: a
+    // relative one resolves in the lane, where a contained process rewrites it.
+    if program.contains('/') {
+        let named = cwd.join(program);
+        let outside = named.canonicalize().is_ok_and(|real| {
+            crate::exec::is_executable_file(&real)
+                && !trees.iter().any(|tree| real.starts_with(tree))
+        });
+        return outside.then_some(named);
+    }
     std::env::split_paths(&search)
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(program))
