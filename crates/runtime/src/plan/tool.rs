@@ -500,7 +500,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                 }
                 _ => parse_checklist(&need::<String>(args, kind, "list")?)?,
             },
-            keep_rest: opt(args, kind, "keep_rest")?.unwrap_or(false),
+            keep_rest: false,
         },
         OpKind::View => Op::View {
             full: opt(args, kind, "full")?.unwrap_or(false),

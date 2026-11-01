@@ -25,15 +25,19 @@ use yi_types::url::Url;
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[derive(Default)]
-struct Stub(AtomicU32);
+struct Stub {
+    spawns: AtomicU32,
+    reaps: AtomicU32,
+}
 
 impl Delegate for Stub {
     fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
-        let serial = self.0.fetch_add(1, Ordering::SeqCst);
+        let serial = self.spawns.fetch_add(1, Ordering::SeqCst);
         AgentId::new(format!("child-{serial}")).map_err(|error| error.to_string())
     }
 
     fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
+        self.reaps.fetch_add(1, Ordering::SeqCst);
         Ok(None)
     }
     fn finishes(&self) -> bool {
@@ -44,6 +48,7 @@ impl Delegate for Stub {
 struct Rig {
     temp: Scratch,
     store: PlanStore,
+    delegate: Arc<Stub>,
     engine: Arc<PlanEngine>,
     tool: PlanTool,
 }
@@ -51,11 +56,13 @@ struct Rig {
 fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
     let temp = Scratch::new(&format!("yi-plan-declare-{name}"))?;
     let store = PlanStore::open(temp.to_path_buf())?;
-    let engine = Arc::new(PlanEngine::new(store.clone(), Arc::new(Stub::default())));
+    let delegate = Arc::new(Stub::default());
+    let engine = Arc::new(PlanEngine::new(store.clone(), delegate.clone()));
     let tool = PlanTool::new(Arc::clone(&engine), Actor::Owner);
     Ok(Rig {
         temp,
         store,
+        delegate,
         engine,
         tool,
     })
@@ -972,6 +979,26 @@ fn a_set_keeps_the_rows_it_does_not_name_and_drops_a_struck_one() -> TestResult 
     assert!(text.contains("b was struck, so it was dropped"), "{text}");
     assert_eq!(state_of(&rig, "b")?, "Abandoned");
     assert_eq!(state_of(&rig, "c")?, "Pending", "the row not named stays");
+    Ok(())
+}
+
+#[test]
+fn a_set_keeps_an_unnamed_running_delegated_todo() -> TestResult {
+    let rig = rig("set-keeps-running")?;
+    opened(
+        &rig,
+        json!([
+            {"label": "running job", "delegation": {"spec": {}, "accept": {"command": "true"}}},
+            {"label": "polish"}
+        ]),
+    )?;
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "list": "- [x] polish\n- [ ] ship"}),
+    );
+    assert!(!refused, "{text}");
+    assert_eq!(rig.delegate.reaps.load(Ordering::SeqCst), 0);
+    assert!(matches!(state_of(&rig, "running job")?.as_str(), "Running"));
     Ok(())
 }
 

@@ -43,9 +43,7 @@ use yi_runtime::plan::ops::{
 };
 use yi_runtime::plan::store::{PlanStore, StoreError};
 use yi_types::plan::canonical::{Chained, Digest, canonical_bytes, canonical_digest};
-use yi_types::plan::doc::{
-    AgentId, Delegation, GoalText, PlanId, TodoAddr, TodoLabel, TodoState, TouchCount,
-};
+use yi_types::plan::doc::{AgentId, Delegation, GoalText, PlanId, TodoAddr, TodoLabel, TouchCount};
 use yi_types::plan::ledger::{JournalRecord, RequestId};
 use yi_types::url::Url;
 
@@ -1292,7 +1290,14 @@ fn a_keep_rest_set_replays_the_rows_it_left_out() -> TestResult {
     let state = yi_runtime::plan::state::reduce(&reading.records)?;
     let plan = state.plans.into_values().next().ok_or("no plan")?;
     let rows: Vec<(String, String)> = (plan.todos.iter())
-        .map(|todo| (todo.label.to_string(), class(&todo.state).to_owned()))
+        .map(|todo| {
+            (
+                todo.label.to_string(),
+                yi_types::plan::doc::TodoStateName::of(&todo.state)
+                    .as_str()
+                    .to_owned(),
+            )
+        })
         .collect();
     assert_eq!(
         rows,
@@ -1304,16 +1309,4 @@ fn a_keep_rest_set_replays_the_rows_it_left_out() -> TestResult {
         "the rows the set did not name stay"
     );
     Ok(())
-}
-
-fn class(state: &TodoState) -> &str {
-    match state {
-        TodoState::Pending => "pending",
-        TodoState::Blocked { .. } => "blocked",
-        TodoState::Running { .. } => "running",
-        TodoState::Done { .. } => "done",
-        TodoState::Failed { .. } => "failed",
-        TodoState::Abandoned => "abandoned",
-        TodoState::Other(tag) => tag.as_str(),
-    }
 }
