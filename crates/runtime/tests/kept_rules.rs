@@ -708,3 +708,39 @@ async fn a_granted_dir_is_writable_and_its_sibling_is_not() -> TestResult {
     );
     Ok(())
 }
+
+/// `yi ask --allow-write .` inside a checkout exited 2 with "is protected": the profile's own git
+/// denials made the whole tree around them look guarded, though the deny outranks any grant.
+#[test]
+fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let root = Scratch::new("yi-grant-root")?;
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the checkout under test is built by the real git"
+    )]
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .status()?;
+    assert!(init.success(), "git init");
+    let sandbox = Sandbox::for_workspace(&repo, &home, None);
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let gate = broker(&session, &repo, sandbox, refuse);
+    gate.grant_write(&repo)?;
+    let denied = gate
+        .grant_write(&repo.join(".git/hooks"))
+        .err()
+        .unwrap_or_default();
+    assert!(
+        denied.contains("protected"),
+        "a git denial still refuses a grant at it: {denied}"
+    );
+    Ok(())
+}

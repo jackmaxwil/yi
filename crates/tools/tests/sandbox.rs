@@ -126,6 +126,7 @@ fn a_denial_is_only_claimed_when_the_output_says_so() {
         writable: vec![cwd.to_path_buf()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
@@ -174,6 +175,7 @@ fn home_project() -> Result<(Sandbox, PathBuf), Box<dyn Error>> {
         writable: vec![PathBuf::from("/work"), home.join("project")],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
@@ -422,6 +424,7 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
@@ -626,6 +629,7 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
@@ -667,6 +671,7 @@ fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestRes
         writable: vec![project.clone(), state.clone()],
         deny_read: vec![store.clone(), state.join("secret")],
         deny_write: vec![state.join("locked")],
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: vec![spelled, spill],
     };
@@ -1051,6 +1056,13 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
             target.display()
         );
     }
+    let index = common.join("modules/nested/sub/index");
+    let (code, output) = run(
+        &format!("printf x > {}", index.display()),
+        &lane,
+        Some(&sandbox),
+    )?;
+    assert_eq!(code, 0, "work inside a submodule still commits: {output}");
     Ok(())
 }
 
@@ -1082,6 +1094,96 @@ fn a_lane_cannot_write_a_sibling_lanes_admin() -> TestResult {
     let own = git(&lane, &["rev-parse", "--absolute-git-dir"])?;
     let (code, output) = run(&format!("printf x > {own}/note"), &lane, Some(&sandbox))?;
     assert_eq!(code, 0, "its own admin stays writable: {output}");
+    Ok(())
+}
+
+/// The wall sits on the directories that hold admin dirs and modules, never on the names one
+/// build found there: a sibling lane or a submodule created after the profile was still writable.
+#[test]
+fn a_seal_closes_an_admin_dir_or_a_module_the_build_never_saw() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("sealed")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let common = trunk.join(".git").canonicalize()?;
+    let module = common.join("modules/early");
+    std::fs::create_dir_all(module.join("hooks"))?;
+    std::fs::write(module.join("HEAD"), "ref: refs/heads/main\n")?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    let admin = common.join("worktrees/later");
+    std::fs::create_dir_all(admin.join("hooks"))?;
+    std::fs::create_dir_all(module.join("modules/later/hooks"))?;
+    for target in [
+        admin.join("config.worktree"),
+        admin.join("gitdir"),
+        admin.join("HEAD"),
+        module.join("modules/later/config"),
+        module.join("modules/later/hooks/post-checkout"),
+    ] {
+        std::fs::write(&target, "")?;
+        let (code, output) = run(
+            &format!("printf x >> {}", target.display()),
+            &lane,
+            Some(&sandbox),
+        )?;
+        assert_ne!(
+            code,
+            0,
+            "{} must stay out of reach: {output}",
+            target.display()
+        );
+    }
+    // A module the build did open keeps its object store: work inside a submodule still commits.
+    let objects = module.join("objects/x");
+    std::fs::create_dir_all(module.join("objects"))?;
+    let (code, output) = run(
+        &format!("printf x >> {}", objects.display()),
+        &lane,
+        Some(&sandbox),
+    )?;
+    assert_eq!(code, 0, "{} stays writable: {output}", objects.display());
+    Ok(())
+}
+
+/// The write gate's own predicate agrees with the seal the policy states, on the same two
+/// directions: a name under a sealed directory is refused, a root the seal opens is not.
+#[test]
+fn the_write_predicate_seals_what_the_policy_seals() -> TestResult {
+    let (root, _project, home) = workspace("seal-predicate")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    assert!(trunk.join(".git").is_dir());
+    let mut sealed = 0;
+    for seal in &sandbox.sealed {
+        sealed += 1;
+        for later in [
+            "later/config",
+            "later/config.worktree",
+            "later/hooks/post-checkout",
+        ] {
+            let path = seal.denied.join(later);
+            assert!(
+                sandbox.denies_write(&path),
+                "{} must be sealed",
+                path.display()
+            );
+        }
+        for open in &seal.open {
+            assert!(
+                !sandbox.denies_write(&open.join("index")),
+                "{} stays writable",
+                open.display()
+            );
+            assert!(
+                sandbox.denies_write(&open.join("config.worktree")),
+                "{} still loses its host-read leaves",
+                open.display()
+            );
+        }
+    }
+    assert_eq!(
+        sealed, 4,
+        "a lane seals worktrees and modules in both git dirs"
+    );
     Ok(())
 }
 

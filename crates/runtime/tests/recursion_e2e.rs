@@ -3825,6 +3825,7 @@ async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResul
         writable: vec![root.join("project")],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
@@ -3896,6 +3897,7 @@ async fn a_merge_check_the_gate_refuses_never_runs() -> TestResult {
         writable: vec![project.clone()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
