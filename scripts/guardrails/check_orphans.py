@@ -20,8 +20,10 @@ SERDE = re.compile(r"\bSerialize\b|\bDeserialize\b")
 READ = re.compile(r"\.(\w+)\b(?!\s*\()(?!\s*=[^=])")
 LITERAL = re.compile(r"\b(?:\w+::)*[A-Z]\w*\s*\{")
 NOT_LITERAL = re.compile(r"(?:->|\b(?:struct|enum|impl|for|trait|union|dyn|mod))\s*$")
-PATTERN_BEFORE = re.compile(r"\blet\s+(?:ref\s+|mut\s+)?$|\bmatches!\([^;]*,\s*$")
-PATTERN_AFTER = re.compile(r"[)\]}\s,]*(?:=>|=(?!=)|\|(?!\|)|:(?!:)|if\b)")
+PATTERN_BEFORE = re.compile(r"\bmatches!\([^;]*,\s*$")
+PATTERN_AFTER = re.compile(r"[)\]}\s,]*(?:=>|=(?!=)|\|(?!\|)|:(?!:)|if\b|in\b)")
+FOR_PATTERN = re.compile(r"\s*in\b")
+NEVER = re.compile(r"(?!)")
 REST_PATTERN = re.compile(r"\.\.\s*(?:,|$)")
 BOUND = re.compile(r"(?:^|[{,])\s*(?:ref\s+|mut\s+)*(\w+)\s*(?=,|$|:(?!:))")
 CORPUS = ("scripts", "evals", "skills")
@@ -53,18 +55,21 @@ def declared(text, enums=True):
     return out
 
 
-def bound_names(text):
+def bound_names(text, off=""):
     """Field names a destructuring pattern in the text binds. A brace group is a pattern, not a
-    literal, when it ends in `..`, sits after `let` or inside `matches!`, or is followed by `=>`,
-    `=`, `|` or `if`."""
+    literal, when it ends in `..`, sits inside `matches!`, or is followed by `=>`, `=`, `|`, `:`,
+    `if` or `in`."""
     names = set()
+    rest = NEVER if off == "rest" else REST_PATTERN
+    before = NEVER if off == "before" else PATTERN_BEFORE
+    after = NEVER if off == "after" else PATTERN_AFTER
     for m in LITERAL.finditer(text):
-        if NOT_LITERAL.search(text[max(0, m.start() - 12):m.start()]):
-            continue
         close = item_end(text, m.end() - 1)
         content = text[m.end():close]
-        if (REST_PATTERN.search(content) or PATTERN_BEFORE.search(text[max(0, m.start() - 80):m.start()])
-                or PATTERN_AFTER.match(text[close + 1:close + 40])):
+        if NOT_LITERAL.search(text[max(0, m.start() - 12):m.start()]) and not FOR_PATTERN.match(text[close + 1:close + 8]):
+            continue
+        if (rest.search(content) or before.search(text[max(0, m.start() - 80):m.start()])
+                or after.match(text[close + 1:close + 40])):
             names |= set(BOUND.findall(content))
     return names
 
@@ -74,11 +79,11 @@ def interpolated(raw):
     return {n for attr in re.findall(r"#\[error\((.*?)\)\]", raw, re.S) for n in re.findall(r"\{(\w+)[^{}]*\}", attr)}
 
 
-def read_names(texts):
+def read_names(texts, off=""):
     """Names read as `.name` (not a call, not an assignment) or bound by a destructuring pattern."""
     names = set()
     for text in texts:
-        names |= set(READ.findall(text)) | bound_names(text)
+        names |= set(READ.findall(text)) | bound_names(text, off)
     return names
 
 
@@ -115,6 +120,7 @@ pub struct A {
 
 pub enum Edit {
     Delete { line: u8, old_assertion: String },
+    TooLong { limit: u8 },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -130,6 +136,19 @@ SELF_READERS = [
     "fn m(A { dropped, .. }: A) -> u8 { dropped }",
 ]
 SELF_FLAGGED = ["old_assertion", "recorded_at"]
+SELF_ERROR = '#[error("over {limit:?}")]'
+# One pattern form per row, each the only thing that binds its name.
+SELF_BOUND = {
+    "arm": "match s { S { arm } => arm }",
+    "eq": "let S { eq } = s;",
+    "alt": "match s { S { alt } | T => 1 }",
+    "typed": "fn f(S { typed }: S) {}",
+    "guard": "match s { S { guard } if guard => 1 }",
+    "walk": "for S { walk } in xs {}",
+    "flag": "matches!(s, S { flag })",
+    "rest": "takes(S { rest, .. });",
+}
+SELF_UNBOUND = ["fn g() -> S { let t = S { set }; t }", "S { cmp } == s;", "impl T for S { held, .. }\n"]
 SELF_SHAPES = {
     "crates/types/src/tape.rs": "pub struct Tape {\n    pub rows: u8,\n}\npub struct Used {\n    pub n: u8,\n}\n",
     "crates/runtime/src/use.rs": "fn f(u: Used) -> u8 { u.n }",
@@ -145,11 +164,19 @@ LOOSE_BOUND = re.compile(r"[{,]\s*(\w+)\s*(?=[,}])")
 def selfcheck(off=""):
     bad = []
     reads = read_names(SELF_READERS)
+    if off != "interpolated":
+        reads |= interpolated(SELF_ERROR)
     if off == "literals":
         reads = reads.union(*(set(LOOSE_BOUND.findall(t)) for t in SELF_READERS))
     flagged = [] if off == "fields" else sorted(n for n, _ in declared(SELF_SRC, enums=off != "variants") if n not in reads)
     if flagged != sorted(SELF_FLAGGED):
         bad.append(f"field scan said {flagged}, not {SELF_FLAGGED}: it must flag a field only a struct literal or a variant literal sets, spare the one read as `.name` or bound by a destructuring pattern, and exempt the serde-derived one")
+    missed = sorted(name for name, text in SELF_BOUND.items() if name not in bound_names(text, off))
+    if missed:
+        bad.append(f"pattern scan missed {missed}: every destructuring form must count as a read")
+    wrong = sorted(set().union(*map(bound_names, SELF_UNBOUND)))
+    if wrong:
+        bad.append(f"pattern scan bound {wrong}: a literal that sets a field reads nothing")
     dead = [] if off == "shapes" else [n for _, n, _ in dead_shapes(SELF_SHAPES)]
     if dead != ["Tape"]:
         bad.append(f"shape scan said {dead}, not ['Tape']: it must flag the yi-types shape named nowhere else and spare the one production code names")
@@ -162,7 +189,7 @@ def selfcheck(off=""):
 if __name__ == "__main__":
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
-        for off in ("fields", "literals", "variants", "shapes", "baselines"):
+        for off in ("fields", "literals", "variants", "shapes", "baselines", "after", "before", "rest", "interpolated"):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} scan disabled, so it refutes nothing")
         fail(errs, "orphans selfcheck")
