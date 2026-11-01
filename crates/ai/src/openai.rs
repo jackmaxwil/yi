@@ -672,16 +672,23 @@ impl ChunkMapper {
                     thinking: String::new(),
                     thinking_signature: None,
                     redacted: None,
+                    reasoning_field: None,
+                    reasoning_details: None,
                 },
             ),
         };
         self.thinking_index = Some(content_index);
         if let Some(Content::Thinking {
-            thinking_signature, ..
+            thinking_signature,
+            reasoning_field,
+            reasoning_details,
+            ..
         }) = assistant_block_mut(&mut self.output, content_index)
             && let Some(sealed) = self.details.seal(thinking_signature.as_deref())
         {
-            *thinking_signature = Some(sealed);
+            *thinking_signature = Some(sealed.signature);
+            *reasoning_field = Some(sealed.field);
+            *reasoning_details = Some(sealed.details);
         }
     }
 
@@ -702,6 +709,8 @@ impl ChunkMapper {
                             thinking: String::new(),
                             thinking_signature: Some(field.to_owned()),
                             redacted: None,
+                            reasoning_field: Some(field.to_owned()),
+                            reasoning_details: None,
                         },
                     );
                     self.thinking_index = Some(content_index);

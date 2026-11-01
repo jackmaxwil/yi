@@ -797,6 +797,29 @@ fn reasoning_details() -> serde_json::Value {
     }])
 }
 
+/// Locates the assistant tool-call message after appending a reply and optional follow-up.
+fn second_request_for(
+    model: &Model,
+    message: &AgentMessage,
+    follow_up: Option<AgentMessage>,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let mut context = history_context();
+    context.messages.push(message.clone());
+    if let Some(follow_up) = follow_up {
+        context.messages.push(follow_up);
+    }
+    let params = build_params(model, &context, &OpenAiOptions::default());
+    params["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find(|message| message.get("tool_calls").is_some())
+        })
+        .cloned()
+        .ok_or_else(|| format!("no assistant tool-call message in {params}").into())
+}
+
 /// The reply the loop gets, mapped, then handed back as history for the turn after the tool.
 fn reply_and_second_request() -> Result<serde_json::Value, Box<dyn Error>> {
     let model = target_model()?;
@@ -808,31 +831,23 @@ fn reply_and_second_request() -> Result<serde_json::Value, Box<dyn Error>> {
     let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
         return Err(format!("expected a done turn: {events:?}").into());
     };
-    let mut context = history_context();
-    context.messages.push(message.clone());
-    context.messages.push(AgentMessage::ToolResult {
-        tool_call_id: "call_1".to_owned(),
-        tool_name: "bash".to_owned(),
-        content: vec![Content::Text {
-            text: "Cargo.toml".to_owned(),
-            text_signature: None,
-        }],
-        details: None,
-        usage: None,
-        added_tool_names: None,
-        is_error: false,
-        timestamp: 1,
-    });
-    let params = build_params(&model, &context, &OpenAiOptions::default());
-    params["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages
-                .iter()
-                .find(|message| message.get("tool_calls").is_some())
-        })
-        .cloned()
-        .ok_or_else(|| format!("no assistant tool-call message in {params}").into())
+    second_request_for(
+        &model,
+        message,
+        Some(AgentMessage::ToolResult {
+            tool_call_id: "call_1".to_owned(),
+            tool_name: "bash".to_owned(),
+            content: vec![Content::Text {
+                text: "Cargo.toml".to_owned(),
+                text_signature: None,
+            }],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 1,
+        }),
+    )
 }
 
 #[test]
@@ -903,22 +918,21 @@ fn an_encrypted_detail_with_no_reasoning_text_still_opens_the_thinking_block() -
         carry["details"],
         json!([{"type": "reasoning.encrypted", "data": "ZW5jcnlwdGVk", "index": 0}])
     );
-    let mut context = history_context();
-    context.messages.push(message.clone());
-    let params = build_params(&model, &context, &OpenAiOptions::default());
-    let assistant = params["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages
-                .iter()
-                .find(|message| message.get("tool_calls").is_some())
-        })
-        .cloned()
-        .ok_or_else(|| format!("no assistant tool-call message in {params}"))?;
+    let mut carried = message.clone();
+    if let AgentMessage::Assistant { content, .. } = &mut carried
+        && let Some(Content::Thinking {
+            thinking_signature, ..
+        }) = content
+            .iter_mut()
+            .find(|block| matches!(block, Content::Thinking { .. }))
+    {
+        *thinking_signature = Some("not-json".to_owned());
+    }
+    let assistant = second_request_for(&model, &carried, None)?;
     assert_eq!(
         assistant["reasoning_details"],
         json!([{"type": "reasoning.encrypted", "data": "ZW5jcnlwdGVk", "index": 0}]),
-        "{params}"
+        "{assistant}"
     );
     Ok(())
 }

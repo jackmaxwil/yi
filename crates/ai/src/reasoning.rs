@@ -1,6 +1,8 @@
 //! What a turn's reasoning must carry back to the provider: OpenRouter's `reasoning_details` and
 //! Google's `thought_signature`, both opaque and both refused by the next tool turn when dropped.
 
+use std::borrow::Cow;
+
 use serde_json::{Map, Value, json};
 use yi_types::message::Content;
 
@@ -8,17 +10,27 @@ pub(crate) const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning"
 const CARRY_FIELD: &str = "field";
 const CARRY_DETAILS: &str = "details";
 
-fn reasoning_carry(signature: Option<&str>) -> Option<(String, Option<Value>)> {
+fn reasoning_carry<'a>(
+    signature: Option<&str>,
+    field: Option<&'a str>,
+    details: Option<&'a Value>,
+) -> Option<(Cow<'a, str>, Option<Cow<'a, Value>>)> {
+    if let Some(field) = field {
+        return Some((Cow::Borrowed(field), details.map(Cow::Borrowed)));
+    }
     let signature = signature?;
     if let Ok(carry) = serde_json::from_str::<Value>(signature)
         && let Some(field) = carry.get(CARRY_FIELD).and_then(Value::as_str)
     {
-        let details = carry.get(CARRY_DETAILS).filter(|value| value.is_array());
-        return Some((field.to_owned(), details.cloned()));
+        let details = carry
+            .get(CARRY_DETAILS)
+            .filter(|value| value.is_array())
+            .cloned();
+        return Some((Cow::Owned(field.to_owned()), details.map(Cow::Owned)));
     }
     REASONING_FIELDS
         .contains(&signature)
-        .then(|| (signature.to_owned(), None))
+        .then(|| (Cow::Owned(signature.to_owned()), None))
 }
 
 fn merge_detail(kept: &mut Value, entry: &Value) {
@@ -36,6 +48,12 @@ fn merge_detail(kept: &mut Value, entry: &Value) {
             }
         }
     }
+}
+
+pub(crate) struct SealedReasoning {
+    pub(crate) signature: String,
+    pub(crate) field: String,
+    pub(crate) details: Value,
 }
 
 /// One turn's details as they arrive: per `index`, text appended and the rest replaced, so what
@@ -70,15 +88,20 @@ impl ReasoningCarry {
 
     /// The block's new signature, or `None` when no details arrived; the plain delta field name
     /// stays as it was, so a turn with no details still sends none.
-    pub(crate) fn seal(&mut self, signature: Option<&str>) -> Option<String> {
+    pub(crate) fn seal(&mut self, signature: Option<&str>) -> Option<SealedReasoning> {
         if self.details.is_empty() {
             return None;
         }
-        let field = reasoning_carry(signature)
-            .map(|(field, _)| field)
+        let field = reasoning_carry(signature, None, None)
+            .map(|(field, _)| field.into_owned())
             .unwrap_or_else(|| REASONING_FIELDS[1].to_owned());
         let details = Value::Array(std::mem::take(&mut self.details));
-        Some(json!({CARRY_FIELD: field, CARRY_DETAILS: details}).to_string())
+        let signature = json!({CARRY_FIELD: field, CARRY_DETAILS: details}).to_string();
+        Some(SealedReasoning {
+            signature,
+            field,
+            details,
+        })
     }
 }
 
@@ -89,9 +112,15 @@ pub(crate) fn apply(message: &mut Value, content: &[Content]) {
         Content::Thinking {
             thinking,
             thinking_signature,
+            reasoning_field,
+            reasoning_details,
             ..
         } => {
-            let (field, details) = reasoning_carry(thinking_signature.as_deref())?;
+            let (field, details) = reasoning_carry(
+                thinking_signature.as_deref(),
+                reasoning_field.as_deref(),
+                reasoning_details.as_ref(),
+            )?;
             (!thinking.trim().is_empty() || details.is_some()).then_some((thinking, field, details))
         }
         _ => None,
@@ -100,10 +129,10 @@ pub(crate) fn apply(message: &mut Value, content: &[Content]) {
         return;
     };
     if !thinking.trim().is_empty() {
-        message[field.as_str()] = Value::String(thinking.clone());
+        message[field.as_ref()] = Value::String(thinking.clone());
     }
     if let Some(details) = details {
-        message["reasoning_details"] = details;
+        message["reasoning_details"] = details.into_owned();
     }
 }
 

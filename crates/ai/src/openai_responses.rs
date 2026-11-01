@@ -11,7 +11,6 @@ use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::openai::{OpenAiOptions, mapped_effort};
 use crate::request::{assistant_content_mut, content_end_events};
 use crate::transform::{system_text, transform_messages};
-
 pub fn normalize_responses_tool_call_id(id: &str) -> String {
     id.chars()
         .map(|character| {
@@ -28,7 +27,6 @@ pub fn normalize_responses_tool_call_id(id: &str) -> String {
         .take(128)
         .collect()
 }
-
 fn call_and_item(id: &str) -> (&str, Option<&str>) {
     match id.split_once('|') {
         Some((call, item)) if !item.is_empty() => (call, Some(item)),
@@ -522,6 +520,8 @@ impl EventMapper {
             thinking: String::new(),
             thinking_signature: None,
             redacted: None,
+            reasoning_field: None,
+            reasoning_details: None,
         });
         self.thinking_index = Some(content_index);
         events.push(AssistantMessageEvent::ThinkingStart { content_index });
