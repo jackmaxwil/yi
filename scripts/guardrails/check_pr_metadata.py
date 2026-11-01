@@ -31,12 +31,11 @@ import urllib.request
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from _common import ROOT, FREE_BAND, fail, row_key, table_rows  # noqa: E402
-from check_changes import DIR, apply_ledger, pending  # noqa: E402
+from check_changes import DIR, LEDGER, apply_ledger, pending  # noqa: E402
 from check_commit_style import NAMED, subject_errors  # noqa: E402
 from pr_body import base_commit, diff_stats, git, sentences, surface_delta, surface_diff, surface_entry, tally  # noqa: E402
 
 ARCH = "docs/ARCHITECTURE.md"
-LEDGER = "Feature ledger"
 # `Closes apex/yi#4` is the same citation as `Closes #4`; `Closes other/repo#4`
 # is a citation of someone else's register and does not count as one here.
 # Incident: every PR body for a week ended in an assistant's generated-with footer, the

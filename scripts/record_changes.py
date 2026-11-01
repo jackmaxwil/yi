@@ -308,6 +308,22 @@ def ledger_selfcheck(tmp, sh, run, gate, bad):
     if not refused.returncode or "ledger~:" not in refused.stdout and "ledger+:" not in refused.stdout:
         bad.append(f"a new edit batched with an old one read {refused.returncode}: {refused.stdout[-200:]!r}")
     sh("checkout", "-q", "-f", "main")
+    (tmp / DIR / "2026-10-15-landed.md").write_text("---\nledger=: landed | 1 | core | H | L | n\n---\nProse.\n")
+    sh("add", "-A")
+    sh("commit", "-q", "-m", "landed, recorder not yet run", date="2026-10-15")
+    sh("checkout", "-q", "-b", "pending-lines")
+    (tmp / DIR / "2026-10-16-new.md").write_text(f"---\nledger=: counted | 1 | core | H | L | n\nledger~: {key} | text no row holds | x\n---\nProse.\n")
+    sh("add", "-A")
+    sh("commit", "-q", "-m", "pending", date="2026-10-16")
+    refused = gate()
+    if not refused.returncode or "2026-10-16-new.md: ledger~:" not in refused.stdout:
+        bad.append(f"a pending line that does not apply read {refused.returncode}: {refused.stdout[-200:]!r}")
+    probe = "import sys; sys.path[:0] = ['scripts', 'scripts/guardrails']; import check_pr_metadata as m; print(*(m.row_key(r) for r in m.measure()[0][0]))"
+    measured = run("-c", probe)
+    if measured.stdout.split() != ["counted"]:
+        bad.append(f"measure read this branch's new row as {measured.stdout!r}: {measured.stderr[-300:]!r}")
+    sh("checkout", "-q", "-f", "main")
+    sh("reset", "-q", "--hard", "HEAD^")
 
 
 def selfcheck():
@@ -350,7 +366,7 @@ def selfcheck():
 
     try:
         shutil.copytree(ROOT / "scripts/guardrails", tmp / "scripts/guardrails", ignore=shutil.ignore_patterns("baselines", "__pycache__"))
-        for script in ("record_changes.py", "adr.py"):
+        for script in ("record_changes.py", "adr.py", "pr_body.py"):
             shutil.copy(ROOT / "scripts" / script, tmp / "scripts" / script)
         for path in (ARCH, LOG, INDEX):
             (tmp / path).parent.mkdir(parents=True, exist_ok=True)

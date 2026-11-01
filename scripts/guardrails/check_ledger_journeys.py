@@ -6,13 +6,13 @@ feature conflicted on it and were merged by hand. One `feature | test` line each
 import re, subprocess, sys, tempfile, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail, row_key, table_rows
-from check_changes import unapplied_ledger
+from check_changes import LEDGER, unapplied_ledger
 
 FILE, ARCH = "docs/ledger-journeys.txt", "docs/ARCHITECTURE.md"
 
 
 def ledger_rows(arch):
-    return [(row_key(row), row) for row in table_rows(arch, "Feature ledger")]
+    return [(row_key(row), row) for row in table_rows(arch, LEDGER)]
 
 
 def ledger_keys(arch):

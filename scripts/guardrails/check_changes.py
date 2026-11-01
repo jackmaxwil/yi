@@ -160,6 +160,9 @@ def apply_ledger(arch, lines):
             arch = arch.replace(row, f"{row[:-2]}; {cells[1]} |", 1)
         elif row.count(cells[1]) == 1:
             arch = arch.replace(row, row.replace(cells[1], cells[2]), 1)
+        elif (parts := CELL.split(row[2:-2])).count(cells[1]) == 1:
+            parts[parts.index(cells[1])] = cells[2]
+            arch = arch.replace(row, f"| {' | '.join(parts)} |", 1)
         else:
             errs.append(f"{op}: `{cells[1]}` occurs {row.count(cells[1])} times in `{cells[0]}`, not once")
     return arch, [] if "ledger-apply" in OFF else errs
@@ -180,20 +183,31 @@ def unapplied_ledger(arch):
     return arch, errs
 
 
+def cell_edit(key, row, old, new):
+    """`old` to `new` as a `~`, cut small so a second PR on the cell still applies; a status that
+    also occurs in the note is spelled as its whole cell. None when neither spelling is unique."""
+    p = len(os.path.commonprefix([old, new]))
+    s = len(os.path.commonprefix([old[p:][::-1], new[p:][::-1]]))
+    cut = lambda text: text[p:len(text) - s]
+    while s and (cut(old)[-1:].isspace() or cut(new)[-1:].isspace()):
+        s -= 1
+    while p and (row.count(cut(old)) != 1 or not cut(new) or cut(old)[:1].isspace() or cut(new)[:1].isspace()):
+        p -= 1
+    if row.count(cut(old)) == 1 and cut(new):
+        return f"ledger~: {key} | {cut(old)} | {cut(new)}"
+    return f"ledger~: {key} | {old} | {new}" if new and CELL.split(row[2:-2]).count(old) == 1 else None
+
+
 def row_edit(key, old, row):
-    """The line that turns `old` into `row`; a cut across cells can only be a delete and a new row."""
+    """The lines that turn `old` into `row`; a delete and a new row, which moves the row to the table's
+    end, only when a changed cell has no unique spelling."""
     if row.startswith(f"{old[:-2]}; "):
         return f"ledger+: {key} | {row[len(old):-2]}"
-    p = len(os.path.commonprefix([old, row]))
-    s = len(os.path.commonprefix([old[p:][::-1], row[p:][::-1]]))
-    cut = lambda text: text[p:len(text) - s]
-    while s and (cut(old)[-1:].isspace() or cut(row)[-1:].isspace()):
-        s -= 1
-    while p and (old.count(cut(old)) != 1 or cut(old)[:1].isspace() or cut(row)[:1].isspace()):
-        p -= 1
-    if CELL.search(cut(old)) or CELL.search(cut(row)):
+    was, now = CELL.split(old[2:-2]), CELL.split(row[2:-2])
+    lines = [cell_edit(key, old, a, b) for a, b in zip(was, now) if a != b]
+    if len(was) != len(now) or None in lines:
         return f"ledger-: {key}\nledger=: {row[2:-2]}"
-    return f"ledger~: {key} | {cut(old)} | {cut(row)}"
+    return "\n".join(lines)
 
 
 def ledger_lines(was, now):
@@ -302,7 +316,7 @@ def cases():
         "a new row one cell short": parse("---\nledger=: new | 1 | core | H | M\n---\nx\n")[1],
         "a new row one cell over": parse("---\nledger=: new | 1 | core | H | M | n | o\n---\nx\n")[1],
         "old text the row does not hold": apply_ledger(LEDGER_FIXTURE, [("ledger~", ["one", "absent", "x"])])[1],
-        "old text the row holds twice": apply_ledger(LEDGER_FIXTURE, [("ledger~", ["one", "core", "x"])])[1],
+        "old text the row holds twice": apply_ledger(LEDGER_FIXTURE, [("ledger~", ["one", "co", "x"])])[1],
         "a new row on an existing key": apply_ledger(LEDGER_FIXTURE, [("ledger=", ["one", "1", "core", "H", "M", "n"])])[1],
         "a clause on a missing key": apply_ledger(LEDGER_FIXTURE, [("ledger+", ["ghost", "x"])])[1],
         "a delete of a missing key": apply_ledger(LEDGER_FIXTURE, [("ledger-", ["ghost"])])[1],
@@ -343,13 +357,18 @@ def ledger_cases():
     for name, after in {"a clause": LEDGER_FIXTURE.replace("first core", "first core; more"),
                         "a mid-row insert": LEDGER_FIXTURE.replace("first core", "first, then core"),
                         "a status": LEDGER_FIXTURE.replace("1 | core | H", "1 | gated | H"),
+                        "a deletion": LEDGER_FIXTURE.replace("first core", "first"),
                         "a cut across cells": LEDGER_FIXTURE.replace("H | M | first", "L | L | second"),
                         "a new row": LEDGER_FIXTURE.replace("\n\n## Next", "\n| new | 3 | core | H | M | n |\n\n## Next"),
                         "a deleted row": LEDGER_FIXTURE.replace("| one | 1 | core | H | M | first core |\n", "")}.items():
         text = "\n".join(ledger_lines(LEDGER_FIXTURE, after))
         read, errs = parse(f"---\n{text}\n---\nx\n")
-        if errs or sorted(table_rows(apply_ledger(LEDGER_FIXTURE, read["ledger"])[0], LEDGER)) != sorted(table_rows(after, LEDGER)):
-            bad.append(f"the lines for {name} do not reproduce it: {text!r} {errs}")
+        if errs or table_rows(apply_ledger(LEDGER_FIXTURE, read["ledger"])[0], LEDGER) != table_rows(after, LEDGER):
+            bad.append(f"the lines for {name} do not reproduce it in place: {text!r} {errs}")
+    twin = LEDGER_FIXTURE.replace("H | M", "H | H")
+    text = "\n".join(ledger_lines(twin, twin.replace("H | H", "L | H")))
+    if not text.startswith("ledger-: one\nledger=: one"):
+        bad.append(f"a cell spelled twice in its row read {text!r}, which applies to the wrong cell")
     arch = "docs/ARCHITECTURE.md"
     history = [(at(f"{m}^", arch), at(tip, arch)) for m, tip in (("aa93a221b^{commit}^0", "398b811c7"), ("c42e30f01^{commit}^0", "3e410a078"))]
     if any(None in pair for pair in history):
