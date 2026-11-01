@@ -11,6 +11,17 @@ use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+fn sandbox(writable: Vec<PathBuf>) -> yi_tools::Sandbox {
+    yi_tools::Sandbox {
+        writable,
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        sealed: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    }
+}
+
 fn write(path: &str, content: &str) -> Map<String, Value> {
     let mut args = Map::new();
     args.insert("path".to_owned(), json!(path));
@@ -92,13 +103,7 @@ fn an_approved_network_ask_says_it_leaves_the_sandbox() -> TestResult {
         Some(asker),
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     let mut args = Map::new();
     args.insert(
         "command".to_owned(),
@@ -126,13 +131,7 @@ fn an_exec_source_the_gate_allows_is_still_admitted() {
         None,
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     assert_eq!(
         yi_runtime::tools::refuse_armed("git status", false, Some(&broker), ""),
         None
@@ -156,13 +155,7 @@ fn a_walled_sessions_exec_source_never_runs_where_a_sandbox_exists() {
             None,
             tokio::sync::broadcast::channel(8).0,
         )
-        .with_sandbox(Some(yi_tools::Sandbox {
-            writable: vec![project.clone()],
-            deny_read: Vec::new(),
-            deny_write: Vec::new(),
-            host_owned: Vec::new(),
-            spared: Vec::new(),
-        }))
+        .with_sandbox(Some(sandbox(vec![project.clone()])))
     };
     let wall = yi_runtime::Wall {
         deny_read: vec![project.join("secret")],
@@ -189,13 +182,7 @@ fn an_allowed_credential_read_runs_outside_and_says_so() -> TestResult {
         None,
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     let mut args = Map::new();
     args.insert("command".to_owned(), json!("cat ~/.netrc"));
     let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
@@ -232,13 +219,7 @@ fn counted(
         Some(asker),
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     (broker, asks)
 }
 
@@ -372,13 +353,7 @@ fn a_headless_compound_says_to_split_it() -> TestResult {
         None,
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     let args = bash_args("cargo test && cargo add serde");
     let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
     assert!(
@@ -498,13 +473,7 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
         Some(asker),
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     let lane = home.join("yi-a2-nonexistent-lane");
     for (refused, widened) in [
         (home.join("probe"), None),
@@ -564,13 +533,7 @@ fn always_on_a_widened_retry_keeps_the_dir_and_the_sandbox() -> TestResult {
         Some(asker),
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     let lane = home.join("yi-a2-nonexistent-kept");
     broker.note_containment_failure(yi_tools::SandboxRefusal::Path(lane.join("x")));
     let touch = |id: &str, name: &str| {
