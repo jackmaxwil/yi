@@ -96,12 +96,11 @@ fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
     // A path someone configured (`lanes.land`) is no PATH lookup, and is held to the same rule: a
     // relative one resolves in the lane, where a contained process rewrites it.
     if program.contains('/') {
-        let named = cwd.join(program);
-        let outside = named.canonicalize().is_ok_and(|real| {
-            crate::exec::is_executable_file(&real)
-                && !trees.iter().any(|tree| real.starts_with(tree))
-        });
-        return outside.then_some(named);
+        let real = cwd.join(program).canonicalize().ok()?;
+        let outside = crate::exec::is_executable_file(&real)
+            && !trees.iter().any(|tree| real.starts_with(tree));
+        // The path judged, never the spelling: a link in the lane could be repointed before the exec.
+        return outside.then_some(real);
     }
     std::env::split_paths(&search)
         .filter(|dir| dir.is_absolute())
