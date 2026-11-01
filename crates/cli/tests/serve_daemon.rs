@@ -596,6 +596,47 @@ fn a_saved_default_reaches_the_next_session_and_a_refused_one_writes_nothing() -
     outcome
 }
 
+/// Saves sent in a burst land in the order they were sent, so the file holds the newest press.
+#[test]
+fn saved_defaults_land_in_the_order_they_were_sent() -> TestResult {
+    let dir = Scratch::new("yi-settings-order")?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let config = dir.join("home/.yi/config.json");
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("i1", "initialize", json!({"protocolVersion": 2}))?;
+        let value = |round: u32| {
+            if round.is_multiple_of(2) {
+                "hidden"
+            } else {
+                "full"
+            }
+        };
+        for round in 0..40 {
+            let params = json!({"id": "console.sidebar", "value": value(round)});
+            client.send(&format!("s{round}"), "_yi/set_default", params)?;
+        }
+        let mut last = client.read_until(|frame| frame["id"] == "s39")?;
+        for (round, answer) in
+            (0..40).zip(last.drain(..).filter(|f| f["result"]["rows"].is_array()))
+        {
+            let rows = answer["result"]["rows"].as_array().ok_or("no rows")?;
+            let row = rows.iter().find(|row| row["id"] == "console.sidebar");
+            assert_eq!(
+                (&answer["id"], row.map(|row| &row["value"])),
+                (&json!(format!("s{round}")), Some(&json!(value(round)))),
+                "an answer read another save's state"
+            );
+        }
+        let saved: Value = std::fs::read_to_string(&config)?.parse()?;
+        assert_eq!(saved["console"]["sidebar"], "full", "{saved}");
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// A client that leaves mid-turn is owed one unseen mark for the idle it missed, not one
 /// per streamed event, and the client that comes back gets the branch verbatim.
 #[test]

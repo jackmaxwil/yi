@@ -1,4 +1,6 @@
 ---
+version: 0.850.0
+decisions: D520
 issue: Closes #1931
 decision: goal checks, child checks, plan verifiers and exec:// sources run in the sandbox outside yolo | an allowed `cargo test` as a check ran a child's build.rs on the host under a green gate | set Checker's profile to None
 growth: +178 includes #1945's lines beneath it; `Checker` carries the sandbox to every check site in place of the hooks handle, and its test sits in the crate. Weighed: a parameter beside `hooks` at each of nine sites, more lines; a global profile, which a family of sessions could not share
