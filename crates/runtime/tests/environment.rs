@@ -677,5 +677,14 @@ fn a_configured_program_in_the_tree_is_refused_and_one_outside_runs() -> TestRes
     assert!(yi_tools::host_command("./land.sh", &tree).is_err());
     assert!(yi_tools::host_command(&tree.join("land.sh").to_string_lossy(), &tree).is_err());
     assert!(yi_tools::host_command(&outside.join("land.sh").to_string_lossy(), &tree).is_ok());
+    // A link in the tree to a program outside it: what runs is the target judged, so repointing
+    // the link after the check changes nothing.
+    std::fs::remove_file(tree.join("land.sh"))?;
+    std::os::unix::fs::symlink(outside.join("land.sh"), tree.join("land.sh"))?;
+    let command = yi_tools::host_command("./land.sh", &tree)?;
+    assert_eq!(
+        std::path::Path::new(command.get_program()),
+        outside.join("land.sh").canonicalize()?
+    );
     Ok(())
 }
