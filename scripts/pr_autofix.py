@@ -903,19 +903,18 @@ def findings_in(clone, pr, rnd, answer, tried=0, floor=0):
 
 
 # Numeric on purpose: no passwd entry, and each fix its own, so one PR's leftovers bind no later one.
-# Restarting at the same number each pass is safe: a pass's processes die with its job's container.
-UIDS = itertools.count(61000)
-WARM_TARGET = ROOT / "target"
+# A random base, so a pass that was killed and left a process cannot share a uid with the next pass.
+UIDS = itertools.count(61000 + int.from_bytes(os.urandom(2), "big") % 4000)
 
 
-def lock_job():
+def lock_job(root=ROOT):
     """What a throwaway user could read or write of the job itself, closed before any PR code runs.
     Incident: the runner's step files are mode 666, so a later step's environment was anyone's to set."""
     if os.geteuid():
         if os.environ.get("CI"):
             raise SystemExit("autofix: this job must run as root, or PR code runs as the fixer's own user")
         return
-    (ROOT / ".git/config").chmod(0o600)
+    (root / ".git/config").chmod(0o600)
     step_files = os.environ.get("FORGEJO_ENV") or os.environ.get("GITHUB_ENV")
     if step_files:
         pathlib.Path(step_files).parents[1].chmod(0o700)
@@ -940,12 +939,15 @@ def handed_over(work):
     """`work` given to a fresh uid with its own copy of every cache a build writes, and the env it runs under.
     Incident: a PR's build shared the fixer's target dir, so its build.rs could replace the next fix's yi."""
     uid, home, real = next(UIDS), work / "home", pathlib.Path.home()
-    seeds = ((os.environ.get("CARGO_HOME") or real / ".cargo", work / "cargo"), (WARM_TARGET, work / "target"),
+    # Of the cargo home only the downloads: its credentials.toml and config hold registry tokens.
+    cargo = pathlib.Path(os.environ.get("CARGO_HOME") or real / ".cargo")
+    seeds = ((cargo / "registry", work / "cargo/registry"), (cargo / "git", work / "cargo/git"),
+             (scrubbed()["CARGO_TARGET_DIR"], work / "target"),
              (real / ".yi", home / ".yi"), (real / ".cache/uv", home / ".cache/uv"))
     home.mkdir()
     for source, into in seeds:
         into.parent.mkdir(parents=True, exist_ok=True)
-        if source and pathlib.Path(source).is_dir():
+        if pathlib.Path(source).is_dir():
             sh(work, "cp", "-a", "--reflink=auto", str(source), str(into))
     sh(work, "chown", "-R", f"{uid}:{uid}", str(work))
     return uid, {"HOME": str(home), "CARGO_HOME": str(work / "cargo"), "CARGO_TARGET_DIR": str(work / "target"),
@@ -1013,6 +1015,17 @@ def worker():
     return 0
 
 
+def bundle_in(work):
+    """The commit a worker left, or None. Anything else at that path is the PR's code, so it is refused:
+    copied as root a symlink reads any file, and skipped it would report a push that moved nothing."""
+    bundle = work / "fix.bundle"
+    if not os.path.lexists(bundle):
+        return None
+    if bundle.is_symlink() or not bundle.is_file():
+        raise Missed("the worker left something other than a bundle at fix.bundle")
+    return bundle
+
+
 def fix(pr, ask=None, root=ROOT, kind="conflict", rnd=None, tried=0, meter=None, stopped=0.0, lanes=()):
     """One attempt on one PR, a model and the PR's code in a worker; root takes back a bundle and pushes it.
     `ask` stands in for the model, in-process, in the selfcheck. Returns the ledger fields."""
@@ -1027,10 +1040,11 @@ def fix(pr, ask=None, root=ROOT, kind="conflict", rnd=None, tried=0, meter=None,
                 meter.add_sessions(call)
         new = sha
         # The worker's uid is dead by now, so nothing can swap this file after the check.
-        if (work / "fix.bundle").is_file() and not (work / "fix.bundle").is_symlink():
+        bundle = bundle_in(work)
+        if bundle:
             # Fetched as data from a copy in root's box: `git fetch <path>` on the PR user's own directory would run its repo.
             kept = work.parent / "fix.bundle"
-            shutil.copyfile(work / "fix.bundle", kept)
+            shutil.copyfile(bundle, kept)
             sh(root, "git", "fetch", "-q", str(kept), "HEAD")
             new = sh(root, "git", "rev-parse", "FETCH_HEAD").stdout.strip()
         pushed = sh(root, "git", "push", "-q", "origin", f"{new}:refs/heads/{ref}", env=push_url_env(root), check=False)
@@ -1865,10 +1879,8 @@ def waits_selfcheck():
 def confined_selfcheck():
     """PR code run through the real worker. As root it must fail to reach what the next fix trusts;
     any other user has no second user to drop to, so there it proves the worker's own contract."""
-    global WARM_TARGET, ROOT
     errs, tmp = [], pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-confined-"))
-    saved = {k: os.environ.get(k) for k in ("PATH", "HOME", "FGJ_TOKEN", "CARGO_HOME", "CI", "FORGEJO_ENV", "YI_BIN", "GIT_AUTHOR_NAME")}
-    warm, checkout = WARM_TARGET, ROOT
+    saved = {k: os.environ.get(k) for k in ("PATH", "HOME", "FGJ_TOKEN", "CARGO_HOME", "CARGO_TARGET_DIR", "RUSTUP_HOME", "CI", "FORGEJO_ENV", "YI_BIN")}
     tmp.chmod(0o755)
     bot_home, fixer = tmp / "bot", tmp / "fixer-yi"
     trusted = bot_home / ".yi/skills/har/SKILL.md"
@@ -1876,7 +1888,9 @@ def confined_selfcheck():
         trusted.parent.mkdir(parents=True)
         trusted.write_text("the rule\n")
         fixer.write_text("the binary\n")
-        (tmp / "cargo-home").mkdir()
+        (tmp / "cargo-home/registry").mkdir(parents=True)
+        (tmp / "cargo-home/registry/cached").write_text("crate\n")
+        (tmp / "cargo-home/credentials.toml").write_text("token\n")
         (tmp / "seed-target").mkdir()
         (tmp / "seed-target/warm").write_text("warm\n")
         repo = tmp / "repo"
@@ -1899,14 +1913,17 @@ reach = dict(uid=os.getuid(), token=os.environ.get("FGJ_TOKEN"), home=str(home),
              skills=tried(lambda: pathlib.Path({str(trusted)!r}).open("a").close()),
              binary=tried(lambda: pathlib.Path({str(fixer)!r}).open("a").close()),
              seed=tried(lambda: pathlib.Path({str(tmp / 'seed-target/warm')!r}).open("a").close()),
-             warm=pathlib.Path(os.environ["CARGO_TARGET_DIR"], "warm").is_file())
+             warm=pathlib.Path(os.environ["CARGO_TARGET_DIR"], "warm").is_file(), rustup=os.environ.get("RUSTUP_HOME"),
+             registry=pathlib.Path(os.environ["CARGO_HOME"], "registry/cached").is_file(),
+             credentials=pathlib.Path(os.environ["CARGO_HOME"], "credentials.toml").exists())
 (pathlib.Path(os.environ["TMPDIR"]) / "reach.json").write_text(json.dumps(reach))
 subprocess.Popen(["sleep", "20"])
 sys.exit(7)
 """)
         attack.chmod(0o755)
-        os.environ.update(PATH=f"{tmp / 'bin'}{os.pathsep}{saved['PATH']}", HOME=str(bot_home), FGJ_TOKEN="canary", CARGO_HOME=str(tmp / "cargo-home"))
-        WARM_TARGET = tmp / "seed-target"
+        os.environ.update(PATH=f"{tmp / 'bin'}{os.pathsep}{saved['PATH']}", HOME=str(bot_home), FGJ_TOKEN="canary", CARGO_HOME=str(tmp / "cargo-home"),
+                          CARGO_TARGET_DIR=str(tmp / "seed-target"))
+        os.environ.pop("RUSTUP_HOME", None)
         with workspace(repo, git("rev-parse", "HEAD")) as work:
             got = in_worker(work, "filter", {"expr": "test(=x)"})
             reach = json.loads((work / "tmp/reach.json").read_text())
@@ -1931,6 +1948,10 @@ sys.exit(7)
                     errs.append(f"the PR's code could write {what}")
             if not reach["uid"] or reach["uid"] != owner:
                 errs.append(f"the PR's code ran as uid {reach['uid']}, not the one uid that owns its work ({owner})")
+            if reach["rustup"] != str(bot_home / ".rustup"):
+                errs.append(f"a worker with no exported rustup home got {reach['rustup']}, and every build in it dies")
+            if not reach["registry"] or reach["credentials"]:
+                errs.append(f"the worker's cargo home kept the downloads: {reach['registry']}, the credentials: {reach['credentials']}")
             if reach["home"] == str(bot_home):
                 errs.append("the PR's code ran under the bot's HOME")
             if not reach["warm"]:
@@ -1952,14 +1973,13 @@ sys.exit(7)
         (tmp / "checkout/.git/config").write_text("[http]\n")
         (tmp / "act/workflow").mkdir(parents=True)
         (tmp / "act/workflow/envs.txt").write_text("")
-        os.environ["FORGEJO_ENV"], ROOT = str(tmp / "act/workflow/envs.txt"), tmp / "checkout"
+        os.environ["FORGEJO_ENV"] = str(tmp / "act/workflow/envs.txt")
         real = os.geteuid
         os.geteuid = lambda: 0
         try:
-            lock_job()
+            lock_job(tmp / "checkout")
         finally:
             os.geteuid = real
-            ROOT = checkout
         if (tmp / "checkout/.git/config").stat().st_mode & 0o077 or (tmp / "act").stat().st_mode & 0o077:
             errs.append("the checkout's credentials or the runner's step files stayed open to a throwaway user")
         os.environ["CI"], real = "1", os.geteuid
@@ -1974,7 +1994,6 @@ sys.exit(7)
     finally:
         for key, value in saved.items():
             os.environ.pop(key, None) if value is None else os.environ.update({key: value})
-        WARM_TARGET, ROOT = warm, checkout
         shutil.rmtree(tmp, ignore_errors=True)
     return errs
 
@@ -2017,6 +2036,18 @@ print(json.dumps(dict(summary="resolved a.txt")))
         got = fix(pr, root=repo, meter=meter, kind="conflict")
     except RuntimeError as err:
         return [f"a fix through the real worker failed: {err}"]
+    planted = tmp / "planted"
+    planted.mkdir()
+    (planted / "fix.bundle").symlink_to(tmp / "checkout-secret")
+    (tmp / "checkout-secret").write_text("secret\n")
+    try:
+        bundle_in(planted)
+        errs.append("a symlink at fix.bundle was taken for the worker's commit")
+    except Missed:
+        pass
+    (planted / "fix.bundle").unlink()
+    if bundle_in(planted) is not None:
+        errs.append("a fix with no commit read as one")
     git("fetch", "-q", "origin")
     pushed = git("rev-parse", "origin/topic")
     if pushed == head or not pushed.startswith(got.get("to") or "-"):
