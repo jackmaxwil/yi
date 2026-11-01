@@ -21,22 +21,23 @@ impl Uncommitted {
     }
 
     /// Invariant: host git never enters a submodule, whose config it cannot trust, so `status` is
-    /// blind to work inside one. A populated gitlink counts as dirty: reading work as clean wipes it.
+    /// blind to work inside one. Each is read in the sandbox; what cannot be read counts as dirty.
     fn with_submodules(mut self, tree: &Path) -> Self {
-        let stage = git_capture(tree, &["ls-files", "--stage"], None, yi_tools::OUTPUT_CAP);
-        let populated = stage
-            .iter()
-            .flat_map(|stage| stage.stdout.lines())
-            .filter(|row| {
-                let path = row
-                    .starts_with("160000 ")
-                    .then(|| row.split_once('\t'))
-                    .flatten();
-                path.is_some_and(|(_, path)| {
-                    std::fs::read_dir(tree.join(path)).is_ok_and(|mut dir| dir.next().is_some())
-                })
+        let Ok(stage) =
+            super::hostgit::git_capped(tree, &["ls-files", "--stage"], None, super::PLUMBING_CAP)
+        else {
+            self.paths = self.paths.saturating_add(1);
+            return self;
+        };
+        let links = (stage.lines())
+            .filter(|row| row.starts_with("160000 "))
+            .filter_map(|row| row.split_once('\t'))
+            .filter(|(_, path)| {
+                let populated =
+                    std::fs::read_dir(tree.join(path)).is_ok_and(|mut dir| dir.next().is_some());
+                populated && !submodule_is_clean(tree, path)
             });
-        self.paths = self.paths.saturating_add(populated.count());
+        self.paths = self.paths.saturating_add(links.count());
         self
     }
 
@@ -196,6 +197,32 @@ impl Pool {
         }
         Ok(lost)
     }
+}
+
+/// `status` under the tree's own profile, so a clean filter a child planted runs contained. A
+/// directory with no `.git` would read the parent's status instead, so it is never clean.
+fn submodule_is_clean(tree: &Path, path: &str) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let (Some(home), true) = (home, yi_tools::Sandbox::available()) else {
+        return false;
+    };
+    let Ok(git) = yi_tools::host_command("git", tree) else {
+        return false;
+    };
+    if !tree.join(path).join(".git").exists() {
+        return false;
+    }
+    let sandbox = yi_tools::Sandbox::for_workspace(tree, &home, None);
+    let program = git.get_program().to_string_lossy().into_owned();
+    let args = ["--no-optional-locks", "-C", path, "status", "--porcelain"];
+    let (program, args) = sandbox.wrap(&program, &args);
+    let mut command = yi_tools::keyless_command(program);
+    command.args(args).current_dir(tree);
+    let until = std::time::Instant::now().checked_add(LIST_BUDGET);
+    let cancelled: yi_tools::CancelFlag =
+        std::sync::Arc::new(move || until.is_none_or(|until| std::time::Instant::now() >= until));
+    yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP)
+        .is_ok_and(|capture| capture.exit_code == Some(0) && capture.stdout.trim().is_empty())
 }
 
 struct Tree {
