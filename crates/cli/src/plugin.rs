@@ -24,7 +24,9 @@ fn run(home: &Path, words: &[&str]) -> i32 {
     let picked = match words {
         ["list"] | [] => return list(home),
         ["list", "--json"] => return list_json(home),
-        ["add", "--all"] => PLUGINS.iter().collect(),
+        ["add", "--all"] => (PLUGINS.iter())
+            .filter(|plugin| plugin.shape != Shape::Host)
+            .collect(),
         ["sync"] => PLUGINS
             .iter()
             .filter(|plugin| plugin::chosen(plugin, home))
@@ -99,6 +101,7 @@ fn list_json(home: &Path) -> i32 {
                 "shape": match plugin.shape {
                     Shape::Program => "program",
                     Shape::Tree => "tree",
+                    Shape::Host => "host",
                 },
             })
         })

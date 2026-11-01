@@ -262,7 +262,7 @@ fn push_token(argv: &mut Vec<String>, token: &mut String, quoted: &mut bool) {
     *quoted = false;
 }
 
-fn program(argv0: &str) -> &str {
+pub(crate) fn program(argv0: &str) -> &str {
     argv0.rsplit('/').next().unwrap_or(argv0)
 }
 
@@ -495,6 +495,12 @@ pub fn classify(argv: &[String]) -> Class {
     }
     if DESTRUCTIVE.binary_search(&name).is_ok() {
         return Class::Destructive;
+    }
+    if name == crate::desktop::PROGRAM {
+        return match crate::desktop::judge(argv) {
+            Some(crate::desktop::Judged::Free) => Class::Safe,
+            _ => Class::Destructive,
+        };
     }
     let class = match name {
         "git" => git_class(argv),
@@ -878,6 +884,12 @@ pub fn command_segments(command: &str) -> Vec<Vec<String>> {
 /// Why one segment cannot run contained: `network` for a network program or git verb, `installs`
 /// for an install verb (a recipe named `install` writes outside the tree as a package manager does).
 pub fn host_need(argv: &[String]) -> Option<&'static str> {
+    if argv
+        .first()
+        .is_some_and(|argv0| argv0 == crate::desktop::PROGRAM)
+    {
+        return Some("desktop control");
+    }
     let scope = scope(argv)?;
     let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
     let git_network = name == "git" && unwrapped(argv).is_some_and(git_network);
@@ -908,6 +920,15 @@ pub(crate) fn grant_scope(command: &str) -> Option<String> {
                 .any(|token| ESCAPES_THE_TREE.iter().any(|flag| token.starts_with(flag)))
         {
             return None;
+        }
+        match crate::desktop::judge(argv) {
+            Some(crate::desktop::Judged::Free) => continue,
+            Some(crate::desktop::Judged::App(app)) => {
+                scopes.push(format!("{} on {app}", crate::desktop::PROGRAM));
+                continue;
+            }
+            Some(_) => return None,
+            None => {}
         }
         match classify(argv) {
             Class::Destructive | Class::Egress => return None,

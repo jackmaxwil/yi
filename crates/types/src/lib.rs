@@ -26,6 +26,7 @@ pub mod checkpoint;
 pub mod classifier;
 pub mod compaction;
 pub mod config;
+pub mod desktop;
 pub mod diff;
 pub mod encoding;
 pub mod entry;

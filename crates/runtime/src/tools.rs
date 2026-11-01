@@ -798,6 +798,17 @@ impl ToolAdapter {
                         )
                         .await;
                     }
+                    if name == "bash" && yi_permission::drives(&command) {
+                        for block in &mut output.result.content {
+                            if let yi_types::message::Content::Text { text, .. } = block {
+                                *text = crate::fetch::fence_untrusted(
+                                    yi_permission::DESKTOP_SOURCE,
+                                    text,
+                                    None,
+                                );
+                            }
+                        }
+                    }
                     let holds = facts_of(&name, &output);
                     let facts = crate::affordance::Facts {
                         holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
