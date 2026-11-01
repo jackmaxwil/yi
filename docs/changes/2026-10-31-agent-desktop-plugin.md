@@ -1,13 +1,13 @@
 ---
 issue: Refs #1958
-growth: +706 about 260 lines are desktop.rs's test module and 170 the verb, app and input tables; weighed deleting the find, wait and list-surfaces rows, the x86_64 asset (deleted, never run) and a generic gate across plugins (not built, one program), and kept the tables since a missing row only asks more often
-raise: comments +34
-raise: tests +140
-raise: crate cli +3
-raise: crate permission +633
+growth: +828 about 260 lines are desktop.rs's test module and 170 the verb, app and input tables; weighed deleting the find, wait and list-surfaces rows, the x86_64 asset (deleted, never run) and a generic gate across plugins (not built, one program), and kept the tables since a missing row only asks more often
+raise: comments +43
+raise: tests +220
+raise: crate cli +26
+raise: crate permission +714
 raise: crate runtime +17
 raise: crate tools +29
-raise: crate types +24
+raise: crate types +42
 decision: computer use and browser automation enter scope through plugins, paid for by deleting the Python client, and a plugin that drives this machine leaves the sandbox only through a table of its verbs | the owner, 2026-10-31: "Any app on my Mac", "remove the design doc ban"; a typed command in Terminal gets around the sandbox, so the gate is the feature | delete the row and the table, restore the §1.2 clause
 ledger-: Python client (`python/yi_client.py`)
 ledger=: `agent-desktop` plugin | 17.1 | optional | M | M | `yi plugin add agent-desktop` (macOS, `host` shape: never by `--all`, never in an eval container) lets the model read and operate Mac apps by bash; asks once per app per session, never keeps a yes for a terminal, editor, settings or password app, refuses browsers and whatever takes the user's own mouse, keyboard or front app (`session start --cursor` draws an agent cursor instead), runs only its plain name outside the sandbox, and fences what it prints

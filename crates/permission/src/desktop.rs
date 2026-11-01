@@ -14,6 +14,14 @@ const FREE: [&str; 6] = [
 
 const TIMEOUT: &[&str] = &["--timeout-ms"];
 
+/// Invariant: the only whole argvs that leave the sandbox unasked outside `FREE`, since `session` is
+/// not a verb this gate scopes; a `_` stands for one word the session-id alphabet allows.
+const FREE_ARGV: [&[&str]; 3] = [
+    &["session", "start", "--cursor"],
+    &["session", "end", "--session", "_"],
+    &["session", "end", "--session=_"],
+];
+
 /// Invariant: a verb or flag missing here asks every time, so the table only ever under-grants;
 /// `--trace` and `launch --env` are out for what they write or inject.
 const VERBS: [(&str, &[&str]); 23] = [
@@ -188,18 +196,34 @@ fn state_root() -> Option<PathBuf> {
 
 /// The app a qualified ref was snapshotted in. Invariant: a contained command cannot write under the
 /// state root, and an env prefix never reaches here, so the model cannot forge this record.
-fn ref_app(token: &str, root: &Path) -> Option<String> {
+fn ref_app(token: &str, cache: &mut Snapshots, root: &Path) -> Option<String> {
     let (snapshot, element) = token.strip_prefix('@')?.split_once(':')?;
     // An id with anything but alphanumerics would otherwise be a path the model chose.
     if snapshot.is_empty() || !snapshot.chars().all(|c| c.is_ascii_alphanumeric()) {
         return None;
     }
-    let json = std::fs::read(root.join("snapshots").join(snapshot).join("refmap.json")).ok()?;
-    yi_types::desktop::source_app(&json, &format!("@{element}"))
+    let refs = cache.entry(snapshot.to_owned()).or_insert_with(|| {
+        let path = root.join("snapshots").join(snapshot).join("refmap.json");
+        std::fs::read(path)
+            .ok()
+            .and_then(|json| yi_types::desktop::Refs::parse(&json))
+    });
+    refs.as_ref()?
+        .app(&format!("@{element}"))
+        .map(str::to_owned)
 }
 
+/// The snapshots one judgement has read, so a command naming four refs reads the record once.
+type Snapshots = std::collections::HashMap<String, Option<yi_types::desktop::Refs>>;
+
 /// The apps a command's words name, or None where a word cannot be judged.
-fn targets(verb: &str, flags: &[&str], words: &[String], root: &Path) -> Option<Vec<String>> {
+fn targets(
+    verb: &str,
+    flags: &[&str],
+    words: &[String],
+    cache: &mut Snapshots,
+    root: &Path,
+) -> Option<Vec<String>> {
     let positional = matches!(verb, "launch" | "close-app");
     let mut apps = Vec::new();
     let mut words = words.iter();
@@ -209,7 +233,7 @@ fn targets(verb: &str, flags: &[&str], words: &[String], root: &Path) -> Option<
             return None;
         }
         if word.starts_with('@') {
-            apps.push(ref_app(word, root)?);
+            apps.push(ref_app(word, cache, root)?);
         } else if word.starts_with('-') {
             let (flag, inline) = word
                 .split_once('=')
@@ -218,7 +242,7 @@ fn targets(verb: &str, flags: &[&str], words: &[String], root: &Path) -> Option<
                 return None;
             }
             if let Some(reference) = inline.filter(|value| value.starts_with('@')) {
-                apps.push(ref_app(reference, root)?);
+                apps.push(ref_app(reference, cache, root)?);
             } else if flag == "--app" {
                 let app = inline.or_else(|| words.next().map(String::as_str))?;
                 apps.push(app.to_owned());
@@ -264,6 +288,23 @@ fn session_of(words: &[String]) -> (Option<String>, Vec<String>) {
     (session, rest)
 }
 
+/// Invariant: a session id names one directory under the state root, so no other byte is a session's.
+fn session_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Whether these words are that argv exactly, a `_` in the table standing for one session id.
+fn same_argvs(words: &[&str], argv: &[&str]) -> bool {
+    words.len() == argv.len()
+        && words
+            .iter()
+            .zip(argv)
+            .all(|(word, want)| match want.strip_suffix('_') {
+                Some(head) => word.strip_prefix(head).is_some_and(session_id),
+                None => *word == *want,
+            })
+}
+
 fn judge_at(argv: &[String], root: &Path) -> Option<Judged> {
     if argv.first().map(String::as_str) != Some(PROGRAM) {
         return None;
@@ -279,16 +320,13 @@ fn judge_at(argv: &[String], root: &Path) -> Option<Judged> {
     }
     let cursor: Vec<&str> = all.iter().map(String::as_str).collect();
     if FREE.contains(&verb) && !words.iter().any(|word| word.starts_with('-'))
-        || matches!(
-            cursor.as_slice(),
-            ["session", "start", "--cursor"] | ["session", "end", "--session", _]
-        )
+        || FREE_ARGV.iter().any(|argv| same_argvs(&cursor, argv))
     {
         return Some(Judged::Free);
     }
     let (session, words) = session_of(words);
     let root = match session {
-        Some(id) if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => {
+        Some(id) if !session_id(&id) => {
             return Some(Judged::EachTime);
         }
         Some(id) => root.join("sessions").join(id),
@@ -299,7 +337,7 @@ fn judge_at(argv: &[String], root: &Path) -> Option<Judged> {
     let Some((_, flags)) = VERBS.iter().find(|(name, _)| *name == verb) else {
         return Some(Judged::EachTime);
     };
-    let Some(apps) = targets(verb, flags, words, root) else {
+    let Some(apps) = targets(verb, flags, words, &mut Snapshots::new(), root) else {
         return Some(Judged::EachTime);
     };
     let apps: Vec<String> = apps.iter().map(|app| app.to_lowercase()).collect();
@@ -320,15 +358,21 @@ fn judge_at(argv: &[String], root: &Path) -> Option<Judged> {
     })
 }
 
-/// Whether any segment drives the desktop by any spelling and is not a proven free verb: such a
-/// command is the user's to answer, never a review model's, and its output is an app's words.
+/// Whether a segment runs the program by its plain name and is not a proven free verb: such a
+/// command is the user's to answer, never a review model's.
 pub fn drives(command: &str) -> bool {
-    crate::safety::command_segments(command).iter().any(|argv| {
-        let named = argv
-            .iter()
-            .any(|word| crate::safety::program(word) == PROGRAM);
-        named && judge(argv) != Some(Judged::Free)
-    })
+    crate::safety::command_segments(command)
+        .iter()
+        .any(|argv| matches!(judge(argv), Some(judged) if judged != Judged::Free))
+}
+
+/// Whether a segment names the program at all, `./agent-desktop` included: its words are an app's,
+/// so they are fenced whatever it did, `skills get` and `list-apps` included.
+pub fn runs(command: &str) -> bool {
+    crate::safety::command_segments(command)
+        .iter()
+        .flatten()
+        .any(|word| crate::safety::program(word) == PROGRAM)
 }
 
 /// Why no mode runs a segment: a browser, which the user routes elsewhere, or their own input.
@@ -587,6 +631,43 @@ mod tests {
         assert_eq!(
             judged(root, &["permissions", "--request"]),
             Some(Judged::EachTime)
+        );
+    }
+    #[test]
+    fn a_session_verb_the_table_does_not_hold_asks_every_time() -> TestResult {
+        let root = root("session-table")?;
+        for words in [
+            &["session", "list"][..],
+            &["session", "start"][..],
+            &["session", "start", "--cursor=1"][..],
+            &["session", "end"][..],
+            &["session", "end", "--session", "../real"][..],
+            &["session", "end", "--session="][..],
+        ] {
+            assert_eq!(judged(&root, words), Some(Judged::EachTime), "{words:?}");
+        }
+        assert_eq!(
+            judged(&root, &["session", "end", "--session=run-1"]),
+            Some(Judged::Free)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_path_naming_the_program_is_not_a_command_that_drives_it() {
+        for command in [
+            "ls ~/.yi/plugins/agent-desktop",
+            "cat /tmp/agent-desktop/README.md",
+            "echo agent-desktop",
+        ] {
+            assert!(!drives(command), "{command}");
+        }
+        assert!(runs("agent-desktop list-apps"));
+        assert!(!drives("agent-desktop list-apps"));
+        assert!(drives("agent-desktop click @real:e7"));
+        assert!(
+            !drives("./agent-desktop status"),
+            "the plain name is the one judged"
         );
     }
 }

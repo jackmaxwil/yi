@@ -29,7 +29,8 @@ JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WA
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
 §17.1) · a GUI · a model tool for the console's browser pane, which shows the user a page and gives
-the model nothing (driving the desktop is the `agent-desktop` plugin's, §17.1) ·
+the model nothing (driving the desktop is the `agent-desktop` plugin's, §17.1) · email, or any
+capability that is not a coding agent other than that plugin ·
 server-side terminal-frame streaming or blit
 encoding in the console (a terminal pane's PTY is the console's own, §17.4) · the console's
 Tape pane, a session's ledger over wall time (left when the terminal pane entered) · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code

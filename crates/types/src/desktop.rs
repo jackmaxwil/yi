@@ -14,10 +14,28 @@ struct RefEntry {
     source_app: Option<String>,
 }
 
-/// The app an unqualified ref such as `@e5` was snapshotted in; None for a record that does not
-/// parse, a ref it does not hold, or an entry naming no app.
-#[must_use]
-pub fn source_app(refmap: &[u8], element: &str) -> Option<String> {
-    let map: RefMap = serde_json::from_slice(refmap).ok()?;
-    map.inner.get(element)?.source_app.clone()
+/// Every ref a snapshot's `refmap.json` holds, paired with the app it was taken in, parsed once so a
+/// command naming several refs reads and deserializes the file once.
+#[derive(Default)]
+pub struct Refs(BTreeMap<String, Option<String>>);
+
+impl Refs {
+    /// None for a record that does not parse.
+    #[must_use]
+    pub fn parse(refmap: &[u8]) -> Option<Self> {
+        let map: RefMap = serde_json::from_slice(refmap).ok()?;
+        Some(Self(
+            map.inner
+                .into_iter()
+                .map(|(element, entry)| (element, entry.source_app))
+                .collect(),
+        ))
+    }
+
+    /// The app an unqualified ref such as `@e5` was snapshotted in; None for a ref this record does
+    /// not hold or an entry naming no app.
+    #[must_use]
+    pub fn app(&self, element: &str) -> Option<&str> {
+        self.0.get(element)?.as_deref()
+    }
 }
