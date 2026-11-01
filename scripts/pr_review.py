@@ -663,6 +663,11 @@ _BUILT = threading.Lock()
 _REFRESHED = []
 
 
+def token_free():
+    """The environment for a model or the PR's code: every variable named like a credential is out."""
+    return {k: v for k, v in os.environ.items() if not re.search("TOKEN|SECRET", k)}
+
+
 def yi_bin():
     """The yi a model call runs; with none built and none on PATH, the first call builds it.
     Incident: 91 of 217 review jobs on 2026-10-12 built yi for 3 minutes, then had nothing to read."""
@@ -724,7 +729,7 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
     # Measured: 2 of the first 10 replayed rounds lost a lens to two malformed answers in a row,
     # and a forge round lost one to a host that closed mid-answer (exit 1, 503 provider_overloaded).
     # A lens reads PR text; the forge token it never needs stays out of its reach.
-    token_free = {k: v for k, v in os.environ.items() if k not in ("FGJ_TOKEN", "GITEA_TOKEN")}
+    token_free_env = token_free()
     # Incident: a fix that timed out was retried with a fresh window, and the runner killed the
     # pass at 45 minutes before it posted anything; a writer's retries share one budget.
     ends = time.monotonic() + deadline + 120
@@ -741,7 +746,7 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
         try:
             return subprocess.run(command + ["--deadline", str(max(int(left) - 120, 1))] + extra + ["-"], input=text,
                                   capture_output=True, text=True, timeout=left, check=False,
-                                  env=env if env is not None else token_free)
+                                  env=env if env is not None else token_free_env)
         except subprocess.TimeoutExpired as err:
             return subprocess.CompletedProcess(command, 124, "", f"timed out after {err.timeout:.0f}s")
 
