@@ -344,6 +344,17 @@ pub fn objective_updated_text(goal: &Goal) -> String {
     fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
 }
 
+/// A continuation is superseded by the next one; the objective-edit and budget notices are not.
+fn continuation_message(text: String) -> AgentMessage {
+    AgentMessage::Custom {
+        custom_type: "goal_prompt".to_owned(),
+        content: UserContent::Text(text),
+        display: true,
+        details: Some(json!({ yi_context::wrapper::CONTINUATION_DETAIL: true })),
+        timestamp: yi_session::now_ms(),
+    }
+}
+
 fn goal_prompt_message(text: String) -> AgentMessage {
     AgentMessage::host_note("goal_prompt", text, yi_session::now_ms())
 }
@@ -720,7 +731,7 @@ impl GoalService {
         }
         let text = continuation_text(&goal, self.read_plan().ok().as_ref());
         Self::set_flag(&self.pending, true);
-        (self.deliver)(goal_prompt_message(text), DeliveryMode::FollowUp);
+        (self.deliver)(continuation_message(text), DeliveryMode::FollowUp);
     }
 
     pub fn observe(&self, event: &AgentEvent) {

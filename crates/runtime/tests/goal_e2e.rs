@@ -1073,3 +1073,58 @@ fn a_citation_ordinal_names_the_same_message_at_the_goal_and_the_fetch_seam() ->
     service.set_objective("new objective", Some("user://2"))?;
     Ok(())
 }
+
+/// The objective-edit notice shares the `goal_prompt` kind with continuations, so superseding by
+/// kind alone dropped the only text telling the model what the user changed and why.
+#[test]
+fn an_objective_edit_notice_survives_the_continuation_that_follows_it() -> TestResult {
+    let (_plans, (service, store, delivered)) = service_with_plans()?;
+    service.create("finish the port", None, None, None)?;
+    {
+        let mut session = yi_session::lock_session(&store);
+        session.append_message(
+            "main",
+            AgentMessage::user_input(UserContent::Text("ship the refactor".to_owned()), 1),
+        )?;
+    }
+    service.set_objective("ship the port «完成»", Some("user://1"))?;
+    service.observe(&yi_types::event::AgentEvent::AgentStart);
+    service.observe(&yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+    let queued: Vec<AgentMessage> = delivered.lock().map_err(|error| error.to_string())?.clone();
+    assert_eq!(
+        queued.len(),
+        2,
+        "the edit notices once and the idle delivers one continuation"
+    );
+    let record = vec![
+        AgentMessage::user_input(UserContent::Text("start".to_owned()), 0),
+        faux_assistant_message(vec![faux_text("working")], StopReason::Stop),
+        queued[0].clone(),
+        faux_assistant_message(vec![faux_text("edited")], StopReason::Stop),
+        queued[1].clone(),
+    ];
+    let request = yi_context::convert_to_llm(&record);
+    let sent: Vec<&str> = request
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        sent.iter()
+            .any(|text| text.contains("was edited by the user")),
+        "the edit's direction reaches the request that follows it: {sent:?}"
+    );
+    assert_eq!(
+        sent.iter()
+            .filter(|text| text.contains("Continue working toward the active thread goal"))
+            .count(),
+        1,
+        "the continuation after the edit is still sent once"
+    );
+    Ok(())
+}

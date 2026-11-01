@@ -901,9 +901,9 @@ fn glm_5_3_flash() -> Option<Model> {
 }
 
 /// A recorded cut turn of `chars` reasoning chars (the transcript's `reasoningChars`; the text
-/// itself was dropped at the cut, so filler stands in) whose last line names `label`.
-fn recorded_cut(chars: usize, label: usize) -> AgentMessage {
-    let last = format!("\nwhere turn {label} stopped: the upper bound still needs its induction");
+/// itself was dropped at the cut, so filler stands in) whose last line names `label` and `last`.
+fn recorded_cut(chars: usize, label: usize, last: &str) -> AgentMessage {
+    let last = format!("\nwhere turn {label} stopped: {last}");
     let filler = "the bound holds at n=4, check n=5 again, ".repeat(chars / 40 + 1);
     let thinking: String = filler
         .chars()
@@ -997,7 +997,13 @@ async fn from_the_second_cut_glm_5_3_flash_is_shown_where_its_reasoning_stopped(
     let script = recorded
         .iter()
         .enumerate()
-        .map(|(index, chars)| recorded_cut(*chars, index + 1))
+        .map(|(index, chars)| {
+            recorded_cut(
+                *chars,
+                index + 1,
+                "the upper bound still needs its induction",
+            )
+        })
         .collect();
     let model = glm_5_3_flash().expect("the bundled catalog carries glm-5.3-flash");
     let (_stream, bodies) = run_on_glm(&model, script, None).await;
@@ -1036,21 +1042,6 @@ async fn from_the_second_cut_glm_5_3_flash_is_shown_where_its_reasoning_stopped(
     }
 }
 
-fn cut_naming(chars: usize, label: usize) -> AgentMessage {
-    let last = format!("\nwhere turn {label} stopped: «l'induzione» still owes a step");
-    let filler = "the bound holds at n=4, check n=5 again, ".repeat(chars / 40 + 1);
-    let thinking: String = filler
-        .chars()
-        .take(chars.saturating_sub(last.chars().count()))
-        .chain(last.chars())
-        .collect();
-    let mut message = faux_assistant_message(vec![faux_thinking(&thinking)], StopReason::Stop);
-    if let AgentMessage::Assistant { usage, .. } = &mut message {
-        usage.unknown = true;
-    }
-    message
-}
-
 fn re_drive(request: &LlmContext) -> Option<String> {
     let fence = "<yi_internal_context source=\"length_redrive\">\n";
     request
@@ -1074,8 +1065,8 @@ fn re_drive(request: &LlmContext) -> Option<String> {
 #[tokio::test]
 async fn a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail() {
     let script = vec![
-        cut_naming(48_002, 1),
-        cut_naming(48_002, 2),
+        recorded_cut(48_002, 1, "«l'induzione» still owes a step"),
+        recorded_cut(48_002, 2, "«l'induzione» still owes a step"),
         faux_assistant_message(
             vec![faux_tool_call("c-1", "echo", Map::new())],
             StopReason::ToolUse,
@@ -1091,11 +1082,9 @@ async fn a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail() {
         unread.contains("<cut_reasoning>") && unread.contains("«l'induzione»"),
         "an unread re-drive is sent whole: {unread}"
     );
-    let read = re_drive(&requests[3].1).expect("the re-drive stays in the conversation");
-    assert_eq!(
-        read,
-        yi_loop::CUT_REDRIVE_TEXT,
-        "a reply answered the quote, so the nudge text goes alone"
+    assert!(
+        re_drive(&requests[3].1).is_none(),
+        "a reply answered the quote, so the spent re-drive rides no request"
     );
     assert!(
         requests[3]
@@ -1113,11 +1102,11 @@ async fn a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail() {
 async fn a_follow_up_after_three_cuts_sends_what_the_first_prompt_sent() {
     let answer = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
     let script = vec![
-        recorded_cut(48_002, 1),
-        recorded_cut(48_002, 2),
-        recorded_cut(48_001, 3),
+        recorded_cut(48_002, 1, "the upper bound still needs its induction"),
+        recorded_cut(48_002, 2, "the upper bound still needs its induction"),
+        recorded_cut(48_001, 3, "the upper bound still needs its induction"),
         answer("first"),
-        recorded_cut(48_019, 4),
+        recorded_cut(48_019, 4, "the upper bound still needs its induction"),
         answer("second"),
     ];
     let model = glm_5_3_flash().expect("the bundled catalog carries glm-5.3-flash");

@@ -43,14 +43,11 @@ fn host_view(source: &str, content: &UserContent, timestamp: u64) -> AgentMessag
 /// are the requester's words; kinds with no LLM representation drop.
 pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     let _span = yi_types::trace::span("context.convert_to_llm").arg("messages", messages.len());
-    let last_reply = messages
-        .iter()
-        .rposition(|message| matches!(message, AgentMessage::Assistant { .. }));
     messages
         .iter()
         .enumerate()
         .filter_map(|(index, message)| {
-            let read = last_reply.is_some_and(|reply| reply > index);
+            let read = crate::wrapper::reply_follows(messages, index);
             match message {
                 AgentMessage::BashExecution {
                     command,
@@ -81,23 +78,25 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                 AgentMessage::Custom {
                     custom_type,
                     content,
+                    details,
                     timestamp,
                     ..
                 } => {
-                    if superseded(index, custom_type, messages) {
+                    if superseded(index, custom_type, details.as_ref(), messages)
+                        || (read && crate::wrapper::dropped_after_reply(custom_type))
+                    {
                         return None;
                     }
-                    let content = read_content(custom_type, content, read);
                     match crate::wrapper::internal_source_of_custom(custom_type) {
                         Some(source) => Some(crate::wrapper::wrap_internal(
                             source,
-                            match &content {
+                            match content {
                                 UserContent::Text(text) => text,
                                 UserContent::Blocks(_) => "",
                             },
                             *timestamp,
                         )),
-                        None => Some(host_view(custom_type, &content, *timestamp)),
+                        None => Some(host_view(custom_type, content, *timestamp)),
                     }
                 }
                 AgentMessage::BranchSummary {
@@ -134,20 +133,17 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
         .collect()
 }
 
-fn superseded(index: usize, custom_type: &str, messages: &[AgentMessage]) -> bool {
-    crate::wrapper::superseded_by_kind(custom_type)
+fn superseded(
+    index: usize,
+    custom_type: &str,
+    details: Option<&serde_json::Value>,
+    messages: &[AgentMessage],
+) -> bool {
+    crate::wrapper::superseded_by_kind(custom_type, details)
         && messages.get(index.saturating_add(1)..).is_some_and(|later| {
             later.iter().any(|message| {
-                matches!(message, AgentMessage::Custom { custom_type: other, .. } if other == custom_type)
+                matches!(message, AgentMessage::Custom { custom_type: other, details: other_details, .. }
+                    if crate::wrapper::superseded_by_kind(other, other_details.as_ref()))
             })
         })
-}
-
-fn read_content(custom_type: &str, content: &UserContent, read: bool) -> UserContent {
-    match content {
-        UserContent::Text(text) if read && crate::wrapper::quote_until_next_turn(custom_type) => {
-            UserContent::Text(crate::wrapper::without_quote(text))
-        }
-        other => other.clone(),
-    }
 }

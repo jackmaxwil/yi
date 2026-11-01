@@ -109,44 +109,51 @@ const HOST_NUDGES: [&str; 5] = [
     "discovery",
 ];
 
-/// Invariant: only a kind's newest copy reaches a request; every older goal continuation rode too.
+/// Invariant: only a goal continuation's newest copy reaches a request; the objective-edit and
+/// budget notices ride the same kind and are not continuations.
 const SUPERSEDED_BY_KIND: [&str; 1] = ["goal_prompt"];
 
-/// Invariant: a kind keeps its quoted tail only until a reply follows it, then the record's alone.
-const QUOTE_UNTIL_NEXT_TURN: [&str; 1] = ["length_redrive"];
+/// The details key a continuation carries so it is superseded while a one-shot notice is not.
+pub const CONTINUATION_DETAIL: &str = "goalContinuation";
 
-pub fn superseded_by_kind(custom_type: &str) -> bool {
+/// Invariant: a cut re-drive a reply followed is spent, so its quoted reasoning rides no request.
+const DROPPED_AFTER_REPLY: [&str; 1] = ["length_redrive"];
+
+pub fn superseded_by_kind(custom_type: &str, details: Option<&serde_json::Value>) -> bool {
     SUPERSEDED_BY_KIND.contains(&custom_type)
+        && details
+            .and_then(|details| details.get(CONTINUATION_DETAIL))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
 }
 
-pub fn quote_until_next_turn(custom_type: &str) -> bool {
-    QUOTE_UNTIL_NEXT_TURN.contains(&custom_type)
+pub fn dropped_after_reply(custom_type: &str) -> bool {
+    DROPPED_AFTER_REPLY.contains(&custom_type)
 }
 
-pub fn without_quote(text: &str) -> String {
-    let Some(start) = text.find("<cut_reasoning>") else {
-        return text.to_owned();
-    };
-    let head = text.get(..start).unwrap_or_default().trim_end_matches('\n');
-    head.rsplit_once("\n\n")
-        .map_or(head, |(intro, _)| intro)
-        .to_owned()
+/// The index of the newest reply, which is the message a nudge before it was raised for.
+pub fn last_reply(messages: &[AgentMessage]) -> Option<usize> {
+    messages
+        .iter()
+        .rposition(|message| matches!(message, AgentMessage::Assistant { .. }))
+}
+
+/// Whether a reply followed the message at `index`, so a one-shot nudge there is spent.
+pub fn reply_follows(messages: &[AgentMessage], index: usize) -> bool {
+    last_reply(messages).is_some_and(|reply| reply > index)
 }
 
 /// Removes wrapped internal context, so per-window injections die with it, and every host
 /// nudge a reply followed: one queued after the last reply is unread, and some are raised once.
 pub fn drop_internal(messages: &[AgentMessage]) -> Vec<AgentMessage> {
-    let last_reply = messages
-        .iter()
-        .rposition(|message| matches!(message, AgentMessage::Assistant { .. }));
     messages
         .iter()
         .enumerate()
         .filter(|(index, message)| {
             if let AgentMessage::Custom { custom_type, .. } = message {
-                let read = last_reply.is_some_and(|reply| reply > *index);
                 return internal_source_of_custom(custom_type).is_none()
-                    && !(read && HOST_NUDGES.contains(&custom_type.as_str()));
+                    && !(reply_follows(messages, *index)
+                        && HOST_NUDGES.contains(&custom_type.as_str()));
             }
             internal_source(message).is_none()
         })
