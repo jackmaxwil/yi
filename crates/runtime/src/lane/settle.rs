@@ -161,6 +161,16 @@ pub struct Staging {
 }
 
 impl Staging {
+    /// A merge in the object store: nothing to hand back, and `integrated` is held by its caller.
+    pub(super) fn laneless(base: Sha, candidate: Sha, integrated: Sha) -> Self {
+        Self {
+            lane: None,
+            base,
+            candidate,
+            integrated,
+        }
+    }
+
     pub fn path(&self) -> Option<&Path> {
         self.lane.as_ref().map(Lane::path)
     }

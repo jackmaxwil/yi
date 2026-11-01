@@ -3139,6 +3139,30 @@ fn checked_merge(
         .ok_or("rlm.merge_worktree")?)
 }
 
+/// Dies with the hand-back back on `prepare`: a slot and a checkout per merge, at 128 children the
+/// wait this exists to remove. A git too old for it takes the old road, so this asks only above it.
+#[tokio::test]
+async fn a_hand_back_merges_in_the_object_store_with_no_staging_lane() -> TestResult {
+    let rig = Rig::new("merge-tree-road")?;
+    let version = git(&rig.repo, &["--version"])?;
+    if yi_runtime::lane::stage::git_version(&version).is_none_or(|at| at < (2, 43)) {
+        return Ok(());
+    }
+    let log = rig.root.join("git-log");
+    shim_git(&rig, &format!("echo \"$*\" >> '{}'", log.display()))?;
+    let family = writer(&rig, "echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let reply = family.host.merge_worktree("writer", None)?;
+    assert_eq!(reply["merged"], true, "{reply:?}");
+    let ran = std::fs::read_to_string(&log)?;
+    assert!(ran.contains("merge-tree --write-tree"), "{ran}");
+    assert!(
+        !ran.lines().any(|line| line.contains(" merge --no-ff")),
+        "{ran}"
+    );
+    Ok(())
+}
+
 /// Dies with the handler dropping `check`: a lane whose work fails it lands here anyway, and the
 /// red one must leave this checkout as it was and the work on the branch it names.
 #[tokio::test]

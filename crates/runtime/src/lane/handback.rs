@@ -189,8 +189,9 @@ impl SubagentHost {
             let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
             let generation = generation_of(&parent, deadline).map_err(|error| error.to_string())?;
             let session = format!("stage-{name}");
-            let prepared = prepare(
+            let prepared = super::stage::merged(
                 &pool,
+                &parent,
                 &session,
                 &generation,
                 &settled.candidate.commit,

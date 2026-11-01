@@ -66,6 +66,7 @@ mod kernel_tools;
 mod lanes;
 mod levers;
 mod memory_journal;
+mod merge_tree;
 mod node;
 mod permission_auto;
 mod permission_scope;
