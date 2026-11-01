@@ -1061,12 +1061,15 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
             target.display()
         );
     }
+    // A lane holds its own branch and nothing shared with its siblings, modules included; a main
+    // checkout's work inside a submodule still commits.
     let index = common.join("modules/nested/sub/index");
-    let (code, output) = run(
-        &format!("printf x > {}", index.display()),
-        &lane,
-        Some(&sandbox),
-    )?;
+    let write = format!("printf x > {}", index.display());
+    let (code, output) = run(&write, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "a lane reached a shared module: {output}");
+    let trunk = common.parent().ok_or("no trunk")?;
+    let main = lane_profile(&root, trunk, &home)?;
+    let (code, output) = run(&write, trunk, Some(&main))?;
     assert_eq!(code, 0, "work inside a submodule still commits: {output}");
     Ok(())
 }
@@ -1137,14 +1140,16 @@ fn a_seal_closes_an_admin_dir_or_a_module_the_build_never_saw() -> TestResult {
             target.display()
         );
     }
-    // A module the build did open keeps its object store: work inside a submodule still commits.
+    // A module the build did open keeps its object store in a main checkout, whose git dir is
+    // writable; a lane reaches none of it.
     let objects = module.join("objects/x");
     std::fs::create_dir_all(module.join("objects"))?;
-    let (code, output) = run(
-        &format!("printf x >> {}", objects.display()),
-        &lane,
-        Some(&sandbox),
-    )?;
+    let write = format!("printf x >> {}", objects.display());
+    let (code, output) = run(&write, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "a lane reached a shared module: {output}");
+    let trunk = common.parent().ok_or("no trunk")?;
+    let main = lane_profile(&root, trunk, &home)?;
+    let (code, output) = run(&write, trunk, Some(&main))?;
     assert_eq!(code, 0, "{} stays writable: {output}", objects.display());
     Ok(())
 }
