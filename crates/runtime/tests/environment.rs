@@ -612,3 +612,56 @@ fn a_git_inside_the_tree_on_path_never_runs_on_the_host() -> TestResult {
     assert!(summary.is_some(), "the real git still answers");
     Ok(())
 }
+
+/// Dies with the host's `status` recursing: a gitlink in the index and a `.git` pointer in the
+/// tree, both contained-writable, sent it into a child git reading that repository's config, which
+/// `core.fsmonitor=false` does not cover: a clean filter there runs too.
+#[test]
+fn a_planted_submodule_never_runs_on_the_host() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (dir, _shim) = counted_repo("yi-env-planted-module", 0)?;
+    let marker = dir.join("ran-on-host");
+    let script = dir.join("monitor.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    let git = |cwd: &std::path::Path, args: &[&str]| -> Result<String, Box<dyn Error>> {
+        let out = yi_tools::command("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()?;
+        Ok(String::from_utf8(out.stdout)?.trim().to_owned())
+    };
+    let evil = dir.join("evil");
+    std::fs::create_dir_all(&evil)?;
+    git(&evil, &["init", "-q", "-b", "main"])?;
+    let head = git(&dir, &["rev-parse", "HEAD"])?;
+    let sub = dir.join("sub");
+    std::fs::create_dir_all(&sub)?;
+    std::fs::write(sub.join("f"), "x\n")?;
+    let (gitdir, tree) = (evil.join(".git"), sub.clone());
+    let (gitdir, tree) = (gitdir.to_string_lossy(), tree.to_string_lossy());
+    git(
+        &dir,
+        &["--git-dir", &gitdir, "--work-tree", &tree, "add", "f"],
+    )?;
+    git(
+        &evil,
+        &["config", "filter.x.clean", &script.to_string_lossy()],
+    )?;
+    std::fs::write(evil.join(".git/info/attributes"), "* filter=x\n")?;
+    // The same size and a new time, so the child must read the file through the filter.
+    std::fs::write(sub.join("f"), "y\n")?;
+    std::fs::write(sub.join(".git"), format!("gitdir: {gitdir}\n"))?;
+    let entry = format!("160000,{head},sub");
+    git(&dir, &["update-index", "--add", "--cacheinfo", &entry])?;
+    let summary = yi_runtime::environment::git_summary(&dir);
+    assert!(
+        !marker.exists(),
+        "a planted submodule's config ran on the host"
+    );
+    assert!(summary.is_some(), "the real git still answers");
+    Ok(())
+}

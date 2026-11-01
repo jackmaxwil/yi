@@ -14,8 +14,7 @@ pub const SEATBELT: &str = "/usr/bin/sandbox-exec";
 pub struct Sandbox {
     pub writable: Vec<PathBuf>,
     pub deny_read: Vec<PathBuf>,
-    /// Paths inside a writable root that host code runs or reads back (D205), and the pointers
-    /// that say where it reads its config.
+    /// Paths inside a writable root that host code runs or reads back (D205).
     pub deny_write: Vec<PathBuf>,
     /// Stores only the host writes, the session corpus above all (its JSONL is the ledger kept
     /// rules replay from): denied to writes, save a writable root nested inside one.
@@ -39,9 +38,9 @@ const HOST_RUN_BY_GIT: [&str; 8] = [
     "config",
     "config.worktree",
     "info",
+    "objects/info/alternates",
     "commondir",
     "gitdir",
-    "objects/info/alternates",
 ];
 
 /// A linked worktree's git writes its admin dir, the objects, its own branch and the stash, and
@@ -111,22 +110,52 @@ fn own_branches(cwd: &Path, admin: &Path, common: &Path, home: &Path) -> Vec<Str
     record.into_iter().chain(head).collect()
 }
 
+/// Directories one profile build walks under `modules`; past it the whole of `modules` is denied.
+const MODULE_WALK_MAX: usize = 256;
+
+/// Every path under `git_dirs` the host's git reads as authority. A submodule keeps its objects and
+/// index writable, so work inside it still commits. A lane cannot write the common dir at all.
+fn host_read_paths(git_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let leaves = |dir: &Path| HOST_RUN_BY_GIT.map(|leaf| dir.join(leaf));
+    let mut paths: Vec<PathBuf> = git_dirs.iter().flat_map(|dir| leaves(dir)).collect();
+    if let [main] = git_dirs {
+        paths.push(main.join("worktrees"));
+    }
+    let mut walk: Vec<PathBuf> = git_dirs.iter().map(|dir| dir.join("modules")).collect();
+    let mut visited = 0usize;
+    while let Some(parent) = walk.pop() {
+        for child in directories(&parent) {
+            visited = visited.saturating_add(1);
+            if visited > MODULE_WALK_MAX {
+                paths.extend(git_dirs.iter().map(|dir| dir.join("modules")));
+                return paths;
+            }
+            if child.join("HEAD").is_file() {
+                paths.extend(leaves(&child));
+                walk.push(child.join("modules"));
+            } else {
+                walk.push(child);
+            }
+        }
+    }
+    paths
+}
+
+/// The real directories in `dir`, never a link: a contained process writes some of these trees.
+fn directories(dir: &Path) -> impl Iterator<Item = PathBuf> {
+    (std::fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+}
+
 impl Sandbox {
     /// The worktree, what its git writes, and build scratch.
     pub fn for_workspace(cwd: &Path, home: &Path, session_dir: Option<&Path>) -> Self {
         let mut writable = vec![cwd.to_path_buf()];
         let git_dirs = yi_permission::git_dirs(cwd);
-        let modules: Vec<PathBuf> = (git_dirs.iter())
-            .filter_map(|dir| std::fs::read_dir(dir.join("modules")).ok())
-            .flatten()
-            .filter_map(|entry| Some(entry.ok()?.path()).filter(|path| path.is_dir()))
-            .collect();
-        let mut deny_write: Vec<PathBuf> = (git_dirs.iter().chain(&modules))
-            .flat_map(|dir| HOST_RUN_BY_GIT.iter().map(|leaf| dir.join(leaf)))
-            .collect();
-        // Invariant: `worktrees` holds every lane's admin dir, and a `.git` that is no directory
-        // says where the host's next git reads its config; a writable root inside one is its own.
-        deny_write.extend(git_dirs.iter().map(|dir| dir.join("worktrees")));
+        let mut deny_write = host_read_paths(&git_dirs);
+        // Invariant: a `.git` that is no directory, or none yet, tells the host's next git where
+        // its config lives.
         if !cwd.join(".git").is_dir() {
             deny_write.push(cwd.join(".git"));
         }
@@ -188,37 +217,21 @@ impl Sandbox {
             let (store, exempt) = (resolve_aliases(store), self.exempt(store));
             path.starts_with(&store) && !exempt.iter().any(|root| path.starts_with(root))
         });
-        let denied = |entry: &PathBuf| {
-            let entry = resolve_aliases(entry);
-            path.starts_with(&entry)
-                && !self
-                    .exempt(&entry)
-                    .iter()
-                    .any(|root| path.starts_with(root))
-        };
         !granted
             && (!under(&self.writable)
-                || self.deny_write.iter().any(denied)
+                || under(&self.deny_write)
                 || under(&self.deny_read)
                 || owned)
     }
 
-    /// The writable roots strictly inside a denied path or a host-owned store: a lane's own admin
-    /// dir, a child's own directory, the family board, a kernel's state.
+    /// The writable roots strictly inside a host-owned store: a child's own directory, the
+    /// family board, a kernel's state.
     fn exempt(&self, store: &Path) -> Vec<PathBuf> {
         let store = resolve_aliases(store);
         (self.writable.iter())
             .map(|root| resolve_aliases(root))
             .filter(|root| root.starts_with(&store) && *root != store)
             .collect()
-    }
-
-    /// A grant at `dir` that cannot be honoured: a file the host runs sits at or below it.
-    pub fn widens_host_run(&self, dir: &Path) -> bool {
-        (self.deny_write.iter()).any(|entry| {
-            let entry = resolve_aliases(entry);
-            dir.starts_with(&entry) || dir.starts_with(yi_permission::resolve_links(&entry))
-        })
     }
 
     /// `-D` bindings keep paths out of the policy text. A denied path binds twice: as spelled,
@@ -403,19 +416,6 @@ impl Sandbox {
         })
     }
 
-    /// A denied path's writable roots nested inside it, written back under their own rules: a lane
-    /// takes its own admin dir while a sibling's deny still outranks the grant.
-    fn nested_roots(&self, dir: &Path) -> String {
-        let entry = resolve_aliases(dir);
-        (self.writable.iter().enumerate())
-            .filter(|(_, root)| {
-                let root = resolve_aliases(root);
-                root != entry && root.starts_with(&entry)
-            })
-            .map(|(index, _)| format!(" (require-not (subpath (param \"WRITABLE_ROOT_{index}\")))"))
-            .collect()
-    }
-
     /// Invariant: the unlink denial on each root stops a contained process
     /// replacing the boundary its own policy is written against.
     fn write_policy(&self, parents: usize) -> String {
@@ -446,13 +446,12 @@ impl Sandbox {
             })
             .map(|key| format!(" (require-not (subpath (param \"{key}\")))"))
             .collect();
-        let denied = (self.deny_write.iter().enumerate())
-            .map(|(index, entry)| (format!("DENY_WRITE_{index}"), self.nested_roots(entry)))
+        let denied = ((0..self.deny_write.len()).map(|index| (format!("DENY_WRITE_{index}"), "")))
             .chain((0..self.deny_read.len()).map(|index| {
                 let exempt = if self.inside_spare(index) {
-                    String::new()
+                    ""
                 } else {
-                    spared.clone()
+                    &*spared
                 };
                 (format!("DENY_READ_{index}"), exempt)
             }));

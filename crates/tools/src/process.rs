@@ -110,8 +110,10 @@ fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
 
 /// Config the host's git never takes from a repository: each of these runs code, and a contained
 /// process can reach a tree's hooks path and its config. Env, so a git's own argv reads the same.
-const HOST_GIT_CONFIG: [(&str, &str); 4] = [
+const HOST_GIT_CONFIG: [(&str, &str); 5] = [
     ("core.fsmonitor", "false"),
+    // A planted gitlink's `.git` would send `status` into a git with that repository's config.
+    ("diff.ignoreSubmodules", "dirty"),
     ("core.hooksPath", "/dev/null"),
     ("commit.gpgsign", "false"),
     ("tag.gpgsign", "false"),
