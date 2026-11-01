@@ -152,6 +152,24 @@ pub fn git_dirs(cwd: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// Origin's `HEAD` when set, else `master` when only that exists, else `main`: from the ref files,
+/// since a claim and every turn ask. ponytail: a reftable repository reads as `main`.
+pub fn trunk_of(common: &Path) -> String {
+    let origin_head = read_pointer(&common.join("refs/remotes/origin/HEAD"));
+    if let Some(name) = origin_head
+        .as_deref()
+        .and_then(|text| text.strip_prefix("ref: refs/remotes/origin/"))
+    {
+        return name.to_owned();
+    }
+    let packed = fs::read_to_string(common.join("packed-refs")).unwrap_or_default();
+    let exists =
+        |name: &str| common.join(name).is_file() || packed.lines().any(|line| line.ends_with(name));
+    let main = exists("refs/heads/main") || exists("refs/remotes/origin/main");
+    let master = exists("refs/heads/master") || exists("refs/remotes/origin/master");
+    if master && !main { "master" } else { "main" }.to_owned()
+}
+
 /// Checked, never believed: without this `gitdir: /` reads as a writable root (D205).
 fn git_dir_at(path: &Path) -> Option<PathBuf> {
     let path = lexical_normalize(path);
