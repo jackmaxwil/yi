@@ -1,8 +1,9 @@
 //! A kernel child's hand-back: its worktree settled, merged into the parent, and its check read.
 
+use super::fork::ChildTree;
 use super::hostgit::git_by;
 use super::settle::*;
-use super::{BranchName, Lane, Sha};
+use super::{BranchName, Sha};
 use crate::subagent::{ChildRecord, SubagentHost};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -83,7 +84,7 @@ impl SubagentHost {
     /// The one settle a reap or a delete runs: the branch kept, or deleted once its pin is the
     /// record's. A settle refused before the release puts the lane back, so the slot stays held.
     pub fn settle_lane(
-        lane: &mut Option<Lane>,
+        lane: &mut Option<ChildTree>,
         choice: Option<Choice>,
         deadline: Option<Instant>,
     ) -> Result<Option<(Choice, Candidate)>, String> {
@@ -94,11 +95,10 @@ impl SubagentHost {
         let quiescence = quiescence_of_jobs(held.path());
         let settled = match held.settle(&quiescence, deadline) {
             Ok(settled) => settled,
-            Err(Unsettled::Kept(kept, error)) => {
+            Err((kept, error)) => {
                 *lane = Some(*kept);
                 return Err(error.to_string());
             }
-            Err(Unsettled::Lost(error)) => return Err(error.to_string()),
         };
         let candidate = match choice {
             Choice::Retained => settled.candidate,
@@ -158,7 +158,7 @@ impl SubagentHost {
         let deadline = deadline.filter(|_| !red.as_ref().is_some_and(|(red, _)| red.cancelled));
         let settled = lane
             .settle(&quiescence, deadline)
-            .map_err(|unsettled| unsettled.error().to_string())?;
+            .map_err(|(_kept, error)| error.to_string())?;
         let mut reply = settled.candidate.as_reply();
         let parent = self.options.cwd.clone();
         let files = changed_files(&parent, &settled.candidate, deadline)
@@ -274,20 +274,34 @@ impl SubagentHost {
     /// The `Discarded` disposition for a kernel-driven child: settled, then the branch deleted.
     pub fn discard_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
         let (lane, _) = self.take_settled_worktree(target)?;
+        let stopped = yi_tools::jobs::registry().kill_under(lane.path());
+        let settled_jobs = |root: &Path| quiescence_of_jobs(root).running.is_empty();
+        let until = Instant::now().checked_add(Duration::from_secs(5));
+        while !settled_jobs(lane.path()) && until.is_some_and(|until| Instant::now() < until) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let quiescence = quiescence_of_jobs(lane.path());
         let settled = lane
             .settle(&quiescence, self.deadline())
-            .map_err(|unsettled| unsettled.error().to_string())?;
+            .map_err(|(_kept, error)| error.to_string())?;
         let candidate = settled.discard().map_err(|error| error.to_string())?;
         let mut reply = candidate.as_reply();
         reply.insert("discarded".to_owned(), Value::Bool(true));
+        if !stopped.is_empty() {
+            let row = format!(
+                "stopped {} jobs under the tree: {}; a process that left its job keeps running",
+                stopped.len(),
+                stopped.join(", ")
+            );
+            reply.insert("stopped".to_owned(), Value::String(row));
+        }
         reply.insert("merged".to_owned(), Value::Bool(false));
         Ok(reply)
     }
 
     /// Invariant: taken off the record, so a tree is never handed back twice; never for a
     /// child the plan engine dispatched, whose branch goes through `submit` or a disposition.
-    fn take_settled_worktree(&self, target: &str) -> Result<(Lane, String), String> {
+    fn take_settled_worktree(&self, target: &str) -> Result<(ChildTree, String), String> {
         let mut children = self
             .children
             .lock()
@@ -307,7 +321,6 @@ impl SubagentHost {
             .worktree
             .take()
             .ok_or_else(|| format!("child \"{target}\" has no worktree (isolation was none)"))?;
-        drop(record.lane_permit.take());
         Ok((lane, record.session_name.clone()))
     }
 }

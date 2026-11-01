@@ -2334,6 +2334,7 @@ dependencies = [
  "globset",
  "proptest",
  "regex",
+ "rustix",
  "serde_json",
  "sha2",
  "thiserror 2.0.20",

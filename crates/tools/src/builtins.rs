@@ -295,7 +295,7 @@ fn walk_capped(
 
 /// Incident: a hand-split verb list called `find . -delete` a read. A read is what the permission
 /// classifier proves, less cargo, whose proven verbs write `target/` and the source.
-fn read_only_command(command: &str) -> bool {
+pub(crate) fn read_only_command(command: &str) -> bool {
     let command = yi_permission::without_redirects(command);
     let yi_permission::Parsed::Segments(segments) = yi_permission::parse(&command) else {
         return false;

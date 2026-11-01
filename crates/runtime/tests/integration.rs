@@ -34,6 +34,7 @@ mod cache_miss;
 mod caps_runtime;
 mod channel_e2e;
 mod check_probe;
+mod child_forks;
 mod child_trail;
 mod child_transcript;
 mod claims;

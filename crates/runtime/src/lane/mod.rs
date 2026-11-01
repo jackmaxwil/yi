@@ -11,6 +11,8 @@ use reap::Uncommitted;
 pub(crate) use hostgit::{PLUMBING_CAP, capture, capture_named, git, git_capture};
 pub use names::{BranchName, Head, Sha};
 
+pub mod carry;
+pub mod fork;
 pub mod handback;
 pub(crate) mod hostgit;
 pub mod land;

@@ -24,7 +24,6 @@
 //! | `user_dirty_tree_is_preserved_during_integration` and `user_staged_tree_is_preserved_during_integration` | T1 | `Rig::fixture_repo(Dirt::Dirty)` and `(Dirt::Staged)`, `git` | A full accept over a parent holding an edit to the overlapping file, unstaged or staged, and an untracked file leaves the status byte for byte and the untracked file in no commit; the candidate's new file is in the working tree and the index, and nothing of the integration shows as a staged reversal. The integration happened in a staging worktree and publication moved a ref, then followed it on every path the user had not touched. | The staging worktree, publication never running `git add -A` near the parent, and the ref-only publication restoring the untouched paths. Prepare in the user's checkout and the accept either refuses on their dirt or commits it; move the ref alone and every path the user did not touch reads as reverted, so their next `git commit -a` undoes the acceptance. |
 //! | `a_replayed_done_returns_the_recorded_acceptance` | T1 | `Rig::fixture_repo`, `Bench::done_as` | The same `done` request id twice after a submit: the second answers the recorded acceptance, journals nothing, and the todo is `Done` once. | `replay` matching an `accepted` record as the `done` it answered. Compare the raw op name and a retried `done` whose reply the kernel dropped is refused `request_id_reused` for an acceptance that succeeded. |
 //! | `done_naming_an_output_the_integration_never_saw_is_stale` | T1 | `Rig::fixture_repo`, `Bench::done_as`, the bench's `Serve` | `done` naming another output than the candidate submitted is refused stale with a `verification_stale` record, charges no refusal, and leaves the attempt at its verified integration; `done` naming nothing accepts the submitted output. | Section 6.3 step 5 at the accept phase: the token recomputed under the lease and compared whole. Skip it and a product the checks never saw is recorded `VerifiedDone`. |
-//! | `full_worker_capacity_does_not_deadlock_verification` | T1 | `Rig::fixture_repo`, `PlanEngine::capacity` | With the engine's own worker share held to its cap, a worktree todo still submits, verifies and is accepted, and the run ends with no verification permit and no slot held. | `Purpose::Verification` being its own counter (capacity.rs). Charge the checks against the worker share and a parent whose workers hold every worker lane cannot verify the candidate any of them submits. |
 //!
 //! `a_repossessed_worktree_keeps_its_work_on_its_branch` landed with F2b (D215) at the end of
 //! this file, against the lease journal on the parent's transcript. The plan journal's own
@@ -1363,7 +1362,6 @@ mod accept {
         KIND_INTEGRATION_INTENT, KIND_INTEGRATION_PREPARED, KIND_INTEGRATION_STALE,
         KIND_INTEGRATION_VERIFIED, Phase, Quiescence, Verified, phase_of,
     };
-    use yi_runtime::plan::capacity::Purpose;
     use yi_runtime::plan::ops::{
         Actor, Delegate, Op, OpRequest, Outcome, OutputResolve, PlanEngine, PlanOpError,
     };
@@ -2558,7 +2556,9 @@ mod accept {
     fn a_lane_that_cannot_settle_stays_held() -> TestResult {
         let rig = Rig::new("f0d-held")?;
         let pool = rig.pool(2)?;
-        let lane = pool.claim("writer", ClaimBase::Main)?;
+        let plan = yi_runtime::lane::fork::Carry::default();
+        let (lane, _rows) =
+            yi_runtime::lane::fork::ChildTree::fork(&pool, &rig.repo, "writer", &plan)?;
         let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
         let job = yi_tools::jobs::spawn_job(
             "sleep 1; echo written >> late.txt",
@@ -2576,7 +2576,6 @@ mod accept {
             "{refused:?}"
         );
         assert!(held_lane.is_some(), "the lane is still held");
-        assert_eq!(held(&pool)?, 1, "the slot is still held");
         let started = std::time::Instant::now();
         while yi_tools::jobs::registry()
             .report(job)
@@ -2597,7 +2596,6 @@ mod accept {
             "written"
         );
         assert!(held_lane.is_none());
-        assert_eq!(held(&pool)?, 0);
         Ok(())
     }
 
@@ -2742,38 +2740,6 @@ mod accept {
         assert!(
             matches!(bench.state()?, TodoState::Done { output: Some(output), .. } if output.to_string() == "local://rotate.sh")
         );
-        Ok(())
-    }
-
-    // Dies with `Purpose::Verification` being its own counter (capacity.rs): charge the
-    // checks against the worker share and a parent whose workers hold every worker lane
-    // cannot verify the candidate any of them submits.
-    #[test]
-    fn full_worker_capacity_does_not_deadlock_verification() -> TestResult {
-        let (rig, parent) = Rig::fixture("f0d-capacity", Dirt::Clean)?;
-        let bench = bench(&rig, parent, "yi/cand-green")?;
-        let capacity = bench.engine.capacity();
-        let mut workers = Vec::new();
-        while let Ok(permit) = capacity.reserve(Purpose::Worker) {
-            workers.push(permit);
-        }
-        assert_eq!(workers.len(), usize::from(capacity.cap(Purpose::Worker)));
-        assert!(
-            workers.len() < usize::from(bench.pool.slots()),
-            "the lane the workers did not get is the reserve"
-        );
-        bench.submit()?;
-        bench.done()?;
-        assert!(matches!(bench.state()?, TodoState::Done { .. }));
-        assert_eq!(capacity.held(Purpose::Verification), 0);
-        assert_eq!(
-            usize::from(capacity.held(Purpose::Worker)),
-            workers.len(),
-            "the acceptance charged nothing to the workers"
-        );
-        drop(workers);
-        assert_eq!(capacity.held(Purpose::Worker), 0);
-        assert_eq!(held(&bench.pool)?, 0);
         Ok(())
     }
 }
@@ -3234,6 +3200,71 @@ async fn a_red_check_on_a_child_that_changed_nothing_names_no_branch() -> TestRe
     let next = reply["next"].as_str().ok_or("no next sentence")?;
     assert!(next.contains("no branch was kept"), "{next}");
     assert!(!next.contains(branch), "{next}");
+    Ok(())
+}
+
+/// Dies with `kill_under` off the discard: a child's server outlives the tree it ran in, and the
+/// settle refuses the lane as busy until the 600 s job ends on its own.
+#[tokio::test]
+async fn a_discard_stops_what_still_runs_in_the_tree_and_says_so() -> TestResult {
+    let rig = Rig::new("discard-job")?;
+    let family = writer(&rig, "echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let listed = git(&rig.repo, &["worktree", "list", "--porcelain"])?;
+    let lane = listed
+        .split("\n\n")
+        .find(|entry| entry.contains("branch refs/heads/yi/sub-"))
+        .and_then(|entry| entry.lines().next()?.strip_prefix("worktree "))
+        .ok_or("no lane worktree")?;
+    let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
+    let job = yi_tools::jobs::spawn_job("sleep 600", Path::new(lane), &never, None, None)?;
+    let host = std::sync::Arc::clone(&family.host);
+    let reply = tokio::task::spawn_blocking(move || host.discard_worktree("writer")).await??;
+    let stopped = reply["stopped"].as_str().ok_or("no stopped row")?;
+    assert!(stopped.contains("sleep 600"), "{stopped}");
+    assert!(
+        stopped.contains("a process that left its job keeps running"),
+        "{stopped}"
+    );
+    assert!(
+        yi_tools::jobs::registry()
+            .report(job)
+            .is_some_and(|report| report.finished)
+    );
+    assert!(!Path::new(lane).join("draft.txt").exists());
+    Ok(())
+}
+
+/// Dies with `carry` off the allowed keys or the plan: the model's list reaches the copy only here.
+#[tokio::test]
+async fn a_carry_list_on_the_spawn_copies_an_ignored_file_and_a_non_list_refuses() -> TestResult {
+    let rig = Rig::new("carry-kwarg")?;
+    std::fs::write(rig.repo.join(".gitignore"), ".env\n")?;
+    std::fs::write(rig.repo.join(".env"), "KEY=1\n")?;
+    let store = support::memory_store("lanes-carry");
+    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, None);
+    let mut asked = serde_json::Map::new();
+    asked.insert("role".to_owned(), "root".into());
+    asked.insert("isolation".to_owned(), "worktree".into());
+    let mut bad = asked.clone();
+    bad.insert("name".to_owned(), "bad".into());
+    bad.insert("carry".to_owned(), ".env".into());
+    let refused = family
+        .host
+        .spawn("look".to_owned(), bad)
+        .err()
+        .ok_or("a non-list carried")?;
+    assert!(refused.contains("carry must be a list"), "{refused}");
+    asked.insert("name".to_owned(), "kid".into());
+    asked.insert("carry".to_owned(), serde_json::json!([".env"]));
+    family.host.spawn("look".to_owned(), asked)?;
+    let tree = family.host.cwd_of("kid").ok_or("no worktree")?;
+    assert_eq!(
+        std::fs::read_to_string(tree.join(".env"))?,
+        "KEY=1
+"
+    );
+    family.reaches("kid", "finished").await;
     Ok(())
 }
 

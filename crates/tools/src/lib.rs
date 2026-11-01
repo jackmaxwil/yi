@@ -51,7 +51,7 @@ pub use sandbox::{
     Sandbox, SandboxRefusal, denial_hint, exit_zero_note, kernel_cell_note, nested_sandbox_note,
     sandbox_refusal,
 };
-pub use spawn::{Spawn, SpawnFn, SpawnRefused};
+pub use spawn::{FirstUse, Spawn, SpawnFn, SpawnRefused, forget_first_use, register_first_use};
 /// The spill root's name under `~/.yi`, one dir per session inside it, before spills moved into
 /// the family board; walled sessions still may not read it (D340).
 pub const SPILLS: &str = "spills";

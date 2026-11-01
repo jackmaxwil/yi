@@ -14,7 +14,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
     let out = yi_tools::keyless_command("git")
         .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
         .args([
