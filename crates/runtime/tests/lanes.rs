@@ -2440,6 +2440,7 @@ mod accept {
             lane.path(),
             &never,
             None,
+            None,
         )?;
         let busy = yi_runtime::lane::settle::quiescence_of_jobs(lane.path());
         assert_eq!(busy.running_commands(), 1);
@@ -2502,6 +2503,7 @@ mod accept {
             "sleep 1; echo written >> late.txt",
             lane.path(),
             &never,
+            None,
             None,
         )?;
         let mut held_lane = Some(lane);
@@ -3177,7 +3179,7 @@ async fn a_job_that_ends_during_the_check_does_not_hold_the_lane() -> TestResult
         .home
         .join(Path::new(lane).strip_prefix(rig.home.canonicalize()?)?);
     let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
-    let _job = yi_tools::jobs::spawn_job("sleep 1", &lane, &never, None)?;
+    let _job = yi_tools::jobs::spawn_job("sleep 1", &lane, &never, None, None)?;
     let reply = checked_merge(&family, "sleep 3")?.await?;
     assert_eq!(reply["merged"], true, "{reply:?}");
     Ok(())

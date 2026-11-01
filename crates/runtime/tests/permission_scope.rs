@@ -11,6 +11,17 @@ use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+fn sandbox(writable: Vec<PathBuf>) -> yi_tools::Sandbox {
+    yi_tools::Sandbox {
+        writable,
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        sealed: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    }
+}
+
 fn write(path: &str, content: &str) -> Map<String, Value> {
     let mut args = Map::new();
     args.insert("path".to_owned(), json!(path));
@@ -92,13 +103,7 @@ fn an_approved_network_ask_says_it_leaves_the_sandbox() -> TestResult {
         Some(asker),
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     let mut args = Map::new();
     args.insert(
         "command".to_owned(),
@@ -126,20 +131,15 @@ fn an_exec_source_the_gate_allows_is_still_admitted() {
         None,
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     assert_eq!(
         yi_runtime::tools::refuse_armed("git status", false, Some(&broker), ""),
         None
     );
-    assert!(
-        yi_runtime::tools::refuse_armed("touch x", false, Some(&broker), "").is_some(),
-        "a source the gate only contains is still refused"
+    assert_eq!(
+        yi_runtime::tools::refuse_armed("touch x", false, Some(&broker), ""),
+        None,
+        "a source the gate only contains runs contained, so it is admitted"
     );
 }
 
@@ -156,13 +156,7 @@ fn a_walled_sessions_exec_source_never_runs_where_a_sandbox_exists() {
             None,
             tokio::sync::broadcast::channel(8).0,
         )
-        .with_sandbox(Some(yi_tools::Sandbox {
-            writable: vec![project.clone()],
-            deny_read: Vec::new(),
-            deny_write: Vec::new(),
-            host_owned: Vec::new(),
-            spared: Vec::new(),
-        }))
+        .with_sandbox(Some(sandbox(vec![project.clone()])))
     };
     let wall = yi_runtime::Wall {
         deny_read: vec![project.join("secret")],
@@ -189,13 +183,7 @@ fn an_allowed_credential_read_runs_outside_and_says_so() -> TestResult {
         None,
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     let mut args = Map::new();
     args.insert("command".to_owned(), json!("cat ~/.netrc"));
     let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
@@ -232,13 +220,7 @@ fn counted(
         Some(asker),
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     (broker, asks)
 }
 
@@ -372,13 +354,7 @@ fn a_headless_compound_says_to_split_it() -> TestResult {
         None,
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     let args = bash_args("cargo test && cargo add serde");
     let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
     assert!(
@@ -451,10 +427,7 @@ fn a_passed_command_refused_on_a_path_asks_to_widen() -> TestResult {
     let retry = decide("c2");
     assert_eq!(
         retry.containment,
-        Containment::Contained {
-            widen: vec![lane],
-            gate_allowed: false
-        }
+        Containment::Contained { widen: vec![lane] }
     );
     assert_eq!(
         *asks.lock().map_err(|_| "poisoned")?,
@@ -498,13 +471,7 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
         Some(asker),
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     let lane = home.join("yi-a2-nonexistent-lane");
     for (refused, widened) in [
         (home.join("probe"), None),
@@ -523,10 +490,7 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
             Some(dir) => {
                 assert_eq!(
                     outcome.containment,
-                    Containment::Contained {
-                        widen: vec![dir],
-                        gate_allowed: false
-                    }
+                    Containment::Contained { widen: vec![dir] }
                 );
                 assert!(text.contains("approving widens this run by"), "{text}");
             }
@@ -564,13 +528,7 @@ fn always_on_a_widened_retry_keeps_the_dir_and_the_sandbox() -> TestResult {
         Some(asker),
         tokio::sync::broadcast::channel(8).0,
     )
-    .with_sandbox(Some(yi_tools::Sandbox {
-        writable: vec![project],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        host_owned: Vec::new(),
-        spared: Vec::new(),
-    }));
+    .with_sandbox(Some(sandbox(vec![project])));
     let lane = home.join("yi-a2-nonexistent-kept");
     broker.note_containment_failure(yi_tools::SandboxRefusal::Path(lane.join("x")));
     let touch = |id: &str, name: &str| {
@@ -581,7 +539,6 @@ fn always_on_a_widened_retry_keeps_the_dir_and_the_sandbox() -> TestResult {
     };
     let widened = Containment::Contained {
         widen: vec![lane.clone()],
-        gate_allowed: false,
     };
     assert_eq!(touch("c1", "x").containment, widened);
     assert_eq!(
@@ -1064,5 +1021,137 @@ fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
     assert!(retry.allowed, "{}", retry.reason);
     assert_eq!(retry.containment, Containment::Uncontained);
     assert_eq!(*asks.lock().map_err(|_| "poisoned")?, 1, "the retry asks");
+    Ok(())
+}
+
+fn sandboxed_broker(asker: Asker) -> PermissionBroker {
+    let project = PathBuf::from("/home/user/project");
+    PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        Vec::new(),
+        Some(asker),
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(sandbox(vec![project])))
+}
+
+/// A broker in auto mode holding a sandbox, which answers every ask with `answer` and counts them.
+fn desktop_broker(answer: AskOutcome) -> (PermissionBroker, Arc<Mutex<Vec<Vec<String>>>>) {
+    let asks = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&asks);
+    let asker: Asker = Arc::new(move |ask| {
+        if let Ok(mut asks) = seen.lock() {
+            asks.push(ask.grants.iter().map(|grant| grant.label.clone()).collect());
+        }
+        answer
+    });
+    let broker = sandboxed_broker(asker);
+    (broker, asks)
+}
+
+fn bash(broker: &PermissionBroker, command: &str) -> yi_runtime::permission::CallOutcome {
+    broker.decide_call(
+        "bash",
+        ToolKind::Exec,
+        true,
+        "c1",
+        &bash_args(command),
+        None,
+    )
+}
+
+/// One yes per app: the sandbox refuses this program outright, so it has to run outside, and the
+/// answer for TextEdit must reach the next TextEdit command and nothing else.
+#[test]
+fn a_yes_for_one_desktop_app_covers_that_app_alone_and_runs_outside() -> TestResult {
+    let (broker, asks) = desktop_broker(AskOutcome::AllowAlways(0));
+    let first = bash(
+        &broker,
+        "agent-desktop snapshot --app TextEdit -i --compact",
+    );
+    assert!(first.allowed);
+    assert_eq!(first.containment, Containment::Uncontained);
+    let again = bash(&broker, "agent-desktop launch textedit");
+    assert!(again.allowed);
+    assert_eq!(again.containment, Containment::Uncontained);
+    assert_eq!(
+        asks.lock().map_err(|_| "poisoned")?.len(),
+        1,
+        "same app asked again"
+    );
+    bash(&broker, "agent-desktop snapshot --app Notes");
+    assert_eq!(
+        asks.lock().map_err(|_| "poisoned")?.len(),
+        2,
+        "another app rode the yes"
+    );
+    Ok(())
+}
+
+/// "Always" on a command with no app to scope to would keep the exact call, and `press cmd+q`
+/// means something else in whichever app is in front next time.
+#[test]
+fn a_desktop_command_with_no_app_is_offered_no_standing_yes_and_keeps_none() -> TestResult {
+    let (broker, asks) = desktop_broker(AskOutcome::AllowAlways(0));
+    for command in [
+        "agent-desktop snapshot -i",
+        "agent-desktop snapshot -i",
+        "agent-desktop snapshot --app Terminal",
+        "agent-desktop snapshot --app Terminal",
+    ] {
+        assert!(bash(&broker, command).allowed);
+    }
+    let asks = asks.lock().map_err(|_| "poisoned")?;
+    assert_eq!(asks.len(), 4, "a standing yes was kept: {asks:?}");
+    assert!(asks.iter().all(Vec::is_empty), "offered {asks:?}");
+    Ok(())
+}
+
+#[test]
+fn a_free_desktop_verb_runs_outside_unasked() -> TestResult {
+    let (broker, asks) = desktop_broker(AskOutcome::Reject);
+    let outcome = bash(&broker, "agent-desktop status");
+    assert!(outcome.allowed);
+    assert_eq!(outcome.containment, Containment::Uncontained);
+    assert!(asks.lock().map_err(|_| "poisoned")?.is_empty());
+    Ok(())
+}
+
+/// The sandbox is the backstop: a spelling that could run the model's own file, or point the record
+/// at the model's forgery, is asked about and, even approved, stays where the OS refuses it.
+#[test]
+fn a_desktop_command_by_any_other_spelling_stays_in_the_sandbox() -> TestResult {
+    for command in [
+        "./agent-desktop status",
+        "AGENT_DESKTOP_HOME=forged agent-desktop click @s1:e1",
+        "PATH=. agent-desktop click @s1:e1",
+        "timeout 5 agent-desktop status",
+    ] {
+        let (broker, asks) = desktop_broker(AskOutcome::AllowOnce);
+        let outcome = bash(&broker, command);
+        assert!(
+            matches!(outcome.containment, Containment::Contained { .. }),
+            "{command} left the sandbox"
+        );
+        assert!(
+            asks.lock().map_err(|_| "poisoned")?.len() <= 1,
+            "{command} asked twice"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_browser_is_refused_in_every_mode_and_names_agent_browser() -> TestResult {
+    let (broker, _) = desktop_broker(AskOutcome::AllowOnce);
+    broker.set_mode(PermissionMode::Yolo);
+    let outcome = bash(&broker, "agent-desktop snapshot --app Safari");
+    assert!(!outcome.allowed);
+    assert!(
+        outcome.reason.contains("agent-browser"),
+        "{}",
+        outcome.reason
+    );
     Ok(())
 }
