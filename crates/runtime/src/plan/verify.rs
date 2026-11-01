@@ -401,6 +401,11 @@ pub(super) fn protecting(
     }
 }
 
+/// A refusal is not the product's answer, so a contained item abstains and asks the owner.
+fn contained(why: &str) -> String {
+    format!("{why}; run it by hand, then accepted_by_user with its exit line as note")
+}
+
 fn run_cmd_said(
     manifest: &CheckerManifest,
     root: &Path,
@@ -423,12 +428,7 @@ fn run_cmd_said(
         .ok()
         .and_then(|capture| checker.refusal(&workdir, &manifest.command, capture));
     if let Some(why) = refused {
-        return (
-            abstain(format!(
-                "{why}; run it by hand, then accepted_by_user with its exit line as note"
-            )),
-            None,
-        );
+        return (abstain(contained(&why)), None);
     }
     let passed =
         |capture: &&yi_tools::CommandCapture| capture.exit_code == Some(0) && !capture.cancelled;
@@ -507,9 +507,11 @@ fn run_schema(
     }
 }
 
-/// Why one case did not pass: the runner's answer, or a host that could not run it at all.
+/// Why one case did not pass: the runner's answer, the sandbox's refusal, or a host that could not
+/// run it at all.
 enum CaseError {
     Case(&'static str),
+    Contained(String),
     /// The shell did not spawn: infrastructure, abstained and retried, never the product's.
     Host(String),
 }
@@ -526,6 +528,7 @@ fn run_examples(
         match run_case(manifest, case, root, item_deadline, checker) {
             Ok(()) => {}
             Err(CaseError::Case(why)) => failed.push((index, why)),
+            Err(CaseError::Contained(why)) => return abstain(why),
             Err(CaseError::Host(reason)) => return abstain(reason),
         }
     }
@@ -573,6 +576,9 @@ fn run_case(
     }
     if capture.truncated {
         return Err(CaseError::Case("output_overflow"));
+    }
+    if let Some(why) = checker.refusal(&manifest.workdir(root), &manifest.command, &capture) {
+        return Err(CaseError::Contained(contained(&why)));
     }
     if capture.exit_code != Some(0) {
         return Err(CaseError::Case("nonzero_exit"));

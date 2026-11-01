@@ -179,8 +179,14 @@ async fn a_kernel_reaches_loopback_and_no_other_kernels_key() -> TestResult {
     let context = yi_tools::ToolContext::new(project.clone());
     let timeout = std::time::Duration::from_secs(60);
     let command = format!("cat '{file}'");
-    let catted =
-        yi_tools::run_or_background(&command, &context, None, timeout, Some(&sandbox), None);
+    let placed = yi_tools::jobs::place(
+        yi_tools::jobs::interpreter(),
+        &command,
+        &project,
+        None,
+        Some(&sandbox),
+    );
+    let catted = yi_tools::run_or_background(&command, &context, None, timeout, placed);
     first.dispose().await;
     second.dispose().await;
     let other = other?.result;

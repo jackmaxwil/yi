@@ -1000,8 +1000,15 @@ fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
     let sandbox = yi_tools::Sandbox::for_workspace(&scratch, &home, None);
     let context = yi_tools::ToolContext::new(scratch.to_path_buf());
     let timeout = std::time::Duration::from_secs(60);
+    let placed = yi_tools::jobs::place(
+        yi_tools::jobs::interpreter(),
+        command,
+        &scratch,
+        None,
+        Some(&sandbox),
+    );
     let yi_tools::Run::Finished(capture) =
-        yi_tools::run_or_background(command, &context, None, timeout, Some(&sandbox), None)?
+        yi_tools::run_or_background(command, &context, None, timeout, placed)?
     else {
         return Err("ping did not finish".into());
     };

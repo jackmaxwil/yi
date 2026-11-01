@@ -764,17 +764,19 @@ impl Tool for BashTool {
             ));
         }
         let running = yi_types::trace::span("bash.run");
-        let placed = (context.container.as_deref())
-            .map(|name| crate::jobs::in_container(name, &context.cwd, command));
+        let placed = crate::jobs::place(
+            crate::jobs::interpreter(),
+            command,
+            &context.cwd,
+            context.container.as_deref(),
+            context.sandbox.as_ref(),
+        );
         let (capture, timed_out) = match crate::jobs::run_or_background(
             command,
             context,
             background_after,
             timeout,
-            context.sandbox.as_ref(),
-            placed
-                .as_ref()
-                .map(|(run, sweep)| (run.as_str(), sweep.as_str())),
+            placed,
         ) {
             Ok(crate::jobs::Run::Finished(capture)) => (*capture, false),
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),

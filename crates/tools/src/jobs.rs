@@ -522,9 +522,8 @@ fn start(
     shell_command: &str,
     cwd: &Path,
     cancelled: &CancelFlag,
-    sandbox: Option<&crate::sandbox::Sandbox>,
     reaper: Reaper,
-    placed: Option<(&str, &str)>,
+    run: Placed,
     spill_dir: Option<&Path>,
 ) -> Result<
     (
@@ -536,7 +535,6 @@ fn start(
     let (sender, receiver) = std::sync::mpsc::channel();
     let live = Arc::new(LiveOutput::default());
     let kill = Arc::new(AtomicBool::new(false));
-    let run = placed_run(interpreter(), shell_command, placed, sandbox);
     let sweep = run.sweep().map(str::to_owned);
     let outer = Arc::clone(cancelled);
     let stopped = Arc::clone(&kill);
@@ -699,16 +697,8 @@ pub fn spawn_job(
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
 ) -> Result<JobId, String> {
-    start(
-        shell_command,
-        cwd,
-        cancelled,
-        sandbox,
-        Reaper::Handle,
-        None,
-        None,
-    )
-    .map(|(id, _)| id)
+    let placed = place(interpreter(), shell_command, cwd, None, sandbox);
+    start(shell_command, cwd, cancelled, Reaper::Handle, placed, None).map(|(id, _)| id)
 }
 
 /// Past `background_after` (a call's `wait`, else `bash.autoBackgroundMs`; `None` holds the turn)
@@ -718,15 +708,13 @@ pub fn run_or_background(
     context: &crate::tool::ToolContext,
     background_after: Option<Duration>,
     timeout: Duration,
-    sandbox: Option<&crate::sandbox::Sandbox>,
-    placed: Option<(&str, &str)>,
+    placed: Placed,
 ) -> Result<Run, String> {
     let begun = std::time::Instant::now();
     let (id, receiver) = start(
         shell_command,
         &context.cwd,
         &context.cancelled,
-        sandbox,
         // Invariant: held until the call hands the turn back, or its output is announced twice.
         Reaper::Poller {
             reported: true,
@@ -1178,13 +1166,13 @@ mod tests {
             return Ok(());
         }
         let dir = Scratch::new("yi-jobs")?;
+        let command = "cd /tmp && timeout 900 python3 -c 'import time; print(\"ready\", flush=True); time.sleep(30)' && ls -la";
         let run = run_or_background(
-            "cd /tmp && timeout 900 python3 -c 'import time; print(\"ready\", flush=True); time.sleep(30)' && ls -la",
+            command,
             &crate::tool::ToolContext::new(dir.to_path_buf()),
             None,
             Duration::from_secs(3),
-            None,
-            None,
+            place(interpreter(), command, &dir, None, None),
         )?;
         let capture = match run {
             Run::TimedOut(capture) => capture,

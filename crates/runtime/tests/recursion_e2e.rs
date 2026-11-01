@@ -3820,6 +3820,9 @@ async fn a_walled_check_is_refused_at_every_spawn() -> TestResult {
 /// it now runs in the sandbox, so a project's own `just check` can be one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResult {
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
     let root = gate_rule_root("yi-check-sandboxed", None)?;
     let sandbox = yi_tools::Sandbox {
         writable: vec![root.join("project")],

@@ -294,17 +294,28 @@ pub(crate) fn run_check_in(
 ) -> Result<yi_tools::CommandCapture, String> {
     checker.guard(command, cwd)?;
     let placed = checker.shell("/bin/sh", command, cwd);
-    let mut shell = placed.command(cwd);
-    shell.env_clear();
-    for name in check_env(env_names, placed.in_container()) {
-        if let Some(value) = std::env::var_os(&name) {
-            shell.env(name, value);
-        }
-    }
+    let shell = check_command(&placed, cwd, env_names, |name| std::env::var_os(name));
     let stop = stop.cloned();
     let cancelled: yi_tools::CancelFlag =
         Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
     captured(shell, placed.sweep(), stdin, &cancelled)
+}
+
+/// The `/bin/sh -c` a check runs as: cleared, then only what [`check_env`] lets it keep.
+fn check_command(
+    placed: &yi_tools::jobs::Placed,
+    cwd: &std::path::Path,
+    env_names: &[String],
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> std::process::Command {
+    let mut shell = placed.command(cwd);
+    shell.env_clear();
+    for name in check_env(env_names, placed.in_container()) {
+        if let Some(value) = lookup(&name) {
+            shell.env(name, value);
+        }
+    }
+    shell
 }
 
 /// What a check keeps of the caller's environment under `env_clear()`: the base names, the manifest's,
@@ -964,10 +975,20 @@ mod checker_tests {
     /// `DOCKER_HOST` and reached no daemon, so every check in a remote container failed to run.
     #[test]
     fn a_placed_check_keeps_its_clients_endpoint() {
-        let plain = check_env(&[], false);
+        let cwd = std::path::Path::new("/work");
+        let kept = |container: Option<&str>| {
+            let env = ["MY_VAR".to_owned()];
+            let placed = yi_tools::jobs::place("sh", "true", cwd, container, None);
+            let command = check_command(&placed, cwd, &env, |name| Some(name.into()));
+            command
+                .get_envs()
+                .map(|(name, _)| name.to_string_lossy().into_owned())
+                .collect::<Vec<String>>()
+        };
+        let plain = kept(None);
         assert!(plain.contains(&"PATH".to_owned()), "{plain:?}");
         assert!(!plain.contains(&"DOCKER_HOST".to_owned()), "{plain:?}");
-        let placed = check_env(&["MY_VAR".to_owned()], true);
+        let placed = kept(Some("yi-child"));
         assert!(placed.contains(&"DOCKER_HOST".to_owned()), "{placed:?}");
         assert!(placed.contains(&"MY_VAR".to_owned()), "{placed:?}");
     }

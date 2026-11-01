@@ -252,16 +252,13 @@ fn a_plan_check_passes_the_frozen_bash_hooks_before_it_runs() -> TestResult {
     Ok(())
 }
 
-/// Dies with a sandboxed `cmd` item failing: a command the profile refused to let run read as the
-/// product's failure and charged a refusal, though nothing about the tree had been decided.
+// A checker whose sandbox refuses every write outside `temp`, and the store its artifacts go in.
 #[cfg(target_os = "macos")]
-#[test]
-fn a_cmd_item_the_sandbox_blocked_abstains_instead_of_failing() -> TestResult {
-    let temp = Scratch::new("yi-verify-refused")?;
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("HOME is unset")?;
-    let sandbox = yi_tools::Sandbox::for_workspace(&temp, &home, None);
+fn sandboxed_checker(
+    temp: &std::path::Path,
+    home: &std::path::Path,
+) -> (Artifacts, yi_runtime::goal::Checker) {
+    let sandbox = yi_tools::Sandbox::for_workspace(temp, home, None);
     let (events, _) = tokio::sync::broadcast::channel(8);
     let refuse: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
     let broker = Arc::new(
@@ -274,32 +271,91 @@ fn a_cmd_item_the_sandbox_blocked_abstains_instead_of_failing() -> TestResult {
         )
         .with_sandbox(Some(sandbox)),
     );
-    let artifacts = Artifacts::under(&temp);
+    let checker =
+        yi_runtime::goal::Checker::new(None, Some(broker), yi_runtime::wall::Wall::default());
+    (Artifacts::under(temp), checker)
+}
+
+/// Dies with a sandboxed `cmd` item failing: a command the profile refused to let run read as the
+/// product's failure and charged a refusal, though nothing about the tree had been decided.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cmd_item_the_sandbox_blocked_abstains_instead_of_failing() -> TestResult {
+    let temp = Scratch::new("yi-verify-refused")?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let (artifacts, checker) = sandboxed_checker(&temp, &home);
     let denied = home.join(format!("yi-verify-refused-{}", std::process::id()));
     let check = put(
         &artifacts,
         &manifest(&format!("touch '{}'", denied.display()), 5_000, &[]),
     )?;
     let contract = cmd_contract(check, 5_000)?;
-    let verdict = Verifier::new(5_000)
-        .with_checker(yi_runtime::goal::Checker::new(
-            None,
-            Some(broker),
-            yi_runtime::wall::Wall::default(),
-        ))
-        .run(
-            &token(&contract)?,
-            &contract,
-            &Snapshot {
-                id: "tree:test",
-                root: &temp,
-                output: None,
-                artifacts: &artifacts,
-            },
-        );
+    let verdict = Verifier::new(5_000).with_checker(checker).run(
+        &token(&contract)?,
+        &contract,
+        &Snapshot {
+            id: "tree:test",
+            root: &temp,
+            output: None,
+            artifacts: &artifacts,
+        },
+    );
     let ran = denied.exists();
     let _ = std::fs::remove_file(&denied);
     assert!(!ran, "the sandbox let the check write into HOME");
+    assert!(
+        verdict
+            .lines()
+            .contains("accepted_by_user with its exit line"),
+        "{}",
+        verdict.lines()
+    );
+    Ok(())
+}
+
+// Dies with the `example` decider failing on a sandbox refusal: a runner the profile stopped was
+// charged to the product, though nothing about the tree had been decided.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_examples_runner_the_sandbox_blocked_abstains_instead_of_failing() -> TestResult {
+    let temp = Scratch::new("yi-verify-example-refused")?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let (artifacts, checker) = sandboxed_checker(&temp, &home);
+    let denied = home.join(format!("yi-verify-example-refused-{}", std::process::id()));
+    let cases = artifacts.put(
+        &serde_json::to_vec(&json!([{"input": 1, "expected": 1}]))?,
+        "application/json",
+        "test",
+    )?;
+    let runner = put(
+        &artifacts,
+        &manifest(&format!("touch '{}'", denied.display()), 5_000, &[]),
+    )?;
+    let contract: Contract = serde_json::from_value(json!({
+        "class": "writer",
+        "items": [{"id": "cases", "critical": true, "weight": 100,
+                   "decider": {"example": {"cases": cases, "runner": runner,
+                                           "timeout_ms": 5_000}}}],
+        "threshold": 1000, "min_coverage": 1000
+    }))?;
+    let verdict = Verifier::new(5_000).with_checker(checker).run(
+        &token(&contract)?,
+        &contract,
+        &Snapshot {
+            id: "tree:test",
+            root: &temp,
+            output: None,
+            artifacts: &artifacts,
+        },
+    );
+    let wrote = denied.exists();
+    let _ = std::fs::remove_file(&denied);
+    assert!(!wrote, "the sandbox let the runner write into HOME");
+    assert_eq!(verdict.outcome, Outcome::Abstain, "{}", verdict.lines());
     assert!(
         verdict
             .lines()

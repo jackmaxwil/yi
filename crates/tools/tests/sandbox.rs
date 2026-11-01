@@ -33,7 +33,8 @@ fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
 fn run(command: &str, cwd: &Path, sandbox: Option<&Sandbox>) -> Result<(i32, String), String> {
     let context = ToolContext::new(cwd.to_path_buf());
     let timeout = std::time::Duration::from_secs(120);
-    match run_or_background(command, &context, None, timeout, sandbox, None)? {
+    let placed = yi_tools::jobs::place(yi_tools::jobs::interpreter(), command, cwd, None, sandbox);
+    match run_or_background(command, &context, None, timeout, placed)? {
         Run::Finished(capture) => Ok((
             capture.exit_code.unwrap_or(-1),
             format!("{}{}", capture.stdout, capture.stderr),
