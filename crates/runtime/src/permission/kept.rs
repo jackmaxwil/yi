@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use yi_permission::SessionRules;
 use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionRule};
 
-use super::{Journal, PermissionBroker, protected};
+use super::{Journal, PermissionBroker};
 
 impl PermissionBroker {
     /// A child's broker: the family's mode, holds, asker and reviewers, and a copy of the kept
@@ -162,20 +162,6 @@ impl PermissionBroker {
                 real.display()
             ));
         }
-        // Invariant: a root the profile already holds gains nothing, and its denies still outrank it.
-        let held = (self.sandbox.iter()).flat_map(|sandbox| &sandbox.writable);
-        if held
-            .into_iter()
-            .any(|root| root.canonicalize().is_ok_and(|root| root == real))
-        {
-            return Ok(());
-        }
-        if protected(self.sandbox.as_ref(), &real) {
-            return Err(format!(
-                "{} is protected and cannot be granted",
-                real.display()
-            ));
-        }
         if self.sandbox.is_none() {
             return Ok(());
         }
@@ -233,5 +219,54 @@ impl PermissionBroker {
         {
             journal(rule);
         }
+    }
+}
+
+/// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
+/// daemon socket), a credential store, or a git path the host runs.
+pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let yi = home.iter().map(|home| home.join(".yi"));
+    let overlaps = |guarded: &PathBuf| {
+        let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
+        // Invariant: a `.git` pointer guards itself; granting the tree around it opens no store,
+        // and the deny still outranks the grant.
+        let pointer = guarded.file_name() == Some(".git".as_ref()) && !guarded.is_dir();
+        [guarded, &real]
+            .iter()
+            .any(|guarded| dir.starts_with(guarded) || (!pointer && guarded.starts_with(dir)))
+    };
+    home.as_deref()
+        .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
+        || (sandbox.into_iter())
+            .flat_map(|s| s.deny_read.iter().chain(&s.deny_write).chain(&s.host_owned))
+            .cloned()
+            .chain(yi)
+            .any(|guarded| overlaps(&guarded))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::protected;
+    use std::path::{Path, PathBuf};
+
+    fn profile(tree: &str) -> yi_tools::Sandbox {
+        yi_tools::Sandbox::for_workspace(Path::new(tree), Path::new("/nonexistent-home"), None)
+    }
+
+    /// Dies with a `.git` that is no directory guarding every directory above it: `--allow-write`
+    /// on a parent of a non-repository cwd exited 2 naming protection that was not real.
+    #[test]
+    fn a_pointer_guards_itself_and_not_the_trees_above_it() {
+        let sandbox = profile("/nonexistent-tree/sub");
+        assert!(!protected(Some(&sandbox), Path::new("/nonexistent-tree")));
+        assert!(!protected(
+            Some(&sandbox),
+            Path::new("/nonexistent-tree/sub")
+        ));
+        assert!(protected(
+            Some(&sandbox),
+            &PathBuf::from("/nonexistent-tree/sub/.git/x")
+        ));
     }
 }
