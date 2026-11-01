@@ -74,9 +74,10 @@ impl GitLane {
             .clone()
     }
 
-    /// What a contained git gets where a repository has an origin and no lane: no transport at all.
-    /// Without it, git reads a credential from the URL and lands on main through a seeded host, asked
-    /// by nobody. A git that cannot say whether there is an origin gets the same: never fail open.
+    /// What a contained git gets where a repository has an origin and no lane: no transport but a
+    /// local path. Without it, git reads a credential from the URL and lands on main through a
+    /// seeded host, asked by nobody. Any remote counts, by whatever name; a git that cannot say
+    /// whether one exists gets the same, never fail open.
     pub(crate) fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
         static NO_LANE: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
         if let Some(lane) = lane {
@@ -88,22 +89,18 @@ impl GitLane {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let memo = memo.get_or_insert_with(HashMap::new);
         (memo.entry(cwd.to_path_buf()).or_insert_with(|| {
-            let origin = git(cwd, &["config", "--get", "remote.origin.url"]);
-            if matches!(
-                origin,
-                Err(LaneError::Git {
-                    exit_code: Some(1),
-                    ..
-                })
-            ) {
+            let remote = git(cwd, &["remote"]).map_or(true, |list| !list.trim().is_empty());
+            if !remote {
                 return Vec::new();
             }
             [
-                "GIT_CONFIG_COUNT=2",
+                "GIT_CONFIG_COUNT=3",
                 "GIT_CONFIG_KEY_0=maintenance.auto",
                 "GIT_CONFIG_VALUE_0=false",
                 "GIT_CONFIG_KEY_1=protocol.allow",
                 "GIT_CONFIG_VALUE_1=never",
+                "GIT_CONFIG_KEY_2=protocol.file.allow",
+                "GIT_CONFIG_VALUE_2=always",
             ]
             .map(str::to_owned)
             .to_vec()
@@ -403,4 +400,38 @@ fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
     let io = |error| super::io_error(store)(error);
     std::fs::create_dir_all(&info).map_err(io)?;
     std::fs::write(info.join("alternates"), format!("{}\n", objects.display())).map_err(io)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GitLane, git};
+
+    /// Dies with the origin-only key: a fork whose remote is `upstream` gets no transport either,
+    /// and the block still permits a local path, which reaches no network.
+    #[test]
+    fn any_remote_closes_the_transport() -> Result<(), String> {
+        let bare = std::env::temp_dir().join("yi-assign-no-remote");
+        let forked = std::env::temp_dir().join("yi-assign-upstream");
+        for dir in [&bare, &forked] {
+            let _ = std::fs::remove_dir_all(dir);
+            std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+            git(dir, &["init", "-q"]).map_err(|error| error.to_string())?;
+        }
+        git(
+            &forked,
+            &["remote", "add", "upstream", "https://example.invalid/r"],
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(GitLane::assign_for(None, &bare), Vec::<String>::new());
+        let assign = GitLane::assign_for(None, &forked);
+        assert!(
+            assign.contains(&"GIT_CONFIG_VALUE_1=never".to_owned()),
+            "{assign:?}"
+        );
+        assert!(
+            assign.contains(&"GIT_CONFIG_KEY_2=protocol.file.allow".to_owned()),
+            "{assign:?}"
+        );
+        Ok(())
+    }
 }

@@ -31,13 +31,17 @@ impl Uncommitted {
         };
         // One budget for the whole read: a hung git in one submodule must not stall every spawn.
         let until = std::time::Instant::now().checked_add(LIST_BUDGET);
+        let profile = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|_| yi_tools::Sandbox::available())
+            .map(|home| yi_tools::Sandbox::for_workspace(tree, &home, None));
         let links = (stage.lines())
             .filter(|row| row.starts_with("160000 "))
             .filter_map(|row| row.split_once('\t'))
             .filter(|(_, path)| {
                 let populated =
                     std::fs::read_dir(tree.join(path)).is_ok_and(|mut dir| dir.next().is_some());
-                populated && !submodule_is_clean(tree, path, until)
+                populated && !submodule_is_clean(tree, path, until, profile.as_ref())
             });
         self.paths = self.paths.saturating_add(links.count());
         self
@@ -203,9 +207,13 @@ impl Pool {
 
 /// `status` under the tree's own profile, so a clean filter a child planted runs contained. A
 /// directory with no `.git` would read the parent's status instead, so it is never clean.
-fn submodule_is_clean(tree: &Path, path: &str, until: Option<std::time::Instant>) -> bool {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let (Some(home), true) = (home, yi_tools::Sandbox::available()) else {
+fn submodule_is_clean(
+    tree: &Path,
+    path: &str,
+    until: Option<std::time::Instant>,
+    profile: Option<&yi_tools::Sandbox>,
+) -> bool {
+    let Some(sandbox) = profile else {
         return false;
     };
     let Ok(git) = yi_tools::host_command("git", tree) else {
@@ -214,17 +222,8 @@ fn submodule_is_clean(tree: &Path, path: &str, until: Option<std::time::Instant>
     if !tree.join(path).join(".git").exists() {
         return false;
     }
-    let sandbox = yi_tools::Sandbox::for_workspace(tree, &home, None);
     let program = git.get_program().to_string_lossy().into_owned();
-    // The flag as the parent's own read has it: a user's `showUntrackedFiles=no` would hide work.
-    let args = [
-        "--no-optional-locks",
-        "-C",
-        path,
-        "status",
-        "--porcelain",
-        "--untracked-files=normal",
-    ];
+    let args = [&["-C", path][..], &super::STATUS[..]].concat();
     let (program, args) = sandbox.wrap(&program, &args);
     let mut command = yi_tools::keyless_command(program);
     command.args(args).current_dir(tree);

@@ -1693,3 +1693,27 @@ fn what_the_host_says_after_a_spawn_reaches_the_model() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with the generic `' not allowed` needle: a compiler echoing a phrase must not read as
+/// git's transport refusal, and git's own refusal must still classify and ask.
+#[test]
+fn only_gits_transport_refusal_is_a_network_denial() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let transport = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(128),
+        "fatal: transport 'https' not allowed\n",
+        "git fetch origin",
+    );
+    assert!(transport.is_some(), "git's transport refusal must classify");
+    let unrelated = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "ValueError: 'None' not allowed as a mode\n",
+        "python3 check.py",
+    );
+    assert_eq!(unrelated, None, "{unrelated:?}");
+    Ok(())
+}
