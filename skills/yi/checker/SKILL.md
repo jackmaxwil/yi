@@ -58,10 +58,10 @@ the task text instead of from a copy of what you did, and `checks.py` lands in
 
 The child's one write lands outside the working tree, so in Auto mode it is a
 permission ask: each run needs a person to approve it, or an allow rule
-covering the temp directory. A headless run (`yi ask`, an unattended run, a
-plan child) has no one to ask, refuses that write, and leaves you grading
-yourself again; there, run with `--yolo` or that allow rule, or do not use
-this recipe.
+covering the temp directory. A plan child asks through its root, so under an
+interactive root the ask reaches you. A headless root (`yi ask`, an unattended
+run) has no one to ask, refuses that write, and leaves you grading yourself
+again; there, run with `--yolo` or that allow rule, or do not use this recipe.
 
 3. Start every requirement row with the check that proves it, and step the row
    done only on that check's own exit or `PASS` line. In a plan, the row's
