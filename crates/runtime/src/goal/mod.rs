@@ -106,10 +106,7 @@ pub(crate) fn captured(
 ) -> Result<yi_tools::CommandCapture, String> {
     let capture = yi_tools::run_captured(shell.command, stdin, cancelled, yi_tools::OUTPUT_CAP)?;
     if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
-        let _swept_or_gone_with_the_container = yi_tools::keyless_command("sh")
-            .arg("-c")
-            .arg(sweep)
-            .output();
+        yi_tools::jobs::run_sweep(sweep);
     }
     Ok(capture)
 }
