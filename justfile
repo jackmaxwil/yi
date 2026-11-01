@@ -364,11 +364,11 @@ package-musl version target='x86_64-unknown-linux-musl':
     echo "package-musl: smoke.sh NOT run on this host (cross binary can't execute on darwin);"
     echo "package-musl: the container's 'yi --version' preflight (evals/README) is the real smoke."
 
-# Catalog skills (§7.8) install into the global root; the fragments an
-# extension attaches are compiled in.
-install-skills:
-    mkdir -p ~/.yi/skills
-    cp -R .ruler/skills/. ~/.yi/skills/
-    rm -rf ~/.yi/skills/yi
-    cp -R skills/yi ~/.yi/skills/yi
-    @for stale in caveman/caveman ponytail/ponytail superpowers diagram-design; do [ -d ~/.yi/skills/$stale ] && echo "stale bundle, remove by hand: ~/.yi/skills/$stale" || true; done
+# Catalog skills (§7.8) install into the global root (`dest`), which the gate points at a temp dir.
+# The fragments an extension attaches are compiled in.
+install-skills dest="$HOME/.yi/skills":
+    mkdir -p "{{dest}}"
+    cp -R .ruler/skills/. "{{dest}}/"
+    rm -rf "{{dest}}/yi"
+    cp -R skills/yi "{{dest}}/yi"
+    @for stale in caveman/caveman ponytail/ponytail superpowers diagram-design; do [ -d "{{dest}}/$stale" ] && echo "stale bundle, remove by hand: {{dest}}/$stale" || true; done
