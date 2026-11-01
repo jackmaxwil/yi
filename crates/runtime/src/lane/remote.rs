@@ -180,8 +180,7 @@ impl GitLane {
     /// Before a spawn whose text reads origin. A script that fetches gets what the last refresh
     /// saw: nothing here reads a script.
     pub(crate) fn refresh(&self, command: &str) -> Vec<String> {
-        let reads = ["fetch", "pull", "ls-remote"];
-        if !command.contains("git ") || !reads.iter().any(|verb| command.contains(verb)) {
+        if !reads_a_remote(command) {
             return Vec::new();
         }
         let repo = self.pool.repo();
@@ -408,6 +407,19 @@ fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
     std::fs::write(alternates, format!("{}\n", objects.display())).map_err(io)
 }
 
+/// Invariant: a word of the command is `git` and another is the remote read, so a file named
+/// `fetch.log` or a `grep pull` pays for no fetch it never asked for.
+fn reads_a_remote(command: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let git = words
+        .iter()
+        .any(|word| *word == "git" || word.ends_with("/git"));
+    let read = words
+        .iter()
+        .any(|word| matches!(*word, "fetch" | "pull" | "ls-remote"));
+    git && read
+}
+
 /// A link where the store expects its own file or directory is unlinked, so the write lands in
 /// the store and a target a contained process chose is left alone.
 fn fresh(store: &Path, at: &str) -> std::io::Result<PathBuf> {
@@ -450,6 +462,17 @@ mod tests {
             "{assign:?}"
         );
         Ok(())
+    }
+
+    /// Dies with the substring test: a file whose name holds the verb costs no fetch.
+    #[test]
+    fn only_a_git_word_fetches() {
+        assert!(super::reads_a_remote("git fetch origin"));
+        assert!(super::reads_a_remote("cargo nextest && git pull --ff-only"));
+        assert!(!super::reads_a_remote(
+            "grep -n pull crates/runtime/src/lane/mod.rs"
+        ));
+        assert!(!super::reads_a_remote("tail -20 git fetch.log"));
     }
 
     /// Dies with a path-based write: a link a contained process planted in the writable admin dir
