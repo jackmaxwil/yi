@@ -4,9 +4,14 @@ use super::LaneError;
 
 /// Invariant: checked against git's ref-format charset once; `git` never sees a flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchName(pub(super) String);
+pub struct BranchName(String);
 
 impl BranchName {
+    /// The trunk's name when a repository says nothing else. A literal, so it needs no parsing.
+    pub(super) fn main() -> Self {
+        Self("main".to_owned())
+    }
+
     pub fn parse(text: &str) -> Result<Self, LaneError> {
         let reason = if text.is_empty() {
             Some("empty")
@@ -50,7 +55,7 @@ impl std::fmt::Display for BranchName {
 
 /// Invariant: forty hex digits, checked once; a sha reaches git argv only through this.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sha(pub(super) String);
+pub struct Sha(String);
 
 impl Sha {
     pub fn parse(text: &str) -> Option<Self> {
