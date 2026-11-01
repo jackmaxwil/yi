@@ -386,25 +386,42 @@ fn init_store(repo: &Path, store: &Path, objects: &Path) -> Result<(), LaneError
 }
 
 /// By hand: git never runs in here, on the host, once a contained process could have written it.
+/// Invariant: a link planted where the store expects its own file is unlinked, never followed.
 fn init_outbox(outbox: &Path, objects: &Path) -> Result<(), LaneError> {
     let io = |error| super::io_error(outbox)(error);
-    std::fs::create_dir_all(outbox.join("refs/heads")).map_err(io)?;
-    std::fs::create_dir_all(outbox.join("refs/tags")).map_err(io)?;
-    std::fs::write(outbox.join("HEAD"), "ref: refs/heads/main\n").map_err(io)?;
-    std::fs::write(outbox.join("config"), "[core]\n\tbare = true\n").map_err(io)?;
+    for dir in ["refs/heads", "refs/tags", "objects/info"] {
+        std::fs::create_dir_all(fresh(outbox, dir).map_err(io)?).map_err(io)?;
+    }
+    std::fs::write(fresh(outbox, "HEAD").map_err(io)?, "ref: refs/heads/main\n").map_err(io)?;
+    std::fs::write(
+        fresh(outbox, "config").map_err(io)?,
+        "[core]\n\tbare = true\n",
+    )
+    .map_err(io)?;
     write_alternates(outbox, objects)
 }
 
 fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
-    let info = store.join("objects/info");
     let io = |error| super::io_error(store)(error);
-    std::fs::create_dir_all(&info).map_err(io)?;
-    std::fs::write(info.join("alternates"), format!("{}\n", objects.display())).map_err(io)
+    std::fs::create_dir_all(fresh(store, "objects/info").map_err(io)?).map_err(io)?;
+    let alternates = fresh(store, "objects/info/alternates").map_err(io)?;
+    std::fs::write(alternates, format!("{}\n", objects.display())).map_err(io)
+}
+
+/// A link where the store expects its own file or directory is unlinked, so the write lands in
+/// the store and a target a contained process chose is left alone.
+fn fresh(store: &Path, at: &str) -> std::io::Result<PathBuf> {
+    let path = store.join(at);
+    if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{GitLane, git};
+    use std::path::Path;
 
     /// Dies with the origin-only key: a fork whose remote is `upstream` gets no transport either,
     /// and the block still permits a local path, which reaches no network.
@@ -431,6 +448,32 @@ mod tests {
         assert!(
             assign.contains(&"GIT_CONFIG_KEY_2=protocol.file.allow".to_owned()),
             "{assign:?}"
+        );
+        Ok(())
+    }
+
+    /// Dies with a path-based write: a link a contained process planted in the writable admin dir
+    /// would be written through on the next start, so its target holds whatever it chose.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_is_never_written_through() -> Result<(), String> {
+        let store = std::env::temp_dir().join("yi-outbox-planted-link");
+        let _ = std::fs::remove_dir_all(&store);
+        std::fs::create_dir_all(&store).map_err(|error| error.to_string())?;
+        let elsewhere = store.join("elsewhere");
+        std::fs::write(&elsewhere, "untouched").map_err(|error| error.to_string())?;
+        for at in ["HEAD", "config"] {
+            std::os::unix::fs::symlink(&elsewhere, store.join(at))
+                .map_err(|error| error.to_string())?;
+        }
+        super::init_outbox(&store, Path::new("/objects")).map_err(|error| error.to_string())?;
+        assert_eq!(
+            std::fs::read_to_string(&elsewhere).map_err(|error| error.to_string())?,
+            "untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(store.join("HEAD")).map_err(|error| error.to_string())?,
+            "ref: refs/heads/main\n"
         );
         Ok(())
     }
