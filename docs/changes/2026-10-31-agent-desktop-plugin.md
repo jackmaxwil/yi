@@ -1,4 +1,6 @@
 ---
+version: 0.858.0
+decisions: D525
 issue: Refs #1958
 growth: +971 about 260 lines are desktop.rs's test module and 170 the verb, app and input tables; weighed deleting the find, wait and list-surfaces rows, the x86_64 asset (deleted, never run) and a generic gate across plugins (not built, one program), and kept the tables since a missing row only asks more often
 raise: comments +48
