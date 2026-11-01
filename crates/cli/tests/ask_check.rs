@@ -461,3 +461,27 @@ fn a_check_that_can_run_exits_0_without_a_turn() -> TestResult {
     assert_eq!(check.sessions(), 0, "the probe started a session: {said}");
     Ok(())
 }
+
+/// Dies with the prompt-less probe printing its refusal on stderr alone: a `--json` harness
+/// pre-validating a check reads an empty stdout where the prompted form closes with `final`.
+#[test]
+fn a_json_probe_without_a_prompt_closes_with_a_final_row() -> TestResult {
+    let workspace = Workspace::new("json-probe")?;
+    let script = cassette(&workspace, &[Turn::Say("unused")])?;
+    let probe = workspace.yi(&[
+        "ask",
+        "--json",
+        "--model",
+        "faux/faux-1",
+        "--faux",
+        &script,
+        "--check",
+        "jsut check",
+    ])?;
+    let out = stdout(&probe);
+    assert_eq!(probe.status.code(), Some(2), "{out}");
+    let last: Value = serde_json::from_str(out.lines().last().unwrap_or_default())?;
+    assert_eq!(last["type"], "final", "{out}");
+    assert_eq!(last["class"], "refusal:config", "{out}");
+    Ok(())
+}

@@ -3,7 +3,9 @@ use std::time::Instant;
 
 use yi_runtime::goal::{CheckFailure, DEFAULT_CHECK_TIMEOUT_MS};
 
-use super::ask::{Outcome, Screen, stream};
+use yi_types::telemetry::ErrorClass;
+
+use super::ask::{Outcome, Screen, refuse, stream};
 
 /// The re-prompts one run may spend before the check's red is final.
 const REPROMPTS: u32 = 3;
@@ -47,20 +49,21 @@ pub(super) fn probe_only(args: &crate::Args) -> i32 {
     let lane = match crate::claim_lane(args, crate::home(), None) {
         Ok((lane, _pool)) => lane,
         Err(message) => {
-            eprintln!("lane: {message}");
-            return 1;
+            let message = format!("lane: {message}");
+            return refuse(args.json, 1, &ErrorClass::RefusalLane, &message);
         }
     };
-    let cwd = crate::work_dir(lane.as_ref().map(|lane| lane.path().to_path_buf()), args);
-    let Some(refusal) = args
-        .check
+    let dir = crate::work_dir(lane.map(|lane| lane.path().to_path_buf()), args);
+    match first_refusal(&args.check, &dir) {
+        None => 0,
+        Some(refusal) => refuse(args.json, 2, &ErrorClass::RefusalConfig, &refusal),
+    }
+}
+
+pub(super) fn first_refusal(checks: &[String], dir: &Path) -> Option<String> {
+    checks
         .iter()
-        .find_map(|check| yi_runtime::goal::probe(check, &cwd))
-    else {
-        return 0;
-    };
-    eprintln!("{refusal}");
-    2
+        .find_map(|check| yi_runtime::goal::probe(check, dir))
 }
 
 /// Re-prompts the same session with a red check's evidence until it passes, the run ends, or

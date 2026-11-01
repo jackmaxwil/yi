@@ -56,11 +56,8 @@ pub(super) fn run(args: &Args) -> i32 {
     };
     let lane = session.lane();
     let checks = args.check.clone();
-    let dir = session.work_dir(&crate::effective_cwd(args));
-    if let Some(refusal) = checks
-        .iter()
-        .find_map(|check| yi_runtime::goal::probe(check, &dir))
-    {
+    let dir = crate::work_dir(lane.as_ref().and_then(|lane| lane.path()), args);
+    if let Some(refusal) = crate::ask_check::first_refusal(&checks, &dir) {
         release_lane(lane.as_deref());
         return refuse(args.json, 2, &config, &refusal);
     }
@@ -160,7 +157,7 @@ fn early_final(json: bool, code: i32, class: &ErrorClass, message: &str) -> i32 
     code
 }
 
-fn refuse(json: bool, code: i32, class: &ErrorClass, message: &str) -> i32 {
+pub(super) fn refuse(json: bool, code: i32, class: &ErrorClass, message: &str) -> i32 {
     eprintln!("error: {message}");
     early_final(json, code, class, message)
 }

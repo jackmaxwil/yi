@@ -61,7 +61,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         }
     };
     let model = session.model();
-    let work = session.work_dir(&crate::effective_cwd(args));
+    let work = crate::work_dir(session.lane().and_then(|lane| lane.path()), args);
     let lane = session
         .lane()
         .and_then(|lane| lane.row())
