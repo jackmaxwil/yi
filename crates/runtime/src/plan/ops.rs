@@ -493,7 +493,7 @@ impl PlanEngine {
             Op::Repair { resolutions } => {
                 self.repair(plan, resolutions, &actor, request, expected_revision)
             }
-            Op::Set { goal, rows, .. } if plan.is_none() && self.resolve(None).is_err() => {
+            Op::Set { goal, rows, .. } if self.opens_plan(plan.as_ref()) => {
                 let goal = goal.ok_or(PlanOpError::NoPlan)?;
                 // Invariant: the caller's id names the Set, so a retry after a crash between
                 // the two commits replays or finishes the Set instead of hitting the init.

@@ -82,9 +82,10 @@ type TestResult = Result<(), Box<dyn Error>>;
 #[derive(Default)]
 pub(crate) struct Stub {
     next: AtomicU32,
-    reaps: AtomicU32,
+    pub(crate) reaps: AtomicU32,
     fail_reap: AtomicBool,
     reap_last: Mutex<Option<Url>>,
+    pub(crate) finishing: AtomicBool,
 }
 
 impl Delegate for Stub {
@@ -102,6 +103,10 @@ impl Delegate for Stub {
             Ok(last) => Ok(last.clone()),
             Err(_) => Err("poisoned".to_owned()),
         }
+    }
+
+    fn finishes(&self) -> bool {
+        self.finishing.load(Ordering::SeqCst)
     }
 }
 

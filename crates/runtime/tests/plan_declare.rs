@@ -6,45 +6,28 @@ use scratch::Scratch;
 
 use std::error::Error;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
 use yi_runtime::plan::acceptance::Phase;
-use yi_runtime::plan::ops::{Actor, Delegate, Op, OpRequest, PlanEngine, PlanOpError};
+use yi_runtime::plan::ops::{Actor, Op, OpRequest, PlanEngine, PlanOpError};
 use yi_runtime::plan::store::PlanStore;
 use yi_runtime::plan::tool::PlanTool;
 use yi_runtime::plan::verify::session_has;
 use yi_tools::{Tool, ToolContext};
 use yi_types::plan::canonical::{Chained, Digest};
 use yi_types::plan::contract::{CheckerManifest, Decider};
-use yi_types::plan::doc::{
-    AgentId, Delegation, Isolation, Plan, TodoAddr, TodoLabel, TodoState, TodoStateName,
-};
-use yi_types::url::Url;
+use yi_types::plan::doc::{AgentId, Isolation, Plan, TodoLabel, TodoState, TodoStateName};
+
+use crate::plan_ops::Stub;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-#[derive(Default)]
-struct Stub {
-    spawns: AtomicU32,
-    reaps: AtomicU32,
+fn stub() -> Arc<Stub> {
+    let stub = Stub::default();
+    stub.finishing.store(true, Ordering::SeqCst);
+    Arc::new(stub)
 }
-
-impl Delegate for Stub {
-    fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
-        let serial = self.spawns.fetch_add(1, Ordering::SeqCst);
-        AgentId::new(format!("child-{serial}")).map_err(|error| error.to_string())
-    }
-
-    fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
-        self.reaps.fetch_add(1, Ordering::SeqCst);
-        Ok(None)
-    }
-    fn finishes(&self) -> bool {
-        true
-    }
-}
-
 struct Rig {
     temp: Scratch,
     store: PlanStore,
@@ -56,7 +39,7 @@ struct Rig {
 fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
     let temp = Scratch::new(&format!("yi-plan-declare-{name}"))?;
     let store = PlanStore::open(temp.to_path_buf())?;
-    let delegate = Arc::new(Stub::default());
+    let delegate = stub();
     let engine = Arc::new(PlanEngine::new(store.clone(), delegate.clone()));
     let tool = PlanTool::new(Arc::clone(&engine), Actor::Owner);
     Ok(Rig {
@@ -416,9 +399,7 @@ impl yi_runtime::plan::recovery::Liveness for Gone {
 #[test]
 fn an_owner_step_on_a_todo_whose_child_is_gone_takes_the_normal_road() -> TestResult {
     let rig = rig("gone")?;
-    let engine = Arc::new(
-        PlanEngine::new(rig.store.clone(), Arc::new(Stub::default())).with_liveness(Arc::new(Gone)),
-    );
+    let engine = Arc::new(PlanEngine::new(rig.store.clone(), stub()).with_liveness(Arc::new(Gone)));
     let gone = Rig {
         tool: PlanTool::new(Arc::clone(&engine), Actor::Owner),
         engine,

@@ -538,6 +538,12 @@ pub(super) fn noted(mut text: String, said: Vec<String>) -> String {
     text
 }
 
+impl PlanEngine {
+    pub(super) fn opens_plan(&self, plan: Option<&PlanId>) -> bool {
+        plan.is_none() && self.resolve(None).is_err()
+    }
+}
+
 /// A `set` as the tool reads one, on every surface: rows it does not name stay, struck rows drop
 /// once the rest lands, and what that did is a notice beside the engine's own.
 pub(super) fn apply_set(
@@ -572,9 +578,7 @@ pub(super) fn keep_omitted(
         expected_revision: None,
         ..request.clone()
     };
-    let opening = request.plan.is_none()
-        && matches!(request.op, Op::Set { goal: Some(_), .. })
-        && engine.resolve(None).is_err();
+    let opening = engine.opens_plan(request.plan.as_ref());
     let Op::Set {
         rows, keep_rest, ..
     } = &mut request.op
