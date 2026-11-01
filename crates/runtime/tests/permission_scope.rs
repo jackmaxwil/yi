@@ -1177,4 +1177,57 @@ mod forge {
         );
         Ok(())
     }
+
+    /// A pin that pins nothing is not a pin: an empty list made the recipe's own code run on the
+    /// host with no ask and no content check.
+    #[test]
+    fn a_recipe_with_no_pin_asks() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(vec![HostRecipe {
+            call: "just pr".to_owned(),
+            pin: Vec::new(),
+        }]);
+        let outcome = decide(&broker, "just pr status 1");
+        assert!(!outcome.allowed, "{}", outcome.reason);
+        assert!(
+            outcome.reason.contains("pin list is empty"),
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
+
+    /// A pathspec matching nothing makes both git calls exit 0, so a typo read as "matching".
+    #[test]
+    fn a_pin_the_trunk_does_not_hold_asks() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(vec![HostRecipe {
+            call: "just pr".to_owned(),
+            pin: vec!["justfil".to_owned()],
+        }]);
+        let outcome = decide(&broker, "just pr status 1");
+        assert!(!outcome.allowed, "{}", outcome.reason);
+        assert!(
+            outcome.reason.contains("justfil is not in the trunk"),
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
+
+    /// A subagent's broker is built by `for_child`, so a recipe the owner wrote must reach it.
+    #[test]
+    fn a_child_session_meets_its_parents_recipes() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(recipes());
+        let child = broker.for_child(&yi_runtime::Wall::default(), &project);
+        let outcome = decide(&child, "just pr status 1");
+        assert_eq!(
+            outcome.containment,
+            Containment::Uncontained,
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
 }

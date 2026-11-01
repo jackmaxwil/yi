@@ -102,14 +102,14 @@ impl PermissionBroker {
             reason,
             containment: Containment::Uncontained,
         };
-        let Some(pin) = moved_pin(&self.cwd, recipe) else {
+        let Some(reason) = unverified(&self.cwd, recipe) else {
             let call = &recipe.call;
             return Some(outside(format!(
                 "`{call}` runs outside the sandbox: its pins match the trunk on origin"
             )));
         };
         let description = format!(
-            "`{command}` runs outside the sandbox, but {pin} differs from the trunk on origin, so it would run what this tree wrote"
+            "`{command}` runs outside the sandbox, but {reason}, so it would run what this tree wrote"
         );
         let ask = PermissionAsk {
             title: "host recipe",
@@ -127,11 +127,19 @@ impl PermissionBroker {
     }
 }
 
-/// The first pin that differs from the trunk on origin or holds an untracked file, and a repository
-/// git cannot read counts as moved.
-fn moved_pin(cwd: &Path, recipe: &HostRecipe) -> Option<String> {
+/// Why a recipe's pins do not hold, or `None` when every pin matches the trunk on origin: an empty
+/// list pins nothing, and a pin naming no path in the trunk is no pin at all.
+fn unverified(cwd: &Path, recipe: &HostRecipe) -> Option<String> {
+    if recipe.pin.is_empty() {
+        return Some("its pin list is empty".to_owned());
+    }
     let base = format!("refs/remotes/origin/{}", trunk(cwd));
     (recipe.pin.iter()).find_map(|pin| {
+        let in_trunk = git(cwd, &["ls-tree", "--name-only", &base, "--", pin])
+            .is_ok_and(|listed| !listed.trim().is_empty());
+        if !in_trunk {
+            return Some(format!("{pin} is not in the trunk on origin"));
+        }
         let same = git(
             cwd,
             &[
@@ -145,8 +153,11 @@ fn moved_pin(cwd: &Path, recipe: &HostRecipe) -> Option<String> {
             ],
         )
         .is_ok();
+        if !same {
+            return Some(format!("{pin} differs from the trunk on origin"));
+        }
         let clean = git(cwd, &["status", "--porcelain", "--", pin])
             .is_ok_and(|status| status.trim().is_empty());
-        (!(same && clean)).then(|| pin.clone())
+        (!clean).then(|| format!("{pin} holds untracked work"))
     })
 }
