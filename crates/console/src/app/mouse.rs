@@ -161,8 +161,16 @@ impl App {
             Some((_, crate::render::Hit::Search)) => {
                 return self.apply_action(outbound, Action::Navigator);
             }
-            Some((_, crate::render::Hit::Run(code))) => {
+            Some((_, crate::render::Hit::Run(pane, cell, ordinal))) => {
                 self.pending_close = None;
+                self.focus_pane(pane);
+                let code = match self.state.panes.get(&pane).map(|pane| &pane.content) {
+                    Some(crate::model::PaneContent::Session {
+                        chat: Some(chat), ..
+                    }) => chat.app.shell_block(cell, ordinal),
+                    _ => None,
+                };
+                let Some(code) = code else { return };
                 return self.run_in_terminal(&code);
             }
             Some((_, crate::render::Hit::Fold(root))) => {

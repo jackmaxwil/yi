@@ -9,41 +9,38 @@ use crate::render::Chip;
 pub(crate) struct PaneRows {
     pub(crate) top: u16,
     pub(crate) left: u16,
-    pub(crate) cells: Vec<Option<usize>>,
-    pub(crate) chips: Vec<Chip>,
+    pub(crate) rows: Vec<Option<(usize, Chip)>>,
 }
 
 impl App {
     pub fn pane_row(&self, y: u16) -> Option<Option<(usize, Option<&str>)>> {
         let rows = &self.pane_rows;
-        let owner = *rows.cells.get(usize::from(y.checked_sub(rows.top)?))?;
-        Some(owner.map(|index| (index, self.history.source(index))))
+        let (cell, _) = (*rows.rows.get(usize::from(y.checked_sub(rows.top)?))?)?;
+        Some(Some((cell, self.history.source(cell))))
     }
 
-    /// Each run chip on the last paint: where it stands and the shell block it runs.
-    pub fn run_chips(&self) -> Vec<(Rect, String)> {
+    /// Each run chip on the last paint: where it stands, and the cell and ordinal naming the
+    /// shell block it runs; the block itself is read once, on the press.
+    pub fn run_chips(&self) -> Vec<(Rect, usize, usize)> {
         let rows = &self.pane_rows;
-        let mut blocks: Option<(usize, Vec<String>)> = None;
-        let mut found = Vec::new();
-        for (at, (cell, chip)) in rows.cells.iter().zip(&rows.chips).enumerate() {
-            let (Some(cell), Some((ordinal, from, wide))) = (*cell, *chip) else {
-                continue;
-            };
-            if blocks.as_ref().is_none_or(|(held, _)| *held != cell) {
-                let source = self.history.source(cell).unwrap_or_default();
-                blocks = Some((cell, crate::markdown::shell_blocks(source)));
-            }
-            let code = blocks.as_ref().and_then(|(_, held)| held.get(ordinal));
-            let (Some(code), Ok(y), Ok(x), Ok(wide)) = (
-                code,
-                u16::try_from(at).map(|at| rows.top.saturating_add(at)),
-                u16::try_from(from).map(|from| rows.left.saturating_add(from)),
-                u16::try_from(wide),
-            ) else {
-                continue;
-            };
-            found.push((Rect::new(x, y, wide, 1), code.clone()));
-        }
-        found
+        rows.rows
+            .iter()
+            .enumerate()
+            .filter_map(|(at, row)| {
+                let (cell, chip) = row.as_ref()?;
+                let (ordinal, from, wide) = (*chip)?;
+                let y = u16::try_from(at).ok()?.checked_add(rows.top)?;
+                let x = u16::try_from(from).ok()?.checked_add(rows.left)?;
+                let wide = u16::try_from(wide).ok()?;
+                Some((Rect::new(x, y, wide, 1), *cell, ordinal))
+            })
+            .collect()
+    }
+
+    /// The shell block the nth run chip of `cell` stands for, parsed from the answer once.
+    pub fn shell_block(&self, cell: usize, ordinal: usize) -> Option<String> {
+        crate::markdown::shell_blocks(self.history.source(cell)?)
+            .get(ordinal)
+            .cloned()
     }
 }

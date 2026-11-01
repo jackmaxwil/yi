@@ -5806,16 +5806,6 @@ fn resume_fenced(frame: &Value) -> Vec<Value> {
     ]
 }
 
-fn opened_fenced() -> Vec<Step> {
-    vec![
-        Step::Expect("initialize", init_reply),
-        Step::Expect("session/list", two_session_list),
-        Step::Expect("session/list", empty_list),
-        Step::Expect("session/resume", resume_fenced),
-        Step::Expect("_yi/seen", seen_ok),
-    ]
-}
-
 /// Dies with a chip nothing answers: the press on it must open a terminal beside the chat, and
 /// a press on the fence's own label, one cell left of the chip, must not.
 #[test]
@@ -5823,7 +5813,7 @@ fn pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not() ->
     let open = |click: &str| {
         run_frames(
             "run-chip",
-            opened_fenced(),
+            replayed_session(resume_fenced),
             &format!("wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 ▶ run\n{click}\nquit\n"),
         )
     };

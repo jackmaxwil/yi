@@ -762,7 +762,7 @@ fn paint_chat_pane(
     view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
     pane.scroll_from_bottom = scroll;
     let runs = chat.app.run_chips();
-    crate::hit::offer_runs(app, runs);
+    crate::hit::offer_runs(app, view.id, runs);
     if dim {
         for y in inner.top()..inner.bottom() {
             for x in inner.left()..inner.right() {

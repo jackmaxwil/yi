@@ -16,14 +16,16 @@ pub enum Hit {
     Search,
     Fold(String),
     Session(usize),
-    /// A shell block's run chip in a chat pane; the shell block is what it types.
-    Run(String),
+    /// A chat pane's run chip: the answer cell and the ordinal of the shell block it stands for.
+    Run(PaneId, usize, usize),
 }
 
 /// Each run chip a chat pane drew this frame is a control the press and the hover walk.
-pub(crate) fn offer_runs(app: &mut App, runs: Vec<(Rect, String)>) {
+pub(crate) fn offer_runs(app: &mut App, pane: PaneId, runs: Vec<(Rect, usize, usize)>) {
     if let Some(hits) = app.hits.as_mut() {
-        hits.controls
-            .extend(runs.into_iter().map(|(rect, code)| (rect, Hit::Run(code))));
+        hits.controls.extend(
+            runs.into_iter()
+                .map(|(rect, cell, ordinal)| (rect, Hit::Run(pane, cell, ordinal))),
+        );
     }
 }

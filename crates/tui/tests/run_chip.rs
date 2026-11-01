@@ -143,7 +143,8 @@ fn each_painted_chip_runs_the_fence_it_sits_on_at_every_scroll() -> TestResult {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 12));
         let mut held = scroll;
         yi_tui::render::paint_pane(&mut app, None, &mut buffer, area, &mut held);
-        for (rect, code) in app.run_chips() {
+        for (rect, cell, ordinal) in app.run_chips() {
+            let code = app.shell_block(cell, ordinal).unwrap_or_default();
             let row: String = (0..60)
                 .filter_map(|x| {
                     buffer
@@ -171,6 +172,64 @@ fn each_painted_chip_runs_the_fence_it_sits_on_at_every_scroll() -> TestResult {
         seen.into_iter().collect::<Vec<_>>(),
         ["git pull first\n", "scripts/build second\n"],
         "both chips were reachable by scrolling"
+    );
+    Ok(())
+}
+
+const LONG_HEADER: &str =
+    "Install it:\n\n```bash title=\"install the CLI and build the dist binary\"\ngit pull\n```\n";
+
+/// Dies with a chip whose rect runs past its pane, where the buffer clips the chip but a press on
+/// the split border or the neighbour still ran the model's command.
+#[test]
+fn a_chip_past_its_pane_is_clamped_to_it_and_one_entirely_outside_is_not_offered() -> TestResult {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    let mut themed = theme();
+    themed.run = true;
+    let mut app = yi_tui::app::App::new(
+        crate::common::options(),
+        themed,
+        yi_tui::keymap::default_keymap(),
+        80,
+    );
+    app.commit_cell(&Cell::Assistant {
+        markdown: LONG_HEADER.to_owned(),
+    });
+    let area = Rect::new(2, 0, 60, 10);
+    let paint = |app: &mut yi_tui::app::App, width: u16| {
+        let area = Rect { width, ..area };
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 12));
+        let mut held = 0;
+        yi_tui::render::paint_pane(app, None, &mut buffer, area, &mut held);
+        area
+    };
+    let wide = paint(&mut app, area.width);
+    let (chip, cell, ordinal) = app.run_chips().first().copied().ok_or("no chip")?;
+    assert_eq!(
+        app.shell_block(cell, ordinal).as_deref(),
+        Some("git pull\n")
+    );
+    let start = chip.x.saturating_sub(wide.x);
+
+    let narrow = paint(&mut app, start.saturating_add(4));
+    let clipped = app
+        .run_chips()
+        .first()
+        .copied()
+        .ok_or("no chip in the narrow pane")?;
+    assert_eq!(
+        clipped.0.right(),
+        narrow.right(),
+        "a chip half cut by the pane kept a rect past it: {:?} in {narrow:?}",
+        clipped.0
+    );
+
+    paint(&mut app, start);
+    assert!(
+        app.run_chips().is_empty(),
+        "a chip wholly past the pane was still offered: {:?}",
+        app.run_chips()
     );
     Ok(())
 }

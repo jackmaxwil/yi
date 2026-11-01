@@ -70,37 +70,20 @@ impl App {
         }
     }
 
-    /// A shell block the person pressed Run on goes to a live terminal pane of this tab, or to a
-    /// new one, as typed text they can watch run; the agent never sees it.
+    /// A shell block is typed into the terminal the person is looking at, or a new one beside the
+    /// chat; Incident: the tab's first live pane took it, so a chip typed into an ssh session.
     pub(super) fn run_in_terminal(&mut self, code: &str) {
-        let live = |app: &Self, id: &crate::layout::PaneId| {
-            matches!(
-                app.state.panes.get(id).map(|pane| &pane.content),
-                Some(PaneContent::Terminal(pty)) if !pty.exited()
-            )
-        };
-        let mut open = self
-            .state
-            .tab()
-            .and_then(|tab| tab.layout.pane_ids().into_iter().find(|id| live(self, id)));
-        if open.is_none() {
+        if self.focused_pty().is_none() {
             self.open_terminal();
-            open = self.state.focused_pane_id().filter(|id| live(self, id));
         }
-        let Some(id) = open else { return };
-        if let Some(tab) = self.state.tab_mut() {
-            tab.layout.focus_pane(id);
-        }
-        self.state.focus_panes();
-        if let Some(PaneContent::Terminal(pty)) =
-            self.state.panes.get_mut(&id).map(|p| &mut p.content)
-        {
-            let typed = pty
-                .paste(code.trim_end_matches('\n'))
-                .and_then(|()| pty.send(b"\r"));
-            if let Err(error) = typed {
-                self.note(&format!("terminal: {error}"));
-            }
+        let Some(pty) = self.focused_pty() else {
+            return;
+        };
+        let typed = pty
+            .paste(code.trim_end_matches('\n'))
+            .and_then(|()| pty.send(b"\r"));
+        if let Err(error) = typed {
+            self.note(&format!("terminal: {error}"));
         }
         self.dirty = true;
     }
@@ -164,7 +147,6 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
         let mut app = App::new("/r".to_owned(), theme);
-        let chat = app.state.focused_pane_id().ok_or("a pane")?;
         let shell = app
             .state
             .split_focused(ratatui::layout::Direction::Horizontal)
@@ -172,9 +154,6 @@ mod tests {
         let (pty, written) = crate::pty::tests::queued_terminal()?;
         if let Some(pane) = app.state.panes.get_mut(&shell) {
             pane.content = PaneContent::Terminal(Box::new(pty));
-        }
-        if let Some(tab) = app.state.tab_mut() {
-            tab.layout.focus_pane(chat);
         }
         let code = "cd ~/Development/yi && git pull --ff-only origin main && \\\n  scripts/build_dist.sh\n";
         app.run_in_terminal(code);
@@ -184,6 +163,33 @@ mod tests {
             "cd ~/Development/yi && git pull --ff-only origin main && \\\n  scripts/build_dist.sh\r"
         );
         assert_eq!(app.state.focused_pane_id(), Some(shell));
+        Ok(())
+    }
+
+    /// Dies with a chip pressed in a chat pane typing the model's command into a live terminal of
+    /// another pane, where an ssh session or a root shell takes it for input the person typed.
+    #[test]
+    fn a_shell_block_is_not_typed_into_a_terminal_the_person_is_not_looking_at()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        let chat = app.state.focused_pane_id().ok_or("a pane")?;
+        let shell = app
+            .state
+            .split_focused(ratatui::layout::Direction::Horizontal)
+            .ok_or("no split")?;
+        let (pty, written) = crate::pty::tests::queued_terminal()?;
+        if let Some(pane) = app.state.panes.get_mut(&shell) {
+            pane.content = PaneContent::Terminal(Box::new(pty));
+        }
+        app.focus_pane(chat);
+        app.run_in_terminal("rm -rf ~");
+        let typed: Vec<u8> = written.try_iter().flatten().collect();
+        assert!(
+            typed.is_empty(),
+            "the unfocused terminal took {:?}",
+            String::from_utf8_lossy(&typed)
+        );
         Ok(())
     }
 }
