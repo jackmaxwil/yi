@@ -1,4 +1,6 @@
 ---
+version: 0.852.0
+decisions: D522
 issue: Closes #601
 decision: contained traffic leaves through a per-spawn CONNECT proxy, and named package caches are writable with their poisoning accepted | installs failed silently, and the owner left containment over it | remove the Spawn seam, the proxy and with_caches; amends D87, D205 and D331
 growth: +1039 is the proxy (egress.rs: the head parser, the holder table, caps with rows, the relay), the broker's decision table, the Spawn seam through jobs, the kernel and checks, and the cache roots. Weighed for deletion: tokio for the proxy, refused since front ends run current_thread and attach_runtime is at its line cap; a dialer through an upstream proxy, cut until someone sits behind one; derivation of the allow-list from a lockfile, cut because a contained process writes the lockfile.
