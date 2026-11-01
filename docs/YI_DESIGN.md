@@ -302,8 +302,9 @@ extension `Host` whose synchronous extensions turn session events into effects.
   §17.1), `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
-  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML
-  comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
+  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for whole-line
+  HTML comments and the leading, trailing or doubled blank line a removed comment leaves behind
+  rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
   granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
 - The table persists as `custom{ext_state2}` when an extension changes it: the build's own slots
