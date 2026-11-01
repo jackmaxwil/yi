@@ -1,7 +1,7 @@
 ---
 issue: Closes #1929
 decision: config.worktree, info, alternates, a submodule's host-read files, a .git that is no directory and every other lane's admin dir are never writable to a contained process | a planted core.fsmonitor in config.worktree ran on the host's next git status, and a repointed .git reached the same place | drop the entries from Sandbox::for_workspace
-raise: tests +292, comments +24, over-cap +1, crate tools +128, crate runtime +87
+raise: tests +292, comments +26, over-cap +1, crate tools +136, crate runtime +87
 growth: +215 a directory seal (Sealed: the denied directory and the roots it opens), its bindings, its policy rule and its predicate arm, plus four tests; the per-name enumeration it replaces was itself the hole
 ---
 A contained process can no longer write the git files the host reads as authority. With

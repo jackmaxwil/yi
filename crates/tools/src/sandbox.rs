@@ -109,6 +109,17 @@ fn directories(dir: &Path) -> impl Iterator<Item = PathBuf> {
         .map(|entry| entry.path())
 }
 
+/// A directory denies every path under it but the roots it keeps open.
+fn denies_inside(path: &Path, store: &Path, open: &[PathBuf]) -> bool {
+    path.starts_with(store) && !open.iter().any(|root| path.starts_with(root))
+}
+
+/// The `require-not` clauses a denial needs for the `-D` keys it keeps open.
+fn require_not(keys: impl Iterator<Item = String>) -> String {
+    keys.map(|key| format!(" (require-not (subpath (param \"{key}\")))"))
+        .collect()
+}
+
 impl Sandbox {
     /// The worktree, its git dirs (a lane's index lives in the trunk's), and build scratch.
     pub fn for_workspace(cwd: &Path, home: &Path, session_dir: Option<&Path>) -> Self {
@@ -187,15 +198,16 @@ impl Sandbox {
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|byte| byte.is_ascii_digit()));
         let granted = tty || path == Path::new("/dev/null") || path == Path::new("/dev/ptmx");
         let owned = self.host_owned.iter().any(|store| {
-            let (store, exempt) = (resolve_aliases(store), self.exempt(store));
-            path.starts_with(&store) && !exempt.iter().any(|root| path.starts_with(root))
+            let store = resolve_aliases(store);
+            denies_inside(&path, &store, &self.exempt(&store))
         });
         let sealed = self.sealed.iter().any(|sealed| {
-            path.starts_with(resolve_aliases(&sealed.denied))
-                && !sealed
-                    .open
-                    .iter()
-                    .any(|open| path.starts_with(resolve_aliases(open)))
+            let open: Vec<PathBuf> = sealed
+                .open
+                .iter()
+                .map(|open| resolve_aliases(open))
+                .collect();
+            denies_inside(&path, &resolve_aliases(&sealed.denied), &open)
         });
         !granted
             && (!under(&self.writable)
@@ -430,34 +442,31 @@ impl Sandbox {
         // Before every denial below it, so a leaf inside an open root still loses: the seal closes
         // a directory a contained process would otherwise create under a writable root.
         for (index, sealed) in self.sealed.iter().enumerate() {
-            let open: String = (0..sealed.open.len())
-                .flat_map(|open| {
-                    [
-                        format!("SEALED_OPEN_{index}_{open}"),
-                        format!("SEALED_OPEN_{index}_{open}_RESOLVED"),
-                    ]
-                })
-                .map(|key| format!(" (require-not (subpath (param \"{key}\")))"))
-                .collect();
+            let open = require_not((0..sealed.open.len()).flat_map(|open| {
+                [
+                    format!("SEALED_OPEN_{index}_{open}"),
+                    format!("SEALED_OPEN_{index}_{open}_RESOLVED"),
+                ]
+            }));
             anchors.push(format!(
                 "(deny file-write* (require-all (require-any (subpath (param \"SEALED_{index}\")) (subpath (param \"SEALED_{index}_RESOLVED\"))){open}))"
             ));
         }
         // A path hidden from reads is not writable either: renamed, it would leave its rule behind;
         // a spared writable root under it reads, so the other rules decide its writes.
-        let spared: String = (self.spared.iter().enumerate())
-            .filter(|(_, dir)| {
-                let dir = resolve_aliases(dir);
-                (self.writable.iter()).any(|root| resolve_aliases(root) == dir)
-            })
-            .flat_map(|(index, _)| {
-                [
-                    format!("SPARED_{index}"),
-                    format!("SPARED_{index}_RESOLVED"),
-                ]
-            })
-            .map(|key| format!(" (require-not (subpath (param \"{key}\")))"))
-            .collect();
+        let spared = require_not(
+            (self.spared.iter().enumerate())
+                .filter(|(_, dir)| {
+                    let dir = resolve_aliases(dir);
+                    (self.writable.iter()).any(|root| resolve_aliases(root) == dir)
+                })
+                .flat_map(|(index, _)| {
+                    [
+                        format!("SPARED_{index}"),
+                        format!("SPARED_{index}_RESOLVED"),
+                    ]
+                }),
+        );
         let denied = ((0..self.deny_write.len()).map(|index| (format!("DENY_WRITE_{index}"), "")))
             .chain((0..self.deny_read.len()).map(|index| {
                 let exempt = if self.inside_spare(index) {
@@ -474,12 +483,11 @@ impl Sandbox {
         }
         for (index, store) in self.host_owned.iter().enumerate() {
             let exempt = self.exempt(store);
-            let keep: String = (self.writable.iter().enumerate())
-                .filter(|(_, root)| exempt.contains(&resolve_aliases(root)))
-                .map(|(root, _)| {
-                    format!(" (require-not (subpath (param \"WRITABLE_ROOT_{root}\")))")
-                })
-                .collect();
+            let keep = require_not(
+                (self.writable.iter().enumerate())
+                    .filter(|(_, root)| exempt.contains(&resolve_aliases(root)))
+                    .map(|(root, _)| format!("WRITABLE_ROOT_{root}")),
+            );
             for key in [
                 format!("HOST_OWNED_{index}"),
                 format!("HOST_OWNED_{index}_RESOLVED"),
