@@ -748,6 +748,18 @@ fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
             above.display()
         );
     }
+    // With no profile there is nothing to widen, so the flag is taken wherever it points.
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let bare = PermissionBroker::new(
+        PermissionMode::Auto,
+        repo.clone(),
+        Vec::new(),
+        Some(refuse),
+        session.events_sender(),
+    );
+    bare.grant_write(Path::new("/"))?;
     let denied = gate
         .grant_write(&repo.join(".git/hooks"))
         .err()
