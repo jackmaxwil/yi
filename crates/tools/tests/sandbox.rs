@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use yi_tools::{
     Run, Sandbox, SandboxRefusal, Tool, ToolContext, denial_hint, run_or_background,
@@ -11,6 +12,8 @@ use yi_tools::{
 use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+use crate::seatbelt::seatbelt;
 fn d_bindings(args: &[String]) -> Vec<(&str, &str)> {
     args.iter()
         .filter_map(|arg| arg.strip_prefix("-D")?.split_once('='))
@@ -124,6 +127,7 @@ fn a_denial_is_only_claimed_when_the_output_says_so() {
         writable: vec![cwd.to_path_buf()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
@@ -172,6 +176,7 @@ fn home_project() -> Result<(Sandbox, PathBuf), Box<dyn Error>> {
         writable: vec![PathBuf::from("/work"), home.join("project")],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
@@ -410,12 +415,9 @@ fn rust_and_node_errno_lines_name_the_refused_path() -> TestResult {
 }
 
 /// The live half. Everything above describes the policy; this runs it.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, home) = workspace("write")?;
     let outside = root.join("outside");
     std::fs::create_dir_all(&outside)?;
@@ -423,6 +425,7 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
@@ -449,15 +452,12 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 /// MCP OAuth tokens sit under `~/.yi/mcp/tokens` and provider logins under
 /// `~/.yi/providers/tokens` (#887). The base profile hides both from every contained command,
 /// the bash tool's and the document converter's included, not only the kernel's.
 #[test]
 fn a_contained_command_cannot_read_yi_tokens() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("tokens")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
 
@@ -504,9 +504,7 @@ fn leaks(
 /// sits under a writable temp root, so renaming a store's parent is a live way around too.
 #[test]
 fn a_contained_command_reads_no_key_by_any_spelling() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("keys")?;
     let keys = [
         ".netrc",
@@ -554,9 +552,7 @@ fn a_contained_command_reads_no_key_by_any_spelling() -> TestResult {
 /// a walled file inside the writable tree left by a renamed parent or a hard link.
 #[test]
 fn a_walled_path_is_unreadable_however_either_side_spells_it() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("wall")?;
     std::fs::create_dir_all(project.join("a/secrets"))?;
     std::fs::write(project.join("a/secrets/key.txt"), "WALLED-598")?;
@@ -593,9 +589,7 @@ fn a_walled_path_is_unreadable_however_either_side_spells_it() -> TestResult {
 /// #906: `*_API_KEY` and the like reached every contained command's environment.
 #[test]
 fn a_contained_command_inherits_no_secret_variable() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let secrets = [
         "YI_598_API_KEY",
         "YI_598_TOKEN",
@@ -630,14 +624,13 @@ fn a_contained_command_inherits_no_secret_variable() -> TestResult {
 
 #[test]
 fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("read")?;
     let sandbox = Sandbox {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
@@ -660,10 +653,10 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
 /// denial inside a spare, read or write, holds (#1000 review F1, F2), and an aliased spare matches.
 #[test]
 fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, _home) = workspace("spared")?;
+    // `Scratch` canonicalizes, so the other spelling is made: `/var` for `/private/var`.
+    let project = Path::new("/").join(project.strip_prefix("/private")?);
     let store = project.join("store");
     let (state, spill) = (store.join("state"), store.join("spill"));
     for (dir, text) in [(&state, "SPARED"), (&spill, "SPARED"), (&store, "WALLED")] {
@@ -679,6 +672,7 @@ fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestRes
         writable: vec![project.clone(), state.clone()],
         deny_read: vec![store.clone(), state.join("secret")],
         deny_write: vec![state.join("locked")],
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: vec![spelled, spill],
     };
@@ -738,12 +732,9 @@ except socket.gaierror:
 /// #599: every contained spawn gets loopback, so a test suite that binds 127.0.0.1 runs; the
 /// rest of the network stays off, and so do unix sockets (the daemon's, docker's, ssh-agent's),
 /// even one inside a writable root.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_command_has_loopback_and_no_other_network() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("network")?;
     std::fs::write(project.join("probe.py"), NETWORK_PROBE)?;
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -785,12 +776,9 @@ fn a_contained_command_has_loopback_and_no_other_network() -> TestResult {
 /// #599: past loopback a contained run fails at the resolver, since the base policy grants no
 /// DNS lookup; curl says `Could not resolve host`, Python `nodename nor servname`. Either reads
 /// as the sandbox's refusal, not as the network being down.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_resolver_failure_reads_as_the_sandbox() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("resolver")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
     for command in [
@@ -810,18 +798,16 @@ fn a_contained_resolver_failure_reads_as_the_sandbox() -> TestResult {
 }
 
 /// Review of #925 (F3): a JVM opens dual-stack sockets and dials 127.0.0.1 as `::ffff:127.0.0.1`,
-/// which Seatbelt refuses, so Gradle, Maven and sbt lost loopback. Skipped with no JDK here.
-#[cfg(target_os = "macos")]
+/// which Seatbelt refuses, so Gradle, Maven and sbt lost loopback. A JDK is optional, so this
+/// rides the ignored lane, where a missing one fails.
 #[test]
+#[ignore = "tier-2 journey: `just journeys`"]
 fn a_contained_jvm_reaches_loopback() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("jvm")?;
     let (code, java_home) = run("/usr/libexec/java_home", &project, None)?;
     if code != 0 {
-        eprintln!("skipped: no JDK");
-        return Ok(());
+        return Err("no JDK: /usr/libexec/java_home found none".into());
     }
     std::fs::write(
         project.join("Probe.java"),
@@ -838,12 +824,9 @@ fn a_contained_jvm_reaches_loopback() -> TestResult {
 }
 
 /// Plan row F's demo: a contained `cargo test` whose test binds 127.0.0.1 passes.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_cargo_test_binds_loopback() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home) = workspace("cargo")?;
     std::fs::create_dir_all(project.join("src"))?;
     std::fs::write(
@@ -924,24 +907,13 @@ fn a_linked_worktree_sandbox_writes_its_gitdir_and_common_dir() -> TestResult {
 }
 
 /// The incident: `git add` in a lane failed on `.git/worktrees/<lane>/index.lock`.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_git_commit_succeeds_in_a_linked_worktree() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, _project, home) = workspace("commit")?;
     let (_trunk, lane) = linked_worktree(&root)?;
     std::fs::write(lane.join("change.txt"), "from the lane\n")?;
-    let mut sandbox = Sandbox::for_workspace(&lane, &home, None);
-    // The scratch dir sits under tmp, a writable root that would hide the trunk's git dir.
-    let scratch = root.canonicalize()?;
-    sandbox.writable.retain(|writable| {
-        writable
-            .canonicalize()
-            .is_ok_and(|resolved| resolved.starts_with(&scratch))
-            || writable == Path::new("/private/tmp")
-    });
+    let sandbox = lane_profile(&root, &lane, &home)?;
     let command = "git checkout -q -b feature && git add -A && \
         GIT_CONFIG_GLOBAL=/dev/null git -c user.email=yi@example.com -c user.name=yi commit -q -m lane";
     let (code, output) = run(command, &lane, Some(&sandbox))?;
@@ -955,22 +927,12 @@ fn a_contained_git_commit_succeeds_in_a_linked_worktree() -> TestResult {
 
 /// A hook and a config are code git runs on the host, outside any sandbox: making the git dirs
 /// writable must not hand a contained command a way out of the sandbox (D205).
-#[cfg(target_os = "macos")]
 #[test]
 fn a_contained_command_cannot_write_a_hook_or_the_config() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, _project, home) = workspace("hooks")?;
     let (trunk, lane) = linked_worktree(&root)?;
-    let mut sandbox = Sandbox::for_workspace(&lane, &home, None);
-    let scratch = root.canonicalize()?;
-    sandbox.writable.retain(|writable| {
-        writable
-            .canonicalize()
-            .is_ok_and(|resolved| resolved.starts_with(&scratch))
-            || writable == Path::new("/private/tmp")
-    });
+    let sandbox = lane_profile(&root, &lane, &home)?;
     let common = trunk.join(".git");
     for target in [
         common.join("hooks/post-commit"),
@@ -990,6 +952,267 @@ fn a_contained_command_cannot_write_a_hook_or_the_config() -> TestResult {
     std::fs::write(lane.join("change.txt"), "from the lane\n")?;
     let (code, output) = run("git add -A", &lane, Some(&sandbox))?;
     assert_eq!(code, 0, "a contained `git add` still works: {output}");
+    Ok(())
+}
+
+/// The lane profile with tmp's blanket grant dropped: the scratch dir sits under tmp, a writable
+/// root that would hide the trunk's git dir.
+fn lane_profile(root: &Path, lane: &Path, home: &Path) -> Result<Sandbox, Box<dyn Error>> {
+    let mut sandbox = Sandbox::for_workspace(lane, home, None);
+    let scratch = root.canonicalize()?;
+    sandbox.writable.retain(|writable| {
+        writable
+            .canonicalize()
+            .is_ok_and(|resolved| resolved.starts_with(&scratch))
+            || writable == Path::new("/private/tmp")
+    });
+    Ok(sandbox)
+}
+
+/// A script that leaves `marker` when git runs it, the shape of a planted `core.fsmonitor`.
+fn marker_script(root: &Path, marker: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    let script = root.join("fsmonitor.sh");
+    std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display()))?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    Ok(script)
+}
+
+/// Incident: `config.worktree` was writable, and with `extensions.worktreeConfig` on, as this
+/// repository has it, the host's next `git status` ran the `core.fsmonitor` planted there.
+#[test]
+fn a_planted_worktree_config_never_runs_on_the_host() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("worktree-config")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    git(&trunk, &["config", "extensions.worktreeConfig", "true"])?;
+    let marker = root.join("ran-on-host");
+    let script = marker_script(&root, &marker)?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    let admin = git(&lane, &["rev-parse", "--absolute-git-dir"])?;
+    let plant = format!(
+        "printf '[core]\\n\\tfsmonitor = {}\\n' >> {admin}/config.worktree",
+        script.display()
+    );
+    let (code, output) = run(&plant, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "the write must be refused: {output}");
+    std::fs::write(lane.join("touched.txt"), "x\n")?;
+    git(&lane, &["status", "--porcelain"])?;
+    assert!(!marker.exists(), "the planted fsmonitor ran on the host");
+    Ok(())
+}
+
+/// A repointed `.git` makes the host's git read a config the contained process wrote.
+#[test]
+fn a_repointed_dot_git_never_runs_on_the_host() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("pointer")?;
+    let (_trunk, lane) = linked_worktree(&root)?;
+    let marker = root.join("ran-on-host");
+    let script = marker_script(&root, &marker)?;
+    let evil = root.join("evil");
+    std::fs::create_dir_all(&evil)?;
+    git(&evil, &["init", "-q", "-b", "main"])?;
+    git(
+        &evil,
+        &["config", "core.fsmonitor", &script.to_string_lossy()],
+    )?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    let plant = format!("printf 'gitdir: {}/.git\\n' > .git", evil.display());
+    let (code, output) = run(&plant, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "the pointer must stay out of reach: {output}");
+    git(&lane, &["status", "--porcelain"])?;
+    assert!(!marker.exists(), "the planted fsmonitor ran on the host");
+    Ok(())
+}
+
+/// Every other file a git dir holds that the host's git reads as authority: attributes pick merge
+/// drivers, a submodule's config runs like the top one, an alternate adds objects unseen.
+#[test]
+fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("host-read")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let common = trunk.join(".git");
+    std::fs::create_dir_all(common.join("modules/nested/sub"))?;
+    std::fs::write(
+        common.join("modules/nested/sub/HEAD"),
+        "ref: refs/heads/main\n",
+    )?;
+    std::fs::write(common.join("modules/nested/sub/config"), "")?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    for target in [
+        common.join("config.worktree"),
+        common.join("info/attributes"),
+        common.join("info/exclude"),
+        common.join("modules/nested/sub/config"),
+        common.join("objects/info/alternates"),
+    ] {
+        let command = format!("printf x >> {}", target.display());
+        let (code, output) = run(&command, &lane, Some(&sandbox))?;
+        assert_ne!(
+            code,
+            0,
+            "{} must stay out of reach: {output}",
+            target.display()
+        );
+    }
+    let index = common.join("modules/nested/sub/index");
+    let (code, output) = run(
+        &format!("printf x > {}", index.display()),
+        &lane,
+        Some(&sandbox),
+    )?;
+    assert_eq!(code, 0, "work inside a submodule still commits: {output}");
+    Ok(())
+}
+
+/// Incident: the first form of this wall stopped a main checkout reaching a lane and left one lane
+/// able to plant `config.worktree` in another, whose host-run status then ran it.
+#[test]
+fn a_lane_cannot_write_a_sibling_lanes_admin() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("sibling")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let other = root.join("other");
+    git(
+        &trunk,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &other.to_string_lossy(),
+        ],
+    )?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    let admin = git(&other, &["rev-parse", "--absolute-git-dir"])?;
+    for leaf in ["config.worktree", "gitdir", "commondir", "HEAD"] {
+        let command = format!("printf x >> {admin}/{leaf}");
+        let (code, output) = run(&command, &lane, Some(&sandbox))?;
+        assert_ne!(code, 0, "{leaf} must stay out of reach: {output}");
+    }
+    let own = git(&lane, &["rev-parse", "--absolute-git-dir"])?;
+    let (code, output) = run(&format!("printf x > {own}/note"), &lane, Some(&sandbox))?;
+    assert_eq!(code, 0, "its own admin stays writable: {output}");
+    Ok(())
+}
+
+/// The wall sits on the directories that hold admin dirs and modules, never on the names one
+/// build found there: a sibling lane or a submodule created after the profile was still writable.
+#[test]
+fn a_seal_closes_an_admin_dir_or_a_module_the_build_never_saw() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("sealed")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let common = trunk.join(".git").canonicalize()?;
+    let module = common.join("modules/early");
+    std::fs::create_dir_all(module.join("hooks"))?;
+    std::fs::write(module.join("HEAD"), "ref: refs/heads/main\n")?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    let admin = common.join("worktrees/later");
+    std::fs::create_dir_all(admin.join("hooks"))?;
+    std::fs::create_dir_all(module.join("modules/later/hooks"))?;
+    for target in [
+        admin.join("config.worktree"),
+        admin.join("gitdir"),
+        admin.join("HEAD"),
+        module.join("modules/later/config"),
+        module.join("modules/later/hooks/post-checkout"),
+    ] {
+        std::fs::write(&target, "")?;
+        let (code, output) = run(
+            &format!("printf x >> {}", target.display()),
+            &lane,
+            Some(&sandbox),
+        )?;
+        assert_ne!(
+            code,
+            0,
+            "{} must stay out of reach: {output}",
+            target.display()
+        );
+    }
+    // A module the build did open keeps its object store: work inside a submodule still commits.
+    let objects = module.join("objects/x");
+    std::fs::create_dir_all(module.join("objects"))?;
+    let (code, output) = run(
+        &format!("printf x >> {}", objects.display()),
+        &lane,
+        Some(&sandbox),
+    )?;
+    assert_eq!(code, 0, "{} stays writable: {output}", objects.display());
+    Ok(())
+}
+
+/// The write gate's own predicate agrees with the seal the policy states, on the same two
+/// directions: a name under a sealed directory is refused, a root the seal opens is not.
+#[test]
+fn the_write_predicate_seals_what_the_policy_seals() -> TestResult {
+    let (root, _project, home) = workspace("seal-predicate")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let sandbox = lane_profile(&root, &lane, &home)?;
+    assert!(trunk.join(".git").is_dir());
+    let mut sealed = 0;
+    for seal in &sandbox.sealed {
+        sealed += 1;
+        for later in [
+            "later/config",
+            "later/config.worktree",
+            "later/hooks/post-checkout",
+        ] {
+            let path = seal.denied.join(later);
+            assert!(
+                sandbox.denies_write(&path),
+                "{} must be sealed",
+                path.display()
+            );
+        }
+        for open in &seal.open {
+            assert!(
+                !sandbox.denies_write(&open.join("index")),
+                "{} stays writable",
+                open.display()
+            );
+            assert!(
+                sandbox.denies_write(&open.join("config.worktree")),
+                "{} still loses its host-read leaves",
+                open.display()
+            );
+        }
+    }
+    assert_eq!(
+        sealed, 4,
+        "a lane seals worktrees and modules in both git dirs"
+    );
+    Ok(())
+}
+
+/// A checkout that is no linked worktree has no `.git` file to protect, but a planted one in a
+/// non-repository cwd would turn the host's next git on, and `worktrees` holds every lane's admin.
+#[test]
+fn a_contained_command_cannot_plant_a_dot_git_or_reach_another_lanes_admin() -> TestResult {
+    seatbelt()?;
+    let (root, project, home) = workspace("plant")?;
+    let sandbox = lane_profile(&root, &project, &home)?;
+    let (code, output) = run("printf 'gitdir: /x\\n' > .git", &project, Some(&sandbox))?;
+    assert_ne!(code, 0, "a non-repository's .git must be refused: {output}");
+
+    let (trunk, lane) = linked_worktree(&root)?;
+    let sandbox = lane_profile(&root, &trunk, &home)?;
+    let admin = git(&lane, &["rev-parse", "--absolute-git-dir"])?;
+    let command = format!("printf x >> {admin}/gitdir.note");
+    let (code, output) = run(&command, &trunk, Some(&sandbox))?;
+    assert_ne!(
+        code, 0,
+        "a main checkout must not reach a lane's admin: {output}"
+    );
+    let (code, output) = run(
+        "printf 'x\\n' > note.txt && git status -s",
+        &trunk,
+        Some(&sandbox),
+    )?;
+    assert_eq!(code, 0, "ordinary work still runs there: {output}");
     Ok(())
 }
 
@@ -1163,5 +1386,192 @@ fn a_network_refusal_behind_a_zero_exit_is_a_note_and_never_recorded() -> TestRe
             result.details
         );
     }
+    Ok(())
+}
+
+/// What the test binary itself reports; the next test runs it under another sandbox.
+#[test]
+fn availability_reports_to_stdout() {
+    println!("available={}", Sandbox::available());
+}
+
+fn reported_availability(outer: Option<&str>) -> Result<String, Box<dyn Error>> {
+    let exe = std::env::current_exe()?;
+    let args = [
+        "--exact",
+        "sandbox::availability_reports_to_stdout",
+        "--nocapture",
+    ];
+    let mut command = match outer {
+        Some(profile) => {
+            let mut command = yi_tools::command(yi_tools::sandbox::SEATBELT);
+            command.args(["-p", profile]).arg(&exe);
+            command
+        }
+        None => yi_tools::command(&exe),
+    };
+    let out = command.args(args).output()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("available=").map(str::to_owned))
+        .ok_or_else(|| format!("no report: {}", String::from_utf8_lossy(&out.stderr)).into())
+}
+
+/// Incident: a process an outer sandbox contains read as sandbox-capable, so its bash and kernel
+/// died on `sandbox_apply: Operation not permitted`.
+#[test]
+fn a_process_inside_a_sandbox_is_not_sandbox_capable() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let outer = "(version 1)(allow default)(deny file-write* (subpath \"/yi-no-such-root\"))";
+    assert_eq!(reported_availability(None)?, "true");
+    assert_eq!(reported_availability(Some(outer))?, "false");
+    Ok(())
+}
+
+/// A contained install writes the package stores; what the host's next build runs stays out of reach.
+#[test]
+fn a_contained_install_writes_the_caches_and_not_what_cargo_runs() -> TestResult {
+    seatbelt()?;
+    let (root, project, home) = workspace("caches")?;
+    let fake_home = root.join("home");
+    std::fs::create_dir_all(fake_home.join(".cargo/registry"))?;
+    std::fs::create_dir_all(fake_home.join(".cargo/bin"))?;
+    let mut sandbox = Sandbox::for_workspace(&project, &home, None);
+    sandbox.writable = vec![project.clone()];
+    let sandbox = sandbox.with_caches_at(&fake_home, None, None);
+    let write = |target: PathBuf| -> Result<i32, Box<dyn Error>> {
+        let command = format!("printf x >> {}", target.display());
+        Ok(run(&command, &project, Some(&sandbox))?.0)
+    };
+    assert_eq!(write(fake_home.join(".cargo/registry/x"))?, 0);
+    assert_ne!(write(fake_home.join(".cargo/bin/cargo"))?, 0);
+    assert_ne!(write(fake_home.join(".cargo/config.toml"))?, 0);
+    Ok(())
+}
+
+/// Incident shape: `CARGO_HOME=$HOME` is how one setup keeps cargo's dirs at the top of home.
+#[test]
+fn a_store_at_home_or_above_it_adds_no_root() -> TestResult {
+    let (root, project, home) = workspace("caches-home")?;
+    let fake_home = root.join("home");
+    std::fs::create_dir_all(&fake_home)?;
+    let base = Sandbox::for_workspace(&project, &home, None);
+    let widened = |cargo: Option<PathBuf>, uv: Option<PathBuf>| {
+        let with = base.clone().with_caches_at(&fake_home, cargo, uv);
+        (with.writable.into_iter())
+            .filter(|dir| !base.writable.contains(dir))
+            .collect::<Vec<PathBuf>>()
+    };
+    let cargo_at_home = widened(Some(fake_home.clone()), None);
+    assert!(
+        !cargo_at_home.contains(&fake_home.join("registry")),
+        "{cargo_at_home:?}"
+    );
+    assert!(
+        !cargo_at_home.contains(&fake_home.join(".package-cache")),
+        "{cargo_at_home:?}"
+    );
+    let uv_at_home = widened(None, Some(fake_home.clone()));
+    assert!(!uv_at_home.contains(&fake_home), "{uv_at_home:?}");
+    let above = root.to_path_buf();
+    let uv_above = widened(None, Some(above.clone()));
+    assert!(!uv_above.contains(&above), "{uv_above:?}");
+    Ok(())
+}
+
+fn spawn_with(env: Vec<(String, String)>, rows: Vec<String>) -> yi_tools::SpawnFn {
+    Arc::new(move || {
+        let rows = rows.clone();
+        Ok(yi_tools::Spawn {
+            env: env.clone(),
+            after: Box::new(move || rows),
+        })
+    })
+}
+
+/// `ps` reads `argv` for every user on the box, so a proxy token rides only the environment.
+#[test]
+fn what_a_spawn_is_handed_reaches_its_child_and_never_its_argv() -> TestResult {
+    seatbelt()?;
+    let (_root, project, home) = workspace("spawn-env")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let pidfile = project.join("pid");
+    let spawn = spawn_with(
+        vec![("PROBE_SECRET".to_owned(), "t0ken".to_owned())],
+        Vec::new(),
+    );
+    let command = format!(
+        "printf %s \"$PROBE_SECRET:$$\" > {}; sleep 30; true",
+        pidfile.display()
+    );
+    let never: yi_tools::CancelFlag = Arc::new(|| false);
+    let job = yi_tools::jobs::spawn_job(&command, &project, &never, Some(&sandbox), Some(&spawn))?;
+    let written = (0..500)
+        .find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::fs::read_to_string(&pidfile)
+                .ok()
+                .filter(|text| !text.is_empty())
+        })
+        .ok_or("the child never wrote")?;
+    let (secret, pid) = written.split_once(':').ok_or("no pid")?;
+    assert_eq!(secret, "t0ken");
+    let args = yi_tools::keyless_command("ps")
+        .args(["-ww", "-o", "command=", "-p", pid])
+        .output()?;
+    let args = String::from_utf8_lossy(&args.stdout);
+    let _ = yi_tools::jobs::registry().kill(job);
+    assert!(
+        args.contains("sleep 30"),
+        "ps read the wrong process: {args}"
+    );
+    assert!(!args.contains("t0ken"), "{args}");
+    Ok(())
+}
+
+#[test]
+fn a_refused_spawn_never_starts_and_says_why() -> TestResult {
+    seatbelt()?;
+    let (_root, project, home) = workspace("spawn-refused")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let marker = project.join("ran");
+    let refused: yi_tools::SpawnFn = Arc::new(|| {
+        Err(yi_tools::SpawnRefused::Egress {
+            why: "the egress proxy cannot listen".to_owned(),
+        })
+    });
+    let never: yi_tools::CancelFlag = Arc::new(|| false);
+    let command = format!("touch {}", marker.display());
+    let why = yi_tools::jobs::spawn_job(&command, &project, &never, Some(&sandbox), Some(&refused))
+        .err()
+        .ok_or("the spawn started")?;
+    assert!(why.contains("the egress proxy cannot listen"), "{why}");
+    assert!(!marker.exists());
+    Ok(())
+}
+
+/// A row the reducer could cut is a refusal the model never reads.
+#[test]
+fn what_the_host_says_after_a_spawn_reaches_the_model() -> TestResult {
+    seatbelt()?;
+    let (_root, project, home) = workspace("spawn-rows")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let mut context = yi_tools::ToolContext::new(project.clone());
+    context.spawn = Some(spawn_with(
+        Vec::new(),
+        vec!["[egress: refused a.example: test]".to_owned()],
+    ));
+    let timeout = std::time::Duration::from_secs(30);
+    let run =
+        yi_tools::run_or_background("printf ok", &context, None, timeout, Some(&sandbox), None)?;
+    let yi_tools::Run::Finished(capture) = run else {
+        return Err("the command did not finish".into());
+    };
+    assert_eq!(
+        capture.rows,
+        vec!["[egress: refused a.example: test]".to_owned()]
+    );
     Ok(())
 }

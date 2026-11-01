@@ -250,16 +250,7 @@ pub fn refuse_armed(
         &bash(command),
         Some(command),
     );
-    match outcome.containment {
-        _ if !outcome.allowed => Some(format!("Permission denied: {}", outcome.reason)),
-        Containment::Contained {
-            gate_allowed: false,
-            ..
-        } => Some(format!(
-            "`{command}` runs later outside the sandbox, which allows it only contained: run it yourself with bash, or allow it by a permission rule"
-        )),
-        Containment::Contained { .. } | Containment::Uncontained => None,
-    }
+    (!outcome.allowed).then(|| format!("Permission denied: {}", outcome.reason))
 }
 
 type Gates<'a> = (
@@ -504,6 +495,7 @@ impl ToolAdapter {
             .cloned()
             .collect();
         let mut context = ToolContext {
+            spawn: None,
             cwd: self.cwd.clone(),
             cancelled: Arc::clone(&self.cancelled),
             recovery_dir: spills,
@@ -706,6 +698,7 @@ impl ToolAdapter {
                                         sandbox
                                     },
                                 );
+                            context.spawn = Some(reporter.spawn_hook(wall.clone()));
                             contained = context.sandbox.as_ref().map(|_| reporter);
                         } else if wall.container.is_none() {
                             outside = reporter.outside_notice(tool.name(), &args, &outcome);
@@ -766,6 +759,15 @@ impl ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
+                    if let (Some(store), Some(usage)) = (&ledger, &output.result.usage) {
+                        crate::spend::append_main_usage(
+                            store,
+                            format!("{}{name}", crate::spend::TOOL_USAGE_PREFIX),
+                            usage.clone(),
+                            Some(output.result.details.clone()),
+                        )
+                        .ok();
+                    }
                     let failed =
                         yi_types::event::shown_failed(output.is_error, &output.result.details);
                     if let Some(hooks) = hooks.as_ref().filter(|_| failed || !cancel()) {

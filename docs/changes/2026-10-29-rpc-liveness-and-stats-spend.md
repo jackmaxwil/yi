@@ -1,6 +1,6 @@
 ---
 issue: Closes #1542
-raise: crate cli +96, crate tools +5, crate types +8, tests +364, comments +1
+raise: crate cli +96, crate types +8, tests +364
 ---
 `yi stats <id>` billed only the messages it could fold, so a family's child lanes
 and a session's side calls, which book their spend as `usage` records and never

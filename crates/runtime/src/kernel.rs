@@ -41,13 +41,14 @@ impl HostRegistry {
     /// until `exec.release`, its profile built as it spawns so a grant kept since reaches it.
     pub fn register_exec(
         &mut self,
-        cwd: PathBuf,
+        (cwd, spawn): (PathBuf, Option<yi_tools::SpawnFn>),
         sandbox: impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static,
     ) {
         let spawned = Arc::clone(&self.handles);
         self.register("exec.spawn", move |payload| {
             let cwd = cwd.clone();
             let sandbox = sandbox();
+            let spawn = spawn.clone();
             let spawned = Arc::clone(&spawned);
             Box::pin(async move {
                 let command = payload
@@ -57,7 +58,13 @@ impl HostRegistry {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
                     })?;
                 let cancelled: CancelFlag = Arc::new(|| false);
-                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, sandbox.as_ref())?;
+                let id = yi_tools::jobs::spawn_job(
+                    command,
+                    &cwd,
+                    &cancelled,
+                    sandbox.as_ref(),
+                    spawn.as_ref(),
+                )?;
                 lock(&spawned).push(id);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));
@@ -237,6 +244,10 @@ pub struct KernelService {
     options: KernelServiceOptions,
     /// Named once, so the prefix that re-allows it stays equal across boots (#599).
     connection_dir: PathBuf,
+    /// Who a contained kernel's network answers to, and its one lease for the service's life, so
+    /// `kernel_wrap` still compares equal.
+    holder: Option<(Arc<crate::permission::PermissionBroker>, crate::wall::Wall)>,
+    lease: std::sync::OnceLock<crate::egress::Lease>,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
     last_error: Mutex<Option<String>>,
     on_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -254,12 +265,20 @@ pub struct KernelService {
 }
 
 impl KernelService {
+    #[must_use]
+    pub(crate) fn with_holder(mut self, wiring: &crate::wiring::RuntimeWiring) -> Self {
+        self.holder = (wiring.broker.clone()).map(|broker| (broker, wiring.wall.clone()));
+        self
+    }
+
     pub fn new(options: KernelServiceOptions) -> Self {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = yi_kernel::connection::connection_root(&options.home);
         Self {
             connection_dir: root.join(format!("{}-{n}", std::process::id())),
+            holder: None,
+            lease: std::sync::OnceLock::new(),
             options,
             manager: tokio::sync::Mutex::new(None),
             last_error: Mutex::new(None),
@@ -349,6 +368,23 @@ impl KernelService {
             .extend(self.own_paths.iter().flat_map(|own| own(state)));
         let family = self.options.family_dir.as_deref().map(make_board);
         Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix(&self.connection_dir))
+    }
+
+    /// `holder`'s proxy credentials on a contained kernel's boot: past a failure it refuses to
+    /// boot, rather than lose its network with nothing saying why.
+    fn egress_env(&self, contained: bool) -> Result<Vec<(String, String)>, String> {
+        let Some((broker, wall)) = self.holder.as_ref().filter(|_| contained) else {
+            return Ok(Vec::new());
+        };
+        if self.lease.get().is_none() {
+            let lease = (broker.egress_lease(wall.clone())).map_err(|error| error.to_string())?;
+            let _a_racing_boot_keeps_its_own = self.lease.set(lease);
+        }
+        Ok(self
+            .lease
+            .get()
+            .map(crate::egress::Lease::env)
+            .unwrap_or_default())
     }
 
     fn kernel_env(&self, state: Option<&std::path::Path>) -> Vec<(String, String)> {
@@ -455,7 +491,9 @@ impl KernelService {
         let manager = Arc::new(KernelManager::new(KernelOptions {
             python: None,
             cwd: Some(self.options.cwd.clone()),
-            env: self.kernel_env(state.as_deref()),
+            env: (self.kernel_env(state.as_deref()).into_iter())
+                .chain(self.egress_env(wrap.is_some())?)
+                .collect(),
             username: "yi".to_owned(),
             home: self.options.home.clone(),
             runtime_source_dir: yi_kernel::bootstrap::default_runtime_source_dir(),
@@ -631,6 +669,10 @@ impl KernelService {
         self.user_cells.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 
+    pub fn contained(&self) -> bool {
+        self.options.sandbox.is_some() && yi_tools::Sandbox::available()
+    }
+
     async fn restart_note(&self, manager: &KernelManager) -> String {
         let before = self.names.lock().ok().and_then(|names| names.clone());
         let now = manager.list_namespace_names().await.unwrap_or_default();
@@ -704,7 +746,7 @@ impl KernelService {
                         *restarted = None;
                     }
                     if result.status != yi_types::kernel::ExecuteStatus::Aborted
-                        && let Some(names) = manager.list_namespace_names().await
+                        && let Some(names) = manager.list_namespace_names_once().await
                         && let Ok(mut slot) = self.names.lock()
                     {
                         *slot = Some(names);
@@ -719,6 +761,12 @@ impl KernelService {
                     }
                     let (sandbox, cwd) = (self.options.sandbox.as_ref(), &self.options.cwd);
                     notes.extend(yi_tools::kernel_cell_note(sandbox, cwd, code, &result));
+                    notes.extend(
+                        self.lease
+                            .get()
+                            .map(crate::egress::Lease::take_rows)
+                            .unwrap_or_default(),
+                    );
                     return Ok(KernelCellOutcome {
                         result,
                         kernel_restarted,
@@ -984,7 +1032,7 @@ mod tests {
 
     fn exec_registry() -> HostRegistry {
         let mut registry = HostRegistry::default();
-        registry.register_exec(std::env::temp_dir(), || None);
+        registry.register_exec((std::env::temp_dir(), None), || None);
         registry
     }
 

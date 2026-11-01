@@ -74,7 +74,7 @@ impl App {
     fn tool_state(&self, name: &str) -> OrbState {
         match name {
             "read" | "get_context" => OrbState::Reading,
-            "grep" => OrbState::Searching,
+            "grep" | "web_search" => OrbState::Searching,
             "edit" | "write" => OrbState::Editing,
             "bash" => OrbState::Executing,
             "ipython" => OrbState::Computing,

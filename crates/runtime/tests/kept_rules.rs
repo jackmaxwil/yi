@@ -3,6 +3,7 @@
 //! `--continue` and re-checked as it is; a child starts with a copy of its parent's rules and
 //! keeps its own, so nothing it keeps reaches the parent or the parent's ledger.
 
+use crate::kernel_sandbox::seatbelt;
 use crate::sandbox_seam::{Probe, always_once, bash_call, faux_model, results, workspace};
 use crate::scratch::Scratch;
 use crate::support;
@@ -144,9 +145,7 @@ fn real(path: &Path) -> PathBuf {
 /// again for a directory the user had already said "always" to.
 #[tokio::test]
 async fn a_kept_grant_still_applies_after_continue() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, sandbox, probe) = workspace("yi-kept-continue")?;
     let dir = Probe::new(&probe, "continue")?;
     let (first, second) = (dir.0.join("first"), dir.0.join("second"));
@@ -185,9 +184,7 @@ async fn a_kept_grant_still_applies_after_continue() -> TestResult {
 /// resumed session is the same session; it stays the exact bytes and the directory it named.
 #[tokio::test]
 async fn a_kept_pass_survives_continue_byte_exact_and_bound_to_its_directory() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, sandbox, _probe) = workspace("yi-kept-pass")?;
     let other = root.join("other");
     std::fs::create_dir_all(&other)?;
@@ -250,9 +247,7 @@ async fn a_kept_pass_survives_continue_byte_exact_and_bound_to_its_directory() -
 /// that is protected now, directly or through a link, is dropped, whatever was kept then.
 #[tokio::test]
 async fn replay_drops_a_grant_on_a_path_protected_since() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-kept-replay")?;
     let (kept, walled) = (Probe::new(&probe, "kept")?, Probe::new(&probe, "walled")?);
     let home = std::env::var_os("HOME")
@@ -295,9 +290,7 @@ async fn replay_drops_a_grant_on_a_path_protected_since() -> TestResult {
 /// the child kept widened the parent's next contained run.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_childs_kept_grant_reaches_neither_its_parent_nor_the_parents_ledger() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, sandbox, probe) = workspace("yi-kept-child")?;
     let dir = Probe::new(&probe, "child")?;
     let made = dir.0.join("made");
@@ -327,9 +320,7 @@ async fn a_childs_kept_grant_reaches_neither_its_parent_nor_the_parents_ledger()
 /// where no wall holds, so a juror walled off the tree must not inherit it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_walled_child_does_not_inherit_the_parents_pass() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, sandbox, _probe) = workspace("yi-kept-juror")?;
     // The wall is a subtree, not the cwd: a refusal text is read for paths under the cwd.
     let jury = project.join("jury");
@@ -583,9 +574,7 @@ async fn a_fork_from_before_a_rule_keeps_none_of_it() -> TestResult {
 #[tokio::test]
 async fn the_session_ledger_is_out_of_reach_of_a_contained_write_and_the_write_tool() -> TestResult
 {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, _project, _sandbox, probe) = workspace("yi-kept-ledger")?;
     let home = Probe::new(&probe, "home")?;
     unsafe { std::env::set_var("HOME", &home.0) };
@@ -630,9 +619,7 @@ async fn the_session_ledger_is_out_of_reach_of_a_contained_write_and_the_write_t
 /// Review of #938: a parent's grant reaching its child was untested; a copy of nothing passed.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_parents_kept_grant_applies_in_its_child() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, sandbox, probe) = workspace("yi-kept-down")?;
     let dir = Probe::new(&probe, "down")?;
     let made = dir.0.join("made");
@@ -683,9 +670,7 @@ fn a_child_elsewhere_does_not_inherit_the_pass() -> TestResult {
 /// sibling, one path over, still does not.
 #[tokio::test]
 async fn a_granted_dir_is_writable_and_its_sibling_is_not() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-grant-write")?;
     let (granted, sibling) = (
         Probe::new(&probe, "granted")?,
@@ -720,6 +705,70 @@ async fn a_granted_dir_is_writable_and_its_sibling_is_not() -> TestResult {
     assert!(
         refused.contains("protected"),
         "HOME is not grantable: {refused}"
+    );
+    Ok(())
+}
+
+/// `yi ask --allow-write .` inside a checkout exited 2 with "is protected": the profile's own git
+/// denials made the whole tree around them look guarded, though the deny outranks any grant.
+#[test]
+fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let root = Scratch::new("yi-grant-root")?;
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the checkout under test is built by the real git"
+    )]
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .status()?;
+    assert!(init.success(), "git init");
+    let sandbox = Sandbox::for_workspace(&repo, &home, None);
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let gate = broker(&session, &repo, sandbox, refuse);
+    gate.grant_write(&repo)?;
+    // A directory the profile does not hold, around the checkout's denials: their denies outrank it.
+    gate.grant_write(repo.parent().ok_or("no parent")?)?;
+    // Above `$HOME`, whose files no deny covers, a grant would open every one of them.
+    for above in [
+        Path::new("/").to_path_buf(),
+        PathBuf::from(&home).join(".."),
+    ] {
+        let refused = gate.grant_write(&above).err().unwrap_or_default();
+        assert!(
+            refused.contains("protected"),
+            "{}: {refused}",
+            above.display()
+        );
+    }
+    // With no profile there is nothing to widen, so the flag is taken wherever it points.
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let bare = PermissionBroker::new(
+        PermissionMode::Auto,
+        repo.clone(),
+        Vec::new(),
+        Some(refuse),
+        session.events_sender(),
+    );
+    bare.grant_write(Path::new("/"))?;
+    // Nothing is contained without a profile, so a grant widens nothing and `$HOME` is taken too:
+    // the early return in `grant_write` runs before `protected_from_grant`, `~/.yi` included.
+    let denied = gate
+        .grant_write(&repo.join(".git/hooks"))
+        .err()
+        .unwrap_or_default();
+    assert!(
+        denied.contains("protected"),
+        "a git denial still refuses a grant at it: {denied}"
     );
     Ok(())
 }

@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::path::Component::ParentDir;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,18 +16,22 @@ pub(crate) fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// The repository's top; a worktree never borrows the main checkout's. `..` is collapsed
-/// first, so `/repo/../scratch` does not walk up through `/repo` and find its `.git`.
+/// The repository's top; a worktree never borrows the main checkout's.
+///
+/// Incident: ancestors are lexical, so a cwd holding `..` (a TMPDIR of
+/// `/repo/../scratch`) climbed to `/repo/..` and then `/repo`, attaching a sibling
+/// checkout's AGENTS.md as trusted instructions.
 pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    let cwd = match cwd.is_absolute() {
-        true => yi_permission::lexical_normalize(cwd),
-        false => cwd.to_path_buf(),
+    let cwd = std::path::absolute(cwd).ok()?;
+    let cwd = if cwd.components().any(|part| part == ParentDir) {
+        std::fs::canonicalize(&cwd).unwrap_or_else(|_| yi_permission::lexical_normalize(&cwd))
+    } else {
+        cwd
     };
     (cwd.ancestors())
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }
-
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[expect(
         clippy::disallowed_methods,
@@ -62,6 +67,8 @@ pub struct CommandCapture {
     pub spill: Option<String>,
     /// Bytes kept over bytes received, summed over both streams, when a stream was cut.
     pub cut: Option<(usize, usize)>,
+    /// What the host says about this run past its output, printed whole: an egress refusal.
+    pub rows: Vec<String>,
 }
 
 impl CommandCapture {
@@ -92,7 +99,9 @@ impl CommandCapture {
     pub(crate) fn shown(&self, reduced: &crate::Reduced) -> Vec<String> {
         let body = (!reduced.text.is_empty()).then(|| reduced.text.clone());
         let row = self.cut_row().filter(|_| reduced.recovery.is_none());
-        body.into_iter().chain(row).collect()
+        (body.into_iter().chain(row))
+            .chain(self.rows.iter().cloned())
+            .collect()
     }
 }
 
@@ -430,6 +439,7 @@ pub(crate) fn run_child_captured_live(
         kill_error,
         spill: spill.and_then(|mut spill| spill.keep()),
         cut,
+        rows: Vec::new(),
     })
 }
 
@@ -456,13 +466,54 @@ mod tests {
 
     #[test]
     fn an_uncut_stream_is_decoded_whole() {
-        // Twelve two-byte characters: the 17-byte head of a 35-byte cap ends inside the ninth.
         let text = "é".repeat(12);
         let spill = Mutex::new(Spill::new(None));
         assert_eq!(
             drain_capped(text.as_bytes(), 35, None, (&spill, Stream::Out)),
             (text, None)
         );
+    }
+
+    #[test]
+    fn a_dotdot_cwd_never_climbs_to_a_sibling_repo() -> Fallible {
+        let base = std::env::temp_dir().join(format!("yi-git-root-{}", std::process::id()));
+        let (repo, scratch) = (base.join("repo"), base.join("scratch"));
+        std::fs::create_dir_all(repo.join(".git"))?;
+        std::fs::create_dir_all(repo.join("src"))?;
+        std::fs::create_dir_all(&scratch)?;
+        assert_eq!(
+            git_root(&repo.join("..").join("scratch")),
+            None,
+            "a dotted path is not an ancestor of the repo it passes through"
+        );
+        assert_eq!(
+            git_root(&repo.join("..").join("scratch").join("missing")),
+            None,
+            "an unresolvable dotted path does not fall back to the lexical walk"
+        );
+        assert_eq!(git_root(&scratch), None);
+        assert_eq!(
+            git_root(&repo.join("src")),
+            Some(yi_permission::lexical_normalize(&repo))
+        );
+        std::fs::remove_dir_all(&base)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_dotdot_past_a_symlink_resolves_on_disk() -> Fallible {
+        let base = std::env::temp_dir().join(format!("yi-git-root-link-{}", std::process::id()));
+        let (deep, wrong) = (base.join("x/y"), base.join("repo"));
+        std::fs::create_dir_all(deep.join("..").join("repo/.git"))?;
+        std::fs::create_dir_all(wrong.join(".git"))?;
+        std::os::unix::fs::symlink(&deep, base.join("link"))?;
+        assert_eq!(
+            git_root(&base.join("link").join("..").join("repo")),
+            Some(std::fs::canonicalize(base.join("x/repo"))?),
+            "`..` after a symlink lands where the kernel lands, not where the text says"
+        );
+        std::fs::remove_dir_all(&base)?;
+        Ok(())
     }
 
     #[test]
@@ -473,7 +524,6 @@ mod tests {
             let capture = run_captured(command("true"), None, &never, OUTPUT_CAP)?;
             assert_eq!(capture.exit_code, Some(0));
         }
-        // The watchdog's 50 ms sleep used to floor each of these at 50 ms.
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_millis(200),
@@ -502,8 +552,6 @@ mod tests {
 
     #[test]
     fn a_process_group_dies_with_no_kill_binary_on_path() -> Fallible {
-        // The group kill runs in this process, so the test reruns itself under a PATH with no
-        // `kill` on it, as in the benchmark images; the rerun makes the assertions.
         if std::env::var_os("PATH").is_none_or(|path| path != "/nonexistent") {
             let rerun = command(std::env::current_exe()?)
                 .args([
@@ -512,7 +560,6 @@ mod tests {
                 ])
                 .env("PATH", "/nonexistent")
                 .output()?;
-            // libtest exits 0 on a filter that matches nothing, so the rerun must say it ran one.
             let stdout = String::from_utf8_lossy(&rerun.stdout);
             assert!(
                 rerun.status.success() && stdout.contains("1 passed"),
@@ -554,6 +601,48 @@ mod tests {
             elapsed < Duration::from_secs(6),
             "the re-grouped grandchild outlived the kill and held stdout for {elapsed:?}"
         );
+        Ok(())
+    }
+
+    /// Invariant: the root comes back in the spelling the caller typed, so a walker comparing it
+    /// against that path's own ancestors still finds it.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_cwd_keeps_the_root_in_the_spelling_the_caller_typed() -> Fallible {
+        let dir = crate::scratch::Scratch::new("yi-git-root")?;
+        std::fs::create_dir_all(dir.join("real").join("src"))?;
+        std::fs::create_dir_all(dir.join("real").join(".git"))?;
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link"))?;
+        let link = dir.join("link");
+        let root = super::git_root(&link.join("src"));
+        assert_eq!(root.as_deref(), Some(link.as_path()));
+        let above: Vec<&std::path::Path> = link.ancestors().collect();
+        assert_eq!(
+            above.iter().position(|dir| root.as_deref() == Some(*dir)),
+            Some(0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_parent_step_never_borrows_a_neighbours_repository() -> Fallible {
+        let base = std::env::temp_dir()
+            .canonicalize()?
+            .join(format!("yi-git-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (repo, other) = (base.join("repo"), base.join("other"));
+        std::fs::create_dir_all(repo.join("nested"))?;
+        std::fs::create_dir_all(&other)?;
+        std::fs::write(repo.join(".git"), "gitdir: elsewhere")?;
+        assert_eq!(
+            git_root(&other.join("..").join("repo").join("nested")).as_deref(),
+            Some(repo.as_path())
+        );
+        assert_eq!(
+            git_root(&repo.join("nested").join("..").join("..").join("other")),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&base);
         Ok(())
     }
 }

@@ -20,10 +20,10 @@ pub use review::{
 };
 pub use rules::{
     ConfigRule, ConfigRuleAction, Grant, PathGlob, RuleStateError, SessionRules,
-    canonical_command_identity, canonical_tool_identity, grants, is_exact_command, write_grant,
-    write_grant_dir,
+    canonical_command_identity, canonical_tool_identity, egress_grant, grants, is_exact_command,
+    write_grant, write_grant_dir,
 };
 pub use safety::{
     Class, Parsed, Verdict, classify, command_segments, host_need, parse, refused_scopes, verdict,
-    write_targets,
+    verdict_of, without_redirects, write_targets,
 };

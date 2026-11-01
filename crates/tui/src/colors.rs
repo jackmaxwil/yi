@@ -51,6 +51,8 @@ pub struct Theme {
     /// The ground lifted toward white. Yi cannot probe the terminal background,
     /// so the tint is offered only where the theme already assumes its ground.
     pub user_bg: Option<Color>,
+    /// Set by a surface that can press a run chip, so only it draws one.
+    pub run: bool,
 }
 
 impl Theme {
@@ -80,6 +82,7 @@ impl Theme {
             purple: pick(Color::Magenta, 219),
             blue5: pick(Color::LightBlue, 123),
             user_bg: None,
+            run: false,
         };
         if tier != ColorTier::TrueColor || !dark {
             return base;

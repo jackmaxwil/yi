@@ -746,12 +746,12 @@ impl SubagentHost {
                     "child \"{target}\" result held back; its check is refused: {refused}"
                 ));
             }
-            let hooks = self.claude_hooks();
+            let checker = self.checker();
             crate::goal::run_check(
                 &check,
                 &cwd,
                 crate::goal::DEFAULT_CHECK_TIMEOUT_MS,
-                hooks.as_deref(),
+                &checker,
             )
             .map_err(|evidence| {
                 format!("child \"{target}\" result held back; its check is red: {evidence}")
@@ -797,13 +797,8 @@ impl SubagentHost {
                     .entry(id)
                     .or_insert_with(|| {
                         let timeout = crate::goal::DISCOVERY_CHECK_TIMEOUT_MS;
-                        crate::goal::run_check(
-                            &check,
-                            &self.options.cwd,
-                            timeout,
-                            self.claude_hooks().as_deref(),
-                        )
-                        .err()
+                        crate::goal::run_check(&check, &self.options.cwd, timeout, &self.checker())
+                            .err()
                     })
                     .clone()
                     .map(|evidence| (id, evidence))
@@ -895,7 +890,9 @@ impl SubagentHost {
                 .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
             (key, record)
         };
-        if record.exit.is_none() {
+        let journal = !record.rows.end_journaled;
+        let fresh = record.exit.is_none();
+        if fresh {
             record.session.stop();
             // A lane refusal stays the cause of a plain removal; a repossession names itself.
             let cause = match exit {
@@ -915,6 +912,12 @@ impl SubagentHost {
             return Err(reason);
         }
         drop(record.lane_permit.take());
+        if journal {
+            record.finish();
+            let last = record.exit.unwrap_or(exit);
+            let line = record.ended(&key, last);
+            self.trail_ended(record.trail.as_ref(), line);
+        }
         self.return_lease(&record);
         let update = record.update(&key);
         let _ = self.options.events.send(AgentEvent::ChildUpdate { update });
