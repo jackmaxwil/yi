@@ -121,6 +121,7 @@ mod todo_e2e;
 mod todo_mirror;
 mod undo_to;
 mod wall_e2e;
+mod warm_checks;
 mod web_search;
 mod worker_prompt;
 

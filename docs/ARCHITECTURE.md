@@ -159,6 +159,27 @@ hardlinked `.rlib` shares an inode with the parent's, so a contained child can w
 which the parent's next uncontained build uses. A process that left its job survives a discard, and
 the row says so.
 
+## Trust boundaries of warm directories
+
+A kernel check runs in one of `node.slots` directories per repository, whose cargo output outlives a
+check, so one family's borrowers share it in turn. A warm directory is one trust domain per family.
+The scrub removes what an honest check leaves. It does not defend against a hostile borrower. Tests
+are in `crates/runtime/tests/warm_checks.rs`.
+
+| boundary | what crosses | assume | instance | control | test |
+|---|---|---|---|---|---|
+| borrower → next borrower | files under the directory | honest, and sometimes wrong | I: ignored output read by the next check | `clean -ffdx` but `target`, `.venv`, `node_modules`, before each check and at release | `an_ignored_report_from_one_borrower_is_gone_for_the_next` |
+| | | | T: a stale binary passes a test with no build | under `target/<profile>` only `deps`, `build`, `.fingerprint`, `incremental` stay | `a_stale_binary_is_gone_and_cargos_bookkeeping_stays`, `a_warm_verdict_agrees_with_a_clean_worktree_across_a_rotation` |
+| | | | **T: a tampered `.rlib` planted for the next borrower** | **residual, below** | |
+| check → the pool | a slot left dirty | a check writes what it likes | D: a dirty slot reads as an orphan and the pool never frees | reset and scrub at release | `a_check_that_writes_and_edits_still_frees_its_directory` |
+| waiting → the model | a verdict | a bound may cut it | R: a cut check read as red | `Abstain` is no verdict; `waited_s` is reported | `past_its_budget_a_check_is_no_verdict_on_the_work`, `past_its_queue_a_check_names_the_pool_that_held_it` |
+| | | | D: many unread checks | `check.tickets` 256, a tree's go with it | `the_ticket_table_holds_at_its_limit_and_refuses_one_past` |
+
+Spoofing: the host rewrites the output's path and keys a run by tree id, so a check cannot speak for
+another tree. Elevation: a check runs contained outside yolo, through the same checker a lane's did.
+Residual, stated: a warm green is not proof against a hostile sibling, which can plant a `deps/*.rlib`
+the next borrower links; the forge gate remains the landing proof. The poison stays contained.
+
 ## Trust boundaries of the plan journal (D193)
 
 The plan store (§13) takes inputs it does not produce: a child's kernel calling `plan.op`, a
