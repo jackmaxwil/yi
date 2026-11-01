@@ -665,6 +665,33 @@ fn a_clean_quit_keeps_uncommitted_work_from_the_next_claim() -> TestResult {
     Ok(())
 }
 
+/// Host git stays out of a submodule, so `status` cannot see work inside one. Dies with a populated
+/// gitlink read as clean: the lane went back to the pool, and the next claim wiped the only copy.
+#[test]
+fn work_inside_a_submodule_keeps_its_lane() -> TestResult {
+    let rig = Rig::new("quit-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let head = git(lane.path(), &["rev-parse", "HEAD"])?;
+    let link = format!("160000,{},sub", head.trim());
+    git(
+        lane.path(),
+        &["update-index", "--add", "--cacheinfo", &link],
+    )?;
+    git(lane.path(), &["commit", "-q", "-m", "a submodule"])?;
+    let work = lane.path().join("sub/edited.txt");
+    std::fs::create_dir_all(lane.path().join("sub"))?;
+    std::fs::write(&work, "only copy\n")?;
+    assert_eq!(lane.release()?.to_string(), "1 uncommitted path");
+    let refused = pool.claim("s-two", ClaimBase::Main);
+    assert!(
+        matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
+        "{refused:?}"
+    );
+    assert!(work.is_file(), "the work survived the claim");
+    Ok(())
+}
+
 #[test]
 fn a_dropped_lane_keeps_its_dirty_tree() -> TestResult {
     let rig = Rig::new("drop-dirty")?;
