@@ -842,8 +842,7 @@ def base_clears(clone, base_ref, tests):
         return False
 
 
-class BaseHasFix(RuntimeError):
-    """A test red on the head passes once the base is merged in, so the head only lacks what the base landed."""
+
 
 
 class Flaky(RuntimeError):
@@ -865,18 +864,21 @@ def gate_prompt(pr, lanes, refused):
 
 def gate_in(clone, pr, lanes, answer, tried=0):
     """Make the red lanes pass in the clone, the deterministic repairs first; a model only for what
-    they leave. Returns (summary, model, touched)."""
+    they leave. Returns (summary, model, touched, merged), `merged` when the base's own merge is what
+    clears them: that merge is made here, on the clone this gate already built."""
     reprice(clone, f"origin/{pr['base']['ref']}")
     measured(clone)
     refused, shared, own = lane_failures(clone, lanes, pr["base"]["ref"])
     if base_clears(clone, pr["base"]["ref"], own):
-        raise BaseHasFix(f"{', '.join(sorted(t for _, t in own))} pass(es) with origin/{pr['base']['ref']} merged in")
+        # Incident: 19 PRs red only on what main had landed, and a model would be paid to write it again.
+        summary, model, touched = resolve_in(clone, pr, pr["base"]["ref"], answer, tried)
+        return summary, model, touched, True
     staged = sh(clone, "git", "diff", "--cached", "--name-only").stdout.split()
     if not refused:
         moved = sh(clone, "git", "diff", "--name-only", "HEAD", "--", "scripts/guardrails/baselines").stdout.split()
         if staged or moved:
             return ("The change files' raises, growth memo and baselines were repaired to what the gates measure.", None,
-                    sorted(set(staged) | set(moved)))
+                    sorted(set(staged) | set(moved)), False)
         if shared:
             raise BaseRed(pr["base"]["ref"], shared)
         raise Flaky(f"the {', '.join(lanes)} lane(s) pass in the fixer's clone at this head")
@@ -898,7 +900,7 @@ def gate_in(clone, pr, lanes, answer, tried=0):
         summary = ((said.get("summary") or "").strip() or "the model gave no summary") + note
         refused, _, _ = lane_failures(clone, lanes, pr["base"]["ref"])
         if not refused:
-            return summary, model, touched
+            return summary, model, touched, False
     raise Missed("the lanes still fail after the fix and one more turn:\n" + refused)
 
 
@@ -976,8 +978,12 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
         elif kind == "gate":
             if prior_fixes(root, sha, stopped, GATE_SIGNED) >= GATE_STREAK:
                 raise Handoff(f"{GATE_STREAK} fixes in a row did not clear the gate")
-            summary, model, touched = gate_in(clone, pr, lanes, answer, tried)
-            subject, signed = f"Fix what the {' and '.join(lanes)} gate refused", f"{GATE_SIGNED} {sha[:12]} of #{pr['number']}.\n"
+            summary, model, touched, merged = gate_in(clone, pr, lanes, answer, tried)
+            if merged:
+                kind, rnd = "conflict", None
+                subject, signed = f"Merge {base_ref} into this branch and resolve its conflicts", ""
+            else:
+                subject, signed = f"Fix what the {' and '.join(lanes)} gate refused", f"{GATE_SIGNED} {sha[:12]} of #{pr['number']}.\n"
         else:
             before = prior_fixes(root, sha, stopped)
             if before >= STOP_AT:
@@ -1256,11 +1262,7 @@ def attempt(repo, pr, ids, asked=False):
     set_label(repo, number, ids, "autofix:working", True)
     fields, verdict, reason, meter = {}, "failed", "", bot_meter.Meter()
     try:
-        try:
-            fields = fix(pr, kind=kind, rnd=rnd, tried=misses(notes), meter=meter, stopped=restart_from(notes), lanes=lanes)
-        except BaseHasFix:
-            # `kind` stays the gate's: a hand-off here is held under the kind the next pass reads.
-            fields = fix(pr, kind="conflict", tried=misses(notes), meter=meter)
+        fields = fix(pr, kind=kind, rnd=rnd, tried=misses(notes), meter=meter, stopped=restart_from(notes), lanes=lanes)
         verdict = "pushed"
     except Flaky as err:
         # One rerun per head: a lane that fails again on the same head is a person's to read.
@@ -1591,18 +1593,23 @@ def gate_selfcheck():
         (tmp / "owned.sh").write_text("if [ -f fixed.txt ] && [ ! -f bug.txt ]; then exit 0; fi\n"
                                       "echo '        FAIL [   0.1s] (1/1) yi t::moved'; echo \"    thread 't::moved' panicked at m.rs:1:1:\"; exit 1\n")
         git("add", "-A"); git("commit", "-qm", "owned"); git("push", "-q", "origin", "main")
-        git("checkout", "-q", "-b", "healed"); git("push", "-q", "origin", "healed")
+        git("checkout", "-q", "-b", "healed"); (tmp / "head.txt").write_text("h\n"); git("add", "-A")
+        git("commit", "-qm", "healed"); git("push", "-q", "origin", "healed")
         git("checkout", "-q", "-b", "harmed"); (tmp / "bug.txt").write_text("x\n"); git("add", "-A"); git("commit", "-qm", "harm")
         git("push", "-q", "origin", "harmed")
         git("checkout", "-q", "main"); (tmp / "fixed.txt").write_text("x\n"); git("add", "-A"); git("commit", "-qm", "fix")
         git("push", "-q", "origin", "main"); git("fetch", "-q", "origin")
         asked.clear()
         healed = run("healed", "ok\n")
-        if not isinstance(healed, BaseHasFix) or asked:
+        parents = sh(tmp, "git", "rev-list", "--parents", "-1", "origin/healed").stdout.split()
+        subject = sh(tmp, "git", "log", "-1", "--format=%s", "origin/healed").stdout.strip()
+        if asked or not (isinstance(healed, dict) and healed["kind"] == "conflict" and healed["model"] == "none"):
             errs.append(f"a test the base's merge clears read {healed!r} after {len(asked)} model turn(s)")
+        elif len(parents) != 3 or subject != "Merge main into this branch and resolve its conflicts":
+            errs.append(f"the base's merge landed {subject!r} with {len(parents) - 1} parent(s)")
         harmed = run("harmed", "ok\n")
-        if isinstance(harmed, BaseHasFix) or not asked:
-            errs.append(f"a test the base's merge does not clear read {harmed!r} with no model turn")
+        if not asked or not isinstance(harmed, Missed):
+            errs.append(f"a test the base's merge does not clear read {harmed!r} with {len(asked)} model turn(s)")
         # The trial's own answers: a flake, a head holding the base, a conflict, a run that cannot start.
         real_filtered, answers = run_filtered, []
 
@@ -1619,7 +1626,7 @@ def gate_selfcheck():
             script = [0, 0]
             if base_clears(tmp, "main", pair) or len(answers) != 1:
                 errs.append("a test that passes before the merge was credited to the merge")
-            git("checkout", "-q", "-f", "-b", "clashing", "origin/healed"); (tmp / "fixed.txt").write_text("mine\n")
+            git("checkout", "-q", "-f", "-b", "clashing", "origin/harmed"); (tmp / "fixed.txt").write_text("mine\n")
             git("add", "-A"); git("commit", "-qm", "clash")
             answers.clear()
             script = [1, 0]
@@ -1782,33 +1789,28 @@ def waits_selfcheck():
             errs.append("a person's issue of the same title was taken for the bot's")
         if not re.search(r"labels=area:forge-ci.*created_by=", seen_paths[-1]):
             errs.append(f"the red issue is looked up by {seen_paths[-1]}")
+        # A head lacking what the base landed comes back from the gate's own clone as its merge: one
+        # fix call, no failure, and the comment names the merge it made.
         calls.clear(); notes[:] = []
-        forge["issues"].clear()
-        # A head lacking what the base landed takes the base, with no model and no failure.
-        calls.clear(); notes[:] = []
+        merged = {"kind": "conflict", "from": "a", "to": "b", "base": "main", "model": "none", "tier": "none",
+                  "round": "", "files": 0, "summary": "git merged it without a conflict", "touched": [], "declined": []}
 
         def lacks_base(pr, **kw):
             calls.append((kw["kind"], kw.get("stopped")))
-            if kw["kind"] == "gate":
-                raise BaseHasFix("t::moved passes with origin/main merged in")
-            return {"kind": "conflict", "from": "a", "to": "b", "base": "main", "model": "none", "tier": "none", "round": "",
-                    "files": 0, "summary": "git merged it without a conflict", "touched": [], "declined": []}
+            return merged
         module.fix = lacks_base
         said = attempt("o/r", pr, {})
-        if said != "pushed" or [k for k, _ in calls] != ["gate", "conflict"] or "merged `origin/main`" not in posted[-1]:
+        if said != "pushed" or [k for k, _ in calls] != ["gate"] or "merged `origin/main`" not in posted[-1]:
             errs.append(f"a head lacking the base's fix read {said} through {calls}")
-
-        def lacks_base_refused(pr, **kw):
-            calls.append((kw["kind"], kw.get("stopped")))
-            raise BaseHasFix("t") if kw["kind"] == "gate" else Handoff("FAIL commit_style")
-        module.fix = lacks_base_refused
+        # A merge that hands off is held under the gate kind the next pass reads.
+        module.fix = raising(Handoff("FAIL commit_style"))
         calls.clear()
         attempt("o/r", pr, {})
         row = re.search(r"yi-autofix-meta[^\n]*", posted[-1]).group(0)
         notes[:] = [meta(now - 60, "handoff", extra=" " + re.search(r"stop=\w+", row).group(0))]
         calls.clear()
-        if attempt("o/r", pr, {}) != "waiting" or calls:
-            errs.append(f"a hand-off on the merge after a base-has-fix was not held: {row[:120]}, then {calls}")
+        if attempt("o/r", pr, {}) != "waiting" or calls or "stop=gate" not in row:
+            errs.append(f"a hand-off on the gate's own merge was not held: {row[:120]}, then {calls}")
         calls.clear(); posted[:] = []; labelled[:] = []
         notes[:] = []
         module.fix = raising(Handoff("6 fixes in a row did not clear the review"))
