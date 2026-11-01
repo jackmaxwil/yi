@@ -446,10 +446,23 @@ impl AgentSession {
         })
     }
 
-    /// Hooks and sandbox for a check this session runs; a walled child's wall rides its broker.
+    /// Before anything builds a [`crate::goal::Checker`]. Incident: the broker arrived last, so every
+    /// check held none and ran on the host, while a test that built one by hand stayed green.
+    pub(crate) fn hold_gate(
+        &self,
+        broker: Option<Arc<crate::permission::PermissionBroker>>,
+        wall: crate::wall::Wall,
+    ) {
+        if let Ok(mut slot) = self.permission.lock() {
+            *slot = broker;
+        }
+        self.set_wall(wall);
+    }
+
+    /// Hooks, sandbox and wall for a check this session runs.
     pub(crate) fn checker(&self, cwd: &std::path::Path) -> crate::goal::Checker {
         let broker = self.permission.lock().ok().and_then(|slot| slot.clone());
-        crate::goal::Checker::new(self.claude_hooks(cwd), broker, crate::wall::Wall::default())
+        crate::goal::Checker::new(self.claude_hooks(cwd), broker, self.wall())
     }
 
     pub(crate) fn claude_hooks(

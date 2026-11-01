@@ -790,6 +790,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
             })
         });
     }
+    session.hold_gate(wiring.broker.clone(), wiring.wall.clone());
     let host = subagent_host(session, &wiring, &plans_dir);
     host.register(&mut registry);
     crate::mailbox::register_receive(session, &host, &mut registry);
@@ -871,7 +872,6 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::rules::attach_rules(session, Arc::clone(&engine));
     session.set_rules_engine(Arc::clone(&engine));
     wire_compacted(session, &service, &plans_dir, engine);
-    session.set_wall(wiring.wall.clone());
     // Owner, overriding D340's per-session spills: "I accept the security hole. It has more
     // value than this esoteric risk"; the board is the family's, so every member reads them.
     session.set_spills(board_spills(&wiring.family_dir()));
