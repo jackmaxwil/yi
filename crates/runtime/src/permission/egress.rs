@@ -51,6 +51,13 @@ impl PermissionBroker {
         self
     }
 
+    /// `sandbox.hostRecipes`, from the person's own config.
+    #[must_use]
+    pub fn with_host_recipes(self, recipes: Vec<yi_types::config::HostRecipe>) -> Self {
+        let _first_wiring_wins = self.host_recipes.set(recipes);
+        self
+    }
+
     /// A contained spawn's proxy credentials and git lane, or the reason it may not start: with no
     /// proxy a contained process would have no network and no row saying why.
     pub(crate) fn spawn_hook(
