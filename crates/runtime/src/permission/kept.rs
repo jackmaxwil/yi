@@ -249,6 +249,13 @@ fn never_widened(sandbox: Option<&yi_tools::Sandbox>) -> Vec<PathBuf> {
     yi.chain(sandboxed).collect()
 }
 
+fn above_home(dir: &Path) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    home.is_some_and(|home| {
+        home.starts_with(dir) || home.canonicalize().is_ok_and(|real| real.starts_with(dir))
+    })
+}
+
 fn is_home(dir: &Path) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     home.is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
@@ -269,10 +276,10 @@ pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool
         })
 }
 
-/// A grant asks only at or below: the directory around a guarded path is granted for nothing but
-/// what it already holds, and the deny outranks the grant.
+/// A grant asks only at or below: a deny outranks the grant around it. Invariant: `$HOME` and
+/// `~/.yi` carry no deny, so a directory above them is refused, or `--allow-write /` opens all home.
 pub(crate) fn protected_from_grant(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
-    is_home(dir)
+    above_home(dir)
         || never_widened(sandbox).iter().any(|guarded| {
             let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
             dir.starts_with(guarded) || dir.starts_with(&real)
