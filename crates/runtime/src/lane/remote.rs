@@ -74,14 +74,15 @@ impl GitLane {
             .clone()
     }
 
-    /// What a contained git gets where a repository has an origin and no lane: no transport at all.
-    /// Without it, git reads a credential from the URL and lands on main through a seeded host, asked
-    /// by nobody. Its refusal then asks, and an approval runs outside.
+    /// What a contained git gets where a repository has no lane: no transport at all. Without it,
+    /// git reads a credential from the URL and lands on main through a seeded host, asked by nobody.
+    /// Its refusal then asks, and an approval runs outside.
     pub(crate) fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
         if let Some(lane) = lane {
             return lane.assign.clone();
         }
-        if git(cwd, &["config", "--get", "remote.origin.url"]).is_err() {
+        // A named remote is a transport too, so the block follows the repository, not `origin`.
+        if git(cwd, &["rev-parse", "--git-dir"]).is_err() {
             return Vec::new();
         }
         [
