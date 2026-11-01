@@ -16,6 +16,9 @@ pub struct Sandbox {
     pub deny_read: Vec<PathBuf>,
     /// Paths inside a writable root that host code runs or reads back (D205).
     pub deny_write: Vec<PathBuf>,
+    /// Directories closed whole to writes, holding the admin dirs and modules a contained process
+    /// would otherwise create under a writable root.
+    pub sealed: Vec<Sealed>,
     /// Stores only the host writes, the session corpus above all (its JSONL is the ledger kept
     /// rules replay from): denied to writes, save a writable root nested inside one.
     pub host_owned: Vec<PathBuf>,
@@ -42,40 +45,61 @@ const HOST_RUN_BY_GIT: [&str; 7] = [
     "gitdir",
 ];
 
-/// Directories one profile build walks under `modules`; past it the whole of `modules` is denied.
+/// Module git dirs one profile build opens; past it none is, which only narrows what a submodule
+/// may write.
 const MODULE_WALK_MAX: usize = 256;
 
-/// Every path under `git_dirs` the host's git reads as authority. A submodule keeps its objects and
-/// index writable, so work inside it still commits. Invariant: a sibling lane's admin dir is denied.
-fn host_read_paths(git_dirs: &[PathBuf]) -> Vec<PathBuf> {
-    let leaves = |dir: &Path| HOST_RUN_BY_GIT.map(|leaf| dir.join(leaf));
-    let mut paths: Vec<PathBuf> = git_dirs.iter().flat_map(|dir| leaves(dir)).collect();
-    match git_dirs {
-        [main] => paths.push(main.join("worktrees")),
-        [own, common, ..] => paths.extend(
-            directories(&common.join("worktrees"))
-                .filter(|sibling| sibling.file_name() != own.file_name()),
-        ),
-        [] => {}
+/// A git directory closed whole to writes, and the roots inside it this session still writes: a
+/// contained process creates an admin dir or a module under a writable root, so the wall sits on
+/// the directory, never on the names one build found there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sealed {
+    pub denied: PathBuf,
+    pub open: Vec<PathBuf>,
+}
+
+/// The two directories under `git_dirs` that hold admin dirs and submodules: a lane keeps its own
+/// admin dir and the module dirs it already has, and a name created after the build is sealed.
+fn sealed(git_dirs: &[PathBuf]) -> Vec<Sealed> {
+    let mut sealed: Vec<Sealed> = Vec::new();
+    for dir in git_dirs {
+        let worktrees = dir.join("worktrees");
+        let own: Vec<PathBuf> = (git_dirs.iter())
+            .filter(|git| git.starts_with(&worktrees))
+            .cloned()
+            .collect();
+        sealed.push(Sealed {
+            denied: worktrees,
+            open: own,
+        });
+        let modules = dir.join("modules");
+        sealed.push(Sealed {
+            open: module_dirs(&modules),
+            denied: modules,
+        });
     }
-    let mut walk: Vec<PathBuf> = git_dirs.iter().map(|dir| dir.join("modules")).collect();
-    let mut visited = 0usize;
+    sealed
+}
+
+/// The module git dirs under `modules`, nested submodules included: a module's own object store
+/// stays writable, and one the build did not see is covered by the seal above it.
+fn module_dirs(modules: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut walk = vec![modules.to_path_buf()];
     while let Some(parent) = walk.pop() {
         for child in directories(&parent) {
-            visited = visited.saturating_add(1);
-            if visited > MODULE_WALK_MAX {
-                paths.extend(git_dirs.iter().map(|dir| dir.join("modules")));
-                return paths;
+            if found.len() >= MODULE_WALK_MAX {
+                return Vec::new();
             }
+            // A module's dir is named after its path, so `modules/nested/sub` sits under a dir
+            // that is no module; only a dir holding HEAD is one.
             if child.join("HEAD").is_file() {
-                paths.extend(leaves(&child));
-                walk.push(child.join("modules"));
-            } else {
-                walk.push(child);
+                found.push(child.clone());
             }
+            walk.push(child);
         }
     }
-    paths
+    found
 }
 
 /// The real directories in `dir`, never a link: a contained process writes some of these trees.
@@ -90,12 +114,23 @@ impl Sandbox {
     pub fn for_workspace(cwd: &Path, home: &Path, session_dir: Option<&Path>) -> Self {
         let mut writable = vec![cwd.to_path_buf()];
         let git_dirs = yi_permission::git_dirs(cwd);
-        let mut deny_write = host_read_paths(&git_dirs);
+        let sealed = sealed(&git_dirs);
+        let leaves = |dir: &PathBuf| HOST_RUN_BY_GIT.map(|leaf| dir.join(leaf));
+        let mut deny_write: Vec<PathBuf> = (git_dirs.iter().flat_map(leaves))
+            .chain(
+                sealed
+                    .iter()
+                    .flat_map(|sealed| sealed.open.iter())
+                    .flat_map(leaves),
+            )
+            .collect();
         // Invariant: a `.git` that is no directory, or none yet, tells the host's next git where
         // its config lives.
         if !cwd.join(".git").is_dir() {
             deny_write.push(cwd.join(".git"));
         }
+        deny_write.sort();
+        deny_write.dedup();
         writable.extend(git_dirs);
         if let Some(dir) = session_dir {
             writable.push(dir.to_path_buf());
@@ -108,6 +143,7 @@ impl Sandbox {
             // The stores the read gate refuses, so a contained `cat` meets the same list (D323).
             deny_read: yi_permission::credential_stores(home),
             deny_write,
+            sealed,
             host_owned: vec![home.join(".yi/sessions")],
             spared: Vec::new(),
         }
@@ -154,9 +190,17 @@ impl Sandbox {
             let (store, exempt) = (resolve_aliases(store), self.exempt(store));
             path.starts_with(&store) && !exempt.iter().any(|root| path.starts_with(root))
         });
+        let sealed = self.sealed.iter().any(|sealed| {
+            path.starts_with(resolve_aliases(&sealed.denied))
+                && !sealed
+                    .open
+                    .iter()
+                    .any(|open| path.starts_with(resolve_aliases(open)))
+        });
         !granted
             && (!under(&self.writable)
                 || under(&self.deny_write)
+                || sealed
                 || under(&self.deny_read)
                 || owned)
     }
@@ -207,6 +251,20 @@ impl Sandbox {
                 format!("HOST_OWNED_{index}_RESOLVED"),
                 yi_permission::resolve_links(store),
             ));
+        }
+        for (index, sealed) in self.sealed.iter().enumerate() {
+            params.push((format!("SEALED_{index}"), resolve_aliases(&sealed.denied)));
+            params.push((
+                format!("SEALED_{index}_RESOLVED"),
+                yi_permission::resolve_links(&sealed.denied),
+            ));
+            for (open, dir) in sealed.open.iter().enumerate() {
+                params.push((format!("SEALED_OPEN_{index}_{open}"), resolve_aliases(dir)));
+                params.push((
+                    format!("SEALED_OPEN_{index}_{open}_RESOLVED"),
+                    yi_permission::resolve_links(dir),
+                ));
+            }
         }
         for (index, dir) in self.spared.iter().enumerate() {
             // Its parent resolved, never the path: a link planted there would widen the grant.
@@ -307,6 +365,7 @@ impl Sandbox {
         let mut parents: Vec<PathBuf> = (self.deny_write.iter())
             .chain(&self.deny_read)
             .chain(&self.host_owned)
+            .chain(self.sealed.iter().map(|sealed| &sealed.denied))
             .flat_map(|path| [resolve_aliases(path), yi_permission::resolve_links(path)])
             .flat_map(|path| {
                 path.ancestors()
@@ -366,6 +425,22 @@ impl Sandbox {
             allows.push(format!("(subpath (param \"{key}\"))"));
             anchors.push(format!(
                 "(deny file-write-unlink (require-all (literal (param \"{key}\")) (vnode-type DIRECTORY)))"
+            ));
+        }
+        // Before every denial below it, so a leaf inside an open root still loses: the seal closes
+        // a directory a contained process would otherwise create under a writable root.
+        for (index, sealed) in self.sealed.iter().enumerate() {
+            let open: String = (0..sealed.open.len())
+                .flat_map(|open| {
+                    [
+                        format!("SEALED_OPEN_{index}_{open}"),
+                        format!("SEALED_OPEN_{index}_{open}_RESOLVED"),
+                    ]
+                })
+                .map(|key| format!(" (require-not (subpath (param \"{key}\")))"))
+                .collect();
+            anchors.push(format!(
+                "(deny file-write* (require-all (require-any (subpath (param \"SEALED_{index}\")) (subpath (param \"SEALED_{index}_RESOLVED\"))){open}))"
             ));
         }
         // A path hidden from reads is not writable either: renamed, it would leave its rule behind;
