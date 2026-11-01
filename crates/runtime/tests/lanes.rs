@@ -692,6 +692,39 @@ fn work_inside_a_submodule_keeps_its_lane() -> TestResult {
     Ok(())
 }
 
+/// Dies with every populated submodule counted: each session left an orphan, until `claim` found
+/// the pool full in any repository that uses them.
+#[test]
+fn a_clean_submodule_frees_its_lane_and_an_edit_in_it_keeps_it() -> TestResult {
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
+    let rig = Rig::new("clean-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = lane.path().join("sub");
+    std::fs::create_dir_all(&sub)?;
+    git(&sub, &["init", "-q", "-b", "main"])?;
+    git(&sub, &["config", "user.email", "t@example.invalid"])?;
+    git(&sub, &["config", "user.name", "t"])?;
+    std::fs::write(sub.join("file.txt"), "one\n")?;
+    git(&sub, &["add", "file.txt"])?;
+    git(&sub, &["commit", "-q", "-m", "first"])?;
+    let head = git(&sub, &["rev-parse", "HEAD"])?;
+    let link = format!("160000,{},sub", head.trim());
+    git(
+        lane.path(),
+        &["update-index", "--add", "--cacheinfo", &link],
+    )?;
+    git(lane.path(), &["commit", "-q", "-m", "a submodule"])?;
+    std::fs::write(sub.join("file.txt"), "edited\n")?;
+    assert_eq!(lane.release()?.to_string(), "1 uncommitted path");
+    let back = pool.claim("s-one", ClaimBase::Main)?;
+    std::fs::write(back.path().join("sub/file.txt"), "one\n")?;
+    assert_eq!(back.release()?.to_string(), "0 uncommitted paths");
+    Ok(())
+}
+
 #[test]
 fn a_dropped_lane_keeps_its_dirty_tree() -> TestResult {
     let rig = Rig::new("drop-dirty")?;
