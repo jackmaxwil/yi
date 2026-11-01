@@ -44,6 +44,7 @@ use std::path::{Path, PathBuf};
 use yi_runtime::lane::land::{
     LaneHandle, bounded_name, format_lanes, host_of, open_pr_in, owner_repo, parse_jobs, pr_number,
 };
+use yi_runtime::lane::reap::{Rung, integrated, integrated_within};
 use yi_runtime::lane::settle::{
     Held, Prepared, Publish, Published, Quiescence, Unsettled, generation_of, prepare, publish,
 };
@@ -3837,5 +3838,139 @@ fn gc_never_fetches_the_remote_main() -> TestResult {
 
     rig.pool(1)?.gc(&rig.repo, true)?;
     assert_eq!(std::fs::metadata(fetch_head)?.modified()?, old);
+    Ok(())
+}
+
+/// The repository at the point a branch forks: `main` with one file, and `work` one commit ahead.
+fn ladder(tag: &str) -> Result<Rig, Box<dyn Error>> {
+    let rig = Rig::new(tag)?;
+    std::fs::write(rig.repo.join("base.txt"), "base\n")?;
+    git(&rig.repo, &["add", "base.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "base"])?;
+    git(&rig.repo, &["switch", "-qc", "work"])?;
+    std::fs::write(rig.repo.join("work.txt"), "work\n")?;
+    git(&rig.repo, &["add", "work.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "work"])?;
+    git(&rig.repo, &["switch", "-q", "main"])?;
+    Ok(rig)
+}
+
+fn squash(rig: &Rig) -> TestResult {
+    git(&rig.repo, &["merge", "-q", "--squash", "work"])?;
+    git(&rig.repo, &["commit", "-qm", "squashed"])?;
+    Ok(())
+}
+
+/// Trunk moves first, or the pick fast-forwards to the very same commit in the same second.
+fn pick(rig: &Rig) -> TestResult {
+    git(
+        &rig.repo,
+        &["commit", "-q", "--allow-empty", "-m", "moved on"],
+    )?;
+    git(&rig.repo, &["cherry-pick", "work"])?;
+    Ok(())
+}
+
+fn rung(rig: &Rig) -> Result<Option<Rung>, LaneError> {
+    integrated(&rig.repo, "work", "main")
+}
+
+#[test]
+fn each_rung_of_the_ladder_reads_its_own_shape() -> TestResult {
+    let rig = ladder("rung-same")?;
+    git(&rig.repo, &["branch", "-f", "work", "main"])?;
+    assert_eq!(rung(&rig)?, Some(Rung::SameCommit));
+
+    let rig = ladder("rung-ancestor")?;
+    git(
+        &rig.repo,
+        &["merge", "-q", "--no-ff", "-m", "merged", "work"],
+    )?;
+    assert_eq!(rung(&rig)?, Some(Rung::Ancestor));
+
+    let rig = ladder("rung-empty")?;
+    git(&rig.repo, &["switch", "-q", "work"])?;
+    git(&rig.repo, &["revert", "--no-edit", "HEAD"])?;
+    git(&rig.repo, &["switch", "-q", "main"])?;
+    git(
+        &rig.repo,
+        &["commit", "-q", "--allow-empty", "-m", "moved on"],
+    )?;
+    assert_eq!(rung(&rig)?, Some(Rung::EmptyDiff));
+
+    let rig = ladder("rung-tree")?;
+    squash(&rig)?;
+    assert_eq!(rung(&rig)?, Some(Rung::SameTree));
+
+    let rig = ladder("rung-merge")?;
+    squash(&rig)?;
+    std::fs::write(rig.repo.join("later.txt"), "later\n")?;
+    git(&rig.repo, &["add", "later.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "later"])?;
+    assert_eq!(rung(&rig)?, Some(Rung::MergeAddsNothing));
+
+    // Trunk took the patch, then changed the same line, so a merge conflicts and only the patch matches.
+    let rig = ladder("rung-patch")?;
+    pick(&rig)?;
+    std::fs::write(rig.repo.join("work.txt"), "changed since\n")?;
+    git(&rig.repo, &["commit", "-qam", "changed since"])?;
+    assert_eq!(rung(&rig)?, Some(Rung::PatchId));
+    Ok(())
+}
+
+/// Dies with the last rung reading "any commit matches": one commit left unmerged is the only copy.
+#[test]
+fn one_unmerged_commit_among_squashed_ones_keeps_the_branch() -> TestResult {
+    let rig = ladder("rung-unmerged")?;
+    pick(&rig)?;
+    git(&rig.repo, &["switch", "-q", "work"])?;
+    std::fs::write(rig.repo.join("only.txt"), "only copy\n")?;
+    git(&rig.repo, &["add", "only.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "only copy"])?;
+    git(&rig.repo, &["switch", "-q", "main"])?;
+    assert_eq!(rung(&rig)?, None);
+    Ok(())
+}
+
+#[test]
+fn a_failed_question_keeps_the_branch_and_never_reads_as_no() -> TestResult {
+    let rig = ladder("rung-error")?;
+    assert!(integrated(&rig.repo, "no-such-branch", "main").is_err());
+    assert!(integrated(&rig.repo, "work", "no-such-trunk").is_err());
+    Ok(())
+}
+
+#[test]
+fn the_walk_cap_holds_at_its_limit_and_is_loud_one_past() -> TestResult {
+    let rig = ladder("rung-cap")?;
+    pick(&rig)?;
+    std::fs::write(rig.repo.join("work.txt"), "changed since\n")?;
+    git(&rig.repo, &["commit", "-qam", "changed since"])?;
+    assert_eq!(
+        integrated_within(&rig.repo, "work", "main", 1)?,
+        Some(Rung::PatchId)
+    );
+    let past = integrated_within(&rig.repo, "work", "main", 0)
+        .err()
+        .ok_or("no refusal past the cap")?
+        .to_string();
+    assert!(past.contains("past gc.integrated_walk 0"), "{past}");
+    Ok(())
+}
+
+/// A squash merge left no ancestry, so gc kept these worktrees and their disk forever.
+#[test]
+fn gc_removes_a_squash_merged_worktree_and_says_how_it_knew() -> TestResult {
+    let rig = ladder("gc-squash")?;
+    let tree = rig.root.canonicalize()?.join("wt-work");
+    git(
+        &rig.repo,
+        &["worktree", "add", "-q", &tree.to_string_lossy(), "work"],
+    )?;
+    squash(&rig)?;
+    let pool = rig.pool(2)?;
+    let report = pool.gc(&rig.repo, false)?.join("\n");
+    assert!(!tree.exists(), "{report}");
+    assert!(report.contains("(merged: same tree)"), "{report}");
     Ok(())
 }

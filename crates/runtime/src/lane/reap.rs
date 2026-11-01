@@ -7,6 +7,88 @@ use super::{
     ClaimBase, Head, LIST_BUDGET, LaneError, Pool, STATUS, Sha, SlotIndex, git, git_capture, head,
 };
 
+const INTEGRATED_WALK_MAX: usize = 256;
+
+/// How a branch's content is in trunk, cheapest test first.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rung {
+    SameCommit,
+    Ancestor,
+    EmptyDiff,
+    SameTree,
+    MergeAddsNothing,
+    PatchId,
+}
+
+impl std::fmt::Display for Rung {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::SameCommit => "same commit",
+            Self::Ancestor => "ancestor",
+            Self::EmptyDiff => "no changes",
+            Self::SameTree => "same tree",
+            Self::MergeAddsNothing => "a merge adds nothing",
+            Self::PatchId => "patch-id",
+        })
+    }
+}
+
+/// Whether `tip`'s content is in `trunk` however it landed: a squash merge leaves no ancestry to read.
+/// Any failed question is an `Err`, which keeps the branch; only git's own exit 1 is a no.
+pub fn integrated(repo: &Path, tip: &str, trunk: &str) -> Result<Option<Rung>, LaneError> {
+    integrated_within(repo, tip, trunk, INTEGRATED_WALK_MAX)
+}
+
+/// # Errors
+/// A [`LaneError::Git`] naming the cap past `walk_max` commits, and any git failure.
+pub fn integrated_within(
+    repo: &Path,
+    tip: &str,
+    trunk: &str,
+    walk_max: usize,
+) -> Result<Option<Rung>, LaneError> {
+    let id = |rev: String| git(repo, &["rev-parse", "--verify", "-q", &rev]);
+    if id(format!("{tip}^{{commit}}"))?.trim() == id(format!("{trunk}^{{commit}}"))?.trim() {
+        return Ok(Some(Rung::SameCommit));
+    }
+    if !super::no(git(repo, &["merge-base", "--is-ancestor", tip, trunk]))? {
+        return Ok(Some(Rung::Ancestor));
+    }
+    let three_dot = format!("{trunk}...{tip}");
+    if !super::no(git(repo, &["diff", "--quiet", "--no-ext-diff", &three_dot]))? {
+        return Ok(Some(Rung::EmptyDiff));
+    }
+    let trunk_tree = id(format!("{trunk}^{{tree}}"))?;
+    if id(format!("{tip}^{{tree}}"))?.trim() == trunk_tree.trim() {
+        return Ok(Some(Rung::SameTree));
+    }
+    // Exit 1 from a merge is a conflict, so that merge adds something; any other failure is an `Err`.
+    match git(repo, &["merge-tree", "--write-tree", trunk, tip]) {
+        Ok(tree) if tree.trim() == trunk_tree.trim() => return Ok(Some(Rung::MergeAddsNothing)),
+        Ok(_)
+        | Err(LaneError::Git {
+            exit_code: Some(1), ..
+        }) => {}
+        Err(error) => return Err(error),
+    }
+    let range = format!("{trunk}..{tip}");
+    let commits = git(repo, &["rev-list", "--count", &range])?;
+    let commits: usize = commits.trim().parse().unwrap_or(usize::MAX);
+    if commits > walk_max {
+        return Err(LaneError::Git {
+            args: vec!["cherry".to_owned(), trunk.to_owned(), tip.to_owned()],
+            exit_code: None,
+            output: format!(
+                "[not judged: {commits} commits on this branch past gc.integrated_walk {walk_max}; compare it with trunk by hand, or rebase it]"
+            ),
+        });
+    }
+    let cherry = git(repo, &["cherry", trunk, tip])?;
+    let all_in = cherry.lines().count() > 0 && cherry.lines().all(|row| row.starts_with("- "));
+    Ok(all_in.then_some(Rung::PatchId))
+}
+
 /// Uncommitted paths one status read named; past the capture cap the count is a floor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Uncommitted {
@@ -267,7 +349,7 @@ impl Pool {
                 Err(why) => format!("kept {shown}: {why}"),
                 // Incident: sixty worktrees' own `target/` directories filled a 1.8 TB disk. Git
                 // removes ignored files with a clean tree and refuses the rest.
-                Ok(()) => match (|| {
+                Ok(rung) => match (|| {
                     if let Some(slot) = slot {
                         self.stop_warmer(slot)?;
                     }
@@ -284,7 +366,7 @@ impl Pool {
                 .map(drop)
                 .map_err(|error| error.to_string())
                 {
-                    Ok(()) => format!("removed {shown}"),
+                    Ok(()) => format!("removed {shown} (merged: {rung})"),
                     Err(why) => format!("kept {shown}: {why}"),
                 },
             });
@@ -299,7 +381,7 @@ impl Pool {
         here: &Path,
         pool_slot: bool,
         status: bool,
-    ) -> Result<(), String> {
+    ) -> Result<Rung, String> {
         let current = head(&tree.path).map_err(|_| "HEAD missing".to_owned())?;
         let name = current
             .branch()
@@ -321,14 +403,15 @@ impl Pool {
         if current.branch().is_some() && tip == base {
             return Err(format!("{name} is at {base}, no commits of its own"));
         }
-        git(&self.repo, &["merge-base", "--is-ancestor", &tip, base])
-            .map_err(|_| format!("{name} is not merged into {base}"))?;
+        let rung = integrated(&self.repo, &tip, base)
+            .map_err(|error| format!("{name}: {error}"))?
+            .ok_or_else(|| format!("{name} is not merged into {base}"))?;
         if !status {
-            return Ok(());
+            return Ok(rung);
         }
         let dirty = Uncommitted::read(&tree.path).map_err(|e| format!("status unreadable: {e}"))?;
         match dirty.is_empty() {
-            true => Ok(()),
+            true => Ok(rung),
             false => Err(dirty.to_string()),
         }
     }
@@ -382,7 +465,7 @@ mod tests {
             .ok_or("no detached tree")?;
         let base = git(&repo, &["rev-parse", "main"])?.trim().to_owned();
         let pool = Pool::open(&root.join("home"), &repo, 1)?;
-        pool.judge(&tree, &base, &repo, false, true)?;
+        let _rung = pool.judge(&tree, &base, &repo, false, true)?;
 
         std::fs::write(path.join("new.txt"), "unreferenced\n")?;
         git(&path, &["add", "."])?;

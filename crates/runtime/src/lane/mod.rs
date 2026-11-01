@@ -911,7 +911,7 @@ impl Pool {
             return Ok(false);
         };
         let base = self.resolve(&ClaimBase::Main, false)?;
-        let merged = git(&self.repo, &["merge-base", "--is-ancestor", branch, &base]).is_ok();
+        let merged = matches!(reap::integrated(&self.repo, branch, &base), Ok(Some(_)));
         if merged {
             git(&self.repo, &["branch", "-q", "-D", branch])?;
         }
