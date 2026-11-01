@@ -99,10 +99,7 @@ impl std::fmt::Debug for Token {
 
 /// The `Basic` credential a client sends for this token, which is what the table is keyed by.
 fn credential(token: &Token) -> String {
-    let url_safe = yi_types::encoding::base64url_nopad(format!("yi:{}", token.hex()).as_bytes());
-    let standard = url_safe.replace('-', "+").replace('_', "/");
-    let pad = "=".repeat((4 - standard.len() % 4) % 4);
-    format!("{standard}{pad}")
+    yi_types::encoding::base64(format!("yi:{}", token.hex()).as_bytes())
 }
 
 fn digest(credential: &str) -> [u8; 32] {
@@ -240,19 +237,11 @@ impl Holder {
         }
     }
 
-    fn denied_by_wall(&self, domain: &Domain) -> bool {
-        self.wall.deny_url.iter().any(|url| {
-            let host = url.split_once("://").map_or(url.as_str(), |(_, rest)| rest);
-            let host = host.split(['/', ':']).next().unwrap_or_default();
-            host.eq_ignore_ascii_case(domain.as_str())
-        })
-    }
-
     /// One ask per domain, on its own thread since a person may never answer; a connection waits
     /// [`Limits::patience`] for it, then gets a 403 naming the open ask.
     fn allows(self: &Arc<Self>, domain: &Domain) -> Result<(), String> {
         let refused = |why: String| format!("[egress: refused {domain}: {why}]");
-        if self.denied_by_wall(domain) {
+        if self.wall.denies_host(domain.as_str()) {
             return Err(refused("this session's wall denies it".to_owned()));
         }
         if self.broker.egress_allowed(domain) {

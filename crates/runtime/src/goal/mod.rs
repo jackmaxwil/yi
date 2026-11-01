@@ -131,12 +131,16 @@ impl Checker {
         script: &str,
         cwd: &std::path::Path,
     ) -> (std::process::Command, Option<crate::egress::Lease>) {
-        let profile = self.profile(cwd);
+        // Invariant: a container child's commands never run on the host, a check included.
+        let placed = (self.wall.container.as_deref())
+            .map(|container| yi_tools::jobs::in_container(container, cwd, script).0);
+        let profile = placed.is_none().then(|| self.profile(cwd)).flatten();
         let lease = (profile.as_ref().and(self.broker.as_ref()))
             .and_then(|broker| broker.egress_lease(self.wall.clone()).ok());
-        let (program, args) = match profile {
-            Some(sandbox) => sandbox.wrap(shell, &["-c", script]),
-            None => (shell.to_owned(), vec!["-c".to_owned(), script.to_owned()]),
+        let (program, args) = match (placed, profile) {
+            (Some(run), _) => (shell.to_owned(), vec!["-c".to_owned(), run]),
+            (None, Some(sandbox)) => sandbox.wrap(shell, &["-c", script]),
+            (None, None) => (shell.to_owned(), vec!["-c".to_owned(), script.to_owned()]),
         };
         let mut command = yi_tools::keyless_command(program);
         command.args(args).current_dir(cwd);
@@ -898,6 +902,27 @@ pub fn attach_goal(
 #[cfg(test)]
 mod checker_tests {
     use super::*;
+
+    /// Dies with a container child's check running on the host, which that child's wall forbids.
+    #[test]
+    fn a_container_childs_check_runs_in_its_container() {
+        let wall = crate::wall::Wall {
+            container: Some("yi-child".to_owned()),
+            ..crate::wall::Wall::default()
+        };
+        let checker = Checker::new(None, None, wall);
+        let (shell, lease) = checker.shell("sh", "cargo test", std::path::Path::new("/work"));
+        assert!(lease.is_none());
+        let args: Vec<String> = (shell.get_args())
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let run = args.join(" ");
+        assert!(
+            run.contains("docker exec") && run.contains("yi-child"),
+            "{run}"
+        );
+        assert!(run.contains("cargo test"), "{run}");
+    }
 
     /// Dies with a check running on the host: `cargo test` as one ran a child's `build.rs` outside
     /// the sandbox the same command met in bash.
