@@ -311,6 +311,19 @@ fn a_walled_url_outranks_the_seed() -> TestResult {
     Ok(())
 }
 
+/// A wall is a prefix list: the form a fetch honours has to close the tunnel too.
+#[test]
+fn a_bare_scheme_in_the_wall_closes_every_host() -> TestResult {
+    let proxy = Proxy::start(stand_in()?, limits())?;
+    let walled = Wall {
+        deny_url: vec!["https://".to_owned()],
+        ..Wall::default()
+    };
+    let lease = proxy.lease(headless()?, walled)?;
+    assert!(through(&lease, SEEDED)?.0.contains("403"));
+    Ok(())
+}
+
 #[test]
 fn the_first_decision_per_host_reaches_the_ledger_once() -> TestResult {
     let proxy = Proxy::start(stand_in()?, limits())?;
