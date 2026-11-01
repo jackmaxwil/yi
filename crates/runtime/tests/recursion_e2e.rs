@@ -3840,6 +3840,52 @@ async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResul
     Ok(())
 }
 
+/// Dies with the broker reaching the session after its checkers were built: a wired session's
+/// check then ran on the host, and its wall was empty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wired_sessions_check_runs_in_its_sandbox_under_its_wall() -> TestResult {
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
+    let root = gate_rule_root("yi-check-wired", None)?;
+    let walled = root.join("project/walled");
+    std::fs::create_dir_all(&walled)?;
+    let sandbox = yi_tools::Sandbox {
+        writable: vec![root.join("project")],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        sealed: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    };
+    let wall = yi_runtime::Wall {
+        deny_write: vec![walled.clone()],
+        ..yi_runtime::Wall::default()
+    };
+    let (_session, _provider, host) = wired_root(&root, wall, Some(sandbox));
+    let outside = root.join("outside-marker");
+    let inside = walled.join("marker");
+    for (name, target) in [("escape", &outside), ("walled", &inside)] {
+        // Read from a file, so the gate's reading of the words cannot refuse it before the sandbox.
+        let address = root.join(format!("project/{name}-target"));
+        std::fs::write(&address, target.display().to_string())?;
+        let check = json!(format!("touch \"$(cat {})\"", address.display()));
+        let reply = host
+            .spawn(
+                "land the fix".to_owned(),
+                protocol_kwargs(name, &[("check", check)]),
+            )
+            .map_err(|error| error.to_string())?;
+        let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+        assert!(wait_for_status(&host, child_id, "completed").await);
+        let refused = host.result(name, None).err().unwrap_or_default();
+        assert!(refused.contains("[contained: "), "{name}: {refused}");
+    }
+    assert!(!outside.exists(), "the check ran on the host");
+    assert!(!inside.exists(), "the check ignored the session's wall");
+    Ok(())
+}
+
 /// The gate passes a check no rule names: it runs at `rlm.result` in the session's cwd, and a
 /// red one still holds the result back with its own evidence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
