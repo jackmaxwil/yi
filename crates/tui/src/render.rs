@@ -485,8 +485,37 @@ fn follow_marker(app: &App, more: usize) -> Line<'static> {
 const ROLL_ROWS: usize = 24;
 struct Followed {
     rows: Vec<Line<'static>>,
-    owners: Vec<usize>,
+    cells: Vec<(usize, Chip)>,
     more: usize,
+}
+
+/// A row's run chip: its ordinal among its cell's chips, first column and width.
+pub(crate) type Chip = Option<(usize, usize, usize)>;
+
+/// Incident: a fence header carries no wrapping, so a long info string draws its chip past the
+/// pane's right edge, where the buffer clips it but the press rect still reached the neighbour.
+fn shown_chip(chip: Chip, width: usize) -> Chip {
+    let (ordinal, from, wide) = chip?;
+    if from >= width {
+        return None;
+    }
+    let wide = wide.min(width.saturating_sub(from));
+    (wide > 0).then_some((ordinal, from, wide))
+}
+
+fn chip_marks(rows: &[Line<'static>], owners: &[usize]) -> Vec<Chip> {
+    let (mut seen, mut cell) = (0usize, None);
+    rows.iter()
+        .zip(owners)
+        .map(|(line, owner)| {
+            if cell != Some(owner) {
+                (seen, cell) = (0, Some(owner));
+            }
+            let (from, to) = crate::markdown::run_chip(line)?;
+            seen = seen.saturating_add(1);
+            Some((seen.saturating_sub(1), from, to.saturating_sub(from)))
+        })
+        .collect()
 }
 
 /// Rows a follower lets through this frame: half the window for a page, never past the cap.
@@ -517,6 +546,11 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
     let at_most = follow.map_or(usize::MAX, |(_, _, pinned, _)| pinned.saturating_sub(1));
     let (_, mut column, owners) = app.history.tail(width, &theme, mode, want, at_most);
     drop(history);
+    let marks: Vec<(usize, Chip)> = owners
+        .iter()
+        .copied()
+        .zip(chip_marks(&column, &owners))
+        .collect();
     join_live(&mut column, false, live);
     let follow_mode = app.follow();
     let end = follow
@@ -551,16 +585,16 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
     };
     column.truncate(end);
     let mut rows = column.split_off(start);
-    let mut owners = owners
-        .get(start..end.min(owners.len()))
+    let mut cells = marks
+        .get(start..end.min(marks.len()))
         .unwrap_or_default()
         .to_vec();
     if more > 0 {
         more = more.saturating_add(usize::from(rows.len() > above.saturating_sub(1)));
         rows.truncate(above.saturating_sub(1));
-        owners.truncate(above.saturating_sub(1));
+        cells.truncate(above.saturating_sub(1));
     }
-    Followed { rows, owners, more }
+    Followed { rows, cells, more }
 }
 
 /// Transcript and live frame scroll as one column; `scroll` zero follows the turn, above holds.
@@ -598,7 +632,7 @@ pub fn paint_pane(
     let result = if *scroll == 0 {
         let followed = follow_column(app, live, above, usize::from(area.height));
         follow_more = followed.more;
-        (followed.rows, followed.owners, None)
+        (followed.rows, followed.cells, None)
     } else {
         app.pane_follow = None;
         // Incident: counting committed rows drifted a held view; now rows below a pinned cell.
@@ -616,29 +650,41 @@ pub fn paint_pane(
         let at_most = hold.map_or(usize::MAX, |(_, _, pinned, _)| pinned);
         let (from, mut column, owners) = app.history.tail(width, &theme, mode, need, at_most);
         let history_rows = column.len();
+        let marks: Vec<(usize, Chip)> = owners
+            .iter()
+            .copied()
+            .zip(chip_marks(&column, &owners))
+            .collect();
         join_live(&mut column, false, live);
         *scroll = (*scroll).min(column.len().saturating_sub(above));
         app.pane_hold = Some((width, mode, from, column.len().saturating_sub(above)));
         let end = column.len().saturating_sub(*scroll);
         let start = end.saturating_sub(above);
         let shown = column.get(start..end).unwrap_or_default().to_vec();
-        let owners = owners
+        let cells = marks
             .get(start..end.min(history_rows))
             .unwrap_or_default()
             .to_vec();
-        let cells = app.history.len().saturating_sub(from).max(1);
-        let before = from.saturating_mul(history_rows) / cells;
+        let count = app.history.len().saturating_sub(from).max(1);
+        let before = from.saturating_mul(history_rows) / count;
         let total = before
             .saturating_add(column.len())
             .saturating_add(usize::from(floor));
         let thumb =
             (total > usize::from(area.height)).then_some((total, before.saturating_add(start)));
-        (shown, owners, thumb)
+        (shown, cells, thumb)
     };
-    let (shown, owners, thumb) = result;
-    let mut owned: Vec<Option<usize>> = owners.into_iter().map(Some).collect();
-    owned.resize(shown.len(), None);
-    app.pane_rows = (area.top(), owned);
+    let (shown, mut cells, thumb) = result;
+    for (_, chip) in cells.iter_mut() {
+        *chip = shown_chip(*chip, usize::from(area.width));
+    }
+    let mut rows: Vec<Option<(usize, Chip)>> = cells.into_iter().map(Some).collect();
+    rows.resize(shown.len(), None);
+    app.pane_rows = crate::app::PaneRows {
+        top: area.top(),
+        left: area.left(),
+        rows,
+    };
     let rows = u16::try_from(shown.len()).unwrap_or(0);
     if rows > 0 {
         let rect = Rect::new(area.left(), area.top(), area.width, rows);

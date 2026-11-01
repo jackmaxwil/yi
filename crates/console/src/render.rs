@@ -34,19 +34,7 @@ pub struct PaneView {
     pub chat: bool,
 }
 
-/// The one control table hover and press both walk; press maps it to an action, hover to a rect.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Hit {
-    Tab(usize),
-    Settings(PaneId, crate::settings::Target),
-    Button(keys::Action),
-    Gear,
-    Title(PaneId),
-    New(Option<String>),
-    Search,
-    Fold(String),
-    Session(usize),
-}
+pub use crate::hit::Hit;
 
 #[derive(Default)]
 pub struct Hits {
@@ -773,6 +761,8 @@ fn paint_chat_pane(
     let mut scroll = pane.scroll_from_bottom;
     view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
     pane.scroll_from_bottom = scroll;
+    let runs = chat.app.run_chips();
+    crate::hit::offer_runs(app, view.id, runs);
     if dim {
         for y in inner.top()..inner.bottom() {
             for x in inner.left()..inner.right() {

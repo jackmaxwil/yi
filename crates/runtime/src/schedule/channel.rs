@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -380,7 +379,7 @@ pub(crate) fn fire_with_hooks(
     todos: &TodoStore,
     job: &Job,
     sub: &ChannelSub,
-    hooks: Option<&Arc<crate::claude_hooks::Hooks>>,
+    checker: Option<&crate::goal::Checker>,
 ) -> Result<Fired, String> {
     let channel = Channel::at(&sub.path);
     let meta = channel.meta()?;
@@ -391,7 +390,7 @@ pub(crate) fn fire_with_hooks(
         Path::new(&job.cwd),
         cadence,
         job.unblocks.is_none(),
-        hooks,
+        checker,
     ) {
         return Ok(Fired::Stopped(stopped));
     }
