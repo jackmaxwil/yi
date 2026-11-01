@@ -475,11 +475,12 @@ fn allow_write_relative_dir_uses_the_invocation_directory() -> TestResult {
 fn allow_write_from_config_refuses_a_protected_dir() -> TestResult {
     let workspace = Workspace::new("allow-write-config")?;
     let home = workspace.0.join("home");
-    std::fs::create_dir_all(home.join(".yi"))?;
+    let yi_dir = home.join(".yi");
+    std::fs::create_dir_all(&yi_dir)?;
     std::fs::write(
-        home.join(".yi/config.json"),
+        yi_dir.join("config.json"),
         serde_json::to_string(&json!({
-            "permissions": {"allowWrite": [home.to_string_lossy()]}
+            "permissions": {"allowWrite": [yi_dir.to_string_lossy()]}
         }))?,
     )?;
     let run = ask(&workspace, "look", &[])?;

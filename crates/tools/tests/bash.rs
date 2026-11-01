@@ -1,4 +1,6 @@
 use serde_json::{Map, Value};
+
+use crate::scratch::Scratch;
 use yi_tools::{BashTool, Tool, ToolKind};
 
 fn input(command: &str) -> Map<String, Value> {
@@ -65,4 +67,16 @@ fn a_hung_sweep_ends_at_its_own_bound() {
     yi_tools::jobs::run_sweep_within("sleep 30", Some(bound));
     let took = begun.elapsed();
     assert!(took < bound + std::time::Duration::from_secs(1), "{took:?}");
+}
+
+/// Dies with `run_sweep` under a bound: the job path settles before its sweep finishes, and one the
+/// watchdog kills there leaves what the container still runs writing the tree.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_job_path_sweep_runs_to_its_end() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = Scratch::new("yi-sweep-job")?;
+    let marker = dir.join("swept");
+    yi_tools::jobs::run_sweep(&format!("sleep 1; touch '{}'", marker.display()));
+    assert!(marker.exists(), "the job path's sweep reached its end");
+    Ok(())
 }

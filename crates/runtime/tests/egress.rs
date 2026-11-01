@@ -311,6 +311,20 @@ fn a_walled_url_outranks_the_seed() -> TestResult {
     Ok(())
 }
 
+/// A person spells a deny entry with the port they see in a URL; the tunnel's host has no port,
+/// so an entry that keeps one closes nothing unless it is cut back to the host it names.
+#[test]
+fn a_wall_entry_that_spells_a_port_closes_its_host() -> TestResult {
+    let proxy = Proxy::start(stand_in()?, limits())?;
+    let walled = Wall {
+        deny_url: vec![format!("https://{SEEDED}:443/")],
+        ..Wall::default()
+    };
+    let lease = proxy.lease(headless()?, walled)?;
+    assert!(through(&lease, SEEDED)?.0.contains("403"));
+    Ok(())
+}
+
 /// A wall is a prefix list: the form a fetch honours has to close the tunnel too.
 #[test]
 fn a_bare_scheme_in_the_wall_closes_every_host() -> TestResult {

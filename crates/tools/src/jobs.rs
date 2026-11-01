@@ -613,7 +613,7 @@ pub fn run_sweep_within(sweep: &str, bound: Option<Duration>) {
     process.arg("-c").arg(sweep);
     let until = bound.and_then(|bound| std::time::Instant::now().checked_add(bound));
     let past: CancelFlag =
-        Arc::new(move || until.is_none_or(|until| std::time::Instant::now() >= until));
+        Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
     let _swept_or_gone_with_the_container =
         crate::process::run_captured(process, None, &past, OUTPUT_CAP);
 }

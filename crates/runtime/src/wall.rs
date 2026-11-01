@@ -58,7 +58,7 @@ impl Wall {
     pub fn denies_host(&self, host: &str) -> bool {
         self.deny_url.iter().any(|prefix| {
             let named = yi_types::url::url_authority(prefix).unwrap_or(prefix);
-            named.eq_ignore_ascii_case(host)
+            bare_host(named).eq_ignore_ascii_case(host)
                 || walls(prefix, &format!("https://{host}"))
                 || walls(prefix, &format!("http://{host}"))
         })
@@ -209,4 +209,12 @@ fn walls(prefix: &str, rendered: &str) -> bool {
         return false;
     };
     rest.is_empty() || prefix.ends_with('/') || rest.starts_with('/') || rest.starts_with('#')
+}
+
+/// A tunnel is opened for a bare host name, so a wall entry that spells a port closes that host.
+fn bare_host(authority: &str) -> &str {
+    match authority.rsplit_once(':') {
+        Some((host, port)) if port.bytes().all(|byte| byte.is_ascii_digit()) => host,
+        _ => authority,
+    }
 }

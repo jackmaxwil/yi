@@ -249,7 +249,7 @@ pub struct SubagentHost {
 }
 
 pub(crate) fn random_suffix() -> Result<String, String> {
-    crate::egress::random_hex(std::path::Path::new("/dev/urandom"), 4)
+    yi_kernel::connection::random_hex(std::path::Path::new("/dev/urandom"), 4)
 }
 
 fn default_session_name(prompt: &str, child_id: &str) -> String {

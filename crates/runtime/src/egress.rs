@@ -43,18 +43,6 @@ impl Default for Limits {
 const HEAD_MAX_BYTES: usize = 8 * 1024;
 const RELAY_STACK_BYTES: usize = 64 * 1024;
 
-pub(crate) fn random_hex(source: &Path, bytes: usize) -> Result<String, String> {
-    let mut buffer = vec![0_u8; bytes];
-    std::fs::File::open(source)
-        .and_then(|mut random| random.read_exact(&mut buffer))
-        .map_err(|error| format!("{}: {error}", source.display()))?;
-    let mut out = String::with_capacity(bytes.saturating_mul(2));
-    for byte in buffer {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    Ok(out)
-}
-
 /// Every key a package manager or HTTP client reads for its proxy, lowercase forms included.
 const PROXY_KEYS: [&str; 16] = [
     "HTTP_PROXY",
@@ -91,7 +79,9 @@ struct Token(String);
 
 impl Token {
     fn mint(source: &Path) -> Result<Self, Error> {
-        random_hex(source, 16).map(Self).map_err(Error::Entropy)
+        yi_kernel::connection::random_hex(source, 16)
+            .map(Self)
+            .map_err(Error::Entropy)
     }
 }
 

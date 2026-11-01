@@ -1029,8 +1029,7 @@ mod sweep_tests {
     /// container writing the tree, which is the invariant `jobs::run_sweep` exists for.
     #[test]
     fn a_cancelled_check_is_swept() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!("yi-swept-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
+        let dir = crate::scratch::Scratch::new("yi-swept")?;
         let marker = dir.join("swept");
         let mut command = yi_tools::keyless_command("sh");
         command.args(["-c", "sleep 5"]);
