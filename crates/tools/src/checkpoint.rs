@@ -403,6 +403,9 @@ impl Checkpoints {
         if let Some(index) = &self.index {
             process.env("GIT_INDEX_FILE", index);
         }
+        let index = (self.index.clone()).unwrap_or_else(|| self.git_dir.join("index"));
+        let lock = index.with_extension("lock");
+        let not_ours = lock.exists();
         let until = self.until;
         let past: crate::tool::CancelFlag =
             Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
@@ -410,9 +413,10 @@ impl Checkpoints {
             crate::process::run_captured(process, stdin.map(<[u8]>::to_vec), &past, usize::MAX)
                 .map_err(CheckpointError::GitMissing)?;
         if capture.cancelled {
-            // Invariant: under the serial lock with the process gone, so nothing else holds it.
-            let index = (self.index.clone()).unwrap_or_else(|| self.git_dir.join("index"));
-            let _no_lock_is_fine = std::fs::remove_file(index.with_extension("lock"));
+            // Invariant: the serial lock is this process's, so a lock there before the spawn is another's.
+            if !not_ours {
+                let _no_lock_is_fine = std::fs::remove_file(&lock);
+            }
             return Err(CheckpointError::Deadline {
                 command: verb.to_owned(),
             });
