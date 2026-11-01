@@ -184,8 +184,8 @@ def unapplied_ledger(arch):
 
 
 def cell_edit(key, row, old, new):
-    """`old` to `new` as a `~`, cut small so a second PR on the cell still applies; a status that
-    also occurs in the note is spelled as its whole cell. None when neither spelling is unique."""
+    """`old` to `new` as a `~`, cut small so a second PR on the cell still applies, or as its whole
+    cell when a status also occurs in the note."""
     p = len(os.path.commonprefix([old, new]))
     s = len(os.path.commonprefix([old[p:][::-1], new[p:][::-1]]))
     cut = lambda text: text[p:len(text) - s]
@@ -193,21 +193,21 @@ def cell_edit(key, row, old, new):
         s -= 1
     while p and (row.count(cut(old)) != 1 or not cut(new) or cut(old)[:1].isspace() or cut(new)[:1].isspace()):
         p -= 1
-    if row.count(cut(old)) == 1 and cut(new):
-        return f"ledger~: {key} | {cut(old)} | {cut(new)}"
-    return f"ledger~: {key} | {old} | {new}" if new and CELL.split(row[2:-2]).count(old) == 1 else None
+    return f"ledger~: {key} | {cut(old)} | {cut(new)}" if row.count(cut(old)) == 1 and cut(new) else f"ledger~: {key} | {old} | {new}"
 
 
 def row_edit(key, old, row):
-    """The lines that turn `old` into `row`; a delete and a new row, which moves the row to the table's
-    end, only when a changed cell has no unique spelling."""
+    """The lines that turn `old` into `row`, proven by applying them; a delete and a new row, which
+    moves the row to the table's end, only when they do not reach it."""
     if row.startswith(f"{old[:-2]}; "):
         return f"ledger+: {key} | {row[len(old):-2]}"
     was, now = CELL.split(old[2:-2]), CELL.split(row[2:-2])
-    lines = [cell_edit(key, old, a, b) for a, b in zip(was, now) if a != b]
-    if len(was) != len(now) or None in lines:
-        return f"ledger-: {key}\nledger=: {row[2:-2]}"
-    return "\n".join(lines)
+    lines = "\n".join(cell_edit(key, old, a, b) for a, b in zip(was, now) if a != b)
+    read, errs = parse(f"---\n{lines}\n---\nx\n")
+    done, found = apply_ledger(f"## {LEDGER}\n\n| f |\n|---|\n{old}\n", read["ledger"])
+    if len(was) == len(now) and not errs and not found and table_rows(done, LEDGER) == [row]:
+        return lines
+    return f"ledger-: {key}\nledger=: {row[2:-2]}"
 
 
 def ledger_lines(was, now):
@@ -365,6 +365,11 @@ def ledger_cases():
         read, errs = parse(f"---\n{text}\n---\nx\n")
         if errs or table_rows(apply_ledger(LEDGER_FIXTURE, read["ledger"])[0], LEDGER) != table_rows(after, LEDGER):
             bad.append(f"the lines for {name} do not reproduce it in place: {text!r} {errs}")
+    swapped = LEDGER_FIXTURE.replace("H | M", "M | L")
+    read, errs = parse("---\n" + "\n".join(ledger_lines(LEDGER_FIXTURE, swapped)) + "\n---\nx\n")
+    now, found = apply_ledger(LEDGER_FIXTURE, read["ledger"])
+    if errs or found or sorted(table_rows(now, LEDGER)) != sorted(table_rows(swapped, LEDGER)):
+        bad.append(f"lines on two cells that interact read {read['ledger']}: {errs} {found}")
     twin = LEDGER_FIXTURE.replace("H | M", "H | H")
     text = "\n".join(ledger_lines(twin, twin.replace("H | H", "L | H")))
     if not text.startswith("ledger-: one\nledger=: one"):
