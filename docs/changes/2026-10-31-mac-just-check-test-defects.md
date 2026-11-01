@@ -1,6 +1,6 @@
 ---
 issue: Closes #1961
-raise: tests +9
+raise: tests +10
 ---
 `just check` no longer goes red on macOS for three reasons unrelated to the diff under test. The
 CLI surface tests clear every provider key from the spawned binary's environment, so a shell's

@@ -1219,6 +1219,83 @@ async fn text_after_the_last_usage_counts_at_bytes_per_three() -> Result<(), Box
     Ok(())
 }
 
+/// #1574: the history whose 1,110 tokens sit past `tight_settings`' 1,000-token budget.
+fn due_history() -> Vec<AgentMessage> {
+    vec![
+        AgentMessage::user_input(UserContent::Text("ask".to_owned()), 0),
+        reply_with_usage("ok", 100, 110),
+        AgentMessage::user_input(UserContent::Text("x".repeat(3_000)), 0),
+    ]
+}
+
+/// Compacts `due_history` under `compaction.render = render`, with one summarizer reply queued
+/// whether or not the run may ask for it.
+async fn compact_due_history(
+    render: bool,
+) -> Result<(Arc<ProviderStream>, yi_runtime::compaction::Replacement), Box<dyn Error>> {
+    let mut compactor = yi_runtime::Compactor::default();
+    compactor.settings = tight_settings();
+    compactor.render = render;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![faux_assistant_message(
+        vec![faux_text("## Goal\nSummary")],
+        StopReason::Stop,
+    )]);
+    let outcome = compactor
+        .maybe_compact(
+            &due_history(),
+            &faux_model(2_000),
+            &yi_runtime::compaction::LoopRequest::new("sys".to_owned(), &[], Effort::Off),
+            provider.as_ref(),
+            None,
+            &yi_loop::interrupt::InterruptSignal::default(),
+        )
+        .await?;
+    let yi_runtime::compaction::Compacted::Applied(replaced) = outcome else {
+        return Err("the history was not due for compaction".into());
+    };
+    Ok((provider, replaced))
+}
+
+/// #1574: a render checkpoint is the view and the file lists, so it opens no summarizer stream
+/// and the summarizer's prose never reaches the summary.
+#[tokio::test]
+async fn a_render_compaction_spends_no_summarizer_request() -> Result<(), Box<dyn Error>> {
+    let (provider, replaced) = compact_due_history(true).await?;
+    assert_eq!(
+        provider.faux_time.requests(),
+        0,
+        "the render compaction opened a summarizer stream"
+    );
+    let Some(AgentMessage::CompactionSummary { summary, .. }) = replaced.messages.first() else {
+        return Err("the replacement does not open on a summary".into());
+    };
+    assert!(summary.contains("<yi_compact_view>"), "{summary}");
+    assert!(
+        !summary.contains("## Goal"),
+        "the summarizer's prose reached a render: {summary}"
+    );
+    Ok(())
+}
+
+/// The lever's other arm is the shipped path, byte for byte: one summarizer request, and the
+/// words it answers with are what the summary carries under the view.
+#[tokio::test]
+async fn a_summary_compaction_still_spends_one_summarizer_request() -> Result<(), Box<dyn Error>> {
+    let (provider, replaced) = compact_due_history(false).await?;
+    assert_eq!(
+        provider.faux_time.requests(),
+        1,
+        "the summary path asked the summarizer more than once"
+    );
+    let Some(AgentMessage::CompactionSummary { summary, .. }) = replaced.messages.first() else {
+        return Err("the replacement does not open on a summary".into());
+    };
+    assert!(summary.contains("<yi_compact_view>"), "{summary}");
+    assert!(summary.contains("## Goal\nSummary"), "{summary}");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_idle_compaction_reads_the_last_requests_prefix() -> Result<(), Box<dyn Error>> {
     let (port, served) = openrouter_stand_in(vec![
@@ -2301,6 +2378,74 @@ async fn a_recorded_finding_is_listed_in_the_compaction_view() -> Result<(), Box
     assert!(
         summary.contains("[Findings, as the model recorded them]\nthe parser drops tab indents [Outstanding] before line 40\n"),
         "{summary}"
+    );
+    Ok(())
+}
+
+/// Dies with a host notice or a wrapped reminder carried into the kept tail as the user's words.
+#[tokio::test]
+async fn the_retention_floor_keeps_the_users_typed_words_and_drops_host_text()
+-> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-floor")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-floor");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-floor".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let summary = faux_assistant_message(vec![faux_text("## Goal\nSummarized")], StopReason::Stop);
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        summary,
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("first requirement: keep the guardrails green")?;
+    session.wait_idle().await;
+    {
+        let mut writer = yi_session::lock_session(&store);
+        writer.append_message(
+            "main",
+            AgentMessage::host_text(
+                yi_types::message::HostSource::Notice,
+                "[host] job 7 finished",
+                0,
+            ),
+        )?;
+        writer.append_message(
+            "main",
+            yi_context::wrap_internal(
+                "reminder",
+                "keep going",
+                yi_types::message::ATTRIBUTED_SINCE_MS,
+            ),
+        )?;
+    }
+    session.prompt("second ask with enough characters to keep recent")?;
+    session.wait_idle().await;
+    assert_eq!(session.store_error(), None);
+    let compactions = compaction_entries(&store);
+    let Some(Entry::Compaction { retained_tail, .. }) = compactions.first() else {
+        return Err("expected a compaction entry".into());
+    };
+    let kept: Vec<&str> = retained_tail
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            "first requirement: keep the guardrails green",
+            "second ask with enough characters to keep recent"
+        ],
+        "the kept tail is the user's typed words only"
     );
     Ok(())
 }

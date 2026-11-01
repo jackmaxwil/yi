@@ -245,20 +245,11 @@ pub struct SubagentHost {
     /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
     pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
     kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
-    pub(crate) claude_hooks: std::sync::OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
+    pub(crate) checker: std::sync::OnceLock<crate::goal::Checker>,
 }
 
 pub(crate) fn random_suffix() -> Result<String, String> {
-    use std::io::Read;
-    let mut buffer = [0_u8; 4];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut source| source.read_exact(&mut buffer))
-        .map_err(|error| format!("/dev/urandom: {error}"))?;
-    let mut out = String::with_capacity(8);
-    for byte in buffer {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    Ok(out)
+    yi_kernel::connection::random_hex(std::path::Path::new("/dev/urandom"), 4)
 }
 
 fn default_session_name(prompt: &str, child_id: &str) -> String {
@@ -419,7 +410,7 @@ impl SubagentHost {
             partitions: Mutex::default(),
             leads: Mutex::default(),
             check_gate: std::sync::OnceLock::new(),
-            claude_hooks: std::sync::OnceLock::new(),
+            checker: std::sync::OnceLock::new(),
             kernel: std::sync::OnceLock::new(),
         }
     }
@@ -444,8 +435,8 @@ impl SubagentHost {
         self.deadline.lock().ok().and_then(|slot| *slot)
     }
 
-    pub(crate) fn claude_hooks(&self) -> Option<Arc<crate::claude_hooks::Hooks>> {
-        self.claude_hooks.get().cloned().flatten()
+    pub(crate) fn checker(&self) -> crate::goal::Checker {
+        self.checker.get().cloned().unwrap_or_default()
     }
 
     /// Incident: a wait on an empty family exempted a repeated failing call from the breaker.
