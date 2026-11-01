@@ -397,6 +397,10 @@ impl KernelService {
                 "RLM_SESSION_DIR".to_owned(),
                 session_dir.to_string_lossy().into_owned(),
             ));
+            // `%pip` installs here, the one place a contained kernel writes that outlives a cell.
+            let site = session_dir.join("site").to_string_lossy().into_owned();
+            env.push(("PIP_TARGET".to_owned(), site.clone()));
+            env.push(("PYTHONPATH".to_owned(), site));
         }
         if let Some(family_dir) = &self.options.family_dir {
             env.push((
@@ -443,6 +447,10 @@ impl KernelService {
             crate::kernel_state::state_dir(dir, self.options.per_session_state, key.as_deref())
         });
         let wrap = self.kernel_wrap(self.options.sandbox.as_ref(), state.as_deref());
+        if let Some(dir) = state.as_deref() {
+            // A sys.path entry missing at boot is cached as absent, and the install never imports.
+            let _a_failed_install_says_so = std::fs::create_dir_all(dir.join("site"));
+        }
         if wrap.is_none() && self.own_paths.is_some() {
             return Err(crate::gate::WALLED_KERNEL_UNCONFINED.to_owned());
         }

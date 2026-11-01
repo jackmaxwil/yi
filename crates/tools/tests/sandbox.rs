@@ -790,7 +790,7 @@ fn a_contained_resolver_failure_reads_as_the_sandbox() -> TestResult {
             .map(|refusal| denial_hint(&refusal))
             .unwrap_or_default();
         assert!(
-            code != 0 && hint.contains("no network beyond 127.0.0.1 and ::1"),
+            code != 0 && hint.contains("only through its proxy on 127.0.0.1"),
             "`{command}` exited {code} with no sandbox hint: {output}"
         );
     }

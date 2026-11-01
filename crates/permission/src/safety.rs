@@ -416,6 +416,27 @@ fn subcommand_after<'a>(argv: &'a [String], after: &str) -> Option<&'a str> {
         .filter(|token| !token.starts_with('-'))
 }
 
+/// Flags that move an install out of the tree and the package caches, where the sandbox would
+/// refuse it after the download; `--location=global` is npm's long spelling of `-g`.
+const OUTSIDE_THE_TREE: [&str; 7] = [
+    "-g",
+    "--global",
+    "--location=global",
+    "--user",
+    "--target",
+    "--prefix",
+    "--root",
+];
+
+fn installs_outside(argv: &[String]) -> bool {
+    argv.iter().any(|token| {
+        let flag = token
+            .split_once('=')
+            .map_or(token.as_str(), |(flag, _)| flag);
+        OUTSIDE_THE_TREE.contains(&token.as_str()) || OUTSIDE_THE_TREE.contains(&flag)
+    })
+}
+
 fn cargo_class(argv: &[String]) -> Class {
     match subcommand(argv) {
         Some("install" | "uninstall" | "publish" | "yank" | "login") => Class::Destructive,
@@ -512,7 +533,14 @@ pub fn classify(argv: &[String]) -> Class {
         }
         "uniq" if argv.len() > flags(argv).len().saturating_add(2) => Class::Unknown,
         "grep" | "awk" => Class::Safe,
-        "npm" | "pnpm" | "yarn" | "pip" | "pip3" | "brew" | "gem" => match subcommand(argv) {
+        "npm" | "pnpm" | "yarn" | "pip" | "pip3" => match subcommand(argv) {
+            Some("publish" | "link" | "login" | "global") => Class::Destructive,
+            Some("install" | "uninstall" | "remove" | "add") if installs_outside(argv) => {
+                Class::Destructive
+            }
+            _ => Class::Unknown,
+        },
+        "brew" | "gem" => match subcommand(argv) {
             Some("install" | "uninstall" | "remove" | "add" | "publish" | "link") => {
                 Class::Destructive
             }
@@ -884,7 +912,16 @@ pub fn host_need(argv: &[String]) -> Option<&'static str> {
     if HOST_PROGRAMS.contains(&name) || git_network {
         return Some("network");
     }
-    (name != "git" && matches!(verb, "add" | "install" | "login" | "publish")).then_some("installs")
+    // Into the tree, through the proxy, with the package caches writable: nothing to leave for.
+    let contained = matches!(verb, "add" | "install")
+        && !installs_outside(argv)
+        && matches!(
+            name,
+            "npm" | "pnpm" | "yarn" | "pip" | "pip3" | "uv" | "bun"
+        )
+        || (name == "cargo" && verb == "add");
+    (name != "git" && !contained && matches!(verb, "add" | "install" | "login" | "publish"))
+        .then_some("installs")
 }
 
 /// Options that move a command's tree or repository, and so its blast radius, elsewhere.

@@ -882,7 +882,7 @@ pub fn nested_sandbox_note(output: &str) -> Option<String> {
     ))
 }
 
-const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and has no network beyond 127.0.0.1 and ::1 (a dual-stack socket's `::ffff:127.0.0.1` is refused)";
+const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and reaches the network only through its proxy on 127.0.0.1 (a dual-stack socket's `::ffff:127.0.0.1` is refused)";
 
 /// The note under a kernel cell the sandbox refused, read off its streams and traceback (a
 /// `bash()` job's output too); the kernel has no retry outside, so it promises no question.

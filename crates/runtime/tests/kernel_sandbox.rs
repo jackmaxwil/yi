@@ -1082,3 +1082,37 @@ except Exception as error:
     );
     Ok(())
 }
+
+/// The hint for a missing module names `%pip`, so a contained kernel has to be able to run it. The
+/// wheel is built here: an install that needs no network shows the target, the path and the import.
+#[tokio::test]
+async fn a_contained_kernels_pip_installs_for_the_session_and_imports() -> TestResult {
+    seatbelt()?;
+    let (root, project, home, _session) = workspace("pip")?;
+    let session = root_session(&project, &home, &root.join("rlm"), None, None, None);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let wheel = root.join("yi_wheel_probe-1.0-py3-none-any.whl");
+    let build = format!(
+        r#"import zipfile
+with zipfile.ZipFile(r"{wheel}", "w") as z:
+    z.writestr("yi_wheel_probe.py", "value = 41 + 1\n")
+    z.writestr("yi_wheel_probe-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: yi-wheel-probe\nVersion: 1.0\n")
+    z.writestr("yi_wheel_probe-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nGenerator: yi\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+    z.writestr("yi_wheel_probe-1.0.dist-info/RECORD", "")
+get_ipython().run_line_magic("pip", r"install --no-index --quiet {wheel}")
+import yi_wheel_probe
+print("imported", yi_wheel_probe.value)"#,
+        wheel = wheel.display()
+    );
+    let ran = cell(&kernel, build).await;
+    kernel.dispose().await;
+    let ran = ran?;
+    assert!(
+        ran.result.stdout.contains("imported 42"),
+        "{:?}",
+        ran.result
+    );
+    Ok(())
+}
