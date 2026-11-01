@@ -345,13 +345,12 @@ fn wire_fetch(
     .with_transcripts(transcripts)
     .with_family_dir(wiring.family_dir())
     .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>)
-    .with_home(wiring.home.clone());
+    .with_home(wiring.home.clone())
+    .with_screen(session.screeners());
     if let Ok(show) = crate::fetch::open_checkpoint_show(&wiring.home, &wiring.cwd) {
         resolver = resolver.with_checkpoint_show(show);
     }
-    if let Some(read) = wiring.mcp_read.clone() {
-        resolver = resolver.with_mcp_read(read);
-    }
+    resolver = resolver.with_mcp_read(wiring.mcp_read.clone());
     let resolver = Arc::new(resolver);
     host.set_resolver(Arc::clone(&resolver));
     if let (Some(sessions), 0) = (&wiring.sessions_dir, wiring.depth) {
