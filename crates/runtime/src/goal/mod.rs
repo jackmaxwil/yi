@@ -112,10 +112,7 @@ pub(crate) fn captured(
         .map(crate::egress::Lease::revoke)
         .unwrap_or_default();
     if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
-        let _swept_or_gone_with_the_container = yi_tools::keyless_command("sh")
-            .arg("-c")
-            .arg(sweep)
-            .output();
+        yi_tools::jobs::run_sweep(sweep);
     }
     Ok(capture)
 }

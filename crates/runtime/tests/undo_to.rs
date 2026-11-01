@@ -323,3 +323,20 @@ async fn a_tree_too_slow_to_capture_stops_trying_and_says_so() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with `restore` asked for a tree its store lacks: a bad-object error on the way to a rewind.
+#[tokio::test]
+async fn an_undo_whose_turn_end_is_in_another_store_moves_nothing() -> Result<(), Box<dyn Error>> {
+    let run = run(&["a"]).await?;
+    let missing = "0123456789abcdef0123456789abcdef01234567";
+    let data = yi_types::checkpoint::CheckpointData {
+        tree: missing.to_owned(),
+        at: yi_types::checkpoint::CheckpointAt::TurnEnd,
+        after: None,
+    };
+    lock_session(&run.store).append_custom_record(&data)?;
+    let outcome = yi_runtime::undo(&run.store, &run.project, &run.home);
+    assert!(matches!(outcome, yi_runtime::UndoOutcome::NoCheckpoint));
+    assert!(run.project.join("a").exists(), "the tree stands");
+    Ok(())
+}
