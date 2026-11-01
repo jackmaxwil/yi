@@ -3830,13 +3830,22 @@ async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResul
         spared: Vec::new(),
     };
     let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), Some(sandbox));
-    let marker = root.join("project/contained-marker");
-    let check = json!(format!("touch {}", marker.display()));
-    let spawned = host.spawn(
-        "land the fix".to_owned(),
-        protocol_kwargs("contained", &[("check", check)]),
-    );
-    assert!(spawned.is_ok(), "{spawned:?}");
+    let outside = root.join("outside-marker");
+    let address = root.join("project/escape-target");
+    std::fs::write(&address, outside.display().to_string())?;
+    // Read from a file, so the gate's reading of the words cannot refuse it before the sandbox.
+    let check = json!(format!("touch \"$(cat {})\"", address.display()));
+    let reply = host
+        .spawn(
+            "land the fix".to_owned(),
+            protocol_kwargs("contained", &[("check", check)]),
+        )
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    assert!(wait_for_status(&host, child_id, "completed").await);
+    let refused = host.result("contained", None).err().unwrap_or_default();
+    assert!(refused.contains("[contained: "), "{refused}");
+    assert!(!outside.exists(), "the child's check ran on the host");
     Ok(())
 }
 

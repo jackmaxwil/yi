@@ -1,7 +1,7 @@
 ---
 issue: Closes #1931
 growth: +314 includes #1945's lines beneath it; `Checker` carries the sandbox to every check site in place of the hooks handle, and its tests sit in its crate. One placement function serves bash and a check (`jobs::place`) and one sweep rule serves both (`jobs::swept`), so the precedence and the sweep have one owner each. Weighed: a parameter beside `hooks` at each of nine sites, more lines; a global profile, which a family of sessions could not share; a second copy of the placement in the goal module, which is where the drift came from
-raise: tests +261, comments +23, crate runtime +214, crate tools +91
+raise: tests +270, comments +23, crate runtime +214, crate tools +91
 ---
 A check now runs where the same command would run in bash: inside the sandbox, outside yolo. Before, a goal check, a child's `check=`, a plan verifier and a schedule's `exec://` source all ran on the host, so `cargo test` as a check ran a child's `build.rs` outside the sandbox. A check the gate would only contain used to be refused at spawn; it now runs contained, so `just check` can be one.
 
