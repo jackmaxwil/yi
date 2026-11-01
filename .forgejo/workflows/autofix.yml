@@ -42,12 +42,16 @@ jobs:
             || echo 0)
           echo "newer=$newer" >> "$GITHUB_OUTPUT"
           [ "$newer" = 0 ] || echo "autofix: skipped, $newer newer pass(es) queued"
-      # Main's tree: the merged PR's code runs only inside a token-free clone.
+      # Main's tree: the PR's code and the model run only in a worker under a throwaway uid.
       - if: steps.queue.outputs.newer == '0'
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
+      # A job's HOME starts with no skills, and this copy is main's, not the PR's tree.
+      # The worker gets a copy; this one stays root's (pr_autofix.in_worker).
+      - if: steps.queue.outputs.newer == '0'
+        run: just install-skills
       - if: steps.queue.outputs.newer == '0'
         run: rustup show
       - if: steps.queue.outputs.newer == '0'

@@ -27,6 +27,7 @@ pub mod classifier;
 pub mod compaction;
 pub mod config;
 pub mod diff;
+pub mod egress;
 pub mod encoding;
 pub mod entry;
 pub mod event;

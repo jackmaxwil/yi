@@ -153,7 +153,7 @@ fn contained(
 ) -> Option<(String, Vec<String>, Option<yi_tools::Sandbox>)> {
     let (program, args) = argv.split_first()?;
     if yi_tools::Sandbox::available() {
-        let sandbox = yi_tools::Sandbox::for_workspace(tree, home, None);
+        let sandbox = yi_tools::Sandbox::for_workspace(tree, home, None).with_caches(home);
         let (program, args) = sandbox.wrap(program, args);
         return Some((program, args, Some(sandbox)));
     }

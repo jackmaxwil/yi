@@ -231,16 +231,18 @@ fn a_plan_check_passes_the_frozen_bash_hooks_before_it_runs() -> TestResult {
         &manifest(&format!("touch {}", marker.display()), 5_000, &[]),
     )?;
     let contract = cmd_contract(check, 5_000)?;
-    let verdict = Verifier::new(5_000).with_claude_hooks(hooks).run(
-        &token(&contract)?,
-        &contract,
-        &Snapshot {
-            id: "tree:test",
-            root: &temp,
-            output: None,
-            artifacts: &artifacts,
-        },
-    );
+    let verdict = Verifier::new(5_000)
+        .with_checker(yi_runtime::goal::Checker::from_hooks(hooks))
+        .run(
+            &token(&contract)?,
+            &contract,
+            &Snapshot {
+                id: "tree:test",
+                root: &temp,
+                output: None,
+                artifacts: &artifacts,
+            },
+        );
     assert!(
         verdict.lines().contains("plan hook denied"),
         "{}",
