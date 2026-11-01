@@ -30,7 +30,7 @@ const SEED: [&str; 13] = [
 /// `sandbox.egress`, and the domains whose first decision the ledger already holds.
 #[derive(Default)]
 pub(super) struct Named {
-    config: OnceLock<Vec<Domain>>,
+    pub(super) config: OnceLock<Vec<Domain>>,
     recorded: Mutex<HashSet<Domain>>,
 }
 

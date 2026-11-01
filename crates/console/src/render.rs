@@ -34,19 +34,7 @@ pub struct PaneView {
     pub chat: bool,
 }
 
-/// The one control table hover and press both walk; press maps it to an action, hover to a rect.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Hit {
-    Tab(usize),
-    Settings(PaneId, crate::settings::Target),
-    Button(keys::Action),
-    Gear,
-    Title(PaneId),
-    New(Option<String>),
-    Search,
-    Fold(String),
-    Session(usize),
-}
+pub use crate::hit::Hit;
 
 #[derive(Default)]
 pub struct Hits {
@@ -181,7 +169,6 @@ pub struct ViewState {
     pub header: Rect,
     pub panes_area: Rect,
     pub panes: Vec<PaneView>,
-    pub split_borders: Vec<SplitBorder>,
     pub banner: Option<Rect>,
     pub framed: bool,
     pub rail_edge: Option<u16>,
@@ -342,7 +329,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         avatars,
         controls,
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
-        splits: split_borders.clone(),
+        splits: split_borders,
         tabs: tab_hits,
         settings_targets: crate::settings::hits(app, &panes),
         gear: (gear.height > 0).then_some(gear),
@@ -356,7 +343,6 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         header,
         panes_area,
         panes,
-        split_borders,
         banner: Some(banner),
         framed,
         rail_edge,
@@ -773,6 +759,8 @@ fn paint_chat_pane(
     let mut scroll = pane.scroll_from_bottom;
     view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
     pane.scroll_from_bottom = scroll;
+    let runs = chat.app.run_chips();
+    crate::hit::offer_runs(app, view.id, runs);
     if dim {
         for y in inner.top()..inner.bottom() {
             for x in inner.left()..inner.right() {

@@ -1456,7 +1456,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 |---|---|---|
 | `check_manifests` | folder `x` is crate `yi-x`; workspace version, edition, license, rust-version, lints; deps `{ workspace = true }`; feature allowlist; string_slice roots (§19); `serde`/`serde_derive` only in `yi-types` (§20) | `string_slice_pending.json` |
 | `check_boundaries` | each crate's `yi-*` deps are in its allowlist, and a `yi-*` dev-dependency past it is in the `[dev]` table; unknown crate, stale entry or stale `[dev]` edge fails | `boundaries.toml` |
-| `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field, no baseline without a reader (D109) | — |
+| `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field or enum variant field (a literal sets, only a read or a pattern binding reads, a test is no reader), no yi-types shape production code never names, no baseline without a reader (D109) | — |
 | `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline modification never shares a commit with code (a deletion rides with the gate that stopped reading it; merge commits exempt) | — |
 | `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, the fork point, `schemas.lock` |
 | `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json` (`binary_size_budget_linux.json` on Linux), `startup_ms_budget.json` |

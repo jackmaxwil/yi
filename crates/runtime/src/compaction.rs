@@ -55,17 +55,39 @@ impl std::fmt::Display for Elision {
     }
 }
 
+/// What `Compactor::maybe_compact` did: the history was replaced, nothing was due, or another
+/// compaction already held the session's one slot.
+pub enum Compacted {
+    Applied(Replacement),
+    NotDue,
+    Busy,
+}
+
+impl Compacted {
+    /// The outcome of a call that replaced nothing: a refusal names itself, so `/compact` does
+    /// not read as nothing to do.
+    pub fn outcome(&self) -> CompactOutcome {
+        if matches!(self, Self::Busy) {
+            CompactOutcome::Busy
+        } else {
+            CompactOutcome::NotApplied
+        }
+    }
+}
+
 /// What `AgentSession::compact_now` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactOutcome {
     NotApplied,
     Summarized,
     Elided(Elision),
+    /// Another compaction was in flight and this request left the history to it.
+    Busy,
 }
 
 impl CompactOutcome {
     pub fn applied(&self) -> bool {
-        *self != Self::NotApplied
+        matches!(self, Self::Summarized | Self::Elided(_))
     }
 }
 
@@ -108,6 +130,9 @@ pub(crate) fn fitting_start(messages: &[AgentMessage], budget: Tokens) -> Option
 
 /// The custom type of every compaction notice and marker: a note, never a turn of its own.
 pub const COMPACTION_NOTICE: &str = "compaction_notice";
+
+/// `compaction.render`: 1 composes the checkpoint from the view and the file lists alone.
+pub const RENDER: u8 = 0;
 
 /// Why a due compaction left the history as it was; the text is the notice the model reads.
 #[derive(Debug, thiserror::Error)]
@@ -202,14 +227,14 @@ pub fn loop_hook(
                 .await;
             drop(closing);
             match replaced {
-                Ok(Some(replaced)) => {
+                Ok(Compacted::Applied(replaced)) => {
                     if let Some(elision) = &replaced.elision {
                         elided(elision);
                     }
                     compacted();
                     Some(replaced.messages)
                 }
-                Ok(None) => None,
+                Ok(Compacted::NotDue | Compacted::Busy) => None,
                 Err(error) => {
                     gave_up.store(true, Ordering::Relaxed);
                     failed(&error);
@@ -246,6 +271,9 @@ pub struct Compactor {
     /// The newest reply with a usage that the latest compaction kept: its count is the history
     /// before that compaction, so `due` does not read it (D338).
     stale: Mutex<Option<AgentMessage>>,
+    /// `compaction.render`: 1 spends no summarizer request on a checkpoint, so what it composes
+    /// is the view and the file lists a summary would have been prefixed with anyway.
+    pub render: bool,
     /// `compaction.at` in tokens, 0 when unset: due once the request passes it, if that comes
     /// before the window's reserve.
     ceiling: AtomicU64,
@@ -254,15 +282,18 @@ pub struct Compactor {
 struct Raised<'a>(&'a AtomicBool);
 
 impl<'a> Raised<'a> {
-    fn new(flag: &'a AtomicBool) -> Self {
-        flag.store(true, Ordering::Relaxed);
-        Self(flag)
+    /// Invariant: one compaction in flight per session. The caller that loses the guard gets
+    /// `None` and has spent neither the pending request nor a summarizer call.
+    fn new(flag: &'a AtomicBool) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self(flag))
     }
 }
 
 impl Drop for Raised<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Relaxed);
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -358,6 +389,16 @@ fn directive_message(
 }
 
 impl Compactor {
+    /// The row a session reads once, before it compacts: `compaction.render`.
+    pub fn new(settings: Settings, summarizer: Option<Model>) -> Self {
+        Self {
+            settings,
+            summarizer,
+            render: crate::levers::get().compaction_render == 1,
+            ..Self::default()
+        }
+    }
+
     /// The reason when `tokens` is under what a compaction keeps and was raised to it.
     pub fn set_ceiling(&self, tokens: Option<u64>) -> Option<String> {
         let tokens = tokens.unwrap_or(0);
@@ -597,12 +638,14 @@ impl Compactor {
         provider: &ProviderStream,
         store: Option<&yi_session::SharedSession>,
         signal: &InterruptSignal,
-    ) -> Result<Option<Replacement>, CompactError> {
+    ) -> Result<Compacted, CompactError> {
         if !self.wanted(messages, model) {
-            return Ok(None);
+            return Ok(Compacted::NotDue);
         }
+        let Some(_in_flight) = Raised::new(&self.running) else {
+            return Ok(Compacted::Busy);
+        };
         let scheduled = self.pending.swap(false, Ordering::Relaxed);
-        let _running = Raised::new(&self.running);
         let once = self
             .instructions
             .lock()
@@ -628,7 +671,7 @@ impl Compactor {
             .unwrap_or_default();
         let prepared = entries.and_then(|entries| prepare_compaction(&entries, &self.settings));
         let Some(mut prepared) = prepared else {
-            return Ok(None);
+            return Ok(Compacted::NotDue);
         };
         prepared.view.findings = findings;
         let inputs = store.and_then(|store| crate::fetch::user_inputs(store).ok());
@@ -682,27 +725,34 @@ impl Compactor {
                 outcome => outcome,
             }
         };
-        // Past the window the warm request cannot go out: two cold tries, a quarter then half
-        // trimmed. Else warm, then a cold quarter-trimmed retry (no tools, so it must be text).
-        let over = estimate_context(messages).tokens >= Tokens(model.context_window);
-        let len = messages.len();
-        let attempts = if over {
-            [(len / 4, false), (len / 2, false)]
+        let summary = if self.render {
+            // Invariant: a render compaction is the view and the file lists alone, so it opens no
+            // summarizer stream and spends no side call.
+            Ok(String::new())
         } else {
-            [(0, warm), (len / 4, false)]
-        };
-        let mut summary = Err(String::new());
-        for (skip, warm) in attempts {
-            // Never open on a tool result, which no provider takes without its call.
-            let skip = messages[skip..]
-                .iter()
-                .position(is_cut_point)
-                .map_or(len, |offset| skip.saturating_add(offset));
-            summary = summarize(request(&messages[skip..], warm), warm).await;
-            if summary.is_ok() {
-                break;
+            // Past the window the warm request cannot go out: two cold tries, a quarter then half
+            // trimmed. Else warm, then a cold quarter-trimmed retry (no tools, so it must be text).
+            let over = estimate_context(messages).tokens >= Tokens(model.context_window);
+            let len = messages.len();
+            let attempts = if over {
+                [(len / 4, false), (len / 2, false)]
+            } else {
+                [(0, warm), (len / 4, false)]
+            };
+            let mut summary = Err(String::new());
+            for (skip, warm) in attempts {
+                // Never open on a tool result, which no provider takes without its call.
+                let skip = messages[skip..]
+                    .iter()
+                    .position(is_cut_point)
+                    .map_or(len, |offset| skip.saturating_add(offset));
+                summary = summarize(request(&messages[skip..], warm), warm).await;
+                if summary.is_ok() {
+                    break;
+                }
             }
-        }
+            summary
+        };
         let (composed, details, retained_tail, elision) = match summary {
             Ok(text) => {
                 let (composed, details) =
@@ -757,7 +807,7 @@ impl Compactor {
             timestamp,
         });
         replacement.extend(retained_tail);
-        Ok(Some(Replacement {
+        Ok(Compacted::Applied(Replacement {
             messages: replacement,
             elision,
         }))
