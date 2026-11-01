@@ -53,7 +53,7 @@ pub(super) fn probe_only(args: &crate::Args) -> i32 {
             return refuse(args.json, 1, &ErrorClass::RefusalLane, &message);
         }
     };
-    let dir = crate::work_dir(lane.map(|lane| lane.path().to_path_buf()), args);
+    let dir = crate::work_dir(lane.as_ref().map(|lane| lane.path().to_path_buf()), args);
     match first_refusal(&args.check, &dir) {
         None => 0,
         Some(refusal) => refuse(args.json, 2, &ErrorClass::RefusalConfig, &refusal),

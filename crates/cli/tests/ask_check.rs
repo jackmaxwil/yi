@@ -356,7 +356,7 @@ fn a_lane_ask_probes_the_check_in_the_lane_worktree() -> TestResult {
     assert_eq!(run.status.code(), Some(2), "{out}{err}");
     assert!(err.contains("`./gate.sh` is not runnable"), "{err}");
     assert!(check_lines(&run)?.is_empty(), "{out}");
-    let sessions = std::fs::read_dir(workspace.0.join("home/sessions")).map_or(0, Iterator::count);
+    let sessions = sessions(&workspace.0.join("home/sessions"));
     assert_eq!(sessions, 0, "the refused run recorded a session: {err}");
     let probe = workspace.yi(&[
         "ask",
@@ -419,9 +419,7 @@ impl Check {
     }
 
     fn sessions(&self) -> usize {
-        std::fs::read_dir(self.root.join("home/sessions"))
-            .map(|entries| entries.count())
-            .unwrap_or(0)
+        sessions(&self.root.join("home/sessions"))
     }
 }
 
@@ -429,6 +427,10 @@ impl Drop for Check {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+fn sessions(dir: &std::path::Path) -> usize {
+    crate::session_files::session_files(dir).map_or(0, |files| files.len())
 }
 
 #[test]
@@ -483,5 +485,35 @@ fn a_json_probe_without_a_prompt_closes_with_a_final_row() -> TestResult {
     let last: Value = serde_json::from_str(out.lines().last().unwrap_or_default())?;
     assert_eq!(last["type"], "final", "{out}");
     assert_eq!(last["class"], "refusal:config", "{out}");
+    Ok(())
+}
+
+/// Dies with the prompt-less probe's lane refusal printed on stderr alone: a `--json` harness
+/// reads an empty stdout where the prompted form closes with a `refusal:lane` final row.
+#[test]
+fn a_json_probe_refused_a_lane_closes_with_a_final_row() -> TestResult {
+    let workspace = Workspace::new("json-probe-lane")?;
+    crate::repo::init_repo(&workspace.project())?;
+    std::fs::write(workspace.0.join("home/.yi/lanes"), "not a directory")?;
+    let script = cassette(&workspace, &[Turn::Say("unused")])?;
+    let probe = workspace.yi(&[
+        "ask",
+        "--json",
+        "--lanes",
+        "--model",
+        "faux/faux-1",
+        "--faux",
+        &script,
+        "--check",
+        "true",
+    ])?;
+    let (out, err) = (
+        stdout(&probe),
+        String::from_utf8_lossy(&probe.stderr).into_owned(),
+    );
+    assert_eq!(probe.status.code(), Some(1), "{out}{err}");
+    let last: Value = serde_json::from_str(out.lines().last().unwrap_or_default())?;
+    assert_eq!(last["type"], "final", "{out}");
+    assert_eq!(last["class"], "refusal:lane", "{out}");
     Ok(())
 }
