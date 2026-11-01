@@ -8,6 +8,8 @@ entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_type
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
+context P1–P19; prefix-aligned P7 | `compaction_faux::a_render_compaction_spends_no_summarizer_request`
+context P1–P19; prefix-aligned P7 | `compaction_faux::the_retention_floor_keeps_the_users_typed_words_and_drops_host_text` (T1)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_second_compaction_while_one_is_in_flight_is_refused` (T1)
 hashline edit (+ registers, instrumented) | `hashline_patcher::read_edit_round_trip_replaces_lines_and_mints_a_new_tag`
 hashline edit (+ registers, instrumented) | `hashline_patcher::named_register_moves_content_across_files`
@@ -588,3 +590,4 @@ lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an e
 web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
 web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)
 console settings pane | `drive::a_press_on_a_settings_row_saves_the_control_it_names`
+console run chip | `drive::pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not`
