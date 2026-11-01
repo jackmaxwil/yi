@@ -151,8 +151,11 @@ mod fresh_tree {
             Scratch::new("yi-first-env")?,
             Scratch::new("yi-first-other")?,
         );
-        // nextest gives each test its own process.
-        unsafe { std::env::set_var("CARGO_TARGET_DIR", "/shared/target") };
+        // nextest gives each test its own process, and CI sets the second one for itself.
+        unsafe {
+            std::env::set_var("CARGO_TARGET_DIR", "/shared/target");
+            std::env::remove_var("CARGO_INCREMENTAL");
+        }
         yi_tools::register_first_use(&tree, Box::new(Vec::new));
         let show = "printf '%s %s' \"${CARGO_TARGET_DIR:-unset}\" \"${CARGO_INCREMENTAL:-unset}\"";
         assert_eq!(run(show, &tree)?.stdout, "unset 0");
