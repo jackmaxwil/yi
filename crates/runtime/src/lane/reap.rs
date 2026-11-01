@@ -29,13 +29,15 @@ impl Uncommitted {
             self.paths = self.paths.saturating_add(1);
             return self;
         };
+        // One budget for the whole read: a hung git in one submodule must not stall every spawn.
+        let until = std::time::Instant::now().checked_add(LIST_BUDGET);
         let links = (stage.lines())
             .filter(|row| row.starts_with("160000 "))
             .filter_map(|row| row.split_once('\t'))
             .filter(|(_, path)| {
                 let populated =
                     std::fs::read_dir(tree.join(path)).is_ok_and(|mut dir| dir.next().is_some());
-                populated && !submodule_is_clean(tree, path)
+                populated && !submodule_is_clean(tree, path, until)
             });
         self.paths = self.paths.saturating_add(links.count());
         self
@@ -161,7 +163,7 @@ impl Pool {
 
 /// `status` under the tree's own profile, so a clean filter a child planted runs contained. A
 /// directory with no `.git` would read the parent's status instead, so it is never clean.
-fn submodule_is_clean(tree: &Path, path: &str) -> bool {
+fn submodule_is_clean(tree: &Path, path: &str, until: Option<std::time::Instant>) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let (Some(home), true) = (home, yi_tools::Sandbox::available()) else {
         return false;
@@ -174,11 +176,18 @@ fn submodule_is_clean(tree: &Path, path: &str) -> bool {
     }
     let sandbox = yi_tools::Sandbox::for_workspace(tree, &home, None);
     let program = git.get_program().to_string_lossy().into_owned();
-    let args = ["--no-optional-locks", "-C", path, "status", "--porcelain"];
+    // The flag as the parent's own read has it: a user's `showUntrackedFiles=no` would hide work.
+    let args = [
+        "--no-optional-locks",
+        "-C",
+        path,
+        "status",
+        "--porcelain",
+        "--untracked-files=normal",
+    ];
     let (program, args) = sandbox.wrap(&program, &args);
     let mut command = yi_tools::keyless_command(program);
     command.args(args).current_dir(tree);
-    let until = std::time::Instant::now().checked_add(LIST_BUDGET);
     let cancelled: yi_tools::CancelFlag =
         std::sync::Arc::new(move || until.is_none_or(|until| std::time::Instant::now() >= until));
     yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP)
