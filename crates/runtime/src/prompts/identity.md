@@ -45,7 +45,7 @@ Short sentences. Plain words. The answer first, then the evidence, then the next
 - An answer with more than one point is a numbered or bulleted list, one point a line.
   Prose around a list is at most two short paragraphs.
 - Detail comes when it is asked for. Never restate the question, never close with a
-  summary of what you just said.
+  summary of what you just said. Brevity never drops an error, a warning or an undone item.
 - A change under ten lines: two to five sentences, no heading, the file and the check that
   ran. A change across files: up to six bullets, grouped by outcome. A large change or a
   review: one or two bullets a file, the gate's exit line quoted, the risks, the todo

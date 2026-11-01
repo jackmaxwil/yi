@@ -29,19 +29,22 @@ RULES = {
     "no-restating": r"never restate the question",
     "no-closing-summary": r"never close with a\s+summary",
     "no-rule-talk": r"rule talk",
+    "keeps-failures": r"brevity never drops an error",
 }
 
+# Stems of the words the prompt's ban list names: a word scored here and banned nowhere would
+# fault an answer for a rule the model was never given, and `prompt_problems` holds the two equal.
+AI_VOCABULARY = ("additionally", "boast", "crucial", "delv", "enhanc", "foster", "intricate",
+                 "landscape", "leverag", "pivotal", "robust", "seamless", "showcas", "tapestry",
+                 "testament", "underscor", "vibrant")
+
 TELLS = {
-    "ai-vocabulary": r"\b(additionally|boasts?|bolster\w*|crucial|delve\w*|enhance\w*|"
-                     r"foster\w*|garner\w*|intricate|intricacies|landscape|leverage\w*|"
-                     r"meticulous\w*|multifaceted|pivotal|robust|seamless|showcas\w*|"
-                     r"tapestry|testament|underscor\w*|vibrant|enduring|interplay)\b",
-    "copula": r"\b(serves? as|stands? as|plays? a (?:\w+ )?role in|functions? as)\b",
+    "ai-vocabulary": rf"\b(?:{'|'.join(AI_VOCABULARY)})\w*\b",
+    "copula": r"\b(serves? as|stands? as|plays? a (?:\w+ )?role in)\b",
     "negative-parallelism": r"\bnot just\b[^.]{0,60}\bbut\b"
-                            r"|\b(?:it|this|that)(?:'s| is) not\b[^.]{0,50}\b(?:it|this|that)(?:'s| is)\b"
-                            r"|\brather than\b",
+                            r"|\b(?:it|this|that)(?:'s| is) not\b[^.]{0,50}\b(?:it|this|that)(?:'s| is)\b",
     "participle-tail": r",\s(?:ensuring|highlighting|reflecting|underscoring|showcasing|"
-                       r"fostering|emphasizing|allowing)\b",
+                       r"fostering|emphasizing)\b",
     "dash": r"[\u2014\u2013]",
     "vague-authority": r"\b(?:experts|studies|research|reports)\s(?:say|note|show|suggest|"
                        r"believe)\b|\bwidely regarded\b|\bindustry reports?\b",
@@ -153,6 +156,8 @@ def prompt_problems(text):
                  for name, n in sorted(strayed.items())]
     if not banned:
         problems.append(f"{PROMPT.name} carries no {BAN_SECTION!r} section")
+    problems += [f"{PROMPT.name}'s ban list names no {stem}* word: ban it, or stop scoring it"
+                 for stem in AI_VOCABULARY if stem not in banned.lower()]
     return problems
 
 
@@ -200,6 +205,10 @@ def selfcheck():
     assert any("states no list-first rule" in p for p in problems), problems
     assert any("spells the ai-vocabulary tell" in p for p in problems), problems
     assert any("carries no" in p for p in problems), "a prompt with no ban list must fail"
+    assert any("names no pivotal*" in p for p in prompt_problems(f"{BAN_SECTION}\n- crucial\n")), \
+        "a scored word the ban list drops must fail"
+    assert score("Rather than a fix, this functions as a stopgap.")["tell_hits"] == 0, \
+        "words the ban list does not name are not tells"
     assert prompt_problems(PROMPT.read_text()) == [], prompt_problems(PROMPT.read_text())
     print("ok   prose selfcheck")
 
