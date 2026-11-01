@@ -849,21 +849,20 @@ fn race(
         .ok_or("no read tool")?;
     let args = args(read.as_ref(), &context);
     let (kind, irreversible) = (tool_impl.kind_for(&args), tool_impl.irreversible(&args));
-    let (mut checks, mut calls, mut calm) = (Vec::new(), Vec::new(), String::new());
+    // Invariant: the offsets follow the rounds' own calls, or a spike here misses every round.
+    let settle = |span: &mut std::time::Duration, seen: std::time::Duration| {
+        *span = (*span * 7 + seen) / 8;
+    };
+    let (mut check, mut call, mut calm) = Default::default();
     for _ in 0..9 {
         swap.disarm(&workspace, benign)?;
         let timed = std::time::Instant::now();
         broker.decide_call(tool, kind, irreversible, "c1", &args, None);
-        checks.push(timed.elapsed());
+        settle(&mut check, timed.elapsed());
         let timed = std::time::Instant::now();
         calm = format!("{:?}", tool_impl.execute(args.clone(), &context).result);
-        calls.push(timed.elapsed());
+        settle(&mut call, timed.elapsed());
     }
-    let median = |spans: &mut Vec<std::time::Duration>| {
-        spans.sort();
-        spans.get(spans.len() / 2).copied().unwrap_or_default()
-    };
-    let (check, call) = (median(&mut checks), median(&mut calls));
     let (arm, armed) = std::sync::mpsc::channel::<std::time::Instant>();
     let (land, landed) = std::sync::mpsc::channel::<std::time::Instant>();
     let swapper = {
@@ -889,16 +888,21 @@ fn race(
         })
     };
     let (mut inside, mut leaks) = (0_usize, 0_usize);
+    let begun = std::time::Instant::now();
     for round in 0..ROUNDS {
-        if inside >= INSIDE {
+        // A cheap tool buys more hits: a broken guard leaks about once in 200 swaps.
+        if inside >= INSIDE * 5 || (inside >= INSIDE && begun.elapsed().as_secs() >= 2) {
             break;
         }
         swap.disarm(&workspace, benign)?;
         let step = u32::try_from(round.wrapping_mul(61) % 64).unwrap_or(0);
-        arm.send(std::time::Instant::now() + check / 2 + (check / 2 + call) * step / 64)?;
+        let started = std::time::Instant::now();
+        arm.send(started + check / 2 + (check / 2 + call) * step / 64)?;
         let allowed = (broker.decide_call(tool, kind, irreversible, "c1", &args, None)).allowed;
         let checked = std::time::Instant::now();
+        settle(&mut check, checked - started);
         let output = allowed.then(|| tool_impl.execute(args.clone(), &context));
+        settle(&mut call, checked.elapsed());
         let at = landed.recv_timeout(std::time::Duration::from_secs(10))?;
         let Some(output) = output else {
             continue;
@@ -1034,7 +1038,8 @@ fn a_parent_swapped_after_the_check_edits_no_key() -> TestResult {
 fn a_parent_swapped_after_the_check_rewrites_no_key_by_grep() -> TestResult {
     let args = |_: &dyn yi_tools::Tool, _: &yi_tools::ToolContext| {
         let mut args = Map::new();
-        args.insert("pattern".to_owned(), json!("ordinary"));
+        // The key's own line matches too, or a call that opened the key would change nothing.
+        args.insert("pattern".to_owned(), json!("ordinary|MARKER"));
         args.insert("path".to_owned(), json!("d"));
         args.insert("replace".to_owned(), json!("overwritten"));
         args.insert("apply".to_owned(), json!(true));
