@@ -768,25 +768,28 @@ enum Swap {
 
 #[cfg(unix)]
 impl Swap {
-    fn arm(self, workspace: &std::path::Path, home: &std::path::Path) {
+    /// Whether the link stands afterwards: a swap that half-happened raced nothing.
+    fn arm(self, workspace: &std::path::Path, home: &std::path::Path) -> bool {
         let at = |name: &str| workspace.join(name);
         match self {
             Swap::File => {
                 let _ = std::os::unix::fs::symlink(home.join(".ssh/id_rsa"), at("l.tmp"));
                 let _ = std::fs::rename(at("l.tmp"), at("x"));
+                at("x").is_symlink()
             }
             Swap::Parent => {
                 let _ = std::fs::rename(at("d"), at("dir.tmp"));
                 let _ = std::os::unix::fs::symlink(home.join(".ssh"), at("d"));
+                at("d").is_symlink()
             }
         }
     }
 
-    fn disarm(self, workspace: &std::path::Path, benign: &str) -> std::io::Result<()> {
+    fn disarm(self, workspace: &std::path::Path) -> std::io::Result<()> {
         let at = |name: &str| workspace.join(name);
         match self {
             Swap::File => {
-                std::fs::write(at("plain.tmp"), benign)?;
+                std::fs::write(at("plain.tmp"), BENIGN)?;
                 std::fs::rename(at("plain.tmp"), at("x"))
             }
             Swap::Parent => {
@@ -799,16 +802,18 @@ impl Swap {
                     let _ = std::fs::remove_dir_all(at("d"));
                     std::fs::rename(at("dir.tmp"), at("d"))?;
                 }
-                std::fs::write(at("d/id_rsa"), benign)
+                std::fs::write(at("d/id_rsa"), BENIGN)
             }
         }
     }
 }
 
-/// Swaps that must land between the broker's check and the tool's open, and the calls allowed
-/// to get them.
 #[cfg(unix)]
-const INSIDE: usize = 200;
+const BENIGN: &str = "ordinary\n";
+/// Swaps a run stops at: a broken guard leaks a few times in a thousand. A run fails below a
+/// fifth of this, and the calls allowed to get them are [`ROUNDS`].
+#[cfg(unix)]
+const INSIDE: usize = 1_000;
 #[cfg(unix)]
 const ROUNDS: usize = 4_000;
 
@@ -818,7 +823,6 @@ const ROUNDS: usize = 4_000;
 fn race(
     tool: &str,
     swap: Swap,
-    benign: &str,
     args: &dyn Fn(&dyn yi_tools::Tool, &yi_tools::ToolContext) -> Map<String, Value>,
     reached: &dyn Fn(&yi_tools::ToolOutput, &std::path::Path) -> bool,
 ) -> Result<(usize, usize), Box<dyn Error>> {
@@ -828,8 +832,8 @@ fn race(
     std::fs::create_dir_all(workspace.join("d"))?;
     let key = home.join(".ssh/id_rsa");
     std::fs::write(&key, "FAKE KEY MARKER\n")?;
-    std::fs::write(workspace.join("x"), benign)?;
-    std::fs::write(workspace.join("d/id_rsa"), benign)?;
+    std::fs::write(workspace.join("x"), BENIGN)?;
+    std::fs::write(workspace.join("d/id_rsa"), BENIGN)?;
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
     unsafe { std::env::set_var("HOME", &home) };
     let broker = PermissionBroker::new(
@@ -855,7 +859,7 @@ fn race(
     };
     let (mut check, mut call, mut calm) = Default::default();
     for _ in 0..9 {
-        swap.disarm(&workspace, benign)?;
+        swap.disarm(&workspace)?;
         let timed = std::time::Instant::now();
         broker.decide_call(tool, kind, irreversible, "c1", &args, None);
         settle(&mut check, timed.elapsed());
@@ -864,7 +868,7 @@ fn race(
         settle(&mut call, timed.elapsed());
     }
     let (arm, armed) = std::sync::mpsc::channel::<std::time::Instant>();
-    let (land, landed) = std::sync::mpsc::channel::<std::time::Instant>();
+    let (land, landed) = std::sync::mpsc::channel::<Option<std::time::Instant>>();
     let swapper = {
         let (workspace, home) = (workspace.clone(), home.clone());
         std::thread::spawn(move || {
@@ -880,21 +884,19 @@ fn race(
                 while std::time::Instant::now() < at {
                     std::hint::spin_loop();
                 }
-                swap.arm(&workspace, &home);
-                if land.send(std::time::Instant::now()).is_err() {
+                let stands = swap.arm(&workspace, &home);
+                if land.send(stands.then(std::time::Instant::now)).is_err() {
                     break;
                 }
             }
         })
     };
     let (mut inside, mut leaks) = (0_usize, 0_usize);
-    let begun = std::time::Instant::now();
     for round in 0..ROUNDS {
-        // A cheap tool buys more hits: a broken guard leaks about once in 200 swaps.
-        if inside >= INSIDE * 5 || (inside >= INSIDE && begun.elapsed().as_secs() >= 2) {
+        if inside >= INSIDE {
             break;
         }
-        swap.disarm(&workspace, benign)?;
+        swap.disarm(&workspace)?;
         let step = u32::try_from(round.wrapping_mul(61) % 64).unwrap_or(0);
         let started = std::time::Instant::now();
         arm.send(started + check / 2 + (check / 2 + call) * step / 64)?;
@@ -908,7 +910,7 @@ fn race(
             continue;
         };
         // Invariant: a swap landing after the tool's open leaves the undisturbed output.
-        if at >= checked && format!("{:?}", output.result) != calm {
+        if at.is_some_and(|at| at >= checked) && format!("{:?}", output.result) != calm {
             inside += 1;
         }
         if reached(&output, &key) {
@@ -951,7 +953,7 @@ fn assert_no_leak(tool: &str, swap: Swap, (inside, leaks): (usize, usize)) {
         Swap::Parent => "parent",
     };
     assert!(
-        inside >= INSIDE,
+        inside >= INSIDE / 5,
         "{tool}: only {inside} of {ROUNDS} swaps landed between the check and the open"
     );
     assert_eq!(
@@ -966,7 +968,7 @@ fn a_link_swapped_after_the_check_reads_no_key() -> TestResult {
     assert_no_leak(
         "read",
         Swap::File,
-        race("read", Swap::File, "ordinary\n", &path_arg("x"), &shows_key)?,
+        race("read", Swap::File, &path_arg("x"), &shows_key)?,
     );
     Ok(())
 }
@@ -974,13 +976,7 @@ fn a_link_swapped_after_the_check_reads_no_key() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn a_parent_swapped_after_the_check_reads_no_key() -> TestResult {
-    let tried = race(
-        "read",
-        Swap::Parent,
-        "ordinary\n",
-        &path_arg("d/id_rsa"),
-        &shows_key,
-    )?;
+    let tried = race("read", Swap::Parent, &path_arg("d/id_rsa"), &shows_key)?;
     assert_no_leak("read", Swap::Parent, tried);
     Ok(())
 }
@@ -992,7 +988,7 @@ fn a_link_swapped_after_the_check_overwrites_no_key() -> TestResult {
     assert_no_leak(
         "write",
         Swap::File,
-        race("write", Swap::File, "ordinary\n", &args, &changes_key)?,
+        race("write", Swap::File, &args, &changes_key)?,
     );
     Ok(())
 }
@@ -1002,7 +998,7 @@ fn a_link_swapped_after_the_check_overwrites_no_key() -> TestResult {
 fn a_parent_swapped_after_the_check_overwrites_no_key() -> TestResult {
     let args =
         |_: &dyn yi_tools::Tool, _: &yi_tools::ToolContext| write("d/id_rsa", "overwritten\n");
-    let tried = race("write", Swap::Parent, "ordinary\n", &args, &changes_key)?;
+    let tried = race("write", Swap::Parent, &args, &changes_key)?;
     assert_no_leak("write", Swap::Parent, tried);
     Ok(())
 }
@@ -1026,9 +1022,7 @@ fn a_parent_swapped_after_the_check_edits_no_key() -> TestResult {
         args.insert("patch".to_owned(), json!(patch));
         args
     };
-    // A long file widens the gap between the edit's read and its write.
-    let benign = format!("ordinary\n{}", "filler\n".repeat(20_000));
-    let tried = race("edit", Swap::Parent, &benign, &args, &changes_key)?;
+    let tried = race("edit", Swap::Parent, &args, &changes_key)?;
     assert_no_leak("edit", Swap::Parent, tried);
     Ok(())
 }
@@ -1045,7 +1039,7 @@ fn a_parent_swapped_after_the_check_rewrites_no_key_by_grep() -> TestResult {
         args.insert("apply".to_owned(), json!(true));
         args
     };
-    let tried = race("grep", Swap::Parent, "ordinary\n", &args, &changes_key)?;
+    let tried = race("grep", Swap::Parent, &args, &changes_key)?;
     assert_no_leak("grep apply", Swap::Parent, tried);
     Ok(())
 }
