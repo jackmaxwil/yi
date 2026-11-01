@@ -8,6 +8,7 @@ use super::{
 };
 
 const INTEGRATED_WALK_MAX: usize = 256;
+const INTEGRATED_PATHS_MAX: usize = 1024;
 
 /// How a branch's content is in trunk, cheapest test first.
 #[must_use]
@@ -17,6 +18,7 @@ pub enum Rung {
     Ancestor,
     EmptyDiff,
     SameTree,
+    SameContent,
     PatchId,
 }
 
@@ -27,6 +29,7 @@ impl std::fmt::Display for Rung {
             Self::Ancestor => "ancestor",
             Self::EmptyDiff => "no changes",
             Self::SameTree => "same tree",
+            Self::SameContent => "same content",
             Self::PatchId => "patch-id",
         })
     }
@@ -44,7 +47,11 @@ pub(super) enum Handback {
     Kept(String),
 }
 
-/// Invariant: the cap counts both sides, because `git cherry` patch-ids trunk's commits too.
+pub(super) enum Landing {
+    Merged,
+    Kept(String),
+}
+
 fn integrated_within(
     repo: &Path,
     tip: &str,
@@ -72,6 +79,36 @@ fn integrated_within(
         && tip_tree == trunk_tree
     {
         return Ok(Some(Rung::SameTree));
+    }
+    let listing = [
+        "diff",
+        "--name-only",
+        "--no-ext-diff",
+        "--no-renames",
+        &range,
+    ];
+    let touched = git(repo, &listing)?;
+    let touched = touched
+        .lines()
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    if touched.len() > INTEGRATED_PATHS_MAX {
+        return Err(LaneError::Git {
+            args: vec!["diff".to_owned()],
+            exit_code: None,
+            output: format!(
+                "[not judged: {} paths changed on this branch past the {INTEGRATED_PATHS_MAX}-path content comparison; compare it with trunk by hand, or rebase it]",
+                touched.len()
+            ),
+        });
+    }
+    if !touched.is_empty() {
+        let mut scoped = vec!["diff", "--quiet", "--no-ext-diff", "--no-renames", tip];
+        scoped.extend([trunk, "--"]);
+        scoped.extend(touched);
+        if !super::no(git(repo, &scoped))? {
+            return Ok(Some(Rung::SameContent));
+        }
     }
     let counts = git(repo, &["rev-list", "--count", "--left-right", &range])?;
     let mut counts = counts
@@ -197,16 +234,40 @@ impl Pool {
         Ok(matches!(integrated(&self.repo, branch, &base), Ok(Some(_))))
     }
 
-    /// `Deleted` when git dropped a branch `main` already holds; `Kept` says what git answered.
-    pub(super) fn settle_branch(&self, branch: &str) -> Result<Handback, LaneError> {
+    /// Invariant: read-only, so the caller can ask before taking the lock a delete serializes on.
+    pub(super) fn land(&self, branch: &str) -> Result<Landing, LaneError> {
         let base = self.resolve(&ClaimBase::Main, false)?;
         match integrated(&self.repo, branch, &base) {
-            Ok(Some(_)) => {
+            Ok(Some(_)) => Ok(Landing::Merged),
+            Ok(None) => Ok(Landing::Kept("unmerged".to_owned())),
+            Err(why) => Ok(Landing::Kept(why.to_string())),
+        }
+    }
+
+    /// Invariant: the worktree is detached before the branch goes, or git refuses the delete.
+    pub(super) fn detach(
+        &self,
+        slot: SlotIndex,
+        branch: Option<&str>,
+        landed: Option<Landing>,
+    ) -> Result<Handback, LaneError> {
+        let path = self.slot_path(slot);
+        let text = path.to_string_lossy().into_owned();
+        let _ = git(&self.repo, &["worktree", "unlock", &text]);
+        git(&path, &["checkout", "-q", "--detach"])?;
+        let Some(branch) = branch else {
+            return Ok(Handback::Deleted);
+        };
+        let landing = match landed {
+            Some(landing) => landing,
+            None => self.land(branch)?,
+        };
+        match landing {
+            Landing::Merged => {
                 git(&self.repo, &["branch", "-q", "-D", branch])?;
                 Ok(Handback::Deleted)
             }
-            Ok(None) => Ok(Handback::Kept("unmerged".to_owned())),
-            Err(why) => Ok(Handback::Kept(why.to_string())),
+            Landing::Kept(why) => Ok(Handback::Kept(why)),
         }
     }
 
@@ -244,7 +305,7 @@ impl Pool {
             }
         }
         let branch = self.branch_of(slot);
-        let kept = self.detach(slot, branch.as_deref())?;
+        let kept = self.detach(slot, branch.as_deref(), None)?;
         let lost = self.wipe(slot)?.discarded();
         self.clear_session(slot)?;
         drop(guard);

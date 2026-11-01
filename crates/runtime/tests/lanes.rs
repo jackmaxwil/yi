@@ -3873,6 +3873,24 @@ fn pick(rig: &Rig) -> TestResult {
     Ok(())
 }
 
+/// Trunk takes one commit of its own, so a branch's tree is never trunk's tree.
+fn moves_on(rig: &Rig) -> TestResult {
+    std::fs::write(rig.repo.join("later.txt"), "later\n")?;
+    git(&rig.repo, &["add", "later.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "later"])?;
+    Ok(())
+}
+
+/// `count` files in one commit, so the branch's changed-path list is exactly that long.
+fn wide(tree: &Path, count: usize) -> TestResult {
+    for n in 0..count {
+        std::fs::write(tree.join(format!("f{n:04}.txt")), format!("{n}\n"))?;
+    }
+    git(tree, &["add", "."])?;
+    git(tree, &["commit", "-qm", "wide"])?;
+    Ok(())
+}
+
 fn rung(rig: &Rig) -> Result<Option<Rung>, LaneError> {
     integrated(&rig.repo, "work", "main")
 }
@@ -3904,12 +3922,22 @@ fn each_rung_of_the_ladder_reads_its_own_shape() -> TestResult {
     squash(&rig)?;
     assert_eq!(rung(&rig)?, Some(Rung::SameTree));
 
-    // Trunk took the patch and moved on, so only the patch-id rung recognizes the content.
+    // Trunk squashed a two-commit branch and moved on: no patch-id matches, the content still does.
+    let rig = ladder("rung-content")?;
+    git(&rig.repo, &["switch", "-q", "work"])?;
+    std::fs::write(rig.repo.join("second.txt"), "second\n")?;
+    git(&rig.repo, &["add", "second.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "second"])?;
+    git(&rig.repo, &["switch", "-q", "main"])?;
+    squash(&rig)?;
+    moves_on(&rig)?;
+    assert_eq!(rung(&rig)?, Some(Rung::SameContent));
+
+    // Trunk squashed the branch and then changed the same file, so only the patch-id answers.
     let rig = ladder("rung-merge")?;
     squash(&rig)?;
-    std::fs::write(rig.repo.join("later.txt"), "later\n")?;
-    git(&rig.repo, &["add", "later.txt"])?;
-    git(&rig.repo, &["commit", "-qm", "later"])?;
+    std::fs::write(rig.repo.join("work.txt"), "changed since\n")?;
+    git(&rig.repo, &["commit", "-qam", "changed since"])?;
     assert_eq!(rung(&rig)?, Some(Rung::PatchId));
 
     // Trunk took the patch, then changed the same line, so a merge conflicts and only the patch matches.
@@ -3959,18 +3987,21 @@ fn gc_removes_a_squash_merged_worktree_and_says_how_it_knew() -> TestResult {
     assert!(report.contains("(merged: same tree)"), "{report}");
     Ok(())
 }
-/// Dies with `detach` asking ancestry alone: a squash-merged lane's branch outlived its lane.
+/// Dies with `detach` asking ancestry alone: a two-commit squash left the branch behind its lane.
 #[test]
 fn a_released_lane_deletes_the_branch_its_squash_merge_landed() -> TestResult {
-    let rig = rig_with_trunk("release-squash")?;
+    let rig = ladder("release-squash")?;
     let pool = rig.pool(2)?;
     let lane = pool.claim("s-squash", ClaimBase::Main)?;
-    std::fs::write(lane.path().join("w.txt"), "work\n")?;
-    git(lane.path(), &["add", "."])?;
-    git(lane.path(), &["commit", "-qm", "w"])?;
+    for name in ["w.txt", "v.txt"] {
+        std::fs::write(lane.path().join(name), format!("{name}\n"))?;
+        git(lane.path(), &["add", "."])?;
+        git(lane.path(), &["commit", "-qm", name])?;
+    }
     let branch = lane.branch().as_str().to_owned();
     git(&rig.repo, &["merge", "-q", "--squash", &branch])?;
     git(&rig.repo, &["commit", "-qm", "squashed"])?;
+    moves_on(&rig)?;
     lane.release()?;
     assert_eq!(
         git(&rig.repo, &["branch", "--list", &branch])?,
@@ -3980,11 +4011,80 @@ fn a_released_lane_deletes_the_branch_its_squash_merge_landed() -> TestResult {
     Ok(())
 }
 
-/// A repository whose `main` has a commit of its own, so a lane branches from a real base.
-fn rig_with_trunk(tag: &str) -> Result<Rig, Box<dyn Error>> {
-    let rig = Rig::new(tag)?;
-    std::fs::write(rig.repo.join("base.txt"), "base\n")?;
-    git(&rig.repo, &["add", "base.txt"])?;
-    git(&rig.repo, &["commit", "-qm", "base"])?;
-    Ok(rig)
+/// Dies with `abandoned` asking ancestry alone: a squash-landed orphan held its slot forever.
+#[test]
+fn an_orphan_whose_branch_squash_merged_is_a_free_slot() -> TestResult {
+    let rig = ladder("orphan-squash")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("pid-9", ClaimBase::Main)?;
+    let slot = lane.slot();
+    let branch = lane.branch().as_str().to_owned();
+    std::fs::write(lane.path().join("w.txt"), "work\n")?;
+    git(lane.path(), &["add", "."])?;
+    git(lane.path(), &["commit", "-qm", "w"])?;
+    let tip = git(lane.path(), &["rev-parse", "HEAD"])?;
+    git(&rig.repo, &["merge", "-q", "--squash", &branch])?;
+    git(&rig.repo, &["commit", "-qm", "squashed"])?;
+    moves_on(&rig)?;
+    drop(lane);
+    // A crash leaves the branch behind; the hand-back would have taken it.
+    git(&rig.repo, &["branch", "-q", &branch, &tip])?;
+    orphan(&pool, slot, "pid-9")?;
+    let taken = pool.claim("s-next", ClaimBase::Main)?;
+    assert_eq!(taken.slot(), slot);
+    assert_eq!(
+        git(&rig.repo, &["branch", "--list", &branch])?,
+        "",
+        "a squash-landed orphan's branch holds nothing"
+    );
+    Ok(())
+}
+
+/// Dies with a failed question folding into a delete: the branch git could not judge went with it.
+#[test]
+fn a_question_git_could_not_answer_keeps_the_branch_and_says_why() -> TestResult {
+    let rig = ladder("rung-kept")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-wide", ClaimBase::Main)?;
+    let slot = lane.slot();
+    let branch = lane.branch().as_str().to_owned();
+    wide(lane.path(), 1025)?;
+    lane.release()?;
+    assert_ne!(
+        git(&rig.repo, &["branch", "--list", &branch])?,
+        "",
+        "a branch past the content comparison was deleted"
+    );
+    orphan(&pool, slot, "s-wide")?;
+    let line = pool.reap(slot)?;
+    assert!(line.contains("kept ("), "{line}");
+    assert!(line.contains("not judged: 1025 paths"), "{line}");
+    Ok(())
+}
+
+/// Dies with the content comparison taking any list: at the cap it answers, one path past it refuses.
+#[test]
+fn the_content_comparison_holds_at_its_path_limit_and_is_loud_one_past() -> TestResult {
+    let rig = ladder("rung-paths")?;
+    git(&rig.repo, &["switch", "-q", "-c", "at-cap", "main"])?;
+    wide(&rig.repo, 1024)?;
+    git(&rig.repo, &["switch", "-q", "main"])?;
+    git(&rig.repo, &["merge", "-q", "--squash", "at-cap"])?;
+    git(&rig.repo, &["commit", "-qm", "squashed"])?;
+    moves_on(&rig)?;
+    assert_eq!(
+        integrated(&rig.repo, "at-cap", "main")?,
+        Some(Rung::SameContent)
+    );
+
+    let rig = ladder("rung-paths-past")?;
+    git(&rig.repo, &["switch", "-q", "-c", "past-cap", "main"])?;
+    wide(&rig.repo, 1025)?;
+    git(&rig.repo, &["switch", "-q", "main"])?;
+    let past = integrated(&rig.repo, "past-cap", "main")
+        .err()
+        .ok_or("no refusal past the path cap")?
+        .to_string();
+    assert!(past.contains("1025 paths"), "{past}");
+    Ok(())
 }

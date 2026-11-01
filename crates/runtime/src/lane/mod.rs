@@ -811,7 +811,8 @@ impl Pool {
             }
             match self.read_state(slot)?.session {
                 Some(_) if self.abandoned(slot)? => {
-                    self.detach(slot, self.branch_of(slot).as_deref())?;
+                    let branch = self.branch_of(slot);
+                    self.detach(slot, branch.as_deref(), Some(reap::Landing::Merged))?;
                     self.clear_session(slot)?;
                     free = Some((slot, guard, false));
                     break;
@@ -901,16 +902,6 @@ impl Pool {
         let path = self.slot_path(slot);
         path.join(".git").is_file() && yi_permission::git_dirs(&path).is_empty()
     }
-
-    fn detach(&self, slot: SlotIndex, branch: Option<&str>) -> Result<reap::Handback, LaneError> {
-        let path = self.slot_path(slot);
-        let text = path.to_string_lossy().into_owned();
-        let _ = git(&self.repo, &["worktree", "unlock", &text]);
-        git(&path, &["checkout", "-q", "--detach"])?;
-        branch.map_or(Ok(reap::Handback::Deleted), |branch| {
-            self.settle_branch(branch)
-        })
-    }
 }
 
 /// A git query's exit 1 is its answer no; any other failure is an error, never a no.
@@ -949,11 +940,13 @@ impl Drop for Lane {
             return;
         }
         self.released = true;
+        let landing = self.pool.land(self.branch.as_str()).ok();
         let _ = self.pool.lock().and_then(|_pool| {
             if self.pool.dirty(self.slot) {
                 return Ok(());
             }
-            self.pool.detach(self.slot, Some(self.branch.as_str()))?;
+            self.pool
+                .detach(self.slot, Some(self.branch.as_str()), landing)?;
             self.pool.clear_session(self.slot)
         });
     }
@@ -1024,14 +1017,16 @@ impl Lane {
 
     fn release_inner(mut self, quit: bool) -> Result<Uncommitted, LaneError> {
         self.released = true;
-        let _pool = self.pool.lock()?;
         if quit {
             let kept = Uncommitted::read(&self.path)?;
             if !kept.is_empty() {
                 return Ok(kept);
             }
         }
-        self.pool.detach(self.slot, Some(self.branch.as_str()))?;
+        let landing = self.pool.land(self.branch.as_str())?;
+        let _pool = self.pool.lock()?;
+        self.pool
+            .detach(self.slot, Some(self.branch.as_str()), Some(landing))?;
         let dropped = if quit {
             Uncommitted::default()
         } else {
