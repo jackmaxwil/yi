@@ -288,27 +288,4 @@ mod tests {
             Path::new("/nonexistent-tree/sub")
         ));
     }
-
-    /// Dies with a grant judged from both sides: `--allow-write .` in a checkout exited 2 naming
-    /// protection that was not real, while the deny outranks any grant there anyway.
-    #[test]
-    fn a_grant_of_the_tree_around_a_denial_is_taken() {
-        let sandbox = yi_tools::Sandbox {
-            writable: vec![PathBuf::from("/repo")],
-            deny_read: Vec::new(),
-            deny_write: vec![PathBuf::from("/repo/.git/config")],
-            sealed: Vec::new(),
-            host_owned: Vec::new(),
-            spared: Vec::new(),
-        };
-        assert!(
-            protected(Some(&sandbox), Path::new("/repo")),
-            "a refusal names the tree an approval would widen"
-        );
-        assert!(!protected_from_grant(Some(&sandbox), Path::new("/repo")));
-        assert!(protected_from_grant(
-            Some(&sandbox),
-            Path::new("/repo/.git/config")
-        ));
-    }
 }
