@@ -741,9 +741,7 @@ def owed_mediums(rnd):
 
 def red_lanes(repo, sha):
     """The gate lanes (lint, guardrails, test) whose newest job on `sha` failed."""
-    tasks = (forge_pr.fgj_api("GET", f"repos/{repo}/actions/tasks?limit=60") or {}).get("workflow_runs") or []
-    table = forge_pr.job_table(tasks, sha)
-    return sorted(m.group(1) for name, status in table.items()
+    return sorted(m.group(1) for name, status in forge_pr.head_jobs(repo, sha).items()
                   if status == "failure" and (m := re.fullmatch(r"gate \((\w+)\)", name)))
 
 
@@ -1270,7 +1268,8 @@ def attempt(repo, pr, ids, asked=False):
         if head_rows(notes, sha, "rerun"):
             fields, verdict, reason = {"kind": "gate", "from": short, "stop": "gate"}, "handoff", f"{err}, and its rerun failed again; the job log says why"
         else:
-            forge_pr.cmd_rerun(argparse.Namespace(number=str(number)))
+            if forge_pr.cmd_rerun(argparse.Namespace(number=str(number))):
+                return "waiting"
             fields, verdict, reason = {"kind": "gate", "from": short}, "rerun", str(err)
     except BaseRed as err:
         # The clone measures the runner as well as the code, so a head the base may not explain reruns first,
@@ -1284,7 +1283,8 @@ def attempt(repo, pr, ids, asked=False):
                 return "waiting"
             fields, verdict, reason = {"kind": "gate", "from": short}, "base-red", f"{err}; #{issue} tracks it."
         else:
-            forge_pr.cmd_rerun(argparse.Namespace(number=str(number)))
+            if forge_pr.cmd_rerun(argparse.Namespace(number=str(number))):
+                return "waiting"
             fields, verdict, reason = {"kind": "gate", "from": short}, "rerun", str(err)
     except Handoff as err:
         fields = {"kind": kind, "from": sha[:12], "stop": kind, **({"round": rnd["n"]} if rnd and kind == "findings" else {})}
@@ -1340,7 +1340,7 @@ def tidied(body, state_of):
 
 def tidy(repo, pr):
     """When `title` failed on the head, take closed-issue citations out of the body and rerun."""
-    if forge_pr.jobs_of(pr).get("title") != "failure":
+    if forge_pr.jobs_of(pr).get("title") != "failure" or forge_pr.rerun_waits(pr):
         return False
     body = tidied(pr.get("body"), lambda n: (forge_pr.fgj_api("GET", f"repos/{repo}/issues/{n}") or {}).get("state"))
     if body is None:
@@ -1697,6 +1697,14 @@ def waits_selfcheck():
         module.set_label = lambda repo, n, ids, name, on: labelled.append((name, on))
         module.red_lanes = lambda repo, sha: ["test"]
         t1, t2 = ("yi-cli::integration", "console_drive::a_hidden_sidebar"), ("yi", "t::two")
+        # A run still waiting refuses the rerun: the head keeps its one rerun and nothing is said.
+        forge_pr.cmd_rerun, count = (lambda ns: 1), len(posted)
+        for err in (BaseRed("main", {t1}), Flaky("a lane passed in the clone")):
+            module.fix = raising(err)
+            said = attempt("o/r", pr, {})
+            if said != "waiting" or len(posted) != count:
+                errs.append(f"a refused rerun of {err!r} read {said} with {len(posted) - count} comment(s)")
+        forge_pr.cmd_rerun = lambda ns: reruns.append(ns.number)
         # The clone can be the runner's fault, so the first answer is a rerun and no issue.
         module.fix = raising(BaseRed("main", {t1}))
         said = attempt("o/r", pr, {})
@@ -1919,6 +1927,17 @@ def selfcheck():
         errs.append(f"a closed citation was not taken out cleanly: {tidied(body, states)!r}")
     if tidied("Refs #1072.", states) is not None or tidied("Closes #1076.", states) is not None:
         errs.append("a body citing only closed issues, or none, was rewritten")
+    statuses, real_api, patched = [("gate (test)", "failure"), ("gate (lint)", "pending"), ("title", "failure")], forge_pr.fgj_api, []
+    forge_pr.fgj_api = lambda method, path, payload=None: patched.append(path) if method != "GET" else (
+        {"state": "closed"} if "/issues/" in path else {"statuses": [{"context": f"pr / {job} (pull_request)", "status": state} for job, state in statuses]})
+    real_repo, forge_pr.repo = forge_pr.repo, lambda: "o/r"
+    try:
+        if red_lanes("o/r", "abc") != ["test"]:
+            errs.append(f"the status route's red lanes read {red_lanes('o/r', 'abc')}")
+        if tidy("o/r", {"number": 1, "body": "Closes #1. Refs #2.", "head": {"sha": "abc"}}) or patched:
+            errs.append(f"a body was edited while its rerun would be refused: {patched}")
+    finally:
+        forge_pr.fgj_api, forge_pr.repo = real_api, real_repo
     fresh = {"n": 3, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness"}]}
     if owed_mediums(fresh) or not owed_mediums(dict(fresh, n=2)) or not owed_mediums(dict(fresh, findings=[dict(fresh["findings"][0], since=2)])):
         errs.append("a fresh medium from round 3 on is owed a fix, or a round-2 or carried one is not")

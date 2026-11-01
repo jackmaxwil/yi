@@ -658,8 +658,7 @@ fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestRes
     }
     std::fs::create_dir_all(state.join("secret"))?;
     // The spare names the root by another spelling (`/private/var` for `/var`), as a link may.
-    let spelled = state.canonicalize()?;
-    assert_ne!(spelled, state, "the scratch dir has one spelling only");
+    let spelled = Path::new("/").join(state.strip_prefix("/private")?);
     std::fs::write(state.join("secret/f"), "WALLED")?;
     let sandbox = Sandbox {
         writable: vec![project.clone(), state.clone()],
