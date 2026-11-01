@@ -41,12 +41,13 @@ use scratch::Scratch;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
+use yi_runtime::lane::handback::Held;
 use yi_runtime::lane::land::{
     LaneHandle, bounded_name, format_lanes, host_of, open_pr_in, owner_repo, parse_jobs, pr_number,
 };
 use yi_runtime::lane::settle::{
-    Held, Prepared, Publish, Published, Quiescence, Unsettled, candidate_of, generation_of,
-    prepare, publish,
+    Prepared, Publish, Published, Quiescence, Unsettled, candidate_of, generation_of, prepare,
+    publish,
 };
 use yi_runtime::lane::{
     BranchName, ClaimBase, DEFAULT_SLOTS, Head, Lane, LaneError, Pool, SlotIndex, SlotView,
