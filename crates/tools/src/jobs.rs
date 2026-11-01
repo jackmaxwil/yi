@@ -440,9 +440,13 @@ fn render(id: u64, job: &Job) -> JobReport {
                 .map(|error| format!("\n[group kill failed: {error}]"));
             let cut = capture.cut_note().map(|note| format!("\n{note}"));
             let text = format!("{}{}", capture.stdout, capture.stderr);
+            let rows: String = (capture.rows.iter())
+                .map(|row| format!("\n{row}"))
+                .collect();
             crate::reduce::strip_ansi(&text)
                 + &cut.unwrap_or_default()
                 + &failed.unwrap_or_default()
+                + &rows
         }
         None => String::new(),
     };
@@ -518,11 +522,13 @@ pub fn interpreter() -> &'static str {
     })
 }
 
+type Contained<'a> = (&'a crate::sandbox::Sandbox, Option<&'a crate::SpawnFn>);
+
 fn start(
     shell_command: &str,
     cwd: &Path,
     cancelled: &CancelFlag,
-    sandbox: Option<&crate::sandbox::Sandbox>,
+    contained: Option<Contained<'_>>,
     reaper: Reaper,
     placed: Option<(&str, &str)>,
     spill_dir: Option<&Path>,
@@ -541,7 +547,12 @@ fn start(
     let outer = Arc::clone(cancelled);
     let stopped = Arc::clone(&kill);
     let flag: CancelFlag = Arc::new(move || stopped.load(Ordering::SeqCst) || outer());
-    let wrapped = sandbox.map(|sandbox| sandbox.wrap(interpreter(), &["-c", &text]));
+    let wrapped =
+        (contained.as_ref()).map(|(sandbox, _)| sandbox.wrap(interpreter(), &["-c", &text]));
+    let spawn = (contained.as_ref().and_then(|(_, spawn)| *spawn))
+        .map(|spawn| spawn())
+        .transpose()
+        .map_err(|refused| refused.to_string())?;
     let mut process = match &wrapped {
         Some((program, args)) => {
             let mut process = crate::keyless_command(program);
@@ -555,6 +566,8 @@ fn start(
         }
     };
     process.current_dir(cwd);
+    let (env, after) = spawn.map_or((Vec::new(), None), |spawn| (spawn.env, Some(spawn.after)));
+    process.envs(env);
     let (child, program) = spawn_captured(process, false)?;
     let id = registry().insert(
         shell_command,
@@ -565,7 +578,7 @@ fn start(
     );
     let spill_dir = spill_dir.map(Path::to_path_buf);
     std::thread::spawn(move || {
-        let capture = run_child_captured_live(
+        let mut capture = run_child_captured_live(
             child,
             &program,
             None,
@@ -574,13 +587,16 @@ fn start(
             Some(live),
             spill_dir.as_deref(),
         );
+        let rows = after.map(|after| after()).unwrap_or_default();
+        if let Ok(capture) = &mut capture {
+            capture.rows = rows;
+        }
         // Invariant: before the job settles, so a lane settle never reads a job gone quiet
         // while what it started in a container still writes the tree.
         if let (Ok(capture), Some(sweep)) = (&capture, &sweep)
             && capture.cancelled
         {
-            let _swept_or_gone_with_the_container =
-                command(interpreter()).arg("-c").arg(sweep).output();
+            run_sweep(sweep);
         }
         if let Ok(capture) = &capture {
             registry().finish(id, capture.clone());
@@ -588,6 +604,25 @@ fn start(
         let _receiver_may_be_gone = sender.send(capture);
     });
     Ok((id, receiver))
+}
+
+/// What a killed `docker exec` left behind. Incident: an engine asleep answers nothing, so a
+/// sweep on a caller's own thread held a check past the deadline it had just hit.
+pub fn run_sweep_within(sweep: &str, bound: Option<Duration>) {
+    let mut process = command(interpreter());
+    process.arg("-c").arg(sweep);
+    let until = bound.and_then(|bound| std::time::Instant::now().checked_add(bound));
+    let past: CancelFlag =
+        Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
+    let _swept_or_gone_with_the_container =
+        crate::process::run_captured(process, None, &past, OUTPUT_CAP);
+}
+
+/// The bound the check path sweeps under, since the sweep runs on the thread that owes an answer.
+pub const SWEEP_BOUND: Duration = Duration::from_secs(5);
+
+pub fn run_sweep(sweep: &str) {
+    run_sweep_within(sweep, None);
 }
 
 /// `docker exec` of `command` under `sh -c` in `cwd` inside `container`, quoted for the host
@@ -620,12 +655,13 @@ pub fn spawn_job(
     cwd: &Path,
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
+    spawn: Option<&crate::SpawnFn>,
 ) -> Result<JobId, String> {
     start(
         shell_command,
         cwd,
         cancelled,
-        sandbox,
+        sandbox.map(|sandbox| (sandbox, spawn)),
         Reaper::Handle,
         None,
         None,
@@ -648,7 +684,7 @@ pub fn run_or_background(
         shell_command,
         &context.cwd,
         &context.cancelled,
-        sandbox,
+        sandbox.map(|sandbox| (sandbox, context.spawn.as_ref())),
         // Invariant: held until the call hands the turn back, or its output is announced twice.
         Reaper::Poller {
             reported: true,
@@ -696,6 +732,7 @@ pub fn run_or_background(
                         cut: None,
                         kill_error: None,
                         spill: None,
+                        rows: Vec::new(),
                     })))
                 }
             }
@@ -807,6 +844,7 @@ mod tests {
             cut: None,
             spill: None,
             kill_error: None,
+            rows: Vec::new(),
         }
     }
 
@@ -838,7 +876,7 @@ mod tests {
     #[test]
     fn output_is_readable_before_the_job_exits() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("printf hello; sleep 300", &dir, &never(), None)?;
+        let id = spawn_job("printf hello; sleep 300", &dir, &never(), None, None)?;
         let chunk = poll_until(|| {
             let chunk = registry().output_since(id, 0).ok()?;
             chunk.text.contains("hello").then_some(chunk)
@@ -864,6 +902,7 @@ mod tests {
             ),
             &dir,
             &never(),
+            None,
             None,
         )?;
         let first = poll_until(|| {
@@ -891,7 +930,7 @@ mod tests {
     #[test]
     fn kill_stops_a_sleeper_and_reports_killed() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("sleep 300", &dir, &never(), None)?;
+        let id = spawn_job("sleep 300", &dir, &never(), None, None)?;
         assert_eq!(registry().kill(id)?, KillOutcome::Signalled);
         assert_eq!(settled(id)?, Outcome::Killed);
         let report = registry().release(id)?;
@@ -903,7 +942,7 @@ mod tests {
     #[test]
     fn kill_after_exit_is_a_no_op() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("exit 3", &dir, &never(), None)?;
+        let id = spawn_job("exit 3", &dir, &never(), None, None)?;
         let exited = Outcome::Exited { code: Some(3) };
         assert_eq!(settled(id)?, exited);
         assert_eq!(registry().kill(id)?, KillOutcome::AlreadySettled(exited));
@@ -1071,6 +1110,7 @@ mod tests {
                 cut: None,
                 spill: None,
                 kill_error: Some("/bin/sh: No such file or directory".to_owned()),
+                rows: Vec::new(),
             },
         );
         let report = registry().release(id)?;
@@ -1129,6 +1169,7 @@ mod tests {
             "awk 'BEGIN{for(i=0;i<5000;i++) print \"0123456789\"}'",
             &dir,
             &never(),
+            None,
             None,
         )?;
         settled(id)?;

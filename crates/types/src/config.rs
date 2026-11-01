@@ -62,6 +62,7 @@ pub struct UserConfig {
     pub skills: Option<SkillsConfig>,
     pub classifier: Option<ClassifierConfig>,
     pub permissions: Option<PermissionsConfig>,
+    pub sandbox: Option<SandboxConfig>,
     pub mail: Option<MailConfig>,
     /// `open`: the apps a console message's Open in submenu lists, each a name and a command
     /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
@@ -109,6 +110,14 @@ pub struct PermissionsConfig {
     pub allow_write: Option<Vec<String>>,
     /// Calls that run unasked, each `TOOL PATTERN`: `bash cargo test*`. A refusal names its rule.
     pub allow: Option<Vec<String>>,
+}
+
+/// `egress`: hosts a contained command reaches unasked, beside the seed list. Read from the home
+/// config alone, so a tree cannot name its own exfiltration host.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SandboxConfig {
+    pub egress: Option<Vec<crate::egress::Domain>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

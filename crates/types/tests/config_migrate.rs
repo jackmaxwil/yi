@@ -66,3 +66,27 @@ fn a_config_naming_gates_migrates_to_the_current_shape_once() -> TestResult {
     assert_eq!(migrations, applied);
     Ok(())
 }
+
+/// A host the proxy could never match must fail at load, naming itself, not ask forever.
+#[test]
+fn a_sandbox_egress_entry_that_is_no_host_name_is_refused_by_name()
+-> Result<(), Box<dyn std::error::Error>> {
+    let accepted: UserConfig =
+        serde_json::from_str(r#"{"sandbox": {"egress": ["Corp.Example."]}}"#)?;
+    let egress = accepted
+        .sandbox
+        .and_then(|sandbox| sandbox.egress)
+        .ok_or("no egress")?;
+    assert_eq!(
+        egress.first().map(|domain| domain.as_str()),
+        Some("corp.example")
+    );
+    for bad in ["127.0.0.1", "2130706433", "0x7f.1", "[::1]", "a b"] {
+        let text = format!(r#"{{"sandbox": {{"egress": ["{bad}"]}}}}"#);
+        let refused = serde_json::from_str::<UserConfig>(&text)
+            .err()
+            .ok_or("taken")?;
+        assert!(refused.to_string().contains("not a host name"), "{refused}");
+    }
+    Ok(())
+}
