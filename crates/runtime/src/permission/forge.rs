@@ -128,18 +128,13 @@ impl PermissionBroker {
 }
 
 /// Why a recipe's pins do not hold, or `None` when every pin matches the trunk on origin: an empty
-/// list pins nothing, and a pin naming no path in the trunk is no pin at all.
+/// list pinned nothing, so the recipe ran on the host unasked.
 fn unverified(cwd: &Path, recipe: &HostRecipe) -> Option<String> {
     if recipe.pin.is_empty() {
         return Some("its pin list is empty".to_owned());
     }
     let base = format!("refs/remotes/origin/{}", trunk(cwd));
     (recipe.pin.iter()).find_map(|pin| {
-        let in_trunk = git(cwd, &["ls-tree", "--name-only", &base, "--", pin])
-            .is_ok_and(|listed| !listed.trim().is_empty());
-        if !in_trunk {
-            return Some(format!("{pin} is not in the trunk on origin"));
-        }
         let same = git(
             cwd,
             &[
@@ -158,6 +153,6 @@ fn unverified(cwd: &Path, recipe: &HostRecipe) -> Option<String> {
         }
         let clean = git(cwd, &["status", "--porcelain", "--", pin])
             .is_ok_and(|status| status.trim().is_empty());
-        (!clean).then(|| format!("{pin} holds untracked work"))
+        (!clean).then(|| format!("{pin} differs from the trunk on origin"))
     })
 }

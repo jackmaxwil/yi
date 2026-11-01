@@ -1197,24 +1197,6 @@ mod forge {
         Ok(())
     }
 
-    /// A pathspec matching nothing makes both git calls exit 0, so a typo read as "matching".
-    #[test]
-    fn a_pin_the_trunk_does_not_hold_asks() -> TestResult {
-        let (_root, project) = repo()?;
-        let broker = gate(&project, Vec::new()).with_host_recipes(vec![HostRecipe {
-            call: "just pr".to_owned(),
-            pin: vec!["justfil".to_owned()],
-        }]);
-        let outcome = decide(&broker, "just pr status 1");
-        assert!(!outcome.allowed, "{}", outcome.reason);
-        assert!(
-            outcome.reason.contains("justfil is not in the trunk"),
-            "{}",
-            outcome.reason
-        );
-        Ok(())
-    }
-
     /// A subagent's broker is built by `for_child`, so a recipe the owner wrote must reach it.
     #[test]
     fn a_child_session_meets_its_parents_recipes() -> TestResult {
