@@ -757,9 +757,11 @@ fn refused_path(
         .find(|path| sandbox.denies_write(path))
 }
 
-const NETWORK_DENIALS: [&str; 3] = [
+const NETWORK_DENIALS: [&str; 4] = [
     // curl, git and cargo: `Could not resolve host`, `Couldn't resolve host name`.
     "resolve host",
+    // git under the transport block a repository with no lane gets.
+    "' not allowed",
     // getaddrinfo's EAI_NONAME, as Python and ssh print it.
     "nodename nor servname",
     // `ping` to a host past loopback, which exits 2.

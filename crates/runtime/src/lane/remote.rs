@@ -74,6 +74,27 @@ impl GitLane {
             .clone()
     }
 
+    /// What a contained git gets where a repository has an origin and no lane: no transport at all.
+    /// Without it, git reads a credential from the URL and lands on main through a seeded host, asked
+    /// by nobody. Its refusal then asks, and an approval runs outside.
+    pub(crate) fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
+        if let Some(lane) = lane {
+            return lane.assign.clone();
+        }
+        if git(cwd, &["config", "--get", "remote.origin.url"]).is_err() {
+            return Vec::new();
+        }
+        [
+            "GIT_CONFIG_COUNT=2",
+            "GIT_CONFIG_KEY_0=maintenance.auto",
+            "GIT_CONFIG_VALUE_0=false",
+            "GIT_CONFIG_KEY_1=protocol.allow",
+            "GIT_CONFIG_VALUE_1=never",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    }
+
     /// One repository's lane, its pushes cut at `forward_timeout`.
     #[must_use]
     pub fn open(cwd: &Path, forward_timeout: Duration) -> Option<Self> {
