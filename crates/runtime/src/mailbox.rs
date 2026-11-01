@@ -746,12 +746,12 @@ impl SubagentHost {
                     "child \"{target}\" result held back; its check is refused: {refused}"
                 ));
             }
-            let hooks = self.claude_hooks();
+            let checker = self.checker();
             crate::goal::run_check(
                 &check,
                 &cwd,
                 crate::goal::DEFAULT_CHECK_TIMEOUT_MS,
-                hooks.as_deref(),
+                &checker,
             )
             .map_err(|evidence| {
                 format!("child \"{target}\" result held back; its check is red: {evidence}")
@@ -797,13 +797,8 @@ impl SubagentHost {
                     .entry(id)
                     .or_insert_with(|| {
                         let timeout = crate::goal::DISCOVERY_CHECK_TIMEOUT_MS;
-                        crate::goal::run_check(
-                            &check,
-                            &self.options.cwd,
-                            timeout,
-                            self.claude_hooks().as_deref(),
-                        )
-                        .err()
+                        crate::goal::run_check(&check, &self.options.cwd, timeout, &self.checker())
+                            .err()
                     })
                     .clone()
                     .map(|evidence| (id, evidence))

@@ -31,6 +31,16 @@ symbol layers. Its own skills teach the verbs for one moment each. Read the one 
 | Briefing someone else on a subsystem | `ripwire-handoff` |
 | Clang optimization remarks while editing ripwire's own C++ (contributors only) | `ripwire-opt-remarks` |
 
+## Has this project seen it?
+
+An error you do not recognise, or why something is the way it is, is often written down where
+code will not show it. `ripwire . --recall="<the error or the question>"` ranks the repository's
+Markdown (decision records, plans, change notes) and returns the best sections, where `--for`
+ranks code. Any folder of Markdown can be the root. It takes no `--json`.
+
+A hit is what someone wrote then: read it, then check the code, which may have moved on. `0
+relevant` means no document matched: try other words, or a root that holds Markdown.
+
 ## Reading them in Yi
 
 - They were written for Claude Code and Codex. "the Read tool" and "Bash" are Yi's `read` and
