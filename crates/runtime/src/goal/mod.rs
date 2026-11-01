@@ -91,6 +91,29 @@ pub struct Checker {
     wall: crate::wall::Wall,
 }
 
+/// A check's command, and what kills what a killed `docker exec` left running in its container.
+pub(crate) struct CheckShell {
+    pub(crate) command: std::process::Command,
+    sweep: Option<String>,
+}
+
+/// Runs a check to its capture. Invariant: a check past its deadline is swept before it reads as
+/// settled, or what it started goes on writing the tree.
+pub(crate) fn captured(
+    shell: CheckShell,
+    stdin: Option<Vec<u8>>,
+    cancelled: &yi_tools::CancelFlag,
+) -> Result<yi_tools::CommandCapture, String> {
+    let capture = yi_tools::run_captured(shell.command, stdin, cancelled, yi_tools::OUTPUT_CAP)?;
+    if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
+        let _swept_or_gone_with_the_container = yi_tools::keyless_command("sh")
+            .arg("-c")
+            .arg(sweep)
+            .output();
+    }
+    Ok(capture)
+}
+
 impl Checker {
     pub(crate) fn new(
         hooks: Option<Arc<crate::claude_hooks::Hooks>>,
@@ -123,24 +146,20 @@ impl Checker {
         broker.sandbox_for(cwd, &self.wall, &broker.kept_writes())
     }
 
-    /// `shell -c script` in `cwd`, inside the sandbox where one holds.
-    pub(crate) fn shell(
-        &self,
-        shell: &str,
-        script: &str,
-        cwd: &std::path::Path,
-    ) -> std::process::Command {
+    /// `shell -c script` in `cwd`: in the session's container, else in the sandbox where one holds.
+    pub(crate) fn shell(&self, shell: &str, script: &str, cwd: &std::path::Path) -> CheckShell {
         // Invariant: a container child's commands never run on the host, a check included.
         let placed = (self.wall.container.as_deref())
-            .map(|container| yi_tools::jobs::in_container(container, cwd, script).0);
-        let (program, args) = match (placed, self.profile(cwd)) {
+            .map(|container| yi_tools::jobs::in_container(container, cwd, script));
+        let (run, sweep) = placed.map_or((None, None), |(run, sweep)| (Some(run), Some(sweep)));
+        let (program, args) = match (run, self.profile(cwd)) {
             (Some(run), _) => (shell.to_owned(), vec!["-c".to_owned(), run]),
             (None, Some(sandbox)) => sandbox.wrap(shell, &["-c", script]),
             (None, None) => (shell.to_owned(), vec!["-c".to_owned(), script.to_owned()]),
         };
         let mut command = yi_tools::keyless_command(program);
         command.args(args).current_dir(cwd);
-        command
+        CheckShell { command, sweep }
     }
 
     /// What the sandbox stopped in this run, in the words a contained bash failure gets.
@@ -173,7 +192,7 @@ pub(crate) fn run_check(
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP)
+    let capture = captured(command, None, &cancelled)
         .map_err(|error| format!("goal check failed to run: {error}"))?;
     if capture.cancelled {
         return Err(format!("goal check timed out after {timeout_ms} ms"));
@@ -279,20 +298,20 @@ pub(crate) fn run_check_in(
 ) -> Result<yi_tools::CommandCapture, String> {
     checker.guard(command, cwd)?;
     let mut shell = checker.shell("/bin/sh", command, cwd);
-    shell.env_clear();
+    shell.command.env_clear();
     for name in CHECKER_ENV_BASE
         .iter()
         .map(|name| (*name).to_owned())
         .chain(env_names.iter().cloned())
     {
         if let Some(value) = std::env::var_os(&name) {
-            shell.env(name, value);
+            shell.command.env(name, value);
         }
     }
     let stop = stop.cloned();
     let cancelled: yi_tools::CancelFlag =
         Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
-    yi_tools::run_captured(shell, stdin, &cancelled, yi_tools::OUTPUT_CAP)
+    captured(shell, stdin, &cancelled)
 }
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
@@ -894,7 +913,8 @@ mod checker_tests {
         };
         let checker = Checker::new(None, None, wall);
         let shell = checker.shell("sh", "cargo test", std::path::Path::new("/work"));
-        let args: Vec<String> = (shell.get_args())
+        assert!(shell.sweep.is_some(), "a killed check must be swept");
+        let args: Vec<String> = (shell.command.get_args())
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         let run = args.join(" ");
