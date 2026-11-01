@@ -1,6 +1,6 @@
 ---
 issue: Closes #1517
-raise: crate runtime +40, tests +196, comments +5
+raise: crate runtime +40, tests +200, comments +5
 ---
 A compaction is due while the whole request leaves the reserve for the summary (D338), so the summary request is the loop's previous request plus the directive and reads the cache. It was not: `compaction.rs` converted the history with `convert_to_llm`, while the loop sends `overlay.view(convert_to_llm(...))`, so every tool result the run had already cut went out whole again and the prefix missed the cache by exactly those results. `LoopRequest` now carries the loop's view stage, handed over by the `LoopRequestOf` closure, and the summary request converts through it. The stage handed over is `reclaim::applied`, which renders the cuts already on record and decides nothing: a compaction repeats the loop's bytes and never spends a cut of its own. `AgentSession::compact_now`, the manual `/compact` path, builds the same convert from the session's ledger.
 
