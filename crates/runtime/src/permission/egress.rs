@@ -70,10 +70,7 @@ impl PermissionBroker {
                 .iter()
                 .flat_map(|lane| lane.refresh(command))
                 .collect::<Vec<_>>();
-            let assign = lane
-                .iter()
-                .flat_map(|lane| lane.assign().to_vec())
-                .collect();
+            let assign = crate::lane::remote::GitLane::assign_for(lane.as_deref(), &cwd);
             let broker = Arc::clone(&broker);
             Ok(yi_tools::Spawn {
                 env: lease.env(),
