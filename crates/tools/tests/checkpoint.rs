@@ -296,6 +296,8 @@ mod deadline {
         slow_add(&shim)?;
         let store = root.join("store");
         let checkpoints = Checkpoints::open(&store, &project)?;
+        // The index exists only once a capture has written it.
+        checkpoints.capture()?;
         let index = (std::fs::read_dir(&store)?.flatten())
             .flat_map(|repo| {
                 std::fs::read_dir(repo.path())
@@ -313,7 +315,6 @@ mod deadline {
             .ok_or("no store")?;
         let theirs = repo.join(format!("{}.lock", index_name(&repo, &project)?));
         std::fs::write(&theirs, "")?;
-        std::fs::write(shim.join("slow-only"), "")?;
         std::fs::write(shim.join("slow"), "")?;
         let killed = checkpoints.capture_within(Duration::from_millis(200));
         assert!(killed.is_err(), "{killed:?}");
