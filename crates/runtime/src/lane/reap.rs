@@ -22,14 +22,14 @@ impl Uncommitted {
 
     /// Invariant: `status` is blind to work inside a gitlink, and what cannot be read counts as dirty.
     fn with_submodules(mut self, tree: &Path) -> Self {
+        // One budget for the whole read: a hung git in one submodule must not stall every spawn.
+        let until = std::time::Instant::now().checked_add(LIST_BUDGET);
         let Ok(stage) =
-            super::hostgit::git_capped(tree, &["ls-files", "--stage"], None, super::PLUMBING_CAP)
+            super::hostgit::git_capped(tree, &["ls-files", "--stage"], until, super::PLUMBING_CAP)
         else {
             self.paths = self.paths.saturating_add(1);
             return self;
         };
-        // One budget for the whole read: a hung git in one submodule must not stall every spawn.
-        let until = std::time::Instant::now().checked_add(LIST_BUDGET);
         let profile = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|_| yi_tools::Sandbox::available())
