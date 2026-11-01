@@ -208,6 +208,7 @@ fn confined_to(project: &Path) -> Sandbox {
         writable: vec![project.to_path_buf()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     }
@@ -1212,6 +1213,38 @@ async fn a_walled_call_never_leaves_the_sandbox_even_allowed() -> TestResult {
         (true, false),
         "Seatbelt, not the text check: {}",
         ran[3]
+    );
+    Ok(())
+}
+
+/// Dies with the hook unset: a contained `curl` would have no network and nothing naming why.
+#[tokio::test]
+async fn a_contained_bash_leaves_through_its_proxy_and_hears_what_it_refused() -> TestResult {
+    seatbelt()?;
+    let (_root, project, sandbox, _) = workspace("egress")?;
+    let results = run_contained(
+        &project,
+        sandbox,
+        &[
+            "curl -sS --max-time 20 https://example.invalid/; echo \"curl=$?\"",
+            "curl -sS --max-time 5 --noproxy '*' http://1.1.1.1/; echo \"raw=$?\"",
+        ],
+    )
+    .await?;
+    let through = results.first().ok_or("no result")?;
+    assert!(
+        through.contains("[egress: refused example.invalid"),
+        "{through}"
+    );
+    assert!(through.contains("403"), "{through}");
+    assert!(
+        !through.contains("yi:"),
+        "the token reached the model: {through}"
+    );
+    let raw = results.get(1).ok_or("no raw result")?;
+    assert!(
+        !raw.contains("raw=0"),
+        "a raw connect left the sandbox: {raw}"
     );
     Ok(())
 }

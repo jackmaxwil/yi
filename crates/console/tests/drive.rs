@@ -42,8 +42,10 @@ fn drive_home() -> PathBuf {
     std::env::temp_dir().join(format!("yi-console-home-{}", std::process::id()))
 }
 
-fn scratch_socket(name: &str) -> std::io::Result<(Scratch, PathBuf)> {
-    let dir = Scratch::new(&format!("yi-console-test-{name}"))?;
+/// Incident: a long test name in this dir put the socket past macOS's 104-byte `sun_path`, and
+/// the console reported `connect: path must be shorte` instead of the run under test.
+fn scratch_socket() -> std::io::Result<(Scratch, PathBuf)> {
+    let dir = Scratch::new("yi-console")?;
     let socket = dir.join("sock");
     Ok((dir, socket))
 }
@@ -644,7 +646,7 @@ fn run_console(
     size: (u16, u16),
 ) -> TestResult {
     let (width, height) = size;
-    let (dir, socket) = scratch_socket(name)?;
+    let (dir, socket) = scratch_socket()?;
     let server = fixture.map(|fixture| spawn_fixture(socket.clone(), fixture));
     let steps = parse_script(script)?;
     // Incident: the flaky drive tests fail by error or by an assertion after this returns, and
@@ -691,7 +693,7 @@ fn run_console(
 /// long line otherwise outruns the deadline the scene author asked for.
 #[test]
 fn paced_type_step_respects_the_deadline() -> TestResult {
-    let (_dir, socket) = scratch_socket("paced-type-deadline")?;
+    let (_dir, socket) = scratch_socket()?;
     let steps = parse_script("type-ms 200\ntype 0123456789abcdefghij")?;
     let started = Instant::now();
     let code = run_headless(
@@ -5785,5 +5787,54 @@ fn a_resumed_sessions_tracked_edit_does_not_open_review_by_itself() -> TestResul
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 tracked-answered\nquit\n",
     )?;
     assert!(!frame.contains("Review"), "{frame}");
+    Ok(())
+}
+
+const FENCED_REPLY: &str =
+    "Run this from the main checkout:\n\n```bash\ngit pull --ff-only origin main\n```\n";
+
+fn resume_fenced(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("how do I update")),
+                entry("e2", Some("e1"), 2, &assistant(FENCED_REPLY)),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 2})),
+    ]
+}
+
+/// Dies with a chip nothing answers: the press on it must open a terminal beside the chat, and
+/// a press on the fence's own label, one cell left of the chip, must not.
+#[test]
+fn pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not() -> TestResult {
+    // Invariant: a shell opens only in a directory that exists; no machine is born with /tmp/demo-root.
+    std::fs::create_dir_all("/tmp/demo-root")?;
+    let open = |click: &str| {
+        run_frames(
+            "run-chip",
+            replayed_session(resume_fenced),
+            &format!("wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 ▶ run\n{click}\nquit\n"),
+        )
+    };
+    let terminal = |frame: &str| {
+        frame
+            .lines()
+            .any(|row| row.contains(">_ ") && row.contains(" · demo-root"))
+    };
+    let pressed = open("mouse down 31 8\nmouse up 31 8\nwait-frame 5000 · demo-root")?;
+    assert!(
+        terminal(&pressed),
+        "no terminal pane after the press: {pressed}"
+    );
+    let label = open("mouse down 25 8\nmouse up 25 8")?;
+    assert!(
+        !terminal(&label),
+        "the fence label opened a terminal: {label}"
+    );
     Ok(())
 }

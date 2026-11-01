@@ -604,7 +604,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   verb and a later use asks. "Always allow" keeps a `Grant` (directory, tree root, program+verb),
   in memory, ≤ 1024 rules.
 - Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, git dirs minus
-  `hooks config commondir gitdir`, session dir, tmp; reads deny the credential stores the read gate
+  `hooks config config.worktree info commondir gitdir objects/info/alternates` in each git dir and
+  submodule, `<git>/worktrees` and `<git>/modules` closed whole (a lane keeps its own admin dir and
+  the module dirs it already has), a `.git` that is no directory, session dir, tmp; reads deny the credential stores the read gate
   refuses (`~/.ssh ~/.gnupg ~/.aws ~/.kube ~/.docker ~/.yi/mcp/tokens ~/.yi/providers/tokens
   ~/.yi/oauth ~/.config/{gh,fgj,gcloud} ~/.netrc ~/.git-credentials ~/.npmrc ~/.pypirc
   ~/.cargo/credentials[.toml] ~/.password-store`, `credential_stores`, D323, D324) and the wall's `deny_read`, each
@@ -612,7 +614,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   unrenamable; the kernel and its `bash()` take the wall too; a contained process starts through
   `env -u` for every inherited variable a name heuristic marks as a secret (D324); in auto mode the
   bash read belt judges a store argument by identity, a directory above one and a glob that reaches
-  one; loopback the only network, and no unix socket (#599). Without it, `Contain`
+  one; no unix socket (#599), and the only network is loopback, where a per-spawn CONNECT proxy
+  decides by host name: the seed, `sandbox.egress`, a kept grant, then a person (#601). Package caches
+  are writable, never `.cargo/bin` or a config. Without it, `Contain`
   becomes a reviewable `Ask`.
 - With a classifier and an OpenRouter key, `classifier.approval` says when Jev's `noul` answers a
   reviewable auto-mode ask: `instant` (default) first, P(safe) ≥ 0.8 (0.9 if destructive) allows,
@@ -1085,7 +1089,7 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   (`~/.yi/adapters/`, then `PATH`) over JSON lines (`adapters/README.md`), one per channel per
   process, restarted within `rlm.service`'s intensity and past it stopped with its subscriptions
   paused and told; `/heartbeat halt` stops them all. An `exec://` command a tool call or the
-  kernel arms is judged as the bash call it amounts to, never contained; a source only waits
+  kernel arms is judged as the bash call it amounts to, and runs contained outside yolo; a source only waits
   read backs off to `plan.probe_max_s` while its level holds. A wake shows at most 32 KiB.
 - Surfaces: RPC `heartbeat`, ACP `_yi/heartbeat` and slash `/heartbeat` (default `every 5m`, one
   per session, reaching the solo TUI, the console and ACP `_yi/slash`); kernel
@@ -1447,7 +1451,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 |---|---|---|
 | `check_manifests` | folder `x` is crate `yi-x`; workspace version, edition, license, rust-version, lints; deps `{ workspace = true }`; feature allowlist; string_slice roots (§19); `serde`/`serde_derive` only in `yi-types` (§20) | `string_slice_pending.json` |
 | `check_boundaries` | each crate's `yi-*` deps are in its allowlist, and a `yi-*` dev-dependency past it is in the `[dev]` table; unknown crate, stale entry or stale `[dev]` edge fails | `boundaries.toml` |
-| `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field, no baseline without a reader (D109) | — |
+| `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field or enum variant field (a literal sets, only a read or a pattern binding reads, a test is no reader), no yi-types shape production code never names, no baseline without a reader (D109) | — |
 | `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline modification never shares a commit with code (a deletion rides with the gate that stopped reading it; merge commits exempt) | — |
 | `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, the fork point, `schemas.lock` |
 | `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json` (`binary_size_budget_linux.json` on Linux), `startup_ms_budget.json` |

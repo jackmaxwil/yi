@@ -214,6 +214,15 @@ pub fn write_grant(dir: &std::path::Path) -> Grant {
     }
 }
 
+/// "Always" on a contained command's network: its later runs reach `domain` unasked.
+pub fn egress_grant(domain: &yi_types::egress::Domain) -> Grant {
+    Grant {
+        kind: RuleKind::Command,
+        canonical: identity(&["egress", domain.as_str()]),
+        label: format!("contained network to {domain}"),
+    }
+}
+
 /// The directory a [`write_grant`] names. Only a command rule is one: an exact `write` call's
 /// identity starts the same way and carries the call's arguments.
 pub fn write_grant_dir(rule: &SessionPermissionRule) -> Option<std::path::PathBuf> {
