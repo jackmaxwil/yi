@@ -760,6 +760,10 @@ fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
         session.events_sender(),
     );
     bare.grant_write(Path::new("/"))?;
+    assert!(
+        bare.grant_write(&home).is_err(),
+        "home is refused with no profile too"
+    );
     let denied = gate
         .grant_write(&repo.join(".git/hooks"))
         .err()
