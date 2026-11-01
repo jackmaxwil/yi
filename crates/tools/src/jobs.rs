@@ -536,25 +536,12 @@ fn start(
     let (sender, receiver) = std::sync::mpsc::channel();
     let live = Arc::new(LiveOutput::default());
     let kill = Arc::new(AtomicBool::new(false));
-    let text = placed.map_or(shell_command, |(run, _)| run).to_owned();
-    let sweep = placed.map(|(_, sweep)| sweep.to_owned());
+    let run = placed_run(interpreter(), shell_command, placed, sandbox);
+    let sweep = run.sweep().map(str::to_owned);
     let outer = Arc::clone(cancelled);
     let stopped = Arc::clone(&kill);
     let flag: CancelFlag = Arc::new(move || stopped.load(Ordering::SeqCst) || outer());
-    let wrapped = sandbox.map(|sandbox| sandbox.wrap(interpreter(), &["-c", &text]));
-    let mut process = match &wrapped {
-        Some((program, args)) => {
-            let mut process = crate::keyless_command(program);
-            process.args(args);
-            process
-        }
-        None => {
-            let mut process = crate::keyless_command(interpreter());
-            process.arg("-c").arg(&text);
-            process
-        }
-    };
-    process.current_dir(cwd);
+    let process = run.command(cwd);
     let (child, program) = spawn_captured(process, false)?;
     let id = registry().insert(
         shell_command,
@@ -576,12 +563,8 @@ fn start(
         );
         // Invariant: before the job settles, so a lane settle never reads a job gone quiet
         // while what it started in a container still writes the tree.
-        if let (Ok(capture), Some(sweep)) = (&capture, &sweep)
-            && capture.cancelled
-        {
-            run_sweep(sweep);
-        }
         if let Ok(capture) = &capture {
+            swept(capture, sweep.as_deref());
             registry().finish(id, capture.clone());
         }
         let _receiver_may_be_gone = sender.send(capture);
@@ -592,14 +575,97 @@ fn start(
 /// What a killed `docker exec` left behind, under a bound of its own. Incident shape: an engine
 /// asleep answers nothing, so an unbounded sweep held a check past the deadline it had just hit.
 pub fn run_sweep(sweep: &str) {
-    const BOUND: Duration = Duration::from_secs(5);
+    run_sweep_within(sweep, Duration::from_secs(5));
+}
+
+/// [`run_sweep`] at the bound a caller asks for, so the bound is measured by a test that pays it.
+pub fn run_sweep_within(sweep: &str, bound: Duration) {
     let mut process = command(interpreter());
     process.arg("-c").arg(sweep);
-    let until = std::time::Instant::now().checked_add(BOUND);
+    let until = std::time::Instant::now().checked_add(bound);
     let past: CancelFlag =
         Arc::new(move || until.is_none_or(|until| std::time::Instant::now() >= until));
     let _swept_or_gone_with_the_container =
         crate::process::run_captured(process, None, &past, OUTPUT_CAP);
+}
+/// A placed command: where it runs, and the sweep that kills what a killed `docker exec` left.
+pub struct Placed {
+    program: String,
+    args: Vec<String>,
+    sweep: Option<String>,
+}
+
+impl Placed {
+    /// The command, rooted at `cwd`.
+    pub fn command(&self, cwd: &Path) -> std::process::Command {
+        let mut command = crate::keyless_command(&self.program);
+        command.args(&self.args).current_dir(cwd);
+        command
+    }
+
+    pub fn sweep(&self) -> Option<&str> {
+        self.sweep.as_deref()
+    }
+
+    pub fn in_container(&self) -> bool {
+        self.sweep.is_some()
+    }
+}
+
+/// Invariant: bash and a check are placed by this one function, so neither can disagree with the
+/// other about where a command runs. Precedence: the container, else the sandbox, else plain.
+pub fn place(
+    interpreter: &str,
+    script: &str,
+    cwd: &Path,
+    container: Option<&str>,
+    sandbox: Option<&crate::sandbox::Sandbox>,
+) -> Placed {
+    let placed = (container).map(|container| in_container(container, cwd, script));
+    let placed = placed
+        .as_ref()
+        .map(|(run, sweep)| (run.as_str(), sweep.as_str()));
+    placed_run(interpreter, script, placed, sandbox)
+}
+
+fn placed_run(
+    interpreter: &str,
+    script: &str,
+    placed: Option<(&str, &str)>,
+    sandbox: Option<&crate::sandbox::Sandbox>,
+) -> Placed {
+    let text = placed.map_or(script, |(run, _)| run);
+    let (program, args) = match (placed, sandbox) {
+        (Some(_), _) | (None, None) => (
+            interpreter.to_owned(),
+            vec!["-c".to_owned(), text.to_owned()],
+        ),
+        (None, Some(sandbox)) => sandbox.wrap(interpreter, &["-c", text]),
+    };
+    Placed {
+        program,
+        args,
+        sweep: placed.map(|(_, sweep)| sweep.to_owned()),
+    }
+}
+
+/// Environment a placed command's host client needs to reach its daemon: the container's own
+/// environment is the image's, but `docker exec` runs here and finds its endpoint in these.
+pub const CLIENT_ENV: [&str; 6] = [
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_TLS_VERIFY",
+    "DOCKER_CERT_PATH",
+    "DOCKER_CONFIG",
+    "DOCKER_API_VERSION",
+];
+
+/// One owner of the rule a cancelled placed capture is swept under, so bash and a check cannot
+/// drift: what a killed `docker exec` left in the container dies before the capture settles.
+pub fn swept(capture: &CommandCapture, sweep: Option<&str>) {
+    if let (true, Some(sweep)) = (capture.cancelled, sweep) {
+        run_sweep(sweep);
+    }
 }
 
 /// `docker exec` of `command` under `sh -c` in `cwd` inside `container`, quoted for the host
@@ -1174,5 +1240,18 @@ mod tests {
             assert_eq!(inside.stdout, direct.stdout, "{placed}");
         }
         Ok(())
+    }
+
+    /// Dies with the precedence inverted: a `container:<image>` child's check ran under the host's
+    /// sandbox profile instead of in its container, which is the incident this placement exists for.
+    #[test]
+    fn a_container_beats_a_sandbox_profile() {
+        let cwd = Path::new("/work");
+        let sandbox = crate::sandbox::Sandbox::for_workspace(cwd, Path::new("/home/none"), None);
+        let placed = place("sh", "cargo test", cwd, Some("yi-child"), Some(&sandbox));
+        assert!(placed.in_container(), "the container arm was not taken");
+        let args = placed.args.join(" ");
+        assert!(args.contains("docker exec"), "{args}");
+        assert!(!args.contains("sandbox-exec"), "{args}");
     }
 }

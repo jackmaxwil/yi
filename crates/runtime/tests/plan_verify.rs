@@ -252,6 +252,64 @@ fn a_plan_check_passes_the_frozen_bash_hooks_before_it_runs() -> TestResult {
     Ok(())
 }
 
+/// Dies with a sandboxed `cmd` item failing: a command the profile refused to let run read as the
+/// product's failure and charged a refusal, though nothing about the tree had been decided.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cmd_item_the_sandbox_blocked_abstains_instead_of_failing() -> TestResult {
+    let temp = Scratch::new("yi-verify-refused")?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let sandbox = yi_tools::Sandbox::for_workspace(&temp, &home, None);
+    let (events, _) = tokio::sync::broadcast::channel(8);
+    let refuse: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let broker = Arc::new(
+        yi_runtime::PermissionBroker::new(
+            yi_runtime::PermissionMode::Auto,
+            temp.to_path_buf(),
+            Vec::new(),
+            Some(refuse),
+            events,
+        )
+        .with_sandbox(Some(sandbox)),
+    );
+    let artifacts = Artifacts::under(&temp);
+    let denied = home.join(format!("yi-verify-refused-{}", std::process::id()));
+    let check = put(
+        &artifacts,
+        &manifest(&format!("touch '{}'", denied.display()), 5_000, &[]),
+    )?;
+    let contract = cmd_contract(check, 5_000)?;
+    let verdict = Verifier::new(5_000)
+        .with_checker(yi_runtime::goal::Checker::new(
+            None,
+            Some(broker),
+            yi_runtime::wall::Wall::default(),
+        ))
+        .run(
+            &token(&contract)?,
+            &contract,
+            &Snapshot {
+                id: "tree:test",
+                root: &temp,
+                output: None,
+                artifacts: &artifacts,
+            },
+        );
+    let ran = denied.exists();
+    let _ = std::fs::remove_file(&denied);
+    assert!(!ran, "the sandbox let the check write into HOME");
+    assert!(
+        verdict
+            .lines()
+            .contains("accepted_by_user with its exit line"),
+        "{}",
+        verdict.lines()
+    );
+    Ok(())
+}
+
 /// Runs `command` as a failing `cmd` item and returns the refused item's detail.
 fn failing_detail(
     name: &str,

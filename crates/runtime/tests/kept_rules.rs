@@ -736,6 +736,25 @@ fn a_grant_of_the_checkout_root_is_taken() -> TestResult {
     gate.grant_write(&repo)?;
     // A directory the profile does not hold, around the checkout's denials: their denies outrank it.
     gate.grant_write(repo.parent().ok_or("no parent")?)?;
+    // Kept and then admitted: `replay` judges a kept grant with the predicate it was taken under.
+    let above_checkout = repo.parent().ok_or("no parent")?.canonicalize()?;
+    let grant = yi_permission::write_grant(&above_checkout);
+    let kept = yi_types::permission::SessionPermissionRule {
+        id: 1,
+        kind: yi_types::permission::RuleKind::Command,
+        canonical: grant.canonical,
+        display_identity: grant.label,
+        decision: yi_types::permission::RuleDecision::Allow,
+        generation: 1,
+    };
+    gate.forget_rules();
+    gate.replay(vec![kept], &Wall::default());
+    assert!(
+        gate.kept_writes().iter().any(|dir| dir == &above_checkout),
+        "a grant taken at {} was dropped one step later: {:?}",
+        above_checkout.display(),
+        gate.kept_writes()
+    );
     // Above `$HOME`, whose files no deny covers, a grant would open every one of them.
     for above in [
         Path::new("/").to_path_buf(),

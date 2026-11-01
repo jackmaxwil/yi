@@ -771,7 +771,7 @@ impl Tool for BashTool {
             context,
             background_after,
             timeout,
-            context.sandbox.as_ref().filter(|_| placed.is_none()),
+            context.sandbox.as_ref(),
             placed
                 .as_ref()
                 .map(|(run, sweep)| (run.as_str(), sweep.as_str())),

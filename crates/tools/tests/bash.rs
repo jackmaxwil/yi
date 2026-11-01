@@ -56,10 +56,17 @@ fn read_only_searches_stay_reads() {
 }
 
 /// Dies with the sweep's old `.output()`: a docker engine that stopped answering held a check past
-/// the deadline it had just hit, so the goal or plan verifier hung where it should have answered.
+/// the deadline it had just hit, so a check hung where it should have answered. The bound is the
+/// argument, so this test measures it instead of paying the production 5 s in every `just check`.
 #[test]
 fn a_hung_sweep_ends_at_its_own_bound() {
+    let bound = std::time::Duration::from_millis(200);
     let begun = std::time::Instant::now();
-    yi_tools::jobs::run_sweep("sleep 30");
-    assert!(begun.elapsed() < std::time::Duration::from_secs(20));
+    yi_tools::jobs::run_sweep_within("sleep 30", bound);
+    let took = begun.elapsed();
+    assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+    assert!(
+        took >= bound,
+        "the sweep did not wait for its bound: {took:?}"
+    );
 }
