@@ -16,7 +16,9 @@ fn skill_question() -> DecisionRequest {
     .map(|(label, text)| (label.to_owned(), text.to_owned()))
     .collect();
     DecisionRequest {
-        state: [("message".to_owned(), serde_json::json!("land this branch"))].into(),
+        state: [("message".to_owned(), serde_json::json!("land this branch"))]
+            .into_iter()
+            .collect(),
         questions: [(
             "skill".to_owned(),
             Question::Choice {

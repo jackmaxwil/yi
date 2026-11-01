@@ -9,84 +9,9 @@ use crate::args::Args;
 use crate::mailbox::{ParentLink, register_child_messaging};
 use crate::rules::RuleEngine;
 use crate::session::AgentSession;
-use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
+use crate::subagent::{SubagentHost, SubagentHostOptions};
 
-/// A child is a fresh session with its own extensions and cwd, on its family's stream (D314).
-fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
-    Arc::new(move |build: ChildBuild<'_>| {
-        let provider = Arc::new(wiring.provider.for_child());
-        if let Some(reader) = build.reader.clone() {
-            let cwd = build
-                .cwd
-                .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
-            let broker = child_broker(&wiring, &build.wall, &cwd);
-            let tools = (wiring.tools)();
-            let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
-            let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
-            return Ok(crate::subagent::reader::session(
-                provider,
-                build,
-                &reader,
-                tools,
-                (cwd, &wiring.home),
-                broker,
-                rules,
-            ));
-        }
-        let mut child = AgentSession::new(
-            crate::session::SessionConfig {
-                system_prompt: wiring.system_prompt.clone(),
-                model: build.model,
-                thinking_level: build.thinking,
-                tool_execution: wiring.tool_execution,
-            },
-            Arc::clone(&provider),
-        );
-        let child_cwd = build
-            .cwd
-            .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
-        child.install_extensions(crate::ext::install(crate::ext::ExtOptions {
-            cwd: child_cwd.clone(),
-            home: wiring.home.clone(),
-            mode: wiring
-                .broker
-                .as_ref()
-                .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode()),
-            user_system: String::new(),
-            schema_instruction: None,
-            context_window: child.model().context_window,
-            global_skills: Vec::new(),
-            can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
-        }));
-        let host = attach_runtime(
-            &mut child,
-            RuntimeWiring {
-                broker: child_broker(&wiring, &build.wall, &child_cwd),
-                depth: wiring.depth.saturating_add(1),
-                rlm_dir: build.session_dir.to_path_buf(),
-                family_dir: Some(wiring.family_dir()),
-                cwd: child_cwd,
-                parent_link: Some(build.link),
-                wall: build.wall,
-                deadline: build.deadline,
-                kernel_prewarm: false,
-                provider,
-                ..wiring.clone()
-            },
-        );
-        host.set_grant(child.wall(), build.tokens);
-        Ok(child)
-    })
-}
-
-/// Rules flow down only: a child's broker starts from a copy of its parent's (#600).
-fn child_broker(
-    wiring: &RuntimeWiring,
-    wall: &crate::wall::Wall,
-    cwd: &Path,
-) -> Option<Arc<crate::permission::PermissionBroker>> {
-    (wiring.broker.as_ref()).map(|broker| Arc::new(broker.for_child(wall, cwd)))
-}
+mod child;
 
 /// Carried again by every child one level deeper.
 #[derive(Clone)]
@@ -420,13 +345,12 @@ fn wire_fetch(
     .with_transcripts(transcripts)
     .with_family_dir(wiring.family_dir())
     .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>)
-    .with_home(wiring.home.clone());
+    .with_home(wiring.home.clone())
+    .with_screen(session.screeners());
     if let Ok(show) = crate::fetch::open_checkpoint_show(&wiring.home, &wiring.cwd) {
         resolver = resolver.with_checkpoint_show(show);
     }
-    if let Some(read) = wiring.mcp_read.clone() {
-        resolver = resolver.with_mcp_read(read);
-    }
+    resolver = resolver.with_mcp_read(wiring.mcp_read.clone());
     let resolver = Arc::new(resolver);
     host.set_resolver(Arc::clone(&resolver));
     if let (Some(sessions), 0) = (&wiring.sessions_dir, wiring.depth) {
@@ -916,7 +840,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &service,
     );
     let mut tools = (wiring.tools)();
-    crate::fetch::route_urls(&mut tools, &resolver);
+    crate::web_search::wire_search(&wiring, &mut tools, &resolver, session.screeners());
     let ipython = crate::kernel_tools::ipython_tool(Arc::clone(&service), Some(calls));
     tools.push(ipython);
     let annotate = crate::annotate::AnnotateTool::new(session.store_handle(), session.reclaimed());
@@ -973,7 +897,7 @@ fn subagent_host(
     wiring: &RuntimeWiring,
     plans_dir: &Path,
 ) -> Arc<SubagentHost> {
-    let factory = child_factory(wiring.clone());
+    let factory = child::child_factory(wiring.clone(), session.screeners());
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: wiring.depth,
         max_depth: wiring.max_depth,
