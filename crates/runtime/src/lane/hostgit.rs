@@ -53,6 +53,9 @@ pub(crate) fn capture_named(
     let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
     let capture = yi_tools::run_captured(command, None, &cancelled, cap)
         .map_err(|error| format!("{label}: {error}"))?;
+    if program == "git" && yi_tools::writes_sealed(args) {
+        yi_tools::reseal();
+    }
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }
@@ -114,6 +117,9 @@ pub(crate) fn git_capture(
             exit_code: None,
             output: error,
         })?;
+    if yi_tools::writes_sealed(args) {
+        yi_tools::reseal();
+    }
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }

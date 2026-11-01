@@ -603,7 +603,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   directory asks (in home, any mention); with no path, `refused_scopes` remembers the program and
   verb and a later use asks. "Always allow" keeps a `Grant` (directory, tree root, program+verb),
   in memory, ≤ 1024 rules.
-- Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, a main checkout's git dir or
+- Sandbox: Seatbelt `/usr/bin/sandbox-exec` on macOS; on Linux `yi __contain` applies Landlock, where
+  reads are a named list, a denial is its siblings, the git files below are compared and put back
+  before each host git rather than denied, and the network is open (#602). Writable cwd, a main checkout's git dir or
   a linked worktree's admin dir, `objects`, own branch and stash, minus
   `hooks config config.worktree info commondir gitdir objects/info/alternates` in each git dir and
   submodule, `<git>/worktrees` and `<git>/modules` closed whole (a lane keeps its own admin dir and
@@ -1370,6 +1372,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `syntect` | `parsing`, `regex-fancy`, `dump-load` | tui | syntax highlighting on the pure-Rust regex engine, over bat's grammars cut at build time; `vendor/syntect` patches its manifest to four Unicode tables | `onig` (C engine, banned) |
 | `unicode-width` | — | tui | terminal cell width | — |
 | `rustix` | `fs`, `std`, `stdio`; `pty`, `termios`, `process` in console; `process` in browser (`geteuid`, `test_kill_process`) | permission, browser, console | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); the terminal pane's PTY pair, its window size, `setsid` and `TIOCSCTTY` in the `yi __pty` shim, and the SIGHUP to a closed pane's process group (#1378); `dup2` in `yi __fds`, which puts Chrome's CDP pipe on fds 3 and 4 without a `pre_exec` (#1379); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide); `portable-pty` (wraps libc in unsafe and spawns through `pre_exec`) |
+| `landlock` | — | cli, Linux only | a contained command restricts itself through the kernel's ruleset calls and execs, with no `unsafe` in Yi: `rustix` has no Landlock calls, and doing them by hand needs `syscall` | hand-written syscalls under `#![forbid(unsafe_code)]`: refused; bubblewrap: a setuid or user-namespace helper CI containers lack |
 | `vt100` | — | console (tui: dev) | the terminal pane's screen: a parsed cell grid with attributes, scrollback, DECCKM and bracketed-paste state (#1378) | `alacritty_terminal` (an event loop and a larger tree); a hand-rolled VT parser |
 
 Dev: `vt100`, `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,

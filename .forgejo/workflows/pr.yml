@@ -25,6 +25,8 @@ concurrency:
 env:
   CARGO_BUILD_JOBS: "5"
   NEXTEST_TEST_THREADS: "5"
+  # A kernel with no Landlock fails the suite rather than skipping what proves the sandbox.
+  YI_SANDBOX_REQUIRED: "1"
   # Incident: upload-artifact runs on Node, which ignores the system store, and failed every
   # chunk with "unable to get local issuer certificate" against the forge's internal CA.
   NODE_EXTRA_CA_CERTS: /etc/ssl/certs/buildhost-root-ca.pem

@@ -55,21 +55,25 @@ pub fn keyless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     process
 }
 
-/// No copy of a host program outside the trees a contained process can write.
+/// Why a host program does not run.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("no `{program}` on PATH outside the trees a contained process can write")]
-pub struct HostProgramMissing {
-    program: String,
+#[non_exhaustive]
+pub enum HostRefused {
+    #[error("no `{program}` on PATH outside the trees a contained process can write")]
+    Missing { program: String },
+    #[error(transparent)]
+    Sealed(#[from] crate::sandbox::SealBroken),
 }
 
 /// A program Yi itself runs on the host, by absolute path. Incident: bare names resolved through
 /// PATH, so a tree's `bin` on it (direnv, an activated venv) ran a contained write on the host.
-pub fn host_command(program: &str, cwd: &Path) -> Result<Command, HostProgramMissing> {
-    let resolved = host_program(program, cwd).ok_or_else(|| HostProgramMissing {
+pub fn host_command(program: &str, cwd: &Path) -> Result<Command, HostRefused> {
+    let resolved = host_program(program, cwd).ok_or_else(|| HostRefused::Missing {
         program: program.to_owned(),
     })?;
     let mut process = keyless_command(resolved);
     if program == "git" {
+        crate::sandbox::verify_seal()?;
         host_git_config(&mut process);
     }
     Ok(process)
