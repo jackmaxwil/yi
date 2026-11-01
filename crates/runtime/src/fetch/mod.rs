@@ -389,6 +389,7 @@ pub struct Resolver {
     family_dir: Option<PathBuf>,
     member_trees: Option<Arc<dyn MemberTrees>>,
     home: Option<PathBuf>,
+    screen: crate::classifier::Screeners,
     log: Arc<FetchLog>,
 }
 
@@ -409,6 +410,7 @@ impl Resolver {
             family_dir: None,
             member_trees: None,
             home: None,
+            screen: crate::classifier::Screeners::default(),
             log: Arc::new(FetchLog::new()),
         }
     }
@@ -477,8 +479,13 @@ impl Resolver {
         self
     }
 
-    pub fn with_mcp_read(mut self, read: Arc<dyn McpResourceRead>) -> Self {
-        self.mcp_read = Some(read);
+    pub fn with_mcp_read(mut self, read: Option<Arc<dyn McpResourceRead>>) -> Self {
+        self.mcp_read = read;
+        self
+    }
+
+    pub fn with_screen(mut self, screen: crate::classifier::Screeners) -> Self {
+        self.screen = screen;
         self
     }
 
@@ -697,6 +704,15 @@ impl Resolver {
 
     pub(super) fn checkpoint_show(&self) -> Option<&Arc<dyn CheckpointShow>> {
         self.checkpoint_show.as_ref()
+    }
+
+    /// Invariant: what a model reads from an MCP server arrives in a data fence naming the
+    /// address, as every other outside source does; a program's `fetch` value stays bare.
+    pub(super) fn fenced(&self, url: &Url, text: String) -> String {
+        match url.scheme() {
+            Scheme::Mcp => fence_screened(&self.screen, "mcp", &url.to_string(), &text),
+            _ => text,
+        }
     }
 
     pub(super) fn mcp_read(&self) -> Option<&Arc<dyn McpResourceRead>> {
