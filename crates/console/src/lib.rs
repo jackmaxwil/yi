@@ -12,6 +12,7 @@ pub mod client;
 mod editor_view;
 pub mod files;
 mod header;
+mod hit;
 pub mod keys;
 pub mod kitty;
 pub mod layout;

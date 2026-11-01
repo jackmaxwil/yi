@@ -21,7 +21,11 @@ fn d_bindings(args: &[String]) -> Vec<(&str, &str)> {
 }
 
 fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
-    let root = Scratch::new(&format!("yi-sandbox-{tag}"))?;
+    workspace_at(&std::env::temp_dir(), tag)
+}
+
+fn workspace_at(base: &Path, tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
+    let root = Scratch::new_at(base, &format!("yi-sandbox-{tag}"))?;
     let project = root.join("project");
     let home = root.join("home");
     std::fs::create_dir_all(&project)?;
@@ -654,9 +658,8 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
 #[test]
 fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestResult {
     seatbelt()?;
-    let (_root, project, _home) = workspace("spared")?;
-    // `Scratch` canonicalizes, so the other spelling is made: `/var` for `/private/var`.
-    let project = Path::new("/").join(project.strip_prefix("/private")?);
+    // Under `/tmp` whatever TMPDIR says: macOS always spells this root two ways.
+    let (_root, project, _home) = workspace_at(Path::new("/tmp"), "spared")?;
     let store = project.join("store");
     let (state, spill) = (store.join("state"), store.join("spill"));
     for (dir, text) in [(&state, "SPARED"), (&spill, "SPARED"), (&store, "WALLED")] {
@@ -664,9 +667,9 @@ fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestRes
         std::fs::write(dir.join("f"), text)?;
     }
     std::fs::create_dir_all(state.join("secret"))?;
-    // The spare names the root by another spelling (`/private/var` for `/var`), as a link may.
-    let spelled = state.canonicalize()?;
-    assert_ne!(spelled, state, "the scratch dir has one spelling only");
+    // The spare names the root by another spelling (`/tmp` for `/private/tmp`), as a link may.
+    let spelled = Path::new("/").join(state.strip_prefix("/private")?);
+    assert_eq!(spelled.canonicalize()?, state, "one root, two spellings");
     std::fs::write(state.join("secret/f"), "WALLED")?;
     let sandbox = Sandbox {
         writable: vec![project.clone(), state.clone()],
@@ -1691,5 +1694,53 @@ fn what_the_host_says_after_a_spawn_reaches_the_model() -> TestResult {
         capture.rows,
         vec!["[egress: refused a.example: test]".to_owned()]
     );
+    Ok(())
+}
+
+/// The transport needle was a bare `' not allowed`, so a tool refusing an argument read as a
+/// sandbox network denial and sent the person to an approval that could not help.
+#[test]
+fn a_tools_own_not_allowed_is_not_a_network_denial() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let found = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "error: hook 'pre-lint' not allowed\n",
+        "lint",
+    );
+    assert_eq!(found, None);
+    let git = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(128),
+        "fatal: transport 'file' not allowed\n",
+        "git fetch origin",
+    );
+    assert!(matches!(git, Some(SandboxRefusal::Scopes(_))), "{git:?}");
+    Ok(())
+}
+
+/// Dies with the generic `' not allowed` needle: a compiler echoing a phrase must not read as
+/// git's transport refusal, and git's own refusal must still classify and ask.
+#[test]
+fn only_gits_transport_refusal_is_a_network_denial() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let transport = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(128),
+        "fatal: transport 'https' not allowed\n",
+        "git fetch origin",
+    );
+    assert!(transport.is_some(), "git's transport refusal must classify");
+    let unrelated = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "ValueError: 'None' not allowed as a mode\n",
+        "python3 check.py",
+    );
+    assert_eq!(unrelated, None, "{unrelated:?}");
     Ok(())
 }

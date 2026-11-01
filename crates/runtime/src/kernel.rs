@@ -791,7 +791,7 @@ impl KernelService {
                             .unwrap_or_default(),
                     );
                     if let (Some((broker, _)), Some(lane)) = (&self.holder, self.git_lane()) {
-                        notes.extend(lane.sweep(broker));
+                        notes.extend(lane.sweep_off_executor(Arc::clone(broker)).await);
                     }
                     return Ok(KernelCellOutcome {
                         result,

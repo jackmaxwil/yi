@@ -248,16 +248,7 @@ pub struct SubagentHost {
 }
 
 pub(crate) fn random_suffix() -> Result<String, String> {
-    use std::io::Read;
-    let mut buffer = [0_u8; 4];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut source| source.read_exact(&mut buffer))
-        .map_err(|error| format!("/dev/urandom: {error}"))?;
-    let mut out = String::with_capacity(8);
-    for byte in buffer {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    Ok(out)
+    yi_kernel::connection::random_hex(std::path::Path::new("/dev/urandom"), 4)
 }
 
 fn default_session_name(prompt: &str, child_id: &str) -> String {

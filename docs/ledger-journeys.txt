@@ -8,6 +8,9 @@ entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_type
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
+context P1–P19; prefix-aligned P7 | `compaction_faux::a_render_compaction_spends_no_summarizer_request`
+context P1–P19; prefix-aligned P7 | `compaction_faux::the_retention_floor_keeps_the_users_typed_words_and_drops_host_text` (T1)
+context P1–P19; prefix-aligned P7 | `compaction_faux::a_second_compaction_while_one_is_in_flight_is_refused` (T1)
 hashline edit (+ registers, instrumented) | `hashline_patcher::read_edit_round_trip_replaces_lines_and_mints_a_new_tag`
 hashline edit (+ registers, instrumented) | `hashline_patcher::named_register_moves_content_across_files`
 hashline edit (+ registers, instrumented) | `tools::a_grep_apply_carries_the_syntax_verdict_and_its_patch`
@@ -167,6 +170,7 @@ final answer (`answer`) | `answer_turn::a_text_stop_with_open_work_is_sent_back_
 final answer (`answer`) | `answer_turn::a_host_note_queued_on_the_answer_turn_is_dropped` (T1)
 identity + doctrine: the comprehensive prompt | `prompt_drift::identity_names_every_tool_the_session_registers`
 identity + doctrine: the comprehensive prompt | `prompt_drift::doctrine_names_only_ops_the_todo_tool_accepts`
+identity + doctrine: the comprehensive prompt | `evals/prose.py --gate` (run by `check_guardrails.sh`)
 skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::a_skill_within_a_repository_is_listed_only_there`
 skills: catalog ladder, `$name`, Yi's triggered skills | `cli_surfaces::a_run_with_nobody_attached_is_told_it_is_alone`
 skills: catalog ladder, `$name`, Yi's triggered skills | `rpc_protocol::an_rpc_session_is_not_told_it_is_alone`
@@ -589,3 +593,4 @@ contained git: a mirror and an outbox | `git_lane::contained::a_contained_push_l
 contained git: a mirror and an outbox | `kernel_sandbox::a_contained_kernels_push_is_forwarded_and_named`
 a child's fork: a linked worktree per child, cut at HEAD, third-party cargo units carried | `child_forks::a_child_builds_its_own_tree_and_reuses_only_what_names_nothing_in_it`
 a child's fork: a linked worktree per child, cut at HEAD, third-party cargo units carried | `lanes::a_discard_stops_what_still_runs_in_the_tree_and_says_so`
+console run chip | `drive::pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not`

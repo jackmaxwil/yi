@@ -239,6 +239,123 @@ fn a_fifo_and_a_link_at_a_ref_hang_nothing_and_go() -> TestResult {
     Ok(())
 }
 
+/// Dies with the walk starting at the store's path: `yi-outbox` is a name in a writable admin dir,
+/// so the link can sit above the whole walk, and the host then unlinks the project's own refs.
+#[test]
+fn an_outbox_or_its_refs_as_a_link_steers_no_unlink() -> TestResult {
+    let repo = Repo::new("link-store")?;
+    let lane = repo.lane(LONG)?;
+    let feature = repo.project.join(".git/refs/heads/feature");
+    let git_dir = repo.project.join(".git");
+    std::fs::remove_dir_all(repo.outbox())?;
+    std::os::unix::fs::symlink(&git_dir, repo.outbox())?;
+    let rows = lane.sweep(&broker(&repo.project, None)).concat();
+    assert!(feature.is_file(), "the project's ref went: {rows}");
+    assert!(repo.at_origin("refs/heads/feature").is_none(), "{rows}");
+    assert!(rows.contains("in the outbox were no ref"), "{rows}");
+    std::fs::remove_file(repo.outbox())?;
+    std::fs::create_dir(repo.outbox())?;
+    std::os::unix::fs::symlink(git_dir.join("refs"), repo.outbox().join("refs"))?;
+    let rows = lane.sweep(&broker(&repo.project, None)).concat();
+    assert!(feature.is_file(), "the project's ref went: {rows}");
+    assert!(rows.contains("in the outbox were no ref"), "{rows}");
+    Ok(())
+}
+
+/// Dies with a path-based layout: a link anywhere in the store, or a hard link at one of its files,
+/// makes the next start write into a file a contained process chose.
+#[test]
+fn starting_a_lane_writes_through_nothing_a_process_planted() -> TestResult {
+    let repo = Repo::new("link-init")?;
+    drop(repo.lane(LONG)?);
+    let decoy = repo.root.join("decoy");
+    std::fs::create_dir_all(decoy.join("objects/info"))?;
+    let untouched = repo.root.join("untouched");
+    std::fs::write(&untouched, "untouched")?;
+    let outbox = repo.outbox();
+
+    std::fs::remove_dir_all(&outbox)?;
+    std::os::unix::fs::symlink(&decoy, &outbox)?;
+    drop(repo.lane(LONG)?);
+    assert!(std::fs::symlink_metadata(&outbox)?.is_dir(), "still a link");
+    assert_eq!(
+        std::fs::read_dir(&decoy)?.count(),
+        1,
+        "wrote into the decoy"
+    );
+
+    std::fs::remove_dir_all(outbox.join("objects"))?;
+    std::os::unix::fs::symlink(decoy.join("objects"), outbox.join("objects"))?;
+    std::fs::remove_file(outbox.join("config"))?;
+    std::fs::hard_link(&untouched, outbox.join("config"))?;
+    std::fs::remove_file(outbox.join("HEAD"))?;
+    std::os::unix::fs::symlink(&untouched, outbox.join("HEAD"))?;
+    drop(repo.lane(LONG)?);
+    assert_eq!(std::fs::read_to_string(&untouched)?, "untouched");
+    assert_eq!(std::fs::read_dir(decoy.join("objects/info"))?.count(), 0);
+    assert_eq!(
+        std::fs::read_to_string(outbox.join("HEAD"))?,
+        "ref: refs/heads/main\n"
+    );
+    Ok(())
+}
+
+/// Dies with `take` alone on the directory listing: the names past it waited with no row.
+#[test]
+fn the_name_cap_holds_at_its_limit_and_says_so_one_past() -> TestResult {
+    const CAP: usize = 1024;
+    let repo = Repo::new("names")?;
+    let lane = repo.lane(LONG)?;
+    let heads = repo.outbox().join("refs/heads");
+    let plant = |tag: &str, count: usize| -> std::io::Result<()> {
+        (0..count).try_for_each(|at| {
+            std::os::unix::fs::symlink("/nowhere", heads.join(format!("{tag}{at}")))
+        })
+    };
+    plant("a", CAP)?;
+    let at_cap = lane.sweep(&broker(&repo.project, None)).concat();
+    assert!(at_cap.contains("1024 entries"), "{at_cap}");
+    assert!(!at_cap.contains("outbox.names"), "{at_cap}");
+    plant("b", CAP + 1)?;
+    let past = lane.sweep(&broker(&repo.project, None)).concat();
+    assert!(past.contains("1024 entries"), "{past}");
+    assert!(past.contains("(outbox.names 1024)"), "{past}");
+    let next = lane.sweep(&broker(&repo.project, None)).concat();
+    assert!(
+        next.contains("1 entries"),
+        "the name past the cap waited: {next}"
+    );
+    Ok(())
+}
+
+/// Dies with the sweep run inline in a cell: the person's answer comes from a task on the same
+/// current-thread runtime, which never runs, so the ask times out and main reads as declined.
+#[tokio::test]
+async fn a_held_main_leaves_the_executor_free_for_the_answer() -> TestResult {
+    let repo = Repo::new("off-executor")?;
+    let lane = Arc::new(repo.lane(LONG)?);
+    let head = repo.head()?;
+    repo.plant("heads/main", &head)?;
+    let (answer, answered) = std::sync::mpsc::channel::<()>();
+    let answered = std::sync::Mutex::new(answered);
+    let asker: Asker = Arc::new(move |_| {
+        let got = answered
+            .lock()
+            .map(|answered| answered.recv_timeout(Duration::from_secs(5)));
+        match got {
+            Ok(Ok(())) => AskOutcome::AllowOnce,
+            _ => AskOutcome::Reject,
+        }
+    });
+    tokio::spawn(async move {
+        let _the_receiver_outlives_the_sweep = answer.send(());
+    });
+    let broker = Arc::new(broker(&repo.project, Some(asker)));
+    let rows = lane.sweep_off_executor(broker).await.concat();
+    assert!(rows.contains("[pushed main to origin: "), "{rows}");
+    Ok(())
+}
+
 /// The host never runs git in the outbox, and a repository's hooks stay off when it forwards.
 #[test]
 fn no_config_the_outbox_or_the_tree_holds_runs_on_the_host() -> TestResult {
