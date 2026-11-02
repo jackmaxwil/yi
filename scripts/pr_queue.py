@@ -8,6 +8,7 @@ Nothing is stored: the state is the `queue` label, the `queue/candidate` ref and
 so a crashed tick loses nothing. A red candidate stays until it is replaced, since it is the memory
 of what comes next. A retry's count rides the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
 import argparse, contextlib, io, os, pathlib, re, shutil, subprocess, sys, tempfile, time
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "scripts/guardrails")]
@@ -267,6 +268,7 @@ def record_main(root=ROOT):
     if not git("status", "--porcelain", "docs", cwd=root).stdout.strip():
         return True
     git("add", "docs", cwd=root)
+    # Incident: a git hook exports GIT_AUTHOR_*, which beats -c user.name, and postmerge reads this author.
     git("-c", "user.name=yi-ci", "-c", "user.email=ci@yi", "commit", "-q", "--author=yi-ci <ci@yi>", "-m", "Record the change files main landed", cwd=root)
     pushed = git("push", "-q", "origin", "HEAD:main", cwd=root, check=False)
     if not pushed.returncode:
@@ -389,7 +391,8 @@ def tick(mode):
     elif action == "land":
         land(obs, mode)
     elif action == "finish":
-        finish(obs)
+        # Invariant: shadow writes neither main nor the forge's issues; a later `on` tick records what landed.
+        finish(obs) if mode == "on" else delete_ref()
     elif action == "paused":
         print(f"queue: paused on {obs['candidate'][:10]}, whose lanes read {obs['lanes']}; deleting {CANDIDATE} resumes")
     return 0
@@ -560,8 +563,9 @@ def record_cases():
             bad.append("nothing to record did not answer True with main unmoved")
 
         script.write_text(recorder)
-        if not record_main(root) or tip() == was:
-            bad.append("a record did not reach main")
+        with mock.patch.dict(os.environ, {"GIT_AUTHOR_NAME": "hook", "GIT_AUTHOR_EMAIL": "hook@hook"}):
+            if not record_main(root) or tip() == was:
+                bad.append("a record did not reach main")
         if git("log", "-1", "--format=%an", tip(), cwd=origin).stdout.strip() != "yi-ci":
             bad.append("the record is not yi-ci's, so postmerge would not skip its own push")
         if git("rev-parse", "origin/main", cwd=root).stdout.strip() != tip():
@@ -591,17 +595,28 @@ def record_cases():
 
 
 def shadow_cases():
-    """Two ticks must not gate one PR's unchanged head twice: the note carries what the skip looks for."""
-    head, saved, bad = "55a77022f2c6c470ae6bb5fc601c17236d8e883d", pr_review.comments, []
-    note = shadow_note("e0f35fe52686c2d9a7b0d3f1c5e8a4b6d7f90123", head, "9d4f83c6f41f01b011ed48e063396ec46eceaa09")
-    pr_review.comments = lambda repo, number: [{"body": note}]
-    try:
-        if not already_said(1812, head):
-            bad.append(f"a head shadow announced reads unannounced: {note!r}")
-        if already_said(1812, "0" * 40):
-            bad.append("a moved head reads as already announced")
-    finally:
-        pr_review.comments = saved
+    """Shadow's real paths with the forge stubbed: a head is announced once, and nothing lands or records."""
+    bad, posted = [], []
+    heads = {1812: "55a77022f2c6c470ae6bb5fc601c17236d8e883d", 1857: "71c203e2372f576ae772b9a4cedc59a2fd7e907d"}
+    obs = {"candidate": "e0f35fe52686c2d9a7b0d3f1c5e8a4b6d7f90123", "base": "9d4f83c6f41f01b011ed48e063396ec46eceaa09",
+           "members": list(heads.items()), "stale_member": None}
+    pull = lambda number: {"title": "t", "head": {"ref": "b"}}
+    with mock.patch.object(forge_pr, "pull", pull), mock.patch.object(pr_review, "comments", lambda repo, n: [{"body": b} for m, b in posted if m == n]), \
+            mock.patch.multiple(sys.modules[__name__], same_tree=lambda *a: True, comment=lambda n, b: posted.append((n, b)),
+                                delete_ref=mock.DEFAULT, finish=mock.DEFAULT, observe=lambda mode: obs, step=lambda o: ("finish", "landed")) as stubs:
+        land(obs, "shadow")
+        for number, head in heads.items():
+            if not already_said(number, head):
+                bad.append(f"#{number}'s head reads unannounced after shadow's comment: {posted}")
+        if already_said(1812, heads[1857]) or already_said(1812, "0" * 40):
+            bad.append(f"a head #1812 never had reads announced: {posted}")
+        with contextlib.redirect_stdout(io.StringIO()):
+            tick("shadow")
+            if stubs["finish"].called:
+                bad.append("a shadow tick over a landed candidate ran finish, which writes main")
+            tick("on")
+            if not stubs["finish"].called:
+                bad.append("an `on` tick over a landed candidate did not finish")
     return bad
 
 
