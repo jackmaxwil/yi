@@ -193,6 +193,10 @@ def dequeue_reason(pr):
     return None
 
 
+def shadow_note(candidate, head, base):
+    return f"Shadow: the queue would land {candidate[:10]}, with this PR at {head[:10]} on main {base[:10]}."
+
+
 def already_said(number, sha):
     return any("would land" in (c.get("body") or "") and sha[:10] in c.get("body", "")
                for c in pr_review.comments(forge_pr.repo(), number))
@@ -255,22 +259,30 @@ def recipe_of(pr):
     return pr["number"], pr["head"]["sha"], pr["title"], pr["head"]["ref"]
 
 
-def record_main():
-    """Record what main has landed; False when main moved under the push."""
-    git("fetch", "-q", "origin", "main")
-    git("checkout", "-q", "--detach", "origin/main")
-    subprocess.run((sys.executable, str(ROOT / "scripts/record_changes.py")), cwd=ROOT, check=True)
-    if not git("status", "--porcelain", "docs").stdout.strip():
+def record_main(root=ROOT):
+    """Record what main has landed; False only when main moved under the push."""
+    git("fetch", "-q", "origin", "main", cwd=root)
+    git("checkout", "-q", "--detach", "origin/main", cwd=root)
+    subprocess.run((sys.executable, str(root / "scripts/record_changes.py")), cwd=root, check=True)
+    if not git("status", "--porcelain", "docs", cwd=root).stdout.strip():
         return True
-    git("add", "docs")
-    git("-c", "user.name=yi-ci", "-c", "user.email=ci@yi", "commit", "-q", "-m", "Record the change files main landed")
-    return git("push", "-q", "origin", "HEAD:main", check=False).returncode == 0
+    git("add", "docs", cwd=root)
+    git("-c", "user.name=yi-ci", "-c", "user.email=ci@yi", "commit", "-q", "--author=yi-ci <ci@yi>", "-m", "Record the change files main landed", cwd=root)
+    pushed = git("push", "-q", "origin", "HEAD:main", cwd=root, check=False)
+    if not pushed.returncode:
+        return True
+    git("fetch", "-q", "origin", "main", cwd=root)
+    if git("rev-parse", "origin/main", cwd=root).stdout != git("rev-parse", "HEAD^", cwd=root).stdout:
+        return False
+    # Invariant: a candidate does not depend on the record, so a refusal that is not a moved main never stops the queue.
+    print(f"queue: the recorder's push was refused with main unmoved: {pushed.stderr.strip()[:200]}")
+    return True
 
 
-def build(obs):
+def build(obs, mode):
     # Incident: the recorder's job waited on a runner and pushed while candidate d862f188 went green,
-    # so a green gate was thrown away. Recording first leaves that job nothing to push.
-    if not record_main():
+    # so a green gate was thrown away. A shadow candidate never lands, so it has nothing to protect.
+    if mode == "on" and not record_main():
         print("queue: main moved under the recorder's push; the next tick builds")
         return
     git("checkout", "-q", "-B", CANDIDATE, "origin/main")
@@ -352,8 +364,8 @@ def land(obs, mode):
         print("queue: the candidate's tree is not its merges; dropping it")
         return delete_ref()
     if mode == "shadow":
-        for number, _ in obs["members"]:
-            comment(number, f"Shadow: the queue would land {obs['candidate'][:10]}, with this PR on main {obs['base'][:10]}.")
+        for number, head in obs["members"]:
+            comment(number, shadow_note(obs["candidate"], head, obs["base"]))
         return delete_ref()
     pushed = git("push", "-q", "origin", f"{obs['candidate']}:refs/heads/main", check=False)
     if pushed.returncode:
@@ -369,7 +381,7 @@ def tick(mode):
     if action == "drop":
         delete_ref()
     elif action == "build":
-        build(obs)
+        build(obs, mode)
     elif action == "retry":
         retry(obs)
     elif action == "eject":
@@ -504,7 +516,7 @@ def build_cases():
     bad = []
     saved = {name: globals()[name] for name in ("git", "record_main", "use_driver", "merge_member")}
     pr = {"number": 7, "title": "t", "head": {"sha": "h", "ref": "b"}}
-    for recorded, want_build in ((True, True), (False, False)):
+    for mode, recorded, want_record, want_build in (("on", True, True, True), ("on", False, True, False), ("shadow", False, False, True)):
         calls = []
         class Done:
             stdout = "abc\n"
@@ -513,19 +525,88 @@ def build_cases():
                          record_main=lambda recorded=recorded: (calls.append("record"), recorded)[1])
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                build({"queued": [pr]})
+                build({"queued": [pr]}, mode)
         finally:
             globals().update(saved)
         built = ("checkout", "-q") in calls
-        if calls[:1] != ["record"]:
-            bad.append(f"a build ran before main was recorded: {calls[:2]}")
+        if (calls[:1] == ["record"]) != want_record:
+            bad.append(f"a build in {mode} read calls {calls[:2]}, wanting a record first: {want_record}")
         if built != want_build:
-            bad.append(f"a record that returned {recorded} read built={built}")
+            bad.append(f"a record that returned {recorded} in {mode} read built={built}")
+    return bad
+
+
+def record_cases():
+    """record_main's answers against real git: a stand-in recorder, a real push, real refusals."""
+    bad = []
+    recorder = "import pathlib\nwith pathlib.Path('docs/r.txt').open('a') as f:\n    f.write('rë\\n')\n"
+    with tempfile.TemporaryDirectory(prefix="yi-record-main-") as tmp:
+        tmp = pathlib.Path(tmp)
+        origin, root, other = tmp / "origin.git", tmp / "w", tmp / "other"
+        subprocess.run(("git", "init", "-q", "--bare", "-b", "main", str(origin)), check=True)
+        for clone in (root, other):
+            subprocess.run(("git", "clone", "-q", str(origin), str(clone)), capture_output=True, check=True)
+        sh = lambda where, *a: git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a, cwd=where, check=False)
+        (root / "docs").mkdir()
+        (root / "docs/r.txt").write_text("seed\n")
+        sh(root, "add", "."), sh(root, "commit", "-qm", "seed"), sh(root, "push", "-q", "origin", "HEAD:main")
+        (root / "scripts").mkdir()
+        script = root / "scripts/record_changes.py"
+        tip = lambda: git("rev-parse", "main", cwd=origin).stdout.strip()
+
+        script.write_text("")
+        was = tip()
+        if not record_main(root) or tip() != was:
+            bad.append("nothing to record did not answer True with main unmoved")
+
+        script.write_text(recorder)
+        if not record_main(root) or tip() == was:
+            bad.append("a record did not reach main")
+        if git("log", "-1", "--format=%an", tip(), cwd=origin).stdout.strip() != "yi-ci":
+            bad.append("the record is not yi-ci's, so postmerge would not skip its own push")
+        if git("rev-parse", "origin/main", cwd=root).stdout.strip() != tip():
+            bad.append("origin/main lags the record, so the candidate would build on an old base")
+
+        hook = origin / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\necho protected >&2\nexit 1\n")
+        hook.chmod(0o755)
+        was, out = tip(), io.StringIO()
+        with contextlib.redirect_stdout(out):
+            kept = record_main(root)
+        if not kept or tip() != was or "refused with main unmoved" not in out.getvalue() or "protected" not in out.getvalue():
+            bad.append(f"a refusal with main unmoved answered {kept}: {out.getvalue()!r}")
+        hook.unlink()
+
+        # The race itself: another pusher wins between the recorder's commit and its push.
+        sh(other, "pull", "-q", "origin", "main")
+        (other / "moved.txt").write_text("moved\n")
+        sh(other, "add", "."), sh(other, "commit", "-qm", "moved")
+        race = root / ".git/hooks/pre-push"
+        race.write_text(f"#!/bin/sh\nenv -u GIT_DIR git -C '{other}' push -q origin HEAD:main\n")
+        race.chmod(0o755)
+        if record_main(root) is not False:
+            bad.append("main moved under the push and the tick read it as recorded")
+        race.unlink()
+    return bad
+
+
+def shadow_cases():
+    """Two ticks must not gate one PR's unchanged head twice: the note carries what the skip looks for."""
+    head, saved, bad = "55a77022f2c6c470ae6bb5fc601c17236d8e883d", pr_review.comments, []
+    note = shadow_note("e0f35fe52686c2d9a7b0d3f1c5e8a4b6d7f90123", head, "9d4f83c6f41f01b011ed48e063396ec46eceaa09")
+    pr_review.comments = lambda repo, number: [{"body": note}]
+    try:
+        if not already_said(1812, head):
+            bad.append(f"a head shadow announced reads unannounced: {note!r}")
+        if already_said(1812, "0" * 40):
+            bad.append("a moved head reads as already announced")
+    finally:
+        pr_review.comments = saved
     return bad
 
 
 def selfcheck():
-    bad = rule_cases() + git_cases() + build_cases()
+    bad = rule_cases() + git_cases() + build_cases() + record_cases() + shadow_cases()
     bad += [f"rule `{name}` disabled and every case still passes, so it refutes nothing"
             for name, _, _ in RULES if not rule_cases(name)]
     for gate in ("growth", "crate_size", "comments", "test_size"):
