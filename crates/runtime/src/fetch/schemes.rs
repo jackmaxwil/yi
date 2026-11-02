@@ -958,7 +958,7 @@ mod tests {
         let workspace = Scratch::new("yi-schemes-mcp")?;
         let contents = r#"{"contents":[{"uri":"issue-42","text":"open"}]}"#;
         let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
-            .with_mcp_read(Arc::new(StubMcp(Ok(contents.to_owned()))));
+            .with_mcp_read(Some(Arc::new(StubMcp(Ok(contents.to_owned())))));
         let url: Url = "mcp://github/issue-42".parse()?;
         let fetched = resolver.fetch(&url)?;
         assert_eq!(fetched.text, contents);
@@ -968,9 +968,9 @@ mod tests {
             resolver.fetch(&serverless),
             Err(FetchError::BadAddress { .. })
         ));
-        let failing = Resolver::new(workspace.to_path_buf(), Wall::default()).with_mcp_read(
+        let failing = Resolver::new(workspace.to_path_buf(), Wall::default()).with_mcp_read(Some(
             Arc::new(StubMcp(Err("@github: resources/read failed".to_owned()))),
-        );
+        ));
         assert!(matches!(
             failing.fetch(&url),
             Err(FetchError::Backend { .. })

@@ -294,7 +294,9 @@ fn restore_tree(
         .as_ref()
         .is_some_and(|since| !checkpoints.holds(since))
     {
-        return UndoOutcome::NoCheckpoint;
+        return UndoOutcome::Failed(
+            "this turn's end is not in the checkpoint store (a session from before the upgrade, or git could not read it), so nothing moved".to_owned(),
+        );
     }
     let replaced = match checkpoints.capture() {
         Ok(tree) => tree,

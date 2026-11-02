@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use yi_runtime::lane::warm::{
     Asked, CHECK_QUEUE, Verdict, WarmRun, check_commit, scrub, snapshot, ticket,
 };
-use yi_runtime::lane::{Pool, Sha};
+use yi_runtime::lane::{ClaimBase, Pool, Sha};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -84,7 +84,7 @@ fn a_stale_binary_is_gone_and_cargos_bookkeeping_stays() -> TestResult {
     let build = "mkdir -p target/debug/deps .venv && echo unit > target/debug/deps/unit && echo env > .venv/pin && echo bin > target/debug/app";
     assert_eq!(rig.check(build)?.verdict, Verdict::Green);
     let next = rig.check(
-        "test ! -e target/debug/app && test -s target/debug/deps/unit && test -s .venv/pin",
+        "test ! -e target/debug/app && test -s target/debug/deps/unit && test ! -e .venv/pin",
     )?;
     assert_eq!(next.verdict, Verdict::Green, "{next:?}");
     Ok(())
@@ -108,6 +108,33 @@ fn a_check_that_writes_and_edits_still_frees_its_directory() -> TestResult {
         &rig.head()?,
         &rig.repo,
         "test ! -e Cargo.lock && test \"$(cat a.txt)\" = a",
+        until,
+        Duration::from_secs(5),
+        &rig.checker,
+    );
+    assert_eq!(next.verdict, Verdict::Green, "{next:?}");
+    Ok(())
+}
+
+/// Dies with the slot left as the failed release found it: a one-slot pool then answers every later
+/// check with "no warm directory came free", though nothing holds it.
+#[test]
+fn a_release_that_cannot_clean_still_frees_its_directory() -> TestResult {
+    let rig = rig("release-fails", 1)?;
+    let head = rig.head()?;
+    let held = rig
+        .warm
+        .claim("first", ClaimBase::Commit(head.as_str().to_owned()))?;
+    std::fs::write(held.path().join(".git"), "gitdir: /nowhere\n")?;
+    assert!(held.release_warm().is_err(), "a broken tree cleaned");
+    let until = Instant::now()
+        .checked_add(Duration::from_secs(5))
+        .ok_or("no instant")?;
+    let next = check_commit(
+        &rig.warm,
+        &head,
+        &rig.repo,
+        "test -s a.txt",
         until,
         Duration::from_secs(5),
         &rig.checker,
@@ -252,13 +279,12 @@ fn a_scrub_leaves_the_rebuild_state_and_nothing_else_untracked() -> TestResult {
         std::fs::write(tree.join(dir).join(file), "x")?;
     }
     scrub(tree)?;
-    for gone in ["target/debug/app", "out", "loose"] {
+    for gone in ["target/debug/app", ".venv/pin", "out", "loose"] {
         assert!(!tree.join(gone).exists(), "{gone} survived");
     }
     for kept in [
         "target/debug/deps/unit",
         "target/release/.fingerprint/f",
-        ".venv/pin",
         "a.txt",
     ] {
         assert!(tree.join(kept).exists(), "{kept} went");

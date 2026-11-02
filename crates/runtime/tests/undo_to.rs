@@ -324,7 +324,7 @@ async fn a_tree_too_slow_to_capture_stops_trying_and_says_so() -> TestResult {
     Ok(())
 }
 
-/// Dies with `restore` asked for a tree its store lacks: a bad-object error on the way to a rewind.
+/// Dies with `restore` asked for a tree its store lacks, and with the refusal reading "no turn yet".
 #[tokio::test]
 async fn an_undo_whose_turn_end_is_in_another_store_moves_nothing() -> Result<(), Box<dyn Error>> {
     let run = run(&["a"]).await?;
@@ -336,7 +336,12 @@ async fn an_undo_whose_turn_end_is_in_another_store_moves_nothing() -> Result<()
     };
     lock_session(&run.store).append_custom_record(&data)?;
     let outcome = yi_runtime::undo(&run.store, &run.project, &run.home);
-    assert!(matches!(outcome, yi_runtime::UndoOutcome::NoCheckpoint));
+    let yi_runtime::UndoOutcome::Failed(why) = outcome else {
+        return Err(
+            "read as no checkpoint, which tells the person this session took no turn".into(),
+        );
+    };
+    assert!(why.contains("so nothing moved"), "{why}");
     assert!(run.project.join("a").exists(), "the tree stands");
     Ok(())
 }
