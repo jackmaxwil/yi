@@ -235,7 +235,7 @@ fn a_snapshot_holds_dirt_and_new_files_and_moves_nothing_the_child_has() -> Test
     std::fs::write(tree.join("out/ignored"), "x")?;
     git(tree, &["add", "a.txt"])?;
     let (head, status) = (rig.head()?, git(tree, &["status", "--porcelain"])?);
-    let commit = snapshot(tree)?;
+    let commit = snapshot(tree, None)?;
     assert_eq!(rig.head()?, head);
     assert_eq!(
         git(tree, &["status", "--porcelain"])?,

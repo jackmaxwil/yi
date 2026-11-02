@@ -88,14 +88,24 @@ impl Lane {
 
 /// `tree`'s files as a commit nobody's branch holds: the index is a copy, so the child's staging is
 /// untouched, and ignored files stay out as they do from a person's own `git add`.
-pub fn snapshot(tree: &Path) -> Result<Sha, LaneError> {
+pub fn snapshot(tree: &Path, deadline: Option<Instant>) -> Result<Sha, LaneError> {
     let index = git(
         tree,
         &["rev-parse", "--path-format=absolute", "--git-path", "index"],
     )?;
     let (index, copy) = (PathBuf::from(index.trim()), temp_index(tree));
     let copied = std::fs::copy(&index, &copy);
-    let run = |args: &[&str]| super::hostgit::git_indexed(tree, &copy, args);
+    let at = copy.to_string_lossy().into_owned();
+    let run = |args: &[&str]| {
+        let capture = super::hostgit::git_capture(
+            tree,
+            args,
+            &[("GIT_INDEX_FILE", at.as_str())],
+            deadline,
+            super::PLUMBING_CAP,
+        )?;
+        super::hostgit::whole(capture, args, super::PLUMBING_CAP)
+    };
     let result = copied
         .map_err(|error| LaneError::Forge(error.to_string()))
         .and_then(|_| {

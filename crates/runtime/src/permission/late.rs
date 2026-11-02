@@ -1,8 +1,10 @@
 //! Who answers an ask the classifier may judge, and when: `classifier.approval` puts it before the
 //! person (`instant`), after `askTimeoutSecs` unanswered (`after-delay`), or never.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use yi_types::event::AgentEvent;
@@ -182,5 +184,34 @@ impl PermissionBroker {
     pub(super) fn late(&self, ask: &PermissionAsk<'_>, late: &Late<'_>) -> Option<Answered> {
         (self.prompts_close_on_settle.load(Ordering::Relaxed))
             .then(|| ask_or_judge(self.asker.as_ref(), ask, late))
+    }
+}
+
+/// One asking request in flight, released on drop: a second ask for it joins the first.
+pub(super) struct InFlight<'a> {
+    set: &'a Mutex<BTreeSet<yi_permission::RequestId>>,
+    request: yi_permission::RequestId,
+}
+
+impl<'a> InFlight<'a> {
+    pub(super) fn claim(
+        set: &'a Mutex<BTreeSet<yi_permission::RequestId>>,
+        request: yi_permission::RequestId,
+    ) -> Option<Self> {
+        let mut guard = set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inserted = guard.insert(request);
+        inserted.then(|| Self { set, request })
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        let mut guard = self
+            .set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.remove(&self.request);
     }
 }

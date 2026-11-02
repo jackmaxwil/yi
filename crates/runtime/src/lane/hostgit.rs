@@ -79,40 +79,13 @@ fn run(
     yi_tools::run_captured(command, None, &cancelled, cap)
 }
 
-/// A git run against a temporary index: a snapshot commits what the tree holds without writing the
-/// index a person is using.
-pub(crate) fn git_indexed(cwd: &Path, index: &Path, args: &[&str]) -> Result<String, LaneError> {
-    let index = index.to_string_lossy().into_owned();
-    let capture = run(
-        cwd,
-        "git",
-        args,
-        &[("GIT_INDEX_FILE", &index)],
-        std::time::Duration::from_millis(GIT_TIMEOUT_MS),
-        super::PLUMBING_CAP,
-    )
-    .map_err(|output| LaneError::Git {
-        args: (args.iter()).map(|arg| (*arg).to_owned()).collect(),
-        exit_code: None,
-        output,
-    })?;
-    if capture.exit_code == Some(0) {
-        return Ok(capture.stdout);
-    }
-    Err(LaneError::Git {
-        args: (args.iter()).map(|arg| (*arg).to_owned()).collect(),
-        exit_code: capture.exit_code,
-        output: format!("{}{}", capture.stdout, capture.stderr),
-    })
-}
-
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
     git_capped(cwd, args, None, PLUMBING_CAP)
 }
 
 /// Incident: a long `status -z` lost its middle, a dirty file with it, and a restore overwrote
 /// that file. A caller that parses plumbing reads all of it or gets this error.
-fn whole(
+pub(super) fn whole(
     capture: yi_tools::CommandCapture,
     args: &[&str],
     cap: usize,
@@ -131,6 +104,7 @@ fn whole(
 pub(crate) fn git_capture(
     cwd: &Path,
     args: &[&str],
+    envs: &[(&str, &str)],
     deadline: Option<Instant>,
     cap: usize,
 ) -> Result<yi_tools::CommandCapture, LaneError> {
@@ -144,7 +118,7 @@ pub(crate) fn git_capture(
         cwd,
         "git",
         args,
-        &[],
+        envs,
         until.saturating_duration_since(Instant::now()),
         cap,
     )
@@ -179,7 +153,7 @@ pub(super) fn git_capped(
     deadline: Option<Instant>,
     cap: usize,
 ) -> Result<String, LaneError> {
-    whole(git_capture(cwd, args, deadline, cap)?, args, cap)
+    whole(git_capture(cwd, args, &[], deadline, cap)?, args, cap)
 }
 
 pub(super) fn past(deadline: Option<Instant>) -> Result<(), LaneError> {

@@ -19,15 +19,12 @@ use yi_types::permission::{
 
 mod egress;
 mod forge;
-mod inflight;
-use inflight::InFlight;
 mod hooked;
 pub(crate) use hooked::claude_dir;
 mod kept;
 pub(crate) use kept::protected;
 mod late;
-use late::{Answered, Late};
-
+use late::{Answered, InFlight, Late};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {
     AllowOnce,

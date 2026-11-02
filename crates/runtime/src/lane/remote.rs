@@ -62,6 +62,10 @@ pub struct GitLane {
 // ponytail: one lane per tree for the process's life; a `git remote set-url` by hand needs a restart.
 static LANES: Mutex<Option<HashMap<PathBuf, Option<Arc<GitLane>>>>> = Mutex::new(None);
 
+/// The trees asked with no lane, and the block each one gets: bounded, since a kernel asks per cwd.
+static NO_LANE: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
+const NO_LANE_MAX: usize = 64;
+
 impl GitLane {
     /// `None` with no origin, no pool or a credentialed origin: `git push` then fails contained
     /// and its refusal asks, as it did before there was a lane.
@@ -79,33 +83,33 @@ impl GitLane {
     /// seeded host, asked by nobody. Any remote counts, by whatever name; a git that cannot say
     /// whether one exists gets the same, never fail open.
     pub(crate) fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
-        static NO_LANE: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
         if let Some(lane) = lane {
             return lane.assign.clone();
         }
-        // Once a tree: a kernel asks per cell, and a changed answer would restart it.
+        // Incident: caching the no-remote answer pinned a tree that gained an origin to no block
+        // for the rest of the process, so only the answer that blocks is kept.
+        let known = NO_LANE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|memo| memo.get(cwd))
+            .cloned();
+        if let Some(block) = known {
+            return block;
+        }
+        // Outside the lock: a hung git must not stall every other spawn in the process.
+        let block = restricted(cwd);
+        if block.is_empty() {
+            return block;
+        }
         let mut memo = NO_LANE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let memo = memo.get_or_insert_with(HashMap::new);
-        (memo.entry(cwd.to_path_buf()).or_insert_with(|| {
-            let remote = git(cwd, &["remote"]).map_or(true, |list| !list.trim().is_empty());
-            if !remote {
-                return Vec::new();
-            }
-            [
-                "GIT_CONFIG_COUNT=3",
-                "GIT_CONFIG_KEY_0=maintenance.auto",
-                "GIT_CONFIG_VALUE_0=false",
-                "GIT_CONFIG_KEY_1=protocol.allow",
-                "GIT_CONFIG_VALUE_1=never",
-                "GIT_CONFIG_KEY_2=protocol.file.allow",
-                "GIT_CONFIG_VALUE_2=always",
-            ]
-            .map(str::to_owned)
-            .to_vec()
-        }))
-        .clone()
+        if memo.len() >= NO_LANE_MAX {
+            memo.clear();
+        }
+        memo.entry(cwd.to_path_buf()).or_insert(block).clone()
     }
 
     /// One repository's lane, its pushes cut at `forward_timeout`.
@@ -330,7 +334,7 @@ impl GitLane {
         let deadline = Instant::now().checked_add(self.forward_timeout);
         let refspec = format!("{}:{target}", sha.as_str());
         let args = ["push", "-q", "origin", refspec.as_str()];
-        match git_capture(repo, &args, deadline, CAPTURE_CAP) {
+        match git_capture(repo, &args, &[], deadline, CAPTURE_CAP) {
             Ok(_) => {
                 if let Wanted::Branch(branch) = wanted {
                     let upstream = format!("origin/{branch}");
@@ -369,6 +373,26 @@ fn asked(label: &str, stat: &str, broker: &PermissionBroker) -> bool {
     };
     let (outcome, _classifier) = broker.confirm_judged(&ask, None);
     !matches!(outcome, AskOutcome::Reject)
+}
+
+/// The transport block a repository with a remote gets: git config entries, no transport but a
+/// local path.
+fn restricted(cwd: &Path) -> Vec<String> {
+    let remote = git(cwd, &["remote"]).map_or(true, |list| !list.trim().is_empty());
+    if !remote {
+        return Vec::new();
+    }
+    [
+        "GIT_CONFIG_COUNT=3",
+        "GIT_CONFIG_KEY_0=maintenance.auto",
+        "GIT_CONFIG_VALUE_0=false",
+        "GIT_CONFIG_KEY_1=protocol.allow",
+        "GIT_CONFIG_VALUE_1=never",
+        "GIT_CONFIG_KEY_2=protocol.file.allow",
+        "GIT_CONFIG_VALUE_2=always",
+    ]
+    .map(str::to_owned)
+    .to_vec()
 }
 
 /// A remote's text is the network's: redacted, fenced and cut where the model reads it.
@@ -446,6 +470,28 @@ mod tests {
         );
         assert!(
             assign.contains(&"GIT_CONFIG_KEY_2=protocol.file.allow".to_owned()),
+            "{assign:?}"
+        );
+        Ok(())
+    }
+
+    /// Dies with the memo keeping the empty answer: a tree that gains an origin after its first
+    /// ask would reach origin with no transport block for the rest of the process.
+    #[test]
+    fn an_origin_added_later_is_blocked_at_once() -> Result<(), String> {
+        let dir = std::env::temp_dir().join("yi-assign-remote-later");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        git(&dir, &["init", "-q"]).map_err(|error| error.to_string())?;
+        assert_eq!(GitLane::assign_for(None, &dir), Vec::<String>::new());
+        git(
+            &dir,
+            &["remote", "add", "origin", "https://example.invalid/r"],
+        )
+        .map_err(|error| error.to_string())?;
+        let assign = GitLane::assign_for(None, &dir);
+        assert!(
+            assign.contains(&"GIT_CONFIG_VALUE_1=never".to_owned()),
             "{assign:?}"
         );
         Ok(())

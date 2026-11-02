@@ -94,7 +94,8 @@ impl SubagentHost {
         }
         let pool = super::Pool::open(&self.options.home, &cwd, self.options.lane_slots)
             .map_err(|error| error.to_string())?;
-        let commit = super::warm::snapshot(&cwd).map_err(|error| error.to_string())?;
+        let commit =
+            super::warm::snapshot(&cwd, self.deadline()).map_err(|error| error.to_string())?;
         let run = warm_run(
             &pool,
             &commit,
