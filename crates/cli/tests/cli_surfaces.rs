@@ -424,6 +424,13 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
 /// A granted directory that does not exist, or that the sandbox must keep closed, ended the run
 /// before the model answered; a good one let it through. The grant belongs to the run that named
 /// it: the ledger keeps none, so a `--continue` that omits the flag does not inherit it.
+/// The binary's answer, not this process's: a test binary has no `__contain`, so on Linux it alone
+/// would say no sandbox while the `yi` it runs refuses the grant.
+fn the_binary_contains() -> bool {
+    yi_tools::set_wrapper(std::path::PathBuf::from(env!("CARGO_BIN_EXE_yi")));
+    yi_tools::Sandbox::available()
+}
+
 #[test]
 fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> TestResult {
     let workspace = Workspace::new("allow-write")?;
@@ -433,7 +440,7 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
     );
     // A guarded dir is refused only under a containment profile: with none, nothing is contained
     // and a grant widens nothing. A dir that does not exist is refused on every host.
-    let guarded = if yi_tools::Sandbox::available() { 2 } else { 0 };
+    let guarded = if the_binary_contains() { 2 } else { 0 };
     for (dir, want) in [(&yi_dir, guarded), (&missing, 2)] {
         let dir = dir.to_string_lossy();
         let run = ask(&workspace, "look", &["--allow-write", &dir])?;
@@ -491,7 +498,7 @@ fn allow_write_from_config_refuses_a_protected_dir() -> TestResult {
     )?;
     let run = ask(&workspace, "look", &[])?;
     let refused = run.status.code() == Some(2);
-    assert_eq!(refused, yi_tools::Sandbox::available(), "{run:?}");
+    assert_eq!(refused, the_binary_contains(), "{run:?}");
     Ok(())
 }
 
