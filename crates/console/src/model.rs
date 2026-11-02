@@ -485,6 +485,8 @@ impl Pane {
 pub struct Tab {
     pub layout: TileLayout,
     pub zoomed: bool,
+    /// The terminal pane a run chip of this tab fed last; a press reuses it rather than split.
+    pub chip_terminal: Option<PaneId>,
 }
 
 pub enum Mode {
@@ -557,6 +559,7 @@ impl ConsoleState {
             tabs: vec![Tab {
                 layout,
                 zoomed: false,
+                chip_terminal: None,
             }],
             active_tab: 0,
             panes,
@@ -930,6 +933,7 @@ impl ConsoleState {
         self.tabs.push(Tab {
             layout,
             zoomed: false,
+            chip_terminal: None,
         });
         self.active_tab = self.tabs.len().saturating_sub(1);
     }

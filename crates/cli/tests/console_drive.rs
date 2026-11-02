@@ -254,7 +254,18 @@ fn a_hidden_sidebar_is_still_hidden_in_the_console_opened_next() -> TestResult {
             &[],
         )?;
         let config = home.join(".yi/config.json");
-        let saved: serde_json::Value = std::fs::read_to_string(&config)?.parse()?;
+        // Invariant: the daemon writes the press, and the console that sent it may already be gone.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let saved = loop {
+            let saved: serde_json::Value = std::fs::read_to_string(&config)
+                .ok()
+                .and_then(|text| text.parse().ok())
+                .unwrap_or_default();
+            if saved["console"]["sidebar"] == "hidden" || std::time::Instant::now() > deadline {
+                break saved;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
         assert_eq!(
             saved["console"]["sidebar"], "hidden",
             "the press was not saved: {saved}"

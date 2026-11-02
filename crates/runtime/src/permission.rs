@@ -24,7 +24,7 @@ pub(crate) use hooked::claude_dir;
 mod kept;
 pub(crate) use kept::protected;
 mod late;
-use late::{Answered, Late};
+use late::{Answered, InFlight, Late};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {
@@ -1122,32 +1122,5 @@ impl PermissionBroker {
         answered.unwrap_or_else(|| {
             Answered::Person(self.asker.as_ref().map_or(AskOutcome::Reject, |a| a(ask)))
         })
-    }
-}
-
-struct InFlight<'a> {
-    set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
-    request: RequestId,
-}
-
-impl<'a> InFlight<'a> {
-    fn claim(
-        set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
-        request: RequestId,
-    ) -> Option<Self> {
-        let inserted = set
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(request);
-        inserted.then(|| Self { set, request })
-    }
-}
-
-impl Drop for InFlight<'_> {
-    fn drop(&mut self) {
-        self.set
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.request);
     }
 }

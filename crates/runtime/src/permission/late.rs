@@ -2,9 +2,10 @@
 //! person (`instant`), after `askTimeoutSecs` unanswered (`after-delay`), or never.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
+use yi_permission::RequestId;
 use yi_types::event::AgentEvent;
 
 use super::{Answerer, AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
@@ -182,5 +183,32 @@ impl PermissionBroker {
     pub(super) fn late(&self, ask: &PermissionAsk<'_>, late: &Late<'_>) -> Option<Answered> {
         (self.prompts_close_on_settle.load(Ordering::Relaxed))
             .then(|| ask_or_judge(self.asker.as_ref(), ask, late))
+    }
+}
+
+pub(super) struct InFlight<'a> {
+    set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
+    request: RequestId,
+}
+
+impl<'a> InFlight<'a> {
+    pub(super) fn claim(
+        set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
+        request: RequestId,
+    ) -> Option<Self> {
+        let inserted = set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(request);
+        inserted.then(|| Self { set, request })
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.request);
     }
 }

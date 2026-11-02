@@ -609,17 +609,23 @@ fn start(
     Ok((id, receiver))
 }
 
-/// What a killed `docker exec` left behind, under a bound of its own. Incident shape: an engine
-/// asleep answers nothing, so an unbounded sweep held a check past the deadline it had just hit.
-pub fn run_sweep(sweep: &str) {
-    const BOUND: Duration = Duration::from_secs(5);
+/// What a killed `docker exec` left behind. Incident: an engine asleep answers nothing, so a
+/// sweep on a caller's own thread held a check past the deadline it had just hit.
+pub fn run_sweep_within(sweep: &str, bound: Option<Duration>) {
     let mut process = command(interpreter());
     process.arg("-c").arg(sweep);
-    let until = std::time::Instant::now().checked_add(BOUND);
+    let until = bound.and_then(|bound| std::time::Instant::now().checked_add(bound));
     let past: CancelFlag =
-        Arc::new(move || until.is_none_or(|until| std::time::Instant::now() >= until));
+        Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
     let _swept_or_gone_with_the_container =
         crate::process::run_captured(process, None, &past, OUTPUT_CAP);
+}
+
+/// The bound the check path sweeps under, since the sweep runs on the thread that owes an answer.
+pub const SWEEP_BOUND: Duration = Duration::from_secs(5);
+
+pub fn run_sweep(sweep: &str) {
+    run_sweep_within(sweep, None);
 }
 
 /// `docker exec` of `command` under `sh -c` in `cwd` inside `container`, quoted for the host
