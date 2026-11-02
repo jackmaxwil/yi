@@ -1,4 +1,5 @@
 ---
+version: 0.869.0
 issue: Closes #1931
 raise: crate runtime +14, comments +3, tests +189
 ---
