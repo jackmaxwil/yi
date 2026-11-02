@@ -154,7 +154,13 @@ fn leaves() -> Vec<String> {
                 allow
             }),
         ),
-        ("sandbox", fields!(SandboxConfig { egress })),
+        (
+            "sandbox",
+            fields!(SandboxConfig {
+                egress,
+                host_recipes
+            }),
+        ),
         ("mail", fields!(MailConfig { hop_limit })),
         ("routing", vec!["order", "only"]),
     ];
@@ -181,6 +187,9 @@ fn sample(row: &SettingRow) -> Value {
         SettingKind::List => json!(["one"]),
         SettingKind::Json if row.id == "open" => {
             json!([{"name": "zed", "command": ["zed", "{path}"]}])
+        }
+        SettingKind::Json if row.id == "sandbox.hostRecipes" => {
+            json!([{"call": "just pr", "pin": ["justfile"]}])
         }
         SettingKind::Json => json!({}),
     }

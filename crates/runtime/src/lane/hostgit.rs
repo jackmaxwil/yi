@@ -45,6 +45,9 @@ pub(crate) fn capture_named(
 ) -> Result<yi_tools::CommandCapture, String> {
     let capture =
         run(cwd, program, args, deadline, cap).map_err(|error| format!("{label}: {error}"))?;
+    if program == "git" && yi_tools::writes_sealed(args) {
+        yi_tools::reseal();
+    }
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }
@@ -121,6 +124,9 @@ pub(crate) fn git_capture(
         exit_code: None,
         output,
     })?;
+    if yi_tools::writes_sealed(args) {
+        yi_tools::reseal();
+    }
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }
@@ -217,7 +223,7 @@ pub fn trunk(repo: &Path) -> BranchName {
         || "main".to_owned(),
         |common| yi_permission::trunk_of(&common),
     );
-    BranchName::parse(&name).unwrap_or_else(|_| BranchName("main".to_owned()))
+    BranchName::parse(&name).unwrap_or_else(|_| BranchName::main())
 }
 
 /// `-c` for what a repository's identity lacks: a host commit must not fail for want of a name.

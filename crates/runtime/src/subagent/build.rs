@@ -309,3 +309,62 @@ pub(super) fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> 
         unsupported.join(", ")
     ))
 }
+
+/// How much parent history seeds a child's transcript. `LastN(n)` counts turn boundaries
+/// rather than messages, so a child never opens on half of an exchange (§11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fork {
+    None,
+    All,
+    LastN(u64),
+}
+
+/// Whether a child edits the parent's checkout or gets a git worktree of its own (§11); a
+/// container child gets the same worktree and runs its bash in a container over it (D286).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Isolation {
+    None,
+    Worktree,
+    Container(String),
+}
+
+pub(super) fn parse_isolation(kwargs: &Map<String, Value>) -> Result<Isolation, String> {
+    match kwargs.get("isolation") {
+        None | Some(Value::Null) => Ok(Isolation::None),
+        Some(Value::String(value)) => match value.trim() {
+            "none" => Ok(Isolation::None),
+            "worktree" => Ok(Isolation::Worktree),
+            other => match crate::node::image_of(other) {
+                Some(image) => Ok(Isolation::Container(image?.to_owned())),
+                None => Err(format!(
+                    "rlm.run isolation must be \"none\", \"worktree\" or \"container:<image>\", got {other}"
+                )),
+            },
+        },
+        Some(other) => Err(format!("rlm.run isolation must be a string, got {other}")),
+    }
+}
+
+pub(super) fn parse_fork(kwargs: &Map<String, Value>) -> Result<Fork, String> {
+    match kwargs.get("fork") {
+        None | Some(Value::Null) => Ok(Fork::None),
+        Some(Value::String(value)) => match value.trim() {
+            "none" => Ok(Fork::None),
+            "all" => Ok(Fork::All),
+            other => other
+                .parse::<u64>()
+                .ok()
+                .filter(|turns| *turns > 0)
+                .map(Fork::LastN)
+                .ok_or_else(|| {
+                    format!("rlm.run fork must be \"none\", \"all\", or a positive turn count, got {other}")
+                }),
+        },
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .filter(|turns| *turns > 0)
+            .map(Fork::LastN)
+            .ok_or_else(|| format!("rlm.run fork turn count must be positive, got {number}")),
+        Some(other) => Err(format!("rlm.run fork must be a string or number, got {other}")),
+    }
+}
