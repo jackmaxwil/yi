@@ -331,9 +331,6 @@ async fn a_discard_removes_a_free_tree_and_a_childs_is_refused() -> TestResult {
 #[tokio::test]
 async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> TestResult {
     let rig = rig("given")?;
-    if !folds(&rig)? {
-        return Ok(());
-    }
     std::fs::write(rig.repo.join("f0.txt"), "a person's\n")?;
     let at = rig.fork("given").await?;
     let mut asked = Map::new();
@@ -350,6 +347,9 @@ async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> 
         .err()
         .ok_or("a dirty fork was merged")?;
     assert!(refused.contains("h.tree.merge()"), "{refused}");
+    if !folds(&rig)? {
+        return Ok(());
+    }
     std::fs::write(at.join("f1.txt"), "kid's\n")?;
     let reply = rig
         .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))
