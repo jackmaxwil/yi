@@ -1434,6 +1434,11 @@ def attempt(repo, pr, ids, asked=False):
         fields["retry"] = (f"the fixer tries again at {hourly(time.time() + RETRY_AFTER)} or on a new head"
                            if len(held_rows(notes, sha, fields["stop"], fields.get("round", ""))) < RETRIES
                            else "the fixer waits for a new head")
+    # Incident: the queue re-adds `autofix` to a PR it still cannot merge, which skips the hand-off's hold
+    # and, with queued PRs first in the pass, would pay for the same stop in every pass.
+    if verdict == "handoff" and "queue" in labels:
+        set_label(repo, number, ids, "queue", False)
+        reason = f"{reason} It left the merge queue; add the `queue` label again once that is answered."
     if verdict in ("handoff", "base-red") and "autofix" in labels:
         set_label(repo, number, ids, "autofix", False)
     # Stop and wait: a high the fixer showed wrong is the owner's call, not another round's.
@@ -1960,6 +1965,13 @@ def waits_selfcheck():
             errs.append(f"a hand-off read {said} with labels {labelled}: {posted[-1][:160]!r}")
         if ("autofix", False) not in labelled or "just pr autofix N" not in posted[-1] or "stop=gate" not in posted[-1]:
             errs.append(f"a hand-off kept the label that asked for it, or names no way to retry: {labelled}, {posted[-1][:160]!r}")
+        if ("queue", False) in labelled:
+            errs.append(f"a hand-off of an unqueued PR touched the queue label: {labelled}")
+        labelled[:] = []
+        notes[:] = []
+        attempt("o/r", dict(pr, labels=[{"name": "autofix"}, {"name": "queue"}]), {})
+        if ("queue", False) not in labelled or "left the merge queue" not in posted[-1]:
+            errs.append(f"a queued PR handed off stayed in the queue, which would ask the fixer again: {labelled}, {posted[-1][:160]!r}")
         gate = " stop=gate"
         for rows, want, why in (([meta(now - 60, "handoff", extra=gate)], "waiting", "inside its window"),
                                 ([meta(now - RETRY_AFTER - 60, "handoff", extra=gate)], "handoff", "past its window"),
