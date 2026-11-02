@@ -1,4 +1,6 @@
 ---
+version: 0.882.0
+decisions: D535
 issue: Closes #1938
 growth: +223 is the merge-tree road (`lane/stage.rs`), the hand-back reshaped around it, and the review's repairs. Weighed for deletion: dropping the old road, which leaves a runner on git 2.34 with no merge at all, since git before 2.43 crashes on --attr-source
 raise: tests +458, comments +17, crate runtime +223
