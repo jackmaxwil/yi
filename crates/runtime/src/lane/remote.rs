@@ -61,6 +61,8 @@ pub struct GitLane {
 
 // ponytail: one lane per tree for the process's life; a `git remote set-url` by hand needs a restart.
 static LANES: Mutex<Option<HashMap<PathBuf, Option<Arc<GitLane>>>>> = Mutex::new(None);
+// ponytail: one assign per tree for the process's life, as the lanes are; a `git remote add` needs a restart.
+static ASSIGNS: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
 
 impl GitLane {
     /// `None` with no origin, no pool or a credentialed origin: `git push` then fails contained
@@ -81,8 +83,22 @@ impl GitLane {
     /// left to work. Incident: `protocol.allow=never` refused the file transport too.
     pub fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
         if let Some(lane) = lane {
-            return lane.assign.clone();
+            return lane.assign().to_vec();
         }
+        let mut assigns = ASSIGNS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let assigns = assigns.get_or_insert_with(HashMap::new);
+        if let Some(cached) = assigns.get(cwd) {
+            return cached.clone();
+        }
+        let assign = Self::forked_assign(cwd);
+        assigns.insert(cwd.to_path_buf(), assign.clone());
+        assign
+    }
+
+    /// One `git config` fork per tree, not per spawn: the fork cost the background window its margin.
+    fn forked_assign(cwd: &Path) -> Vec<String> {
         if git(cwd, &["config", "--get", "remote.origin.url"]).is_err() {
             return Vec::new();
         }

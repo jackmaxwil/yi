@@ -313,7 +313,7 @@ mod deadline {
         let repo = index
             .and_then(|head| head.parent().map(std::path::Path::to_path_buf))
             .ok_or("no store")?;
-        let theirs = repo.join(format!("{}.lock", index_name(&repo, &project)?));
+        let theirs = repo.join(format!("{}.lock", index_name(&repo)?));
         std::fs::write(&theirs, "")?;
         std::fs::write(shim.join("slow"), "")?;
         let killed = checkpoints.capture_within(Duration::from_millis(200));
@@ -322,10 +322,7 @@ mod deadline {
         Ok(())
     }
 
-    fn index_name(
-        repo: &std::path::Path,
-        _project: &std::path::Path,
-    ) -> Result<String, Box<dyn Error>> {
+    fn index_name(repo: &std::path::Path) -> Result<String, Box<dyn Error>> {
         let found = (std::fs::read_dir(repo)?.flatten())
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .find(|name| name.starts_with("index-"));

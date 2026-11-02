@@ -1340,7 +1340,7 @@ fn a_job_wait_returns_as_the_job_settles() -> TestResult {
     context.auto_background = Some(std::time::Duration::from_millis(80));
     let mut waited = std::time::Duration::ZERO;
     for _ in 0..5 {
-        let started = tool.execute(args(&[("command", json!("sleep 0.1"))]), &context);
+        let started = tool.execute(args(&[("command", json!("sleep 0.4"))]), &context);
         let job = started.result.details.get("job").and_then(Value::as_u64);
         let job = job.ok_or("no job id")?;
         let polling = std::time::Instant::now();
@@ -1350,7 +1350,7 @@ fn a_job_wait_returns_as_the_job_settles() -> TestResult {
         assert!(finished.contains("finished (exit 0)"), "{finished}");
     }
     assert!(
-        waited < std::time::Duration::from_millis(500),
+        waited < std::time::Duration::from_millis(3000),
         "five waits took {waited:?}"
     );
     Ok(())
