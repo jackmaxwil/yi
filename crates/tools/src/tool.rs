@@ -43,6 +43,8 @@ pub struct ToolContext {
     pub auto_background: Option<std::time::Duration>,
     /// Set when the permission layer contained this call rather than asking.
     pub sandbox: Option<crate::sandbox::Sandbox>,
+    /// Asked once per contained spawn, so its network has a holder.
+    pub spawn: Option<crate::SpawnFn>,
     /// Invariant: paths the reviewer wall hides from this agent. A tool reading a tree rather
     /// than a named path shows the wall no target, so it consults this set itself.
     pub deny_read: Vec<PathBuf>,
@@ -86,6 +88,7 @@ impl ToolContext {
             transcript: None,
             auto_background: None,
             sandbox: None,
+            spawn: None,
             deny_read: Vec::new(),
             deny_write: Vec::new(),
             container: None,

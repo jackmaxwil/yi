@@ -480,7 +480,7 @@ fn wire_plan_request(
     // Invariant: a verification never outlives the run (D177): the verifier and every lane
     // settle read the session's deadline too.
     let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
-        .with_claude_hooks(session.claude_hooks(&cwd));
+        .with_checker(session.checker(&cwd));
     if let Some(deadline) = session.deadline()
         && let Some(ends) = deadline.started.checked_add(deadline.total)
     {
@@ -738,7 +738,7 @@ fn wire_kernel(
             }));
         }),
     );
-    let service = crate::kernel::KernelService::new(options);
+    let service = crate::kernel::KernelService::new(options).with_holder(wiring);
     Arc::new(service.with_own_paths(wiring.own_paths(session)))
 }
 
@@ -758,7 +758,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
-    registry.register_exec(wiring.cwd.clone(), job_profile(&wiring, session));
+    registry.register_exec(wiring.exec_home(), job_profile(&wiring, session));
     crate::kernel_state::register_host_stores(&mut registry, &wiring);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
@@ -789,6 +789,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
             })
         });
     }
+    session.hold_gate(wiring.broker.clone(), wiring.wall.clone());
     let host = subagent_host(session, &wiring, &plans_dir);
     host.register(&mut registry);
     crate::mailbox::register_receive(session, &host, &mut registry);
@@ -870,7 +871,6 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::rules::attach_rules(session, Arc::clone(&engine));
     session.set_rules_engine(Arc::clone(&engine));
     wire_compacted(session, &service, &plans_dir, engine);
-    session.set_wall(wiring.wall.clone());
     // Owner, overriding D340's per-session spills: "I accept the security hole. It has more
     // value than this esoteric risk"; the board is the family's, so every member reads them.
     session.set_spills(board_spills(&wiring.family_dir()));
@@ -918,7 +918,7 @@ fn subagent_host(
         plans_dir: plans_dir.to_path_buf(),
         family_live: Arc::clone(&wiring.kernels),
     }));
-    let _first_wins = host.claude_hooks.set(session.claude_hooks(&wiring.cwd));
+    let _first_wins = host.checker.set(session.checker(&wiring.cwd));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
     let (handle, own) = (session.rules_handle(), wiring.own_paths(session));

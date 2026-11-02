@@ -47,7 +47,12 @@ impl Workspace {
             .arg(self.0.join("home/sessions"))
             .arg("--cwd")
             .arg(self.project())
-            .env("HOME", self.0.join("home"))
+            .env("HOME", self.0.join("home"));
+        // Incident: a shell's OPENROUTER_API_KEY turned the keyless doctor FAIL into a live probe.
+        for (_, key) in yi_types::PROVIDER_KEY_VARS {
+            command.env_remove(key);
+        }
+        command
             .envs(env.iter().copied())
             .current_dir(self.project());
         Ok(command.output()?)
@@ -422,15 +427,19 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
 #[test]
 fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> TestResult {
     let workspace = Workspace::new("allow-write")?;
-    let (home, missing) = (
-        workspace.0.join("home"),
+    let (yi_dir, missing) = (
+        workspace.0.join("home").join(".yi"),
         workspace.project().join("no-such-dir"),
     );
-    for dir in [home.to_string_lossy(), missing.to_string_lossy()] {
+    // A guarded dir is refused only under a containment profile: with none, nothing is contained
+    // and a grant widens nothing. A dir that does not exist is refused on every host.
+    let guarded = if yi_tools::Sandbox::available() { 2 } else { 0 };
+    for (dir, want) in [(&yi_dir, guarded), (&missing, 2)] {
+        let dir = dir.to_string_lossy();
         let run = ask(&workspace, "look", &["--allow-write", &dir])?;
         let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
-        assert_eq!(run.status.code(), Some(2), "{dir}: {stderr}");
-        assert!(stderr.contains("allow-write"), "{stderr}");
+        assert_eq!(run.status.code(), Some(want), "{dir}: {stderr}");
+        assert!(want != 2 || stderr.contains("allow-write"), "{stderr}");
     }
     write_config(
         &workspace,
@@ -467,23 +476,22 @@ fn allow_write_relative_dir_uses_the_invocation_directory() -> TestResult {
     Ok(())
 }
 
-/// The grant reached through `permissions.allowWrite` is refused where the flag's is, so a
-/// config chain that stops delivering the value fails here instead of granting nothing.
+/// The grant reached through `permissions.allowWrite` is refused where the flag's is, so a config
+/// chain that stops delivering the value fails here instead of granting nothing.
 #[test]
 fn allow_write_from_config_refuses_a_protected_dir() -> TestResult {
     let workspace = Workspace::new("allow-write-config")?;
-    let home = workspace.0.join("home");
-    std::fs::create_dir_all(home.join(".yi"))?;
+    let yi_dir = workspace.0.join("home").join(".yi");
+    std::fs::create_dir_all(&yi_dir)?;
     std::fs::write(
-        home.join(".yi/config.json"),
+        yi_dir.join("config.json"),
         serde_json::to_string(&json!({
-            "permissions": {"allowWrite": [home.to_string_lossy()]}
+            "permissions": {"allowWrite": [yi_dir.to_string_lossy()]}
         }))?,
     )?;
     let run = ask(&workspace, "look", &[])?;
-    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
-    assert_eq!(run.status.code(), Some(2), "{stderr}");
-    assert!(stderr.contains("allow-write"), "{stderr}");
+    let refused = run.status.code() == Some(2);
+    assert_eq!(refused, yi_tools::Sandbox::available(), "{run:?}");
     Ok(())
 }
 
@@ -3306,6 +3314,35 @@ fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
         (&json!("program"), &json!("tree")),
         "the adapter carries programs and never the console's Chrome: {rows}"
     );
+    let desktop = (rows.as_array().ok_or("not an array")?.iter())
+        .find(|row| row["name"] == "agent-desktop")
+        .ok_or("no agent-desktop row")?;
+    assert_eq!(
+        desktop["shape"],
+        json!("host"),
+        "the adapter must never carry a program that drives this machine: {rows}"
+    );
+    Ok(())
+}
+
+/// `yi gate` answers with the same decide() the tool seam calls, so this is the real binary's
+/// judgement of each kind of desktop command, offline, with nothing installed.
+#[test]
+fn the_gate_says_what_a_desktop_command_would_do() -> TestResult {
+    let workspace = Workspace::new("yi-gate-desktop")?;
+    for (command, first_line) in [
+        ("agent-desktop status", "auto: allow"),
+        ("agent-desktop snapshot --app TextEdit -i", "auto: ask"),
+        ("agent-desktop press cmd+q", "auto: deny"),
+        ("agent-desktop session start --cursor", "auto: allow"),
+        ("agent-desktop snapshot --app Safari", "auto: deny"),
+    ] {
+        let output = workspace.yi(&["gate", command])?;
+        let shown = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert_eq!(shown.lines().next(), Some(first_line), "{command}: {shown}");
+    }
+    let refused = workspace.yi(&["gate", "agent-desktop launch firefox"])?;
+    assert!(String::from_utf8_lossy(&refused.stdout).contains("agent-browser"));
     Ok(())
 }
 
