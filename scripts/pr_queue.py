@@ -102,7 +102,7 @@ def merge_member(cwd, number, head, title, branch, body=""):
 
 
 def closing(body):
-    return [int(n) for word, named, n in CITE.findall(body or "") if word.lower() == "closes" and not named]
+    return list(dict.fromkeys(int(n) for word, named, n in CITE.findall(body or "") if word.lower() == "closes" and not named))
 
 
 def use_driver(cwd):
@@ -505,7 +505,7 @@ def selfcheck():
         bad.append("a label from outside MERGERS was honoured")
     if enqueue_time([add("jack", "t1"), drop]) is not None:
         bad.append("a removed label still read as queued")
-    if closing("Closes #1\nrefs #2\ncloses #3\nCloses other/repo#4") != [1, 3]:
+    if closing("Closes #1\nrefs #2\ncloses #3\nCloses other/repo#4\nCloses #1") != [1, 3]:
         bad.append("closing() read the wrong issues")
     if bad:
         print("\n".join(f"FAIL queue selfcheck: {b}" for b in bad))

@@ -183,7 +183,7 @@ def scratch_repo(prefix, seed):
     """A git repo holding these guardrails and `seed` ({path: text or bytes}) on main, checked out on
     `topic`; yields (dir, run), run being a command in it with CARGO_TARGET_DIR unset; removed after."""
     tmp = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
-    env = {k: v for k, v in os.environ.items() if k != "CARGO_TARGET_DIR"}
+    env = {k: v for k, v in os.environ.items() if k not in ("CARGO_TARGET_DIR", "GITHUB_REF")}
     run = lambda *a: subprocess.run(a, cwd=tmp, capture_output=True, text=True, env=env)
     try:
         shutil.copytree(pathlib.Path(__file__).parent, tmp / "scripts/guardrails", ignore=shutil.ignore_patterns("baselines", "__pycache__"))
