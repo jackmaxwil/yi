@@ -59,6 +59,7 @@ pub struct ToolContext {
     /// and collects past the caps of the model's view, since the program reads the value.
     pub program: bool,
     pub fuse: Fuse,
+    pub hold_opens: Option<yi_permission::OpenHold>,
 }
 
 impl ToolContext {
@@ -67,7 +68,9 @@ impl ToolContext {
     pub(crate) fn read_gate(&self) -> yi_permission::ReadGate {
         let context = yi_permission::CatastrophicContext::detect(&self.cwd);
         let own = self.recovery_dir.iter().chain(&self.transcript).cloned();
-        yi_permission::ReadGate::new(&context).except(own.collect())
+        let mut gate = yi_permission::ReadGate::new(&context).except(own.collect());
+        gate.hold_opens(self.hold_opens.clone());
+        gate
     }
 
     /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`.
@@ -96,6 +99,7 @@ impl ToolContext {
             job_owner: None,
             program: false,
             fuse: Fuse::PROGRAM,
+            hold_opens: None,
         }
     }
 }
