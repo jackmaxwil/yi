@@ -7,9 +7,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use yi_runtime::lane::warm::{
-    Asked, CHECK_QUEUE, Verdict, WarmRun, check_commit, scrub, snapshot, ticket,
-};
+use yi_runtime::lane::warm::{CHECK_QUEUE, Verdict, WarmRun, check_commit, scrub, snapshot};
 use yi_runtime::lane::{ClaimBase, Pool, Sha};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -206,7 +204,7 @@ fn past_its_queue_a_check_names_the_pool_that_held_it() -> TestResult {
 }
 
 #[test]
-fn three_checks_through_two_directories_all_answer_and_the_wait_is_counted() -> TestResult {
+fn three_checks_through_two_directories_all_answer() -> TestResult {
     let rig = rig("through", 2)?;
     let runs: Vec<Result<WarmRun, String>> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..3)
@@ -220,16 +218,10 @@ fn three_checks_through_two_directories_all_answer_and_the_wait_is_counted() -> 
             .map(|handle| handle.join().unwrap_or_else(|_| Err("panicked".to_owned())))
             .collect()
     });
-    let mut waited = Duration::ZERO;
     for run in runs {
         let run = run?;
         assert_eq!(run.verdict, Verdict::Green, "{run:?}");
-        waited = waited.max(run.waited);
     }
-    assert!(
-        waited >= Duration::from_millis(500),
-        "the third never waited: {waited:?}"
-    );
     Ok(())
 }
 
@@ -289,69 +281,6 @@ fn a_scrub_leaves_the_rebuild_state_and_nothing_else_untracked() -> TestResult {
     ] {
         assert!(tree.join(kept).exists(), "{kept} went");
     }
-    Ok(())
-}
-
-fn green() -> WarmRun {
-    WarmRun {
-        verdict: Verdict::Green,
-        capture: None,
-        waited: Duration::ZERO,
-    }
-}
-
-/// Dies with the run tied to the cell: a check past the kernel's 600 s abort would start over each
-/// time, and at 128 children never finish.
-#[test]
-fn a_ticket_outlives_its_first_wait_is_read_once_and_runs_once() -> TestResult {
-    let starts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let run = |wait: Duration, starts: &std::sync::Arc<std::sync::atomic::AtomicUsize>| {
-        let starts = std::sync::Arc::clone(starts);
-        ticket("tree", "cmd", wait, move || {
-            starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(300));
-            green()
-        })
-    };
-    let Asked::Waiting { row } = run(Duration::ZERO, &starts) else {
-        return Err("a running check answered".into());
-    };
-    assert!(row.contains("the same call again reads this run"), "{row}");
-    let Asked::Finished(first) = run(Duration::from_secs(10), &starts) else {
-        return Err("the check never finished".into());
-    };
-    assert_eq!(first.verdict, Verdict::Green);
-    assert_eq!(
-        starts.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "the second call read the same run"
-    );
-    let _a_third_call_is_a_new_run = run(Duration::from_secs(10), &starts);
-    assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), 2);
-    Ok(())
-}
-
-#[test]
-fn the_ticket_table_holds_at_its_limit_and_refuses_one_past() -> TestResult {
-    for n in 0..256 {
-        let Asked::Waiting { .. } = ticket("full", &n.to_string(), Duration::ZERO, || {
-            std::thread::sleep(Duration::from_secs(5));
-            green()
-        }) else {
-            return Err(format!("ticket {n} was refused").into());
-        };
-    }
-    let Asked::Finished(refused) = ticket("full", "one past", Duration::ZERO, green) else {
-        return Err("one past the table ran".into());
-    };
-    let Verdict::Abstain { why } = refused.verdict else {
-        return Err("one past the table has a verdict".into());
-    };
-    assert!(why.contains("check.tickets 256"), "{why}");
-    yi_runtime::lane::warm::forget_tickets("full");
-    assert!(
-        matches!(ticket("full", "again", Duration::from_secs(1), green), Asked::Finished(run) if run.verdict == Verdict::Green)
-    );
     Ok(())
 }
 

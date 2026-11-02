@@ -1,10 +1,9 @@
 //! Checks on warm directories: a per-repository pool of `node.slots` trees whose cargo output
 //! outlives a check, scrubbed to cargo's bookkeeping so no borrower reads another's files.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::hostgit::{git, identity, sha_of};
@@ -12,7 +11,6 @@ use super::{ClaimBase, Lane, LaneError, Pool, Sha};
 
 /// How long a check may wait for a directory when the session names no deadline.
 pub const CHECK_QUEUE: Duration = Duration::from_secs(3_600);
-const TICKETS_MAX: usize = 256;
 const BACKOFF_START: Duration = Duration::from_millis(50);
 const BACKOFF_MAX: Duration = Duration::from_secs(2);
 /// What survives under `target/<profile>`: a binary at `target/debug/app` would run the last
@@ -33,7 +31,6 @@ pub struct WarmRun {
     pub verdict: Verdict,
     /// What the check printed, its paths the model's. `None` when it never ran.
     pub capture: Option<yi_tools::CommandCapture>,
-    pub waited: Duration,
 }
 
 impl WarmRun {
@@ -214,26 +211,21 @@ pub fn check_commit(
 ) -> WarmRun {
     let _span = yi_types::trace::span("tree.check");
     let begun = Instant::now();
-    let stopped = |why: String, begun: Instant| WarmRun {
+    let stopped = |why: String| WarmRun {
         verdict: Verdict::Abstain { why },
         capture: None,
-        waited: begun.elapsed(),
     };
     let lane = match claim(warm, commit, queue_until) {
         Ok(lane) => lane,
         Err(Ok(_)) => {
-            return stopped(
-                format!(
-                    "no warm directory came free in {} s; {n} of {n} held (node.slots {n})",
-                    begun.elapsed().as_secs(),
-                    n = warm.slots
-                ),
-                begun,
-            );
+            return stopped(format!(
+                "no warm directory came free in {} s; {n} of {n} held (node.slots {n})",
+                begun.elapsed().as_secs(),
+                n = warm.slots
+            ));
         }
-        Err(Err(error)) => return stopped(format!("no warm directory: {error}"), begun),
+        Err(Err(error)) => return stopped(format!("no warm directory: {error}")),
     };
-    let waited = begun.elapsed();
     let path = lane.path().to_path_buf();
     let prepared = scrub(&path).and_then(|()| {
         if !path.join("target").exists() {
@@ -244,19 +236,12 @@ pub fn check_commit(
     });
     if let Err(error) = prepared {
         let _released_or_reclaimed_by_the_next_claim = lane.release_warm();
-        return stopped(
-            format!("the warm directory could not be prepared: {error}"),
-            begun,
-        );
+        return stopped(format!("the warm directory could not be prepared: {error}"));
     }
     let began = Instant::now();
     let until = began.checked_add(budget).unwrap_or(began);
     let capture = crate::goal::run_check_in(&path, command, &[], None, until, None, checker);
-    let run = |verdict, capture| WarmRun {
-        verdict,
-        capture,
-        waited,
-    };
+    let run = |verdict, capture| WarmRun { verdict, capture };
     let shown = path.to_string_lossy().into_owned();
     let result = match capture {
         Err(error) => run(Verdict::Abstain { why: error }, None),
@@ -281,98 +266,4 @@ pub fn check_commit(
     };
     let _released_or_reclaimed_by_the_next_claim = lane.release_warm();
     result
-}
-
-/// One run per tree and command, which outlives the cell that started it and is read once.
-#[derive(Default)]
-struct Ticket {
-    done: Mutex<Option<WarmRun>>,
-    settled: Condvar,
-}
-
-/// What asking about a check answered.
-#[derive(Debug, Clone)]
-pub enum Asked {
-    Finished(WarmRun),
-    /// The notice names how to read it: a cell's 600 s abort does not end the run.
-    Waiting {
-        row: String,
-    },
-}
-
-type Tickets = HashMap<(String, String), (Arc<Ticket>, Instant)>;
-
-fn tickets() -> &'static Mutex<Tickets> {
-    static TICKETS: OnceLock<Mutex<Tickets>> = OnceLock::new();
-    TICKETS.get_or_init(Mutex::default)
-}
-
-/// The run for `(tree, command)`: started once, waited on up to `wait`, handed back once.
-/// `start` runs on its own thread; a refused thread or a full table is an `Abstain`.
-pub fn ticket(
-    tree: &str,
-    command: &str,
-    wait: Duration,
-    start: impl FnOnce() -> WarmRun + Send + 'static,
-) -> Asked {
-    let key = (tree.to_owned(), command.to_owned());
-    let abstain = |why: String| WarmRun {
-        verdict: Verdict::Abstain { why },
-        capture: None,
-        waited: Duration::ZERO,
-    };
-    let (held, begun) = {
-        let mut table = tickets().lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((held, begun)) = table.get(&key) {
-            (Arc::clone(held), *begun)
-        } else {
-            if table.len() >= TICKETS_MAX {
-                return Asked::Finished(abstain(format!(
-                    "[… {} checks unread (check.tickets {TICKETS_MAX}); read a finished one with its own call, or discard its tree]",
-                    table.len()
-                )));
-            }
-            let held = Arc::new(Ticket::default());
-            let (filled, begun) = (Arc::clone(&held), Instant::now());
-            let spawned = std::thread::Builder::new()
-                .name("yi-tree-check".to_owned())
-                .spawn(move || {
-                    let run = start();
-                    *filled.done.lock().unwrap_or_else(PoisonError::into_inner) = Some(run);
-                    filled.settled.notify_all();
-                });
-            if let Err(error) = spawned {
-                return Asked::Finished(abstain(format!("no thread for the check: {error}")));
-            }
-            table.insert(key.clone(), (Arc::clone(&held), begun));
-            (held, begun)
-        }
-    };
-    let done = held.done.lock().unwrap_or_else(PoisonError::into_inner);
-    let (mut done, _timed_out) = held
-        .settled
-        .wait_timeout_while(done, wait, |run| run.is_none())
-        .unwrap_or_else(PoisonError::into_inner);
-    match done.take() {
-        Some(run) => {
-            drop(done);
-            tickets()
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&key);
-            Asked::Finished(run)
-        }
-        None => Asked::Waiting {
-            row: format!(
-                "[check still running after {} s, in a warm directory or waiting for one (node.slots); the same call again reads this run]",
-                begun.elapsed().as_secs()
-            ),
-        },
-    }
-}
-
-/// A tree gone takes its unread runs with it.
-pub fn forget_tickets(tree: &str) {
-    let mut table = tickets().lock().unwrap_or_else(PoisonError::into_inner);
-    table.retain(|(owner, _), _| owner != tree);
 }
