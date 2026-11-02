@@ -840,7 +840,10 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
 
 
 def comments(repo, number):
-    return forge_pr.fgj_api("GET", f"repos/{repo}/issues/{number}/comments") or []
+    answer = forge_pr.fgj_api("GET", f"repos/{repo}/issues/{number}/comments") or []
+    if isinstance(answer, dict):
+        raise SystemExit(f"#{number}: the forge did not list the comments: {answer.get('message')}")
+    return answer
 
 
 def authors():

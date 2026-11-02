@@ -126,11 +126,23 @@ def same_tree(base, tip, recipe):
 
 
 def api(method, path, payload=None):
-    return forge_pr.fgj_api(method, f"repos/{forge_pr.repo()}/{path}", payload)
+    answer = forge_pr.fgj_api(method, f"repos/{forge_pr.repo()}/{path}", payload)
+    # Invariant: a refused write stops the tick, so `finish` keeps the ref and the next tick's `landed` rule redoes it.
+    if method != "GET" and isinstance(answer, dict) and answer.get("message"):
+        raise SystemExit(f"queue: the forge refused {method} {path}: {answer['message']}")
+    return answer
+
+
+def listing(batch, what):
+    """Incident: `database is locked` came back as an object whose keys the tick iterated, and 21 ticks
+    died on an AttributeError that never said what the forge answered. The next tick starts over."""
+    if isinstance(batch, list):
+        return batch
+    raise SystemExit(f"queue: the forge did not list {what}: {(batch or {}).get('message')}")
 
 
 def label_ids():
-    return {label["name"]: label["id"] for label in api("GET", "labels?limit=100") or []}
+    return {label["name"]: label["id"] for label in listing(api("GET", "labels?limit=100") or [], "the labels")}
 
 
 def set_label(number, name, present):
@@ -163,12 +175,12 @@ def enqueue_time(events):
 
 
 def enqueued_at(number):
-    transport = lambda method, url, _: forge_pr.fgj_api(method, url)
+    transport = lambda method, url, _: listing(forge_pr.fgj_api(method, url) or [], f"#{number}'s timeline")
     return enqueue_time(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/timeline?x=1"))
 
 
 def queued_pulls():
-    return [pr for pr in forge_pr.open_pulls() if LABEL in {label["name"] for label in pr.get("labels") or []}]
+    return [pr for pr in listing(forge_pr.open_pulls(), "the open pull requests") if LABEL in {label["name"] for label in pr.get("labels") or []}]
 
 
 def eligible_problem(pr, jobs):
@@ -620,8 +632,48 @@ def shadow_cases():
     return bad
 
 
+def forge_cases():
+    """A forge that answers with an error object, as `database is locked` did for 100 minutes on 2026-11-02."""
+    bad = []
+    locked = {"message": "database is locked", "url": "https://git.example.invalid/api/swagger"}
+    calls = {"queued_pulls": queued_pulls, "enqueued_at": lambda: enqueued_at(1), "label_ids": label_ids,
+             "comments": lambda: pr_review.comments("o/r", 1), "comment": lambda: comment(1, "x"),
+             "delete_ref": delete_ref, "tick": lambda: tick("on")}
+    with mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(sys.modules[__name__], "git", mock.Mock()):
+        for name, call in calls.items():
+            with mock.patch.object(forge_pr, "fgj_api", lambda *a: locked):
+                try:
+                    call()
+                    bad.append(f"{name} took an error object for an answer")
+                except SystemExit as stop:
+                    if "database is locked" not in str(stop):
+                        bad.append(f"{name} stopped without the forge's words: {stop}")
+                except Exception as err:
+                    bad.append(f"{name} died on an error object: {err!r}")
+        # A 204 has no body, which fgj_api reads as an empty message, and a label already gone is a 404.
+        for answer in ({"message": ""}, None):
+            with mock.patch.object(forge_pr, "fgj_api", lambda *a: answer):
+                try:
+                    delete_ref()
+                except SystemExit as stop:
+                    bad.append(f"a write answered {answer} read as refused: {stop}")
+        # A landed PR whose issue would not close keeps its ref, so the next tick's `landed` rule closes it.
+        obs = {"members": [(1, "a" * 40)]}
+        forge = lambda method, path, payload=None: locked if method == "PATCH" else {"body": "Closes #5"}
+        with mock.patch.object(forge_pr, "fgj_api", forge), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
+                mock.patch.multiple(sys.modules[__name__], delete_ref=mock.DEFAULT, record_main=mock.DEFAULT, set_label=mock.DEFAULT) as stubs:
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    finish(obs)
+            except SystemExit:
+                pass
+            if stubs["delete_ref"].called:
+                bad.append("finish deleted the ref of a landing whose issue the forge would not close")
+    return bad
+
+
 def selfcheck():
-    bad = rule_cases() + git_cases() + build_cases() + record_cases() + shadow_cases()
+    bad = rule_cases() + git_cases() + build_cases() + record_cases() + shadow_cases() + forge_cases()
     bad += [f"rule `{name}` disabled and every case still passes, so it refutes nothing"
             for name, _, _ in RULES if not rule_cases(name)]
     for gate in ("growth", "crate_size", "comments", "test_size"):
