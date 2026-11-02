@@ -435,7 +435,12 @@ async fn a_schedule_exec_passes_the_frozen_bash_hooks_before_it_runs() -> TestRe
     let (_session, todos) = session(&[])?;
     let mut job = subscription(&channel, "sub-claude-hook", None)?;
     job.cwd = dir.to_string_lossy().into_owned();
-    clock::fire_with_hooks(&todos, &job, &Firing::at(0), hooks.as_ref())?;
+    clock::fire_with_hooks(
+        &todos,
+        &job,
+        &Firing::at(0),
+        Some(&yi_runtime::goal::Checker::from_hooks(hooks)),
+    )?;
     assert!(wait_until(8_000, || !channel.entries().is_empty()).await);
     let entry = channel.entries().remove(0);
     adapter::halt(true);

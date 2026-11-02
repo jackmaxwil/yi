@@ -3,6 +3,7 @@
 
 mod catastrophic;
 mod decide;
+mod desktop;
 mod review;
 mod rules;
 mod safety;
@@ -15,13 +16,14 @@ pub use catastrophic::{
 pub use decide::{
     Decision, Hold, HoldPattern, HoldSource, PermissionMode, ToolCall, decide, mode_fragment,
 };
+pub use desktop::{PROGRAM as DESKTOP_SOURCE, drives, runs};
 pub use review::{
     ActionId, ActionLedger, ActionState, LEDGER_CAP, RequestId, ReviewedAsk, UserVerdict,
 };
 pub use rules::{
     ConfigRule, ConfigRuleAction, Grant, PathGlob, RuleStateError, SessionRules,
-    canonical_command_identity, canonical_tool_identity, grants, is_exact_command, write_grant,
-    write_grant_dir,
+    canonical_command_identity, canonical_tool_identity, egress_grant, grants, is_exact_command,
+    write_grant, write_grant_dir,
 };
 pub use safety::{
     Class, Parsed, Verdict, classify, command_segments, host_need, parse, refused_scopes, verdict,
