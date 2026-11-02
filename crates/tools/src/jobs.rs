@@ -611,14 +611,14 @@ fn start(
 
 /// What a killed `docker exec` left behind. Incident: an engine asleep answers nothing, so a
 /// sweep on a caller's own thread held a check past the deadline it had just hit.
-pub fn run_sweep_within(sweep: &str, bound: Option<Duration>) {
+pub fn run_sweep_within(sweep: &str, bound: Option<Duration>) -> bool {
     let mut process = command(interpreter());
     process.arg("-c").arg(sweep);
     let until = bound.and_then(|bound| std::time::Instant::now().checked_add(bound));
     let past: CancelFlag =
         Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
-    let _swept_or_gone_with_the_container =
-        crate::process::run_captured(process, None, &past, OUTPUT_CAP);
+    crate::process::run_captured(process, None, &past, OUTPUT_CAP)
+        .is_ok_and(|capture| capture.exit_code == Some(0))
 }
 
 /// The bound the check path sweeps under, since the sweep runs on the thread that owes an answer.

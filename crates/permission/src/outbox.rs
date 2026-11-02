@@ -7,7 +7,8 @@ use std::path::Path;
 
 use rustix::fs::{AtFlags, CWD, Dir, FileType, Mode, OFlags, fstat, openat, unlinkat};
 
-const DEPTH_MAX: usize = 8;
+/// The deepest `refs/…` the sweep walks; past it an entry is named, never taken for a ref.
+pub const DEPTH_MAX: usize = 8;
 const ENTRIES_PER_DIR_MAX: usize = 1024;
 const VALUE_MAX_BYTES: u64 = 64;
 
@@ -17,6 +18,8 @@ pub struct Taken {
     pub refs: Vec<(Vec<u8>, Vec<u8>)>,
     /// Names that were a link, a FIFO or anything else no ref is, and are gone now.
     pub refused: usize,
+    /// A directory past [`DEPTH_MAX`]: no ref, and it stays, so a sweep says so once a call.
+    pub too_deep: usize,
     pub past_cap: bool,
 }
 
@@ -36,11 +39,39 @@ fn names_in(dir: &OwnedFd) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// The outbox itself, no link followed: a contained process can put one there or under it, and a
+/// path lookup would read `.git` and unlink a project's own branches.
+fn descend(store: &Path) -> Option<OwnedFd> {
+    let name = store.file_name()?;
+    let parent = openat(
+        CWD,
+        store.parent()?,
+        flags() | OFlags::DIRECTORY,
+        Mode::empty(),
+    )
+    .ok()?;
+    openat(
+        parent.as_fd(),
+        name,
+        flags() | OFlags::DIRECTORY,
+        Mode::empty(),
+    )
+    .ok()
+}
+
 /// Commit point: the unlink, before the caller acts, so a ref acts at most once. A crash after it
 /// loses the request and never the work, which is in the object store.
 pub fn take_refs(store: &Path, max: usize) -> Taken {
     let mut taken = Taken::default();
-    let root = openat(CWD, store.join("refs"), flags(), Mode::empty());
+    let Some(admin) = descend(store) else {
+        return taken;
+    };
+    let root = openat(
+        admin.as_fd(),
+        "refs",
+        flags() | OFlags::DIRECTORY,
+        Mode::empty(),
+    );
     let Ok(root) = root else {
         return taken;
     };
@@ -62,6 +93,12 @@ pub fn take_refs(store: &Path, max: usize) -> Taken {
             match (opened, kind) {
                 (Ok(file), Some(FileType::Directory)) if depth < DEPTH_MAX => {
                     walk.push((file, path, depth.saturating_add(1)));
+                    continue;
+                }
+                (Ok(_), Some(FileType::Directory)) => {
+                    let _an_empty_one_goes =
+                        unlinkat(dir.as_fd(), name.as_slice(), AtFlags::REMOVEDIR);
+                    taken.too_deep = taken.too_deep.saturating_add(1);
                     continue;
                 }
                 (Ok(file), Some(FileType::RegularFile)) => {

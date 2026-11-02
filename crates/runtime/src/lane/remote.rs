@@ -61,6 +61,35 @@ pub struct GitLane {
 
 // ponytail: one lane per tree for the process's life; a `git remote set-url` by hand needs a restart.
 static LANES: Mutex<Option<HashMap<PathBuf, Option<Arc<GitLane>>>>> = Mutex::new(None);
+// ponytail: the same for a tree with no lane, so the spawn hook forks no git per call.
+static NO_LANE: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
+
+/// Git reads a network protocol through `protocol.<name>.allow` before `protocol.allow`, so a
+/// repository that sets one is refused too: the block names every protocol, not the fallback.
+fn no_transport_rules() -> [(&'static str, &'static str); 7] {
+    [
+        ("maintenance.auto", "false"),
+        ("protocol.allow", "never"),
+        ("protocol.https.allow", "never"),
+        ("protocol.http.allow", "never"),
+        ("protocol.ssh.allow", "never"),
+        ("protocol.file.allow", "never"),
+        ("protocol.git.allow", "never"),
+    ]
+}
+
+/// The one encoder of git's `-c`-as-environment form, which both a lane and a blocked tree hand a
+/// contained git; two spellings of it drifted into each other's neighbours before.
+fn config_env(rules: &[(&str, &str)]) -> Vec<String> {
+    std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
+        .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
+            [
+                format!("GIT_CONFIG_KEY_{at}={key}"),
+                format!("GIT_CONFIG_VALUE_{at}={value}"),
+            ]
+        }))
+        .collect()
+}
 
 impl GitLane {
     /// `None` with no origin, no pool or a credentialed origin: `git push` then fails contained
@@ -74,25 +103,29 @@ impl GitLane {
             .clone()
     }
 
-    /// What a contained git gets where a repository has an origin and no lane: no transport at all.
+    /// What a contained git gets where a repository has a remote and no lane: no transport at all.
     /// Without it, git reads a credential from the URL and lands on main through a seeded host, asked
     /// by nobody. Its refusal then asks, and an approval runs outside.
     pub(crate) fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
         if let Some(lane) = lane {
             return lane.assign.clone();
         }
-        if git(cwd, &["config", "--get", "remote.origin.url"]).is_err() {
-            return Vec::new();
+        let cached = NO_LANE
+            .lock()
+            .ok()
+            .and_then(|memo| memo.as_ref()?.get(cwd).cloned());
+        if let Some(assign) = cached {
+            return assign;
         }
-        [
-            "GIT_CONFIG_COUNT=2",
-            "GIT_CONFIG_KEY_0=maintenance.auto",
-            "GIT_CONFIG_VALUE_0=false",
-            "GIT_CONFIG_KEY_1=protocol.allow",
-            "GIT_CONFIG_VALUE_1=never",
-        ]
-        .map(str::to_owned)
-        .to_vec()
+        let assign = match has_a_remote(cwd) {
+            true => config_env(&no_transport_rules()),
+            false => Vec::new(),
+        };
+        if let Ok(mut memo) = NO_LANE.lock() {
+            memo.get_or_insert_with(HashMap::new)
+                .insert(cwd.to_path_buf(), assign.clone());
+        }
+        assign
     }
 
     /// One repository's lane, its pushes cut at `forward_timeout`.
@@ -129,14 +162,11 @@ impl GitLane {
             Some(pushurl) => (format!("url.{}.insteadOf", outbox.display()), pushurl),
             None => (format!("url.{}.pushInsteadOf", outbox.display()), url),
         });
-        let assign = std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
-            .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
-                [
-                    format!("GIT_CONFIG_KEY_{at}={key}"),
-                    format!("GIT_CONFIG_VALUE_{at}={value}"),
-                ]
-            }))
-            .collect();
+        let assign = config_env(
+            &(rules.iter())
+                .map(|(key, value)| (key.as_str(), value.as_str()))
+                .collect::<Vec<_>>(),
+        );
         let lane = Self {
             pool,
             mirror,
@@ -164,11 +194,10 @@ impl GitLane {
         .map(drop)
     }
 
-    /// Before a spawn whose text reads origin. A script that fetches gets what the last refresh
-    /// saw: nothing here reads a script.
+    /// Before a spawn whose segments run `git fetch`, `git pull` or `git ls-remote`. A script that
+    /// only mentions one gets what the last refresh saw: nothing here reads a script's text.
     pub(crate) fn refresh(&self, command: &str) -> Vec<String> {
-        let reads = ["fetch", "pull", "ls-remote"];
-        if !command.contains("git ") || !reads.iter().any(|verb| command.contains(verb)) {
+        if !reads_origin(command) {
             return Vec::new();
         }
         let repo = self.pool.repo();
@@ -196,8 +225,16 @@ impl GitLane {
         let mut rows = Vec::new();
         if taken.refused > 0 {
             rows.push(format!(
-                "[not pushed: {} entries in the outbox were no ref (a link, a FIFO or a directory too deep)]",
+                "[not pushed: {} entries in the outbox were no ref (a link or a FIFO), and are gone]",
                 taken.refused
+            ));
+        }
+        if taken.too_deep > 0 {
+            rows.push(format!(
+                "[not pushed: {} entries in the outbox are directories past {} deep, so no sweep clears them (outbox.depth {}); delete the outbox beside this repository's git dir]",
+                taken.too_deep,
+                yi_permission::outbox::DEPTH_MAX,
+                yi_permission::outbox::DEPTH_MAX
             ));
         }
         for (name, value) in &taken.refs {
@@ -329,6 +366,31 @@ impl GitLane {
             Err(error) => Forward::Rejected(fenced(&error.to_string())),
         }
     }
+}
+
+/// Any remote at all, not `origin`: a fork checkout's is `upstream`, and its URL carries the token.
+fn has_a_remote(cwd: &Path) -> bool {
+    git(
+        cwd,
+        &["config", "--get-regexp", r"^remote\..*\.(url|pushurl)$"],
+    )
+    .is_ok()
+}
+
+/// Whether a segment runs `git fetch`, `git pull` or `git ls-remote`; a script that only mentions
+/// one (`rg 'git fetch' docs/`) never reaches the network for it.
+fn reads_origin(command: &str) -> bool {
+    (yi_permission::command_segments(command).iter()).any(|argv| {
+        let Some(at) = argv
+            .iter()
+            .position(|word| word == "git" || word.ends_with("/git"))
+        else {
+            return false;
+        };
+        (argv.iter().skip(at.saturating_add(1)))
+            .find(|word| !word.starts_with('-'))
+            .is_some_and(|verb| matches!(verb.as_str(), "fetch" | "pull" | "ls-remote"))
+    })
 }
 
 fn asked(label: &str, stat: &str, broker: &PermissionBroker) -> bool {

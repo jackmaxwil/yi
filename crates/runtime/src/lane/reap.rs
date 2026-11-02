@@ -23,6 +23,9 @@ impl Uncommitted {
     /// Invariant: host git never enters a submodule, whose config it cannot trust, so `status` is
     /// blind to work inside one. Each is read in the sandbox; what cannot be read counts as dirty.
     fn with_submodules(mut self, tree: &Path) -> Self {
+        if !tree.join(".gitmodules").is_file() {
+            return self;
+        }
         let Ok(stage) =
             super::hostgit::git_capped(tree, &["ls-files", "--stage"], None, super::PLUMBING_CAP)
         else {
@@ -216,15 +219,9 @@ fn submodule_is_clean(tree: &Path, path: &str, until: Option<std::time::Instant>
     }
     let sandbox = yi_tools::Sandbox::for_workspace(tree, &home, None);
     let program = git.get_program().to_string_lossy().into_owned();
-    // The flag as the parent's own read has it: a user's `showUntrackedFiles=no` would hide work.
-    let args = [
-        "--no-optional-locks",
-        "-C",
-        path,
-        "status",
-        "--porcelain",
-        "--untracked-files=normal",
-    ];
+    // The parent's own status read, spliced under `-C`: one spelling of it in `lane/`.
+    let mut args: Vec<&str> = vec![STATUS[0], "-C", path];
+    args.extend_from_slice(&STATUS[1..]);
     let (program, args) = sandbox.wrap(&program, &args);
     let mut command = yi_tools::keyless_command(program);
     command.args(args).current_dir(tree);

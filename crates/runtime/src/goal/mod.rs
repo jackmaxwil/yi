@@ -117,8 +117,13 @@ pub(crate) fn captured(
         .lease
         .map(crate::egress::Lease::revoke)
         .unwrap_or_default();
-    if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
-        yi_tools::jobs::run_sweep_within(sweep, Some(yi_tools::jobs::SWEEP_BOUND));
+    if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep)
+        && !yi_tools::jobs::run_sweep_within(sweep, Some(yi_tools::jobs::SWEEP_BOUND))
+    {
+        capture.rows.push(
+            "[… the container sweep did not finish inside SWEEP_BOUND (5 s); what a killed call left may still write the tree]"
+                .to_owned(),
+        );
     }
     Ok(capture)
 }
