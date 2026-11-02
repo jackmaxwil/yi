@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.872.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.874.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -268,6 +268,7 @@ A PR never edits a row here: it writes `ledger+`, `ledger~`, `ledger=` or `ledge
 | kimi login and models | 5 | core | M | L | `yi login kimi` runs the device-code login a `~/.yi/oauth/kimi.json` profile names (Yi ships no client id) and then reads the account's own `GET <api_base>/models`, printing the `kimi/<id>` models it wrote to `~/.yi/catalog/kimi.json`, so K3.1 resolves on the first run after login with no id compiled in; `yi login <provider> --refresh <seconds>` uses the same locked, profile-aware grant and prints only the access credential when it covers that lifetime; a Kimi turn sends effort as Moonshot's `thinking` field, the session as `prompt_cache_key`, `reasoning_content` on every assistant turn and `User-Agent: yi/<version>`, stops at once on a 429 that codes an exhausted quota (or, on Moonshot's own host, words one), and `yi catalog usage kimi` prints the account's 5-hour, 7-day and monthly windows as one JSON line |
 | `agent-desktop` plugin | 17.1 | optional | M | M | `yi plugin add agent-desktop` (macOS, `host` shape: never by `--all`, never in an eval container) lets the model read and operate Mac apps by bash; asks once per app per session, never keeps a yes for a terminal, editor, settings or password app, refuses browsers and whatever takes the user's own mouse, keyboard or front app (`session start --cursor` draws an agent cursor instead), runs only its plain name outside the sandbox, and fences what it prints |
 | `agent-browser` plugin | 17.1 | optional | M | M | `yi plugin add agent-browser` (macOS, `host` shape: never by `--all`, never in an eval container) also installs `chrome` and lets the model drive a headless page by bash; Chrome runs in a sandbox that reads no credential and writes only temp. The default session has loopback alone and asks nothing; `--session web` has the internet and one yes covers it for the session; what the daemon itself would do asks every time; real logins and a visible window are refused in every mode, as is every command until the pinned program, its config and its script all stand, so a copy on PATH is refused; page text returns inside the external-data fence. |
+| contained git: a mirror and an outbox | 8 | core | H | M | a contained `git fetch` reads a host-run mirror and a `git push` lands in an outbox the host forwards after the spawn, with no question unless it is trunk, `main`, `master` or a tag; force and delete still ask (`crates/runtime/src/lane/remote.rs`) |
 
 ## Decision log
 
@@ -275,6 +276,8 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D530 | a contained git reaches origin through a host mirror and an outbox; a non-main branch goes unasked, trunk, main, master and a tag ask a person with a diffstat | the owner's top friction | remove the rewrite in GitLane::assign and move the git verbs back to Egress; amends D205 |
+| D529 | a package install into the tree runs contained and unasked in auto; a global one, a publish and brew or gem still ask and leave | every install asked or failed now that the proxy gives them a network | restore the classify and host_need arms |
 | D528 | the agent-browser plugin runs its daemon outside the sandbox and its Chrome inside one, with Chrome's own sandbox off | a Chrome outside read a planted ~/.ssh key and any contained program reached it over its loopback debug port, so the agent-desktop shape was unsafe; the owner, 2026-11-01: "One yes, then web", accepting that a page breaking Chrome reads source code and that contained programs can use the web session while it lives | delete the row and the table |
 | D527 | every git the host runs goes through one door, by absolute path, with hooks, fsmonitor and signing off | a host hand-back ran the repository's hooks, a relative core.hooksPath is written by the child, and a tree's bin on PATH ran a contained write on the host | restore capture_named and git_capture to bare names |
 | D526 | a linked worktree's sandbox writes its admin dir, the shared objects, its own branch and the stash, never the rest of the common dir | a contained process deleted a sibling's ref and moved trunk | restore the common dir in lane_writes |
