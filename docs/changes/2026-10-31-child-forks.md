@@ -1,4 +1,6 @@
 ---
+version: 0.879.0
+decisions: D534
 issue: Closes #1937
 growth: +972 is the fork, its copy, the two carries with their limits, and first use. Deleted beside it: the worker permit, Purpose::Worker and claim_child_lane. Weighed for deletion: .worktreeinclude and .yi/setup, kept since each saves every child rediscovering the same step; a name list for cargo units, which carries an in-tree patched crate and tests the parent
 raise: tests +958, comments +65, over-cap +1, crate runtime +961, crate tools +74

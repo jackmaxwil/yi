@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.878.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.879.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -318,6 +318,7 @@ A PR never edits a row here: it writes `ledger+`, `ledger~`, `ledger=` or `ledge
 | `agent-browser` plugin | 17.1 | optional | M | M | `yi plugin add agent-browser` (macOS, `host` shape: never by `--all`, never in an eval container) also installs `chrome` and lets the model drive a headless page by bash; Chrome runs in a sandbox that reads no credential and writes only temp. The default session has loopback alone and asks nothing; `--session web` has the internet and one yes covers it for the session; what the daemon itself would do asks every time; real logins and a visible window are refused in every mode, as is every command until the pinned program, its config and its script all stand, so a copy on PATH is refused; page text returns inside the external-data fence. |
 | contained git: a mirror and an outbox | 8 | core | H | M | a contained `git fetch` reads a host-run mirror and a `git push` lands in an outbox the host forwards after the spawn, with no question unless it is trunk, `main`, `master` or a tag; force and delete still ask (`crates/runtime/src/lane/remote.rs`) |
 | Linux containment: Landlock and the git-file seal | 8 | core | H | M | a contained command on Linux starts as `yi __contain`: writes reach its roots, reads a named list, and the host compares what its next git reads and puts back what changed. No network wall. A kernel that refuses the ruleset makes `Contain` an ask. |
+| a child's fork: a linked worktree per child, cut at HEAD, third-party cargo units carried | 14 | core | H | H | a worktree child takes a tree under `~/.yi/forks` rather than a slot: a directory clone on APFS, a plain checkout elsewhere. Its first writing command carries the cargo units whose dep-info names nothing in the tree, syncs the toolchain and runs a committed `.yi/setup`. `.worktreeinclude` and `carry=` copy ignored files. A discard stops its jobs. |
 
 ## Decision log
 
@@ -325,6 +326,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D534 | A worktree child is a linked worktree under ~/.yi/forks, cut at HEAD, carrying only cargo units whose dep-info names nothing in its tree; no slot or worker permit | 64 GB and 524 s at 128 children | restore claim_child_lane. Amends D119, D286 |
 | D533 | Linux contains with Landlock through a re-exec of yi, and the host compares and restores the git files it cannot deny | Linux ran every contained command unsandboxed | make Sandbox::available false on Linux. Amends D205, D348, D350 |
 | D532 | one shadow store per repository with an index per tree | 22 MB and 2 s per lane and fork | key the store by path again; amends D401 |
 | D531 | forge commands leave by home config and tree recipes by pin | a contained forge CLI has no route to its login | drop the class and sandbox.hostRecipes |
