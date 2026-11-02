@@ -408,16 +408,19 @@ fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
 /// Invariant: a segment's program is `git` and its subcommand reads the remote, so `git log --grep
 /// fetch` or a path naming `origin/fetch` pays for no fetch it never asked for.
 fn reads_a_remote(command: &str) -> bool {
-    yi_permission::command_segments(command).iter().any(|argv| {
-        let Some(program) = argv.first().map(|argv0| yi_permission::program(argv0)) else {
-            return false;
-        };
-        program == "git"
-            && matches!(
-                yi_permission::git_subcommand(argv),
-                Some("fetch" | "pull" | "ls-remote")
-            )
-    })
+    command
+        .lines()
+        .flat_map(yi_permission::command_segments)
+        .any(|argv| {
+            let Some(program) = argv.first().map(|argv0| yi_permission::program(argv0)) else {
+                return false;
+            };
+            program == "git"
+                && matches!(
+                    yi_permission::git_subcommand(&argv),
+                    Some("fetch" | "pull" | "ls-remote")
+                )
+        })
 }
 
 #[cfg(test)]
@@ -453,14 +456,18 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the substring test: a file whose name holds the verb costs no fetch.
+    /// Dies with a bare-word scan or a first-line-only scan: a verb in a flag or a path costs no
+    /// fetch, and one on a later line of a multi-line command costs the fetch it asks for.
     #[test]
     fn only_a_git_word_fetches() {
         assert!(super::reads_a_remote("git fetch origin"));
         assert!(super::reads_a_remote("cargo nextest && git pull --ff-only"));
+        assert!(super::reads_a_remote("cd /repo\ngit fetch origin"));
         assert!(!super::reads_a_remote(
             "grep -n pull crates/runtime/src/lane/mod.rs"
         ));
         assert!(!super::reads_a_remote("tail -20 git fetch.log"));
+        assert!(!super::reads_a_remote("git log --grep fetch"));
+        assert!(!super::reads_a_remote("cat origin/fetch.log"));
     }
 }
