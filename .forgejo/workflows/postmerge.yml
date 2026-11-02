@@ -125,7 +125,8 @@ jobs:
   # Off until the repository variable RECORD_CHANGES is `on`: the push to main needs a token that
   # branch protection lets through, and the first run, a backfill, is the owner's call.
   record:
-    if: vars.RECORD_CHANGES == 'on'
+    # The queue records its own landing, in the tick that pushed it.
+    if: vars.RECORD_CHANGES == 'on' && github.event.head_commit.author.name != 'yi-queue'
     concurrency:
       group: record-changes
       cancel-in-progress: false

@@ -911,7 +911,6 @@ impl SubagentHost {
             self.restore(&key, record, &reason);
             return Err(reason);
         }
-        drop(record.lane_permit.take());
         if journal {
             record.finish();
             let last = record.exit.unwrap_or(exit);

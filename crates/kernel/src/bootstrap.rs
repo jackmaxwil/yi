@@ -6,7 +6,7 @@ use yi_types::kernel::BootstrapVersion;
 pub(crate) use crate::lock::acquire_bootstrap_lock;
 pub use crate::lock::{process_is_running, remove_stale_venvs};
 
-pub const BOOTSTRAP_SCHEMA: u64 = 1;
+pub const BOOTSTRAP_SCHEMA: u64 = 2;
 const PYTHON_VERSION: &str = "3.11";
 /// Incident: host replies ride ipykernel internals (`kernel.control_handlers`), unpinned.
 const IPYKERNEL_REQUIREMENT: &str = "ipykernel>=7,<8";
@@ -496,6 +496,7 @@ fn create_venv(toolchain: &Toolchain, venv_text: &str) -> Result<(), String> {
                 &[
                     "venv",
                     venv_text,
+                    "--seed",
                     "--python",
                     &python,
                     "--system-site-packages",
