@@ -255,6 +255,22 @@ fn a_snapshot_holds_dirt_and_new_files_and_moves_nothing_the_child_has() -> Test
     Ok(())
 }
 
+/// Dies with the deadline dropped: a hand-back near its deadline would block up to the lane's git
+/// timeout per invocation instead of answering at once.
+#[test]
+fn a_snapshot_past_its_deadline_answers_at_once() -> TestResult {
+    let rig = rig("snapshot-deadline", 1)?;
+    let past = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .ok_or("no instant")?;
+    let outcome = snapshot(&rig.repo, Some(past));
+    assert!(
+        matches!(outcome, Err(yi_runtime::lane::LaneError::Deadline)),
+        "{outcome:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_scrub_leaves_the_rebuild_state_and_nothing_else_untracked() -> TestResult {
     let rig = rig("scrub", 1)?;

@@ -62,9 +62,47 @@ pub struct GitLane {
 // ponytail: one lane per tree for the process's life; a `git remote set-url` by hand needs a restart.
 static LANES: Mutex<Option<HashMap<PathBuf, Option<Arc<GitLane>>>>> = Mutex::new(None);
 
-/// The trees asked with no lane, and the block each one gets: bounded, since a kernel asks per cwd.
-static NO_LANE: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
+/// The trees asked with no lane, and the block or the empty answer each one got: bounded, since a
+/// kernel asks per cwd.
+static NO_LANE: Mutex<Option<HashMap<PathBuf, NoLane>>> = Mutex::new(None);
 const NO_LANE_MAX: usize = 64;
+
+struct NoLane {
+    block: Vec<String>,
+    /// `None` behind a block, which no config can weaken, and `None` for an empty answer with no
+    /// config to watch: that one is not remembered.
+    config: Option<ConfigStamp>,
+}
+
+/// A repository's config as it stood. Invariant: `git remote add` moves this, so a tree that gains
+/// an origin is blocked on its next spawn, and a tree that gains nothing pays no `git remote`.
+struct ConfigStamp {
+    path: PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl ConfigStamp {
+    fn of(cwd: &Path) -> Option<Self> {
+        let path = yi_permission::git_dirs(cwd).last()?.join("config");
+        let at = |path: &Path| {
+            std::fs::metadata(path)
+                .ok()
+                .map(|meta| (meta.len(), meta.modified().ok()))
+        };
+        let (len, modified) = at(&path)?;
+        Some(Self {
+            path,
+            len,
+            modified,
+        })
+    }
+
+    fn still(&self) -> bool {
+        std::fs::metadata(&self.path)
+            .is_ok_and(|meta| meta.len() == self.len && meta.modified().ok() == self.modified)
+    }
+}
 
 impl GitLane {
     /// `None` with no origin, no pool or a credentialed origin: `git push` then fails contained
@@ -86,20 +124,13 @@ impl GitLane {
         if let Some(lane) = lane {
             return lane.assign.clone();
         }
-        // Incident: caching the no-remote answer pinned a tree that gained an origin to no block
-        // for the rest of the process, so only the answer that blocks is kept.
-        let known = NO_LANE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(|memo| memo.get(cwd))
-            .cloned();
-        if let Some(block) = known {
-            return block;
+        if let Some(known) = Self::remembered(cwd) {
+            return known;
         }
         // Outside the lock: a hung git must not stall every other spawn in the process.
         let block = restricted(cwd);
-        if block.is_empty() {
+        let config = block.is_empty().then(|| ConfigStamp::of(cwd)).flatten();
+        if block.is_empty() && config.is_none() {
             return block;
         }
         let mut memo = NO_LANE
@@ -109,7 +140,25 @@ impl GitLane {
         if memo.len() >= NO_LANE_MAX {
             memo.clear();
         }
-        memo.entry(cwd.to_path_buf()).or_insert(block).clone()
+        memo.insert(cwd.to_path_buf(), NoLane { block, config });
+        memo.get(cwd)
+            .map(|known| known.block.clone())
+            .unwrap_or_default()
+    }
+
+    fn remembered(cwd: &Path) -> Option<Vec<String>> {
+        let memo = NO_LANE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let known = memo.as_ref()?.get(cwd)?;
+        if !known.block.is_empty() {
+            return Some(known.block.clone());
+        }
+        known
+            .config
+            .as_ref()
+            .filter(|stamp| stamp.still())
+            .map(|_| Vec::new())
     }
 
     /// One repository's lane, its pushes cut at `forward_timeout`.
@@ -146,14 +195,7 @@ impl GitLane {
             Some(pushurl) => (format!("url.{}.insteadOf", outbox.display()), pushurl),
             None => (format!("url.{}.pushInsteadOf", outbox.display()), url),
         });
-        let assign = std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
-            .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
-                [
-                    format!("GIT_CONFIG_KEY_{at}={key}"),
-                    format!("GIT_CONFIG_VALUE_{at}={value}"),
-                ]
-            }))
-            .collect();
+        let assign = git_config_env(&rules);
         let lane = Self {
             pool,
             mirror,
@@ -382,17 +424,24 @@ fn restricted(cwd: &Path) -> Vec<String> {
     if !remote {
         return Vec::new();
     }
-    [
-        "GIT_CONFIG_COUNT=3",
-        "GIT_CONFIG_KEY_0=maintenance.auto",
-        "GIT_CONFIG_VALUE_0=false",
-        "GIT_CONFIG_KEY_1=protocol.allow",
-        "GIT_CONFIG_VALUE_1=never",
-        "GIT_CONFIG_KEY_2=protocol.file.allow",
-        "GIT_CONFIG_VALUE_2=always",
-    ]
-    .map(str::to_owned)
-    .to_vec()
+    git_config_env(&[
+        ("maintenance.auto".to_owned(), "false".to_owned()),
+        ("protocol.allow".to_owned(), "never".to_owned()),
+        ("protocol.file.allow".to_owned(), "always".to_owned()),
+    ])
+}
+
+/// `GIT_CONFIG_COUNT=n` and one `GIT_CONFIG_KEY_i` / `GIT_CONFIG_VALUE_i` pair a rule: `env`'s argv
+/// for git's own config, counted from the rules so a fourth entry cannot outrun the count.
+fn git_config_env(rules: &[(String, String)]) -> Vec<String> {
+    std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
+        .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
+            [
+                format!("GIT_CONFIG_KEY_{at}={key}"),
+                format!("GIT_CONFIG_VALUE_{at}={value}"),
+            ]
+        }))
+        .collect()
 }
 
 /// A remote's text is the network's: redacted, fenced and cut where the model reads it.
@@ -494,6 +543,26 @@ mod tests {
             assign.contains(&"GIT_CONFIG_VALUE_1=never".to_owned()),
             "{assign:?}"
         );
+        Ok(())
+    }
+
+    /// Dies with the stamp compared wrongly: an untouched config must answer from the memo, so a
+    /// bare tree pays no `git remote` per spawn, and a remote add must move it.
+    #[test]
+    fn a_bare_trees_answer_stands_until_its_config_moves() -> Result<(), String> {
+        let dir = std::env::temp_dir().join("yi-assign-stamp");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        git(&dir, &["init", "-q"]).map_err(|error| error.to_string())?;
+        let stamp = super::ConfigStamp::of(&dir).ok_or("the repository has no config")?;
+        assert_eq!(GitLane::assign_for(None, &dir), Vec::<String>::new());
+        assert!(stamp.still(), "an untouched config stands");
+        git(
+            &dir,
+            &["remote", "add", "origin", "https://example.invalid/r"],
+        )
+        .map_err(|error| error.to_string())?;
+        assert!(!stamp.still(), "a remote add moved the config");
         Ok(())
     }
 
