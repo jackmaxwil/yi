@@ -1175,6 +1175,59 @@ fn a_free_desktop_verb_runs_outside_unasked() -> TestResult {
     Ok(())
 }
 
+/// Chrome in the default session has only loopback and no credential, so nothing there needs a yes.
+#[test]
+fn the_local_browser_runs_outside_unasked() -> TestResult {
+    let (broker, asks) = desktop_broker(AskOutcome::Reject);
+    let outcome = bash(&broker, "agent-browser open http://localhost:3000");
+    assert!(outcome.allowed);
+    assert_eq!(outcome.containment, Containment::Uncontained);
+    assert!(asks.lock().map_err(|_| "poisoned")?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn one_yes_covers_the_web_session_and_nothing_the_box_cannot_hold() -> TestResult {
+    let (broker, asks) = desktop_broker(AskOutcome::AllowAlways(0));
+    for command in [
+        "agent-browser --session web open https://example.com",
+        "agent-browser --session web click @e3",
+    ] {
+        let outcome = bash(&broker, command);
+        assert!(outcome.allowed);
+        assert_eq!(outcome.containment, Containment::Uncontained);
+    }
+    assert_eq!(asks.lock().map_err(|_| "poisoned")?.len(), 1);
+    for command in [
+        "agent-browser read https://example.com",
+        "agent-browser read https://example.com",
+    ] {
+        assert!(bash(&broker, command).allowed);
+    }
+    let asks = asks.lock().map_err(|_| "poisoned")?;
+    assert_eq!(asks.len(), 3, "a yes reached past the box: {asks:?}");
+    assert!(asks.last().is_some_and(Vec::is_empty), "offered {asks:?}");
+    Ok(())
+}
+
+#[test]
+fn a_browser_command_by_any_other_spelling_stays_in_the_sandbox() -> TestResult {
+    for command in [
+        "./agent-browser open x",
+        "AGENT_BROWSER_EXECUTABLE_PATH=forged agent-browser open x",
+        "AGENT_BROWSER_SESSION=web agent-browser open x",
+        "timeout 5 agent-browser open x",
+    ] {
+        let (broker, _) = desktop_broker(AskOutcome::AllowOnce);
+        let outcome = bash(&broker, command);
+        assert!(
+            matches!(outcome.containment, Containment::Contained { .. }),
+            "{command} left the sandbox"
+        );
+    }
+    Ok(())
+}
+
 /// The sandbox is the backstop: a spelling that could run the model's own file, or point the record
 /// at the model's forgery, is asked about and, even approved, stays where the OS refuses it.
 #[test]

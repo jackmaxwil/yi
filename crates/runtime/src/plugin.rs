@@ -35,6 +35,21 @@ pub fn add(
     home: &Path,
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<PathBuf, String> {
+    let path = add_pin(plugin, home, &fetch)?;
+    // Invariant: its daemon runs only the pinned Chrome in a box, so neither is optional.
+    if plugin.name == yi_tools::plugin::BROWSER {
+        let chrome = Plugin::named("chrome").ok_or("no chrome row")?;
+        let chrome = add_pin(chrome, home, &fetch)?;
+        yi_tools::plugin::write_browser_box(home, &chrome)?;
+    }
+    Ok(path)
+}
+
+fn add_pin(
+    plugin: &Plugin,
+    home: &Path,
+    fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<PathBuf, String> {
     let whole = plugin.skills.is_empty() || plugin.skill_root(home).is_some();
     let aside = match !whole && plugin.installed(home).is_some() {
         // Incident: a program-only install from before the row named skills blocks the publish
@@ -95,6 +110,9 @@ fn install_pin(
             .map(|skill| format!("skills/{skill}"))
             .collect::<Vec<_>>(),
     };
+    if asset.member.is_empty() {
+        return yi_kernel::pinned::install_bare(&pin, fetch);
+    }
     yi_kernel::pinned::install(&pin, fetch)
 }
 

@@ -3346,6 +3346,28 @@ fn the_gate_says_what_a_desktop_command_would_do() -> TestResult {
     Ok(())
 }
 
+/// The real binary's judgement of each kind of browser command, offline, with nothing installed.
+#[test]
+fn the_gate_says_what_a_browser_command_would_do() -> TestResult {
+    let workspace = Workspace::new("yi-gate-browser")?;
+    for (command, first_line) in [
+        ("agent-browser open http://localhost:3000", "auto: allow"),
+        (
+            "agent-browser --session web open https://x.dev",
+            "auto: ask",
+        ),
+        ("agent-browser read https://x.dev", "auto: ask"),
+        ("agent-browser connect 9222", "auto: deny"),
+        ("agent-browser --headed open x", "auto: deny"),
+        ("X=1 agent-browser open x", "auto: contain"),
+    ] {
+        let output = workspace.yi(&["gate", command])?;
+        let shown = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert_eq!(shown.lines().next(), Some(first_line), "{command}: {shown}");
+    }
+    Ok(())
+}
+
 fn told_it_is_alone(workspace: &Workspace) -> Result<bool, Box<dyn Error>> {
     let slots = prompt_slots(&workspace.0.join("home/sessions"))?;
     Ok(slots

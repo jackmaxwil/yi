@@ -230,3 +230,62 @@ fn an_installed_host_plugin_is_on_the_child_path() -> TestResult {
     assert_eq!(first, desktop.dir(&home));
     Ok(())
 }
+
+/// Upstream publishes a bare program, so its digest is the download's and a wrong one installs nothing.
+#[test]
+fn a_bare_program_is_published_and_a_tampered_one_is_not() -> TestResult {
+    let scratch = Scratch::new("plugin-bare")?;
+    let home = scratch.home()?;
+    let digest: &'static str = Box::leak(program_sha().into_boxed_str());
+    let asset = Asset {
+        os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        url: "https://example.invalid/tool",
+        sha256: digest,
+        member_sha256: digest,
+        member: "",
+    };
+    let tool = Plugin {
+        name: "tool",
+        version: "2.0",
+        summary: "a bare test program",
+        shape: Shape::Host,
+        card: "",
+        skills: &[],
+        assets: Box::leak(Box::new([asset])),
+    };
+    assert!(add(&tool, &home, |_| Ok(b"tampered".to_vec())).is_err());
+    assert!(tool.installed(&home).is_none());
+    let path = add(&tool, &home, |_| Ok(PROGRAM.to_vec()))?;
+    assert_eq!(path, tool.dir(&home).join("tool"));
+    assert_eq!(std::fs::read(&path)?, PROGRAM);
+    let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path)?.permissions());
+    assert_eq!(mode & 0o777, 0o755);
+    Ok(())
+}
+
+/// A daemon missing these reads the repo's `agent-browser.json` and starts a browser with no box.
+#[test]
+fn an_installed_browser_starts_with_its_own_config_and_socket() -> TestResult {
+    let scratch = Scratch::new("plugin-browser")?;
+    let home = scratch.home()?;
+    let browser = Plugin::named(yi_tools::plugin::BROWSER).ok_or("no agent-browser row")?;
+    assert_eq!(browser.shape, Shape::Host, "--all must never install it");
+    assert!(yi_tools::plugin::browser_env(&home).is_empty());
+    let program = browser.program(&home).ok_or("no program path")?;
+    std::fs::create_dir_all(program.parent().ok_or("no parent")?)?;
+    std::fs::write(&program, PROGRAM)?;
+    let env = yi_tools::plugin::browser_env(&home);
+    let value = |name: &str| {
+        env.iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        value("AGENT_BROWSER_CONFIG"),
+        Some(browser.dir(&home).join("config.json").into_os_string())
+    );
+    assert!(value("AGENT_BROWSER_SOCKET_DIR").is_some());
+    assert!(value("AGENT_BROWSER_IDLE_TIMEOUT_MS").is_some());
+    Ok(())
+}

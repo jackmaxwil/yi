@@ -1,3 +1,4 @@
+mod browser;
 mod caches;
 
 use std::path::{Path, PathBuf};

@@ -256,10 +256,13 @@ fn auto(call: &ToolCall<'_>, context: &CatastrophicContext) -> Decision {
     }
     // Invariant: one yes reaches whatever an app can do, so a review model never answers this.
     if crate::desktop::drives(command) {
-        return ask(
-            call,
-            "agent-desktop reads or acts in another app, outside the sandbox",
-        );
+        let why = match crate::desktop::source(command) {
+            Some(crate::browser::PROGRAM) => {
+                "agent-browser reaches the internet, or does what its sandbox cannot hold"
+            }
+            _ => "agent-desktop reads or acts in another app, outside the sandbox",
+        };
+        return ask(call, why);
     }
     match crate::safety::verdict(command) {
         crate::safety::Verdict::Allow => Decision::Allow {

@@ -134,11 +134,30 @@ pub fn install(
         .map(|entry| entry.bytes)
         .ok_or_else(|| format!("the {} archive carries no {}", pin.label, pin.member))?;
     let tree = tree(pin, &entries)?;
+    publish_pin(pin, binary, &tree)
+}
+
+/// [`install`] for a release that publishes the program itself rather than an archive of it.
+pub fn install_bare(
+    pin: &Pinned<'_>,
+    fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<PathBuf, String> {
+    let binary =
+        fetch(pin.url).map_err(|error| format!("couldn't download {}: {error}", pin.label))?;
+    checked(pin.url, &binary, pin.sha256, "; not installing")?;
+    publish_pin(pin, &binary, &[])
+}
+
+fn publish_pin(
+    pin: &Pinned<'_>,
+    binary: &[u8],
+    tree: &[(String, &[u8])],
+) -> Result<PathBuf, String> {
     let adopt = || std::fs::read(pin.dir.join(pin.file)).is_ok_and(|existing| existing == binary);
     stage(
         pin.dir,
         pin.label,
-        |staging| publish(staging, pin, binary, &tree),
+        |staging| publish(staging, pin, binary, tree),
         adopt,
     )?;
     let path = pin.dir.join(pin.file);

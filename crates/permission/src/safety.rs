@@ -496,7 +496,7 @@ pub fn classify(argv: &[String]) -> Class {
     if DESTRUCTIVE.binary_search(&name).is_ok() {
         return Class::Destructive;
     }
-    if name == crate::desktop::PROGRAM {
+    if name == crate::desktop::PROGRAM || name == crate::browser::PROGRAM {
         return match crate::desktop::judge(argv) {
             Some(crate::desktop::Judged::Free) => Class::Safe,
             _ => Class::Destructive,
@@ -884,11 +884,10 @@ pub fn command_segments(command: &str) -> Vec<Vec<String>> {
 /// Why one segment cannot run contained: `network` for a network program or git verb, `installs`
 /// for an install verb (a recipe named `install` writes outside the tree as a package manager does).
 pub fn host_need(argv: &[String]) -> Option<&'static str> {
-    if argv
-        .first()
-        .is_some_and(|argv0| argv0 == crate::desktop::PROGRAM)
-    {
-        return Some("desktop control");
+    match argv.first().map(String::as_str) {
+        Some(crate::desktop::PROGRAM) => return Some("desktop control"),
+        Some(crate::browser::PROGRAM) => return Some("browser control"),
+        _ => {}
     }
     let scope = scope(argv)?;
     let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
@@ -924,7 +923,7 @@ pub(crate) fn grant_scope(command: &str) -> Option<String> {
         match crate::desktop::judge(argv) {
             Some(crate::desktop::Judged::Free) => continue,
             Some(crate::desktop::Judged::App(app)) => {
-                scopes.push(format!("{} on {app}", crate::desktop::PROGRAM));
+                scopes.push(format!("{argv0} on {app}"));
                 continue;
             }
             Some(_) => return None,

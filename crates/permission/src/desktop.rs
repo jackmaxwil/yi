@@ -268,7 +268,7 @@ fn targets(verb: &str, flags: &[&str], words: &[String], root: &Path) -> Option<
 /// Invariant: only the plain name is judged (None otherwise), so `X=1 agent-desktop` and
 /// `./agent-desktop` get no grant and stay in the sandbox, where the OS refuses them.
 pub(crate) fn judge(argv: &[String]) -> Option<Judged> {
-    judge_at(argv, &state_root().unwrap_or_default())
+    crate::browser::judge(argv).or_else(|| judge_at(argv, &state_root().unwrap_or_default()))
 }
 
 /// Whether a command takes physical input. A global flag before the verb hides it, so then any
@@ -377,14 +377,18 @@ pub fn drives(command: &str) -> bool {
         .any(|argv| matches!(judge(argv), Some(judged) if judged != Judged::Free))
 }
 
-/// Whether a segment runs the program, `./agent-desktop` and an `env` or `X=1` prefix included: its
-/// words are an app's, so they are fenced whatever it did, `skills get` and `list-apps` included.
-pub fn runs(command: &str) -> bool {
-    crate::safety::command_segments(command).iter().any(|argv| {
-        let argv = crate::safety::unwrapped(argv).unwrap_or(argv);
-        argv.first()
-            .is_some_and(|word| crate::safety::program(word) == PROGRAM)
-    })
+/// The program a segment runs when its words are an app's or a page's, `./agent-desktop` and an `env`
+/// or `X=1` prefix included: they are fenced whatever it did, `skills get` and `list-apps` included.
+pub fn source(command: &str) -> Option<&'static str> {
+    crate::safety::command_segments(command)
+        .iter()
+        .find_map(|argv| {
+            let argv = crate::safety::unwrapped(argv).unwrap_or(argv);
+            let name = crate::safety::program(argv.first()?);
+            [PROGRAM, crate::browser::PROGRAM]
+                .into_iter()
+                .find(|program| *program == name)
+        })
 }
 
 /// Why no mode runs a segment: a browser, which the user routes elsewhere, or their own input.
@@ -674,7 +678,7 @@ mod tests {
         ] {
             assert!(!drives(command), "{command}");
         }
-        assert!(runs("agent-desktop list-apps"));
+        assert!(source("agent-desktop list-apps").is_some());
         assert!(!drives("agent-desktop list-apps"));
         assert!(drives("agent-desktop click @real:e7"));
         assert!(
@@ -691,8 +695,10 @@ mod tests {
             "echo agent-desktop",
             "ls ~/.yi/plugins/agent-desktop",
             "git log --oneline -- agent-desktop",
+            "echo agent-browser",
+            "ls ~/.yi/plugins/agent-browser",
         ] {
-            assert!(!runs(command), "{command}");
+            assert_eq!(source(command), None, "{command}");
         }
         for command in [
             "agent-desktop skills get desktop",
@@ -703,7 +709,7 @@ mod tests {
             "env AGENT_DESKTOP_HOME=/tmp/x agent-desktop status",
             "cd /tmp && agent-desktop status",
         ] {
-            assert!(runs(command), "{command}");
+            assert_eq!(source(command), Some(PROGRAM), "{command}");
         }
     }
 
