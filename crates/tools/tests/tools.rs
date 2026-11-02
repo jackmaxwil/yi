@@ -12,9 +12,6 @@ use crate::poll::poll_until;
 use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
-pub(crate) fn plain(command: &str, cwd: &std::path::Path) -> yi_tools::jobs::Placed {
-    yi_tools::jobs::place(yi_tools::jobs::interpreter(), command, cwd, None, None)
-}
 
 pub(crate) fn temp_dir(tag: &str) -> std::io::Result<Scratch> {
     Scratch::new(&format!("yi-tools-{tag}"))
@@ -982,13 +979,8 @@ fn a_backgrounded_jobs_report_names_its_spill() -> TestResult {
     context.recovery_dir = Some(dir.join("tool-output"));
     let after = Some(std::time::Duration::from_millis(100));
     let limit = std::time::Duration::from_secs(60);
-    let run = yi_tools::run_or_background(
-        "sleep 1; seq 1 20000",
-        &context,
-        after,
-        limit,
-        plain("sleep 1; seq 1 20000", &context.cwd),
-    )?;
+    let run =
+        yi_tools::run_or_background("sleep 1; seq 1 20000", &context, after, limit, None, None)?;
     let yi_tools::Run::Backgrounded(id) = run else {
         return Err("the job finished before its wait".into());
     };
@@ -1014,8 +1006,8 @@ fn a_container_job_keeps_the_models_command_and_runs_the_placed_one() -> TestRes
         Some(std::time::Duration::from_millis(50)),
         std::time::Duration::from_secs(60),
     );
-    let placed = plain("sleep 0.3; printf placed", &context.cwd);
-    let run = yi_tools::run_or_background("cargo test", &context, after, limit, placed)?;
+    let placed = Some(("sleep 0.3; printf placed", "true"));
+    let run = yi_tools::run_or_background("cargo test", &context, after, limit, None, placed)?;
     let yi_tools::Run::Backgrounded(id) = run else {
         return Err("the placed command did not become a job".into());
     };
@@ -1694,13 +1686,13 @@ fn a_running_poll_shows_output_and_kill_ends_the_job() -> TestResult {
     let dir = temp_dir("job-running-poll")?;
     let mut context = ToolContext::new(dir.to_path_buf());
     context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
-    let command = "printf before; touch ready; sleep 30";
     let run = yi_tools::run_or_background(
-        command,
+        "printf before; touch ready; sleep 30",
         &context,
         Some(Duration::ZERO),
         Duration::from_secs(60),
-        plain(command, &context.cwd),
+        None,
+        None,
     )?;
     let yi_tools::Run::Backgrounded(id) = run else {
         return Err("the command did not become a job".into());
@@ -1740,7 +1732,8 @@ fn a_running_poll_view_names_its_ceiling_only_one_byte_past_it() -> TestResult {
             &context,
             Some(Duration::ZERO),
             Duration::from_secs(60),
-            plain(&command, &context.cwd),
+            None,
+            None,
         )?;
         let yi_tools::Run::Backgrounded(id) = run else {
             return Err("the command did not become a job".into());
@@ -1764,13 +1757,13 @@ fn a_running_poll_names_output_dropped_from_its_live_buffer() -> TestResult {
     let dir = temp_dir("job-running-live-cap")?;
     let mut context = ToolContext::new(dir.to_path_buf());
     context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
-    let command = "head -c 55000 /dev/zero | tr '\\0' x; touch ready; sleep 30";
     let run = yi_tools::run_or_background(
-        command,
+        "head -c 55000 /dev/zero | tr '\\0' x; touch ready; sleep 30",
         &context,
         Some(Duration::ZERO),
         Duration::from_secs(60),
-        plain(command, &context.cwd),
+        None,
+        None,
     )?;
     let yi_tools::Run::Backgrounded(id) = run else {
         return Err("the command did not become a job".into());
@@ -1805,7 +1798,8 @@ fn a_poll_cannot_cross_job_owners() -> TestResult {
             context,
             Some(Duration::ZERO),
             Duration::from_secs(60),
-            plain(command, &context.cwd),
+            None,
+            None,
         )?;
         match run {
             yi_tools::Run::Backgrounded(id) => Ok(id),

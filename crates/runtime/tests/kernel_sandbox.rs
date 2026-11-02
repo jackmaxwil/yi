@@ -179,14 +179,8 @@ async fn a_kernel_reaches_loopback_and_no_other_kernels_key() -> TestResult {
     let context = yi_tools::ToolContext::new(project.clone());
     let timeout = std::time::Duration::from_secs(60);
     let command = format!("cat '{file}'");
-    let placed = yi_tools::jobs::place(
-        yi_tools::jobs::interpreter(),
-        &command,
-        &project,
-        None,
-        Some(&sandbox),
-    );
-    let catted = yi_tools::run_or_background(&command, &context, None, timeout, placed);
+    let catted =
+        yi_tools::run_or_background(&command, &context, None, timeout, Some(&sandbox), None);
     first.dispose().await;
     second.dispose().await;
     let other = other?.result;
@@ -1040,5 +1034,51 @@ async fn a_kernel_cell_the_sandbox_refused_names_the_sandbox() -> TestResult {
     for (code, note, result) in &notes[2..] {
         assert!(!note.contains("sandbox"), "{code}: {note}\n{result:?}");
     }
+    Ok(())
+}
+
+/// One lease for the kernel's life, so a restart compares equal and its cells can name a refusal.
+#[tokio::test]
+async fn a_contained_kernel_leaves_through_its_proxy_and_hears_what_it_refused() -> TestResult {
+    seatbelt()?;
+    let (root, project, home, _session) = workspace("egress")?;
+    let broker = yi_runtime::permission::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        project.clone(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    );
+    let broker = Some(Arc::new(broker));
+    let session = root_session(&project, &home, &root.join("rlm"), None, broker, None);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let code = r#"import os, urllib.request
+print(os.environ["HTTPS_PROXY"].split("@")[1])
+try:
+    urllib.request.urlopen("https://example.invalid/", timeout=20)
+except Exception as error:
+    print(type(error).__name__)"#;
+    let ran = cell(&kernel, code.to_owned()).await;
+    let job = r#"print(await bash("curl -sS --max-time 20 https://bash.invalid/"))"#;
+    let job = cell(&kernel, job.to_owned()).await;
+    kernel.dispose().await;
+    let job = job?;
+    assert!(
+        job.result.stdout.contains("[egress: refused bash.invalid"),
+        "{:?}",
+        job.result
+    );
+    let ran = ran?;
+    assert!(ran.result.stdout.contains("127.0.0.1:"), "{:?}", ran.result);
+    assert!(
+        ran.notes
+            .iter()
+            .any(|note| note.contains("[egress: refused example.invalid")),
+        "{:?} {}",
+        ran.notes,
+        ran.result.stdout
+    );
     Ok(())
 }

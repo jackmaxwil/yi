@@ -8,7 +8,8 @@ use crate::scratch::Scratch;
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn refusal(command: &str) -> Result<String, Box<dyn Error>> {
-    probe_here(command).ok_or_else(|| format!("`{command}` was not refused").into())
+    yi_runtime::goal::probe(command, &std::env::temp_dir())
+        .ok_or_else(|| format!("`{command}` was not refused").into())
 }
 
 #[test]
@@ -48,13 +49,19 @@ fn a_compound_command_is_probed_at_each_segment() -> TestResult {
     let said = refusal("cd . && yidog-not-a-program -q")?;
     assert!(said.contains("`yidog-not-a-program`"), "{said}");
     assert!(said.contains("first word of each segment"), "{said}");
-    assert_eq!(probe_here("cd . && true"), None);
+    assert_eq!(
+        yi_runtime::goal::probe("cd . && true", &std::env::temp_dir()),
+        None
+    );
     Ok(())
 }
 
 #[test]
 fn an_assignment_prefix_does_not_hide_the_program() -> TestResult {
-    assert_eq!(probe_here("FOO=1 true"), None);
+    assert_eq!(
+        yi_runtime::goal::probe("FOO=1 true", &std::env::temp_dir()),
+        None
+    );
     let said = refusal("FOO=1 jsut check")?;
     assert!(said.contains("`jsut`"), "{said}");
     Ok(())
@@ -69,25 +76,13 @@ fn the_life_sized_checks_pass_where_their_programs_exist() -> TestResult {
         if !on_path(program) {
             continue;
         }
-        assert_eq!(probe_here(command), None, "{command}");
+        assert_eq!(
+            yi_runtime::goal::probe(command, &std::env::temp_dir()),
+            None,
+            "{command}"
+        );
     }
     Ok(())
-}
-
-/// Dies with a probe run on the host for a check that runs in a container: a program the image
-/// carries and the host does not was refused before `docker exec` was ever built.
-#[test]
-fn a_check_placed_in_a_container_is_probed_for_syntax_only() {
-    assert_eq!(
-        yi_runtime::goal::probe("yidog-not-a-program -q", &std::env::temp_dir(), true),
-        None
-    );
-    let said = yi_runtime::goal::probe("if then fi", &std::env::temp_dir(), true);
-    assert!(
-        said.as_deref()
-            .is_some_and(|said| said.contains("cannot parse")),
-        "syntax is still refused for a placed check: {said:?}"
-    );
 }
 
 #[test]
@@ -109,17 +104,14 @@ fn a_relative_program_is_found_where_the_check_runs() -> TestResult {
     let mut mode = std::fs::metadata(dir.as_path().join("test.sh"))?.permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
     std::fs::set_permissions(dir.as_path().join("test.sh"), mode)?;
-    assert_eq!(
-        yi_runtime::goal::probe("./test.sh", dir.as_path(), false),
-        None
-    );
-    let elsewhere = yi_runtime::goal::probe("./test.sh", &std::env::temp_dir(), false);
+    assert_eq!(yi_runtime::goal::probe("./test.sh", dir.as_path()), None);
+    let elsewhere = yi_runtime::goal::probe("./test.sh", &std::env::temp_dir());
     assert!(elsewhere.is_some_and(|said| said.contains("`./test.sh`")));
     Ok(())
 }
 
 fn probe_here(command: &str) -> Option<String> {
-    yi_runtime::goal::probe(command, &std::env::temp_dir(), false)
+    yi_runtime::goal::probe(command, &std::env::temp_dir())
 }
 
 fn on_path(word: &str) -> bool {

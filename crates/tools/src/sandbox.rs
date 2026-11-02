@@ -1,3 +1,5 @@
+mod caches;
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -215,11 +217,11 @@ impl Sandbox {
             denies_inside(&path, &store, &self.exempt(&store))
         });
         let sealed = self.sealed.iter().any(|sealed| {
-            let denied = resolve_aliases(&sealed.denied);
-            let open: Vec<PathBuf> = (sealed.open.iter())
-                .map(|root| resolve_aliases(root))
-                .collect();
-            denies_inside(&path, &denied, &open)
+            let denied = &sealed.denied;
+            let inside = path.starts_with(denied) || path.starts_with(resolve_aliases(denied));
+            inside
+                && !(sealed.open.iter())
+                    .any(|root| path.starts_with(root) || path.starts_with(resolve_aliases(root)))
         });
         !granted
             && (!under(&self.writable)

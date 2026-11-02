@@ -48,11 +48,15 @@ impl PermissionBroker {
             .context
             .host_owned
             .clone_from(&self.context.host_owned);
+        // `sandbox.egress` is the person's own config, so a child's contained command meets it too.
+        if let Some(egress) = self.egress.config.get() {
+            let _first_wiring_wins = child.egress.config.set(egress.clone());
+        }
         child
     }
 
-    /// A write grant holds while its directory is neither `$HOME` nor above one — the predicate it
-    /// was taken under, so a kept rule is not dropped a step later. Path rules meet D323 per call.
+    /// A write grant holds while its directory is neither protected nor walled; a pass, which
+    /// runs outside every wall, never in a walled holder. Path rules meet D323 at each call.
     fn admits(&self, rule: &SessionPermissionRule, wall: &crate::wall::Wall) -> bool {
         if let Some(dir) = yi_permission::write_grant_dir(rule) {
             return self.sandbox.as_ref().is_some_and(|sandbox| {
@@ -61,8 +65,7 @@ impl PermissionBroker {
                 walled.deny_read.extend_from_slice(&wall.deny_read);
                 // A directory swapped for a link since it was kept is judged where it leads.
                 let real = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-                !protected_from_grant(Some(&walled), &dir)
-                    && !protected_from_grant(Some(&walled), &real)
+                !protected(Some(&walled), &dir) && !protected(Some(&walled), &real)
             });
         }
         wall.is_empty() || !yi_permission::is_exact_command(rule)
@@ -166,14 +169,14 @@ impl PermissionBroker {
         if holds {
             return Ok(());
         }
+        if self.sandbox.is_none() {
+            return Ok(());
+        }
         if protected_from_grant(self.sandbox.as_ref(), &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
             ));
-        }
-        if self.sandbox.is_none() {
-            return Ok(());
         }
         let grant = yi_permission::write_grant(&real);
         self.keep_grant(
@@ -209,6 +212,10 @@ impl PermissionBroker {
         canonical: &str,
         display: &str,
     ) {
+        // Invariant: a desktop command with no grant offered keeps nothing, even on "always".
+        if grant.is_none() && kind == RuleKind::Command && yi_permission::drives(display) {
+            return;
+        }
         // An exact call's label names no call, so the listing adds the call it keeps.
         let (kind, canonical, label) = match grant {
             Some(grant) if grant.canonical != canonical => {
@@ -262,41 +269,30 @@ fn is_home(dir: &Path) -> bool {
     home.is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
 }
 
-/// A guard the refused path sits under, or the directory that contains it: an approval for
-/// `<trunk>/.git/config` widens the run by `<trunk>/.git`.
-fn guards(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
-    never_widened(sandbox)
-        .iter()
-        .any(|guarded| met_from_both_sides(guarded, dir))
-}
-
-fn met_from_both_sides(guarded: &Path, dir: &Path) -> bool {
-    let real = guarded
-        .canonicalize()
-        .unwrap_or_else(|_| guarded.to_path_buf());
-    // Invariant: a `.git` pointer guards itself; granting the tree around it opens no store.
-    let pointer = guarded.file_name() == Some(".git".as_ref()) && !guarded.is_dir();
-    [guarded, &real]
-        .iter()
-        .any(|guarded| dir.starts_with(guarded) || (!pointer && guarded.starts_with(dir)))
-}
-
+/// A refusal asks from both sides, because the gate judges the refused file's parent: an approval
+/// for `<trunk>/.git/config` widens the run by `<trunk>/.git`.
 pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
-    is_home(dir) || guards(sandbox, dir)
+    is_home(dir)
+        || never_widened(sandbox).iter().any(|guarded| {
+            let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
+            // Invariant: a `.git` pointer guards itself; granting the tree around it opens no
+            // store, and the deny still outranks the grant.
+            let pointer = guarded.file_name() == Some(".git".as_ref()) && !guarded.is_dir();
+            [guarded, &real]
+                .iter()
+                .any(|guarded| dir.starts_with(guarded) || (!pointer && guarded.starts_with(dir)))
+        })
 }
 
-/// A grant asks only at or below a guard: a deny outranks a grant around it. Invariant: `$HOME` and
-/// `~/.yi` carry no deny, so a directory above them is refused or `--allow-write /` opens home.
+/// A grant asks only at or below: a deny outranks the grant around it. Invariant: `$HOME` and
+/// `~/.yi` carry no deny, so a directory above them is refused, or `--allow-write /` opens all home.
 pub(crate) fn protected_from_grant(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
-    // With no profile a directory above home widens nothing, so refusing it only kills the start.
-    is_home(dir) || (sandbox.is_some() && above_home(dir)) || under_a_guard(sandbox, dir)
-}
-
-fn under_a_guard(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
-    never_widened(sandbox).iter().any(|guarded| {
-        let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
-        dir.starts_with(guarded) || dir.starts_with(&real)
-    })
+    // With no profile nothing is contained, so no grant widens anything and none is refused.
+    (sandbox.is_some() && (is_home(dir) || above_home(dir)))
+        || never_widened(sandbox).iter().any(|guarded| {
+            let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
+            dir.starts_with(guarded) || dir.starts_with(&real)
+        })
 }
 
 #[cfg(test)]
@@ -324,11 +320,10 @@ mod tests {
         ));
     }
 
-    /// Dies with a grant judged from both sides at keep time and one side at admit time: a kept
-    /// grant was taken and then dropped a step later, so the rule did nothing where it was taken.
-    /// A deny outranks the grant around it, so `--allow-write .` is taken in a checkout.
+    /// Dies with a grant judged from both sides: `--allow-write .` in a checkout exited 2 naming
+    /// protection that was not real, while the deny outranks any grant there anyway.
     #[test]
-    fn a_grant_is_admitted_by_the_predicate_it_was_taken_under() {
+    fn a_grant_of_the_tree_around_a_denial_is_taken() {
         let sandbox = yi_tools::Sandbox {
             writable: vec![PathBuf::from("/repo")],
             deny_read: Vec::new(),
@@ -341,10 +336,7 @@ mod tests {
             protected(Some(&sandbox), Path::new("/repo")),
             "a refusal names the tree an approval would widen"
         );
-        assert!(
-            !protected_from_grant(Some(&sandbox), Path::new("/repo")),
-            "a grant of the tree around a denial is taken; its denies still outrank it"
-        );
+        assert!(!protected_from_grant(Some(&sandbox), Path::new("/repo")));
         assert!(protected_from_grant(
             Some(&sandbox),
             Path::new("/repo/.git/config")

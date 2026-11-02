@@ -440,9 +440,13 @@ fn render(id: u64, job: &Job) -> JobReport {
                 .map(|error| format!("\n[group kill failed: {error}]"));
             let cut = capture.cut_note().map(|note| format!("\n{note}"));
             let text = format!("{}{}", capture.stdout, capture.stderr);
+            let rows: String = (capture.rows.iter())
+                .map(|row| format!("\n{row}"))
+                .collect();
             crate::reduce::strip_ansi(&text)
                 + &cut.unwrap_or_default()
                 + &failed.unwrap_or_default()
+                + &rows
         }
         None => String::new(),
     };
@@ -518,12 +522,15 @@ pub fn interpreter() -> &'static str {
     })
 }
 
+type Contained<'a> = (&'a crate::sandbox::Sandbox, Option<&'a crate::SpawnFn>);
+
 fn start(
     shell_command: &str,
     cwd: &Path,
     cancelled: &CancelFlag,
+    contained: Option<Contained<'_>>,
     reaper: Reaper,
-    run: Placed,
+    placed: Option<(&str, &str)>,
     spill_dir: Option<&Path>,
 ) -> Result<
     (
@@ -535,11 +542,32 @@ fn start(
     let (sender, receiver) = std::sync::mpsc::channel();
     let live = Arc::new(LiveOutput::default());
     let kill = Arc::new(AtomicBool::new(false));
-    let sweep = run.sweep().map(str::to_owned);
+    let text = placed.map_or(shell_command, |(run, _)| run).to_owned();
+    let sweep = placed.map(|(_, sweep)| sweep.to_owned());
     let outer = Arc::clone(cancelled);
     let stopped = Arc::clone(&kill);
     let flag: CancelFlag = Arc::new(move || stopped.load(Ordering::SeqCst) || outer());
-    let process = run.command(cwd);
+    let wrapped =
+        (contained.as_ref()).map(|(sandbox, _)| sandbox.wrap(interpreter(), &["-c", &text]));
+    let spawn = (contained.as_ref().and_then(|(_, spawn)| *spawn))
+        .map(|spawn| spawn())
+        .transpose()
+        .map_err(|refused| refused.to_string())?;
+    let mut process = match &wrapped {
+        Some((program, args)) => {
+            let mut process = crate::keyless_command(program);
+            process.args(args);
+            process
+        }
+        None => {
+            let mut process = crate::keyless_command(interpreter());
+            process.arg("-c").arg(&text);
+            process
+        }
+    };
+    process.current_dir(cwd);
+    let (env, after) = spawn.map_or((Vec::new(), None), |spawn| (spawn.env, Some(spawn.after)));
+    process.envs(env);
     let (child, program) = spawn_captured(process, false)?;
     let id = registry().insert(
         shell_command,
@@ -550,7 +578,7 @@ fn start(
     );
     let spill_dir = spill_dir.map(Path::to_path_buf);
     std::thread::spawn(move || {
-        let capture = run_child_captured_live(
+        let mut capture = run_child_captured_live(
             child,
             &program,
             None,
@@ -559,10 +587,18 @@ fn start(
             Some(live),
             spill_dir.as_deref(),
         );
+        let rows = after.map(|after| after()).unwrap_or_default();
+        if let Ok(capture) = &mut capture {
+            capture.rows = rows;
+        }
         // Invariant: before the job settles, so a lane settle never reads a job gone quiet
         // while what it started in a container still writes the tree.
+        if let (Ok(capture), Some(sweep)) = (&capture, &sweep)
+            && capture.cancelled
+        {
+            run_sweep(sweep);
+        }
         if let Ok(capture) = &capture {
-            swept(capture, sweep.as_deref());
             registry().finish(id, capture.clone());
         }
         let _receiver_may_be_gone = sender.send(capture);
@@ -570,100 +606,23 @@ fn start(
     Ok((id, receiver))
 }
 
-/// What a killed `docker exec` left behind, under a bound of its own. Incident shape: an engine
-/// asleep answers nothing, so an unbounded sweep held a check past the deadline it had just hit.
-pub fn run_sweep(sweep: &str) {
-    run_sweep_within(sweep, Duration::from_secs(5));
-}
-
-/// [`run_sweep`] at the bound a caller asks for, so the bound is measured by a test that pays it.
-pub fn run_sweep_within(sweep: &str, bound: Duration) {
+/// What a killed `docker exec` left behind. Incident: an engine asleep answers nothing, so a
+/// sweep on a caller's own thread held a check past the deadline it had just hit.
+pub fn run_sweep_within(sweep: &str, bound: Option<Duration>) {
     let mut process = command(interpreter());
     process.arg("-c").arg(sweep);
-    let until = std::time::Instant::now().checked_add(bound);
+    let until = bound.and_then(|bound| std::time::Instant::now().checked_add(bound));
     let past: CancelFlag =
-        Arc::new(move || until.is_none_or(|until| std::time::Instant::now() >= until));
+        Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
     let _swept_or_gone_with_the_container =
         crate::process::run_captured(process, None, &past, OUTPUT_CAP);
 }
-/// A placed command: where it runs, and the sweep that kills what a killed `docker exec` left.
-pub struct Placed {
-    program: String,
-    args: Vec<String>,
-    sweep: Option<String>,
-}
 
-impl Placed {
-    /// The command, rooted at `cwd`.
-    pub fn command(&self, cwd: &Path) -> std::process::Command {
-        let mut command = crate::keyless_command(&self.program);
-        command.args(&self.args).current_dir(cwd);
-        command
-    }
+/// The bound the check path sweeps under, since the sweep runs on the thread that owes an answer.
+pub const SWEEP_BOUND: Duration = Duration::from_secs(5);
 
-    pub fn sweep(&self) -> Option<&str> {
-        self.sweep.as_deref()
-    }
-
-    pub fn in_container(&self) -> bool {
-        self.sweep.is_some()
-    }
-}
-
-/// Invariant: bash and a check are placed by this one function, so neither can disagree with the
-/// other about where a command runs. Precedence: the container, else the sandbox, else plain.
-pub fn place(
-    interpreter: &str,
-    script: &str,
-    cwd: &Path,
-    container: Option<&str>,
-    sandbox: Option<&crate::sandbox::Sandbox>,
-) -> Placed {
-    let placed = (container).map(|container| in_container(container, cwd, script));
-    let placed = placed
-        .as_ref()
-        .map(|(run, sweep)| (run.as_str(), sweep.as_str()));
-    placed_run(interpreter, script, placed, sandbox)
-}
-
-fn placed_run(
-    interpreter: &str,
-    script: &str,
-    placed: Option<(&str, &str)>,
-    sandbox: Option<&crate::sandbox::Sandbox>,
-) -> Placed {
-    let text = placed.map_or(script, |(run, _)| run);
-    let (program, args) = match (placed, sandbox) {
-        (Some(_), _) | (None, None) => (
-            interpreter.to_owned(),
-            vec!["-c".to_owned(), text.to_owned()],
-        ),
-        (None, Some(sandbox)) => sandbox.wrap(interpreter, &["-c", text]),
-    };
-    Placed {
-        program,
-        args,
-        sweep: placed.map(|(_, sweep)| sweep.to_owned()),
-    }
-}
-
-/// Environment a placed command's host client needs to reach its daemon: the container's own
-/// environment is the image's, but `docker exec` runs here and finds its endpoint in these.
-pub const CLIENT_ENV: [&str; 6] = [
-    "DOCKER_HOST",
-    "DOCKER_CONTEXT",
-    "DOCKER_TLS_VERIFY",
-    "DOCKER_CERT_PATH",
-    "DOCKER_CONFIG",
-    "DOCKER_API_VERSION",
-];
-
-/// One owner of the rule a cancelled placed capture is swept under, so bash and a check cannot
-/// drift: what a killed `docker exec` left in the container dies before the capture settles.
-pub fn swept(capture: &CommandCapture, sweep: Option<&str>) {
-    if let (true, Some(sweep)) = (capture.cancelled, sweep) {
-        run_sweep(sweep);
-    }
+pub fn run_sweep(sweep: &str) {
+    run_sweep_within(sweep, None);
 }
 
 /// `docker exec` of `command` under `sh -c` in `cwd` inside `container`, quoted for the host
@@ -696,9 +655,18 @@ pub fn spawn_job(
     cwd: &Path,
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
+    spawn: Option<&crate::SpawnFn>,
 ) -> Result<JobId, String> {
-    let placed = place(interpreter(), shell_command, cwd, None, sandbox);
-    start(shell_command, cwd, cancelled, Reaper::Handle, placed, None).map(|(id, _)| id)
+    start(
+        shell_command,
+        cwd,
+        cancelled,
+        sandbox.map(|sandbox| (sandbox, spawn)),
+        Reaper::Handle,
+        None,
+        None,
+    )
+    .map(|(id, _)| id)
 }
 
 /// Past `background_after` (a call's `wait`, else `bash.autoBackgroundMs`; `None` holds the turn)
@@ -708,13 +676,15 @@ pub fn run_or_background(
     context: &crate::tool::ToolContext,
     background_after: Option<Duration>,
     timeout: Duration,
-    placed: Placed,
+    sandbox: Option<&crate::sandbox::Sandbox>,
+    placed: Option<(&str, &str)>,
 ) -> Result<Run, String> {
     let begun = std::time::Instant::now();
     let (id, receiver) = start(
         shell_command,
         &context.cwd,
         &context.cancelled,
+        sandbox.map(|sandbox| (sandbox, context.spawn.as_ref())),
         // Invariant: held until the call hands the turn back, or its output is announced twice.
         Reaper::Poller {
             reported: true,
@@ -762,6 +732,7 @@ pub fn run_or_background(
                         cut: None,
                         kill_error: None,
                         spill: None,
+                        rows: Vec::new(),
                     })))
                 }
             }
@@ -873,6 +844,7 @@ mod tests {
             cut: None,
             spill: None,
             kill_error: None,
+            rows: Vec::new(),
         }
     }
 
@@ -904,7 +876,7 @@ mod tests {
     #[test]
     fn output_is_readable_before_the_job_exits() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("printf hello; sleep 300", &dir, &never(), None)?;
+        let id = spawn_job("printf hello; sleep 300", &dir, &never(), None, None)?;
         let chunk = poll_until(|| {
             let chunk = registry().output_since(id, 0).ok()?;
             chunk.text.contains("hello").then_some(chunk)
@@ -930,6 +902,7 @@ mod tests {
             ),
             &dir,
             &never(),
+            None,
             None,
         )?;
         let first = poll_until(|| {
@@ -957,7 +930,7 @@ mod tests {
     #[test]
     fn kill_stops_a_sleeper_and_reports_killed() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("sleep 300", &dir, &never(), None)?;
+        let id = spawn_job("sleep 300", &dir, &never(), None, None)?;
         assert_eq!(registry().kill(id)?, KillOutcome::Signalled);
         assert_eq!(settled(id)?, Outcome::Killed);
         let report = registry().release(id)?;
@@ -969,7 +942,7 @@ mod tests {
     #[test]
     fn kill_after_exit_is_a_no_op() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("exit 3", &dir, &never(), None)?;
+        let id = spawn_job("exit 3", &dir, &never(), None, None)?;
         let exited = Outcome::Exited { code: Some(3) };
         assert_eq!(settled(id)?, exited);
         assert_eq!(registry().kill(id)?, KillOutcome::AlreadySettled(exited));
@@ -1137,6 +1110,7 @@ mod tests {
                 cut: None,
                 spill: None,
                 kill_error: Some("/bin/sh: No such file or directory".to_owned()),
+                rows: Vec::new(),
             },
         );
         let report = registry().release(id)?;
@@ -1166,13 +1140,13 @@ mod tests {
             return Ok(());
         }
         let dir = Scratch::new("yi-jobs")?;
-        let command = "cd /tmp && timeout 900 python3 -c 'import time; print(\"ready\", flush=True); time.sleep(30)' && ls -la";
         let run = run_or_background(
-            command,
+            "cd /tmp && timeout 900 python3 -c 'import time; print(\"ready\", flush=True); time.sleep(30)' && ls -la",
             &crate::tool::ToolContext::new(dir.to_path_buf()),
             None,
             Duration::from_secs(3),
-            place(interpreter(), command, &dir, None, None),
+            None,
+            None,
         )?;
         let capture = match run {
             Run::TimedOut(capture) => capture,
@@ -1195,6 +1169,7 @@ mod tests {
             "awk 'BEGIN{for(i=0;i<5000;i++) print \"0123456789\"}'",
             &dir,
             &never(),
+            None,
             None,
         )?;
         settled(id)?;
@@ -1228,18 +1203,5 @@ mod tests {
             assert_eq!(inside.stdout, direct.stdout, "{placed}");
         }
         Ok(())
-    }
-
-    /// Dies with the precedence inverted: a `container:<image>` child's check ran under the host's
-    /// sandbox profile instead of in its container, which is the incident this placement exists for.
-    #[test]
-    fn a_container_beats_a_sandbox_profile() {
-        let cwd = Path::new("/work");
-        let sandbox = crate::sandbox::Sandbox::for_workspace(cwd, Path::new("/home/none"), None);
-        let placed = place("sh", "cargo test", cwd, Some("yi-child"), Some(&sandbox));
-        assert!(placed.in_container(), "the container arm was not taken");
-        let args = placed.args.join(" ");
-        assert!(args.contains("docker exec"), "{args}");
-        assert!(!args.contains("sandbox-exec"), "{args}");
     }
 }

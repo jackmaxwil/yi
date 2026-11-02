@@ -42,8 +42,10 @@ fn drive_home() -> PathBuf {
     std::env::temp_dir().join(format!("yi-console-home-{}", std::process::id()))
 }
 
-fn scratch_socket(name: &str) -> std::io::Result<(Scratch, PathBuf)> {
-    let dir = Scratch::new(&format!("yi-console-test-{name}"))?;
+/// Incident: a long test name in this dir put the socket past macOS's 104-byte `sun_path`, and
+/// the console reported `connect: path must be shorte` instead of the run under test.
+fn scratch_socket() -> std::io::Result<(Scratch, PathBuf)> {
+    let dir = Scratch::new("yi-console")?;
     let socket = dir.join("sock");
     Ok((dir, socket))
 }
@@ -644,7 +646,7 @@ fn run_console(
     size: (u16, u16),
 ) -> TestResult {
     let (width, height) = size;
-    let (dir, socket) = scratch_socket(name)?;
+    let (dir, socket) = scratch_socket()?;
     let server = fixture.map(|fixture| spawn_fixture(socket.clone(), fixture));
     let steps = parse_script(script)?;
     // Incident: the flaky drive tests fail by error or by an assertion after this returns, and
@@ -691,7 +693,7 @@ fn run_console(
 /// long line otherwise outruns the deadline the scene author asked for.
 #[test]
 fn paced_type_step_respects_the_deadline() -> TestResult {
-    let (_dir, socket) = scratch_socket("paced-type-deadline")?;
+    let (_dir, socket) = scratch_socket()?;
     let steps = parse_script("type-ms 200\ntype 0123456789abcdefghij")?;
     let started = Instant::now();
     let code = run_headless(

@@ -28,8 +28,9 @@ refinement or self-extension · embeddings and semantic search · resident LSP o
 JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WASM · document
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
-§17.1) · a GUI · browser automation as an agent tool, computer use, email, or any capability that
-is not a coding agent (the console's browser pane shows the user a page and gives the model nothing) ·
+§17.1) · a GUI · a model tool for the console's browser pane, which shows the user a page and gives
+the model nothing (driving the desktop is the `agent-desktop` plugin's, §17.1) · email, or any
+capability that is not a coding agent other than that plugin ·
 server-side terminal-frame streaming or blit
 encoding in the console (a terminal pane's PTY is the console's own, §17.4) · the console's
 Tape pane, a session's ledger over wall time (left when the terminal pane entered) · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code
@@ -614,7 +615,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   unrenamable; the kernel and its `bash()` take the wall too; a contained process starts through
   `env -u` for every inherited variable a name heuristic marks as a secret (D324); in auto mode the
   bash read belt judges a store argument by identity, a directory above one and a glob that reaches
-  one; loopback the only network, and no unix socket (#599). Without it, `Contain`
+  one; no unix socket (#599), and the only network is loopback, where a per-spawn CONNECT proxy
+  decides by host name: the seed, `sandbox.egress`, a kept grant, then a person (#601). Package caches
+  are writable, never `.cargo/bin` or a config. Without it, `Contain`
   becomes a reviewable `Ask`.
 - With a classifier and an OpenRouter key, `classifier.approval` says when Jev's `noul` answers a
   reviewable auto-mode ask: `instant` (default) first, P(safe) ≥ 0.8 (0.9 if destructive) allows,
@@ -1130,7 +1133,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
-| `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target, and the member's own): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. A row is a `Program` (a tar.gz member published as its name) or a `Tree` (a zip unpacked whole by the in-tree reader, its member the executable inside, its digest checked before the one rename): `chrome`, Chrome for Testing's headless shell, is the one tree. Yi uses only the pinned version, else a program on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed programs first on PATH, and a tree is neither on PATH nor carded: the console starts it, never the model |
+| `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target, and the member's own): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. A row is a `Program` (a tar.gz member published as its name) or a `Tree` (a zip unpacked whole by the in-tree reader, its member the executable inside, its digest checked before the one rename): `chrome`, Chrome for Testing's headless shell, is the one tree. Yi uses only the pinned version, else a program on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed programs first on PATH, and a tree is neither on PATH nor carded: the console starts it, never the model. A `Host` is a program the model runs that drives this machine: `add --all` and the eval containers skip it, so `agent-desktop` arrives only by name. The sandbox refuses it, and `yi_permission`'s desktop table lets only its plain name out: one yes per app per session, read from `--app` or from the app a ref's snapshot record names; a terminal, an editor, settings or a password app, and any verb or flag the table does not name, ask every time and keep nothing; a browser is refused in every mode; what it prints returns in a `yi-external` fence |
 | `update` | the installed binary, and the release's skills written over `~/.yi/skills`, each top-level directory the release ships (`yi/`) replaced whole so a skill it dropped goes (other skills kept), from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
@@ -1449,7 +1452,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 |---|---|---|
 | `check_manifests` | folder `x` is crate `yi-x`; workspace version, edition, license, rust-version, lints; deps `{ workspace = true }`; feature allowlist; string_slice roots (§19); `serde`/`serde_derive` only in `yi-types` (§20) | `string_slice_pending.json` |
 | `check_boundaries` | each crate's `yi-*` deps are in its allowlist, and a `yi-*` dev-dependency past it is in the `[dev]` table; unknown crate, stale entry or stale `[dev]` edge fails | `boundaries.toml` |
-| `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field, no baseline without a reader (D109) | — |
+| `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field or enum variant field (a literal sets, only a read or a pattern binding reads, a test is no reader), no yi-types shape production code never names, no baseline without a reader (D109) | — |
 | `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline modification never shares a commit with code (a deletion rides with the gate that stopped reading it; merge commits exempt) | — |
 | `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, the fork point, `schemas.lock` |
 | `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json` (`binary_size_budget_linux.json` on Linux), `startup_ms_budget.json` |

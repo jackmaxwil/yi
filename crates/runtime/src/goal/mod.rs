@@ -36,9 +36,15 @@ pub(crate) fn check_view(
     let producer = yi_tools::Involuntary::Job(&rerun);
     let view = yi_tools::view(producer, stdout, stderr, exit, None, spill);
     let text = view.text.trim();
+    let rows = capture.rows.join("\n");
+    let body = if rows.is_empty() {
+        text.to_owned()
+    } else {
+        format!("{text}\n{rows}")
+    };
     capture
         .cut_row()
-        .map_or_else(|| text.to_owned(), |row| format!("{text}\n{row}"))
+        .map_or_else(|| body.clone(), |row| format!("{body}\n{row}"))
 }
 
 /// The rerun a cut row names: `command` from `dir`, where the check ran. The reader's own bash
@@ -91,17 +97,35 @@ pub struct Checker {
     wall: crate::wall::Wall,
 }
 
-/// Runs a check to its capture. Invariant: a check past its deadline is swept before it reads as
-/// settled, or what it started goes on writing the tree.
+/// A check's command, its proxy lease, and what kills what a killed `docker exec` left running.
+pub(crate) struct CheckShell {
+    pub(crate) command: std::process::Command,
+    lease: Option<crate::egress::Lease>,
+    sweep: Option<String>,
+}
+
+/// Runs a check to its capture, holding its lease until then. Invariant: a check past its deadline
+/// is swept before it reads as settled, or what it started goes on writing the tree.
 pub(crate) fn captured(
-    shell: std::process::Command,
-    sweep: Option<&str>,
+    shell: CheckShell,
     stdin: Option<Vec<u8>>,
     cancelled: &yi_tools::CancelFlag,
 ) -> Result<yi_tools::CommandCapture, String> {
-    let capture = yi_tools::run_captured(shell, stdin, cancelled, yi_tools::OUTPUT_CAP)?;
-    yi_tools::jobs::swept(&capture, sweep);
+    let mut capture =
+        yi_tools::run_captured(shell.command, stdin, cancelled, yi_tools::OUTPUT_CAP)?;
+    capture.rows = shell
+        .lease
+        .map(crate::egress::Lease::revoke)
+        .unwrap_or_default();
+    if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
+        yi_tools::jobs::run_sweep_within(sweep, Some(yi_tools::jobs::SWEEP_BOUND));
+    }
     Ok(capture)
+}
+
+/// The lease's proxy variables: the one place a spawned check learns the proxy's address.
+fn lease_env(lease: Option<&crate::egress::Lease>) -> impl Iterator<Item = (String, String)> + '_ {
+    lease.into_iter().flat_map(crate::egress::Lease::env)
 }
 
 impl Checker {
@@ -136,23 +160,29 @@ impl Checker {
         broker.sandbox_for(cwd, &self.wall, &broker.kept_writes())
     }
 
-    /// `shell -c script` in `cwd`, placed by the one function bash is placed by: in the session's
-    /// container, else in the sandbox where one holds, else plain.
-    pub(crate) fn shell(
-        &self,
-        shell: &str,
-        script: &str,
-        cwd: &std::path::Path,
-    ) -> yi_tools::jobs::Placed {
-        let sandbox = self.profile(cwd);
+    /// `shell -c script` in `cwd`: in the session's container, else in the sandbox where one holds,
+    /// with that spawn's proxy lease. Past a failed lease a check has no network, as its output says.
+    pub(crate) fn shell(&self, shell: &str, script: &str, cwd: &std::path::Path) -> CheckShell {
         // Invariant: a container child's commands never run on the host, a check included.
-        yi_tools::jobs::place(
-            shell,
-            script,
-            cwd,
-            self.wall.container.as_deref(),
-            sandbox.as_ref(),
-        )
+        let placed = (self.wall.container.as_deref())
+            .map(|container| yi_tools::jobs::in_container(container, cwd, script));
+        let (run, sweep) = placed.map_or((None, None), |(run, sweep)| (Some(run), Some(sweep)));
+        let profile = run.is_none().then(|| self.profile(cwd)).flatten();
+        let lease = (profile.as_ref().and(self.broker.as_ref()))
+            .and_then(|broker| broker.egress_lease(self.wall.clone()).ok());
+        let (program, args) = match (run, profile) {
+            (Some(run), _) => (shell.to_owned(), vec!["-c".to_owned(), run]),
+            (None, Some(sandbox)) => sandbox.wrap(shell, &["-c", script]),
+            (None, None) => (shell.to_owned(), vec!["-c".to_owned(), script.to_owned()]),
+        };
+        let mut command = yi_tools::keyless_command(program);
+        command.args(args).current_dir(cwd);
+        command.envs(lease_env(lease.as_ref()));
+        CheckShell {
+            command,
+            lease,
+            sweep,
+        }
     }
 
     /// What the sandbox stopped in this run, in the words a contained bash failure gets.
@@ -177,15 +207,19 @@ pub(crate) fn run_check(
     checker: &Checker,
 ) -> Result<(), String> {
     checker.guard(check, cwd)?;
-    let shell = checker.shell("sh", check, cwd);
-    if let Some(refusal) = probe(check, cwd, shell.in_container()) {
+    // Invariant: a check placed in a container is judged there, so its first word is not on the
+    // host's PATH and the host probe would refuse a program the image has.
+    if checker.wall.container.is_none()
+        && let Some(refusal) = probe(check, cwd)
+    {
         return Err(refusal);
     }
+    let command = checker.shell("sh", check, cwd);
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = captured(shell.command(cwd), shell.sweep(), None, &cancelled)
+    let capture = captured(command, None, &cancelled)
         .map_err(|error| format!("goal check failed to run: {error}"))?;
     if capture.cancelled {
         return Err(format!("goal check timed out after {timeout_ms} ms"));
@@ -205,9 +239,9 @@ pub(crate) fn run_check(
     }
 }
 
-/// Invariant: a check is refused before it runs when the shell cannot parse it, or — where the host
-/// runs it — when a segment's first word is not a program there. A placed check is probed for syntax.
-pub fn probe(command: &str, cwd: &std::path::Path, in_container: bool) -> Option<String> {
+/// Invariant: a check is refused before it runs when the shell cannot parse it or a segment's
+/// first word is not a program in `cwd`, so an exit 127 is never read as the check's verdict.
+pub fn probe(command: &str, cwd: &std::path::Path) -> Option<String> {
     let mut syntax = yi_tools::keyless_command("sh");
     syntax.arg("-n").arg("-c").arg(command).current_dir(cwd);
     let parsed = probe_capture(syntax)?;
@@ -220,9 +254,6 @@ pub fn probe(command: &str, cwd: &std::path::Path, in_container: bool) -> Option
             "the check `{command}` cannot run: the shell cannot parse it (exit {exit}): {first}
 The ways out: fix the syntax, or declare no check."
         ));
-    }
-    if in_container {
-        return None;
     }
     let words = probe_words(command);
     if words.is_empty() {
@@ -293,45 +324,23 @@ pub(crate) fn run_check_in(
     checker: &Checker,
 ) -> Result<yi_tools::CommandCapture, String> {
     checker.guard(command, cwd)?;
-    let placed = checker.shell("/bin/sh", command, cwd);
-    let shell = check_command(&placed, cwd, env_names, |name| std::env::var_os(name));
-    let stop = stop.cloned();
-    let cancelled: yi_tools::CancelFlag =
-        Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
-    captured(shell, placed.sweep(), stdin, &cancelled)
-}
-
-/// The `/bin/sh -c` a check runs as: cleared, then only what [`check_env`] lets it keep.
-fn check_command(
-    placed: &yi_tools::jobs::Placed,
-    cwd: &std::path::Path,
-    env_names: &[String],
-    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> std::process::Command {
-    let mut shell = placed.command(cwd);
-    shell.env_clear();
-    for name in check_env(env_names, placed.in_container()) {
-        if let Some(value) = lookup(&name) {
-            shell.env(name, value);
-        }
-    }
-    shell
-}
-
-/// What a check keeps of the caller's environment under `env_clear()`: the base names, the manifest's,
-/// and, for a check placed in a container, the ones its host client finds the daemon by.
-fn check_env(env_names: &[String], in_container: bool) -> Vec<String> {
-    let client = if in_container {
-        &yi_tools::jobs::CLIENT_ENV[..]
-    } else {
-        &[][..]
-    };
-    CHECKER_ENV_BASE
+    let mut shell = checker.shell("/bin/sh", command, cwd);
+    shell.command.env_clear();
+    let proxy: Vec<(String, String)> = lease_env(shell.lease.as_ref()).collect();
+    shell.command.envs(proxy);
+    for name in CHECKER_ENV_BASE
         .iter()
         .map(|name| (*name).to_owned())
         .chain(env_names.iter().cloned())
-        .chain(client.iter().map(|name| (*name).to_owned()))
-        .collect()
+    {
+        if let Some(value) = std::env::var_os(&name) {
+            shell.command.env(name, value);
+        }
+    }
+    let stop = stop.cloned();
+    let cancelled: yi_tools::CancelFlag =
+        Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
+    captured(shell, stdin, &cancelled)
 }
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
@@ -933,8 +942,9 @@ mod checker_tests {
         };
         let checker = Checker::new(None, None, wall);
         let shell = checker.shell("sh", "cargo test", std::path::Path::new("/work"));
-        assert!(shell.sweep().is_some(), "a killed check must be swept");
-        let args: Vec<String> = (shell.command(std::path::Path::new("/work")).get_args())
+        assert!(shell.lease.is_none());
+        assert!(shell.sweep.is_some(), "a killed check must be swept");
+        let args: Vec<String> = (shell.command.get_args())
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         let run = args.join(" ");
@@ -943,54 +953,6 @@ mod checker_tests {
             "{run}"
         );
         assert!(run.contains("cargo test"), "{run}");
-    }
-
-    /// Dies with a check past its deadline settling unswept: a `container:<image>` child's timed-out
-    /// `cargo test` kept writing the mounted tree after `run_check` had reported the timeout.
-    #[test]
-    fn a_cancelled_check_runs_its_sweep() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!("yi-check-sweep-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
-        let marker = dir.join("swept");
-        let sweep = format!("touch '{}'", marker.display());
-        let mut command = yi_tools::keyless_command("sh");
-        command.args(["-c", "sleep 5"]);
-        let deadline = Instant::now() + std::time::Duration::from_millis(300);
-        let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-        let capture = captured(command, Some(&sweep), None, &cancelled);
-        let swept = marker.exists();
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(
-            capture?.cancelled,
-            "the check did not run past its deadline"
-        );
-        assert!(
-            swept,
-            "a cancelled check settled without sweeping what it left running"
-        );
-        Ok(())
-    }
-
-    /// Dies with `env_clear()` alone on a container-placed check: the host `docker exec` client lost
-    /// `DOCKER_HOST` and reached no daemon, so every check in a remote container failed to run.
-    #[test]
-    fn a_placed_check_keeps_its_clients_endpoint() {
-        let cwd = std::path::Path::new("/work");
-        let kept = |container: Option<&str>| {
-            let env = ["MY_VAR".to_owned()];
-            let placed = yi_tools::jobs::place("sh", "true", cwd, container, None);
-            let command = check_command(&placed, cwd, &env, |name| Some(name.into()));
-            command
-                .get_envs()
-                .map(|(name, _)| name.to_string_lossy().into_owned())
-                .collect::<Vec<String>>()
-        };
-        let plain = kept(None);
-        assert!(plain.contains(&"PATH".to_owned()), "{plain:?}");
-        assert!(!plain.contains(&"DOCKER_HOST".to_owned()), "{plain:?}");
-        let placed = kept(Some("yi-child"));
-        assert!(placed.contains(&"DOCKER_HOST".to_owned()), "{placed:?}");
-        assert!(placed.contains(&"MY_VAR".to_owned()), "{placed:?}");
     }
 
     /// Dies with a check running on the host: `cargo test` as one ran a child's `build.rs` outside
@@ -1025,5 +987,64 @@ mod checker_tests {
         let evidence = refused.err().ok_or("the refused check passed")?;
         assert!(evidence.starts_with("[contained: "), "{evidence}");
         run_check("true", &std::env::temp_dir(), 30_000, &checker).map_err(|error| error.into())
+    }
+
+    /// Dies with no lease on a check: `cargo test` as one could not fetch a seeded crate, or, on
+    /// the second path, with the environment clear running after the proxy was set.
+    #[test]
+    fn a_check_is_handed_its_proxy_on_both_paths() -> Result<(), Box<dyn std::error::Error>> {
+        if !yi_tools::Sandbox::available() {
+            return Ok(());
+        }
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .ok_or("no HOME")?;
+        let tree = std::env::temp_dir();
+        let broker = crate::permission::PermissionBroker::new(
+            yi_permission::PermissionMode::Auto,
+            tree.clone(),
+            Vec::new(),
+            None,
+            tokio::sync::broadcast::channel(8).0,
+        )
+        .with_sandbox(Some(yi_tools::Sandbox::for_workspace(&tree, &home, None)));
+        let checker = Checker::new(None, Some(Arc::new(broker)), crate::wall::Wall::default());
+        let script = "test -n \"$HTTPS_PROXY\"";
+        run_check(script, &tree, 30_000, &checker).map_err(|error| error.to_string())?;
+        let deadline = Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .ok_or("no deadline")?;
+        let capture = run_check_in(&tree, script, &[], None, deadline, None, &checker)?;
+        assert_eq!(capture.exit_code, Some(0));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::{CheckShell, captured};
+    use std::sync::Arc;
+
+    /// Dies with `captured` dropping its sweep: a cancelled check leaves what it started in the
+    /// container writing the tree, which is the invariant `jobs::run_sweep` exists for.
+    #[test]
+    fn a_cancelled_check_is_swept() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = crate::scratch::Scratch::new("yi-swept")?;
+        let marker = dir.join("swept");
+        let mut command = yi_tools::keyless_command("sh");
+        command.args(["-c", "sleep 5"]);
+        let shell = CheckShell {
+            command,
+            lease: None,
+            sweep: Some(format!("touch '{}'", marker.display())),
+        };
+        let cancelled: yi_tools::CancelFlag = Arc::new(|| true);
+        let capture = captured(shell, None, &cancelled)?;
+        assert!(
+            capture.cancelled,
+            "the flag trips a check that never finishes"
+        );
+        assert!(marker.exists(), "a cancelled check's sweep ran");
+        Ok(())
     }
 }

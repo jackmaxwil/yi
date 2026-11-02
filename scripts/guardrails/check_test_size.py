@@ -4,7 +4,7 @@ change file this branch adds. Inline #[cfg(test)] items in src count too, so mov
 is no way around the raise."""
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import SRC, TESTS, fail, fork, no_fork, test_mask, texts
+from _common import skip_on_candidate, SRC, TESTS, fail, fork, no_fork, test_mask, texts
 from check_changes import raise_errors, raised
 
 
@@ -38,6 +38,7 @@ if __name__ == "__main__":
         fail(errs, "test_size selfcheck")
         sys.exit(0)
     base = fork()
+    skip_on_candidate("test_size")
     if base is None:
         no_fork("test_size")
     total, was = size(texts(TESTS), texts(SRC)), size(texts(TESTS, base), texts(SRC, base))

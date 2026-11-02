@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use yi_tools::{
     Run, Sandbox, SandboxRefusal, Tool, ToolContext, denial_hint, run_or_background,
@@ -20,7 +21,11 @@ fn d_bindings(args: &[String]) -> Vec<(&str, &str)> {
 }
 
 fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
-    let root = Scratch::new(&format!("yi-sandbox-{tag}"))?;
+    workspace_at(&std::env::temp_dir(), tag)
+}
+
+fn workspace_at(base: &Path, tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
+    let root = Scratch::new_at(base, &format!("yi-sandbox-{tag}"))?;
     let project = root.join("project");
     let home = root.join("home");
     std::fs::create_dir_all(&project)?;
@@ -33,8 +38,7 @@ fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
 fn run(command: &str, cwd: &Path, sandbox: Option<&Sandbox>) -> Result<(i32, String), String> {
     let context = ToolContext::new(cwd.to_path_buf());
     let timeout = std::time::Duration::from_secs(120);
-    let placed = yi_tools::jobs::place(yi_tools::jobs::interpreter(), command, cwd, None, sandbox);
-    match run_or_background(command, &context, None, timeout, placed)? {
+    match run_or_background(command, &context, None, timeout, sandbox, None)? {
         Run::Finished(capture) => Ok((
             capture.exit_code.unwrap_or(-1),
             format!("{}{}", capture.stdout, capture.stderr),
@@ -654,9 +658,8 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
 #[test]
 fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestResult {
     seatbelt()?;
-    let (_root, project, _home) = workspace("spared")?;
-    // `Scratch` canonicalizes, so the other spelling is made: `/var` for `/private/var`.
-    let project = Path::new("/").join(project.strip_prefix("/private")?);
+    // Under `/tmp` whatever TMPDIR says: macOS always spells this root two ways.
+    let (_root, project, _home) = workspace_at(Path::new("/tmp"), "spared")?;
     let store = project.join("store");
     let (state, spill) = (store.join("state"), store.join("spill"));
     for (dir, text) in [(&state, "SPARED"), (&spill, "SPARED"), (&store, "WALLED")] {
@@ -664,9 +667,9 @@ fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestRes
         std::fs::write(dir.join("f"), text)?;
     }
     std::fs::create_dir_all(state.join("secret"))?;
-    // The spare names the root by another spelling (`/private/var` for `/var`), as a link may.
-    let spelled = state.canonicalize()?;
-    assert_ne!(spelled, state, "the scratch dir has one spelling only");
+    // The spare names the root by another spelling (`/tmp` for `/private/tmp`), as a link may.
+    let spelled = Path::new("/").join(state.strip_prefix("/private")?);
+    assert_eq!(spelled.canonicalize()?, state, "one root, two spellings");
     std::fs::write(state.join("secret/f"), "WALLED")?;
     let sandbox = Sandbox {
         writable: vec![project.clone(), state.clone()],
@@ -1427,5 +1430,151 @@ fn a_process_inside_a_sandbox_is_not_sandbox_capable() -> TestResult {
     let outer = "(version 1)(allow default)(deny file-write* (subpath \"/yi-no-such-root\"))";
     assert_eq!(reported_availability(None)?, "true");
     assert_eq!(reported_availability(Some(outer))?, "false");
+    Ok(())
+}
+
+/// A contained install writes the package stores; what the host's next build runs stays out of reach.
+#[test]
+fn a_contained_install_writes_the_caches_and_not_what_cargo_runs() -> TestResult {
+    seatbelt()?;
+    let (root, project, home) = workspace("caches")?;
+    let fake_home = root.join("home");
+    std::fs::create_dir_all(fake_home.join(".cargo/registry"))?;
+    std::fs::create_dir_all(fake_home.join(".cargo/bin"))?;
+    let mut sandbox = Sandbox::for_workspace(&project, &home, None);
+    sandbox.writable = vec![project.clone()];
+    let sandbox = sandbox.with_caches_at(&fake_home, None, None);
+    let write = |target: PathBuf| -> Result<i32, Box<dyn Error>> {
+        let command = format!("printf x >> {}", target.display());
+        Ok(run(&command, &project, Some(&sandbox))?.0)
+    };
+    assert_eq!(write(fake_home.join(".cargo/registry/x"))?, 0);
+    assert_ne!(write(fake_home.join(".cargo/bin/cargo"))?, 0);
+    assert_ne!(write(fake_home.join(".cargo/config.toml"))?, 0);
+    Ok(())
+}
+
+/// Incident shape: `CARGO_HOME=$HOME` is how one setup keeps cargo's dirs at the top of home.
+#[test]
+fn a_store_at_home_or_above_it_adds_no_root() -> TestResult {
+    let (root, project, home) = workspace("caches-home")?;
+    let fake_home = root.join("home");
+    std::fs::create_dir_all(&fake_home)?;
+    let base = Sandbox::for_workspace(&project, &home, None);
+    let widened = |cargo: Option<PathBuf>, uv: Option<PathBuf>| {
+        let with = base.clone().with_caches_at(&fake_home, cargo, uv);
+        (with.writable.into_iter())
+            .filter(|dir| !base.writable.contains(dir))
+            .collect::<Vec<PathBuf>>()
+    };
+    let cargo_at_home = widened(Some(fake_home.clone()), None);
+    assert!(
+        !cargo_at_home.contains(&fake_home.join("registry")),
+        "{cargo_at_home:?}"
+    );
+    assert!(
+        !cargo_at_home.contains(&fake_home.join(".package-cache")),
+        "{cargo_at_home:?}"
+    );
+    let uv_at_home = widened(None, Some(fake_home.clone()));
+    assert!(!uv_at_home.contains(&fake_home), "{uv_at_home:?}");
+    let above = root.to_path_buf();
+    let uv_above = widened(None, Some(above.clone()));
+    assert!(!uv_above.contains(&above), "{uv_above:?}");
+    Ok(())
+}
+
+fn spawn_with(env: Vec<(String, String)>, rows: Vec<String>) -> yi_tools::SpawnFn {
+    Arc::new(move || {
+        let rows = rows.clone();
+        Ok(yi_tools::Spawn {
+            env: env.clone(),
+            after: Box::new(move || rows),
+        })
+    })
+}
+
+/// `ps` reads `argv` for every user on the box, so a proxy token rides only the environment.
+#[test]
+fn what_a_spawn_is_handed_reaches_its_child_and_never_its_argv() -> TestResult {
+    seatbelt()?;
+    let (_root, project, home) = workspace("spawn-env")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let pidfile = project.join("pid");
+    let spawn = spawn_with(
+        vec![("PROBE_SECRET".to_owned(), "t0ken".to_owned())],
+        Vec::new(),
+    );
+    let command = format!(
+        "printf %s \"$PROBE_SECRET:$$\" > {}; sleep 30; true",
+        pidfile.display()
+    );
+    let never: yi_tools::CancelFlag = Arc::new(|| false);
+    let job = yi_tools::jobs::spawn_job(&command, &project, &never, Some(&sandbox), Some(&spawn))?;
+    let written = (0..500)
+        .find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::fs::read_to_string(&pidfile)
+                .ok()
+                .filter(|text| !text.is_empty())
+        })
+        .ok_or("the child never wrote")?;
+    let (secret, pid) = written.split_once(':').ok_or("no pid")?;
+    assert_eq!(secret, "t0ken");
+    let args = yi_tools::keyless_command("ps")
+        .args(["-ww", "-o", "command=", "-p", pid])
+        .output()?;
+    let args = String::from_utf8_lossy(&args.stdout);
+    let _ = yi_tools::jobs::registry().kill(job);
+    assert!(
+        args.contains("sleep 30"),
+        "ps read the wrong process: {args}"
+    );
+    assert!(!args.contains("t0ken"), "{args}");
+    Ok(())
+}
+
+#[test]
+fn a_refused_spawn_never_starts_and_says_why() -> TestResult {
+    seatbelt()?;
+    let (_root, project, home) = workspace("spawn-refused")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let marker = project.join("ran");
+    let refused: yi_tools::SpawnFn = Arc::new(|| {
+        Err(yi_tools::SpawnRefused::Egress {
+            why: "the egress proxy cannot listen".to_owned(),
+        })
+    });
+    let never: yi_tools::CancelFlag = Arc::new(|| false);
+    let command = format!("touch {}", marker.display());
+    let why = yi_tools::jobs::spawn_job(&command, &project, &never, Some(&sandbox), Some(&refused))
+        .err()
+        .ok_or("the spawn started")?;
+    assert!(why.contains("the egress proxy cannot listen"), "{why}");
+    assert!(!marker.exists());
+    Ok(())
+}
+
+/// A row the reducer could cut is a refusal the model never reads.
+#[test]
+fn what_the_host_says_after_a_spawn_reaches_the_model() -> TestResult {
+    seatbelt()?;
+    let (_root, project, home) = workspace("spawn-rows")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let mut context = yi_tools::ToolContext::new(project.clone());
+    context.spawn = Some(spawn_with(
+        Vec::new(),
+        vec!["[egress: refused a.example: test]".to_owned()],
+    ));
+    let timeout = std::time::Duration::from_secs(30);
+    let run =
+        yi_tools::run_or_background("printf ok", &context, None, timeout, Some(&sandbox), None)?;
+    let yi_tools::Run::Finished(capture) = run else {
+        return Err("the command did not finish".into());
+    };
+    assert_eq!(
+        capture.rows,
+        vec!["[egress: refused a.example: test]".to_owned()]
+    );
     Ok(())
 }

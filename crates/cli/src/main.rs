@@ -264,7 +264,12 @@ fn build_session(
         )
         .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None))
         .with_session_store(&default_session_dir(args))
-        .with_unattended(unattended),
+        .with_unattended(unattended)
+        .with_egress(
+            (settings.sandbox.clone())
+                .and_then(|sandbox| sandbox.egress)
+                .unwrap_or_default(),
+        ),
     );
     let configured = (settings.permissions.as_ref()).and_then(|p| p.allow_write.as_deref());
     for dir in args
@@ -894,7 +899,7 @@ fn run_version(_: &Args) -> i32 {
 
 fn run_ask(args: &Args) -> i32 {
     if let Some(check) = args.check.as_deref() {
-        return match yi_runtime::goal::probe(check, &effective_cwd(args), false) {
+        return match yi_runtime::goal::probe(check, &effective_cwd(args)) {
             None => 0,
             Some(refusal) => {
                 eprintln!("{refusal}");
