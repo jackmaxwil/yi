@@ -240,7 +240,7 @@ fn instruction_text(content: &str) -> String {
         .join("\n")
 }
 
-fn committed(root: &Path, path: &Path, source: &str) -> bool {
+pub(crate) fn committed(root: &Path, path: &Path, source: &str) -> bool {
     let path = path.to_string_lossy();
     let head = crate::lane::git(root, &["rev-parse", &format!("HEAD:{source}")]);
     let blob = crate::lane::git(root, &["hash-object", "--", &path]);

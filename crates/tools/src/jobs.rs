@@ -358,6 +358,22 @@ impl Jobs {
         running.into_iter().map(|(_, command)| command).collect()
     }
 
+    /// Stops every job still running under `root`: a discarded tree's server, a sleeping test. A
+    /// process that left its job is out of reach, and the caller's row says so.
+    pub fn kill_under(&self, root: &Path) -> Vec<String> {
+        let running: Vec<(u64, String)> = {
+            let jobs = self.lock();
+            (jobs.iter())
+                .filter(|(_, job)| job.cwd.starts_with(root) && state(job) == JobState::Running)
+                .map(|(id, job)| (*id, job.command.clone()))
+                .collect()
+        };
+        for (id, _) in &running {
+            let _settled_meanwhile = self.kill(JobId(*id));
+        }
+        running.into_iter().map(|(_, command)| command).collect()
+    }
+
     /// The unannounced finished jobs `owner` started, marked so none repeats.
     pub fn take_finished(&self, owner: JobOwner) -> Vec<JobReport> {
         let mut jobs = self.lock();
@@ -547,12 +563,15 @@ fn start(
     let outer = Arc::clone(cancelled);
     let stopped = Arc::clone(&kill);
     let flag: CancelFlag = Arc::new(move || stopped.load(Ordering::SeqCst) || outer());
-    let wrapped =
-        (contained.as_ref()).map(|(sandbox, _)| sandbox.wrap(interpreter(), &["-c", &text]));
     let spawn = (contained.as_ref().and_then(|(_, spawn)| *spawn))
-        .map(|spawn| spawn())
+        .map(|spawn| spawn(shell_command))
         .transpose()
         .map_err(|refused| refused.to_string())?;
+    let assign = spawn
+        .as_ref()
+        .map_or(&[][..], |spawn| spawn.assign.as_slice());
+    let wrapped = (contained.as_ref())
+        .map(|(sandbox, _)| sandbox.wrap_assigning(assign, interpreter(), &["-c", &text]));
     let mut process = match &wrapped {
         Some((program, args)) => {
             let mut process = crate::keyless_command(program);
@@ -568,6 +587,17 @@ fn start(
     process.current_dir(cwd);
     let (env, after) = spawn.map_or((Vec::new(), None), |spawn| (spawn.env, Some(spawn.after)));
     process.envs(env);
+    // Incident shape: a shared target dir read a sibling's binary as Fresh.
+    if crate::spawn::in_fresh_tree(cwd) {
+        process.env_remove("CARGO_TARGET_DIR");
+        if std::env::var_os("CARGO_INCREMENTAL").is_none() {
+            process.env("CARGO_INCREMENTAL", "0");
+        }
+    }
+    let mut first_rows = Vec::new();
+    if !crate::builtins::read_only_command(shell_command) {
+        first_rows = crate::spawn::run_first_use(cwd);
+    }
     let (child, program) = spawn_captured(process, false)?;
     let id = registry().insert(
         shell_command,
@@ -587,9 +617,9 @@ fn start(
             Some(live),
             spill_dir.as_deref(),
         );
-        let rows = after.map(|after| after()).unwrap_or_default();
+        first_rows.extend(after.map(|after| after()).unwrap_or_default());
         if let Ok(capture) = &mut capture {
-            capture.rows = rows;
+            capture.rows = first_rows;
         }
         // Invariant: before the job settles, so a lane settle never reads a job gone quiet
         // while what it started in a container still writes the tree.

@@ -726,9 +726,7 @@ def owed_mediums(rnd):
 
 def red_lanes(repo, sha):
     """The gate lanes (lint, guardrails, test) whose newest job on `sha` failed."""
-    tasks = (forge_pr.fgj_api("GET", f"repos/{repo}/actions/tasks?limit=60") or {}).get("workflow_runs") or []
-    table = forge_pr.job_table(tasks, sha)
-    return sorted(m.group(1) for name, status in table.items()
+    return sorted(m.group(1) for name, status in forge_pr.head_jobs(repo, sha).items()
                   if status == "failure" and (m := re.fullmatch(r"gate \((\w+)\)", name)))
 
 
@@ -1395,7 +1393,8 @@ def attempt(repo, pr, ids, asked=False):
         if head_rows(notes, sha, "rerun"):
             fields, verdict, reason = {"kind": "gate", "from": short, "stop": "gate"}, "handoff", f"{err}, and its rerun failed again; the job log says why"
         else:
-            forge_pr.cmd_rerun(argparse.Namespace(number=str(number)))
+            if forge_pr.cmd_rerun(argparse.Namespace(number=str(number))):
+                return "waiting"
             fields, verdict, reason = {"kind": "gate", "from": short}, "rerun", str(err)
     except BaseRed as err:
         # The clone measures the runner as well as the code, so a head the base may not explain reruns first,
@@ -1409,7 +1408,8 @@ def attempt(repo, pr, ids, asked=False):
                 return "waiting"
             fields, verdict, reason = {"kind": "gate", "from": short}, "base-red", f"{err}; #{issue} tracks it."
         else:
-            forge_pr.cmd_rerun(argparse.Namespace(number=str(number)))
+            if forge_pr.cmd_rerun(argparse.Namespace(number=str(number))):
+                return "waiting"
             fields, verdict, reason = {"kind": "gate", "from": short}, "rerun", str(err)
     except Handoff as err:
         fields = {"kind": kind, "from": sha[:12], "stop": kind, **({"round": rnd["n"]} if rnd and kind == "findings" else {})}
@@ -1434,6 +1434,11 @@ def attempt(repo, pr, ids, asked=False):
         fields["retry"] = (f"the fixer tries again at {hourly(time.time() + RETRY_AFTER)} or on a new head"
                            if len(held_rows(notes, sha, fields["stop"], fields.get("round", ""))) < RETRIES
                            else "the fixer waits for a new head")
+    # Incident: the queue re-adds `autofix` to a PR it still cannot merge, which skips the hand-off's hold
+    # and, with queued PRs first in the pass, would pay for the same stop in every pass.
+    if verdict == "handoff" and "queue" in labels:
+        set_label(repo, number, ids, "queue", False)
+        reason = f"{reason} It left the merge queue; add the `queue` label again once that is answered."
     if verdict in ("handoff", "base-red") and "autofix" in labels:
         set_label(repo, number, ids, "autofix", False)
     # Stop and wait: a high the fixer showed wrong is the owner's call, not another round's.
@@ -1465,7 +1470,7 @@ def tidied(body, state_of):
 
 def tidy(repo, pr):
     """When `title` failed on the head, take closed-issue citations out of the body and rerun."""
-    if forge_pr.jobs_of(pr).get("title") != "failure":
+    if forge_pr.jobs_of(pr).get("title") != "failure" or forge_pr.rerun_waits(pr):
         return False
     body = tidied(pr.get("body"), lambda n: (forge_pr.fgj_api("GET", f"repos/{repo}/issues/{n}") or {}).get("state"))
     if body is None:
@@ -1495,6 +1500,13 @@ def pass_stop(fixed, spent, now=None):
     return None
 
 
+def pass_order(pulls, repo):
+    """Queued first, then oldest. Incident: a pass takes PER_RUN fixes from the oldest of about ninety
+    open PRs, so #1857 and #1872 sat conflicted in the queue with the fixer working elsewhere."""
+    queued = lambda p: any(label["name"] == "queue" for label in p.get("labels") or [])
+    return sorted((p for p in pulls if p["head"]["repo"]["full_name"] == repo), key=lambda p: (not queued(p), p["number"]))
+
+
 def cmd_autofix(args):
     # Incident: a pass the runner killed had buffered every line it printed, so its log was empty.
     sys.stdout.reconfigure(line_buffering=True)
@@ -1509,7 +1521,7 @@ def cmd_autofix(args):
     if not isinstance(pulls, list):
         print(f"autofix: the forge did not list the pull requests: {(pulls or {}).get('message')}")
         return 1
-    ours = sorted((p for p in pulls if p["head"]["repo"]["full_name"] == repo), key=lambda p: p["number"])
+    ours = pass_order(pulls, repo)
     # One pass at a time (the workflow's concurrency group), so a working label left here is a dead run's.
     for pr in ours:
         if any(label["name"] == "autofix:working" for label in pr.get("labels") or []):
@@ -1823,6 +1835,14 @@ def waits_selfcheck():
         module.set_label = lambda repo, n, ids, name, on: labelled.append((name, on))
         module.red_lanes = lambda repo, sha: ["test"]
         t1, t2 = ("yi-cli::integration", "console_drive::a_hidden_sidebar"), ("yi", "t::two")
+        # A run still waiting refuses the rerun: the head keeps its one rerun and nothing is said.
+        forge_pr.cmd_rerun, count = (lambda ns: 1), len(posted)
+        for err in (BaseRed("main", {t1}), Flaky("a lane passed in the clone")):
+            module.fix = raising(err)
+            said = attempt("o/r", pr, {})
+            if said != "waiting" or len(posted) != count:
+                errs.append(f"a refused rerun of {err!r} read {said} with {len(posted) - count} comment(s)")
+        forge_pr.cmd_rerun = lambda ns: reruns.append(ns.number)
         # The clone can be the runner's fault, so the first answer is a rerun and no issue.
         module.fix = raising(BaseRed("main", {t1}))
         said = attempt("o/r", pr, {})
@@ -1945,6 +1965,13 @@ def waits_selfcheck():
             errs.append(f"a hand-off read {said} with labels {labelled}: {posted[-1][:160]!r}")
         if ("autofix", False) not in labelled or "just pr autofix N" not in posted[-1] or "stop=gate" not in posted[-1]:
             errs.append(f"a hand-off kept the label that asked for it, or names no way to retry: {labelled}, {posted[-1][:160]!r}")
+        if ("queue", False) in labelled:
+            errs.append(f"a hand-off of an unqueued PR touched the queue label: {labelled}")
+        labelled[:] = []
+        notes[:] = []
+        attempt("o/r", dict(pr, labels=[{"name": "autofix"}, {"name": "queue"}]), {})
+        if ("queue", False) not in labelled or "left the merge queue" not in posted[-1]:
+            errs.append(f"a queued PR handed off stayed in the queue, which would ask the fixer again: {labelled}, {posted[-1][:160]!r}")
         gate = " stop=gate"
         for rows, want, why in (([meta(now - 60, "handoff", extra=gate)], "waiting", "inside its window"),
                                 ([meta(now - RETRY_AFTER - 60, "handoff", extra=gate)], "handoff", "past its window"),
@@ -2200,6 +2227,17 @@ def selfcheck():
         errs.append(f"a closed citation was not taken out cleanly: {tidied(body, states)!r}")
     if tidied("Refs #1072.", states) is not None or tidied("Closes #1076.", states) is not None:
         errs.append("a body citing only closed issues, or none, was rewritten")
+    statuses, real_api, patched = [("gate (test)", "failure"), ("gate (lint)", "pending"), ("title", "failure")], forge_pr.fgj_api, []
+    forge_pr.fgj_api = lambda method, path, payload=None: patched.append(path) if method != "GET" else (
+        {"state": "closed" if path.endswith("/issues/2") else "open"} if "/issues/" in path else {"statuses": [{"context": f"pr / {job} (pull_request)", "status": state} for job, state in statuses]})
+    real_repo, forge_pr.repo, real_rerun, forge_pr.cmd_rerun = forge_pr.repo, lambda: "o/r", forge_pr.cmd_rerun, lambda ns: None
+    try:
+        if red_lanes("o/r", "abc") != ["test"]:
+            errs.append(f"the status route's red lanes read {red_lanes('o/r', 'abc')}")
+        if tidy("o/r", {"number": 1, "body": "Closes #1. Refs #2.", "head": {"sha": "abc"}}) or patched:
+            errs.append(f"a body was edited while its rerun would be refused: {patched}")
+    finally:
+        forge_pr.fgj_api, forge_pr.repo, forge_pr.cmd_rerun = real_api, real_repo, real_rerun
     fresh = {"n": 3, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness"}]}
     if owed_mediums(fresh) or not owed_mediums(dict(fresh, n=2)) or not owed_mediums(dict(fresh, findings=[dict(fresh["findings"][0], since=2)])):
         errs.append("a fresh medium from round 3 on is owed a fix, or a round-2 or carried one is not")
@@ -2254,6 +2292,10 @@ def selfcheck():
     iso = lambda at: datetime.datetime.fromtimestamp(at, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     row = lambda cost, at, verdict="pushed": dict(bot, created_at=iso(at), body="<!-- yi-autofix -->\n"
                                                  f"<!-- yi-autofix-meta pr=1 cost={cost:.4f} verdict={verdict} -->\n")
+    pass_of = lambda n, *labels: {"number": n, "head": {"repo": {"full_name": "o/r"}}, "labels": [{"name": x} for x in labels]}
+    fork = {"number": 1, "head": {"repo": {"full_name": "fork/r"}}, "labels": [{"name": "queue"}]}
+    if [p["number"] for p in pass_order([pass_of(9), pass_of(2), fork, pass_of(1857, "queue"), pass_of(1872, "autofix", "queue")], "o/r")] != [1857, 1872, 2, 9]:
+        errs.append("a queued PR did not come first in the pass, oldest first after it, forks out")
     if pass_stop(PER_RUN - 1, 0.0, now) is not None or pass_stop(PER_RUN, 0.0, now) is None:
         errs.append(f"a pass stops after {PER_RUN} fixes but not after {PER_RUN - 1}")
     day, over = pass_stop(0, CAP_DAY - 0.01, now), pass_stop(0, CAP_DAY, now)
@@ -2763,12 +2805,15 @@ def selfcheck():
     try:
         stale = [{"number": n, "labels": [{"name": "autofix:failed"}], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}} for n in (1, 2, 3)]
         fresh = {"number": 4, "labels": [], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
-        forge_pr.fgj_api, forge_pr.repo = (lambda *a, **k: stale + [fresh]), (lambda: "o/r")
+        queued = {"number": 5, "labels": [{"name": "queue"}], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
+        forge_pr.fgj_api, forge_pr.repo = (lambda *a, **k: stale + [fresh, queued]), (lambda: "o/r")
         module.label_ids, module.spent_today, module.tidy = (lambda repo: {}), (lambda repo: 0.0), (lambda repo, pr: False)
         module.settle_base_red = lambda repo, bases: settled_bases.append(bases)
         module.attempt = lambda repo, pr, ids, asked=False: (tried_prs.append(pr["number"]) or
                                                               decide({l["name"] for l in pr["labels"]}, [], 9e9, False, True))
         cmd_autofix(type("A", (), {"number": None})())
+        if tried_prs[:1] != [5]:
+            errs.append(f"a pass did not start at the queued PR: {tried_prs}")
         if settled_bases != [{"main"}]:
             errs.append(f"a pass settled the red issues of {settled_bases}, not its PRs' bases")
         misses_left = [True]
