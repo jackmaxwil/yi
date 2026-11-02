@@ -73,7 +73,7 @@ impl SubagentHost {
             .map_err(|error| error.to_string())?;
         // Invariant: a child is cut at the commit, so the parent's uncommitted edits are not in it.
         let short = head.short();
-        let left_out = match crate::lane::reap::Uncommitted::read_briefly(&self.options.cwd) {
+        let left_out = match crate::lane::reap::Uncommitted::read_briefly(&self.options.cwd, None) {
             Ok(dirt) if dirt.is_empty() => None,
             Ok(dirt) => Some(format!(
                 "the child starts at HEAD {short}, without {dirt} in your checkout: pass them as local:// context or spawn without a worktree"
