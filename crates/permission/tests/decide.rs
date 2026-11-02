@@ -1121,3 +1121,77 @@ fn a_wrapped_destructive_command_is_denied_in_every_mode() -> TestResult {
     ));
     Ok(())
 }
+
+#[test]
+fn a_browser_is_refused_for_agent_desktop_in_yolo_and_over_an_allow_rule() -> TestResult {
+    let call = bash_call("agent-desktop snapshot --app Safari", "c1");
+    let allow = [ConfigRule::new(
+        "bash",
+        "agent-desktop *",
+        ConfigRuleAction::Allow,
+    )?];
+    let decision = decide(
+        &call,
+        PermissionMode::Yolo,
+        &allow,
+        &SessionRules::new(),
+        &[],
+        &context(),
+    );
+    let Decision::Deny { reason } = decision else {
+        return Err(format!("not denied: {decision:?}").into());
+    };
+    assert!(reason.contains("agent-browser"), "{reason}");
+    Ok(())
+}
+
+#[test]
+fn the_users_own_mouse_is_refused_in_yolo_and_over_an_allow_rule() -> TestResult {
+    let allow = [ConfigRule::new(
+        "bash",
+        "agent-desktop *",
+        ConfigRuleAction::Allow,
+    )?];
+    for command in [
+        "agent-desktop --headed click @s1:e1",
+        "agent-desktop mouse-click --xy 1,2",
+    ] {
+        let decision = decide(
+            &bash_call(command, "c1"),
+            PermissionMode::Yolo,
+            &allow,
+            &SessionRules::new(),
+            &[],
+            &context(),
+        );
+        let Decision::Deny { reason } = decision else {
+            return Err(format!("{command} was not denied: {decision:?}").into());
+        };
+        assert!(reason.contains("own mouse"), "{reason}");
+    }
+    Ok(())
+}
+
+#[test]
+fn only_the_person_answers_a_desktop_ask_never_the_review_model() -> TestResult {
+    let call = bash_call("agent-desktop snapshot --app TextEdit", "c1");
+    let decision = decide(
+        &call,
+        PermissionMode::Auto,
+        &[],
+        &SessionRules::new(),
+        &[],
+        &context(),
+    );
+    assert!(
+        matches!(
+            decision,
+            Decision::Ask {
+                reviewable: false,
+                ..
+            }
+        ),
+        "{decision:?}"
+    );
+    Ok(())
+}

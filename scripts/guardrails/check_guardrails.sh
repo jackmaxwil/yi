@@ -147,6 +147,7 @@ fi
 # A baseline edit that rides beside code is how growth hid before the ratchets had their own
 # commits; the deletion carve-out is a rule over file statuses, so only this flag proves it.
 run "$PY" scripts/guardrails/check_commit_style.py --selfcheck
+run "$PY" scripts/pr_queue.py --selfcheck
 # The landing verbs decide from the forge's answers — behind, failed, ready — and a
 # decision read wrong retries a refusal forever; only this flag walks the table.
 run "$PY" scripts/forge_pr.py --selfcheck
