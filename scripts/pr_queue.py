@@ -359,7 +359,8 @@ def finish(obs):
         pr = forge_pr.pull(number)
         # The forge marks the PR but fires no closing keyword on a push (the 2026-11-01 probe).
         for issue in closing(pr.get("body")):
-            refused = (api("PATCH", f"issues/{issue}", {"state": "closed"}) or {}).get("message")
+            answer = api("PATCH", f"issues/{issue}", {"state": "closed"})
+            refused = "the forge answered 404" if answer is None else answer.get("message") if isinstance(answer, dict) else None
             if refused and obs.get("age_minutes", 0) < CLOSE_PATIENCE:
                 raise SystemExit(f"queue: the forge refused to close #{issue}, and the next tick tries again: {refused}")
             if refused:
@@ -701,14 +702,17 @@ def forge_cases():
                     bad.append(f"a refused close at {age} minutes stopped={stopped}, deleted the ref={stubs['delete_ref'].called}")
                 if not keeps and "#5" not in str(stubs["comment"].call_args):
                     bad.append("a close given up on did not say so on the PR")
-        # The two answers that are not a refusal: the closed issue itself, and a 404 for an issue that is gone.
-        for answer in ({"number": 5, "state": "closed"}, None):
+        # A 404 may be a gone issue or a write the token may not make, so only the closed issue itself is an answer.
+        for answer, closed in (({"number": 5, "state": "closed"}, True), (None, False)):
             with mock.patch.object(forge_pr, "fgj_api", lambda *a: answer), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
                     mock.patch.multiple(sys.modules[__name__], delete_ref=mock.DEFAULT, record_main=mock.DEFAULT, set_label=mock.DEFAULT, comment=mock.DEFAULT) as stubs:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    finish({"members": [(1, "a" * 40)], "age_minutes": 1})
-                if stubs["comment"].called or not stubs["delete_ref"].called:
-                    bad.append(f"a close answered {answer} read as refused")
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        finish({"members": [(1, "a" * 40)], "age_minutes": 1})
+                except SystemExit:
+                    pass
+                if stubs["comment"].called or stubs["delete_ref"].called != closed:
+                    bad.append(f"a close answered {answer} deleted the ref={stubs['delete_ref'].called}")
     return bad
 
 
