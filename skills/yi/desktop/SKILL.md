@@ -11,7 +11,7 @@ requires: agent-desktop
 # Driving a Mac app
 
 Reach for this when the result can only be seen in a running app. When a test or a build answers
-the question, use that: it is faster and asks nothing. Web pages belong to a browser driver;
+the question, use that: it is faster and asks nothing. Web pages belong to agent-browser;
 agent-desktop refuses browsers.
 
 `agent-desktop skills get desktop` prints upstream's full command guide for the pinned version.

@@ -1,7 +1,6 @@
 //! Pooled git worktrees a session works in, and the hand-back ladder out of them.
 //! A root session never edits the trunk checkout; it claims a slot.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use yi_types::lane::SlotState;
@@ -9,9 +8,12 @@ use yi_types::lane::SlotState;
 use reap::{Uncommitted, Wiped};
 
 pub(crate) use hostgit::{PLUMBING_CAP, capture, capture_named, git, git_capture};
+pub use names::{BranchName, Head, Sha};
 
+pub mod handback;
 pub(crate) mod hostgit;
 pub mod land;
+mod names;
 pub mod reap;
 pub mod remote;
 pub mod settle;
@@ -53,103 +55,12 @@ impl std::str::FromStr for SlotIndex {
     }
 }
 
-/// Invariant: checked against git's ref-format charset once; `git` never sees a flag.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchName(String);
-
-impl BranchName {
-    pub fn parse(text: &str) -> Result<Self, LaneError> {
-        let reason = if text.is_empty() {
-            Some("empty")
-        } else if text.starts_with('-') {
-            Some("leading dash")
-        } else if text.contains("..") || text.contains("//") {
-            Some("repeated separator")
-        } else if text.ends_with('/') || text.ends_with('.') || text.ends_with(".lock") {
-            Some("trailing separator")
-        } else if !text
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
-        {
-            Some("character outside [A-Za-z0-9._/-]")
-        } else {
-            None
-        };
-        match reason {
-            Some(reason) => Err(LaneError::Branch {
-                text: text.to_owned(),
-                reason,
-            }),
-            None => Ok(Self(text.to_owned())),
-        }
-    }
-
-    pub fn for_session(session: &str) -> Result<Self, LaneError> {
-        Self::parse(&yi_types::lane::branch_for_session(session))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for BranchName {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-/// Invariant: forty hex digits, checked once; a sha reaches git argv only through this.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sha(String);
-
-impl Sha {
-    pub fn parse(text: &str) -> Option<Self> {
-        let text = text.trim();
-        (text.len() == 40 && text.bytes().all(|b| b.is_ascii_hexdigit()))
-            .then(|| Self(text.to_owned()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn short(&self) -> &str {
-        self.0.get(..8).unwrap_or(&self.0)
-    }
-}
-
-/// What `.git/HEAD` names: the one reader the status row, the environment block
-/// and the pool share, a file read with no git process behind it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Head {
-    Branch(BranchName),
-    Detached(Sha),
-}
-
-impl Head {
-    pub fn branch(&self) -> Option<&BranchName> {
-        match self {
-            Self::Branch(branch) => Some(branch),
-            Self::Detached(_) => None,
-        }
-    }
-
-    /// The branch name, or the short sha when detached: one spelling on every surface.
-    pub fn label(&self) -> String {
-        match self {
-            Self::Branch(branch) => branch.to_string(),
-            Self::Detached(sha) => sha.short().to_owned(),
-        }
-    }
-}
-
 const HEAD_MAX_BYTES: u64 = 256;
 
 fn read_bounded(path: &Path) -> Result<String, LaneError> {
     use std::io::Read;
     let mut text = String::new();
-    File::open(path)
+    std::fs::File::open(path)
         .and_then(|file| file.take(HEAD_MAX_BYTES).read_to_string(&mut text))
         .map_err(io_error(path))?;
     Ok(text)
@@ -527,13 +438,13 @@ impl Pool {
         yi_session::replace_file(&path, &bytes).map_err(io_error(&path))
     }
 
-    fn lock(&self) -> Result<File, LaneError> {
+    fn lock(&self) -> Result<std::fs::File, LaneError> {
         let path = self.dir.join("pool.lock");
         yi_session::lock_file(&path).map_err(io_error(&path))
     }
 
     /// Invariant: held while a live process holds the `.held` flock; named under a free one is an orphan.
-    fn probe(&self, slot: SlotIndex) -> Result<(File, Option<String>), LaneError> {
+    fn probe(&self, slot: SlotIndex) -> Result<(std::fs::File, Option<String>), LaneError> {
         let path = self.held_path(slot);
         match yi_session::try_lock_file(&path).map_err(io_error(&path))? {
             Ok(file) => Ok((file, None)),
@@ -888,7 +799,7 @@ pub struct Lane {
     /// The worktree lock names `session`: set by this process, so a bind to it again is a no-op.
     locked: bool,
     released: bool,
-    _held: File,
+    _held: std::fs::File,
 }
 
 /// Invariant: a dropped clean lane is handed back detached, a dirty one kept; only release warms.

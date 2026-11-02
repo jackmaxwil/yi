@@ -170,6 +170,27 @@ fn main_asks_and_a_refusal_leaves_origin_where_it_was() -> TestResult {
 }
 
 #[test]
+fn a_branch_origin_already_tracks_asks_before_it_is_rewritten() -> TestResult {
+    let repo = Repo::new("foreign-branch")?;
+    let lane = repo.lane(LONG)?;
+    git(
+        &repo.project,
+        &["push", "-q", "origin", "main:refs/heads/gh-pages"],
+    )?;
+    git(&repo.project, &["fetch", "-q", "origin"])?;
+    let before = repo.at_origin("refs/heads/gh-pages");
+    repo.plant("heads/gh-pages", &repo.head()?)?;
+    let rows = lane.sweep(&broker(&repo.project, None));
+    assert_eq!(repo.at_origin("refs/heads/gh-pages"), before);
+    assert!(
+        rows.concat()
+            .contains("[not pushed: gh-pages asks a person"),
+        "{rows:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn main_goes_when_a_person_says_so_and_a_tag_asks_too() -> TestResult {
     let repo = Repo::new("main-yes")?;
     let lane = repo.lane(LONG)?;
