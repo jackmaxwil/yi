@@ -633,6 +633,30 @@ fn a_negated_pattern_refuses_what_a_broader_line_keeps() -> TestResult {
     Ok(())
 }
 
+/// Dies with `keep && !skip`: a refusal outranks a later line that keeps the file, where git's last
+/// matching line decides.
+#[test]
+fn a_later_line_outranks_an_earlier_refusal() -> TestResult {
+    let rig = Rig::new("include-order")?;
+    std::fs::write(
+        rig.repo.join(".worktreeinclude"),
+        "!*.production.bak\n.env*\n",
+    )?;
+    std::fs::write(rig.repo.join(".env.local"), "KEY=1\n")?;
+    std::fs::write(rig.repo.join(".env.production.bak"), "SECRET=1\n")?;
+    let into = rig.root.join("into");
+    std::fs::create_dir_all(&into)?;
+    let ignored = [".env.local".to_owned(), ".env.production.bak".to_owned()];
+    let rows = carry_includes(&rig.repo, &into, &ignored, &[], &[]);
+    assert_eq!(std::fs::read_to_string(into.join(".env.local"))?, "KEY=1\n");
+    assert_eq!(
+        std::fs::read_to_string(into.join(".env.production.bak"))?,
+        "SECRET=1\n",
+        "a later keep line carries it: {rows:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_include_file_count_holds_at_its_limit_and_says_so_one_past() -> TestResult {
     let rig = Rig::new("include-cap")?;

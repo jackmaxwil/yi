@@ -254,8 +254,12 @@ pub fn include_list(bytes: &[u8]) -> Result<(Vec<String>, usize), String> {
 }
 
 /// One bad line is named and the rest still match; git's last matching line wins, so a `!x` refuses
-/// only the paths no later line keeps back.
-fn matcher(patterns: &[String], rows: &mut Vec<String>) -> Vec<(globset::GlobMatcher, bool)> {
+/// only the paths no later line keeps back. The set answers "no line names this path" in one pass.
+fn matcher(
+    patterns: &[String],
+    rows: &mut Vec<String>,
+) -> (globset::GlobSet, Vec<(globset::GlobMatcher, bool)>) {
+    let mut set = globset::GlobSetBuilder::new();
     let mut rules = Vec::new();
     for line in patterns {
         let Some((pattern, dir_only, negate)) = yi_tools::ignore::pattern(line) else {
@@ -267,9 +271,8 @@ fn matcher(patterns: &[String], rows: &mut Vec<String>) -> Vec<(globset::GlobMat
         };
         if dir_only {
             rows.push(format!(
-                "[not carried: `{}` names a directory; name its files, or `{}**`]",
-                crate::ext::sanitize(line),
-                crate::ext::sanitize(pattern.trim_start_matches("**/"))
+                "[not carried: `{}` names a directory, and git reports an ignored directory as one entry; name the files it holds]",
+                crate::ext::sanitize(line)
             ));
             continue;
         }
@@ -277,7 +280,10 @@ fn matcher(patterns: &[String], rows: &mut Vec<String>) -> Vec<(globset::GlobMat
             .literal_separator(true)
             .build()
         {
-            Ok(glob) => rules.push((glob.compile_matcher(), !negate)),
+            Ok(glob) => {
+                set.add(glob.clone());
+                rules.push((glob.compile_matcher(), !negate));
+            }
             Err(error) => rows.push(format!(
                 "[not carried: pattern `{}` does not parse: {}]",
                 crate::ext::sanitize(line),
@@ -285,7 +291,8 @@ fn matcher(patterns: &[String], rows: &mut Vec<String>) -> Vec<(globset::GlobMat
             )),
         }
     }
-    rules
+    let set = set.build().unwrap_or_else(|_| globset::GlobSet::empty());
+    (set, rules)
 }
 
 /// A path copied, or why not: the walk refuses a link on any component, so a path a contained
@@ -377,16 +384,17 @@ pub fn carry_includes(
     if patterns.is_empty() {
         return rows;
     }
-    let rules = matcher(&patterns, &mut rows);
+    let (names_any, rules) = matcher(&patterns, &mut rows);
     if rules.is_empty() {
         return rows;
     }
     let carried = |path: &str| {
-        rules
-            .iter()
-            .rev()
-            .find(|(rule, _)| rule.is_match(path))
-            .is_some_and(|(_, keep)| *keep)
+        names_any.is_match(path)
+            && rules
+                .iter()
+                .rev()
+                .find(|(rule, _)| rule.is_match(path))
+                .is_some_and(|(_, keep)| *keep)
     };
     let (mut copied, mut bytes) = (0usize, 0u64);
     let matched = (ignored.iter())
