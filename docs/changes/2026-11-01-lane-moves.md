@@ -1,6 +1,6 @@
 ---
 issue: Closes #1935
-raise: tests +115, comments +15, crate runtime +145, crate permission +37
+raise: tests +115, comments +17, crate runtime +144, crate permission +37
 growth: +206 is the review rounds' work: a registry refused to an em dash renderer already holding it, the outbox's no-link descent with two tests, one encoder for the git config a contained spawn gets, and `refresh` reading segments instead of text. Weighed for deletion: the second encoder (`open` now calls `config_env`), the submodule status argv (now [`STATUS`]), and the substring scan in `refresh`.
 ledger=: contained git: a mirror and an outbox | 8 | core | H | M | a contained `git fetch` reads a host-run mirror and a `git push` lands in an outbox the host forwards after the spawn, with no question unless it is trunk, `main`, `master` or a tag; force and delete still ask (`crates/runtime/src/lane/remote.rs`)
 ---

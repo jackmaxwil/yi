@@ -23,9 +23,8 @@ impl Uncommitted {
     /// Invariant: host git never enters a submodule, whose config it cannot trust, so `status` is
     /// blind to work inside one. Each is read in the sandbox; what cannot be read counts as dirty.
     fn with_submodules(mut self, tree: &Path) -> Self {
-        if !tree.join(".gitmodules").is_file() {
-            return self;
-        }
+        // Invariant: a gitlink whose directory is not a repository is invisible to `status` and
+        // need not have a `.gitmodules`, so the index is the only place it can be found.
         let Ok(stage) =
             super::hostgit::git_capped(tree, &["ls-files", "--stage"], None, super::PLUMBING_CAP)
         else {
