@@ -757,16 +757,22 @@ fn refused_path(
         .find(|path| sandbox.denies_write(path))
 }
 
-const NETWORK_DENIALS: [&str; 4] = [
+const NETWORK_DENIALS: [&str; 3] = [
     // curl, git and cargo: `Could not resolve host`, `Couldn't resolve host name`.
     "resolve host",
-    // git under the transport block a repository with no lane gets.
-    "transport '",
     // getaddrinfo's EAI_NONAME, as Python and ssh print it.
     "nodename nor servname",
     // `ping` to a host past loopback, which exits 2.
     "sendto: operation not permitted",
 ];
+
+/// Incident: a bare `transport '` needle read a tool's own message as git's transport refusal.
+fn git_transport_refusal(lower: &str) -> bool {
+    lower.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("fatal: transport '") && line.ends_with("' not allowed")
+    })
+}
 
 /// A denied write target counts at any exit; else a non-zero exit naming a denial, a network
 /// denial also past a shell-failure exit. Exit 0 never records a scope: see [`exit_zero_note`].
@@ -799,7 +805,9 @@ pub fn sandbox_refusal(
     let lower = output.to_lowercase();
     let contains = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
     let refused = code != 0
-        && (contains(&NETWORK_DENIALS) || (!QUICK_REJECT.contains(&code) && contains(&DENIALS)));
+        && (contains(&NETWORK_DENIALS)
+            || git_transport_refusal(&lower)
+            || (!QUICK_REJECT.contains(&code) && contains(&DENIALS)));
     refused.then(|| SandboxRefusal::Scopes(yi_permission::refused_scopes(command)))
 }
 
