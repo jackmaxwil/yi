@@ -93,10 +93,8 @@ not (
   (binary_id(=yi-runtime::integration) & test(=lanes::handing_a_worktree_back_leaves_the_executor_free)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_overwrites_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_reads_no_key)) |
-  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_edits_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_overwrites_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_reads_no_key)) |
-  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_rewrites_no_key_by_grep)) |
   (binary_id(=yi-runtime::integration) & test(=plan_capacity::two_acceptances_verify_at_once_and_a_third_waits)) |
   (binary_id(=yi-runtime::integration) & test(=plan_declare::every_dogfood_call_lands_or_says_where_it_goes)) |
   (binary_id(=yi-runtime::integration) & test(=plan_fuzz::random_op_sequences_hold_every_invariant)) |
@@ -177,10 +175,8 @@ not (
   (binary_id(=yi-runtime::integration) & test(=lanes::handing_a_worktree_back_leaves_the_executor_free)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_overwrites_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_reads_no_key)) |
-  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_edits_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_overwrites_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_reads_no_key)) |
-  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_rewrites_no_key_by_grep)) |
   (binary_id(=yi-runtime::integration) & test(=plan_capacity::two_acceptances_verify_at_once_and_a_third_waits)) |
   (binary_id(=yi-runtime::integration) & test(=plan_declare::every_dogfood_call_lands_or_says_where_it_goes)) |
   (binary_id(=yi-runtime::integration) & test(=plan_fuzz::random_op_sequences_hold_every_invariant)) |
