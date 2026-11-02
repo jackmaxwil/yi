@@ -48,6 +48,14 @@ impl PermissionBroker {
             .context
             .host_owned
             .clone_from(&self.context.host_owned);
+        // `sandbox.egress` is the person's own config, so a child's contained command meets it too.
+        if let Some(egress) = self.egress.config.get() {
+            let _first_wiring_wins = child.egress.config.set(egress.clone());
+        }
+        // `sandbox.hostRecipes` is the person's own config too, so a child meets the same recipes.
+        if let Some(recipes) = self.host_recipes.get() {
+            let _first_wiring_wins = child.host_recipes.set(recipes.clone());
+        }
         child
     }
 
@@ -165,14 +173,14 @@ impl PermissionBroker {
         if holds {
             return Ok(());
         }
+        if self.sandbox.is_none() {
+            return Ok(());
+        }
         if protected_from_grant(self.sandbox.as_ref(), &real) {
             return Err(format!(
                 "{} is protected and cannot be granted",
                 real.display()
             ));
-        }
-        if self.sandbox.is_none() {
-            return Ok(());
         }
         let grant = yi_permission::write_grant(&real);
         self.keep_grant(
@@ -292,9 +300,8 @@ pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool
 /// A grant asks only at or below: a deny outranks the grant around it. Invariant: `$HOME` and
 /// `~/.yi` carry no deny, so a directory above them is refused, or `--allow-write /` opens all home.
 pub(crate) fn protected_from_grant(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
-    // With no profile a directory above home widens nothing, so refusing it only kills the start.
-    is_home(dir)
-        || (sandbox.is_some() && above_home(dir))
+    // With no profile nothing is contained, so no grant widens anything and none is refused.
+    (sandbox.is_some() && (is_home(dir) || above_home(dir)))
         || (sandbox.into_iter()).any(|sandbox| holds_a_closed_git_dir(sandbox, dir))
         || never_widened(sandbox).iter().any(|guarded| {
             let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());

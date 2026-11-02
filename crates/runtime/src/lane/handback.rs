@@ -1,9 +1,9 @@
 //! A kernel child's hand-back: its worktree settled, merged into the parent, and its check read.
 
-use super::fork::ChildTree;
+use super::fork::{ChildTree, SettledTree};
 use super::hostgit::git_by;
 use super::settle::*;
-use super::{BranchName, Sha};
+use super::{BranchName, Pool, Sha};
 use crate::subagent::{ChildRecord, SubagentHost};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -182,10 +182,34 @@ impl SubagentHost {
         let tree_key = lane.path().to_string_lossy().into_owned();
         let deadline = self.deadline();
         let quiescence = quiescence_of_jobs(lane.path());
-        let settled = lane
-            .settle(&quiescence, deadline)
-            .map_err(|(_kept, error)| error.to_string())?;
+        let settled = match lane.settle(&quiescence, deadline) {
+            Ok(settled) => settled,
+            Err((kept, error)) => {
+                self.put_back_worktree(target, *kept);
+                return Err(error.to_string());
+            }
+        };
         super::warm::forget_tickets(&tree_key);
+        let branch = settled.candidate.branch.clone();
+        self.land_settled(settled, check, &name, &pool, deadline)
+            .map_err(|error| match pool.branch_exists(&branch) {
+                Ok(true) if !error.contains(branch.as_str()) => format!(
+                    "{error}; the child's lane is released and its work is kept on branch {branch}"
+                ),
+                _ => error,
+            })
+    }
+
+    /// Past the settle the tree is gone and the commit is on its branch, so a failure from here on
+    /// has to say where the work went.
+    fn land_settled(
+        &self,
+        settled: SettledTree,
+        check: Option<&str>,
+        name: &str,
+        pool: &Pool,
+        deadline: Option<Instant>,
+    ) -> Result<Map<String, Value>, String> {
         let mut reply = settled.candidate.as_reply();
         let parent = self.options.cwd.clone();
         let files = changed_files(&parent, &settled.candidate, deadline)
@@ -195,7 +219,7 @@ impl SubagentHost {
         let red = check
             .map(|check| {
                 red_check(
-                    &pool,
+                    pool,
                     &settled.candidate.commit,
                     &parent,
                     check,
@@ -232,7 +256,7 @@ impl SubagentHost {
             let generation = generation_of(&parent, deadline).map_err(|error| error.to_string())?;
             let session = format!("stage-{name}");
             let prepared = super::stage::merged(
-                &pool,
+                pool,
                 &parent,
                 &session,
                 &generation,
@@ -324,9 +348,13 @@ impl SubagentHost {
             std::thread::sleep(Duration::from_millis(20));
         }
         let quiescence = quiescence_of_jobs(lane.path());
-        let settled = lane
-            .settle(&quiescence, self.deadline())
-            .map_err(|(_kept, error)| error.to_string())?;
+        let settled = match lane.settle(&quiescence, self.deadline()) {
+            Ok(settled) => settled,
+            Err((kept, error)) => {
+                self.put_back_worktree(target, *kept);
+                return Err(error.to_string());
+            }
+        };
         let candidate = settled.discard().map_err(|error| error.to_string())?;
         let mut reply = candidate.as_reply();
         reply.insert("discarded".to_owned(), Value::Bool(true));
@@ -340,6 +368,16 @@ impl SubagentHost {
         }
         reply.insert("merged".to_owned(), Value::Bool(false));
         Ok(reply)
+    }
+
+    /// A failure before the tree retired hands it back to the record, so a retry finds it and it
+    /// waits on no retention sweep with nothing naming it.
+    fn put_back_worktree(&self, target: &str, tree: ChildTree) {
+        if let Ok(mut children) = self.children.lock()
+            && let Ok((_, record)) = Self::record_mut(&mut children, target)
+        {
+            record.worktree = Some(tree);
+        }
     }
 
     /// Invariant: taken off the record, so a tree is never handed back twice; never for a
@@ -363,7 +401,7 @@ impl SubagentHost {
         let lane = record
             .worktree
             .take()
-            .ok_or_else(|| format!("child \"{target}\" has no worktree (isolation was none)"))?;
+            .ok_or_else(|| format!("child \"{target}\" has no worktree: isolation was none, or it was already merged or discarded"))?;
         Ok((lane, record.session_name.clone()))
     }
 }

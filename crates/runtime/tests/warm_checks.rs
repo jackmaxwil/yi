@@ -271,7 +271,6 @@ fn green() -> WarmRun {
         verdict: Verdict::Green,
         capture: None,
         waited: Duration::ZERO,
-        ran: Duration::ZERO,
     }
 }
 

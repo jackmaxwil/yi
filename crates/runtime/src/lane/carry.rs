@@ -205,8 +205,8 @@ fn copy_unit(from: &Path, to: &Path) -> std::io::Result<()> {
     fclonefileat(&source, CWD, to, CloneFlags::NOOWNERCOPY).map_err(Into::into)
 }
 
-/// Ext4 has no clone. Only artifacts cargo replaces whole hardlink; what it writes in place is
-/// copied, or a child's build would write through to the parent's.
+/// Ext4 has no clone. Only artifacts cargo replaces whole hardlink, so an honest build never writes
+/// through to the parent's; a hostile child still can, the disk trade the trust table names.
 #[cfg(not(target_os = "macos"))]
 fn copy_unit(from: &Path, to: &Path) -> std::io::Result<()> {
     if from.is_dir() {
@@ -231,29 +231,41 @@ fn copy_unit(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::copy(from, to).map(drop)
 }
 
-/// `.worktreeinclude`: gitignore-style lines, a `#` comment or a blank skipped. Cut, with a row, past
-/// its limits. `None` when the file is past 64 KiB, which nothing writes by hand.
-#[must_use]
-pub fn include_list(bytes: &[u8]) -> Option<Vec<String>> {
+/// `.worktreeinclude`: gitignore-style lines, a `#` comment or a blank skipped. The patterns kept
+/// and how many it listed, or why none of it was read.
+pub fn include_list(bytes: &[u8]) -> Result<(Vec<String>, usize), String> {
     if bytes.len() > INCLUDE_LIST_MAX_BYTES {
-        return None;
+        return Err(format!(
+            "{} bytes, past fork.include_list {INCLUDE_LIST_MAX_BYTES}",
+            bytes.len()
+        ));
     }
-    let text = std::str::from_utf8(bytes).ok()?;
-    let patterns: Vec<String> = text
+    let text = std::str::from_utf8(bytes).map_err(|_| "not UTF-8".to_owned())?;
+    let lines = text
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter(|line| !line.is_empty() && !line.starts_with('#'));
+    let listed = lines.clone().count();
+    let patterns = lines
         .take(INCLUDE_PATTERNS_MAX)
         .map(str::to_owned)
         .collect();
-    Some(patterns)
+    Ok((patterns, listed))
 }
 
-fn matcher(patterns: &[String]) -> Option<globset::GlobSet> {
+/// One bad pattern is named and the rest still match.
+fn matcher(patterns: &[String], rows: &mut Vec<String>) -> Option<globset::GlobSet> {
     let mut set = globset::GlobSetBuilder::new();
     for pattern in patterns {
         let trimmed = pattern.trim_start_matches('/').trim_end_matches('/');
-        set.add(globset::Glob::new(trimmed).ok()?);
+        match globset::Glob::new(trimmed) {
+            Ok(glob) => drop(set.add(glob)),
+            Err(error) => rows.push(format!(
+                "[not carried: pattern `{}` does not parse: {}]",
+                crate::ext::sanitize(pattern),
+                error.kind()
+            )),
+        }
     }
     set.build().ok()
 }
@@ -321,15 +333,35 @@ pub fn carry_includes(
     extra: &[String],
     denied: &[PathBuf],
 ) -> Vec<String> {
-    let listed = std::fs::read(parent.join(".worktreeinclude"))
-        .ok()
-        .and_then(|bytes| include_list(&bytes))
-        .unwrap_or_default();
-    let patterns: Vec<String> = listed.into_iter().chain(extra.iter().cloned()).collect();
-    let Some(set) = matcher(&patterns).filter(|_| !patterns.is_empty()) else {
-        return Vec::new();
-    };
     let mut rows = Vec::new();
+    let mut patterns = Vec::new();
+    if let Ok(bytes) = std::fs::read(parent.join(".worktreeinclude")) {
+        match include_list(&bytes) {
+            Ok((kept, listed)) => {
+                if kept.len() < listed {
+                    rows.push(yi_tools::cut_row(
+                        kept.len(),
+                        listed,
+                        "patterns read from .worktreeinclude",
+                        "fork.include_patterns",
+                        INCLUDE_PATTERNS_MAX,
+                        "carry=[...] on rlm.run",
+                    ));
+                }
+                patterns = kept;
+            }
+            Err(why) => rows.push(format!(
+                "[.worktreeinclude not read: {why}; shorten it, or name the files with carry=[...] on rlm.run]"
+            )),
+        }
+    }
+    patterns.extend(extra.iter().cloned());
+    if patterns.is_empty() {
+        return rows;
+    }
+    let Some(set) = matcher(&patterns, &mut rows) else {
+        return rows;
+    };
     let (mut copied, mut bytes) = (0usize, 0u64);
     let matched = (ignored.iter())
         .map(|path| path.trim_end_matches('/'))

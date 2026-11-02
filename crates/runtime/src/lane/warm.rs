@@ -34,7 +34,6 @@ pub struct WarmRun {
     /// What the check printed, its paths the model's. `None` when it never ran.
     pub capture: Option<yi_tools::CommandCapture>,
     pub waited: Duration,
-    pub ran: Duration,
 }
 
 impl WarmRun {
@@ -214,7 +213,6 @@ pub fn check_commit(
         verdict: Verdict::Abstain { why },
         capture: None,
         waited: begun.elapsed(),
-        ran: Duration::ZERO,
     };
     let lane = match claim(warm, commit, queue_until) {
         Ok(lane) => lane,
@@ -246,15 +244,13 @@ pub fn check_commit(
             begun,
         );
     }
-    let ran = Instant::now();
-    let until = ran.checked_add(budget).unwrap_or(ran);
+    let began = Instant::now();
+    let until = began.checked_add(budget).unwrap_or(began);
     let capture = crate::goal::run_check_in(&path, command, &[], None, until, None, checker);
-    let ran = ran.elapsed();
     let run = |verdict, capture| WarmRun {
         verdict,
         capture,
         waited,
-        ran,
     };
     let shown = path.to_string_lossy().into_owned();
     let result = match capture {
@@ -319,7 +315,6 @@ pub fn ticket(
         verdict: Verdict::Abstain { why },
         capture: None,
         waited: Duration::ZERO,
-        ran: Duration::ZERO,
     };
     let (held, begun) = {
         let mut table = tickets().lock().unwrap_or_else(PoisonError::into_inner);

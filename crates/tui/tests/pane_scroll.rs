@@ -282,6 +282,36 @@ fn each_painted_row_names_the_cell_it_was_drawn_from() -> TestResult {
     Ok(())
 }
 
+/// A drag selecting into the answer still arriving stops at the paint's last row: a live row
+/// answered as outside the pane dropped the selection's tail.
+#[test]
+fn a_live_row_reads_as_inside_the_pane_though_it_names_no_cell() -> TestResult {
+    let mut app = app();
+    app.commit_cell(&Cell::User {
+        text: "go".to_owned(),
+    });
+    app.reduce_agent(AgentEvent::AgentStart);
+    app.reduce_agent(AgentEvent::MessageUpdate {
+        assistant_message_event: AssistantMessageEvent::Done {
+            reason: StopReason::Stop,
+            message: message("", "a streaming answer\n"),
+        },
+    });
+    let mut scroll = 0;
+    let _ = paint(&mut app, &mut scroll);
+    let live = (AREA.top()..AREA.bottom())
+        .find(|y| matches!(app.pane_row(*y), Some(None)))
+        .ok_or("no painted live row reads as inside the pane")?;
+    let past = (live..AREA.bottom())
+        .find(|y| app.pane_row(*y).is_none())
+        .ok_or("the paint covered the whole pane, so no row lies past it")?;
+    assert!(
+        past > live,
+        "the live row {live} read as past the pane's end"
+    );
+    Ok(())
+}
+
 /// Rows the column moved up between two frames, read off the first written row of `now`.
 fn shift(before: &[String], now: &[String]) -> Option<usize> {
     let row = now.iter().position(|row| !row.trim().is_empty())?;
