@@ -93,19 +93,35 @@ impl GitLane {
             if !remote {
                 return Vec::new();
             }
-            [
-                "GIT_CONFIG_COUNT=3",
-                "GIT_CONFIG_KEY_0=maintenance.auto",
-                "GIT_CONFIG_VALUE_0=false",
-                "GIT_CONFIG_KEY_1=protocol.allow",
-                "GIT_CONFIG_VALUE_1=never",
-                "GIT_CONFIG_KEY_2=protocol.file.allow",
-                "GIT_CONFIG_VALUE_2=always",
-            ]
-            .map(str::to_owned)
-            .to_vec()
+            let rules = [
+                ("maintenance.auto", "false"),
+                ("protocol.allow", "never"),
+                ("protocol.http.allow", "never"),
+                ("protocol.https.allow", "never"),
+                ("protocol.ssh.allow", "never"),
+                ("protocol.git.allow", "never"),
+                ("protocol.ext.allow", "never"),
+                ("protocol.file.allow", "always"),
+            ];
+            let rules: Vec<(String, String)> = rules
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+            Self::config_env(&rules)
         }))
         .clone()
+    }
+
+    /// `GIT_CONFIG_*` for `env`'s argv: the one spelling of a per-invocation git config.
+    fn config_env(rules: &[(String, String)]) -> Vec<String> {
+        std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
+            .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
+                [
+                    format!("GIT_CONFIG_KEY_{at}={key}"),
+                    format!("GIT_CONFIG_VALUE_{at}={value}"),
+                ]
+            }))
+            .collect()
     }
 
     /// One repository's lane, its pushes cut at `forward_timeout`.
@@ -142,14 +158,7 @@ impl GitLane {
             Some(pushurl) => (format!("url.{}.insteadOf", outbox.display()), pushurl),
             None => (format!("url.{}.pushInsteadOf", outbox.display()), url),
         });
-        let assign = std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
-            .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
-                [
-                    format!("GIT_CONFIG_KEY_{at}={key}"),
-                    format!("GIT_CONFIG_VALUE_{at}={value}"),
-                ]
-            }))
-            .collect();
+        let assign = Self::config_env(&rules);
         let lane = Self {
             pool,
             mirror,
@@ -440,14 +449,46 @@ mod tests {
         .map_err(|error| error.to_string())?;
         assert_eq!(GitLane::assign_for(None, &bare), Vec::<String>::new());
         let assign = GitLane::assign_for(None, &forked);
-        assert!(
-            assign.contains(&"GIT_CONFIG_VALUE_1=never".to_owned()),
+        assert_eq!(pair(&assign, "protocol.allow"), Some("never"), "{assign:?}");
+        assert_eq!(
+            pair(&assign, "protocol.file.allow"),
+            Some("always"),
             "{assign:?}"
         );
-        assert!(
-            assign.contains(&"GIT_CONFIG_KEY_2=protocol.file.allow".to_owned()),
-            "{assign:?}"
-        );
+        Ok(())
+    }
+
+    /// The value `env` assigns `key`, read back through the `GIT_CONFIG_*` numbering.
+    fn pair<'a>(assign: &'a [String], key: &str) -> Option<&'a str> {
+        let at = assign.iter().position(|line| {
+            line.strip_prefix("GIT_CONFIG_KEY_")
+                .and_then(|rest| rest.split_once('='))
+                .is_some_and(|(_, name)| name == key)
+        })?;
+        assign
+            .get(at.checked_add(1)?)?
+            .split_once('=')
+            .map(|(_, value)| value)
+    }
+
+    /// Invariant: `protocol.allow` is only git's fallback, so a repository's own
+    /// `protocol.https.allow = always` outranks it and smuggles a transport past the block.
+    #[test]
+    fn a_per_protocol_allow_cannot_outrank_the_block() -> Result<(), String> {
+        let dir = std::env::temp_dir().join("yi-assign-per-protocol");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        git(&dir, &["init", "-q"]).map_err(|error| error.to_string())?;
+        git(
+            &dir,
+            &["remote", "add", "origin", "https://example.invalid/r"],
+        )
+        .map_err(|error| error.to_string())?;
+        let assign = GitLane::assign_for(None, &dir);
+        for scheme in ["http", "https", "ssh", "git", "ext"] {
+            let key = format!("protocol.{scheme}.allow");
+            assert_eq!(pair(&assign, &key), Some("never"), "{scheme}: {assign:?}");
+        }
         Ok(())
     }
 
