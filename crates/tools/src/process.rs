@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::Component::ParentDir;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -52,6 +53,100 @@ pub fn keyless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
         process.env_remove(variable);
     }
     process
+}
+
+/// No copy of a host program outside the trees a contained process can write.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("no `{program}` on PATH outside the trees a contained process can write")]
+pub struct HostProgramMissing {
+    program: String,
+}
+
+/// A program Yi itself runs on the host, by absolute path. Incident: bare names resolved through
+/// PATH, so a tree's `bin` on it (direnv, an activated venv) ran a contained write on the host.
+pub fn host_command(program: &str, cwd: &Path) -> Result<Command, HostProgramMissing> {
+    let resolved = host_program(program, cwd).ok_or_else(|| HostProgramMissing {
+        program: program.to_owned(),
+    })?;
+    let mut process = keyless_command(resolved);
+    if program == "git" {
+        host_git_config(&mut process);
+    }
+    Ok(process)
+}
+
+/// The first executable `program` on PATH outside a tree a contained process writes. Temp roots
+/// stay searched: nothing puts one on PATH in the field, and every git shim in the suite lives there.
+fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
+    let home = crate::plugin::home();
+    let search = (home.as_deref())
+        .and_then(crate::plugin::search_path)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_else(|| "/usr/bin:/bin".into());
+    let cwds = [Some(cwd.to_path_buf()), std::env::current_dir().ok()];
+    let trees: Vec<PathBuf> = (cwds.into_iter().flatten())
+        .map(|dir| git_root(&dir).unwrap_or(dir))
+        .chain(
+            home.iter()
+                .flat_map(|home| [home.join(".yi/lanes"), home.join(".yi/forks")]),
+        )
+        .filter_map(|tree| tree.canonicalize().ok())
+        .filter(|tree| tree.parent().is_some())
+        .collect();
+    // A path someone configured (`lanes.land`) is no PATH lookup, and is held to the same rule: a
+    // relative one resolves in the lane, and the canonical target is judged, never the spelling.
+    let outside = |real: &Path| {
+        crate::exec::is_executable_file(real) && !trees.iter().any(|tree| real.starts_with(tree))
+    };
+    if program.contains('/') {
+        let real = cwd.join(program).canonicalize().ok()?;
+        return outside(&real).then_some(real);
+    }
+    std::env::split_paths(&search)
+        .filter(|dir| dir.is_absolute())
+        .filter_map(|dir| dir.join(program).canonicalize().ok())
+        .find(|real| outside(real))
+}
+
+/// Config the host's git never takes from a repository: each of these runs code, and a contained
+/// process can reach a tree's hooks path and its config. Env, so a git's own argv reads the same.
+const HOST_GIT_CONFIG: [(&str, &str); 5] = [
+    ("core.fsmonitor", "false"),
+    // A planted gitlink's `.git` would send `status` into a git with that repository's config.
+    ("diff.ignoreSubmodules", "dirty"),
+    ("core.hooksPath", "/dev/null"),
+    ("commit.gpgsign", "false"),
+    ("tag.gpgsign", "false"),
+];
+
+/// A caller's repository context never redirects the host's git; identity and transport stay.
+fn host_git_config(process: &mut Command) {
+    const CONTEXT: [&str; 10] = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_PREFIX",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+    ];
+    for (variable, _) in std::env::vars_os() {
+        let name = variable.to_string_lossy();
+        if CONTEXT.contains(&name.as_ref())
+            || name.starts_with("GIT_CONFIG_KEY_")
+            || name.starts_with("GIT_CONFIG_VALUE_")
+        {
+            process.env_remove(&variable);
+        }
+    }
+    process.env("GIT_CONFIG_COUNT", HOST_GIT_CONFIG.len().to_string());
+    for (index, (key, value)) in HOST_GIT_CONFIG.iter().enumerate() {
+        process.env(format!("GIT_CONFIG_KEY_{index}"), key);
+        process.env(format!("GIT_CONFIG_VALUE_{index}"), value);
+    }
 }
 
 #[derive(Debug, Clone)]
