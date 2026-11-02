@@ -521,6 +521,7 @@ impl ToolAdapter {
             job_owner: self.job_owner,
             program,
             fuse: yi_tools::Fuse::PROGRAM,
+            hold_opens: None,
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();

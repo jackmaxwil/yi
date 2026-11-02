@@ -810,8 +810,8 @@ impl Swap {
 
 #[cfg(unix)]
 const BENIGN: &str = "ordinary\n";
-/// Swaps a run stops at: a broken guard leaks once or twice in a thousand on its narrowest
-/// path, so fewer lets a run miss it. A run fails below half this, within [`ROUNDS`] calls.
+/// Swaps a run stops at: a broken guard leaks in bursts, so fewer lets a run miss them, and this
+/// many can still miss them. A run fails below half this, within [`ROUNDS`] calls.
 #[cfg(unix)]
 const INSIDE: usize = 5_000;
 #[cfg(unix)]
@@ -823,7 +823,7 @@ const ROUNDS: usize = 20_000;
 fn race(
     tool: &str,
     swap: Swap,
-    args: &dyn Fn(&dyn yi_tools::Tool, &yi_tools::ToolContext) -> Map<String, Value>,
+    args: &Map<String, Value>,
     reached: &dyn Fn(&yi_tools::ToolOutput, &std::path::Path) -> bool,
 ) -> Result<(usize, usize), Box<dyn Error>> {
     let scratch = Scratch::new("yi-scope-swap")?;
@@ -848,11 +848,7 @@ fn race(
         .find(|candidate| candidate.name() == tool)
         .ok_or("no such tool")?;
     let context = yi_tools::ToolContext::new(workspace.clone());
-    let read = (tools.iter())
-        .find(|candidate| candidate.name() == "read")
-        .ok_or("no read tool")?;
-    let args = args(read.as_ref(), &context);
-    let (kind, irreversible) = (tool_impl.kind_for(&args), tool_impl.irreversible(&args));
+    let (kind, irreversible) = (tool_impl.kind_for(args), tool_impl.irreversible(args));
     // Invariant: the offsets follow the rounds' own calls, or a spike here misses every round.
     let settle = |span: &mut std::time::Duration, seen: std::time::Duration| {
         *span = (*span * 7 + seen) / 8;
@@ -861,7 +857,7 @@ fn race(
     for _ in 0..9 {
         swap.disarm(&workspace)?;
         let timed = std::time::Instant::now();
-        broker.decide_call(tool, kind, irreversible, "c1", &args, None);
+        broker.decide_call(tool, kind, irreversible, "c1", args, None);
         settle(&mut check, timed.elapsed());
         let timed = std::time::Instant::now();
         calm = format!("{:?}", tool_impl.execute(args.clone(), &context).result);
@@ -900,7 +896,7 @@ fn race(
         let step = u32::try_from(round.wrapping_mul(61) % 64).unwrap_or(0);
         let started = std::time::Instant::now();
         arm.send(started + check / 2 + (check / 2 + call) * step / 64)?;
-        let allowed = (broker.decide_call(tool, kind, irreversible, "c1", &args, None)).allowed;
+        let allowed = (broker.decide_call(tool, kind, irreversible, "c1", args, None)).allowed;
         let checked = std::time::Instant::now();
         settle(&mut check, checked - started);
         let output = allowed.then(|| tool_impl.execute(args.clone(), &context));
@@ -936,14 +932,10 @@ fn changes_key(output: &yi_tools::ToolOutput, key: &std::path::Path) -> bool {
 }
 
 #[cfg(unix)]
-fn path_arg(
-    path: &str,
-) -> impl Fn(&dyn yi_tools::Tool, &yi_tools::ToolContext) -> Map<String, Value> + '_ {
-    move |_, _| {
-        let mut args = Map::new();
-        args.insert("path".to_owned(), json!(path));
-        args
-    }
+fn path_arg(path: &str) -> Map<String, Value> {
+    let mut args = Map::new();
+    args.insert("path".to_owned(), json!(path));
+    args
 }
 
 #[cfg(unix)]
@@ -984,7 +976,7 @@ fn a_parent_swapped_after_the_check_reads_no_key() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn a_link_swapped_after_the_check_overwrites_no_key() -> TestResult {
-    let args = |_: &dyn yi_tools::Tool, _: &yi_tools::ToolContext| write("x", "overwritten\n");
+    let args = write("x", "overwritten\n");
     assert_no_leak(
         "write",
         Swap::File,
@@ -996,19 +988,90 @@ fn a_link_swapped_after_the_check_overwrites_no_key() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn a_parent_swapped_after_the_check_overwrites_no_key() -> TestResult {
-    let args =
-        |_: &dyn yi_tools::Tool, _: &yi_tools::ToolContext| write("d/id_rsa", "overwritten\n");
+    let args = write("d/id_rsa", "overwritten\n");
     let tried = race("write", Swap::Parent, &args, &changes_key)?;
     assert_no_leak("write", Swap::Parent, tried);
     Ok(())
 }
 
-/// The edit names `d/id_rsa` by the tag a read of the ordinary file minted before the swaps.
+/// One call of `tool`, with `d` swapped to a link to the key store just before its `at`th open
+/// through the gate (0 is before the call); returns the opens, its output and the key's text.
+#[cfg(unix)]
+fn swapped_at_open(
+    tool: &str,
+    args: &dyn Fn(&dyn yi_tools::Tool, &yi_tools::ToolContext) -> Map<String, Value>,
+    at: Option<usize>,
+) -> Result<(usize, String, String), Box<dyn Error>> {
+    let scratch = Scratch::new("yi-scope-open")?;
+    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(workspace.join("d"))?;
+    let key = home.join(".ssh/id_rsa");
+    std::fs::write(&key, "FAKE KEY MARKER\n")?;
+    std::fs::write(workspace.join("d/id_rsa"), BENIGN)?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let tools = yi_tools::builtin_tools();
+    let find = |name: &str| (tools.iter()).find(|candidate| candidate.name() == name);
+    let tool_impl = find(tool).ok_or("no such tool")?;
+    let mut context = yi_tools::ToolContext::new(workspace.clone());
+    let args = args(find("read").ok_or("no read tool")?.as_ref(), &context);
+    let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hold = {
+        let (opens, workspace, home) = (opens.clone(), workspace.clone(), home.clone());
+        move || {
+            let open = opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if at == Some(open) {
+                Swap::Parent.arm(&workspace, &home);
+            }
+        }
+    };
+    context.hold_opens = Some(std::sync::Arc::new(hold));
+    if at == Some(0) {
+        Swap::Parent.arm(&workspace, &home);
+    }
+    let output = tool_impl.execute(args, &context);
+    Ok((
+        opens.load(std::sync::atomic::Ordering::SeqCst),
+        format!("{:?}", output.result),
+        std::fs::read_to_string(&key)?,
+    ))
+}
+
+/// A swap at each open a call makes reaches no key, and the undisturbed call makes `opens` of
+/// them: a tool that opened past the gate would never reach its hold, so only the count sees it.
+#[cfg(unix)]
+fn no_open_reaches_the_key(
+    tool: &str,
+    opens: usize,
+    args: &dyn Fn(&dyn yi_tools::Tool, &yi_tools::ToolContext) -> Map<String, Value>,
+) -> TestResult {
+    let (seen, shown, _) = swapped_at_open(tool, args, None)?;
+    assert_eq!(
+        seen, opens,
+        "{tool} opened through the gate {seen} times: {shown}"
+    );
+    for at in 0..=opens {
+        let (seen, shown, key) = swapped_at_open(tool, args, Some(at))?;
+        assert!(seen >= at, "{tool} never reached open {at}: {shown}");
+        assert!(
+            !shown.contains("MARKER"),
+            "{tool}, swap at open {at} showed the key: {shown}"
+        );
+        assert!(
+            key.contains("MARKER"),
+            "{tool}, swap at open {at} changed the key to {key:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The edit names `d/id_rsa` by the tag a read of the ordinary file minted before the swap.
 #[cfg(unix)]
 #[test]
-fn a_parent_swapped_after_the_check_edits_no_key() -> TestResult {
+fn a_parent_swapped_at_any_open_edits_no_key() -> TestResult {
     let args = |read: &dyn yi_tools::Tool, context: &yi_tools::ToolContext| {
-        let shown = read.execute(path_arg("d/id_rsa")(read, context), context);
+        let shown = read.execute(path_arg("d/id_rsa"), context);
         let text = format!("{:?}", shown.result);
         let tag: String = (text
             .split_once("d/id_rsa#")
@@ -1022,14 +1085,12 @@ fn a_parent_swapped_after_the_check_edits_no_key() -> TestResult {
         args.insert("patch".to_owned(), json!(patch));
         args
     };
-    let tried = race("edit", Swap::Parent, &args, &changes_key)?;
-    assert_no_leak("edit", Swap::Parent, tried);
-    Ok(())
+    no_open_reaches_the_key("edit", 2, &args)
 }
 
 #[cfg(unix)]
 #[test]
-fn a_parent_swapped_after_the_check_rewrites_no_key_by_grep() -> TestResult {
+fn a_parent_swapped_at_any_open_rewrites_no_key_by_grep() -> TestResult {
     let args = |_: &dyn yi_tools::Tool, _: &yi_tools::ToolContext| {
         let mut args = Map::new();
         // The key's own line matches too, or a call that opened the key would change nothing.
@@ -1039,9 +1100,7 @@ fn a_parent_swapped_after_the_check_rewrites_no_key_by_grep() -> TestResult {
         args.insert("apply".to_owned(), json!(true));
         args
     };
-    let tried = race("grep", Swap::Parent, &args, &changes_key)?;
-    assert_no_leak("grep apply", Swap::Parent, tried);
-    Ok(())
+    no_open_reaches_the_key("grep", 2, &args)
 }
 
 /// The remedy the ping hint names: after the sandbox refuses a real `ping`, the next `ping` asks,
