@@ -81,7 +81,10 @@ impl PermissionBroker {
     /// followed the recipe would leave with it.
     pub(super) fn host_recipe(&self, command: Option<&str>) -> Option<CallOutcome> {
         let command = command?;
-        if self.mode() == yi_permission::PermissionMode::Yolo || self.sandbox.is_none() {
+        if self.mode() == yi_permission::PermissionMode::Yolo
+            || self.sandbox.is_none()
+            || self.confines_walled()
+        {
             return None;
         }
         let recipes = self.host_recipes.get()?;

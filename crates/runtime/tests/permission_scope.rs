@@ -1467,4 +1467,25 @@ mod forge {
         );
         Ok(())
     }
+
+    /// Invariant: a walled child's call never runs unconfined, so a recipe must not reach it.
+    #[test]
+    fn a_walled_child_meets_no_host_recipe() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(recipes());
+        let wall = yi_runtime::Wall {
+            deny_write: vec![project.join("secrets")],
+            ..yi_runtime::Wall::default()
+        };
+        let child = broker.for_child(&wall, &project);
+        let outcome = decide(&child, "just pr status 1");
+        // A walled child's call is contained, never answered by the recipe and run outside.
+        assert_ne!(
+            outcome.containment,
+            Containment::Uncontained,
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
 }

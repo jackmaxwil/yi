@@ -52,8 +52,9 @@ impl PermissionBroker {
         if let Some(egress) = self.egress.config.get() {
             let _first_wiring_wins = child.egress.config.set(egress.clone());
         }
-        // `sandbox.hostRecipes` is the person's own config too, so a child meets the same recipes.
-        if let Some(recipes) = self.host_recipes.get() {
+        // `sandbox.hostRecipes` is the person's own config, so a child meets the same recipes --
+        // unless it is walled, where a recipe would run outside the sandbox that wall denies.
+        if let (false, Some(recipes)) = (child.walled, self.host_recipes.get()) {
             let _first_wiring_wins = child.host_recipes.set(recipes.clone());
         }
         child
