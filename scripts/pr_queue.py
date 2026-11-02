@@ -363,6 +363,7 @@ def finish(obs):
             if refused and obs.get("age_minutes", 0) < CLOSE_PATIENCE:
                 raise SystemExit(f"queue: the forge refused to close #{issue}, and the next tick tries again: {refused}")
             if refused:
+                print(f"queue: gave up closing #{issue}: {refused}")
                 comment(number, f"Landed, but the forge refused to close #{issue}: {refused}. It needs closing by hand.")
         set_label(number, LABEL, False)
     if not record_main():
@@ -676,6 +677,14 @@ def forge_cases():
                     bad.append(f"a refused close at {age} minutes stopped={stopped}, deleted the ref={stubs['delete_ref'].called}")
                 if not keeps and "#5" not in str(stubs["comment"].call_args):
                     bad.append("a close given up on did not say so on the PR")
+        # The two answers that are not a refusal: the closed issue itself, and a 404 for an issue that is gone.
+        for answer in ({"number": 5, "state": "closed"}, None):
+            with mock.patch.object(forge_pr, "fgj_api", lambda *a: answer), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
+                    mock.patch.multiple(sys.modules[__name__], delete_ref=mock.DEFAULT, record_main=mock.DEFAULT, set_label=mock.DEFAULT, comment=mock.DEFAULT) as stubs:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    finish({"members": [(1, "a" * 40)], "age_minutes": 1})
+                if stubs["comment"].called or not stubs["delete_ref"].called:
+                    bad.append(f"a close answered {answer} read as refused")
     return bad
 
 
