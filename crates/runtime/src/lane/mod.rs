@@ -33,7 +33,6 @@ pub fn forbid_fetch() {
     FETCH_FORBIDDEN.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 const WARMER_EXIT_WAIT_MS: u64 = 30_000;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SlotIndex(u8);
 

@@ -140,6 +140,31 @@ lane stops an honest git and not a hostile one, because `git -c protocol.https.a
 `packed-refs` writable, so its guard on main is the name alone; and a contained process's `HEAD`
 can take an unchecked-out branch other than trunk, and push it as any branch.
 
+## Trust boundaries of Linux containment
+
+A contained command starts as `yi __contain`, which applies a Landlock ruleset and execs. Rules only
+grant, over inodes that already exist, so three things read differently from Seatbelt. A denial is
+written as the siblings of what it denies. What the host's next git reads is saved and compared
+instead of denied. And the network stays open. Tests are in `crates/tools/tests/contain.rs`.
+
+| boundary | what crosses | assume | instance | control | test |
+|---|---|---|---|---|---|
+| contained process → files | reads and writes | hostile | I: a read of `~/.ssh` or a wall's path | reads are a list: system roots, home's children past the stores, writable roots | `a_write_outside_the_roots_and_a_read_of_a_store_are_refused`, `a_store_inside_a_root_is_left_out_by_granting_what_sits_beside_it` |
+| | | | I: a link to a store | a grant is judged by what it resolves to | `a_link_to_a_store_is_no_way_around_it` |
+| | | | I: another process's environment under `/proc` | Landlock's ptrace scope; a process outside this domain refuses | `a_contained_process_cannot_read_another_process_environment` |
+| | | | E: a ruleset the kernel will not enforce | `__contain` exits 126 and nothing runs; a failed probe means `Contain` asks | `yi_contain::a_wrapper_that_cannot_apply_runs_nothing` |
+| contained process → host git | `config`, `hooks`, `info`, `.git`, `commondir`, `gitdir`, `alternates`, origin's `HEAD`, admin and module names | hostile, inside a writable root where Landlock cannot deny | E: a planted config runs on the host's next git | compared before every host git, put back, and that git refused | `a_planted_config_is_put_back_and_refuses_one_git`, `a_contained_git_config_runs_nothing_on_the_host_and_goes_back` |
+| | | | T: a link at the git dir steers the restore | the parent's real path is held; a moved one refuses and writes nothing | `a_git_dir_swapped_for_a_link_refuses_without_writing_through_it` |
+| | | | D: a hooks directory or a family too large to save | `seal.root_files`, `seal.root_bytes`, `seal.roots`: past one, no host git runs and the error names it | `a_directory_at_its_file_limit_is_saved_and_one_past_refuses_by_name` |
+
+Repudiation has no instance beyond the refused git's own error, and spoofing none: the wrapper is the
+running binary's own path. Residual, stated: no network wall, since Landlock's port rules would break
+the loopback servers a test starts, so a client that ignores the proxy variables reaches anything. A
+contained process in a main checkout can change a sealed file between a host writer's verify and its
+reseal, a window of one command, and it is blessed. A person's own `git config` in that checkout is
+put back too, until the host's next writer. A lane on a branch outside `yi/` cannot move it, nor
+stash, since neither leaf has a parent the rules may name.
+
 ## Trust boundaries of the plan journal (D193)
 
 The plan store (§13) takes inputs it does not produce: a child's kernel calling `plan.op`, a
