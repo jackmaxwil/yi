@@ -269,7 +269,19 @@ fn a_bare_program_is_published_and_a_tampered_one_is_not() -> TestResult {
 fn adding_the_browser_fetches_chrome_first_and_a_failure_publishes_no_browser() -> TestResult {
     let scratch = Scratch::new("plugin-browser-order")?;
     let home = scratch.home()?;
-    let browser = Plugin::named(yi_tools::plugin::BROWSER).ok_or("no agent-browser row")?;
+    // The browser pins fewer platforms than Chrome, so this row has one everywhere the order matters.
+    let browser = Plugin {
+        assets: &[Asset {
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+            url: "https://example.invalid/agent-browser",
+            sha256: "",
+            member_sha256: "",
+            member: "",
+        }],
+        ..*Plugin::named(yi_tools::plugin::BROWSER).ok_or("no agent-browser row")?
+    };
+    let browser = &browser;
     let chrome = Plugin::named("chrome").ok_or("no chrome row")?;
     let asked = std::sync::Mutex::new(Vec::new());
     let refused = add(browser, &home, |url| {
@@ -279,7 +291,8 @@ fn adding_the_browser_fetches_chrome_first_and_a_failure_publishes_no_browser() 
         Err("offline".to_owned())
     });
     assert!(refused.is_err());
-    let wanted: Vec<String> = (browser.asset().and(chrome.asset()))
+    let wanted: Vec<String> = chrome
+        .asset()
         .map(|asset| asset.url.to_owned())
         .into_iter()
         .collect();

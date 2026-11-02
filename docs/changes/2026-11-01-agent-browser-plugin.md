@@ -3,7 +3,7 @@ issue: Refs #1958
 growth: +495 about 120 lines are browser.rs's test module and 60 its verb table; weighed `--allowed-domains` (cut, CDNs break under a list of one site), a filtering proxy (cut), a contained daemon (cut, it needs the unix socket ban lifted), and a `needs:` column on the plugin table (cut, one row)
 raise: comments +33
 raise: over-cap +1
-raise: tests +558
+raise: tests +571
 raise: crate kernel +12
 raise: crate permission +284
 raise: crate runtime +42
