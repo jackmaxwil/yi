@@ -672,14 +672,51 @@ fn a_wall_and_a_planted_link_copy_nothing() -> TestResult {
 
 #[test]
 fn a_bad_include_list_refuses_by_size_and_cuts_by_count() {
-    assert!(include_list(&vec![b' '; 64 << 10]).is_some());
-    assert!(include_list(&vec![b' '; (64 << 10) + 1]).is_none());
-    assert!(include_list(b"\xff\xfe").is_none());
+    assert!(include_list(&vec![b' '; 64 << 10]).is_ok());
+    assert!(include_list(&vec![b' '; (64 << 10) + 1]).is_err());
+    assert!(include_list(b"\xff\xfe").is_err());
     let many: String = (0..300).map(|n| format!("f{n}\n")).collect();
-    assert_eq!(
-        include_list(many.as_bytes()).map(|list| list.len()),
-        Some(256)
+    let (kept, listed) = include_list(many.as_bytes()).unwrap_or_default();
+    assert_eq!((kept.len(), listed), (256, 300));
+}
+
+/// Dies with the list dropped or cut in silence: the person listed `.env`, the child has none, and
+/// nothing in the spawn's reply says why.
+#[test]
+fn every_way_a_listed_pattern_is_lost_is_named() -> TestResult {
+    let rig = Rig::new("include-loud")?;
+    std::fs::write(rig.repo.join("kept.note"), "x")?;
+    let ignored = vec!["kept.note".to_owned()];
+    let into = rig.root.join("into");
+    std::fs::create_dir_all(&into)?;
+    let carry = |list: Vec<u8>| -> Result<Vec<String>, std::io::Error> {
+        std::fs::write(rig.repo.join(".worktreeinclude"), list)?;
+        Ok(carry_includes(&rig.repo, &into, &ignored, &[], &[]))
+    };
+
+    let at: String = (0..256).map(|n| format!("*.note{n}\n")).collect();
+    let rows = carry(at.clone().into_bytes())?;
+    assert!(!rows.concat().contains("fork.include_patterns"), "{rows:?}");
+    let past = format!("{at}*.one-more\n");
+    let rows = carry(past.into_bytes())?;
+    assert!(rows.concat().contains("256 of 257 patterns"), "{rows:?}");
+    assert!(
+        rows.concat().contains("fork.include_patterns 256"),
+        "{rows:?}"
     );
+
+    let rows = carry(vec![b' '; (64 << 10) + 1])?.concat();
+    assert!(rows.contains("not read: 65537 bytes"), "{rows}");
+    assert!(rows.contains("fork.include_list 65536"), "{rows}");
+    assert!(carry(b"\xff\xfe".to_vec())?.concat().contains("not UTF-8"));
+
+    let rows = carry(b"a[\n*.note\n".to_vec())?.concat();
+    assert!(rows.contains("pattern `a[` does not parse"), "{rows}");
+    assert!(
+        into.join("kept.note").exists(),
+        "a bad line took the good one: {rows}"
+    );
+    Ok(())
 }
 
 #[test]
