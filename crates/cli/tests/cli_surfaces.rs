@@ -3321,6 +3321,35 @@ fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
         (&json!("program"), &json!("tree")),
         "the adapter carries programs and never the console's Chrome: {rows}"
     );
+    let desktop = (rows.as_array().ok_or("not an array")?.iter())
+        .find(|row| row["name"] == "agent-desktop")
+        .ok_or("no agent-desktop row")?;
+    assert_eq!(
+        desktop["shape"],
+        json!("host"),
+        "the adapter must never carry a program that drives this machine: {rows}"
+    );
+    Ok(())
+}
+
+/// `yi gate` answers with the same decide() the tool seam calls, so this is the real binary's
+/// judgement of each kind of desktop command, offline, with nothing installed.
+#[test]
+fn the_gate_says_what_a_desktop_command_would_do() -> TestResult {
+    let workspace = Workspace::new("yi-gate-desktop")?;
+    for (command, first_line) in [
+        ("agent-desktop status", "auto: allow"),
+        ("agent-desktop snapshot --app TextEdit -i", "auto: ask"),
+        ("agent-desktop press cmd+q", "auto: deny"),
+        ("agent-desktop session start --cursor", "auto: allow"),
+        ("agent-desktop snapshot --app Safari", "auto: deny"),
+    ] {
+        let output = workspace.yi(&["gate", command])?;
+        let shown = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert_eq!(shown.lines().next(), Some(first_line), "{command}: {shown}");
+    }
+    let refused = workspace.yi(&["gate", "agent-desktop launch firefox"])?;
+    assert!(String::from_utf8_lossy(&refused.stdout).contains("agent-browser"));
     Ok(())
 }
 

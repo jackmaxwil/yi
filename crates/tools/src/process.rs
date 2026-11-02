@@ -107,7 +107,6 @@ fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
         // The path judged, never the spelling: a link in the lane could be repointed before the exec.
         return outside(&real).then_some(real);
     }
-    // The path judged here too: a link in a tree's `bin` could be repointed before the exec.
     std::env::split_paths(&search)
         .filter(|dir| dir.is_absolute())
         .filter_map(|dir| dir.join(program).canonicalize().ok())

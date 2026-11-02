@@ -141,6 +141,12 @@ pub fn decide(
         };
     }
 
+    if let Some(why) = call.command.and_then(crate::desktop::refused) {
+        return Decision::Deny {
+            reason: format!("{why}. This is denied in every mode."),
+        };
+    }
+
     let subject = call.command.unwrap_or(call.display);
     if let Some(rule) = config_rules
         .iter()
@@ -246,6 +252,13 @@ fn auto(call: &ToolCall<'_>, context: &CatastrophicContext) -> Decision {
         return ask(
             call,
             &format!("the command reads a credential store ({hit})"),
+        );
+    }
+    // Invariant: one yes reaches whatever an app can do, so a review model never answers this.
+    if crate::desktop::drives(command) {
+        return ask(
+            call,
+            "agent-desktop reads or acts in another app, outside the sandbox",
         );
     }
     match crate::safety::verdict(command) {

@@ -20,6 +20,17 @@ pub enum Shape {
     /// A zip published whole, `member` naming the executable inside it: a program Yi starts
     /// itself, so it is off PATH and the model gets no card.
     Tree,
+    /// A [`Shape::Program`] that drives this machine rather than a repository: only an explicit
+    /// `yi plugin add` installs it, so `--all` and the eval containers never carry it.
+    Host,
+}
+
+impl Shape {
+    /// Whether the model runs it by name: first on a spawn's PATH, its card in every session.
+    #[must_use]
+    pub fn on_path(self) -> bool {
+        matches!(self, Self::Program | Self::Host)
+    }
 }
 
 /// A program `yi plugin add` installs on request; the code that reads it is compiled into yi.
@@ -36,7 +47,7 @@ pub struct Plugin {
 
 /// Bump a version with every digest beside it, from the release's own `.sha256` files, and
 /// record its skills' `sha256sum` as tests/fixtures/ripwire/skills-<version>.sha256.
-pub const PLUGINS: [Plugin; 2] = [
+pub const PLUGINS: [Plugin; 3] = [
     Plugin {
         name: "ripwire",
         version: "0.6.5",
@@ -126,6 +137,24 @@ pub const PLUGINS: [Plugin; 2] = [
             },
         ],
     },
+    // Only the main binary is published: the tarball's second file serves the clipboard alone,
+    // and snapshot, click and close-app were run without it.
+    Plugin {
+        name: "agent-desktop",
+        version: "1.0.2",
+        summary: "operates any Mac app through its accessibility tree, asking once per app",
+        shape: Shape::Host,
+        card: include_str!("prompts/agent_desktop.md"),
+        skills: &[],
+        assets: &[Asset {
+            os: "macos",
+            arch: "aarch64",
+            url: "https://github.com/vercel-labs/agent-desktop/releases/download/v1.0.2/agent-desktop-v1.0.2-aarch64-apple-darwin.tar.gz",
+            sha256: "7bee385196d7b478de80cf05ca4304aaa38f0eba593b3406ad3c247c1773be19",
+            member_sha256: "bf0a3c9256512f2f57288d37ccd17d7f03665fccc53c2f74011a49b98e61ba59",
+            member: "agent-desktop",
+        }],
+    },
 ];
 
 impl Plugin {
@@ -152,7 +181,7 @@ impl Plugin {
     /// Where the pinned version's program sits once installed.
     pub fn program(&self, home: &Path) -> Option<PathBuf> {
         match self.shape {
-            Shape::Program => Some(self.dir(home).join(self.name)),
+            Shape::Program | Shape::Host => Some(self.dir(home).join(self.name)),
             Shape::Tree => self.asset().map(|asset| self.dir(home).join(asset.member)),
         }
     }
@@ -172,7 +201,7 @@ impl Plugin {
     /// A tree's name on PATH is someone else's program: `chrome` there is not the headless shell.
     pub fn found(&self, home: &Path) -> Option<PathBuf> {
         self.installed(home).or_else(|| match self.shape {
-            Shape::Program => crate::syntax::on_path(self.name),
+            Shape::Program | Shape::Host => crate::syntax::on_path(self.name),
             Shape::Tree => None,
         })
     }
@@ -187,7 +216,7 @@ pub fn home() -> Option<PathBuf> {
 pub fn search_path(home: &Path) -> Option<OsString> {
     let dirs: Vec<PathBuf> = PLUGINS
         .iter()
-        .filter(|plugin| plugin.shape == Shape::Program && plugin.installed(home).is_some())
+        .filter(|plugin| plugin.shape.on_path() && plugin.installed(home).is_some())
         .map(|plugin| plugin.dir(home))
         .collect();
     if dirs.is_empty() {
