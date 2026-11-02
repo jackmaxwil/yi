@@ -395,24 +395,9 @@ async fn a_kernel_cell_sweeps_its_outbox_off_the_executor() -> TestResult {
     let repo = crate::git_lane::Repo::new("cell-sweep")?;
     let head = repo.head()?;
     repo.plant("heads/main", &head)?;
-    let (asking, asked) = tokio::sync::oneshot::channel::<()>();
-    let asking = std::sync::Mutex::new(Some(asking));
-    let (answer, answered) = std::sync::mpsc::channel::<()>();
-    let answered = std::sync::Mutex::new(answered);
-    let asker: yi_runtime::Asker = Arc::new(move |_| {
-        if let Ok(Some(asking)) = asking.lock().map(|mut asking| asking.take()) {
-            let _the_sweep_asks = asking.send(());
-        }
-        let got = answered
-            .lock()
-            .map(|answered| answered.recv_timeout(Duration::from_secs(5)));
-        match got {
-            Ok(Ok(())) => yi_runtime::AskOutcome::AllowOnce,
-            _ => yi_runtime::AskOutcome::Reject,
-        }
-    });
+    let asker = crate::git_lane::asker_answered_elsewhere();
     let broker = Arc::new(crate::git_lane::broker(&repo.project, Some(asker)));
-    let session = crate::kernel_sandbox::root_session(
+    let session = crate::wiring::root_session(
         &repo.project,
         &repo.root.join("home"),
         &repo.root.join("rlm"),
@@ -423,11 +408,6 @@ async fn a_kernel_cell_sweeps_its_outbox_off_the_executor() -> TestResult {
     let kernel = session
         .kernel_service()
         .ok_or("the wiring installs a kernel")?;
-    tokio::spawn(async move {
-        if asked.await.is_ok() {
-            let _the_receiver_outlives_the_sweep = answer.send(());
-        }
-    });
     let out = kernel
         .execute_user_cell("print('cell')", &never_cancelled())
         .await;

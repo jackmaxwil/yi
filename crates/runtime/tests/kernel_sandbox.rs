@@ -13,6 +13,7 @@ use yi_tools::{CancelFlag, KernelBridge, Sandbox};
 type TestResult = Result<(), Box<dyn Error>>;
 
 pub(crate) use crate::seatbelt_support::seatbelt;
+use crate::wiring::{root_session, walled_session};
 
 async fn cell(
     service: &Arc<KernelService>,
@@ -253,71 +254,6 @@ async fn a_link_planted_at_the_kernels_own_directory_grants_nothing() -> TestRes
     Ok(())
 }
 
-/// A root session wired the way `yi` wires one, with `sessions_dir` as its session corpus.
-pub(crate) fn root_session(
-    project: &std::path::Path,
-    home: &std::path::Path,
-    rlm_dir: &std::path::Path,
-    sessions_dir: Option<PathBuf>,
-    broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
-    mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
-) -> yi_runtime::AgentSession {
-    let wall = yi_runtime::Wall::default();
-    walled_session(project, home, rlm_dir, sessions_dir, broker, mcp_read, wall)
-}
-
-fn walled_session(
-    project: &std::path::Path,
-    home: &std::path::Path,
-    rlm_dir: &std::path::Path,
-    sessions_dir: Option<PathBuf>,
-    broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
-    mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
-    wall: yi_runtime::Wall,
-) -> yi_runtime::AgentSession {
-    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
-    let mut session = yi_runtime::AgentSession::new(
-        yi_runtime::SessionConfig {
-            system_prompt: String::new(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: yi_loop::ExecutionMode::Sequential,
-        },
-        Arc::clone(&provider),
-    );
-    yi_runtime::attach_runtime(
-        &mut session,
-        yi_runtime::RuntimeWiring {
-            provider,
-            system_prompt: String::new(),
-            tool_execution: yi_loop::ExecutionMode::Sequential,
-            cwd: project.to_path_buf(),
-            home: home.to_path_buf(),
-            lane_slots: 1,
-            broker,
-            tools: Arc::new(yi_tools::builtin_tools),
-            depth: 0,
-            max_depth: 1,
-            rlm_dir: rlm_dir.to_path_buf(),
-            family_dir: None,
-            summarizer: None,
-            advisor: None,
-            auto_review: None,
-            plan_stale_turns: None,
-            plans_dir: Some(rlm_dir.join("plans")),
-            parent_link: None,
-            wall,
-            auto_background: None,
-            deadline: None,
-            kernel_prewarm: false,
-            mcp_read,
-            sessions_dir,
-            kernels: yi_runtime::fetch::KernelServiceMap::new(),
-        },
-    );
-    session
-}
-
 /// #598, #889: a walled juror's kernel wrote the tree and read walled files, since the wall was
 /// a check at the tool seam and in no profile; and a cell inherited `*_API_KEY`. The stores
 /// themselves are proven in `tools/tests/sandbox.rs` with a scratch HOME, not the runner's.
@@ -441,31 +377,6 @@ async fn a_global_harness_save_asks_the_permission_broker() -> TestResult {
         "a global harness save must ask and honor the answer (asked {asked}): {stdout}"
     );
     Ok(())
-}
-
-fn faux_model() -> yi_types::model::Model {
-    let zero = || serde_json::Number::from(0u64);
-    yi_types::model::Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: yi_types::model::ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
 }
 
 /// Incident: `exec.spawn`, the host half of the kernel's `bash()`, ran with no sandbox, so a

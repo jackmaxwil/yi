@@ -103,6 +103,33 @@ pub(crate) fn broker(cwd: &Path, asker: Option<Asker>) -> PermissionBroker {
     )
 }
 
+/// The person's asker, answered from a task on the test's own runtime: a sweep that holds it
+/// blocks the answer, so an inline sweep reads as a declination rather than waiting a person.
+pub(crate) fn asker_answered_elsewhere() -> Asker {
+    let (asking, asked) = tokio::sync::oneshot::channel::<()>();
+    let asking = std::sync::Mutex::new(Some(asking));
+    let (answer, answered) = std::sync::mpsc::channel::<()>();
+    let answered = std::sync::Mutex::new(answered);
+    let asker: Asker = Arc::new(move |_| {
+        if let Ok(Some(asking)) = asking.lock().map(|mut asking| asking.take()) {
+            let _the_sweep_asks = asking.send(());
+        }
+        let got = answered
+            .lock()
+            .map(|answered| answered.recv_timeout(Duration::from_secs(5)));
+        match got {
+            Ok(Ok(())) => AskOutcome::AllowOnce,
+            _ => AskOutcome::Reject,
+        }
+    });
+    tokio::spawn(async move {
+        if asked.await.is_ok() {
+            let _the_asker_outlives_the_answer = answer.send(());
+        }
+    });
+    asker
+}
+
 const LONG: Duration = Duration::from_secs(60);
 
 #[test]
@@ -336,20 +363,7 @@ async fn a_held_main_leaves_the_executor_free_for_the_answer() -> TestResult {
     let lane = Arc::new(repo.lane(LONG)?);
     let head = repo.head()?;
     repo.plant("heads/main", &head)?;
-    let (answer, answered) = std::sync::mpsc::channel::<()>();
-    let answered = std::sync::Mutex::new(answered);
-    let asker: Asker = Arc::new(move |_| {
-        let got = answered
-            .lock()
-            .map(|answered| answered.recv_timeout(Duration::from_secs(5)));
-        match got {
-            Ok(Ok(())) => AskOutcome::AllowOnce,
-            _ => AskOutcome::Reject,
-        }
-    });
-    tokio::spawn(async move {
-        let _the_receiver_outlives_the_sweep = answer.send(());
-    });
+    let asker = asker_answered_elsewhere();
     let broker = Arc::new(broker(&repo.project, Some(asker)));
     let rows = lane.sweep_off_executor(broker).await.concat();
     assert!(rows.contains("[pushed main to origin: "), "{rows}");
