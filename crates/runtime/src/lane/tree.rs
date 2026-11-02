@@ -4,13 +4,9 @@
 use std::path::Path;
 
 use super::hostgit::{git, git_by};
-use super::stage::{git_version, merge_tree_rows};
+use super::stage::{folds, merge_tree_rows};
 use super::warm::snapshot;
 use super::{LaneError, Sha};
-
-/// `git merge-tree --merge-base` and `--attr-source` together: older gits have no road here, since a
-/// fold over uncommitted trees has no checkout to fall back to.
-const FOLD_SINCE: (u32, u32) = (2, 43);
 
 /// `+added -deleted path`, as `git diff --numstat` counts them, from `against` to the tree's files.
 pub fn diff_rows(tree: &Path, against: &Sha) -> Result<Vec<String>, LaneError> {
@@ -137,7 +133,7 @@ pub struct Fold {
 /// counts once. Attributes are ours, as a checkout of ours would read them.
 pub fn fold(ours: &Path, other: &Path, other_base: &Sha) -> Result<Fold, LaneError> {
     let version = git(ours, &["--version"])?;
-    if git_version(&version).is_none_or(|at| at < FOLD_SINCE) {
+    if !folds(&version) {
         return Err(LaneError::Forge(format!(
             "merging trees needs git 2.43 and this one is {}",
             version.trim()

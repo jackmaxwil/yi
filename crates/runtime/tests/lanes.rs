@@ -3241,7 +3241,7 @@ fn checked_merge(
 async fn a_hand_back_merges_in_the_object_store_with_no_staging_lane() -> TestResult {
     let rig = Rig::new("merge-tree-road")?;
     let version = git(&rig.repo, &["--version"])?;
-    if yi_runtime::lane::stage::git_version(&version).is_none_or(|at| at < (2, 43)) {
+    if !yi_runtime::lane::stage::folds(&version) {
         return Ok(());
     }
     let log = rig.root.join("git-log");

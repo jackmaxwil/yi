@@ -38,9 +38,7 @@ pub fn parent_state(status: &str) -> Option<ParentState> {
         return None;
     }
     let mut state = ParentState::default();
-    let mut fields = status.split('\0').filter(|field| !field.is_empty());
-    while let Some(row) = fields.next() {
-        let (code, path) = (row.get(..2)?, row.get(3..)?);
+    for (code, path) in super::settle::status_records(status) {
         match code {
             "!!" => {
                 state.skipped.push(path.to_owned());
@@ -53,9 +51,6 @@ pub fn parent_state(status: &str) -> Option<ParentState> {
             _ => {
                 state.tracked_dirt = true;
                 state.left_out = state.left_out.saturating_add(1);
-                if code.starts_with('R') || code.starts_with('C') {
-                    let _the_old_name = fields.next();
-                }
             }
         }
     }

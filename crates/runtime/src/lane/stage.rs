@@ -13,6 +13,8 @@ use super::{LaneError, Pool, Sha};
 /// here still has 2.34, so an older or unreadable version takes the old road.
 const ATTR_SOURCE_SINCE: (u32, u32) = (2, 43);
 
+pub const FOLD_SINCE: (u32, u32) = (2, 43);
+
 /// `git version 2.54.0 (Apple Git-157)` to `(2, 54)`.
 #[must_use]
 pub fn git_version(text: &str) -> Option<(u32, u32)> {
@@ -20,6 +22,12 @@ pub fn git_version(text: &str) -> Option<(u32, u32)> {
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
     Some((major, minor))
+}
+
+/// Whether this git folds two snapshots: no checkout exists to fall back to below 2.43.
+#[must_use]
+pub fn folds(text: &str) -> bool {
+    git_version(text).is_some_and(|at| at >= FOLD_SINCE)
 }
 
 fn native(parent: &Path) -> bool {

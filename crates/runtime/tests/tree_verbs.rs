@@ -71,11 +71,19 @@ impl Rig {
     }
 }
 
-/// `merge-tree` on two snapshots needs 2.43, and one forge runner has 2.34: a fold refuses there by
-/// name, and nothing on that git can answer these.
+/// `merge-tree` on two snapshots needs 2.43 and one forge runner has 2.34, so a skip says it skipped:
+/// a green run past a 2.34 git is never read as these having run.
 fn folds(rig: &Rig) -> Result<bool, Box<dyn Error>> {
     let version = git(&rig.repo, &["--version"])?;
-    Ok(yi_runtime::lane::stage::git_version(&version).is_some_and(|at| at >= (2, 43)))
+    let foldable = yi_runtime::lane::stage::folds(&version);
+    if !foldable {
+        eprintln!(
+            "[skipped: {} folds no two trees (fold.since {}); these stay unrun]",
+            version.trim(),
+            yi_runtime::lane::stage::FOLD_SINCE.0
+        );
+    }
+    Ok(foldable)
 }
 
 fn read(path: &Path) -> Result<String, Box<dyn Error>> {
@@ -324,6 +332,20 @@ async fn a_discard_removes_a_free_tree_and_a_childs_is_refused() -> TestResult {
             .await
             .is_err()
     );
+    let kept = rig.fork("given").await?;
+    let mut asked = Map::new();
+    asked.insert("name".to_owned(), "kid".into());
+    asked.insert("role".to_owned(), "root".into());
+    asked.insert("tree".to_owned(), "given".into());
+    rig.family.host.spawn("look".to_owned(), asked)?;
+    assert!(rig.family.reaches("kid", "finished").await);
+    let refused = rig
+        .ask("tree.discard", json!({"tree": "given"}))
+        .await
+        .err()
+        .ok_or("a child's tree was discarded under it")?;
+    assert!(refused.contains("discard_worktree"), "{refused}");
+    assert!(kept.exists(), "the child's tree is still there");
     Ok(())
 }
 
