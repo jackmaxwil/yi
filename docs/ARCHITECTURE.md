@@ -172,7 +172,7 @@ are in `crates/runtime/tests/warm_checks.rs`.
 
 | boundary | what crosses | assume | instance | control | test |
 |---|---|---|---|---|---|
-| borrower → next borrower | files under the directory | honest, and sometimes wrong | I: ignored output read by the next check | `clean -ffdx` but `target`, `.venv`, `node_modules`, before each check and at release | `an_ignored_report_from_one_borrower_is_gone_for_the_next` |
+| borrower → next borrower | files under the directory | honest, and sometimes wrong | I: ignored output read by the next check | `clean -ffdx` but `target`, before each check and at release; `.venv` and `node_modules` go, since only cargo re-verifies what it keeps | `an_ignored_report_from_one_borrower_is_gone_for_the_next` |
 | | | | T: a stale binary passes a test with no build | under `target/<profile>` only `deps`, `build`, `.fingerprint`, `incremental` stay | `a_stale_binary_is_gone_and_cargos_bookkeeping_stays`, `a_warm_verdict_agrees_with_a_clean_worktree_across_a_rotation` |
 | | | | **T: a tampered `.rlib` planted for the next borrower** | **residual, below** | |
 | check → the pool | a slot left dirty | a check writes what it likes | D: a dirty slot reads as an orphan and the pool never frees | reset and scrub at release | `a_check_that_writes_and_edits_still_frees_its_directory` |

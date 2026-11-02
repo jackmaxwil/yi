@@ -64,12 +64,29 @@ impl Lane {
     pub fn release_warm(mut self) -> Result<(), LaneError> {
         self.released = true;
         let _pool = self.pool.lock()?;
-        git(&self.path, &["reset", "-q", "--hard"])?;
-        scrub(&self.path)?;
+        let cleaned = git(&self.path, &["reset", "-q", "--hard"]).and_then(|_| scrub(&self.path));
+        if let Err(error) = cleaned {
+            self.remove_warm_tree()?;
+            return Err(error);
+        }
         let branch = self.branch.as_str().to_owned();
         self.pool.detach(self.slot, None)?;
         let _kept_only_by_its_own_name = git(&self.pool.repo, &["branch", "-q", "-D", &branch]);
         self.pool.clear_session(self.slot)
+    }
+
+    /// Incident: a reset or a scrub that failed left the slot dirty with its session recorded, so
+    /// every later check waited on it. A warm tree holds no work; gone, the next claim makes a new one.
+    fn remove_warm_tree(&self) -> Result<(), LaneError> {
+        let (repo, text) = (&self.pool.repo, self.path.to_string_lossy().into_owned());
+        let _gone_already_is_fine = git(repo, &["worktree", "unlock", &text]);
+        self.pool.stop_warmer(self.slot)?;
+        std::fs::remove_dir_all(&self.path).map_err(super::io_error(&self.path))?;
+        let _the_next_add_prunes_too = git(repo, &["worktree", "prune", "--expire=now"]);
+        let branch = self.branch.as_str();
+        let _kept_only_by_its_own_name = git(repo, &["branch", "-q", "-D", branch]);
+        self.pool
+            .write_state(self.slot, &yi_types::lane::SlotState::default())
     }
 }
 
@@ -123,21 +140,9 @@ fn temp_index(tree: &Path) -> PathBuf {
 }
 
 /// Every check, since a contained process wrote this tree last. What it keeps is only what cargo
-/// rebuilds from if it doubts, so a stale binary cannot pass and an ignored report cannot be read.
+/// rebuilds from if it doubts: `.venv` and `node_modules` go, since no tool here re-verifies them.
 pub fn scrub(tree: &Path) -> Result<(), LaneError> {
-    git(
-        tree,
-        &[
-            "clean",
-            "-qffdx",
-            "-e",
-            "target",
-            "-e",
-            ".venv",
-            "-e",
-            "node_modules",
-        ],
-    )?;
+    git(tree, &["clean", "-qffdx", "-e", "target"])?;
     let profiles = std::fs::read_dir(tree.join("target"))
         .into_iter()
         .flatten()
