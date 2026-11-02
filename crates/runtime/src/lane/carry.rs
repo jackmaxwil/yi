@@ -395,3 +395,21 @@ pub fn carry_includes(
     }
     rows
 }
+
+#[cfg(test)]
+mod tests {
+    use super::matcher;
+
+    /// Dies with a matcher that reads `!keep.txt` as a file name: the exclusion matched nothing,
+    /// no row said so, and a file the person meant to leave behind was never mentioned.
+    #[test]
+    fn a_negated_include_pattern_is_named_not_matched() {
+        let mut rows = Vec::new();
+        let set = matcher(&["!keep.txt".to_owned()], &mut rows);
+        assert!(
+            rows.iter().any(|row| row.contains("is a negation")),
+            "{rows:?}"
+        );
+        assert!(!set.is_some_and(|set| set.is_match("keep.txt")));
+    }
+}
