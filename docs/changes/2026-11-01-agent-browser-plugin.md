@@ -1,4 +1,6 @@
 ---
+version: 0.872.0
+decisions: D528
 issue: Refs #1958
 growth: +495 about 120 lines are browser.rs's test module and 60 its verb table; weighed `--allowed-domains` (cut, CDNs break under a list of one site), a filtering proxy (cut), a contained daemon (cut, it needs the unix socket ban lifted), and a `needs:` column on the plugin table (cut, one row)
 raise: comments +33
