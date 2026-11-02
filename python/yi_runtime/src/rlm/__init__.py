@@ -588,6 +588,7 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``fork`` seeds the child with this session's history: 'none' (default), 'all'
     (inherits the parent model, so ``model``/``thinking`` are refused with it), or a
     positive turn count for the last N turns.
+    ``carry=['.env']`` copies gitignored files into a worktree child, which starts without them.
     ``isolation='worktree'`` gives the child its own checkout; hand it back with
     ``merge_worktree`` or ``discard_worktree``. ``isolation='container:<image>'`` is the
     same checkout and hand-back, with the child's bash run in a container of that image

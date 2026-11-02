@@ -19,6 +19,7 @@ pub mod refresh;
 pub mod request;
 pub mod retry;
 pub mod roots;
+pub mod search;
 
 pub mod schema;
 pub mod settle;

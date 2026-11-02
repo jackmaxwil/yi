@@ -239,3 +239,25 @@ async fn a_restore_after_a_conversation_rewind_also_moves_back_the_rewound_turns
     assert!(run.project.join("a.txt").exists(), "turn one's file stays");
     Ok(())
 }
+
+/// Dies with `restore` asked for a tree its store lacks, and with the refusal reading "no turn yet".
+#[tokio::test]
+async fn an_undo_whose_turn_end_is_in_another_store_moves_nothing() -> Result<(), Box<dyn Error>> {
+    let run = run(&["a"]).await?;
+    let missing = "0123456789abcdef0123456789abcdef01234567";
+    let data = yi_types::checkpoint::CheckpointData {
+        tree: missing.to_owned(),
+        at: yi_types::checkpoint::CheckpointAt::TurnEnd,
+        after: None,
+    };
+    lock_session(&run.store).append_custom_record(&data)?;
+    let outcome = yi_runtime::undo(&run.store, &run.project, &run.home);
+    let yi_runtime::UndoOutcome::Failed(why) = outcome else {
+        return Err(
+            "read as no checkpoint, which tells the person this session took no turn".into(),
+        );
+    };
+    assert!(why.contains("so nothing moved"), "{why}");
+    assert!(run.project.join("a").exists(), "the tree stands");
+    Ok(())
+}

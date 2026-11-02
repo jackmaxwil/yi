@@ -272,7 +272,8 @@ fn poll_forge(forge: Forge, url: &str, lane: &Lane, pr: PrNumber) -> Result<Land
                 .unwrap_or_default()
         }
     };
-    let behind = git(lane.path(), &["rev-list", "--count", "HEAD..origin/main"])
+    let range = format!("HEAD..origin/{}", super::hostgit::trunk(lane.pool().repo()));
+    let behind = git(lane.path(), &["rev-list", "--count", &range])
         .ok()
         .and_then(|text| text.trim().parse::<u32>().ok())
         .unwrap_or(0);
@@ -461,8 +462,13 @@ impl LaneHandle {
     /// aborts, verifies the tree is clean again, and names the files; nothing is pushed.
     fn merge_main(&self) -> Result<(), LaneError> {
         self.with_lane(|lane| {
-            let _ = git(lane.pool().repo(), &["fetch", "-q", "origin", "main"]);
-            if git(lane.path(), &["merge", "--no-edit", "origin/main"]).is_ok() {
+            let trunk = super::hostgit::trunk(lane.pool().repo());
+            super::hostgit::own_head(lane.path(), lane.branch())?;
+            let _ = git(lane.pool().repo(), &["fetch", "-q", "origin", trunk.as_str()]);
+            let merge = ["merge", "--no-edit", &format!("origin/{trunk}")].map(str::to_owned);
+            let merge: Vec<&str> = merge.iter().map(String::as_str).collect();
+            let identity = super::hostgit::identity(lane.path());
+            if git(lane.path(), &[&identity[..], &merge[..]].concat()).is_ok() {
                 return Ok(());
             }
             let files: Vec<String> = git(
@@ -805,8 +811,21 @@ pub fn lane_line(view: &SlotView, ledger: Option<&DaemonLedger>) -> String {
     }
 }
 
-pub fn claim_root(pool: &Pool, session: &str) -> Result<Lane, LaneError> {
+/// A failed toolchain sync starts the session unsynced, and the notice says so.
+pub fn claim_root(pool: &Pool, session: &str) -> Result<(Lane, Option<String>), LaneError> {
     let lane = pool.claim(session, ClaimBase::Main)?;
-    lane.sync()?;
-    Ok(lane)
+    let notice = lane.sync().err().map(|error| {
+        let text = error.to_string();
+        let reason: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        format!(
+            "lane {}: toolchain sync failed, the session starts unsynced: {}",
+            lane.slot(),
+            reason.join(" · ")
+        )
+    });
+    Ok((lane, notice))
 }

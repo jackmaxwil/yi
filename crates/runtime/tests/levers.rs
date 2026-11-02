@@ -155,23 +155,24 @@ fn an_override_is_applied_whole_or_refused_with_its_reason() -> Result<(), Box<d
     Ok(())
 }
 
-/// A swarm run may hold 128 live children and 128 workers under one parent, and not one more:
-/// the defaults stay the everyday fuses, and only an eval run's levers raise them.
+/// A swarm run may hold 128 children under one parent and not one more: the root's own kernel counts
+/// as a live session, so the family's cap is one higher. The defaults stay the everyday fuses.
 #[test]
 fn a_swarm_run_raises_the_family_to_128_and_no_further() -> Result<(), Box<dyn Error>> {
     let path = overrides(
         "swarm",
-        r#"{"family.cap": 128, "family.max_children": 128}"#,
+        r#"{"family.cap": 129, "family.max_children": 128}"#,
     )?;
     let raised = load(&path)?;
     std::fs::remove_file(&path)?;
-    assert_eq!((raised.family_cap, raised.family_max_children), (128, 128));
-    for key in ["family.cap", "family.max_children"] {
-        let path = overrides("over", &format!(r#"{{"{key}": 129}}"#))?;
+    assert_eq!((raised.family_cap, raised.family_max_children), (129, 128));
+    for (key, past) in [("family.cap", 130), ("family.max_children", 129)] {
+        let path = overrides("over", &format!(r#"{{"{key}": {past}}}"#))?;
         let refused = load(&path);
         std::fs::remove_file(&path)?;
-        let error = refused.err().ok_or(format!("{key} 129 was admitted"))?;
-        assert!(error.contains(key) && error.contains("128"), "{error}");
+        let error = refused.err().ok_or(format!("{key} {past} was admitted"))?;
+        let top = (past - 1).to_string();
+        assert!(error.contains(key) && error.contains(&top), "{error}");
     }
     assert_eq!(
         (
