@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.874.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.875.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -320,6 +320,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D531 | forge commands leave by home config and tree recipes by pin | a contained forge CLI has no route to its login | drop the class and sandbox.hostRecipes |
 | D530 | a contained git reaches origin through a host mirror and an outbox; a non-main branch goes unasked, trunk, main, master and a tag ask a person with a diffstat | the owner's top friction | remove the rewrite in GitLane::assign and move the git verbs back to Egress; amends D205 |
 | D529 | a package install into the tree runs contained and unasked in auto; a global one, a publish and brew or gem still ask and leave | every install asked or failed now that the proxy gives them a network | restore the classify and host_need arms |
 | D528 | the agent-browser plugin runs its daemon outside the sandbox and its Chrome inside one, with Chrome's own sandbox off | a Chrome outside read a planted ~/.ssh key and any contained program reached it over its loopback debug port, so the agent-desktop shape was unsafe; the owner, 2026-11-01: "One yes, then web", accepting that a page breaking Chrome reads source code and that contained programs can use the web session while it lives | delete the row and the table |
