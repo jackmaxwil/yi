@@ -268,14 +268,14 @@ impl GitLane {
             Wanted::Branch(branch) => (format!("refs/heads/{branch}"), branch.to_string()),
             Wanted::Tag(tag) => (format!("refs/tags/{tag}"), format!("tag {tag}")),
         };
-        // Invariant: only the lane's own branch is forwarded unasked. The outbox is contained-writable,
-        // so any other name could publish a commit that process wrote.
+        // Invariant: the outbox is contained-writable, so a branch someone else owns is asked about;
+        // a name origin has never tracked is the push a contained kernel exists to make.
         let held = match wanted {
             Wanted::Tag(_) => true,
             Wanted::Branch(branch) => {
                 *branch == trunk(repo)
                     || matches!(branch.as_str(), "main" | "master")
-                    || self.own.as_ref() != Some(branch)
+                    || (self.own.as_ref() != Some(branch) && on_origin(repo, branch))
             }
         };
         let stat = if held {
@@ -365,6 +365,19 @@ impl GitLane {
             Err(error) => Forward::Rejected(fenced(&error.to_string())),
         }
     }
+}
+
+fn on_origin(repo: &Path, branch: &BranchName) -> bool {
+    git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{branch}"),
+        ],
+    )
+    .is_ok()
 }
 
 fn asked(label: &str, stat: &str, broker: &PermissionBroker) -> bool {
