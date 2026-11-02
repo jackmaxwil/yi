@@ -383,7 +383,7 @@ pub fn runs(command: &str) -> bool {
     crate::safety::command_segments(command).iter().any(|argv| {
         let argv = crate::safety::unwrapped(argv).unwrap_or(argv);
         argv.first()
-            .is_some_and(|word| crate::safety::program(word) == PROGRAM)
+            .is_some_and(|word| crate::safety::program_of(word) == PROGRAM)
     })
 }
 

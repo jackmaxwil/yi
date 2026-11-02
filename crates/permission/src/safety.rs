@@ -262,7 +262,7 @@ fn push_token(argv: &mut Vec<String>, token: &mut String, quoted: &mut bool) {
     *quoted = false;
 }
 
-pub(crate) fn program(argv0: &str) -> &str {
+pub fn program_of(argv0: &str) -> &str {
     argv0.rsplit('/').next().unwrap_or(argv0)
 }
 
@@ -329,7 +329,7 @@ const GIT_VALUED_OPTIONS: [&str; 6] = [
     "-c",
 ];
 
-pub(crate) fn git_subcommand(argv: &[String]) -> Option<&str> {
+pub fn git_subcommand(argv: &[String]) -> Option<&str> {
     let mut tokens = argv.iter().skip(1).map(String::as_str);
     while let Some(token) = tokens.next() {
         if GIT_VALUED_OPTIONS.contains(&token) {
@@ -496,7 +496,7 @@ pub fn classify(argv: &[String]) -> Class {
     if assigned > 0 {
         return classify(argv.get(assigned..).unwrap_or_default()).max(Class::Unknown);
     }
-    let name = program(argv0);
+    let name = program_of(argv0);
     if wrapper(name) {
         let skip = if name == "timeout" { 2 } else { 1 };
         return match argv.get(1).is_some_and(|next| !next.starts_with('-')) {
@@ -572,7 +572,7 @@ fn worst_reading(rest: &[String]) -> Class {
         .filter_map(|at| rest.get(at..))
         .filter(|argv| {
             argv.first().is_some_and(|word| {
-                !word.starts_with('-') && !word.contains('=') && !wrapper(program(word))
+                !word.starts_with('-') && !word.contains('=') && !wrapper(program_of(word))
             })
         })
         .map(classify)
@@ -668,7 +668,7 @@ pub fn verdict_of(segments: &[Vec<String>]) -> Verdict {
                 };
             }
             Class::Egress => {
-                let git = (argv.iter().position(|word| program(word) == "git"))
+                let git = (argv.iter().position(|word| program_of(word) == "git"))
                     .and_then(|at| git_subcommand(argv.get(at..)?));
                 let reason = match git {
                     Some(verb) => {
@@ -711,7 +711,7 @@ pub(crate) fn unwrapped(argv: &[String]) -> Option<&[String]> {
     // A wrapper runs another program, so the scope is that program, not `timeout` or `nice`.
     while let Some(first) = argv.first() {
         let raw = first.trim_start_matches('\u{0}');
-        let token = program(raw);
+        let token = program_of(raw);
         let wrapper =
             PASSTHROUGH.binary_search(&token).is_ok() || matches!(token, "timeout" | "env");
         let carried = raw.starts_with('-')
@@ -728,7 +728,7 @@ pub(crate) fn unwrapped(argv: &[String]) -> Option<&[String]> {
 
 fn scope(argv: &[String]) -> Option<String> {
     let argv = unwrapped(argv)?;
-    let name = program(argv.first()?.trim_start_matches('\u{0}'));
+    let name = program_of(argv.first()?.trim_start_matches('\u{0}'));
     let verb = match name {
         "git" => git_subcommand(argv),
         name if VERB_PROGRAMS.binary_search(&name).is_ok() => subcommand(argv),
@@ -748,7 +748,7 @@ pub fn refused_scopes(command: &str) -> Vec<String> {
     };
     let reader = |argv: &&Vec<String>| {
         argv.first()
-            .is_some_and(|argv0| SAFE.binary_search(&program(argv0)).is_ok())
+            .is_some_and(|argv0| SAFE.binary_search(&program_of(argv0)).is_ok())
     };
     let tiers: [Vec<&Vec<String>>; 3] = [
         segments
@@ -890,14 +890,14 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
     for argv in &mut segments {
         while argv
             .first()
-            .is_some_and(|first| OPENERS.contains(&program(first)))
+            .is_some_and(|first| OPENERS.contains(&program_of(first)))
         {
             argv.remove(0);
         }
     }
     segments.retain(|argv| {
         argv.first()
-            .is_some_and(|first| !HEADERS.contains(&program(first)))
+            .is_some_and(|first| !HEADERS.contains(&program_of(first)))
     });
     segments
 }

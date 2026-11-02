@@ -80,33 +80,24 @@ impl GitLane {
     /// seeded host, asked by nobody. Any remote counts, by whatever name; a git that cannot say
     /// whether one exists gets the same, never fail open.
     pub(crate) fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
-        static NO_LANE: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
         if let Some(lane) = lane {
             return lane.assign.clone();
         }
-        // Once a tree: a kernel asks per cell, and a changed answer would restart it.
-        let mut memo = NO_LANE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let memo = memo.get_or_insert_with(HashMap::new);
-        (memo.entry(cwd.to_path_buf()).or_insert_with(|| {
-            let remote = git(cwd, &["remote"]).map_or(true, |list| !list.trim().is_empty());
-            if !remote {
-                return Vec::new();
-            }
-            [
-                "GIT_CONFIG_COUNT=3",
-                "GIT_CONFIG_KEY_0=maintenance.auto",
-                "GIT_CONFIG_VALUE_0=false",
-                "GIT_CONFIG_KEY_1=protocol.allow",
-                "GIT_CONFIG_VALUE_1=never",
-                "GIT_CONFIG_KEY_2=protocol.file.allow",
-                "GIT_CONFIG_VALUE_2=always",
-            ]
-            .map(str::to_owned)
-            .to_vec()
-        }))
-        .clone()
+        let remote = git(cwd, &["remote"]).map_or(true, |list| !list.trim().is_empty());
+        if !remote {
+            return Vec::new();
+        }
+        [
+            "GIT_CONFIG_COUNT=3",
+            "GIT_CONFIG_KEY_0=maintenance.auto",
+            "GIT_CONFIG_VALUE_0=false",
+            "GIT_CONFIG_KEY_1=protocol.allow",
+            "GIT_CONFIG_VALUE_1=never",
+            "GIT_CONFIG_KEY_2=protocol.file.allow",
+            "GIT_CONFIG_VALUE_2=always",
+        ]
+        .map(str::to_owned)
+        .to_vec()
     }
 
     /// One repository's lane, its pushes cut at `forward_timeout`.
@@ -275,7 +266,7 @@ impl GitLane {
             Wanted::Branch(branch) => {
                 *branch == trunk(repo)
                     || matches!(branch.as_str(), "main" | "master")
-                    || (self.own.as_ref() != Some(branch) && on_origin(repo, branch))
+                    || (self.own.as_ref() != Some(branch) && tracked(repo, branch).is_some())
             }
         };
         let stat = if held {
@@ -312,7 +303,7 @@ impl GitLane {
         let Wanted::Branch(branch) = wanted else {
             return "a tag".to_owned();
         };
-        let range = format!("refs/remotes/origin/{branch}...{}", sha.as_str());
+        let range = format!("{}...{}", tracking_ref(branch), sha.as_str());
         let Ok(rows) = git(self.pool.repo(), &["diff", "--numstat", &range]) else {
             return "no diff against origin to show".to_owned();
         };
@@ -330,13 +321,10 @@ impl GitLane {
 
     fn push(&self, wanted: &Wanted, sha: &Sha, target: &str) -> Forward {
         let repo = self.pool.repo();
-        let tracking = match wanted {
-            Wanted::Branch(branch) => format!("refs/remotes/origin/{branch}"),
-            Wanted::Tag(_) => String::new(),
+        let old = match wanted {
+            Wanted::Branch(branch) => tracked(repo, branch),
+            Wanted::Tag(_) => None,
         };
-        let old = git(repo, &["rev-parse", "--verify", "-q", &tracking])
-            .ok()
-            .and_then(|text| Sha::parse(&text));
         let deadline = Instant::now().checked_add(self.forward_timeout);
         let refspec = format!("{}:{target}", sha.as_str());
         let args = ["push", "-q", "origin", refspec.as_str()];
@@ -367,17 +355,18 @@ impl GitLane {
     }
 }
 
-fn on_origin(repo: &Path, branch: &BranchName) -> bool {
+fn tracking_ref(branch: &BranchName) -> String {
+    format!("refs/remotes/origin/{branch}")
+}
+
+/// What origin has for a branch: the ask, the stat and the push's old value answer from one read.
+fn tracked(repo: &Path, branch: &BranchName) -> Option<Sha> {
     git(
         repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/origin/{branch}"),
-        ],
+        &["rev-parse", "--verify", "-q", &tracking_ref(branch)],
     )
-    .is_ok()
+    .ok()
+    .and_then(|text| Sha::parse(&text))
 }
 
 fn asked(label: &str, stat: &str, broker: &PermissionBroker) -> bool {
@@ -428,17 +417,17 @@ fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
     std::fs::write(alternates, format!("{}\n", objects.display())).map_err(io)
 }
 
-/// Invariant: a word of the command is `git` and another is the remote read, so a file named
-/// `fetch.log` or a `grep pull` pays for no fetch it never asked for.
+/// Invariant: a segment's program is `git` and its own subcommand is the remote read, so a file
+/// named `fetch.log`, a `grep pull` or a commit message mentioning one pays for no fetch.
 fn reads_a_remote(command: &str) -> bool {
-    let words: Vec<&str> = command.split_whitespace().collect();
-    let git = words
-        .iter()
-        .any(|word| *word == "git" || word.ends_with("/git"));
-    let read = words
-        .iter()
-        .any(|word| matches!(*word, "fetch" | "pull" | "ls-remote"));
-    git && read
+    yi_permission::command_segments(command).iter().any(|argv| {
+        argv.first()
+            .is_some_and(|program| yi_permission::program_of(program) == "git")
+            && matches!(
+                yi_permission::git_subcommand(argv),
+                Some("fetch" | "pull" | "ls-remote")
+            )
+    })
 }
 
 #[cfg(test)]
@@ -474,14 +463,40 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the substring test: a file whose name holds the verb costs no fetch.
+    /// Dies with the word-scan: a program that merely says the words, or a commit message quoting
+    /// one, costs no fetch.
     #[test]
     fn only_a_git_word_fetches() {
         assert!(super::reads_a_remote("git fetch origin"));
         assert!(super::reads_a_remote("cargo nextest && git pull --ff-only"));
+        assert!(super::reads_a_remote("git -C /tmp/r ls-remote origin"));
         assert!(!super::reads_a_remote(
             "grep -n pull crates/runtime/src/lane/mod.rs"
         ));
         assert!(!super::reads_a_remote("tail -20 git fetch.log"));
+        assert!(!super::reads_a_remote("git status && make fetch"));
+        assert!(!super::reads_a_remote("git diff && rg fetch docs/"));
+    }
+
+    /// Dies with the memo: a tree asked before its origin existed kept the bare answer for ever, and
+    /// that answer is the one with no transport block.
+    #[test]
+    fn a_remote_added_after_the_first_ask_closes_the_transport() -> Result<(), String> {
+        let tree = std::env::temp_dir().join("yi-assign-late-remote");
+        let _ = std::fs::remove_dir_all(&tree);
+        std::fs::create_dir_all(&tree).map_err(|error| error.to_string())?;
+        git(&tree, &["init", "-q"]).map_err(|error| error.to_string())?;
+        assert_eq!(GitLane::assign_for(None, &tree), Vec::<String>::new());
+        git(
+            &tree,
+            &["remote", "add", "origin", "https://example.invalid/r"],
+        )
+        .map_err(|error| error.to_string())?;
+        let assign = GitLane::assign_for(None, &tree);
+        assert!(
+            assign.contains(&"GIT_CONFIG_VALUE_1=never".to_owned()),
+            "{assign:?}"
+        );
+        Ok(())
     }
 }
