@@ -42,8 +42,6 @@ impl Default for Limits {
 
 const HEAD_MAX_BYTES: usize = 8 * 1024;
 const RELAY_STACK_BYTES: usize = 64 * 1024;
-/// Incident: a closed descriptor made accept fail forever, and the loop spent the core retrying it.
-const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Every key a package manager or HTTP client reads for its proxy, lowercase forms included.
 const PROXY_KEYS: [&str; 16] = [
@@ -385,11 +383,8 @@ impl Proxy {
         std::thread::Builder::new()
             .name("yi-egress".to_owned())
             .spawn(move || {
-                for stream in listener.incoming() {
-                    match stream {
-                        Ok(stream) => accept(&accepting, stream),
-                        Err(_) => std::thread::sleep(ACCEPT_BACKOFF),
-                    }
+                for stream in listener.incoming().flatten() {
+                    accept(&accepting, stream);
                 }
             })
             .map_err(Error::Bind)?;
