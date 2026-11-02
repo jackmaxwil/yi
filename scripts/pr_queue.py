@@ -136,7 +136,7 @@ def listing(batch, what):
     died on an AttributeError that never said what the forge answered. The next tick starts over."""
     if isinstance(batch, list):
         return batch
-    raise SystemExit(f"queue: the forge did not list {what}: {(batch or {}).get('message')}")
+    raise SystemExit(f"queue: the forge did not list {what}: {batch.get('message') if isinstance(batch, dict) else batch}")
 
 
 def label_ids():
@@ -641,6 +641,15 @@ def forge_cases():
     calls = {"queued_pulls": queued_pulls, "enqueued_at": lambda: enqueued_at(1), "label_ids": label_ids,
              "comments": lambda: pr_review.comments("o/r", 1), "tick": lambda: tick("on")}
     with mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(sys.modules[__name__], "git", mock.Mock()):
+        # A body that is JSON but not an object still has to reach the log.
+        with mock.patch.object(forge_pr, "fgj_api", lambda *a: "bad gateway"):
+            try:
+                queued_pulls()
+            except SystemExit as stop:
+                if "bad gateway" not in str(stop):
+                    bad.append(f"a string answer stopped without its words: {stop}")
+            except Exception as err:
+                bad.append(f"a string answer died: {err!r}")
         for name, call in calls.items():
             with mock.patch.object(forge_pr, "fgj_api", lambda *a: locked):
                 try:
