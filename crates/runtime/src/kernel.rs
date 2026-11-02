@@ -436,6 +436,9 @@ impl KernelService {
         if let Some(path) = yi_tools::plugin::search_path(&self.options.home) {
             env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
         }
+        for (key, value) in yi_tools::plugin::browser_env(&self.options.home) {
+            env.push((key.to_owned(), value.to_string_lossy().into_owned()));
+        }
         env
     }
 
@@ -970,6 +973,19 @@ mod tests {
         let path = path_of(&home).ok_or("no PATH for the kernel")?;
         let first = std::env::split_paths(&path).next();
         assert_eq!(first, Some(ripwire.dir(&home)));
+        // A cell's `agent-browser` missing this starts a Chrome with no box.
+        let browser = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+        std::fs::create_dir_all(browser.dir(&home))?;
+        for file in [browser.name, "config.json", "chrome-box"] {
+            std::fs::write(browser.dir(&home).join(file), "#!/bin/sh\n")?;
+        }
+        let env = KernelService::new(options(&home)).kernel_env(None);
+        let config = (env.into_iter())
+            .find_map(|(key, value)| (key == "AGENT_BROWSER_CONFIG").then_some(value));
+        assert_eq!(
+            config.as_deref().map(std::path::Path::new),
+            Some(browser.dir(&home).join("config.json").as_path())
+        );
         Ok(())
     }
 
