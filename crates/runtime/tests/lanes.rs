@@ -65,19 +65,7 @@ fn quiet() -> Quiescence {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
-    let output = yi_tools::command("git")
-        .current_dir(cwd)
-        .args(args)
-        .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    crate::worktree::git(cwd, args)
 }
 
 struct Rig {
@@ -665,6 +653,31 @@ fn a_clean_quit_keeps_uncommitted_work_from_the_next_claim() -> TestResult {
     Ok(())
 }
 
+/// A submodule at `name` in a lane: its own repository, its gitlink staged and committed, and the
+/// `.gitmodules` entry a checkout carries when `modules` asks for one.
+fn submodule(lane: &Path, name: &str, modules: bool) -> Result<PathBuf, Box<dyn Error>> {
+    let sub = lane.join(name);
+    std::fs::create_dir_all(&sub)?;
+    git(&sub, &["init", "-q", "-b", "main"])?;
+    git(&sub, &["config", "user.email", "t@example.invalid"])?;
+    git(&sub, &["config", "user.name", "t"])?;
+    std::fs::write(sub.join("file.txt"), "one\n")?;
+    git(&sub, &["add", "file.txt"])?;
+    git(&sub, &["commit", "-q", "-m", "first"])?;
+    if modules {
+        std::fs::write(
+            lane.join(".gitmodules"),
+            format!("[submodule \"{name}\"]\n\tpath = {name}\n\turl = ./nowhere\n"),
+        )?;
+        git(lane, &["add", ".gitmodules"])?;
+    }
+    let head = git(&sub, &["rev-parse", "HEAD"])?;
+    let link = format!("160000,{},{}", head.trim(), name);
+    git(lane, &["update-index", "--add", "--cacheinfo", &link])?;
+    git(lane, &["commit", "-q", "-m", "a submodule"])?;
+    Ok(sub)
+}
+
 /// Host git stays out of a submodule, so `status` cannot see work inside one. Dies with a populated
 /// gitlink read as clean: the lane went back to the pool, and the next claim wiped the only copy.
 #[test]
@@ -672,23 +685,24 @@ fn work_inside_a_submodule_keeps_its_lane() -> TestResult {
     let rig = Rig::new("quit-submodule")?;
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-one", ClaimBase::Main)?;
-    let head = git(lane.path(), &["rev-parse", "HEAD"])?;
-    let link = format!("160000,{},sub", head.trim());
-    git(
-        lane.path(),
-        &["update-index", "--add", "--cacheinfo", &link],
-    )?;
-    git(lane.path(), &["commit", "-q", "-m", "a submodule"])?;
-    let work = lane.path().join("sub/edited.txt");
-    std::fs::create_dir_all(lane.path().join("sub"))?;
-    std::fs::write(&work, "only copy\n")?;
+    let sub = submodule(lane.path(), "sub", false)?;
+    std::fs::write(sub.join("edited.txt"), "only copy\n")?;
+    let text = format_lanes(&pool.list()?, None);
+    let line = text.lines().next().unwrap_or_default();
+    assert!(
+        line.contains("1 modified"),
+        "the listing counts a gitlink with no .gitmodules: {text}"
+    );
     assert_eq!(lane.release()?.to_string(), "1 uncommitted path");
     let refused = pool.claim("s-two", ClaimBase::Main);
     assert!(
         matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
         "{refused:?}"
     );
-    assert!(work.is_file(), "the work survived the claim");
+    assert!(
+        sub.join("edited.txt").is_file(),
+        "the work survived the claim"
+    );
     Ok(())
 }
 
@@ -699,21 +713,7 @@ fn a_clean_submodule_frees_its_lane_and_an_edit_in_it_keeps_it() -> TestResult {
     let rig = Rig::new("clean-submodule")?;
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-one", ClaimBase::Main)?;
-    let sub = lane.path().join("sub");
-    std::fs::create_dir_all(&sub)?;
-    git(&sub, &["init", "-q", "-b", "main"])?;
-    git(&sub, &["config", "user.email", "t@example.invalid"])?;
-    git(&sub, &["config", "user.name", "t"])?;
-    std::fs::write(sub.join("file.txt"), "one\n")?;
-    git(&sub, &["add", "file.txt"])?;
-    git(&sub, &["commit", "-q", "-m", "first"])?;
-    let head = git(&sub, &["rev-parse", "HEAD"])?;
-    let link = format!("160000,{},sub", head.trim());
-    git(
-        lane.path(),
-        &["update-index", "--add", "--cacheinfo", &link],
-    )?;
-    git(lane.path(), &["commit", "-q", "-m", "a submodule"])?;
+    let sub = submodule(lane.path(), "sub", false)?;
     std::fs::write(sub.join("file.txt"), "edited\n")?;
     assert_eq!(lane.release()?.to_string(), "1 uncommitted path");
     let back = pool.claim("s-one", ClaimBase::Main)?;
@@ -725,6 +725,20 @@ fn a_clean_submodule_frees_its_lane_and_an_edit_in_it_keeps_it() -> TestResult {
     git(&sub, &["config", "status.showUntrackedFiles", "no"])?;
     std::fs::write(sub.join("new.txt"), "work\n")?;
     assert_eq!(again.release()?.to_string(), "1 uncommitted path");
+    Ok(())
+}
+
+/// Dies with a quoted gitlink path read as no directory: `ls-files` escapes a name beyond ASCII, so
+/// a submodule full of edits was skipped and its lane went back to the pool.
+#[test]
+fn an_edited_submodule_named_beyond_ascii_keeps_its_lane() -> TestResult {
+    let rig = Rig::new("quit-submodule-utf8")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = submodule(lane.path(), "sub-é", false)?;
+    std::fs::write(sub.join("file.txt"), "edited\n")?;
+    assert_eq!(lane.release()?.to_string(), "1 uncommitted path");
+    assert!(sub.join("file.txt").is_file(), "the work survived");
     Ok(())
 }
 
@@ -760,6 +774,21 @@ fn a_slot_an_older_binary_released_dirty_is_never_wiped() -> TestResult {
             && line.ends_with(" — reap discards the uncommitted paths"),
         "the refusal's listing names the slot it counted: {text}"
     );
+    Ok(())
+}
+
+/// Dies with a listing that reads only the parent's status: the submodule's edit is invisible to
+/// it, so the row said clean while the claim refused the slot as dirty.
+#[test]
+fn a_listing_counts_work_inside_a_submodule() -> TestResult {
+    let rig = Rig::new("list-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = submodule(lane.path(), "sub", true)?;
+    std::fs::write(sub.join("file.txt"), "edited\n")?;
+    let text = format_lanes(&pool.list()?, None);
+    let line = text.lines().next().unwrap_or_default();
+    assert!(line.contains("1 modified"), "the listing counts it: {text}");
     Ok(())
 }
 
@@ -824,6 +853,67 @@ fn a_reap_past_the_status_cap_says_at_least() -> TestResult {
     Ok(())
 }
 
+/// A wipe runs `checkout -f` and `clean -qfd` at the lane's top, and git enters no submodule for
+/// either. Dies with the reap claiming work it left in place.
+#[test]
+fn a_reap_says_a_submodules_work_survived_it() -> TestResult {
+    let rig = Rig::new("reap-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = submodule(lane.path(), "sub", false)?;
+    std::fs::write(sub.join("file.txt"), "only copy\n")?;
+    let slot = lane.slot();
+    lane.release()?;
+    let message = pool.reap(slot)?;
+    assert!(
+        message.contains("kept inside a submodule"),
+        "the reap says what survived: {message}"
+    );
+    assert!(
+        !message.contains("discarded"),
+        "and claims nothing it did not drop: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sub.join("file.txt"))?,
+        "only copy\n"
+    );
+    let refused = pool.claim("s-two", ClaimBase::Main);
+    assert!(
+        matches!(refused, Err(LaneError::PoolFull { .. })),
+        "the slot stays out of the pool while the work does: {refused:?}"
+    );
+    Ok(())
+}
+
+/// A lane a child ran `git init` in keeps that directory: `clean -fd` refuses to remove an
+/// untracked repository without a second `-f`. Dies with the survivor named a submodule's.
+#[test]
+fn a_reap_names_a_nested_repository_as_left_in_place() -> TestResult {
+    let rig = Rig::new("reap-nested")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let nested = lane.path().join("nested");
+    std::fs::create_dir_all(&nested)?;
+    git(&nested, &["init", "-q"])?;
+    std::fs::write(nested.join("file.txt"), "only copy\n")?;
+    let slot = lane.slot();
+    lane.release()?;
+    let message = pool.reap(slot)?;
+    assert!(
+        message.contains("kept in place"),
+        "the survivor is named for where it is: {message}"
+    );
+    assert!(
+        !message.contains("inside a submodule"),
+        "and not for a submodule nothing measured: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(nested.join("file.txt"))?,
+        "only copy\n"
+    );
+    Ok(())
+}
+
 /// A resume finds its own slot first: a lower slot freed meanwhile is not where its work is.
 #[test]
 fn a_resume_takes_its_own_dirty_slot_over_a_lower_free_one() -> TestResult {
@@ -859,7 +949,10 @@ fn a_discard_says_what_it_dropped_and_frees_the_slot() -> TestResult {
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-one", ClaimBase::Main)?;
     std::fs::write(lane.path().join("draft-é.txt"), "unsaved\n")?;
-    assert_eq!(lane.discard()?.to_string(), "1 uncommitted path");
+    assert_eq!(
+        lane.discard()?.discarded(),
+        "; 1 uncommitted path discarded"
+    );
     let next = pool.claim("s-two", ClaimBase::Main)?;
     assert_eq!(git(next.path(), &["status", "--porcelain"])?, "");
     Ok(())
@@ -4011,6 +4104,21 @@ async fn a_repository_with_no_identity_still_hands_back() -> TestResult {
     git(&rig.repo, &["config", "--unset", "user.name"])?;
     git(&rig.repo, &["config", "user.useConfigOnly", "true"])?;
     // nextest gives each test its own process, so this empty global config reaches no other.
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
+    hand_back_commits(&rig).await
+}
+
+/// Dies with an identity probe keyed on `user.email` alone: with the name unset and `useConfigOnly`
+/// on, git refuses the hand-back with `empty ident name … not allowed`.
+#[tokio::test]
+async fn a_repository_with_only_an_email_still_hands_back() -> TestResult {
+    let rig = Rig::new("email-only-identity")?;
+    git(&rig.repo, &["config", "--unset", "user.name"])?;
+    git(&rig.repo, &["config", "user.email", "t@example.invalid"])?;
+    git(&rig.repo, &["config", "user.useConfigOnly", "true"])?;
     unsafe {
         std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
         std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");

@@ -141,6 +141,12 @@ pub fn decide(
         };
     }
 
+    if let Some(why) = call.command.and_then(crate::desktop::refused) {
+        return Decision::Deny {
+            reason: format!("{why}. This is denied in every mode."),
+        };
+    }
+
     let subject = call.command.unwrap_or(call.display);
     if let Some(rule) = config_rules
         .iter()
@@ -247,6 +253,16 @@ fn auto(call: &ToolCall<'_>, context: &CatastrophicContext) -> Decision {
             call,
             &format!("the command reads a credential store ({hit})"),
         );
+    }
+    // Invariant: one yes reaches whatever an app can do, so a review model never answers this.
+    if crate::desktop::drives(command) {
+        let why = match crate::desktop::source(command) {
+            Some(crate::browser::PROGRAM) => {
+                "agent-browser reaches the internet, or does what its sandbox cannot hold"
+            }
+            _ => "agent-desktop reads or acts in another app, outside the sandbox",
+        };
+        return ask(call, why);
     }
     match crate::safety::verdict(command) {
         crate::safety::Verdict::Allow => Decision::Allow {

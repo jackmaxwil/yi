@@ -122,7 +122,7 @@ impl Lane {
         }
         let slot = self.slot;
         let pool = self.pool.clone();
-        self.release_inner(false).map_err(Unsettled::Lost)?;
+        self.take_slot(false).map_err(Unsettled::Lost)?;
         Ok(Settled {
             candidate,
             slot,
@@ -191,7 +191,7 @@ impl Staging {
     pub fn keep(mut self) -> Result<Sha, LaneError> {
         let integrated = self.integrated.clone();
         if let Some(lane) = self.lane.take() {
-            lane.release_inner(false)?;
+            lane.take_slot(false)?;
         }
         Ok(integrated)
     }
