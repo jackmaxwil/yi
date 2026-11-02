@@ -64,6 +64,18 @@ static LANES: Mutex<Option<HashMap<PathBuf, Option<Arc<GitLane>>>>> = Mutex::new
 // ponytail: one assign per tree for the process's life, as the lanes are; a `git remote add` needs a restart.
 static ASSIGNS: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
 
+/// `GIT_CONFIG_COUNT` and its keyed pairs, the one spelling both the lane and the no-lane assign use.
+fn env_pairs(rules: Vec<(String, String)>) -> Vec<String> {
+    std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
+        .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
+            [
+                format!("GIT_CONFIG_KEY_{at}={key}"),
+                format!("GIT_CONFIG_VALUE_{at}={value}"),
+            ]
+        }))
+        .collect()
+}
+
 impl GitLane {
     /// `None` with no origin, no pool or a credentialed origin: `git push` then fails contained
     /// and its refusal asks, as it did before there was a lane.
@@ -102,19 +114,16 @@ impl GitLane {
         if git(cwd, &["config", "--get", "remote.origin.url"]).is_err() {
             return Vec::new();
         }
-        [
-            "GIT_CONFIG_COUNT=4",
-            "GIT_CONFIG_KEY_0=maintenance.auto",
-            "GIT_CONFIG_VALUE_0=false",
-            "GIT_CONFIG_KEY_1=protocol.https.allow",
-            "GIT_CONFIG_VALUE_1=never",
-            "GIT_CONFIG_KEY_2=protocol.ssh.allow",
-            "GIT_CONFIG_VALUE_2=never",
-            "GIT_CONFIG_KEY_3=protocol.git.allow",
-            "GIT_CONFIG_VALUE_3=never",
-        ]
-        .map(str::to_owned)
-        .to_vec()
+        env_pairs(
+            [
+                ("maintenance.auto", "false"),
+                ("protocol.https.allow", "never"),
+                ("protocol.ssh.allow", "never"),
+                ("protocol.git.allow", "never"),
+            ]
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .to_vec(),
+        )
     }
 
     /// One repository's lane, its pushes cut at `forward_timeout`.
@@ -151,14 +160,7 @@ impl GitLane {
             Some(pushurl) => (format!("url.{}.insteadOf", outbox.display()), pushurl),
             None => (format!("url.{}.pushInsteadOf", outbox.display()), url),
         });
-        let assign = std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
-            .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
-                [
-                    format!("GIT_CONFIG_KEY_{at}={key}"),
-                    format!("GIT_CONFIG_VALUE_{at}={value}"),
-                ]
-            }))
-            .collect();
+        let assign = env_pairs(rules);
         let lane = Self {
             pool,
             mirror,
