@@ -149,6 +149,57 @@ fn the_assign_config_blocks_the_network_transports_and_no_local_one() -> TestRes
     Ok(())
 }
 
+/// Dies with a fork per spawn: one tree's no-lane assign is one answer for the process's life, and
+/// the spawns that ask while it is being built share that build.
+#[test]
+fn the_no_lane_assign_forks_once_for_a_tree_however_many_ask() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = Repo::new("assign-once")?;
+    let shim = Scratch::new("yi-gitlane-shim")?;
+    let log = shim.join("forks");
+    let path = std::env::var_os("PATH").ok_or("no PATH")?;
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .ok_or("no git on PATH")?;
+    let body = format!(
+        "#!/bin/sh\ncase \"$*\" in *remote.origin.url*) echo x >> '{}'; sleep 0.2;; esac\nexec '{}' \"$@\"\n",
+        log.display(),
+        real.display()
+    );
+    std::fs::write(shim.join("git"), body)?;
+    std::fs::set_permissions(shim.join("git"), std::fs::Permissions::from_mode(0o755))?;
+    let joined = std::env::join_paths(
+        std::iter::once(shim.to_path_buf()).chain(std::env::split_paths(&path)),
+    )?;
+    // nextest gives each test its own process.
+    unsafe { std::env::set_var("PATH", joined) };
+    let asking: Vec<_> = (0..8)
+        .map(|_| {
+            let cwd = repo.project.clone();
+            std::thread::spawn(move || GitLane::assign_for(None, &cwd))
+        })
+        .collect();
+    let mut answers = Vec::new();
+    for thread in asking {
+        answers.push(thread.join().map_err(|_| "a caller panicked")?);
+    }
+    let forks = std::fs::read_to_string(&log)
+        .map(|text| text.lines().count())
+        .unwrap_or(0);
+    assert_eq!(
+        forks, 1,
+        "the no-lane assign forked {forks} times for one tree"
+    );
+    let first = answers.first().ok_or("no answer")?;
+    assert!(!first.is_empty(), "{first:?}");
+    assert!(
+        answers.iter().all(|answer| answer == first),
+        "the callers read different assigns: {answers:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_branch_in_the_outbox_lands_on_origin_and_the_ref_is_gone() -> TestResult {
     let repo = Repo::new("land")?;

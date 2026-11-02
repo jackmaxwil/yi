@@ -1,7 +1,7 @@
 ---
 issue: Closes #1940
 growth: +268 is the flight states, the bounded capture, the record, the cut's notice and the transport block. Weighed for deletion: a capture per call on the tool's own thread, which is 42-96 ms a call in a tool's wait; and no guard, which leaves a tree too large for it running git after every call
-raise: tests +316, comments +26, over-cap +1, crate tools +74, crate types +16, crate runtime +203
+raise: tests +514, comments +26, crate tools +79, crate types +16, crate runtime +272
 decision: A mutating tool call is a capture point, off the tool's thread, and restore scope stays the turn's pair of checkpoints | a tree's history is what bisecting and a per-child log read | drop note_mutating_call
 ---
 A tool call that writes or runs now leaves a `custom{tree_snapshot}` entry naming the tree it left, captured on a background thread so the tool never waits. Calls during a capture coalesce into one more. `/undo` reads none of these and still goes back to the turn's start.

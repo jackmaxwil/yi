@@ -298,7 +298,60 @@ mod deadline {
         let checkpoints = Checkpoints::open(&store, &project)?;
         // The index exists only once a capture has written it.
         checkpoints.capture()?;
-        let index = (std::fs::read_dir(&store)?.flatten())
+        let repo = store_dir(&store)?;
+        let theirs = repo.join(format!("{}.lock", index_name(&repo)?));
+        std::fs::write(&theirs, "")?;
+        std::fs::write(shim.join("slow"), "")?;
+        let killed = checkpoints.capture_within(Duration::from_millis(200));
+        assert!(killed.is_err(), "{killed:?}");
+        assert!(theirs.exists(), "another process's lock went");
+        Ok(())
+    }
+
+    /// Incident: a per-call index named `index-<hash>.call` had its lock derived by replacing that
+    /// extension, so a kill cleared the shared index's lock and left the capture's own behind.
+    #[test]
+    fn a_killed_per_call_capture_clears_its_own_lock() -> Result<(), Box<dyn Error>> {
+        let (root, shim) = (
+            Scratch::new("yi-capture-call")?,
+            Scratch::new("yi-capture-shim3")?,
+        );
+        let project = root.join("project");
+        std::fs::create_dir_all(&project)?;
+        std::fs::write(project.join("a.txt"), "a\n")?;
+        slow_add(&shim)?;
+        let store = root.join("store");
+        let checkpoints = Checkpoints::open(&store, &project)?;
+        let repo = store_dir(&store)?;
+        std::fs::write(shim.join("slow"), "")?;
+        let killed = checkpoints
+            .own_index()
+            .capture_within(Duration::from_millis(200));
+        assert!(
+            matches!(killed, Err(CheckpointError::Deadline { .. })),
+            "{killed:?}"
+        );
+        std::fs::remove_file(shim.join("slow"))?;
+        let stale: Vec<String> = (std::fs::read_dir(&repo)?.flatten())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".call.lock"))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "a killed per-call capture left its own lock: {stale:?}"
+        );
+        assert!(
+            checkpoints
+                .own_index()
+                .capture_within(Duration::from_secs(30))
+                .is_ok()
+        );
+        Ok(())
+    }
+
+    /// The store's own directory, found from the `HEAD` a capture leaves in it.
+    fn store_dir(store: &std::path::Path) -> Result<std::path::PathBuf, Box<dyn Error>> {
+        let head = (std::fs::read_dir(store)?.flatten())
             .flat_map(|repo| {
                 std::fs::read_dir(repo.path())
                     .into_iter()
@@ -310,16 +363,8 @@ mod deadline {
                 path.file_name()
                     .is_some_and(|name| name.to_string_lossy().starts_with("HEAD"))
             });
-        let repo = index
-            .and_then(|head| head.parent().map(std::path::Path::to_path_buf))
-            .ok_or("no store")?;
-        let theirs = repo.join(format!("{}.lock", index_name(&repo)?));
-        std::fs::write(&theirs, "")?;
-        std::fs::write(shim.join("slow"), "")?;
-        let killed = checkpoints.capture_within(Duration::from_millis(200));
-        assert!(killed.is_err(), "{killed:?}");
-        assert!(theirs.exists(), "another process's lock went");
-        Ok(())
+        head.and_then(|head| head.parent().map(std::path::Path::to_path_buf))
+            .ok_or_else(|| "no store".into())
     }
 
     fn index_name(repo: &std::path::Path) -> Result<String, Box<dyn Error>> {

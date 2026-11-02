@@ -63,6 +63,8 @@ pub struct GitLane {
 static LANES: Mutex<Option<HashMap<PathBuf, Option<Arc<GitLane>>>>> = Mutex::new(None);
 // ponytail: one assign per tree for the process's life, as the lanes are; a `git remote add` needs a restart.
 static ASSIGNS: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
+// One gate per tree, so two spawns of one tree wait on whoever is opening it and no other tree's.
+static OPENING: Mutex<Option<HashMap<PathBuf, Arc<Mutex<()>>>>> = Mutex::new(None);
 
 /// `GIT_CONFIG_COUNT` and its keyed pairs, the one spelling both the lane and the no-lane assign use.
 fn env_pairs(rules: Vec<(String, String)>) -> Vec<String> {
@@ -75,29 +77,53 @@ fn env_pairs(rules: Vec<(String, String)>) -> Vec<String> {
         }))
         .collect()
 }
+/// One answer per tree for the process's life: built outside the map's lock, so one tree's first
+/// spawn never holds another's, and under a gate of its own, so two of them open a tree once.
+fn memo<T: Clone>(
+    cache: &Mutex<Option<HashMap<PathBuf, T>>>,
+    cwd: &Path,
+    build: impl FnOnce() -> T,
+) -> T {
+    let cached = || {
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|entries| entries.get(cwd))
+            .cloned()
+    };
+    if let Some(hit) = cached() {
+        return hit;
+    }
+    let gate = OPENING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert_with(HashMap::new)
+        .entry(cwd.to_path_buf())
+        .or_default()
+        .clone();
+    let _opening = gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(hit) = cached() {
+        return hit;
+    }
+    let built = build();
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert_with(HashMap::new)
+        .insert(cwd.to_path_buf(), built.clone());
+    built
+}
 
 impl GitLane {
     /// `None` with no origin, no pool or a credentialed origin: `git push` then fails contained
     /// and its refusal asks, as it did before there was a lane.
-    /// Opened outside the map's lock: `open` fetches a mirror, and one tree's first spawn must not
-    /// hold every other tree's.
     pub(crate) fn for_tree(cwd: &Path) -> Option<Arc<Self>> {
-        if let Some(cached) = LANES
-            .lock()
-            .ok()?
-            .as_ref()
-            .and_then(|lanes| lanes.get(cwd))
-            .cloned()
-        {
-            return cached;
-        }
-        let opened = Self::open(cwd, FORWARD_TIMEOUT).map(Arc::new);
-        let mut lanes = LANES.lock().ok()?;
-        lanes
-            .get_or_insert_with(HashMap::new)
-            .entry(cwd.to_path_buf())
-            .or_insert(opened)
-            .clone()
+        memo(&LANES, cwd, || {
+            Self::open(cwd, FORWARD_TIMEOUT).map(Arc::new)
+        })
     }
 
     /// What a contained git gets where a repository has an origin and no lane: no transport at all.
@@ -106,25 +132,10 @@ impl GitLane {
     /// The `GIT_CONFIG_*` a contained git inherits: the network transports refused, a local remote
     /// left to work. Incident: `protocol.allow=never` refused the file transport too.
     pub fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
-        if let Some(lane) = lane {
-            return lane.assign().to_vec();
+        match lane {
+            Some(lane) => lane.assign().to_vec(),
+            None => memo(&ASSIGNS, cwd, || Self::forked_assign(cwd)),
         }
-        // The fork runs outside the lock, so one tree's first spawn never blocks another's.
-        if let Some(cached) = ASSIGNS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(|assigns| assigns.get(cwd))
-        {
-            return cached.clone();
-        }
-        let assign = Self::forked_assign(cwd);
-        ASSIGNS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_or_insert_with(HashMap::new)
-            .insert(cwd.to_path_buf(), assign.clone());
-        assign
     }
 
     /// One `git config` fork per tree, not per spawn: the fork cost the background window its margin.
