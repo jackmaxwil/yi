@@ -503,5 +503,6 @@ edited by hand.
 - [D530](adr/d530.md) - a contained git reaches origin through a host mirror and an outbox; a...
 - [D531](adr/d531.md) - forge commands leave by home config and tree recipes by pin
 - [D532](adr/d532.md) - one shadow store per repository with an index per tree
+- [D533](adr/d533.md) - Linux contains with Landlock through a re-exec of yi, and the host compares...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
