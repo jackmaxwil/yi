@@ -8,8 +8,8 @@ use yi_types::todo::TodoList;
 use yi_types::url::Url;
 
 use super::{
-    HeartbeatService, JobSpec, JobStore, RunOutcome, new_job, next_run_at_for_schedule,
-    parse_iso_ms, parse_schedule, shared,
+    HeartbeatService, JobSpec, JobStore, RunOutcome, Zone, new_job, next_run_at_for_schedule,
+    parse_local_ms, parse_schedule, shared,
 };
 use crate::todo::{Op, TodoStore};
 
@@ -64,7 +64,10 @@ pub fn wait_schedule(address: &str, now: u64) -> Result<(CronSchedule, u64), Str
         .strip_prefix(CLOCK_SCHEME)
         .ok_or_else(|| format!("{address:?} is not a clock:// address"))?
         .trim();
-    if let Some(when) = text.strip_prefix("at ").and_then(parse_iso_ms) {
+    if let Some(when) = text
+        .strip_prefix("at ")
+        .and_then(|when| parse_local_ms(when, &Zone::local()))
+    {
         let schedule = CronSchedule {
             kind: ScheduleKind::Once,
             expression: text.to_owned(),
@@ -95,7 +98,16 @@ pub type Wait = (Option<PlanId>, TodoLabel, BlockedOn);
 /// is an `exec` wait on its command's exit, so a plan written before channels still unblocks.
 pub fn wait_of(on: &BlockedOn) -> Option<(String, Option<String>)> {
     match on {
-        BlockedOn::Channel { address, filter } => Some((address.clone(), filter.clone())),
+        // Incident: `file://build.done` unblocked on its first `exists:false` reading, and the woken
+        // agent re-armed it seven times in one turn while the file never appeared.
+        BlockedOn::Channel { address, filter } => Some((
+            address.clone(),
+            filter.clone().or_else(|| {
+                address
+                    .starts_with("file://")
+                    .then(|| "exists=true".to_owned())
+            }),
+        )),
         BlockedOn::External {
             probe: Some(command),
         } => Some((

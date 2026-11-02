@@ -10,9 +10,9 @@ use super::{Op, Target, TodoError, TodoStore, mirror, text};
 
 pub const NAME: &str = "todo";
 
-pub const DESCRIPTION: &str = "Your task list; the user sees every change live. Create it before multi-step work: set with a checklist (`## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked). While a plan is open the plan is the list, and these ops move only your own items. One op per state change: start, done with evidence, block, unblock, drop, append, rm, view. A todo call rides with real work. Full guide: read(\"yi://tools/todo\").";
+pub const DESCRIPTION: &str = "Your task list; the user sees every change live. Create it before multi-step work: set with a checklist (`## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked). While a plan is open the plan is the list, and these ops move only your own items. One op per state change: start, done with evidence, block, unblock, drop, append, rm, view. A todo call rides with real work. A reminder is a todo blocked on an address (`clock://at <ISO time>`, `clock://in 30m`, `file://<path>`), which wakes you when it fires; one that repeats is `await rlm.subscribe(\"clock://<cron>\", create={\"label\": ...})` in ipython, never a system scheduler. Full guide: read(\"yi://tools/todo\").";
 
-pub const GUIDE: &str = "Your task list; the user sees every change live. Create it before multi-step work (init with phases, or set with a checklist: `## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked, two spaces nest one level). While a plan is open the plan is the list: its todos move by the plan tool, and these ops move only your own items. Every item is in one state and one op moves it: start (pending→running, one at a time), done with evidence (running→done, only after its check passed), block on user|external|child with a note on what unblocks it, unblock, drop with a reason, append (optionally under a parent), rm, view. Labels are verbatim and unique. A todo call rides with real work in the same message. Every result ends with next: lines you can copy.";
+pub const GUIDE: &str = "Your task list; the user sees every change live. Create it before multi-step work (init with phases, or set with a checklist: `## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked, two spaces nest one level). While a plan is open the plan is the list: its todos move by the plan tool, and these ops move only your own items. Every item is in one state and one op moves it: start (pending→running, one at a time), done with evidence (running→done, only after its check passed), block on user|external|child or an address with a note on what unblocks it, unblock, drop with a reason, append (optionally under a parent), rm, view. A reminder is a todo blocked on an address: `clock://at <ISO time>`, `clock://in 30m` or `file://<path>` wakes you when it fires, restarts included. One that repeats is `await rlm.subscribe(\"clock://<cron>\", create={\"label\": ...})` in ipython, never a system scheduler, which this session cannot see or stop. Labels are verbatim and unique. A todo call rides with real work in the same message. Every result ends with next: lines you can copy.";
 
 const OPS: [&str; 10] = [
     "set", "init", "append", "start", "done", "drop", "block", "unblock", "rm", "view",
@@ -228,6 +228,41 @@ pub fn unkey_op(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
     Cow::Owned(fixed)
 }
 
+fn arms_a_wait(word: &str) -> bool {
+    word.starts_with(crate::schedule::clock::CLOCK_SCHEME)
+        || crate::schedule::channel::check_address(word).is_ok()
+}
+
+fn refuse_a_wait_outside_on(op: &str, args: &Map<String, Value>) -> Result<(), ArgError> {
+    // Incident: `set` with `on=exec://…` left the row running and armed nothing, while the agent
+    // told the user the watch was live.
+    if op != "block" && args.contains_key("on") {
+        return Err(ArgError::Malformed {
+            op: "block",
+            field: "on",
+            cause: format!("`on` belongs to block, not {op}: make the item, then block it"),
+        });
+    }
+    // Incident: a wait written in `note`, or as the value of `block`, left no `on`, so the row
+    // waited on the user, nothing fired, and the agent told the user the reminder was set.
+    if op == "block" && !args.contains_key("on") {
+        let stray = ["note", "block"].into_iter().find(|field| {
+            string(args, field).is_some_and(|text| text.split_whitespace().any(arms_a_wait))
+        });
+        if let Some(field) = stray {
+            return Err(ArgError::Malformed {
+                op: "block",
+                field,
+                cause: format!(
+                    "`{field}` names an address, but only `on` arms one, so nothing would fire; \
+                     pass on=<the address>, or on=user if it waits on the user"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
     let args = &unkey_op(args);
     let op = string(args, "op")
@@ -240,6 +275,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         "set" if !list && item_list(args).is_some() => "init",
         given => given,
     };
+    refuse_a_wait_outside_on(op, args)?;
     Ok(match op {
         "set" => Op::Set {
             list: need_string(args, "set", "list")?,
@@ -316,6 +352,20 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                         address,
                         filter: string(args, "filter"),
                     }
+                }
+                // Incident: `at 2026-11-02T09:00:00-08:00` with no scheme was kept as a blocker
+                // nothing fires, and the agent told the user the reminder was set.
+                BlockedOn::Other(word)
+                    if word.starts_with("at ")
+                        || crate::schedule::parse_schedule(&word, yi_session::now_ms()).is_ok() =>
+                {
+                    return Err(ArgError::Malformed {
+                        op: "block",
+                        field: "on",
+                        cause: format!(
+                            "`{word}` is a time, so nothing would fire it; write `clock://{word}`"
+                        ),
+                    });
                 }
                 on => on,
             },

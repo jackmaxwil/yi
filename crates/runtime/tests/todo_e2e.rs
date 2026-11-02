@@ -1657,6 +1657,109 @@ fn a_session_todos_ask_waits_for_the_reply_and_records_the_pick() -> TestResult 
     Ok(())
 }
 
+/// Dies with a time missing its scheme kept as a blocker: nothing fires it, and GLM told the user
+/// the reminder was set.
+#[test]
+fn an_address_outside_on_is_refused_and_prose_is_not() -> TestResult {
+    let (_root, session) = session("stray-address")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    call(
+        &tool,
+        json!({"op": "set", "list": "- [ ] renew the cert\n- [ ] ask about the docs"}),
+    );
+
+    // Verbatim from GLM 5.3 flash: each armed nothing and the row went to the user.
+    for (args, field) in [
+        (
+            json!({"op": "block", "id": "t1", "reason": "a scheduled reminder",
+                "note": "clock://at 2026-11-02T09:00:00-08:00 (9am PST tomorrow). Wakes me to renew the staging TLS cert."}),
+            "note",
+        ),
+        (
+            json!({"op": "block", "id": "t1", "note": "file://build.done", "note2": "block"}),
+            "note",
+        ),
+        (
+            json!({"op": "block", "id": "t1", "block": "file://build.done",
+                "note": "Wakes when build.done exists; then tell the user."}),
+            "block",
+        ),
+    ] {
+        let (refused, text) = call(&tool, args);
+        assert!(refused, "a wait with no `on` was taken: {text}");
+        assert!(
+            text.contains(&format!("`{field}` names an address")),
+            "{text}"
+        );
+    }
+    let first = store.list().items().next().map(|todo| todo.state.clone());
+    assert!(
+        !matches!(first, Some(TodoState::Blocked { .. })),
+        "{first:?}"
+    );
+
+    for (id, args) in [
+        (
+            "t1",
+            json!({"note": "see https://example.com/runbook for what to ask"}),
+        ),
+        (
+            "t2",
+            json!({"on": "user", "note": "does file://build.done belong in the docs?"}),
+        ),
+    ] {
+        let mut call_args = json!({"op": "block", "id": id});
+        for (key, value) in args.as_object().into_iter().flatten() {
+            call_args[key] = value.clone();
+        }
+        let (refused, text) = call(&tool, call_args);
+        assert!(!refused, "prose naming a link was refused: {text}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_block_on_a_time_with_no_scheme_is_refused() -> TestResult {
+    let (_root, session) = session("bare-word")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    call(&tool, json!({"op": "set", "list": "- [ ] renew the cert"}));
+
+    let (refused, text) = call(
+        &tool,
+        json!({"op": "block", "id": "t1", "on": "at 2026-11-02T09:00:00-08:00", "note": "wait"}),
+    );
+    assert!(refused, "a blocker nothing fires was taken: {text}");
+    assert!(
+        text.contains("clock://at 2026-11-02T09:00:00-08:00"),
+        "{text}"
+    );
+    let open = store.list().items().next().map(|todo| todo.state.clone());
+    assert!(!matches!(open, Some(TodoState::Blocked { .. })), "{open:?}");
+
+    // GLM's spelling: the wait rode a `set`, which took the row and dropped the wait.
+    let (refused, text) = call(
+        &tool,
+        json!({"op": "set", "list": "- [>] watch for build.done", "filter": "ok=true",
+            "on": "exec://test -f build.done?every=30s"}),
+    );
+    assert!(
+        refused,
+        "a wait on a set armed nothing and said nothing: {text}"
+    );
+    assert!(text.contains("`on` belongs to block"), "{text}");
+
+    for word in ["user", "external", "child", "a docs reviewer"] {
+        let (refused, text) = call(
+            &tool,
+            json!({"op": "block", "id": "t1", "on": word, "note": "wait"}),
+        );
+        assert!(!refused, "{word}: {text}");
+    }
+    Ok(())
+}
+
 /// The tool refuses an address nothing can serve, naming why, and keeps one it can.
 #[test]
 fn a_block_on_a_clock_address_is_checked_before_it_waits() -> TestResult {
