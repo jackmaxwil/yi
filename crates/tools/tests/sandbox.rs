@@ -121,6 +121,17 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
         Some("/usr/bin/env"),
         "the kernel starts through `env -u`, which drops secret-named variables"
     );
+
+    let assign = [
+        "GIT_CONFIG_COUNT=1".to_owned(),
+        "GIT_CONFIG_KEY_0=protocol.https.allow".to_owned(),
+        "GIT_CONFIG_VALUE_0=never".to_owned(),
+    ];
+    let (_, blocked) = sandbox.kernel_prefix(own, &assign);
+    assert!(
+        blocked.ends_with(&assign),
+        "the kernel's git keeps the transport block past the scrub: {blocked:?}"
+    );
     Ok(())
 }
 

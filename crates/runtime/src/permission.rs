@@ -21,10 +21,12 @@ mod egress;
 mod forge;
 mod hooked;
 pub(crate) use hooked::claude_dir;
+mod inflight;
+use inflight::InFlight;
 mod kept;
 pub(crate) use kept::protected;
 mod late;
-use late::{Answered, InFlight, Late};
+use late::{Answered, Late};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {

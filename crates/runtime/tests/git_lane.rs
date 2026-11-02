@@ -140,6 +140,12 @@ fn the_assign_config_blocks_the_network_transports_and_no_local_one() -> TestRes
         "{}",
         String::from_utf8_lossy(&remote.stderr)
     );
+    let plain = ls("http://127.0.0.1:9/x.git")?;
+    let plain = String::from_utf8_lossy(&plain.stderr);
+    assert!(
+        plain.contains("transport 'http' not allowed"),
+        "a plain http origin keeps the transport the assign exists to refuse: {plain}"
+    );
     Ok(())
 }
 

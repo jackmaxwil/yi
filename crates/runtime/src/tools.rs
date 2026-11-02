@@ -831,6 +831,9 @@ impl ToolAdapter {
                     {
                         crate::affordance::append(&mut output.result, &line);
                     }
+                    if mutating && let Some(row) = crate::checkpoint::take_snapshots_off_row(&cwd) {
+                        crate::affordance::append(&mut output.result, &row);
+                    }
                     let text = result_text(&output.result);
                     if let Some(rules) = &rules {
                         let failed =

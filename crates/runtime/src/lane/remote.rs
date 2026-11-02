@@ -79,12 +79,24 @@ fn env_pairs(rules: Vec<(String, String)>) -> Vec<String> {
 impl GitLane {
     /// `None` with no origin, no pool or a credentialed origin: `git push` then fails contained
     /// and its refusal asks, as it did before there was a lane.
+    /// Opened outside the map's lock: `open` fetches a mirror, and one tree's first spawn must not
+    /// hold every other tree's.
     pub(crate) fn for_tree(cwd: &Path) -> Option<Arc<Self>> {
+        if let Some(cached) = LANES
+            .lock()
+            .ok()?
+            .as_ref()
+            .and_then(|lanes| lanes.get(cwd))
+            .cloned()
+        {
+            return cached;
+        }
+        let opened = Self::open(cwd, FORWARD_TIMEOUT).map(Arc::new);
         let mut lanes = LANES.lock().ok()?;
-        let lanes = lanes.get_or_insert_with(HashMap::new);
         lanes
+            .get_or_insert_with(HashMap::new)
             .entry(cwd.to_path_buf())
-            .or_insert_with(|| Self::open(cwd, FORWARD_TIMEOUT).map(Arc::new))
+            .or_insert(opened)
             .clone()
     }
 
@@ -97,15 +109,21 @@ impl GitLane {
         if let Some(lane) = lane {
             return lane.assign().to_vec();
         }
-        let mut assigns = ASSIGNS
+        // The fork runs outside the lock, so one tree's first spawn never blocks another's.
+        if let Some(cached) = ASSIGNS
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let assigns = assigns.get_or_insert_with(HashMap::new);
-        if let Some(cached) = assigns.get(cwd) {
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|assigns| assigns.get(cwd))
+        {
             return cached.clone();
         }
         let assign = Self::forked_assign(cwd);
-        assigns.insert(cwd.to_path_buf(), assign.clone());
+        ASSIGNS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .insert(cwd.to_path_buf(), assign.clone());
         assign
     }
 
@@ -117,9 +135,12 @@ impl GitLane {
         env_pairs(
             [
                 ("maintenance.auto", "false"),
+                ("protocol.ftp.allow", "never"),
+                ("protocol.ftps.allow", "never"),
+                ("protocol.git.allow", "never"),
+                ("protocol.http.allow", "never"),
                 ("protocol.https.allow", "never"),
                 ("protocol.ssh.allow", "never"),
-                ("protocol.git.allow", "never"),
             ]
             .map(|(key, value)| (key.to_owned(), value.to_owned()))
             .to_vec(),

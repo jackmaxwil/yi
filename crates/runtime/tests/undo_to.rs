@@ -321,12 +321,19 @@ async fn a_tree_too_slow_to_capture_stops_trying_and_says_so() -> TestResult {
         row.contains("(snapshot.budget_ms 500); t.head() still works]"),
         "{row}"
     );
+    let spent: usize =
+        std::iter::from_fn(|| yi_runtime::take_snapshots_off_row(&run.project)).count();
+    assert!(
+        spent <= 1,
+        "the cut prints one row, not one per call after it: {spent}"
+    );
     Ok(())
 }
 
-/// Dies with `restore` asked for a tree its store lacks: a bad-object error on the way to a rewind.
+/// Dies with an undo that says the session has no checkpoint when it has one: the turn end sits in
+/// the store the session upgrade left behind, where what the turn moved cannot be told apart.
 #[tokio::test]
-async fn an_undo_whose_turn_end_is_in_another_store_moves_nothing() -> Result<(), Box<dyn Error>> {
+async fn an_undo_whose_turn_end_is_in_another_store_says_so() -> Result<(), Box<dyn Error>> {
     let run = run(&["a"]).await?;
     let missing = "0123456789abcdef0123456789abcdef01234567";
     let data = yi_types::checkpoint::CheckpointData {
@@ -336,7 +343,13 @@ async fn an_undo_whose_turn_end_is_in_another_store_moves_nothing() -> Result<()
     };
     lock_session(&run.store).append_custom_record(&data)?;
     let outcome = yi_runtime::undo(&run.store, &run.project, &run.home);
-    assert!(matches!(outcome, yi_runtime::UndoOutcome::NoCheckpoint));
+    let yi_runtime::UndoOutcome::Failed(why) = outcome else {
+        return Err("an undo across stores reported nothing to restore".into());
+    };
+    assert!(
+        why.contains("older checkpoint store") && why.contains("nothing was restored"),
+        "{why}"
+    );
     assert!(run.project.join("a").exists(), "the tree stands");
     Ok(())
 }

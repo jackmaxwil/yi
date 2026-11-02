@@ -217,6 +217,27 @@ impl Checkpoints {
         bound.capture()
     }
 
+    /// A handle whose git uses an index of its own, so a background capture never queues a turn's
+    /// behind it; a store from before one was shared keeps the single index it has.
+    #[must_use]
+    pub fn own_index(&self) -> Self {
+        let index = self
+            .index
+            .as_ref()
+            .map(|index| index.with_extension("call"));
+        Self {
+            serial: index
+                .as_ref()
+                .map_or_else(|| Arc::clone(&self.serial), |index| serial_for(index)),
+            git_dir: self.git_dir.clone(),
+            work_tree: self.work_tree.clone(),
+            staged: self.staged.clone(),
+            index,
+            legacy: None,
+            until: None,
+        }
+    }
+
     /// A capture with `excluded` (paths relative to the project) left out of the tree; the
     /// next `add --all` puts them back in the shadow index.
     pub fn capture_excluding(&self, excluded: &[&Path]) -> Result<TreeId, CheckpointError> {

@@ -68,8 +68,8 @@ pub mod web_search;
 pub mod wiring;
 
 pub use checkpoint::{
-    RecordedCheckpoint, UndoOutcome, describe_undo, over_budget, recorded, snapshots_off_row, undo,
-    undo_notes, undo_to, wire_turn_checkpoints,
+    RecordedCheckpoint, UndoOutcome, describe_undo, over_budget, recorded, snapshots_off_row,
+    take_snapshots_off_row, undo, undo_notes, undo_to, wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
 
