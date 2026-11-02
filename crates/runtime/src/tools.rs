@@ -76,10 +76,10 @@ fn result_text(result: &yi_types::event::ToolResult) -> String {
 }
 
 /// The source a bash call's text came from when it is not Yi's own: a command that runs the desktop
-/// program, or the shell tool's own mark on a background job that one started.
+/// or browser program, or the shell tool's own mark on a background job that one started.
 fn external_source<'a>(command: &str, details: &'a Value) -> Option<std::borrow::Cow<'a, str>> {
-    if yi_permission::runs(command) {
-        return Some(std::borrow::Cow::Borrowed(yi_permission::DESKTOP_SOURCE));
+    if let Some(source) = yi_permission::source(command) {
+        return Some(std::borrow::Cow::Borrowed(source));
     }
     details
         .get("externalSource")
@@ -711,7 +711,8 @@ impl ToolAdapter {
                                         sandbox
                                     },
                                 );
-                            context.spawn = Some(reporter.spawn_hook(wall.clone()));
+                            context.spawn =
+                                Some(reporter.spawn_hook(wall.clone(), context.cwd.clone()));
                             contained = context.sandbox.as_ref().map(|_| reporter);
                         } else if wall.container.is_none() {
                             outside = reporter.outside_notice(tool.name(), &args, &outcome);

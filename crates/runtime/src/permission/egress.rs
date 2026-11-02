@@ -37,7 +37,8 @@ pub(super) struct Named {
 impl crate::wiring::RuntimeWiring {
     /// Where a kernel `bash()` job runs, and what it asks for its proxy credentials.
     pub(crate) fn exec_home(&self) -> (std::path::PathBuf, Option<yi_tools::SpawnFn>) {
-        let spawn = (self.broker.as_ref()).map(|broker| broker.spawn_hook(self.wall.clone()));
+        let spawn = (self.broker.as_ref())
+            .map(|broker| broker.spawn_hook(self.wall.clone(), self.cwd.clone()));
         (self.cwd.clone(), spawn)
     }
 }
@@ -50,19 +51,41 @@ impl PermissionBroker {
         self
     }
 
-    /// A contained spawn's proxy credentials, or the reason it may not start: with no proxy a
-    /// contained process would have no network and no row saying why.
-    pub(crate) fn spawn_hook(self: &Arc<Self>, wall: crate::wall::Wall) -> yi_tools::SpawnFn {
+    /// `sandbox.hostRecipes`, from the person's own config.
+    #[must_use]
+    pub fn with_host_recipes(self, recipes: Vec<yi_types::config::HostRecipe>) -> Self {
+        let _first_wiring_wins = self.host_recipes.set(recipes);
+        self
+    }
+
+    /// A contained spawn's proxy credentials and git lane, or the reason it may not start: with no
+    /// proxy a contained process would have no network and no row saying why.
+    pub(crate) fn spawn_hook(
+        self: &Arc<Self>,
+        wall: crate::wall::Wall,
+        cwd: std::path::PathBuf,
+    ) -> yi_tools::SpawnFn {
         let broker = Arc::clone(self);
-        Arc::new(move || {
+        Arc::new(move |command: &str| {
             let lease = broker.egress_lease(wall.clone()).map_err(|error| {
                 yi_tools::SpawnRefused::Egress {
                     why: error.to_string(),
                 }
             })?;
+            let lane = crate::lane::remote::GitLane::for_tree(&cwd);
+            let refreshed = lane
+                .iter()
+                .flat_map(|lane| lane.refresh(command))
+                .collect::<Vec<_>>();
+            let assign = crate::lane::remote::GitLane::assign_for(lane.as_deref(), &cwd);
+            let broker = Arc::clone(&broker);
             Ok(yi_tools::Spawn {
                 env: lease.env(),
-                after: Box::new(move || lease.revoke()),
+                assign,
+                after: Box::new(move || {
+                    let pushed = lane.iter().flat_map(|lane| lane.sweep(&broker));
+                    (refreshed.into_iter().chain(lease.revoke()).chain(pushed)).collect()
+                }),
             })
         })
     }

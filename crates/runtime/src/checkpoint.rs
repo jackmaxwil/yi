@@ -165,16 +165,27 @@ fn restore_tree(
     since: Option<String>,
     rewind: impl FnOnce() -> Result<(), String>,
 ) -> UndoOutcome {
-    let checkpoints = match Checkpoints::open(&checkpoint_root(home), project) {
+    let tree = TreeId::new(data.tree.clone());
+    let checkpoints = match Checkpoints::open_holding(&checkpoint_root(home), project, &tree) {
         Ok(checkpoints) => checkpoints,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
+    let since = since.map(TreeId::new);
+    // A session across the one-store upgrade: its old start in the old store, its newest end in the
+    // new. "What the agent moved" has no answer across two stores, so nothing moves.
+    if since
+        .as_ref()
+        .is_some_and(|since| !checkpoints.holds(since))
+    {
+        return UndoOutcome::Failed(
+            "this turn's end is not in the checkpoint store (a session from before the upgrade, or git could not read it), so nothing moved".to_owned(),
+        );
+    }
     let replaced = match checkpoints.capture() {
         Ok(tree) => tree,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
-    let since = since.map(TreeId::new);
-    let restored = match checkpoints.restore(&TreeId::new(data.tree.clone()), since.as_ref()) {
+    let restored = match checkpoints.restore(&tree, since.as_ref()) {
         Ok(changes) => changes,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };

@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.868.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.884.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -113,6 +113,81 @@ environment; a contained process can send data out through a seeded host with it
 writable `~/.cargo/registry` lets a contained process plant a `build.rs` your next terminal build
 runs. The last is the price of installs that work, and the decision that lands this says so.
 
+## Trust boundaries of the git lane
+
+A contained git reaches origin through two stores. Reads come from a mirror the host refreshes,
+outside every writable root. Pushes land in an outbox under the tree's admin dir, which the host
+empties after the spawn and forwards from the repository. A contained process writes the outbox,
+so it is hostile data and git never runs in it. Tests are in `crates/runtime/tests/git_lane.rs`.
+
+| boundary | what crosses | assume | instance | control | test |
+|---|---|---|---|---|---|
+| outbox → host | names and bytes under `refs/` | hostile, chosen by a contained process | T: a link at `yi-outbox`, `refs` or `refs/heads` steers a host unlink at a project's refs | a descriptor walk from the admin dir, `NOFOLLOW` on every component, `unlinkat` through the held parent | `a_planted_link_steers_no_unlink`, `an_outbox_or_its_refs_as_a_link_steers_no_unlink` |
+| | | | T: a link or hard link in the store makes the next start write where a process chose | laid out by descriptor; each file unlinked, then created exclusively | `starting_a_lane_writes_through_nothing_a_process_planted` |
+| | | | D: a FIFO, a deep tree, thousands of refs | `NONBLOCK`, depth 8, `outbox.names` and `outbox.refs` with a row each | `a_fifo_and_a_link_at_a_ref_hang_nothing_and_go`, `the_name_cap_holds_at_its_limit_and_says_so_one_past`, `the_ref_cap_holds_at_its_limit_and_says_so_one_past` |
+| | | | D: a kernel cell's push or a held main stalls a current-thread front end | the sweep runs off the executor | `a_held_main_leaves_the_executor_free_for_the_answer` |
+| | | | E: a ref at a commit the project never had, a hostile `config` | the commit must exist in the project's store; host git only ever runs in the repository | `a_sha_outside_the_project_store_is_not_pushed`, `no_config_the_outbox_or_the_tree_holds_runs_on_the_host` |
+| host → origin | a push the model asked for | a push may land and still time out | R: a timed-out push read as failed | `Forward::Unknown` never retries, and its row says to compare | `a_push_past_its_deadline_reads_unknown_never_failed` |
+| | | | E: a contained process lands on trunk or a tag | trunk, `main`, `master` and every tag ask a person with a diffstat; headless refuses | `main_asks_and_a_refusal_leaves_origin_where_it_was`, `a_contained_push_to_main_waits_for_a_person` |
+| origin → model | the remote's text on a rejection | hostile network text | I, T: an instruction or a token in a row | redacted, fenced, cut with a row | `a_rejection_is_fenced_and_stripped` |
+| config → argv | the origin URL in a rewrite rule | a URL may embed a credential | I: a credential on `env`'s argv | such a repository has no lane and asks as before | `a_credentialed_origin_has_no_lane_and_never_reaches_an_argument` |
+
+Spoofing has no instance beyond the proxy's: a process that writes a ref by hand has only the
+authority a `git push` would. Residual, stated: a script that fetches reads what the last refresh
+saw, since only a command's own text triggers one; the transport block for a repository with no
+lane stops an honest git and not a hostile one, because `git -c protocol.https.allow=always` or
+`env -u GIT_CONFIG_COUNT` undoes it; a `--here` session in a main checkout keeps
+`packed-refs` writable, so its guard on main is the name alone; and a contained process's `HEAD`
+can take an unchecked-out branch other than trunk, and push it as any branch.
+
+## Trust boundaries of a child's fork
+
+A worktree child's tree is a linked worktree under `~/.yi/forks`, cut at the parent's `HEAD` and filled
+by the cheapest copy this filesystem has. It claims no slot. A contained process wrote the parent's
+tree, so what the host reads there at a fork or a first command is hostile. Tests are in
+`crates/runtime/tests/child_forks.rs`.
+
+| boundary | what crosses | assume | instance | control | test |
+|---|---|---|---|---|---|
+| parent tree → host, at the fork | names, links, `.worktreeinclude`, `carry=` | hostile, swappable between check and copy | I: a listed file swapped for a link to `~/.ssh` | walked from a held directory with `NOFOLLOW` on every part, copied from the open descriptor | `a_wall_and_a_planted_link_copy_nothing` |
+| | | | I: a wall's path or a credential store listed | the session's `credential_stores` refuse it, with a row | `a_wall_and_a_planted_link_copy_nothing` |
+| | | | D: thousands of listed files, a deep tree | `fork.include_files`, `fork.include_bytes`, 64 KiB and 256 patterns, depth 256 on an explicit stack | `the_include_file_count_holds_at_its_limit_and_says_so_one_past` |
+| parent `target/` → child, at first use | dep-info rules | written by a contained build | T: a unit that names the parent's tree reads as Fresh, and the child tests its parent | classified by dep-info; one such unit drops its package; past a cap nothing carries | `a_child_builds_its_own_tree_and_reuses_only_what_names_nothing_in_it`, `a_unit_naming_the_tree_drops_its_whole_package_and_others_carry` |
+| | | | D: a huge or endless dep-info | 4 MiB a file, 65,536 files | `a_dep_info_at_its_limit_is_read_and_one_past_drops_the_unit`, `the_dep_info_count_holds_at_its_limit_and_refuses_one_past` |
+| `.yi/setup` → host | one script | a child's edit is a child's code | E: an edited setup run in the host's name | contained, and only as committed | `a_setup_edited_since_its_commit_is_skipped_by_name` |
+| child → the parent's next git | `.git`, its own admin dir | as any lane | see the lane and containment tables | contained as a lane is | `sandbox::` |
+
+Spoofing has no instance: the id is host-minted and a name a model gives never becomes a path or a
+ref. Repudiation: rows name what a fork left out and what it carried. Residual, stated: on Linux a
+hardlinked `.rlib` shares an inode with the parent's, so a contained child can write through to it,
+which the parent's next uncontained build uses. A process that left its job survives a discard, and
+the row says so.
+
+## Trust boundaries of Linux containment
+
+A contained command starts as `yi __contain`, which applies a Landlock ruleset and execs. Rules only
+grant, over inodes that already exist, so three things read differently from Seatbelt. A denial is
+written as the siblings of what it denies. What the host's next git reads is saved and compared
+instead of denied. And the network stays open. Tests are in `crates/tools/tests/contain.rs`.
+
+| boundary | what crosses | assume | instance | control | test |
+|---|---|---|---|---|---|
+| contained process → files | reads and writes | hostile | I: a read of `~/.ssh` or a wall's path | reads are a list: system roots, home's children past the stores, writable roots | `a_write_outside_the_roots_and_a_read_of_a_store_are_refused`, `a_store_inside_a_root_is_left_out_by_granting_what_sits_beside_it` |
+| | | | I: a link to a store | a grant is judged by what it resolves to | `a_link_to_a_store_is_no_way_around_it` |
+| | | | I: another process's environment under `/proc` | Landlock's ptrace scope; a process outside this domain refuses | `a_contained_process_cannot_read_another_process_environment` |
+| | | | E: a ruleset the kernel will not enforce | `__contain` exits 126 and nothing runs; a failed probe means `Contain` asks | `yi_contain::a_wrapper_that_cannot_apply_runs_nothing` |
+| contained process → host git | `config`, `hooks`, `info`, `.git`, `commondir`, `gitdir`, `alternates`, origin's `HEAD`, admin and module names | hostile, inside a writable root where Landlock cannot deny | E: a planted config runs on the host's next git | compared before every host git, put back, and that git refused | `a_planted_config_is_put_back_and_refuses_one_git`, `a_contained_git_config_runs_nothing_on_the_host_and_goes_back` |
+| | | | T: a link at the git dir steers the restore | the parent's real path is held; a moved one refuses and writes nothing | `a_git_dir_swapped_for_a_link_refuses_without_writing_through_it` |
+| | | | D: a hooks directory or a family too large to save | `seal.root_files`, `seal.root_bytes`, `seal.roots`: past one, no host git runs and the error names it | `a_directory_at_its_file_limit_is_saved_and_one_past_refuses_by_name` |
+
+Repudiation has no instance beyond the refused git's own error, and spoofing none: the wrapper is the
+running binary's own path. Residual, stated: no network wall, since Landlock's port rules would break
+the loopback servers a test starts, so a client that ignores the proxy variables reaches anything. A
+contained process in a main checkout can change a sealed file between a host writer's verify and its
+reseal, a window of one command, and it is blessed. A person's own `git config` in that checkout is
+put back too, until the host's next writer. A lane on a branch outside `yi/` cannot move it, nor
+stash, since neither leaf has a parent the rules may name.
+
 ## Trust boundaries of the plan journal (D193)
 
 The plan store (§13) takes inputs it does not produce: a child's kernel calling `plan.op`, a
@@ -201,7 +276,7 @@ A PR never edits a row here: it writes `ledger+`, `ledger~`, `ledger=` or `ledge
 | history hits: own case, the cut named (`compact.recall`, `compact.search`) | 10 | core | M | L | a `history.grep` or `history.search` snippet keeps its line's own case and holds at most 160 chars (`SNIPPET_CHARS`); a hit cut to it carries `"cut": true` and the reply's `notice` gains a row naming the cap and `rlm.fetch(hit["url"])`, which reads the whole entry (a `history.grep` hit's `url` is `history://self/<entry>`; a reader whose wall refuses that fetch, at that address or under this session's id or name, is told its wall puts the rest out of reach instead of being sent to a refused fetch, while a wall on another transcript only, such as `history://main`, keeps the fetch row); one `paged_reply` spells the page row for both verbs, so a page of exactly 32 has no page row and a 33rd hit names `offset=32` above the snippet row |
 | behavior baseline gate (micro-eval ratchet) | 21 | core | H | L | shrink-only faux-cassette replays in `check_behavior`; `evals/record.py` distils a case from a session file |
 | `get_context` orientation packet | 7.1 | core | M | M | one clamped, layered packet behind a completeness header; skeletons ranked by `symbol`, then change heat, then name; `task` asks ripwire for the code to read first and `symbol` for its callers and callees, with ripwire's own cuts named |
-| loud caps on model-facing text | 7.5 | core | M | L | a context source over its byte budget ends in a `[… K of T bytes kept (source budget N); the rest: …]` row; a compaction view that drops outstanding errors past `OUTSTANDING_CAP` says how many; a malformed edit header echoes at most 120 chars of the line and says how many it held; a default `read` window cut at 2,000 lines names `READ_LINE_CAP`; `get_context` says when its skeleton scan stopped at 2,000 source files; an unpaged `read` of a `local://` file stops at 51,200 bytes on a char with the row a history listing gets, and a `grep` page stops between hits once its rows hold 51,200 bytes, and its continuation row names the cap that cut it (`PAGE_BYTES`, `PAGE_CAP` or `BLOCK_PAGE_CAP`); a source over budget names the read that gets the rest |
+| loud caps on model-facing text | 7.5 | core | M | L | a context source over its byte budget ends in a `[… K of T bytes kept (source budget N); the rest: …]` row; a compaction view that drops outstanding errors past `OUTSTANDING_CAP` says how many; a malformed edit header echoes at most 120 chars of the line and says how many it held; a default `read` window cut at 2,000 lines names `READ_LINE_CAP`; `get_context` says when its skeleton scan stopped at 2,000 source files; an unpaged `read` of a `local://` file stops at 51,200 bytes on a char with the row a history listing gets, and a `grep` page stops between hits once its rows hold 51,200 bytes, and its continuation row names the cap that cut it (`PAGE_BYTES`, `PAGE_CAP` or `BLOCK_PAGE_CAP`); a source over budget names the read that gets the rest; a file the read gate refuses is counted in one row naming it, not answered as no matches (`tools::a_refused_file_is_named_rather_than_no_matches`) |
 | trigger rules (gate + remind) | 6 | core | H | M | user-authored from `~/.yi/rules` and `.yi/rules`, none built in; gate is deny-with-evidence before permission; a spawn's `check`, which runs `sh -c` on the host at `rlm.result`, meets the gate an armed command does at spawn and again before it runs, so a rule promoted in between still stops it (#1055) |
 | host-written memory (one file per fact, hook index) | 6 | core | M | M | the `memory` extension, `memory.save/read/forget`, `yi memory`; see [memory.md](memory.md); since 0.387.0 each store journals its ops with the bodies as objects, so a forget deletes every version and `yi memory rebuild` restores the rest (`memory::store::tests::a_forget_leaves_no_copy_of_any_version_in_the_store`); since 0.389.0 `memory.search` ranks notes by BM25 (`memory::tests::search_ranks_notes_by_their_words_and_names_its_cap`) and since 0.390.0 `history.search` ranks this repository's past sessions (`history::tests::a_search_reaches_every_lane_of_the_repository_and_skips_tool_arguments`); a key guard counts a prefix only at a token edge with a digit in its run, and a `<memory` mention is kept (`memory::doc::tests::fences_and_secrets_are_refused`); `yi memory list` writes nothing, so a hand edit is journaled at the next session start |
 | advisor (LlmReviewer only) | 16 | gated `models.advisor` | H | M | a fresh reviewer session over the work-log digest, forced on plan change and compaction; Hold degrades to Warn headless, and an untargeted (or blank-target) Hold degrades to Warn even with an asker present; `/advisor promote` writes a rule |
@@ -240,6 +315,10 @@ A PR never edits a row here: it writes `ledger+`, `ledger~`, `ledger=` or `ledge
 | cursor login and models | 5 | core | M | L | `yi login cursor` polls Cursor's deep-control login and stores the token; a `cursor-agent` model posts Connect frames over HTTP/2, forwards each text frame as it arrives, runs a tool the server asks for on the session's tool path once (a native shell frame as `bash`, only from the run loop's own turns and only among the tools that request offers), closes the stream when the session aborts, and takes its model list from the account's AvailableModels cache rather than a baked file |
 | kimi login and models | 5 | core | M | L | `yi login kimi` runs the device-code login a `~/.yi/oauth/kimi.json` profile names (Yi ships no client id) and then reads the account's own `GET <api_base>/models`, printing the `kimi/<id>` models it wrote to `~/.yi/catalog/kimi.json`, so K3.1 resolves on the first run after login with no id compiled in; `yi login <provider> --refresh <seconds>` uses the same locked, profile-aware grant and prints only the access credential when it covers that lifetime; a Kimi turn sends effort as Moonshot's `thinking` field, the session as `prompt_cache_key`, `reasoning_content` on every assistant turn and `User-Agent: yi/<version>`, stops at once on a 429 that codes an exhausted quota (or, on Moonshot's own host, words one), and `yi catalog usage kimi` prints the account's 5-hour, 7-day and monthly windows as one JSON line |
 | `agent-desktop` plugin | 17.1 | optional | M | M | `yi plugin add agent-desktop` (macOS, `host` shape: never by `--all`, never in an eval container) lets the model read and operate Mac apps by bash; asks once per app per session, never keeps a yes for a terminal, editor, settings or password app, refuses browsers and whatever takes the user's own mouse, keyboard or front app (`session start --cursor` draws an agent cursor instead), runs only its plain name outside the sandbox, and fences what it prints |
+| `agent-browser` plugin | 17.1 | optional | M | M | `yi plugin add agent-browser` (macOS, `host` shape: never by `--all`, never in an eval container) also installs `chrome` and lets the model drive a headless page by bash; Chrome runs in a sandbox that reads no credential and writes only temp. The default session has loopback alone and asks nothing; `--session web` has the internet and one yes covers it for the session; what the daemon itself would do asks every time; real logins and a visible window are refused in every mode, as is every command until the pinned program, its config and its script all stand, so a copy on PATH is refused; page text returns inside the external-data fence. |
+| contained git: a mirror and an outbox | 8 | core | H | M | a contained `git fetch` reads a host-run mirror and a `git push` lands in an outbox the host forwards after the spawn, with no question unless it is trunk, `main`, `master` or a tag; force and delete still ask (`crates/runtime/src/lane/remote.rs`) |
+| Linux containment: Landlock and the git-file seal | 8 | core | H | M | a contained command on Linux starts as `yi __contain`: writes reach its roots, reads a named list, and the host compares what its next git reads and puts back what changed. No network wall. A kernel that refuses the ruleset makes `Contain` an ask. |
+| a child's fork: a linked worktree per child, cut at HEAD, third-party cargo units carried | 14 | core | H | H | a worktree child takes a tree under `~/.yi/forks` rather than a slot: a directory clone on APFS, a plain checkout elsewhere. Its first writing command carries the cargo units whose dep-info names nothing in the tree, syncs the toolchain and runs a committed `.yi/setup`. `.worktreeinclude` and `carry=` copy ignored files. A discard stops its jobs. |
 
 ## Decision log
 
@@ -247,6 +326,14 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D535 | Kernel hand-back merges by merge-tree --attr-source, and git merge in a lane below 2.43 | a slot per merge, and a checkout to write | revert the one call. Amends D475's order |
+| D534 | A worktree child is a linked worktree under ~/.yi/forks, cut at HEAD, carrying only cargo units whose dep-info names nothing in its tree; no slot or worker permit | 64 GB and 524 s at 128 children | restore claim_child_lane. Amends D119, D286 |
+| D533 | Linux contains with Landlock through a re-exec of yi, and the host compares and restores the git files it cannot deny | Linux ran every contained command unsandboxed | make Sandbox::available false on Linux. Amends D205, D348, D350 |
+| D532 | one shadow store per repository with an index per tree | 22 MB and 2 s per lane and fork | key the store by path again; amends D401 |
+| D531 | forge commands leave by home config and tree recipes by pin | a contained forge CLI has no route to its login | drop the class and sandbox.hostRecipes |
+| D530 | a contained git reaches origin through a host mirror and an outbox; a non-main branch goes unasked, trunk, main, master and a tag ask a person with a diffstat | the owner's top friction | remove the rewrite in GitLane::assign and move the git verbs back to Egress; amends D205 |
+| D529 | a package install into the tree runs contained and unasked in auto; a global one, a publish and brew or gem still ask and leave | every install asked or failed now that the proxy gives them a network | restore the classify and host_need arms |
+| D528 | the agent-browser plugin runs its daemon outside the sandbox and its Chrome inside one, with Chrome's own sandbox off | a Chrome outside read a planted ~/.ssh key and any contained program reached it over its loopback debug port, so the agent-desktop shape was unsafe; the owner, 2026-11-01: "One yes, then web", accepting that a page breaking Chrome reads source code and that contained programs can use the web session while it lives | delete the row and the table |
 | D527 | every git the host runs goes through one door, by absolute path, with hooks, fsmonitor and signing off | a host hand-back ran the repository's hooks, a relative core.hooksPath is written by the child, and a tree's bin on PATH ran a contained write on the host | restore capture_named and git_capture to bare names |
 | D526 | a linked worktree's sandbox writes its admin dir, the shared objects, its own branch and the stash, never the rest of the common dir | a contained process deleted a sibling's ref and moved trunk | restore the common dir in lane_writes |
 | D525 | computer use and browser automation enter scope through plugins, paid for by deleting the Python client, and a plugin that drives this machine leaves the sandbox only through a table of its verbs | the owner, 2026-10-31: "Any app on my Mac", "remove the design doc ban"; a typed command in Terminal gets around the sandbox, so the gate is the feature | delete the row and the table, restore the §1.2 clause |

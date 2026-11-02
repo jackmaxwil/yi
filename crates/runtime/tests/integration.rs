@@ -20,6 +20,8 @@ mod support;
 mod upstream;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/wiring.rs"]
+mod wiring;
 #[path = "support/worktree.rs"]
 mod worktree;
 
@@ -34,6 +36,7 @@ mod cache_miss;
 mod caps_runtime;
 mod channel_e2e;
 mod check_probe;
+mod child_forks;
 mod child_trail;
 mod child_transcript;
 mod claims;
@@ -51,6 +54,7 @@ mod fetch_grep;
 mod fetch_session;
 mod gate;
 mod gate_battery;
+mod git_lane;
 mod goal_e2e;
 mod host_facts;
 mod injection_canary;
@@ -64,6 +68,7 @@ mod kernel_tools;
 mod lanes;
 mod levers;
 mod memory_journal;
+mod merge_tree;
 mod node;
 mod permission_auto;
 mod permission_scope;

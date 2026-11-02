@@ -118,6 +118,16 @@ pub struct PermissionsConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SandboxConfig {
     pub egress: Option<Vec<crate::egress::Domain>>,
+    pub host_recipes: Option<Vec<HostRecipe>>,
+}
+
+/// `call`: words a command starts with, run outside the sandbox unasked while every `pin` (a path
+/// in the tree) matches the trunk on origin. Read from the home config alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostRecipe {
+    pub call: String,
+    pub pin: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

