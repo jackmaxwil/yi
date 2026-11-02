@@ -842,7 +842,7 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
 def comments(repo, number):
     answer = forge_pr.fgj_api("GET", f"repos/{repo}/issues/{number}/comments") or []
     if not isinstance(answer, list):
-        raise SystemExit(f"#{number}: the forge did not list the comments: {answer.get('message') if isinstance(answer, dict) else answer}")
+        raise Unanswered(f"#{number}: the forge did not list the comments: {answer.get('message') if isinstance(answer, dict) else answer}")
     return answer
 
 

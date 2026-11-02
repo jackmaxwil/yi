@@ -392,7 +392,10 @@ def land(obs, mode):
 
 
 def tick(mode):
-    obs = observe(mode)
+    try:
+        obs = observe(mode)
+    except pr_review.Unanswered as err:
+        raise SystemExit(f"queue: {err}") from err
     action, why = step(obs)
     print(f"queue: {action} ({why}){' ' + obs['stale_member'] if obs['stale_member'] else ''}")
     if action == "drop":
@@ -640,12 +643,13 @@ def forge_cases():
     bad = []
     locked = {"message": "database is locked", "url": "https://git.example.invalid/api/swagger"}
     calls = {"queued_pulls": queued_pulls, "enqueued_at": lambda: enqueued_at(1), "label_ids": label_ids,
-             "comments": lambda: pr_review.comments("o/r", 1), "tick": lambda: tick("on")}
+             "tick": lambda: tick("on")}
     with mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(sys.modules[__name__], "git", mock.Mock()):
         # A body that is JSON but not an object still has to reach the log.
         with mock.patch.object(forge_pr, "fgj_api", lambda *a: "bad gateway"):
             try:
                 queued_pulls()
+                bad.append("a string answer read as a listing")
             except SystemExit as stop:
                 if "bad gateway" not in str(stop):
                     bad.append(f"a string answer stopped without its words: {stop}")
@@ -661,6 +665,26 @@ def forge_cases():
                         bad.append(f"{name} stopped without the forge's words: {stop}")
                 except Exception as err:
                     bad.append(f"{name} died on an error object: {err!r}")
+        # A round reader's miss is the review job's Unanswered, which a tick turns into the same stop.
+        queued = {"number": 1, "labels": [{"name": LABEL}]}
+        answers = lambda method, path, payload=None: locked if path.endswith("/comments") else [queued] if "page=1" in path else []
+        with mock.patch.object(forge_pr, "fgj_api", answers):
+            try:
+                tick("on")
+                bad.append("a tick took an error object for the comments")
+            except SystemExit as stop:
+                if "database is locked" not in str(stop):
+                    bad.append(f"a tick stopped on the comments without the forge's words: {stop}")
+            except Exception as err:
+                bad.append(f"a tick died on the comments: {err!r}")
+            try:
+                pr_review.comments("o/r", 1)
+                bad.append("comments took an error object for an answer")
+            except pr_review.Unanswered as err:
+                if "database is locked" not in str(err):
+                    bad.append(f"comments' miss lost the forge's words: {err}")
+            except BaseException as err:
+                bad.append(f"comments stopped outside the handlers that retry a miss: {err!r}")
         # A refused close holds the ref inside the patience, so the `landed` rule retries it, and never wedges past it.
         forge = lambda method, path, payload=None: locked if method == "PATCH" else {"body": "Closes #5"}
         for age, keeps in ((CLOSE_PATIENCE - 1, True), (CLOSE_PATIENCE, False)):
