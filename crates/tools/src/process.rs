@@ -162,6 +162,8 @@ pub struct CommandCapture {
     pub spill: Option<String>,
     /// Bytes kept over bytes received, summed over both streams, when a stream was cut.
     pub cut: Option<(usize, usize)>,
+    /// What the host says about this run past its output, printed whole: an egress refusal.
+    pub rows: Vec<String>,
 }
 
 impl CommandCapture {
@@ -192,7 +194,9 @@ impl CommandCapture {
     pub(crate) fn shown(&self, reduced: &crate::Reduced) -> Vec<String> {
         let body = (!reduced.text.is_empty()).then(|| reduced.text.clone());
         let row = self.cut_row().filter(|_| reduced.recovery.is_none());
-        body.into_iter().chain(row).collect()
+        (body.into_iter().chain(row))
+            .chain(self.rows.iter().cloned())
+            .collect()
     }
 }
 
@@ -530,6 +534,7 @@ pub(crate) fn run_child_captured_live(
         kill_error,
         spill: spill.and_then(|mut spill| spill.keep()),
         cut,
+        rows: Vec::new(),
     })
 }
 

@@ -163,7 +163,8 @@ pub(super) fn wrapped(
 /// A lane's own profile, from the home the pool holds: the one builder every contained lane git
 /// takes, so a seal added here reaches the submodule read too.
 pub(super) fn profile(tree: &Path, home: &Path) -> Option<yi_tools::Sandbox> {
-    yi_tools::Sandbox::available().then(|| yi_tools::Sandbox::for_workspace(tree, home, None))
+    yi_tools::Sandbox::available()
+        .then(|| yi_tools::Sandbox::for_workspace(tree, home, None).with_caches(home))
 }
 
 /// Seatbelt-contained like a bash call: slot and scratch writable, credentials unreadable.

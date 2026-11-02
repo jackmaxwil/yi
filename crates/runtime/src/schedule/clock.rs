@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use serde_json::Value;
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::plan::doc::{BlockedOn, Note, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState};
@@ -159,10 +157,10 @@ pub fn fire_with_hooks(
     todos: &TodoStore,
     job: &Job,
     firing: &Firing,
-    hooks: Option<&Arc<crate::claude_hooks::Hooks>>,
+    checker: Option<&crate::goal::Checker>,
 ) -> Result<Fired, String> {
     match (&job.channel, &job.unblocks) {
-        (Some(sub), _) => super::channel::fire_with_hooks(todos, job, sub, hooks),
+        (Some(sub), _) => super::channel::fire_with_hooks(todos, job, sub, checker),
         (None, Some(label)) => unblock(todos, job, label, CLOCK_ACTOR),
         (None, None) => create(todos, job, firing),
     }

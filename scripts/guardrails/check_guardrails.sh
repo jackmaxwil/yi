@@ -80,6 +80,10 @@ run "$PY" scripts/guardrails/check_prompt_examples.py
 run env PYTHONPATH=python/yi_runtime/src "$PY" -m unittest discover -q -s python/yi_runtime/tests
 run "$PY" -m unittest discover -q -s adapters
 run "$PY" evals/selftest.py
+# A prompt's rules are text, so a rewording that drops one passes every other gate; the
+# scorer's cases are hand-counted, which is where it is proved to judge anything at all (#1862).
+run "$PY" evals/prose.py --gate
+run "$PY" evals/prose.py --selfcheck
 # The mined artifacts carry session text, so §10's planted-fake redaction proof is a
 # gate, not a habit: its only executable check is this flag.
 run "$PY" skills/yi/session-mining/extract.py --selfcheck
@@ -143,6 +147,7 @@ fi
 # A baseline edit that rides beside code is how growth hid before the ratchets had their own
 # commits; the deletion carve-out is a rule over file statuses, so only this flag proves it.
 run "$PY" scripts/guardrails/check_commit_style.py --selfcheck
+run "$PY" scripts/pr_queue.py --selfcheck
 # The landing verbs decide from the forge's answers — behind, failed, ready — and a
 # decision read wrong retries a refusal forever; only this flag walks the table.
 run "$PY" scripts/forge_pr.py --selfcheck

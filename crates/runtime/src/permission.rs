@@ -17,6 +17,7 @@ use yi_types::permission::{
     Answerer, PermissionRecord, RuleDecision, RuleKind, SessionPermissionRule,
 };
 
+mod egress;
 mod hooked;
 pub(crate) use hooked::claude_dir;
 mod kept;
@@ -97,6 +98,7 @@ pub struct PermissionBroker {
     unattended: bool,
     /// Loaded once from the root's tree and shared down: a lane child reads the root's project.
     claude_hooks: std::sync::OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
+    egress: egress::Named,
 }
 
 pub struct CallOutcome {
@@ -111,9 +113,6 @@ pub enum Containment {
     /// Inside the sandbox, with these directories writable besides the holder's tree.
     Contained {
         widen: Vec<PathBuf>,
-        /// The gate allowed the call outright, so it may run where no sandbox can hold it: an
-        /// `exec://` source, which only ever runs on the host.
-        gate_allowed: bool,
     },
     Uncontained,
 }
@@ -213,6 +212,7 @@ impl PermissionBroker {
             walled: false,
             unattended: false,
             claude_hooks: std::sync::OnceLock::new(),
+            egress: egress::Named::default(),
         }
     }
 
@@ -311,13 +311,10 @@ impl PermissionBroker {
             .cloned()
     }
 
-    fn containment_with(&self, refused: Option<PathBuf>, gate_allowed: bool) -> Containment {
+    fn containment_with(&self, refused: Option<PathBuf>) -> Containment {
         let mut widen = self.kept_writes();
         widen.extend(refused);
-        Containment::Contained {
-            widen,
-            gate_allowed,
-        }
+        Containment::Contained { widen }
     }
 
     /// An allowed bash call runs contained unless it must leave (#600 stage 2b); `Err` asks, as a
@@ -357,7 +354,7 @@ impl PermissionBroker {
             None => Ok(CallOutcome {
                 allowed: true,
                 reason,
-                containment: self.containment_with(None, true),
+                containment: self.containment_with(None),
             }),
             Some(yi_tools::SandboxRefusal::Scopes(_)) if passed => Ok(outside(format!(
                 "{reason}; it runs outside the sandbox (an \"always\" kept this exact command after a refusal naming no path)"
@@ -386,7 +383,7 @@ impl PermissionBroker {
             return outside(why);
         }
         match refusal {
-            None => (self.containment_with(None, false), String::new()),
+            None => (self.containment_with(None), String::new()),
             Some(yi_tools::SandboxRefusal::Scopes(_)) => outside("the refusal named no path"),
             Some(yi_tools::SandboxRefusal::Path(path)) => {
                 let dir = path.parent().unwrap_or(path);
@@ -395,7 +392,7 @@ impl PermissionBroker {
                     return outside(&format!("`{}` is protected", dir.display()));
                 }
                 let note = format!("; approving widens this run by `{}`", dir.display());
-                (self.containment_with(Some(dir), false), note)
+                (self.containment_with(Some(dir)), note)
             }
         }
     }
@@ -414,6 +411,7 @@ impl PermissionBroker {
                 deny_read: base.deny_read.clone(),
                 host_owned: base.host_owned.clone(),
                 ..yi_tools::Sandbox::for_workspace(cwd, Path::new(&home), None)
+                    .with_caches(Path::new(&home))
             },
             None => base.clone(),
         };
@@ -602,7 +600,7 @@ impl PermissionBroker {
                 return CallOutcome {
                     allowed: true,
                     reason,
-                    containment: self.containment_with(None, false),
+                    containment: self.containment_with(None),
                 };
             }
             // A containment Yi cannot enforce, or one the sandbox already refused, is the same
