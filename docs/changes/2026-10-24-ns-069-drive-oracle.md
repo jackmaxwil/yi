@@ -1,4 +1,5 @@
 ---
+version: 0.870.0
 issue: Closes #1504, Refs #1442
 raise: crate tui +21, tests +187
 ---
