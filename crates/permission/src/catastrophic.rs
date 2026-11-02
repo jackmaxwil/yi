@@ -348,7 +348,10 @@ pub struct ReadGate {
     /// Paths no wall covers, with all under them: a session's family spills and own transcript
     /// under the roots its wall holds (#971).
     spared: Vec<PathBuf>,
+    hold: Option<OpenHold>,
 }
+
+pub type OpenHold = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 impl ReadGate {
     pub fn new(context: &CatastrophicContext) -> Self {
@@ -370,6 +373,19 @@ impl ReadGate {
             tree_ids,
             ids,
             spared: Vec::new(),
+            hold: None,
+        }
+    }
+
+    /// A test seam: `hold` runs inside each [`Self::open`] and [`Self::open_write`] as `held`
+    /// does in [`Self::open_after`], so a test forces a swap inside a tool. Production sets none.
+    pub fn hold_opens(&mut self, hold: Option<OpenHold>) {
+        self.hold = hold;
+    }
+
+    fn held(&self) {
+        if let Some(hold) = &self.hold {
+            hold();
         }
     }
 
@@ -397,7 +413,7 @@ impl ReadGate {
     /// Opens the resolved `path`, judged with `walls`, with no link left to follow: the file judged
     /// is the file opened, so a link swapped in after an earlier check reaches nothing (#890).
     pub fn open(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
-        self.open_after(path, walls, &mut || ())
+        self.open_after(path, walls, &mut || self.held())
     }
 
     /// A test seam: [`Self::open`] with `held` run between the judgement and the act, the one
@@ -415,7 +431,7 @@ impl ReadGate {
     /// [`Self::open`] to write, under the destroy gate too: untruncated, or created only where
     /// nothing stands, not even a dangling link; the caller truncates through the handle.
     pub fn open_write(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
-        self.open_write_after(path, walls, &mut || ())
+        self.open_write_after(path, walls, &mut || self.held())
     }
 
     /// A test seam: [`Self::open_write`] with `held` run before each judged open, as in

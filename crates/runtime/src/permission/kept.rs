@@ -216,6 +216,10 @@ impl PermissionBroker {
         canonical: &str,
         display: &str,
     ) {
+        // Invariant: a desktop command with no grant offered keeps nothing, even on "always".
+        if grant.is_none() && kind == RuleKind::Command && yi_permission::drives(display) {
+            return;
+        }
         // An exact call's label names no call, so the listing adds the call it keeps.
         let (kind, canonical, label) = match grant {
             Some(grant) if grant.canonical != canonical => {
