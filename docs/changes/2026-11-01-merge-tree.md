@@ -1,6 +1,6 @@
 ---
 issue: Closes #1938
-growth: +2324 is one merge, its conflict rows and the review's repairs. Weighed for deletion: dropping the old road, which leaves a runner on git 2.34 with no merge at all, since git before 2.43 crashes on --attr-source
+growth: +90 is the review's repairs. Weighed for deletion: dropping the old road, which leaves a runner on git 2.34 with no merge at all, since git before 2.43 crashes on --attr-source
 raise: tests +450, comments +25, crate runtime +218, crate tools +7
 decision: Kernel hand-back merges by merge-tree --attr-source, and git merge in a lane below 2.43 | a slot per merge, and a checkout to write | revert the one call. Amends D475's order
 ---
