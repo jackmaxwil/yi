@@ -77,7 +77,9 @@ impl GitLane {
     /// What a contained git gets where a repository has an origin and no lane: no transport at all.
     /// Without it, git reads a credential from the URL and lands on main through a seeded host, asked
     /// by nobody. Its refusal then asks, and an approval runs outside.
-    pub(crate) fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
+    /// The `GIT_CONFIG_*` a contained git inherits: the network transports refused, a local remote
+    /// left to work. Incident: `protocol.allow=never` refused the file transport too.
+    pub fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
         if let Some(lane) = lane {
             return lane.assign.clone();
         }
@@ -85,11 +87,15 @@ impl GitLane {
             return Vec::new();
         }
         [
-            "GIT_CONFIG_COUNT=2",
+            "GIT_CONFIG_COUNT=4",
             "GIT_CONFIG_KEY_0=maintenance.auto",
             "GIT_CONFIG_VALUE_0=false",
-            "GIT_CONFIG_KEY_1=protocol.allow",
+            "GIT_CONFIG_KEY_1=protocol.https.allow",
             "GIT_CONFIG_VALUE_1=never",
+            "GIT_CONFIG_KEY_2=protocol.ssh.allow",
+            "GIT_CONFIG_VALUE_2=never",
+            "GIT_CONFIG_KEY_3=protocol.git.allow",
+            "GIT_CONFIG_VALUE_3=never",
         ]
         .map(str::to_owned)
         .to_vec()

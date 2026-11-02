@@ -729,16 +729,22 @@ fn refused_path(
         .find(|path| sandbox.denies_write(path))
 }
 
-const NETWORK_DENIALS: [&str; 4] = [
+const NETWORK_DENIALS: [&str; 3] = [
     // curl, git and cargo: `Could not resolve host`, `Couldn't resolve host name`.
     "resolve host",
-    // git under the transport block a repository with no lane gets.
-    "' not allowed",
     // getaddrinfo's EAI_NONAME, as Python and ssh print it.
     "nodename nor servname",
     // `ping` to a host past loopback, which exits 2.
     "sendto: operation not permitted",
 ];
+
+/// Incident: a bare `' not allowed` is a Python `ValueError`'s wording, so an escalation read from
+/// text the command printed is the command asking to leave the sandbox; only git's fatal line counts.
+fn git_transport_denial(lower: &str) -> Option<usize> {
+    lower
+        .find("fatal: transport '")
+        .filter(|_| lower.contains("not allowed"))
+}
 
 /// A denied write target counts at any exit; else a non-zero exit naming a denial, a network
 /// denial also past a shell-failure exit. Exit 0 never records a scope: see [`exit_zero_note`].
@@ -771,7 +777,9 @@ pub fn sandbox_refusal(
     let lower = output.to_lowercase();
     let contains = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
     let refused = code != 0
-        && (contains(&NETWORK_DENIALS) || (!QUICK_REJECT.contains(&code) && contains(&DENIALS)));
+        && (contains(&NETWORK_DENIALS)
+            || git_transport_denial(&lower).is_some()
+            || (!QUICK_REJECT.contains(&code) && contains(&DENIALS)));
     refused.then(|| SandboxRefusal::Scopes(yi_permission::refused_scopes(command)))
 }
 
@@ -794,6 +802,7 @@ pub fn exit_zero_note(output: &str, command: &str) -> Option<String> {
         let at = NETWORK_DENIALS
             .iter()
             .filter_map(|needle| lower.find(needle))
+            .chain(git_transport_denial(&lower))
             .min();
         let before = at.and_then(|at| line.get(..at)).unwrap_or_default();
         PROGRAMS.iter().any(|program| {

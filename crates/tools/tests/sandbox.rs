@@ -124,6 +124,39 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
     Ok(())
 }
 
+/// Incident: `' not allowed` is a Python `ValueError`'s wording, so a script's own text escalated
+/// the network; only git's fatal line proving a transport block counts as the sandbox's refusal.
+#[test]
+fn a_value_error_is_no_network_refusal() {
+    let cwd = Path::new("/work");
+    let sandbox = Sandbox {
+        writable: vec![cwd.to_path_buf()],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        sealed: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    };
+    let refused = |code, output: &str, command: &str| {
+        sandbox_refusal(&sandbox, cwd, Some(code), output, command).is_some()
+    };
+    assert!(!refused(
+        1,
+        "ValueError: 'https' not allowed\n",
+        "python3 job.py"
+    ));
+    assert!(!refused(
+        1,
+        "cannot open 'https' not allowed\n",
+        "cat notes.txt"
+    ));
+    assert!(refused(
+        128,
+        "fatal: transport 'https' not allowed\n",
+        "git fetch origin"
+    ));
+}
+
 #[test]
 fn a_denial_is_only_claimed_when_the_output_says_so() {
     let cwd = Path::new("/work");

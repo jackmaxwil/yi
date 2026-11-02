@@ -105,6 +105,44 @@ fn broker(cwd: &Path, asker: Option<Asker>) -> PermissionBroker {
 
 const LONG: Duration = Duration::from_secs(60);
 
+/// Incident: `protocol.allow=never` refused the file transport too, so every contained git in a
+/// repository with a local remote failed; the network transports are what the assign blocks.
+#[test]
+fn the_assign_config_blocks_the_network_transports_and_no_local_one() -> TestResult {
+    let repo = Repo::new("assign")?;
+    let assign = GitLane::assign_for(None, &repo.project);
+    let env: Vec<(String, String)> = assign
+        .iter()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+    assert!(!env.is_empty(), "{assign:?}");
+    let ls = |url: &str| {
+        yi_tools::keyless_command("git")
+            .args(["ls-remote", url])
+            .current_dir(&repo.project)
+            .envs(
+                env.iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str())),
+            )
+            .output()
+    };
+    let local = ls("origin")?;
+    assert!(
+        local.status.success(),
+        "a local remote was refused: {}",
+        String::from_utf8_lossy(&local.stderr)
+    );
+    let remote = ls("https://example.invalid/x.git")?;
+    assert!(!remote.status.success(), "the https transport went on");
+    assert!(
+        String::from_utf8_lossy(&remote.stderr).contains("not allowed"),
+        "{}",
+        String::from_utf8_lossy(&remote.stderr)
+    );
+    Ok(())
+}
+
 #[test]
 fn a_branch_in_the_outbox_lands_on_origin_and_the_ref_is_gone() -> TestResult {
     let repo = Repo::new("land")?;
