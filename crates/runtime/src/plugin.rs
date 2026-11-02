@@ -38,6 +38,7 @@ pub fn add(
     if plugin.name != yi_tools::plugin::BROWSER {
         return add_pin(plugin, home, &fetch);
     }
+    plugin.asset().ok_or_else(|| unsupported(plugin))?;
     // Invariant: its daemon runs only the pinned Chrome in a box, so Chrome comes first and a failed
     // download leaves no browser to judge.
     let chrome = Plugin::named("chrome").ok_or("no chrome row")?;

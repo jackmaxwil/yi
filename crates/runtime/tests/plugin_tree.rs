@@ -279,13 +279,34 @@ fn adding_the_browser_fetches_chrome_first_and_a_failure_publishes_no_browser() 
         Err("offline".to_owned())
     });
     assert!(refused.is_err());
-    let wanted: Vec<String> = chrome
-        .asset()
+    let wanted: Vec<String> = (browser.asset().and(chrome.asset()))
         .map(|asset| asset.url.to_owned())
         .into_iter()
         .collect();
     assert_eq!(*asked.lock().map_err(|_| "poisoned")?, wanted);
     assert!(browser.installed(&home).is_none());
+    Ok(())
+}
+
+/// Incident: Chrome has a pin where the browser has none, so a Linux add fetched 100 MB for a
+/// command that could not finish.
+#[test]
+fn a_platform_with_no_browser_pin_downloads_nothing() -> TestResult {
+    let scratch = Scratch::new("plugin-browser-no-pin")?;
+    let home = scratch.home()?;
+    let row = Plugin {
+        assets: &[],
+        ..*Plugin::named(yi_tools::plugin::BROWSER).ok_or("no agent-browser row")?
+    };
+    let asked = std::sync::Mutex::new(0);
+    let refused = add(&row, &home, |_| {
+        if let Ok(mut asked) = asked.lock() {
+            *asked += 1;
+        }
+        Err("offline".to_owned())
+    });
+    assert!(refused.is_err_and(|why| why.contains("a copy on PATH is refused")));
+    assert_eq!(*asked.lock().map_err(|_| "poisoned")?, 0);
     Ok(())
 }
 
