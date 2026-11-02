@@ -22,6 +22,9 @@ impl Uncommitted {
 
     /// Invariant: `status` is blind to work inside a gitlink, and what cannot be read counts as dirty.
     fn with_submodules(mut self, tree: &Path) -> Self {
+        if !tree.join(".gitmodules").is_file() {
+            return self;
+        }
         // One budget for the whole read: a hung git in one submodule must not stall every spawn.
         let until = std::time::Instant::now().checked_add(LIST_BUDGET);
         let Ok(stage) =

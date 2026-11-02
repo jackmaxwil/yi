@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::hostgit::{git, git_capture, trunk};
-use super::{BranchName, LaneError, Pool, Sha};
+use super::{BranchName, Head, LaneError, Pool, Sha, head};
 use crate::permission::{AskOutcome, PermissionAsk, PermissionBroker};
 
 const OUTBOX_REFS_MAX: usize = 32;
@@ -57,6 +57,7 @@ pub struct GitLane {
     outbox: PathBuf,
     assign: Vec<String>,
     forward_timeout: Duration,
+    own: Option<BranchName>,
 }
 
 // ponytail: one lane per tree for the process's life; a `git remote set-url` by hand needs a restart.
@@ -150,12 +151,17 @@ impl GitLane {
                 ]
             }))
             .collect();
+        let own = match head(cwd) {
+            Ok(Head::Branch(branch)) => Some(branch),
+            Ok(Head::Detached(_)) | Err(_) => None,
+        };
         let lane = Self {
             pool,
             mirror,
             outbox,
             assign,
             forward_timeout,
+            own,
         };
         let _an_empty_mirror_says_so_at_the_fetch = lane.sync_mirror();
         Some(lane)
@@ -262,10 +268,14 @@ impl GitLane {
             Wanted::Branch(branch) => (format!("refs/heads/{branch}"), branch.to_string()),
             Wanted::Tag(tag) => (format!("refs/tags/{tag}"), format!("tag {tag}")),
         };
+        // Invariant: only the lane's own branch is forwarded unasked. The outbox is contained-writable,
+        // so any other name could publish a commit that process wrote.
         let held = match wanted {
             Wanted::Tag(_) => true,
             Wanted::Branch(branch) => {
-                *branch == trunk(repo) || matches!(branch.as_str(), "main" | "master")
+                *branch == trunk(repo)
+                    || matches!(branch.as_str(), "main" | "master")
+                    || self.own.as_ref() != Some(branch)
             }
         };
         let stat = if held {

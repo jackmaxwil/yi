@@ -143,6 +143,21 @@ fn main_asks_and_a_refusal_leaves_origin_where_it_was() -> TestResult {
 }
 
 #[test]
+fn a_branch_that_is_not_the_lanes_own_asks_before_origin_sees_it() -> TestResult {
+    let repo = Repo::new("foreign-branch")?;
+    let lane = repo.lane(LONG)?;
+    repo.plant("heads/gh-pages", &repo.head()?)?;
+    let rows = lane.sweep(&broker(&repo.project, None));
+    assert!(repo.at_origin("refs/heads/gh-pages").is_none());
+    assert!(
+        rows.concat()
+            .contains("[not pushed: gh-pages asks a person"),
+        "{rows:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn main_goes_when_a_person_says_so_and_a_tag_asks_too() -> TestResult {
     let repo = Repo::new("main-yes")?;
     let lane = repo.lane(LONG)?;

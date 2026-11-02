@@ -667,20 +667,16 @@ pub fn verdict_of(segments: &[Vec<String>]) -> Verdict {
                     ),
                 };
             }
-            Class::Egress if scope(argv).is_some_and(|scope| scope.starts_with("git")) => {
-                return Verdict::Ask {
-                    reason: format!(
-                        "`git {}` needs the network; a contained run has none",
-                        (argv.iter().position(|word| program(word) == "git"))
-                            .and_then(|at| git_subcommand(argv.get(at..)?))
-                            .unwrap_or_default()
-                    ),
-                };
-            }
             Class::Egress => {
-                return Verdict::Ask {
-                    reason: format!("`{shown}` needs a forge login; a contained run has none"),
+                let git = (argv.iter().position(|word| program(word) == "git"))
+                    .and_then(|at| git_subcommand(argv.get(at..)?));
+                let reason = match git {
+                    Some(verb) => {
+                        format!("`git {verb}` needs the network; a contained run has none")
+                    }
+                    None => format!("`{shown}` needs a forge login; a contained run has none"),
                 };
+                return Verdict::Ask { reason };
             }
             Class::Unknown => {
                 if unknown.is_none() {
