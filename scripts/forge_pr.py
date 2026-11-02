@@ -487,10 +487,16 @@ def required():
     return [job for job in dict.fromkeys([*pr_review.GATE_LANES, *protected]) if job != "review"]
 
 
+# Invariant: a 403 or 500 answers with a message and no statuses, which must not read as nothing waiting.
+UNREAD = "the commit's statuses, unreadable"
+
+
 def head_jobs(name, sha):
     """Job name to its newest status on one head. Incident: the task list has no row until a runner
     claims a job, so #1887's waiting rerun read as its old failure, and 60 rows is an hour or two."""
     combined = fgj_api("GET", f"repos/{name}/commits/{sha}/status") or {}
+    if "message" in combined:
+        return {UNREAD: "pending"}
     jobs = {}
     for status in combined.get("statuses") or []:
         job = required_jobs([status["context"]])[0]
@@ -546,10 +552,8 @@ def cmd_update(args):
 
 def rerun_waits(pr):
     """The gate's jobs still waiting on this head. The review job is left out: a round runs for hours."""
-    import pr_review
-
     jobs = jobs_of(pr)
-    return [job for job in (*pr_review.GATE_LANES, "title") if jobs.get(job) == "pending"]
+    return [job for job in (*required(), UNREAD) if jobs.get(job) == "pending"]
 
 
 def cmd_rerun(args):
@@ -864,6 +868,9 @@ def selfcheck():
         assert seen.get("gate (test)") == "pending" and seen.get("gate (lint)") == "failure", ("a waiting run read as its old failure", seen)
         with contextlib.redirect_stdout(io.StringIO()):
             assert cmd_rerun(argparse.Namespace(number=7)) == 1 and not closed, "a second reopen cancels the waiting run"
+            served, head_status = head_status, {"message": "forbidden"}
+            assert cmd_rerun(argparse.Namespace(number=7)) == 1 and not closed, "an unreadable status lets a reopen cancel a waiting run"
+            head_status = served
             head_status["statuses"][0] = {"context": "pr / gate (test) (pull_request)", "status": "failure"}
             real_sleep, time.sleep = time.sleep, lambda s: None
             try:
