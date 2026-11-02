@@ -244,7 +244,7 @@ pub struct SubagentHost {
     /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
     pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
     kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
-    pub(crate) checker: std::sync::OnceLock<crate::goal::Checker>,
+    checker: std::sync::OnceLock<crate::goal::Checker>,
 }
 
 pub(crate) fn random_suffix() -> Result<String, String> {

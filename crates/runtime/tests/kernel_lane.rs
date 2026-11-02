@@ -332,6 +332,54 @@ async fn a_merged_worktree_names_the_files_it_changed() -> TestResult {
     Ok(())
 }
 
+/// The child's tree, read from git: a test has no other handle on a host-minted path.
+fn child_tree(repo: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let out = yi_tools::keyless_command("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo)
+        .output()?;
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let tree = listing
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .find(|path| path.contains("forks"));
+    Ok(PathBuf::from(
+        tree.ok_or_else(|| format!("no fork in {listing}"))?,
+    ))
+}
+
+/// Dies with the tree dropped on a failed settle: the retry answered "isolation was none", and the
+/// child's uncommitted work sat in a tree nothing named until retention came for it.
+#[tokio::test]
+async fn a_settle_that_fails_keeps_the_tree_and_a_retry_lands_it() -> TestResult {
+    let (_root, repo, family) =
+        finished_child("settle", "printf 'kept\\n' > kept.txt", false).await?;
+    let pointer = child_tree(&repo)?.join(".git");
+    let good = std::fs::read(&pointer)?;
+    std::fs::write(&pointer, "gitdir: /nowhere\n")?;
+    let failed = family.host.merge_worktree("writer", None);
+    assert!(failed.is_err(), "{failed:?}");
+    std::fs::write(&pointer, good)?;
+    let merged = family.host.merge_worktree("writer", None)?;
+    assert_eq!(merged["merged"], true, "{merged:?}");
+    assert!(repo.join("kept.txt").is_file());
+    Ok(())
+}
+
+/// Dies with a bare git error past the settle: the tree is gone by then, so the error is the only
+/// place that says the work survived and where.
+#[tokio::test]
+async fn a_failure_after_the_settle_names_the_branch_holding_the_work() -> TestResult {
+    let (_root, repo, family) =
+        finished_child("after", "printf 'kept\\n' > kept.txt", true).await?;
+    std::fs::write(repo.join(".git/worktrees/parent-lane/HEAD"), "garbage\n")?;
+    let Err(error) = family.host.merge_worktree("writer", None) else {
+        return Err("a parent with no HEAD merged".into());
+    };
+    assert!(error.contains("its work is kept on branch yi/"), "{error}");
+    Ok(())
+}
+
 /// Dies with `files` inserted on the published arm only: a conflict is the reply that most
 /// needs to say what the child touched.
 #[tokio::test]
