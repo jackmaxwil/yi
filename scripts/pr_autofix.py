@@ -1495,6 +1495,13 @@ def pass_stop(fixed, spent, now=None):
     return None
 
 
+def pass_order(pulls, repo):
+    """Queued first, then oldest. Incident: a pass takes PER_RUN fixes from the oldest of about ninety
+    open PRs, so #1857 and #1872 sat conflicted in the queue with the fixer working elsewhere."""
+    queued = lambda p: any(label["name"] == "queue" for label in p.get("labels") or [])
+    return sorted((p for p in pulls if p["head"]["repo"]["full_name"] == repo), key=lambda p: (not queued(p), p["number"]))
+
+
 def cmd_autofix(args):
     # Incident: a pass the runner killed had buffered every line it printed, so its log was empty.
     sys.stdout.reconfigure(line_buffering=True)
@@ -1509,7 +1516,7 @@ def cmd_autofix(args):
     if not isinstance(pulls, list):
         print(f"autofix: the forge did not list the pull requests: {(pulls or {}).get('message')}")
         return 1
-    ours = sorted((p for p in pulls if p["head"]["repo"]["full_name"] == repo), key=lambda p: p["number"])
+    ours = pass_order(pulls, repo)
     # One pass at a time (the workflow's concurrency group), so a working label left here is a dead run's.
     for pr in ours:
         if any(label["name"] == "autofix:working" for label in pr.get("labels") or []):
@@ -2273,6 +2280,10 @@ def selfcheck():
     iso = lambda at: datetime.datetime.fromtimestamp(at, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     row = lambda cost, at, verdict="pushed": dict(bot, created_at=iso(at), body="<!-- yi-autofix -->\n"
                                                  f"<!-- yi-autofix-meta pr=1 cost={cost:.4f} verdict={verdict} -->\n")
+    pass_of = lambda n, *labels: {"number": n, "head": {"repo": {"full_name": "o/r"}}, "labels": [{"name": x} for x in labels]}
+    fork = {"number": 1, "head": {"repo": {"full_name": "fork/r"}}, "labels": [{"name": "queue"}]}
+    if [p["number"] for p in pass_order([pass_of(9), pass_of(2), fork, pass_of(1857, "queue"), pass_of(1872, "autofix", "queue")], "o/r")] != [1857, 1872, 2, 9]:
+        errs.append("a queued PR did not come first in the pass, oldest first after it, forks out")
     if pass_stop(PER_RUN - 1, 0.0, now) is not None or pass_stop(PER_RUN, 0.0, now) is None:
         errs.append(f"a pass stops after {PER_RUN} fixes but not after {PER_RUN - 1}")
     day, over = pass_stop(0, CAP_DAY - 0.01, now), pass_stop(0, CAP_DAY, now)
