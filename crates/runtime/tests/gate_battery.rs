@@ -120,7 +120,7 @@ const BATTERY: [(&str, &str); 129] = [
     ("python3 script.py", "contain"),
     ("./scripts/build.sh", "contain"),
     ("docker build .", "contain"),
-    ("gh pr create --fill", "contain"),
+    ("gh pr create --fill", "ask"),
     ("kubectl get pods", "contain"),
     ("mkdir -p target/tmp", "contain"),
     ("touch NOTES.md", "contain"),

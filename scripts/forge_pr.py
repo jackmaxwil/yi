@@ -391,10 +391,10 @@ def cmd_open(args):
             print(err)
         print("open: refused — the title job would fail; fix the above first")
         return 1
+    # A host-run recipe never builds: pushing here would run a child's build.rs outside the sandbox.
     if not pushed():
-        code = cmd_push(args)
-        if code:
-            return code
+        print("open: this branch is not pushed — just push first")
+        return 1
     out = subprocess.run(
         ("fgj", "pr", "create", *scope(), "--head", branch(), "--base", "main", "--title", title, "--body", body),
         capture_output=True, text=True, check=False,

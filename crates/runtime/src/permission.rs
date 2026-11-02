@@ -18,6 +18,9 @@ use yi_types::permission::{
 };
 
 mod egress;
+mod forge;
+mod inflight;
+use inflight::InFlight;
 mod hooked;
 pub(crate) use hooked::claude_dir;
 mod kept;
@@ -99,6 +102,7 @@ pub struct PermissionBroker {
     /// Loaded once from the root's tree and shared down: a lane child reads the root's project.
     claude_hooks: std::sync::OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
     egress: egress::Named,
+    host_recipes: std::sync::OnceLock<Vec<yi_types::config::HostRecipe>>,
 }
 
 pub struct CallOutcome {
@@ -213,6 +217,7 @@ impl PermissionBroker {
             unattended: false,
             claude_hooks: std::sync::OnceLock::new(),
             egress: egress::Named::default(),
+            host_recipes: std::sync::OnceLock::new(),
         }
     }
 
@@ -501,6 +506,9 @@ impl PermissionBroker {
         } else {
             None
         };
+        if let Some(outcome) = self.host_recipe(command) {
+            return outcome;
+        }
         let cwd_text = self.cwd.to_string_lossy().into_owned();
         let (rule_kind, canonical, display) = match command {
             Some(command) => (
@@ -565,6 +573,7 @@ impl PermissionBroker {
             &active_holds,
             &self.context,
         );
+        let decision = self.forge_gate(command, decision);
         let judged = hooked::Judged {
             call: &call,
             config_rules: &self.config_rules,
@@ -1115,32 +1124,5 @@ impl PermissionBroker {
         answered.unwrap_or_else(|| {
             Answered::Person(self.asker.as_ref().map_or(AskOutcome::Reject, |a| a(ask)))
         })
-    }
-}
-
-struct InFlight<'a> {
-    set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
-    request: RequestId,
-}
-
-impl<'a> InFlight<'a> {
-    fn claim(
-        set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
-        request: RequestId,
-    ) -> Option<Self> {
-        let inserted = set
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(request);
-        inserted.then(|| Self { set, request })
-    }
-}
-
-impl Drop for InFlight<'_> {
-    fn drop(&mut self) {
-        self.set
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.request);
     }
 }

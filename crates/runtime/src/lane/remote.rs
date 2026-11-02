@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::hostgit::{git, git_capture, trunk};
-use super::{BranchName, LaneError, Pool, Sha};
+use super::{BranchName, Head, LaneError, Pool, Sha, head};
 use crate::permission::{AskOutcome, PermissionAsk, PermissionBroker};
 
 const OUTBOX_REFS_MAX: usize = 32;
@@ -57,6 +57,7 @@ pub struct GitLane {
     outbox: PathBuf,
     assign: Vec<String>,
     forward_timeout: Duration,
+    own: Option<BranchName>,
 }
 
 // ponytail: one lane per tree for the process's life; a `git remote set-url` by hand needs a restart.
@@ -140,12 +141,17 @@ impl GitLane {
             None => (format!("url.{}.pushInsteadOf", outbox.display()), url),
         });
         let assign = config_env(&rules);
+        let own = match head(cwd) {
+            Ok(Head::Branch(branch)) => Some(branch),
+            Ok(Head::Detached(_)) | Err(_) => None,
+        };
         let lane = Self {
             pool,
             mirror,
             outbox,
             assign,
             forward_timeout,
+            own,
         };
         let _an_empty_mirror_says_so_at_the_fetch = lane.sync_mirror();
         Some(lane)
@@ -252,10 +258,14 @@ impl GitLane {
             Wanted::Branch(branch) => (format!("refs/heads/{branch}"), branch.to_string()),
             Wanted::Tag(tag) => (format!("refs/tags/{tag}"), format!("tag {tag}")),
         };
+        // Invariant: the outbox is contained-writable, so a branch someone else owns is asked about;
+        // a name origin has never tracked is the push a contained kernel exists to make.
         let held = match wanted {
             Wanted::Tag(_) => true,
             Wanted::Branch(branch) => {
-                *branch == trunk(repo) || matches!(branch.as_str(), "main" | "master")
+                *branch == trunk(repo)
+                    || matches!(branch.as_str(), "main" | "master")
+                    || (self.own.as_ref() != Some(branch) && tracked(repo, branch).is_some())
             }
         };
         let stat = if held {
@@ -292,7 +302,7 @@ impl GitLane {
         let Wanted::Branch(branch) = wanted else {
             return "a tag".to_owned();
         };
-        let range = format!("refs/remotes/origin/{branch}...{}", sha.as_str());
+        let range = format!("{}...{}", tracking_ref(branch), sha.as_str());
         let Ok(rows) = git(self.pool.repo(), &["diff", "--numstat", &range]) else {
             return "no diff against origin to show".to_owned();
         };
@@ -310,13 +320,10 @@ impl GitLane {
 
     fn push(&self, wanted: &Wanted, sha: &Sha, target: &str) -> Forward {
         let repo = self.pool.repo();
-        let tracking = match wanted {
-            Wanted::Branch(branch) => format!("refs/remotes/origin/{branch}"),
-            Wanted::Tag(_) => String::new(),
+        let old = match wanted {
+            Wanted::Branch(branch) => tracked(repo, branch),
+            Wanted::Tag(_) => None,
         };
-        let old = git(repo, &["rev-parse", "--verify", "-q", &tracking])
-            .ok()
-            .and_then(|text| Sha::parse(&text));
         let deadline = Instant::now().checked_add(self.forward_timeout);
         let refspec = format!("{}:{target}", sha.as_str());
         let args = ["push", "-q", "origin", refspec.as_str()];
@@ -345,6 +352,20 @@ impl GitLane {
             Err(error) => Forward::Rejected(fenced(&error.to_string())),
         }
     }
+}
+
+fn tracking_ref(branch: &BranchName) -> String {
+    format!("refs/remotes/origin/{branch}")
+}
+
+/// What origin has for a branch: the ask, the stat and the push's old value answer from one read.
+fn tracked(repo: &Path, branch: &BranchName) -> Option<Sha> {
+    git(
+        repo,
+        &["rev-parse", "--verify", "-q", &tracking_ref(branch)],
+    )
+    .ok()
+    .and_then(|text| Sha::parse(&text))
 }
 
 fn asked(label: &str, stat: &str, broker: &PermissionBroker) -> bool {
@@ -406,8 +427,8 @@ fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
     std::fs::write(alternates, format!("{}\n", objects.display())).map_err(io)
 }
 
-/// Invariant: a word of the command is `git` and another is the remote read, so a file named
-/// `fetch.log` or a `grep pull` pays for no fetch it never asked for.
+/// Invariant: a segment's program is `git` and its own subcommand is the remote read, so a file
+/// named `fetch.log`, a `grep pull` or a commit message mentioning one pays for no fetch.
 fn reads_a_remote(command: &str) -> bool {
     let words: Vec<&str> = command
         .split(|c: char| c.is_whitespace() || ";&|()<>!".contains(c))
@@ -460,11 +481,13 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the substring test: a file whose name holds the verb costs no fetch.
+    /// Dies with the word-scan: a program that merely says the words, or a commit message quoting
+    /// one, costs no fetch.
     #[test]
     fn only_a_git_word_fetches() {
         assert!(super::reads_a_remote("git fetch origin"));
         assert!(super::reads_a_remote("cargo nextest && git pull --ff-only"));
+        assert!(super::reads_a_remote("git -C /tmp/r ls-remote origin"));
         assert!(!super::reads_a_remote(
             "grep -n pull crates/runtime/src/lane/mod.rs"
         ));

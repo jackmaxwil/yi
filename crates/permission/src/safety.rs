@@ -527,6 +527,7 @@ pub fn classify(argv: &[String]) -> Class {
     }
     let class = match name {
         "git" => git_class(argv),
+        "fgj" | "gh" => Class::Egress,
         "cargo" => cargo_class(argv),
         "find" => find_class(argv),
         "ripwire"
@@ -666,7 +667,7 @@ pub fn verdict_of(segments: &[Vec<String>]) -> Verdict {
                     ),
                 };
             }
-            Class::Egress => {
+            Class::Egress if scope(argv).is_some_and(|scope| scope.starts_with("git")) => {
                 return Verdict::Ask {
                     reason: format!(
                         "`git {}` needs the network; a contained run has none",
@@ -674,6 +675,11 @@ pub fn verdict_of(segments: &[Vec<String>]) -> Verdict {
                             .and_then(|at| git_subcommand(argv.get(at..)?))
                             .unwrap_or_default()
                     ),
+                };
+            }
+            Class::Egress => {
+                return Verdict::Ask {
+                    reason: format!("`{shown}` needs a forge login; a contained run has none"),
                 };
             }
             Class::Unknown => {
@@ -698,9 +704,9 @@ const KEYWORDS: [&str; 12] = [
 pub(crate) const OPENERS: [&str; 8] = ["!", "do", "done", "else", "esac", "fi", "then", "{"];
 pub(crate) const HEADERS: [&str; 6] = ["case", "elif", "for", "if", "until", "while"];
 
-const VERB_PROGRAMS: [&str; 16] = [
-    "brew", "bun", "cargo", "docker", "gem", "git", "go", "just", "make", "npm", "pip", "pip3",
-    "pnpm", "rustup", "uv", "yarn",
+const VERB_PROGRAMS: [&str; 18] = [
+    "brew", "bun", "cargo", "docker", "fgj", "gem", "gh", "git", "go", "just", "make", "npm",
+    "pip", "pip3", "pnpm", "rustup", "uv", "yarn",
 ];
 
 /// `argv` past the wrappers that run another program (`timeout`, `nice`, `env`, assignments).
@@ -929,6 +935,9 @@ pub fn host_need(argv: &[String]) -> Option<&'static str> {
         name == "git" && unwrapped(argv).is_some_and(|argv| git_network(argv) || forced(argv));
     if HOST_PROGRAMS.contains(&name) || git_network {
         return Some("network");
+    }
+    if matches!(name, "fgj" | "gh") {
+        return Some("forge");
     }
     // Into the tree, through the proxy, with the package caches writable: nothing to leave for.
     let contained = matches!(verb, "add" | "install")
