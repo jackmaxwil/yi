@@ -254,7 +254,7 @@ async fn a_link_planted_at_the_kernels_own_directory_grants_nothing() -> TestRes
 }
 
 /// A root session wired the way `yi` wires one, with `sessions_dir` as its session corpus.
-fn root_session(
+pub(crate) fn root_session(
     project: &std::path::Path,
     home: &std::path::Path,
     rlm_dir: &std::path::Path,

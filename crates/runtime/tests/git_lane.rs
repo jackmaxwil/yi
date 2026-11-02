@@ -68,7 +68,7 @@ impl Repo {
     }
 
     /// What `git push` leaves behind in the outbox, written straight, the way a hostile process can.
-    fn plant(&self, name: &str, sha: &str) -> TestResult {
+    pub(crate) fn plant(&self, name: &str, sha: &str) -> TestResult {
         let path = self.outbox().join("refs").join(name);
         std::fs::create_dir_all(path.parent().ok_or("no parent")?)?;
         std::fs::write(path, format!("{sha}\n"))?;
@@ -93,7 +93,7 @@ impl Repo {
     }
 }
 
-fn broker(cwd: &Path, asker: Option<Asker>) -> PermissionBroker {
+pub(crate) fn broker(cwd: &Path, asker: Option<Asker>) -> PermissionBroker {
     PermissionBroker::new(
         PermissionMode::Auto,
         cwd.to_path_buf(),
