@@ -117,6 +117,8 @@ pub fn workspace_sandbox(
         .then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir).with_caches(home))
 }
 
+pub use yi_tools::set_wrapper as set_sandbox_wrapper;
+
 pub fn identity_fragment() -> &'static str {
     include_str!("prompts/identity.md")
 }

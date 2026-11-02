@@ -258,6 +258,13 @@ fn matcher(patterns: &[String], rows: &mut Vec<String>) -> Option<globset::GlobS
     let mut set = globset::GlobSetBuilder::new();
     for pattern in patterns {
         let trimmed = pattern.trim_start_matches('/').trim_end_matches('/');
+        if trimmed.starts_with('!') {
+            rows.push(format!(
+                "[not carried: pattern `{}` is a negation, which this list has no rule order for; list the files it names]",
+                crate::ext::sanitize(pattern)
+            ));
+            continue;
+        }
         match globset::Glob::new(trimmed) {
             Ok(glob) => drop(set.add(glob)),
             Err(error) => rows.push(format!(
@@ -387,4 +394,22 @@ pub fn carry_includes(
         rows.push(format!("carried {copied} ignored files into the child"));
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matcher;
+
+    /// Dies with a matcher that reads `!keep.txt` as a file name: the exclusion matched nothing,
+    /// no row said so, and a file the person meant to leave behind was never mentioned.
+    #[test]
+    fn a_negated_include_pattern_is_named_not_matched() {
+        let mut rows = Vec::new();
+        let set = matcher(&["!keep.txt".to_owned()], &mut rows);
+        assert!(
+            rows.iter().any(|row| row.contains("is a negation")),
+            "{rows:?}"
+        );
+        assert!(!set.is_some_and(|set| set.is_match("keep.txt")));
+    }
 }

@@ -478,3 +478,13 @@ fn cut_patch(patch: String, name: &str, file: &str) -> (String, Option<String>) 
         )),
     )
 }
+
+impl crate::fetch::MemberTrees for SubagentHost {
+    fn cwd_of(&self, agent: &str) -> Option<PathBuf> {
+        SubagentHost::cwd_of(self, agent).or_else(|| free_tree_path(&self.options.cwd, agent))
+    }
+
+    fn diff_rows(&self, agent: &str) -> Result<Vec<String>, String> {
+        self.tree_rows(agent)
+    }
+}

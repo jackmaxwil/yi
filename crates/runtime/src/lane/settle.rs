@@ -535,27 +535,26 @@ fn nul_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn status_records(text: &str) -> Vec<(&str, &str)> {
+/// Every path `status --porcelain -z` names, dirty or untracked; a rename names two.
+fn status_paths(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut records = text.split('\0').filter(|record| !record.is_empty());
     while let Some(record) = records.next() {
-        let (Some(code), Some(path)) = (record.get(..2), record.get(3..)) else {
+        let Some((code, path)) = status_row(record) else {
             continue;
         };
-        out.push((code, path));
+        out.push(path.to_owned());
         if code.starts_with('R') || code.starts_with('C') {
-            let _the_old_name = records.next();
+            out.extend(records.next().map(str::to_owned));
         }
     }
     out
 }
 
-/// Every path `status --porcelain -z` names, dirty or untracked; a rename names two.
-fn status_paths(text: &str) -> Vec<String> {
-    status_records(text)
-        .into_iter()
-        .map(|(_, path)| path.to_owned())
-        .collect()
+/// One `-z` record's porcelain code and path: two columns, a space, then the name.
+#[must_use]
+pub fn status_row(record: &str) -> Option<(&str, &str)> {
+    Some((record.get(..2)?, record.get(3..)?))
 }
 
 /// A slot path under the pool, so a staging lane can be named in a record without its host path.
