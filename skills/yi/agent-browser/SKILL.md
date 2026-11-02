@@ -31,6 +31,9 @@ only with test credentials the user gave you for this. Attaching a real browser 
 (`connect`, `--cdp`, `--auto-connect`, `--profile`, `--state`) and `--headed` are refused in every
 mode, so say what you could not do and ask the user to do it.
 
+A refusal naming `yi plugin add agent-browser` means Chrome has no sandbox on this machine yet, a
+copy on PATH included. Ask the user to run it; nothing else gets past it.
+
 ## The loop
 
 Observe, act on one ref, observe again. Refs go stale when the page changes, so snapshot after

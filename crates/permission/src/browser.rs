@@ -1,6 +1,10 @@
-use crate::desktop::Judged;
+use std::path::Path;
+
+use crate::desktop::{Judged, names_any, session_of};
 
 pub const PROGRAM: &str = "agent-browser";
+
+pub const VERSION: &str = "0.41.0";
 
 /// The session whose Chrome has the internet: the plugin's wrapper reads the same name.
 pub const WEB: &str = "web";
@@ -70,32 +74,13 @@ const REFUSED: [&str; 9] = [
     "inspect",
 ];
 
-/// A flag before the verb hides it, so then any word naming one counts; after a verb only a flag
-/// does, since other words are typed text.
-fn refused(all: &[String]) -> bool {
-    let named = |word: &String| REFUSED.contains(&word.split('=').next().unwrap_or(word));
-    match all.first() {
-        Some(verb) if !verb.starts_with('-') => {
-            named(verb) || all.iter().any(|word| word.starts_with("--") && named(word))
-        }
-        _ => all.iter().any(named),
-    }
-}
-
-/// `--session`'s value when it is given, and the words without it or `--json`.
-fn globals(all: &[String]) -> (Option<&str>, Vec<&str>) {
-    let (mut session, mut rest) = (None, Vec::new());
-    let mut words = all.iter().map(String::as_str);
-    while let Some(word) = words.next() {
-        if word == "--session" {
-            session = Some(words.next().unwrap_or_default());
-        } else if let Some(name) = word.strip_prefix("--session=") {
-            session = Some(name);
-        } else if word != "--json" {
-            rest.push(word);
-        }
-    }
-    (session, rest)
+/// Whether the pinned program stands beside the config and script that hold its Chrome. Invariant:
+/// only `yi plugin add` writes under this directory, and it writes these last.
+pub fn boxed(home: &Path) -> bool {
+    let dir = home.join(".yi/plugins").join(PROGRAM).join(VERSION);
+    [PROGRAM, "config.json", "chrome-box"]
+        .iter()
+        .all(|file| dir.join(file).is_file())
 }
 
 /// Invariant: only the plain name is judged (None otherwise), so `AGENT_BROWSER_EXECUTABLE_PATH=x
@@ -104,38 +89,55 @@ pub(crate) fn judge(argv: &[String]) -> Option<Judged> {
     if argv.first().map(String::as_str) != Some(PROGRAM) {
         return None;
     }
-    let all = argv.get(1..).unwrap_or_default();
-    if refused(all) {
-        return Some(Judged::Refused(format!(
+    let boxed = std::env::var_os("HOME").is_some_and(|home| boxed(Path::new(&home)));
+    Some(judge_words(argv.get(1..).unwrap_or_default(), boxed))
+}
+
+fn judge_words(all: &[String], boxed: bool) -> Judged {
+    if names_any(all, &REFUSED) {
+        return Judged::Refused(format!(
             "this attaches the user's real logins or takes their screen; use the headless browser: {}",
             all.join(" ")
-        )));
+        ));
     }
-    let (session, words) = globals(all);
-    let web = match session {
+    // Incident: a Chrome outside the box returned a planted `~/.ssh/id_rsa`; a copy on PATH, or an
+    // install whose Chrome download failed, starts exactly that one.
+    if !boxed {
+        return Judged::Refused(format!(
+            "agent-browser runs only from `yi plugin add agent-browser`, which holds its Chrome in a sandbox: {}",
+            all.join(" ")
+        ));
+    }
+    let (session, words) = session_of(all);
+    let web = match session.as_deref() {
         None => false,
         Some(WEB) => true,
-        Some(_) => return Some(Judged::EachTime),
+        Some(_) => return Judged::EachTime,
     };
+    let words: Vec<&str> = (words.iter().map(String::as_str))
+        .filter(|word| *word != "--json")
+        .collect();
     let Some((verb, rest)) = words.split_first() else {
-        return Some(Judged::EachTime);
+        return Judged::EachTime;
     };
     let Some((_, flags)) = VERBS.iter().find(|(name, _)| name == verb) else {
-        return Some(Judged::EachTime);
+        return Judged::EachTime;
     };
     let unlisted = |word: &&str| {
         word.starts_with('-') && !flags.contains(&word.split('=').next().unwrap_or(word))
     };
-    // Invariant: a screenshot's other word can be a path, which the outside daemon would write.
-    let writes = *verb == "screenshot" && rest.iter().any(|word| !word.starts_with(['-', '@']));
+    // Invariant: a screenshot's other word can be a path, `-f=x` included, which the outside daemon
+    // would write.
+    let writes = *verb == "screenshot"
+        && (rest.iter()).any(|word| !word.starts_with('@') && !flags.contains(word));
     if rest.iter().any(unlisted) || writes {
-        return Some(Judged::EachTime);
+        return Judged::EachTime;
     }
-    Some(if web {
+    if web {
         Judged::App(WEB.to_owned())
     } else {
         Judged::Free
-    })
+    }
 }
 
 #[cfg(test)]
@@ -143,11 +145,8 @@ mod tests {
     use super::*;
 
     fn judged(words: &[&str]) -> Option<Judged> {
-        let argv: Vec<String> = std::iter::once(PROGRAM)
-            .chain(words.iter().copied())
-            .map(str::to_owned)
-            .collect();
-        judge(&argv)
+        let words: Vec<String> = words.iter().copied().map(str::to_owned).collect();
+        Some(judge_words(&words, true))
     }
 
     #[test]
@@ -190,6 +189,8 @@ mod tests {
             &["--session", "../web", "get", "title"][..],
             &["read", "https://example.com"][..],
             &["screenshot", "/Users/u/.zshrc"][..],
+            &["screenshot", "-f=/Users/u/.zshrc"][..],
+            &["screenshot", "--full=/Users/u/.zshrc"][..],
             &["pdf", "x.pdf"][..],
             &["wait", "--download", "x.zip"][..],
             &["download", "@e1", "x"][..],
@@ -226,6 +227,36 @@ mod tests {
             );
         }
         assert_eq!(judged(&["fill", "@e1", "connect"]), Some(Judged::Free));
+    }
+
+    #[test]
+    fn with_no_box_nothing_runs_outside_whichever_session() {
+        for words in [
+            &["open", "http://localhost:3000"][..],
+            &["--session", "web", "open", "https://example.com"][..],
+            &["read", "https://example.com"][..],
+        ] {
+            let words: Vec<String> = words.iter().copied().map(str::to_owned).collect();
+            assert!(
+                matches!(judge_words(&words, false), Judged::Refused(why) if why.contains("yi plugin add")),
+                "{words:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_box_is_the_program_its_config_and_its_script_together()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let home = std::env::temp_dir().join(format!("yi-browser-box-{}", std::process::id()));
+        let dir = home.join(".yi/plugins").join(PROGRAM).join(VERSION);
+        std::fs::create_dir_all(&dir)?;
+        for file in [PROGRAM, "config.json", "chrome-box"] {
+            assert!(!boxed(&home), "boxed before {file}");
+            std::fs::write(dir.join(file), "")?;
+        }
+        assert!(boxed(&home));
+        std::fs::remove_dir_all(&home)?;
+        Ok(())
     }
 
     #[test]

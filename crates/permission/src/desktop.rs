@@ -271,10 +271,10 @@ pub(crate) fn judge(argv: &[String]) -> Option<Judged> {
     crate::browser::judge(argv).or_else(|| judge_at(argv, &state_root().unwrap_or_default()))
 }
 
-/// Whether a command takes physical input. A global flag before the verb hides it, so then any
-/// word naming one counts; after a verb only a flag does, since other words are typed text.
-fn takes_input(all: &[String]) -> bool {
-    let named = |word: &String| PHYSICAL.contains(&word.split('=').next().unwrap_or(word));
+/// Whether a command names one of these. A global flag before the verb hides it, so then any word
+/// naming one counts; after a verb only a flag does, since other words are typed text.
+pub(crate) fn names_any(all: &[String], table: &[&str]) -> bool {
+    let named = |word: &String| table.contains(&word.split('=').next().unwrap_or(word));
     match all.first() {
         Some(verb) if !verb.starts_with('-') => {
             named(verb) || all.iter().any(|word| word.starts_with("--") && named(word))
@@ -284,7 +284,7 @@ fn takes_input(all: &[String]) -> bool {
 }
 
 /// `--session`'s value, and the words without it: a session's records live under its own directory.
-fn session_of(words: &[String]) -> (Option<String>, Vec<String>) {
+pub(crate) fn session_of(words: &[String]) -> (Option<String>, Vec<String>) {
     let (mut session, mut rest) = (None, Vec::new());
     let mut words = words.iter();
     while let Some(word) = words.next() {
@@ -323,7 +323,7 @@ fn judge_at(argv: &[String], root: &Path) -> Option<Judged> {
     let all = argv.get(1..).unwrap_or_default();
     let verb = all.first().map_or("", String::as_str);
     let words = all.get(1..).unwrap_or_default();
-    if takes_input(all) {
+    if names_any(all, &PHYSICAL) {
         return Some(Judged::Refused(format!(
             "this takes the user's own mouse, keyboard or front app; act on refs with no --headed: {}",
             all.join(" ")

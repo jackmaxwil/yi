@@ -279,19 +279,23 @@ impl Sandbox {
         )
     }
 
-    /// `-p <policy> -DKEY=value ... -- env -u …`: the rules and their bindings come from one
-    /// reading of the filesystem, so a link swapped between the two cannot unbind a rule.
     fn seatbelt_args(&self, own: Option<&Path>, network: bool) -> Vec<String> {
+        let mut wrapped = self.bound_policy(own, network, "");
+        wrapped.extend(scrubbed_env());
+        wrapped
+    }
+
+    /// `-p <policy> -DKEY=value ... --`: the rules and their bindings come from one reading of the
+    /// filesystem, so a link swapped between the two cannot unbind a rule.
+    fn bound_policy(&self, own: Option<&Path>, network: bool, extra: &str) -> Vec<String> {
         let parents = self.denied_parents();
-        let mut wrapped = vec![
-            "-p".to_owned(),
-            self.policy_for(parents.len(), own.is_some(), network),
-        ];
+        let mut policy = self.policy_for(parents.len(), own.is_some(), network);
+        policy.push_str(extra);
+        let mut wrapped = vec!["-p".to_owned(), policy];
         for (key, value) in self.params_for(&parents, own) {
             wrapped.push(format!("-D{key}={}", value.to_string_lossy()));
         }
         wrapped.push("--".to_owned());
-        wrapped.extend(scrubbed_env());
         wrapped
     }
 

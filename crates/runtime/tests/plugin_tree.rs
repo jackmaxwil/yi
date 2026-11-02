@@ -264,6 +264,31 @@ fn a_bare_program_is_published_and_a_tampered_one_is_not() -> TestResult {
     Ok(())
 }
 
+/// A browser published before its Chrome downloaded is a browser with no box to run it in.
+#[test]
+fn adding_the_browser_fetches_chrome_first_and_a_failure_publishes_no_browser() -> TestResult {
+    let scratch = Scratch::new("plugin-browser-order")?;
+    let home = scratch.home()?;
+    let browser = Plugin::named(yi_tools::plugin::BROWSER).ok_or("no agent-browser row")?;
+    let chrome = Plugin::named("chrome").ok_or("no chrome row")?;
+    let asked = std::sync::Mutex::new(Vec::new());
+    let refused = add(browser, &home, |url| {
+        if let Ok(mut asked) = asked.lock() {
+            asked.push(url.to_owned());
+        }
+        Err("offline".to_owned())
+    });
+    assert!(refused.is_err());
+    let wanted: Vec<String> = chrome
+        .asset()
+        .map(|asset| asset.url.to_owned())
+        .into_iter()
+        .collect();
+    assert_eq!(*asked.lock().map_err(|_| "poisoned")?, wanted);
+    assert!(browser.installed(&home).is_none());
+    Ok(())
+}
+
 /// A daemon missing these reads the repo's `agent-browser.json` and starts a browser with no box.
 #[test]
 fn an_installed_browser_starts_with_its_own_config_and_socket() -> TestResult {
@@ -275,6 +300,12 @@ fn an_installed_browser_starts_with_its_own_config_and_socket() -> TestResult {
     let program = browser.program(&home).ok_or("no program path")?;
     std::fs::create_dir_all(program.parent().ok_or("no parent")?)?;
     std::fs::write(&program, PROGRAM)?;
+    assert!(
+        yi_tools::plugin::browser_env(&home).is_empty(),
+        "a config that does not exist reads no box"
+    );
+    yi_tools::plugin::write_browser_box(&home, &home.join("chrome"))?;
+    assert!(yi_permission::browser_boxed(&home));
     let env = yi_tools::plugin::browser_env(&home);
     let value = |name: &str| {
         env.iter()

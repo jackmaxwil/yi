@@ -35,13 +35,15 @@ pub fn add(
     home: &Path,
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<PathBuf, String> {
-    let path = add_pin(plugin, home, &fetch)?;
-    // Invariant: its daemon runs only the pinned Chrome in a box, so neither is optional.
-    if plugin.name == yi_tools::plugin::BROWSER {
-        let chrome = Plugin::named("chrome").ok_or("no chrome row")?;
-        let chrome = add_pin(chrome, home, &fetch)?;
-        yi_tools::plugin::write_browser_box(home, &chrome)?;
+    if plugin.name != yi_tools::plugin::BROWSER {
+        return add_pin(plugin, home, &fetch);
     }
+    // Invariant: its daemon runs only the pinned Chrome in a box, so Chrome comes first and a failed
+    // download leaves no browser to judge.
+    let chrome = Plugin::named("chrome").ok_or("no chrome row")?;
+    let chrome = add_pin(chrome, home, &fetch)?;
+    let path = add_pin(plugin, home, &fetch)?;
+    yi_tools::plugin::write_browser_box(home, &chrome)?;
     Ok(path)
 }
 
@@ -110,9 +112,6 @@ fn install_pin(
             .map(|skill| format!("skills/{skill}"))
             .collect::<Vec<_>>(),
     };
-    if asset.member.is_empty() {
-        return yi_kernel::pinned::install_bare(&pin, fetch);
-    }
     yi_kernel::pinned::install(&pin, fetch)
 }
 
@@ -131,6 +130,14 @@ pub fn chosen(plugin: &Plugin, home: &Path) -> bool {
 }
 
 pub fn unsupported(plugin: &Plugin) -> String {
+    if plugin.name == yi_tools::plugin::BROWSER {
+        return format!(
+            "yi pins no {} build for {}/{}, and a copy on PATH is refused: its Chrome would have no sandbox",
+            plugin.name,
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+    }
     format!(
         "yi pins no {} build for {}/{}; build it from source and put it on PATH",
         plugin.name,

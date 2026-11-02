@@ -572,7 +572,9 @@ mod tests {
         let home = std::env::temp_dir().join(format!("yi-plugin-env-{}", std::process::id()));
         let plugin = crate::plugin::Plugin::named(crate::plugin::BROWSER).ok_or("no row")?;
         std::fs::create_dir_all(plugin.dir(&home))?;
-        std::fs::write(plugin.program(&home).ok_or("no path")?, "#!/bin/sh\n")?;
+        for file in [crate::plugin::BROWSER, "config.json", "chrome-box"] {
+            std::fs::write(plugin.dir(&home).join(file), "#!/bin/sh\n")?;
+        }
         let mut process = command("/usr/bin/true");
         plugin_env(&mut process, &home);
         let config = (process.get_envs())

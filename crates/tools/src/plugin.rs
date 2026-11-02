@@ -158,7 +158,7 @@ pub const PLUGINS: [Plugin; 4] = [
     },
     Plugin {
         name: BROWSER,
-        version: "0.41.0",
+        version: yi_permission::BROWSER_VERSION,
         summary: "drives a headless Chrome held in a sandbox: this Mac's apps unasked, the \
                   internet after one yes per session",
         shape: Shape::Host,
@@ -189,10 +189,10 @@ fn browser_config(home: &Path) -> Option<PathBuf> {
     Some(plugin.dir(home).join("config.json"))
 }
 
-/// What the installed daemon starts with. Invariant: its config names the file, so a repo's
+/// What the boxed daemon starts with. Invariant: its config names the file, so a repo's
 /// `agent-browser.json` is never read, and a socket of its own is no daemon the user started.
 pub fn browser_env(home: &Path) -> Vec<(&'static str, OsString)> {
-    let Some(config) = browser_config(home) else {
+    let Some(config) = browser_config(home).filter(|_| yi_permission::browser_boxed(home)) else {
         return Vec::new();
     };
     let sockets = config.with_file_name("s");

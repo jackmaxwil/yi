@@ -31,19 +31,10 @@ impl Sandbox {
     /// Chrome in this box, its own sandbox off since it cannot nest: the GPU process dies, and with
     /// no GPU the renderer never answers. `env -i`, so it inherits none of the daemon's variables.
     pub fn wrap_browser(&self, web: bool, home: &Path, chrome: &str) -> (String, Vec<String>) {
-        let parents = self.denied_parents();
-        let mut policy = self.policy_for(parents.len(), false, true);
-        policy.push_str(BROWSER_POLICY);
-        if web {
-            policy.push_str(WEB_POLICY);
-        }
-        let mut wrapped = vec!["-p".to_owned(), policy];
-        for (key, value) in self.params_for(&parents, None) {
-            wrapped.push(format!("-D{key}={}", value.to_string_lossy()));
-        }
+        let web = if web { WEB_POLICY } else { "" };
+        let mut wrapped = self.bound_policy(None, true, &format!("{BROWSER_POLICY}{web}"));
         wrapped.extend(
             [
-                "--",
                 "/usr/bin/env",
                 "-i",
                 &format!("HOME={}", home.display()),

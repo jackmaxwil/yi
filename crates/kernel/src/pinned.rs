@@ -125,6 +125,10 @@ pub fn install(
     let archive =
         fetch(pin.url).map_err(|error| format!("couldn't download {}: {error}", pin.label))?;
     checked(pin.url, &archive, pin.sha256, "; not installing")?;
+    // A release that publishes the program itself rather than an archive of it.
+    if pin.member.is_empty() {
+        return publish_pin(pin, &archive, &[]);
+    }
     let tar = crate::tarball::gunzip(&archive)
         .map_err(|error| format!("the {} archive {error}", pin.label))?;
     let entries = crate::tarball::entries(&tar)
@@ -135,17 +139,6 @@ pub fn install(
         .ok_or_else(|| format!("the {} archive carries no {}", pin.label, pin.member))?;
     let tree = tree(pin, &entries)?;
     publish_pin(pin, binary, &tree)
-}
-
-/// [`install`] for a release that publishes the program itself rather than an archive of it.
-pub fn install_bare(
-    pin: &Pinned<'_>,
-    fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
-) -> Result<PathBuf, String> {
-    let binary =
-        fetch(pin.url).map_err(|error| format!("couldn't download {}: {error}", pin.label))?;
-    checked(pin.url, &binary, pin.sha256, "; not installing")?;
-    publish_pin(pin, &binary, &[])
 }
 
 fn publish_pin(
