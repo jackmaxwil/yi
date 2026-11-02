@@ -118,7 +118,9 @@ pub enum BadHead {
 /// # Errors
 /// [`BadHead`] for anything but one complete `CONNECT name:port` head with a name [`Domain`] takes.
 pub fn connect_head(head: &[u8]) -> Result<Connect, BadHead> {
-    let end = head_end(head).ok_or(BadHead::Incomplete)?.saturating_sub(4);
+    let end = (head.windows(4))
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or(BadHead::Incomplete)?;
     let text = head
         .get(..end)
         .and_then(|bytes| std::str::from_utf8(bytes).ok())

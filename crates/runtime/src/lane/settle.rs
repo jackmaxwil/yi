@@ -540,15 +540,21 @@ fn status_paths(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut records = text.split('\0').filter(|record| !record.is_empty());
     while let Some(record) = records.next() {
-        let Some(path) = record.get(3..) else {
+        let Some((code, path)) = status_row(record) else {
             continue;
         };
         out.push(path.to_owned());
-        if record.starts_with('R') || record.starts_with('C') {
+        if code.starts_with('R') || code.starts_with('C') {
             out.extend(records.next().map(str::to_owned));
         }
     }
     out
+}
+
+/// One `-z` record's porcelain code and path: two columns, a space, then the name.
+#[must_use]
+pub fn status_row(record: &str) -> Option<(&str, &str)> {
+    Some((record.get(..2)?, record.get(3..)?))
 }
 
 /// A slot path under the pool, so a staging lane can be named in a record without its host path.

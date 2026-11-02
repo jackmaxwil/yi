@@ -1,7 +1,9 @@
 ---
+version: 0.879.0
+decisions: D534
 issue: Closes #1937
 growth: +972 is the fork, its copy, the two carries with their limits, and first use. Deleted beside it: the worker permit, Purpose::Worker and claim_child_lane. Weighed for deletion: .worktreeinclude and .yi/setup, kept since each saves every child rediscovering the same step; a name list for cargo units, which carries an in-tree patched crate and tests the parent
-raise: tests +900, comments +64, over-cap +1, crate runtime +914, crate tools +74
+raise: tests +958, comments +65, over-cap +1, crate runtime +961, crate tools +74
 decision: A worktree child is a linked worktree under ~/.yi/forks, cut at HEAD, carrying only cargo units whose dep-info names nothing in its tree; no slot or worker permit | 64 GB and 524 s at 128 children | restore claim_child_lane. Amends D119, D286
 ledger=: a child's fork: a linked worktree per child, cut at HEAD, third-party cargo units carried | 14 | core | H | H | a worktree child takes a tree under `~/.yi/forks` rather than a slot: a directory clone on APFS, a plain checkout elsewhere. Its first writing command carries the cargo units whose dep-info names nothing in the tree, syncs the toolchain and runs a committed `.yi/setup`. `.worktreeinclude` and `carry=` copy ignored files. A discard stops its jobs.
 ---

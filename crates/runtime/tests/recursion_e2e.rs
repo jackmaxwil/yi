@@ -3817,9 +3817,7 @@ async fn a_walled_check_is_refused_at_every_spawn() -> TestResult {
 }
 
 /// Dies with a check the gate only contains being refused at spawn, since a check ran on the host:
-/// it now runs in the sandbox, so a project's own `just check` can be one. macOS only, since the
-/// refusal it reads is the Seatbelt profile's: a host with no profile cannot show this path.
-#[cfg(target_os = "macos")]
+/// it now runs in the sandbox, so a project's own `just check` can be one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResult {
     let root = gate_rule_root("yi-check-sandboxed", None)?;
@@ -3844,6 +3842,9 @@ async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResul
         )
         .map_err(|error| error.to_string())?;
     let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
     assert!(wait_for_status(&host, child_id, "completed").await);
     let refused = host.result("contained", None).err().unwrap_or_default();
     assert!(refused.contains("[contained: "), "{refused}");
@@ -3852,11 +3853,12 @@ async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResul
 }
 
 /// Dies with the broker reaching the session after its checkers were built: a wired session's
-/// check then ran on the host, and its wall was empty. macOS only, since the refusal it reads is
-/// the Seatbelt profile's.
-#[cfg(target_os = "macos")]
+/// check then ran on the host, and its wall was empty.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wired_sessions_check_runs_in_its_sandbox_under_its_wall() -> TestResult {
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
     let root = gate_rule_root("yi-check-wired", None)?;
     let walled = root.join("project/walled");
     std::fs::create_dir_all(&walled)?;

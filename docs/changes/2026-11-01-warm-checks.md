@@ -1,7 +1,7 @@
 ---
 issue: Closes #1939
 growth: +412 is the pool, scrub, snapshot and ticket table with their limits. Weighed for deletion: sharing nothing, a target per check, which is the 176 s at 128 children this replaces; and the ticket table, which a cell's 600 s abort makes necessary
-raise: tests +455, comments +38, crate runtime +433, crate tools +4
+raise: tests +416, comments +24, crate runtime +317
 decision: Kernel checks and the plan's candidate check run in a per-repo pool of node.slots warm directories, scrubbed to cargo's bookkeeping, and report exit and output only | 43 s against 176 s at 128 children | call run_check_in on the path again. Amends D475
 ---
 A child's `check=` now runs in a warm directory rather than in the child's own tree. `merge_worktree` settles first and checks the settled commit, so a job still running refuses it at once, and a check's unignored writes no longer land with the child's work. `rlm.result` on a fork checks a snapshot of the tree, and a plan's verifier claims from the same pool.

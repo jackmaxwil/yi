@@ -1742,6 +1742,14 @@ fn only_gits_transport_refusal_is_a_network_denial() -> TestResult {
         "python3 check.py",
     );
     assert_eq!(unrelated, None, "{unrelated:?}");
+    let merely_named = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "warning: no rule for the transport 'bluetooth' in this schema\n",
+        "python3 check.py",
+    );
+    assert_eq!(merely_named, None, "{merely_named:?}");
     Ok(())
 }
 

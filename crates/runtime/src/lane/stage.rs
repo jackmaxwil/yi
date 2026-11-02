@@ -1,5 +1,5 @@
-//! A kernel child's hand-back merged in the object store: no checkout, so no slot per merge. The
-//! plan engine stays on [`super::settle::prepare`], since it verifies in that directory.
+//! A kernel child's hand-back merged in the object store on git 2.43 and later: no checkout, so no
+//! slot per merge. An older git takes the plan engine's [`super::settle::prepare`] and its directory.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -24,13 +24,16 @@ pub fn git_version(text: &str) -> Option<(u32, u32)> {
 
 fn native(parent: &Path) -> bool {
     static NEW_ENOUGH: OnceLock<bool> = OnceLock::new();
-    *NEW_ENOUGH.get_or_init(|| {
-        let version = git(parent, &["--version"]).ok();
-        version
-            .as_deref()
-            .and_then(git_version)
-            .is_some_and(|at| at >= ATTR_SOURCE_SINCE)
-    })
+    *NEW_ENOUGH.get_or_init(|| native_road(git(parent, &["--version"]).ok().as_deref()))
+}
+
+/// Whether a `git version` line is one whose `merge-tree` takes `--attr-source`: an absent or
+/// unreadable line, and every version before 2.43, takes the checkout road.
+#[must_use]
+pub fn native_road(version: Option<&str>) -> bool {
+    version
+        .and_then(git_version)
+        .is_some_and(|at| at >= ATTR_SOURCE_SINCE)
 }
 
 /// A conflicted `merge-tree --write-tree -z`: the tree, then `mode oid stage\tpath` rows up to an
@@ -139,4 +142,21 @@ pub fn merged(
         candidate.clone(),
         sha_of(&integrated)?,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::native_road;
+
+    /// Invariant: 2.43 is the floor `--attr-source` needs, so a gate that drifts either side of it
+    /// sends every host down the road the other one proves.
+    #[test]
+    fn the_object_store_road_opens_at_2_43() {
+        assert!(!native_road(None));
+        assert!(!native_road(Some("git version 2.34.1")));
+        assert!(!native_road(Some("git version 2.42.9")));
+        assert!(!native_road(Some("no version here")));
+        assert!(native_road(Some("git version 2.43.0")));
+        assert!(native_road(Some("git version 2.54.0 (Apple Git-157)")));
+    }
 }

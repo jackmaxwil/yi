@@ -45,6 +45,9 @@ pub(crate) fn capture_named(
 ) -> Result<yi_tools::CommandCapture, String> {
     let capture =
         run(cwd, program, args, &[], deadline, cap).map_err(|error| format!("{label}: {error}"))?;
+    if program == "git" && yi_tools::writes_sealed(args) {
+        yi_tools::reseal();
+    }
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }
@@ -127,6 +130,9 @@ pub(crate) fn git_capture(
         exit_code: None,
         output,
     })?;
+    if yi_tools::writes_sealed(args) {
+        yi_tools::reseal();
+    }
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }

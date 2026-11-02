@@ -3236,25 +3236,25 @@ fn checked_merge(
 }
 
 /// Dies with the hand-back back on `prepare`: a slot and a checkout per merge, at 128 children the
-/// wait this exists to remove. A git too old for it takes the old road, so this asks only above it.
+/// wait this exists to remove. A git too old for merge-tree is proved on the road it must take.
 #[tokio::test]
 async fn a_hand_back_merges_in_the_object_store_with_no_staging_lane() -> TestResult {
     let rig = Rig::new("merge-tree-road")?;
     let version = git(&rig.repo, &["--version"])?;
-    if yi_runtime::lane::stage::git_version(&version).is_none_or(|at| at < (2, 43)) {
-        return Ok(());
-    }
-    let log = rig.root.join("git-log");
-    shim_git(&rig, &format!("echo \"$*\" >> '{}'", log.display()))?;
+    let native = yi_runtime::lane::stage::native_road(Some(&version));
     let family = writer(&rig, "echo x > draft.txt").await?;
     assert!(family.reaches("writer", "finished").await);
     let reply = family.host.merge_worktree("writer", None)?;
     assert_eq!(reply["merged"], true, "{reply:?}");
-    let ran = std::fs::read_to_string(&log)?;
-    assert!(ran.contains("merge-tree --write-tree"), "{ran}");
-    assert!(
-        !ran.lines().any(|line| line.contains(" merge --no-ff")),
-        "{ran}"
+    assert_eq!(
+        git(&rig.repo, &["show", "HEAD:draft.txt"])?,
+        "x",
+        "{reply:?}"
+    );
+    assert_eq!(
+        rig.home.join(".yi/lanes").exists(),
+        !native,
+        "this host's git is {version}, so only a road that checks out a tree claims a lane"
     );
     Ok(())
 }
@@ -3288,6 +3288,55 @@ async fn a_checked_hand_back_merges_only_a_lane_whose_check_passes() -> TestResu
         let next = reply["next"].as_str().ok_or("no next sentence")?;
         assert!(next.contains(&format!("git merge {branch}")), "{next}");
     }
+    Ok(())
+}
+
+/// Dies with a refused check merging, or the work lost: the check runs on the settled commit, so a
+/// refusal leaves the work on the branch the error names and this checkout as it was.
+#[tokio::test]
+async fn a_check_the_hooks_refuse_leaves_the_work_on_its_branch() -> TestResult {
+    let rig = Rig::new("check-refused")?;
+    let deny = rig.root.join("deny.sh");
+    std::fs::write(
+        &deny,
+        "#!/bin/sh\nprintf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"no checks here\"}}'\n",
+    )?;
+    let settings = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+        {"type": "command", "command": format!("sh '{}'", deny.display())}
+    ]}]}});
+    let home = rig.root.join("hook-home");
+    std::fs::create_dir_all(home.join(".claude"))?;
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        serde_json::to_vec(&settings)?,
+    )?;
+    let family = writer(&rig, "echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let managed = rig.root.join("managed");
+    family
+        .host
+        .set_checker(yi_runtime::goal::Checker::from_hooks(Some(
+            yi_runtime::claude_hooks::Hooks::load_from(&rig.repo, Some(&home), &managed),
+        )));
+    let refused = family
+        .host
+        .merge_worktree("writer", Some("test -f NEW"))
+        .err()
+        .ok_or("a check the hooks refuse merged anyway")?;
+    assert!(refused.contains("PreToolUse hook refused"), "{refused}");
+    assert!(
+        !rig.repo.join("draft.txt").exists(),
+        "a refused check merged"
+    );
+    let branch = refused
+        .split("kept on branch ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .ok_or("the error names no branch")?;
+    assert_eq!(
+        git(&rig.repo, &["show", &format!("{branch}:draft.txt")])?,
+        "x"
+    );
     Ok(())
 }
 

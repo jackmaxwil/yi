@@ -250,8 +250,9 @@ impl SubagentHost {
             reply.insert("next".to_owned(), json!(next));
             return Ok(reply);
         }
-        let mut moved: Option<(Sha, Sha)> = None;
-        for _attempt in 0..2 {
+        let mut attempt = 0u8;
+        let (expected, found) = loop {
+            attempt = attempt.saturating_add(1);
             let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
             let generation = generation_of(&parent, deadline).map_err(|error| error.to_string())?;
             let session = format!("stage-{name}");
@@ -320,15 +321,13 @@ impl SubagentHost {
                     );
                     return Ok(reply);
                 }
-                Publish::Moved { expected, found } => moved = Some((expected, found)),
+                Publish::Moved { expected, found } => {
+                    if attempt > 1 {
+                        break (expected, found);
+                    }
+                }
             }
-        }
-        let (expected, found) = moved.unwrap_or_else(|| {
-            (
-                settled.candidate.commit.clone(),
-                settled.candidate.commit.clone(),
-            )
-        });
+        };
         Err(format!(
             "the parent moved from {} to {} while the merge was prepared, twice; the candidate {} is retained on branch {}: merge that branch by hand, the child's lane is released",
             expected.short(),
@@ -426,7 +425,7 @@ fn red_check(
         (super::warm::Verdict::Green, _) => None,
         (_, Some(capture)) => Some((capture, cap)),
         (super::warm::Verdict::Red { .. }, None) => Some((never_ran(), cap)),
-        (super::warm::Verdict::Abstain { why }, None) => Some((never_ran(), why)),
+        (super::warm::Verdict::Abstain { why }, None) => return Err(why),
     })
 }
 
