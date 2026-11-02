@@ -154,13 +154,13 @@ impl RuntimeWiring {
     }
 
     /// The kernel's own profile, which its `bash()` jobs run under too (D241).
-    fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
+    pub(crate) fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
         self.session_sandbox()
             .map(|sandbox| crate::kernel::kernel_profile(&sandbox, Some(&self.family_dir())))
     }
 
     /// The kernel's own writable dir, unless it is the root's corpus (#580).
-    fn writable_kernel_dir(&self) -> Option<PathBuf> {
+    pub(crate) fn writable_kernel_dir(&self) -> Option<PathBuf> {
         (self.depth > 0 || self.sessions_dir.is_none()).then(|| self.kernel_dir())
     }
 
@@ -187,7 +187,7 @@ impl RuntimeWiring {
 
     /// A walled session's family spills, own transcript and kernel state, named as a kernel boots
     /// or a job spawns (a child's store attaches after its wiring); a root's state is not its corpus.
-    fn own_paths(&self, session: &AgentSession) -> Option<OwnPathsFn> {
+    pub(crate) fn own_paths(&self, session: &AgentSession) -> Option<OwnPathsFn> {
         let (store, wall) = (session.store_handle(), self.wall.clone());
         let spills = board_spills(&self.family_dir());
         let own = move |state: Option<&Path>| {
@@ -238,25 +238,6 @@ impl RuntimeWiring {
 /// A walled session's own paths as of the call, given its kernel's state dir: read again under
 /// its profile's denials.
 pub(crate) type OwnPathsFn = Arc<dyn Fn(Option<&Path>) -> Vec<PathBuf> + Send + Sync>;
-
-/// A kernel `bash()` job's profile, built as it spawns: the kernel's own plus every write
-/// grant kept since, so a grant reaches a kernel that was running before it (#600).
-fn job_profile(
-    wiring: &RuntimeWiring,
-    session: &AgentSession,
-) -> impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static {
-    let (profile, broker) = (wiring.exec_sandbox(), wiring.broker.clone());
-    let (own, state) = (wiring.own_paths(session), wiring.writable_kernel_dir());
-    move || {
-        let mut profile = profile.clone()?;
-        let kept = broker.iter().flat_map(|broker| broker.kept_writes());
-        profile.writable.extend(kept);
-        profile
-            .spared
-            .extend(own.iter().flat_map(|own| own(state.as_deref())));
-        Some(profile)
-    }
-}
 
 /// Every spawned child wires itself the same way at depth+1; the depth check in
 /// [`SubagentHost::spawn`] is what terminates the recursion.
@@ -758,7 +739,10 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
-    registry.register_exec(wiring.exec_home(), job_profile(&wiring, session));
+    registry.register_exec(
+        wiring.exec_home(),
+        crate::kernel_state::job_profile(&wiring, session),
+    );
     crate::kernel_state::register_host_stores(&mut registry, &wiring);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort

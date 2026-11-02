@@ -217,7 +217,7 @@ pub fn trunk(repo: &Path) -> BranchName {
         || "main".to_owned(),
         |common| yi_permission::trunk_of(&common),
     );
-    BranchName::parse(&name).unwrap_or_else(|_| BranchName("main".to_owned()))
+    BranchName::parse(&name).unwrap_or_else(|_| BranchName::main())
 }
 
 /// `-c` for what a repository's identity lacks: a host commit must not fail for want of a name.

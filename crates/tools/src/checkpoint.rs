@@ -36,13 +36,17 @@ pub enum CheckpointError {
     Git { command: String, message: String },
 }
 
-/// A shadow gitdir beside the project, never its own `.git`: checkpoints must
-/// not touch the user's branch, index or stash.
+/// A shadow gitdir beside the project, never its own `.git`, so the user's branch, index and stash
+/// stay untouched. One per repository: its worktrees share the objects, each with its own index.
 pub struct Checkpoints {
     git_dir: PathBuf,
     work_tree: PathBuf,
     serial: Arc<Mutex<()>>,
     staged: Vec<String>,
+    /// `None` is a store from before one was shared, whose own `index` is this tree's.
+    index: Option<PathBuf>,
+    /// The per-path store this tree used before, which still holds its old sessions' trees.
+    legacy: Option<PathBuf>,
 }
 
 // Per gitdir, not per handle: git fails hard on index.lock, and one shadow has several openers.
@@ -75,28 +79,106 @@ fn real(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+fn staged_for(checkpoint_root: &Path, project: &Path) -> Vec<String> {
+    let mut staged = ["add", "--all", "--", "."].map(str::to_owned).to_vec();
+    // Incident: `yi` started in `~` staged the shadow into itself, each capture slower.
+    for root in not_project_content(checkpoint_root, project) {
+        if let Ok(inside) = real(&root).strip_prefix(real(project)) {
+            staged.push(format!(":(exclude,literal){}", inside.to_string_lossy()));
+        }
+    }
+    staged
+}
+
 impl Checkpoints {
     pub fn open(checkpoint_root: &Path, project: &Path) -> Result<Self, CheckpointError> {
-        let git_dir = checkpoint_root.join(project_key(project));
+        let common = yi_permission::git_dirs(project).pop();
+        let keyed = common.as_deref().unwrap_or(project);
+        let git_dir = checkpoint_root.join(project_key(keyed));
+        // `core.worktree` names the repository's main tree, which is what retention asks about.
+        let main_tree = (common.as_deref())
+            .and_then(Path::parent)
+            .unwrap_or(project);
         std::fs::create_dir_all(&git_dir)
             .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
-        let mut staged = ["add", "--all", "--", "."].map(str::to_owned).to_vec();
-        // Incident: `yi` started in `~` staged the shadow into itself, each capture slower.
-        for root in not_project_content(checkpoint_root, project) {
-            if let Ok(inside) = real(&root).strip_prefix(real(project)) {
-                staged.push(format!(":(exclude,literal){}", inside.to_string_lossy()));
-            }
-        }
+        let old = checkpoint_root.join(project_key(project));
+        let index = git_dir.join(format!("index-{}", project_key(project)));
         let checkpoints = Self {
-            serial: serial_for(&git_dir),
-            git_dir,
+            serial: serial_for(&index),
+            legacy: (old != git_dir && old.join("HEAD").exists()).then_some(old),
+            index: Some(index),
             work_tree: project.to_path_buf(),
-            staged,
+            staged: staged_for(checkpoint_root, project),
+            git_dir,
         };
+        // Incident shape: first opens of one new store raced on `config.lock`, and the shadow
+        // stayed `None` for the session.
+        let creating = serial_for(&checkpoints.git_dir);
+        let _creating = creating.lock().unwrap_or_else(PoisonError::into_inner);
         if !checkpoints.git_dir.join("HEAD").exists() {
-            checkpoints.git(&["init", "--quiet"])?;
+            checkpoints.init(main_tree)?;
         }
+        checkpoints.sync_exclude(common.as_deref());
         Ok(checkpoints)
+    }
+
+    /// The store that holds `tree`: this repository's, else the per-path one an older session
+    /// wrote, which then serves the whole operation.
+    pub fn open_holding(
+        checkpoint_root: &Path,
+        project: &Path,
+        tree: &TreeId,
+    ) -> Result<Self, CheckpointError> {
+        let shared = Self::open(checkpoint_root, project)?;
+        match &shared.legacy {
+            Some(old) if !shared.holds(tree) => Ok(Self {
+                serial: serial_for(old),
+                git_dir: old.clone(),
+                work_tree: project.to_path_buf(),
+                staged: staged_for(checkpoint_root, project),
+                index: None,
+                legacy: None,
+            }),
+            _ => Ok(shared),
+        }
+    }
+
+    #[must_use]
+    pub fn holds(&self, tree: &TreeId) -> bool {
+        self.git(&["cat-file", "-e", tree.as_str()]).is_ok()
+    }
+
+    fn init(&self, main_tree: &Path) -> Result<(), CheckpointError> {
+        let output = host_git(main_tree)?
+            .arg("--git-dir")
+            .arg(&self.git_dir)
+            .arg("--work-tree")
+            .arg(main_tree)
+            .args(["init", "--quiet"])
+            .current_dir(main_tree)
+            .output()
+            .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(CheckpointError::Git {
+            command: "init".to_owned(),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+    }
+
+    /// The project's `info/exclude` is a repository's own ignore list, and a shadow has its own
+    /// `info`. Copied at open only when the bytes differ, so an edit reaches the next session.
+    fn sync_exclude(&self, common: Option<&Path>) {
+        let source = common.map(|common| common.join("info/exclude"));
+        let wanted = source.and_then(|source| std::fs::read(source).ok());
+        let target = self.git_dir.join("info/exclude");
+        if let Some(wanted) =
+            wanted.filter(|bytes| std::fs::read(&target).ok().as_ref() != Some(bytes))
+        {
+            let _no_list_only_narrows_nothing = std::fs::create_dir_all(self.git_dir.join("info"))
+                .and_then(|()| std::fs::write(target, wanted));
+        }
     }
 
     /// Honours the project's own ignore rules, read from the work tree.
@@ -287,6 +369,10 @@ impl Checkpoints {
             .arg(&self.work_tree)
             .args(args)
             .current_dir(&self.work_tree);
+        // Invariant: in the store's root, so its `.lock` still moves the dir mtime retention reads.
+        if let Some(index) = &self.index {
+            process.env("GIT_INDEX_FILE", index);
+        }
         let never: crate::tool::CancelFlag = Arc::new(|| false);
         let capture =
             crate::process::run_captured(process, stdin.map(<[u8]>::to_vec), &never, usize::MAX)
@@ -336,6 +422,21 @@ pub fn work_tree(git_dir: &Path) -> Option<PathBuf> {
         .lines()
         .find_map(|line| line.trim().strip_prefix("worktree = "))?;
     (!value.starts_with('"') && !value.contains('\\')).then(|| PathBuf::from(value))
+}
+
+/// A worktree's index left behind once the tree is gone: only a cache of what the next capture
+/// would stat again, so it goes with no effect but one slow capture.
+pub fn drop_old_indexes(git_dir: &Path, older_than: std::time::Duration) {
+    let entries = std::fs::read_dir(git_dir).into_iter().flatten().flatten();
+    for entry in entries.filter(|entry| entry.file_name().to_string_lossy().starts_with("index-")) {
+        let age = entry.metadata().and_then(|meta| meta.modified()).ok();
+        if age
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age > older_than)
+        {
+            let _gone_already_is_fine = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Invariant: captures write no ref, so every object is unreachable and `prune` keeps what is
