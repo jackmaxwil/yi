@@ -10,8 +10,7 @@ FAST=0 QUIET=0
 for arg in "$@"; do
   case "$arg" in --fast) FAST=1 ;; --quiet) QUIET=1 ;; esac
 done
-PY="${PY:-$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)}"
-"$PY" -c "import tomllib" 2>/dev/null || { echo "FAIL: $PY lacks tomllib (need python >= 3.11)"; exit 1; }
+PY=$(scripts/py.sh) || exit 1
 FAILED=0
 # Every gate reads the tree and none writes it, so they all run at once; `drain` prints each
 # one's output in launch order, so the report still reads most-legible-failure-first.
@@ -59,6 +58,7 @@ run "$PY" scripts/guardrails/check_commit_style.py
 run "$PY" scripts/guardrails/check_glob_reexport.py
 run "$PY" scripts/guardrails/check_orphans.py
 run "$PY" scripts/guardrails/check_panic.py
+run "$PY" scripts/guardrails/check_host_git.py
 run "$PY" scripts/guardrails/check_changes.py
 run "$PY" scripts/guardrails/check_comments.py
 run "$PY" scripts/guardrails/check_file_size.py
@@ -80,6 +80,10 @@ run "$PY" scripts/guardrails/check_prompt_examples.py
 run env PYTHONPATH=python/yi_runtime/src "$PY" -m unittest discover -q -s python/yi_runtime/tests
 run "$PY" -m unittest discover -q -s adapters
 run "$PY" evals/selftest.py
+# A prompt's rules are text, so a rewording that drops one passes every other gate; the
+# scorer's cases are hand-counted, which is where it is proved to judge anything at all (#1862).
+run "$PY" evals/prose.py --gate
+run "$PY" evals/prose.py --selfcheck
 # The mined artifacts carry session text, so §10's planted-fake redaction proof is a
 # gate, not a habit: its only executable check is this flag.
 run "$PY" skills/yi/session-mining/extract.py --selfcheck
@@ -87,6 +91,9 @@ run "$PY" skills/yi/session-mining/extract.py --selfcheck
 # a path in the wrong bucket misprices it silently; only this flag exercises the split.
 run "$PY" scripts/pr_body.py --selfcheck
 run "$PY" scripts/test_sign.py
+# A checked-in filter over test names rots silently, so only this flag proves a stale row is
+# refused; it lists no workspace, so the fast lane runs it too.
+run "$PY" scripts/slow_tests.py --selfcheck
 # The snap diff an agent reads is parsed from casts, checked against Yi's own screen dumps.
 run "$PY" scripts/tui_see.py --selfcheck
 # The monkey's seed must replay byte for byte or a failure it reports cannot be reproduced.
@@ -140,6 +147,7 @@ fi
 # A baseline edit that rides beside code is how growth hid before the ratchets had their own
 # commits; the deletion carve-out is a rule over file statuses, so only this flag proves it.
 run "$PY" scripts/guardrails/check_commit_style.py --selfcheck
+run "$PY" scripts/pr_queue.py --selfcheck
 # The landing verbs decide from the forge's answers — behind, failed, ready — and a
 # decision read wrong retries a refusal forever; only this flag walks the table.
 run "$PY" scripts/forge_pr.py --selfcheck
@@ -156,6 +164,7 @@ run "$PY" scripts/bot_meter.py --selfcheck
 # judge anything at all: each scan is disabled in turn and the selfcheck must fail
 # for that scan's own reason (D109).
 run "$PY" scripts/guardrails/check_orphans.py --selfcheck
+run "$PY" scripts/guardrails/check_host_git.py --selfcheck
 # The public surface is what the mirror publishes, modelled on filter-repo's own
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck

@@ -21,8 +21,8 @@ jobs:
   autofix:
     runs-on: ubuntu-latest
     # The one place the autofix job's limit is set; pr_autofix.py budgets its pass from it, and the
-    # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 45m) bounds it.
-    timeout-minutes: 45
+    # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 120m) bounds it.
+    timeout-minutes: 90
     steps:
       - name: install fgj
         run: |
@@ -42,12 +42,16 @@ jobs:
             || echo 0)
           echo "newer=$newer" >> "$GITHUB_OUTPUT"
           [ "$newer" = 0 ] || echo "autofix: skipped, $newer newer pass(es) queued"
-      # Main's tree: the merged PR's code runs only inside a token-free clone.
+      # Main's tree: the PR's code and the model run only in a worker under a throwaway uid.
       - if: steps.queue.outputs.newer == '0'
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
+      # A job's HOME starts with no skills, and this copy is main's, not the PR's tree.
+      # The worker gets a copy; this one stays root's (pr_autofix.in_worker).
+      - if: steps.queue.outputs.newer == '0'
+        run: just install-skills
       - if: steps.queue.outputs.newer == '0'
         run: rustup show
       - if: steps.queue.outputs.newer == '0'
@@ -82,6 +86,8 @@ jobs:
           ./target/debug/yi catalog refresh openrouter
           # Incident: /tmp is the job's 2 GB tmpfs, and the fixer's clones and the lanes it runs there
           # filled it: #1111's fix died "Out of diskspace", and a 64 MB spill test failed in the clone.
-          export TMPDIR="$GITHUB_WORKSPACE/../autofix-tmp"
+          # Incident: a `..` here walked lexically through the checkout, so a head without the dotted-path
+          # fix found its `.git` and priced its AGENTS.md into every bare role prefix, 45 KB (#1805).
+          export TMPDIR="$(dirname "$GITHUB_WORKSPACE")/autofix-tmp"
           mkdir -p "$TMPDIR"
           just pr autofix

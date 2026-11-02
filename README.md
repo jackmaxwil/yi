@@ -71,7 +71,7 @@ Strict: an unknown key is an error that names it. Every key is in
 |---|---|---|
 | `model`, `thinking` | none, `medium` | `provider/id`; `off` to `max` effort |
 | `models.summarizer`, `.advisor`, `.autoReview` | main, off, off | compaction, titles; naming one turns it on |
-| `models.classifier` | off | the local [Laya](https://huggingface.co/convaiinnovations/laya) permission classifier |
+| `models.classifier` | off | TypeSafe's Jev through OpenRouter (`typesafe/jev-1.13`) as the permission and skill classifier; typed messages and judged commands leave the machine |
 | `routing` | none | OpenRouter's `provider` object |
 | `permissions.mode`, `permissions.allow` | `auto`, none | `ask`, `auto` or `yolo`; calls that run unasked |
 | `tui.pace` | 100 | reveal speed, percent |
@@ -166,8 +166,9 @@ Session, tool, kernel, URL, child, todo, plan, contract and lane compose every f
 
 ```bash
 just dev                              # build and start yi
+just test-quick                       # the workspace without its slowest tests
 just build-dist                       # the release build
 ```
 
 [YI_DESIGN.md](docs/YI_DESIGN.md) is the law, [ARCHITECTURE.md](docs/ARCHITECTURE.md) the map.
-Apache License 2.0 in `LICENSE`; copyright Jack Mazac and AiBridge LLC, in `NOTICE`.
+Apache License 2.0 in `LICENSE`; copyright Jack Mazac and AiBridge LLC, in `NOTICE`. `vendor/` keeps its upstream licenses.
