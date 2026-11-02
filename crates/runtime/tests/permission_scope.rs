@@ -1022,13 +1022,13 @@ fn swapped_at_open(
         move || {
             let open = opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             if at == Some(open) {
-                Swap::Parent.arm(&workspace, &home);
+                assert!(Swap::Parent.arm(&workspace, &home));
             }
         }
     };
     context.hold_opens = Some(std::sync::Arc::new(hold));
     if at == Some(0) {
-        Swap::Parent.arm(&workspace, &home);
+        assert!(Swap::Parent.arm(&workspace, &home));
     }
     let output = tool_impl.execute(args, &context);
     Ok((
@@ -1039,7 +1039,7 @@ fn swapped_at_open(
 }
 
 /// A swap at each open a call makes reaches no key, and the undisturbed call makes `opens` of
-/// them: a tool that opened past the gate would never reach its hold, so only the count sees it.
+/// them. A tool that skips the gate lowers the count; one that reopens by path after it does not.
 #[cfg(unix)]
 fn no_open_reaches_the_key(
     tool: &str,
