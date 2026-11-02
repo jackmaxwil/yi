@@ -71,19 +71,38 @@ impl Rig {
     }
 }
 
-/// `merge-tree` on two snapshots needs 2.43 and one forge runner has 2.34, so a skip says it skipped:
-/// a green run past a 2.34 git is never read as these having run.
-fn folds(rig: &Rig) -> Result<bool, Box<dyn Error>> {
-    let version = git(&rig.repo, &["--version"])?;
-    let foldable = yi_runtime::lane::stage::folds(&version);
-    if !foldable {
-        eprintln!(
-            "[skipped: {} folds no two trees (fold.since {}); these stay unrun]",
-            version.trim(),
-            yi_runtime::lane::stage::FOLD_SINCE.0
-        );
-    }
-    Ok(foldable)
+/// `merge-tree` on two snapshots needs git 2.43 and one forge runner has 2.34, so a git that cannot
+/// fold is still made to answer: each of these tests asserts the refusal instead of returning green.
+fn foldable(rig: &Rig) -> Result<bool, Box<dyn Error>> {
+    Ok(yi_runtime::lane::stage::folds(&git(
+        &rig.repo,
+        &["--version"],
+    )?))
+}
+
+/// The host git read as one that cannot fold: `--version` answers the version asked for and
+/// `merge-tree` fails as 2.34's does, every other call is the real git.
+fn read_version_as(rig: &Rig, version: &str) -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::env::var_os("PATH").ok_or("no PATH")?;
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .ok_or("no git on PATH")?;
+    let dir = rig.repo.parent().ok_or("no scratch root")?.join("shim");
+    std::fs::create_dir_all(&dir)?;
+    let body = format!(
+        "#!/bin/sh\n\
+         [ \"$1\" = --version ] && {{ echo '{version}'; exit 0; }}\n\
+         case \"$*\" in *merge-tree*) echo 'error: unknown option write-tree' >&2; exit 129;; esac\n\
+         exec '{}' \"$@\"\n",
+        real.display()
+    );
+    std::fs::write(dir.join("git"), body)?;
+    std::fs::set_permissions(dir.join("git"), std::fs::Permissions::from_mode(0o755))?;
+    let joined = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path)))?;
+    unsafe { std::env::set_var("PATH", joined) };
+    Ok(())
 }
 
 fn read(path: &Path) -> Result<String, Box<dyn Error>> {
@@ -177,11 +196,17 @@ async fn a_diff_names_eight_files_cuts_at_nine_and_says_how_to_read_the_rest() -
 #[tokio::test]
 async fn would_conflict_names_the_path_and_is_empty_when_nothing_would() -> TestResult {
     let rig = rig("radar")?;
-    if !folds(&rig)? {
-        return Ok(());
-    }
     let at = rig.fork("radar").await?;
     std::fs::write(at.join("f0.txt"), "theirs\n")?;
+    if !foldable(&rig)? {
+        let seen = rig.ask("tree.diff", json!({"tree": "radar"})).await?;
+        assert_eq!(
+            seen["would_conflict"],
+            Value::Null,
+            "a trial that could not run is not no conflict: {seen:?}"
+        );
+        return Ok(());
+    }
     let clear = rig.ask("tree.diff", json!({"tree": "radar"})).await?;
     assert_eq!(clear["would_conflict"], json!([]), "{clear:?}");
     std::fs::write(rig.repo.join("f0.txt"), "ours\n")?;
@@ -191,17 +216,43 @@ async fn would_conflict_names_the_path_and_is_empty_when_nothing_would() -> Test
     Ok(())
 }
 
+/// Dies with a fold or a trial that runs on a git too old for it: both name the floor they need, and
+/// a trial that could not run reads unknown, never "no conflict".
+#[tokio::test]
+async fn an_old_git_is_refused_by_name_and_its_trial_is_not_read_as_no_conflict() -> TestResult {
+    let rig = rig("oldgit")?;
+    read_version_as(&rig, "git version 2.34.1")?;
+    let at = rig.fork("oldgit").await?;
+    std::fs::write(at.join("f0.txt"), "theirs\n")?;
+    let seen = rig.ask("tree.diff", json!({"tree": "oldgit"})).await?;
+    assert_eq!(seen["would_conflict"], Value::Null, "{seen:?}");
+    let why = rig
+        .ask("tree.merge", json!({"tree": "self", "others": ["oldgit"]}))
+        .await
+        .err()
+        .ok_or("a fold ran on git 2.34")?;
+    assert!(why.contains("needs git 2.43"), "{why}");
+    assert!(why.contains("2.34.1"), "{why}");
+    Ok(())
+}
+
 /// Dies with a fold that commits or that moves on conflict: the tree a conflict stopped must stand
 /// exactly as it was, and a clean one leaves the person's branch where it is.
 #[tokio::test]
 async fn a_merge_folds_what_it_can_names_what_it_cannot_and_commits_nothing() -> TestResult {
     let rig = rig("merge")?;
-    if !folds(&rig)? {
-        return Ok(());
-    }
     let (clean, clash) = (rig.fork("clean").await?, rig.fork("clash").await?);
     std::fs::write(clean.join("f1.txt"), "clean's\n")?;
     std::fs::write(clash.join("f0.txt"), "clash's\n")?;
+    if !foldable(&rig)? {
+        let why = rig
+            .ask("tree.merge", json!({"tree": "self", "others": ["clean"]}))
+            .await
+            .err()
+            .ok_or("a fold ran on a git that cannot fold")?;
+        assert!(why.contains("needs git 2.43"), "{why}");
+        return Ok(());
+    }
     std::fs::write(rig.repo.join("f0.txt"), "ours\n")?;
     let head = git(&rig.repo, &["rev-parse", "HEAD"])?;
     let reply = rig
@@ -369,7 +420,13 @@ async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> 
         .err()
         .ok_or("a dirty fork was merged")?;
     assert!(refused.contains("h.tree.merge()"), "{refused}");
-    if !folds(&rig)? {
+    if !foldable(&rig)? {
+        let why = rig
+            .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))
+            .await
+            .err()
+            .ok_or("a fold ran on a git that cannot fold")?;
+        assert!(why.contains("needs git 2.43"), "{why}");
         return Ok(());
     }
     std::fs::write(at.join("f1.txt"), "kid's\n")?;
