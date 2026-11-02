@@ -54,7 +54,9 @@ use yi_runtime::plan::store::PlanStore;
 use yi_runtime::plan::verify::{CheckerManifest, Snapshot, Verifier, freeze, session_has};
 use yi_types::plan::PlanVersion;
 use yi_types::plan::canonical::{ArtifactRef, Digest};
-use yi_types::plan::contract::{Contract, ItemVerdict, Outcome, Verdict, VerificationToken};
+#[cfg(target_os = "macos")]
+use yi_types::plan::contract::Verdict;
+use yi_types::plan::contract::{Contract, ItemVerdict, Outcome, VerificationToken};
 use yi_types::plan::doc::{AttemptId, GoalText, PlanId, TodoLabel, TodoState};
 
 type TestResult = Result<(), Box<dyn Error>>;

@@ -3842,6 +3842,9 @@ async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResul
         )
         .map_err(|error| error.to_string())?;
     let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
     assert!(wait_for_status(&host, child_id, "completed").await);
     let refused = host.result("contained", None).err().unwrap_or_default();
     assert!(refused.contains("[contained: "), "{refused}");
