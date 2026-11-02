@@ -1697,6 +1697,30 @@ fn what_the_host_says_after_a_spawn_reaches_the_model() -> TestResult {
     Ok(())
 }
 
+/// The transport needle was a bare `' not allowed`, so a tool refusing an argument read as a
+/// sandbox network denial and sent the person to an approval that could not help.
+#[test]
+fn a_tools_own_not_allowed_is_not_a_network_denial() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let found = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "error: hook 'pre-lint' not allowed\n",
+        "lint",
+    );
+    assert_eq!(found, None);
+    let git = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(128),
+        "fatal: transport 'file' not allowed\n",
+        "git fetch origin",
+    );
+    assert!(matches!(git, Some(SandboxRefusal::Scopes(_))), "{git:?}");
+    Ok(())
+}
+
 /// Dies with the generic `' not allowed` needle: a compiler echoing a phrase must not read as
 /// git's transport refusal, and git's own refusal must still classify and ask.
 #[test]

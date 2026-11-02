@@ -269,6 +269,11 @@ fn build_session(
             (settings.sandbox.clone())
                 .and_then(|sandbox| sandbox.egress)
                 .unwrap_or_default(),
+        )
+        .with_host_recipes(
+            (settings.sandbox.clone())
+                .and_then(|sandbox| sandbox.host_recipes)
+                .unwrap_or_default(),
         ),
     );
     let configured = (settings.permissions.as_ref()).and_then(|p| p.allow_write.as_deref());
