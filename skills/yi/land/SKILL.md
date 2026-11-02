@@ -63,7 +63,8 @@ growth passes the free band — `python3 scripts/guardrails/check_growth.py`
 prints N — `raise:` lines, `decision: <decision> | <why> | <reversible
 via>`), then the changelog prose. It never edits the `version:` line, a
 changelog row, a decision row or an ADR: the recorder numbers and writes
-those on main. A user-visible behaviour change updates the feature ledger.
+those on main. A user-visible behaviour change adds `ledger+`, `ledger~`, `ledger=` or
+`ledger-` lines to that header; the recorder applies them to the feature ledger.
 
 ## Push and open
 

@@ -1,4 +1,6 @@
 ---
+version: 0.851.0
+decisions: D521
 issue: Closes #1929
 decision: config.worktree, info, alternates, a submodule's host-read files, a .git that is no directory and every other lane's admin dir are never writable to a contained process | a planted core.fsmonitor in config.worktree ran on the host's next git status, and a repointed .git reached the same place | drop the entries from Sandbox::for_workspace
 raise: tests +333, comments +29, over-cap +3, crate tools +148, crate runtime +96

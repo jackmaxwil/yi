@@ -67,7 +67,7 @@ const PROXY_KEYS: [&str; 16] = [
 #[non_exhaustive]
 pub enum Error {
     #[error("no entropy for a proxy token: {0}")]
-    Entropy(io::Error),
+    Entropy(String),
     #[error("the egress proxy cannot listen: {0}")]
     Bind(io::Error),
     #[error("the egress proxy's holder table is poisoned")]
@@ -75,19 +75,13 @@ pub enum Error {
 }
 
 /// A spawn's credential: its only copy past [`Lease::env`] is a digest in the table.
-struct Token([u8; 16]);
+struct Token(String);
 
 impl Token {
     fn mint(source: &Path) -> Result<Self, Error> {
-        let mut bytes = [0u8; 16];
-        std::fs::File::open(source)
-            .and_then(|mut random| random.read_exact(&mut bytes))
-            .map_err(Error::Entropy)?;
-        Ok(Self(bytes))
-    }
-
-    fn hex(&self) -> String {
-        self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+        yi_kernel::connection::random_hex(source, 16)
+            .map(Self)
+            .map_err(Error::Entropy)
     }
 }
 
@@ -99,7 +93,7 @@ impl std::fmt::Debug for Token {
 
 /// The `Basic` credential a client sends for this token, which is what the table is keyed by.
 fn credential(token: &Token) -> String {
-    yi_types::encoding::base64(format!("yi:{}", token.hex()).as_bytes())
+    yi_types::encoding::base64(format!("yi:{}", token.0).as_bytes())
 }
 
 fn digest(credential: &str) -> [u8; 32] {
@@ -188,12 +182,20 @@ pub type Dialer = Arc<dyn Fn(&Domain, u16) -> io::Result<TcpStream> + Send + Syn
 /// Resolves, keeps the public addresses and connects to one of those, so a name cannot rebind.
 pub fn dial_public(domain: &Domain, port: u16) -> io::Result<TcpStream> {
     const DIAL: Duration = Duration::from_secs(10);
+    // One budget for the walk, so a name whose first address blackholes costs one wait, not one each.
+    let until = Instant::now()
+        .checked_add(DIAL)
+        .unwrap_or_else(Instant::now);
     let mut last = io::Error::other("no public address");
     for address in (domain.as_str(), port).to_socket_addrs()? {
         if !public_address(address.ip()) {
             continue;
         }
-        match TcpStream::connect_timeout(&address, DIAL) {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, last));
+        }
+        match TcpStream::connect_timeout(&address, left) {
             Ok(stream) => return Ok(stream),
             Err(error) => last = error,
         }
@@ -418,7 +420,7 @@ impl Proxy {
         let mut holders = self.inner.holders.lock().map_err(|_| Error::Poisoned)?;
         holders.insert(key, Arc::clone(&holder));
         Ok(Lease {
-            url: format!("http://yi:{}@127.0.0.1:{}", token.hex(), self.port),
+            url: format!("http://yi:{}@127.0.0.1:{}", token.0, self.port),
             key,
             holder,
             inner: Arc::clone(&self.inner),
@@ -557,7 +559,12 @@ fn serve(mut counted: Counted, mut client: TcpStream) {
         return;
     };
     let Ok(connect) = connect_head(&head) else {
-        answer(&mut client, "400 Bad Request");
+        // A plain `http://` request arrives in absolute form; the proxy tunnels CONNECT only, so
+        // the refusal names why instead of a bare 400 the model reads as the check's own failure.
+        answer(
+            &mut client,
+            "501 yi's egress proxy tunnels CONNECT (https) only; plain http is not proxied",
+        );
         return;
     };
     let key = connect.credential.as_deref().map(digest);

@@ -3,6 +3,7 @@
 
 mod catastrophic;
 mod decide;
+mod desktop;
 pub mod outbox;
 mod review;
 mod rules;
@@ -16,6 +17,7 @@ pub use catastrophic::{
 pub use decide::{
     Decision, Hold, HoldPattern, HoldSource, PermissionMode, ToolCall, decide, mode_fragment,
 };
+pub use desktop::{PROGRAM as DESKTOP_SOURCE, drives, runs};
 pub use review::{
     ActionId, ActionLedger, ActionState, LEDGER_CAP, RequestId, ReviewedAsk, UserVerdict,
 };
