@@ -35,6 +35,24 @@ pub fn add(
     home: &Path,
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<PathBuf, String> {
+    if plugin.name != yi_tools::plugin::BROWSER {
+        return add_pin(plugin, home, &fetch);
+    }
+    plugin.asset().ok_or_else(|| unsupported(plugin))?;
+    // Invariant: its daemon runs only the pinned Chrome in a box, so Chrome comes first and a failed
+    // download leaves no browser to judge.
+    let chrome = Plugin::named("chrome").ok_or("no chrome row")?;
+    let chrome = add_pin(chrome, home, &fetch)?;
+    let path = add_pin(plugin, home, &fetch)?;
+    yi_tools::plugin::write_browser_box(home, &chrome)?;
+    Ok(path)
+}
+
+fn add_pin(
+    plugin: &Plugin,
+    home: &Path,
+    fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<PathBuf, String> {
     let whole = plugin.skills.is_empty() || plugin.skill_root(home).is_some();
     let aside = match !whole && plugin.installed(home).is_some() {
         // Incident: a program-only install from before the row named skills blocks the publish
@@ -113,6 +131,14 @@ pub fn chosen(plugin: &Plugin, home: &Path) -> bool {
 }
 
 pub fn unsupported(plugin: &Plugin) -> String {
+    if plugin.name == yi_tools::plugin::BROWSER {
+        return format!(
+            "yi pins no {} build for {}/{}, and a copy on PATH is refused: its Chrome would have no sandbox",
+            plugin.name,
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+    }
     format!(
         "yi pins no {} build for {}/{}; build it from source and put it on PATH",
         plugin.name,

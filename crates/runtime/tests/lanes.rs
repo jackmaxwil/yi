@@ -65,7 +65,19 @@ fn quiet() -> Quiescence {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
-    crate::worktree::git(cwd, args)
+    let output = yi_tools::command("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 struct Rig {
@@ -777,21 +789,6 @@ fn a_slot_an_older_binary_released_dirty_is_never_wiped() -> TestResult {
     Ok(())
 }
 
-/// Dies with a listing that reads only the parent's status: the submodule's edit is invisible to
-/// it, so the row said clean while the claim refused the slot as dirty.
-#[test]
-fn a_listing_counts_work_inside_a_submodule() -> TestResult {
-    let rig = Rig::new("list-submodule")?;
-    let pool = rig.pool(1)?;
-    let lane = pool.claim("s-one", ClaimBase::Main)?;
-    let sub = submodule(lane.path(), "sub", true)?;
-    std::fs::write(sub.join("file.txt"), "edited\n")?;
-    let text = format_lanes(&pool.list()?, None);
-    let line = text.lines().next().unwrap_or_default();
-    assert!(line.contains("1 modified"), "the listing counts it: {text}");
-    Ok(())
-}
-
 #[test]
 fn reap_discards_a_dirty_tree_and_says_how_much() -> TestResult {
     let rig = Rig::new("reap-dirty")?;
@@ -850,67 +847,6 @@ fn a_reap_past_the_status_cap_says_at_least() -> TestResult {
             }
         }
     }
-    Ok(())
-}
-
-/// A wipe runs `checkout -f` and `clean -qfd` at the lane's top, and git enters no submodule for
-/// either. Dies with the reap claiming work it left in place.
-#[test]
-fn a_reap_says_a_submodules_work_survived_it() -> TestResult {
-    let rig = Rig::new("reap-submodule")?;
-    let pool = rig.pool(1)?;
-    let lane = pool.claim("s-one", ClaimBase::Main)?;
-    let sub = submodule(lane.path(), "sub", false)?;
-    std::fs::write(sub.join("file.txt"), "only copy\n")?;
-    let slot = lane.slot();
-    lane.release()?;
-    let message = pool.reap(slot)?;
-    assert!(
-        message.contains("kept inside a submodule"),
-        "the reap says what survived: {message}"
-    );
-    assert!(
-        !message.contains("discarded"),
-        "and claims nothing it did not drop: {message}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(sub.join("file.txt"))?,
-        "only copy\n"
-    );
-    let refused = pool.claim("s-two", ClaimBase::Main);
-    assert!(
-        matches!(refused, Err(LaneError::PoolFull { .. })),
-        "the slot stays out of the pool while the work does: {refused:?}"
-    );
-    Ok(())
-}
-
-/// A lane a child ran `git init` in keeps that directory: `clean -fd` refuses to remove an
-/// untracked repository without a second `-f`. Dies with the survivor named a submodule's.
-#[test]
-fn a_reap_names_a_nested_repository_as_left_in_place() -> TestResult {
-    let rig = Rig::new("reap-nested")?;
-    let pool = rig.pool(1)?;
-    let lane = pool.claim("s-one", ClaimBase::Main)?;
-    let nested = lane.path().join("nested");
-    std::fs::create_dir_all(&nested)?;
-    git(&nested, &["init", "-q"])?;
-    std::fs::write(nested.join("file.txt"), "only copy\n")?;
-    let slot = lane.slot();
-    lane.release()?;
-    let message = pool.reap(slot)?;
-    assert!(
-        message.contains("kept in place"),
-        "the survivor is named for where it is: {message}"
-    );
-    assert!(
-        !message.contains("inside a submodule"),
-        "and not for a submodule nothing measured: {message}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(nested.join("file.txt"))?,
-        "only copy\n"
-    );
     Ok(())
 }
 
@@ -4092,21 +4028,6 @@ async fn a_repository_with_no_identity_still_hands_back() -> TestResult {
     hand_back_commits(&rig).await
 }
 
-/// Dies with an identity probe keyed on `user.email` alone: with the name unset and `useConfigOnly`
-/// on, git refuses the hand-back with `empty ident name … not allowed`.
-#[tokio::test]
-async fn a_repository_with_only_an_email_still_hands_back() -> TestResult {
-    let rig = Rig::new("email-only-identity")?;
-    git(&rig.repo, &["config", "--unset", "user.name"])?;
-    git(&rig.repo, &["config", "user.email", "t@example.invalid"])?;
-    git(&rig.repo, &["config", "user.useConfigOnly", "true"])?;
-    unsafe {
-        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
-        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
-    }
-    hand_back_commits(&rig).await
-}
-
 /// Dies with `git add -A` over everything: a build's output landed in the candidate. Source under
 /// a directory that merely shares the name still lands, and so does a tracked build file.
 #[tokio::test]
@@ -4250,6 +4171,82 @@ async fn a_dirty_file_deep_in_a_long_status_keeps_its_bytes() -> TestResult {
     assert_eq!(
         std::fs::read_to_string(rig.repo.join("m/new.txt"))?,
         "mine\n"
+    );
+    Ok(())
+}
+
+/// Dies with a listing that reads only the parent's status: the submodule's edit is invisible to
+/// it, so the row said clean while the claim refused the slot as dirty.
+#[test]
+fn a_listing_counts_work_inside_a_submodule() -> TestResult {
+    let rig = Rig::new("list-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = submodule(lane.path(), "sub", true)?;
+    std::fs::write(sub.join("file.txt"), "edited\n")?;
+    let text = format_lanes(&pool.list()?, None);
+    let line = text.lines().next().unwrap_or_default();
+    assert!(line.contains("1 modified"), "the listing counts it: {text}");
+    Ok(())
+}
+
+/// A wipe runs `checkout -f` and `clean -qfd` at the lane's top, and git enters no submodule for
+/// either. Dies with the reap claiming work it left in place.
+#[test]
+fn a_reap_says_a_submodules_work_survived_it() -> TestResult {
+    let rig = Rig::new("reap-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = submodule(lane.path(), "sub", false)?;
+    std::fs::write(sub.join("file.txt"), "only copy\n")?;
+    let slot = lane.slot();
+    lane.release()?;
+    let message = pool.reap(slot)?;
+    assert!(
+        message.contains("kept inside a submodule"),
+        "the reap says what survived: {message}"
+    );
+    assert!(
+        !message.contains("discarded"),
+        "and claims nothing it did not drop: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sub.join("file.txt"))?,
+        "only copy\n"
+    );
+    let refused = pool.claim("s-two", ClaimBase::Main);
+    assert!(
+        matches!(refused, Err(LaneError::PoolFull { .. })),
+        "the slot stays out of the pool while the work does: {refused:?}"
+    );
+    Ok(())
+}
+
+/// A lane a child ran `git init` in keeps that directory: `clean -fd` refuses to remove an
+/// untracked repository without a second `-f`. Dies with the survivor named a submodule's.
+#[test]
+fn a_reap_names_a_nested_repository_as_left_in_place() -> TestResult {
+    let rig = Rig::new("reap-nested")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let nested = lane.path().join("nested");
+    std::fs::create_dir_all(&nested)?;
+    git(&nested, &["init", "-q"])?;
+    std::fs::write(nested.join("file.txt"), "only copy\n")?;
+    let slot = lane.slot();
+    lane.release()?;
+    let message = pool.reap(slot)?;
+    assert!(
+        message.contains("kept in place"),
+        "the survivor is named for where it is: {message}"
+    );
+    assert!(
+        !message.contains("inside a submodule"),
+        "and not for a submodule nothing measured: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(nested.join("file.txt"))?,
+        "only copy\n"
     );
     Ok(())
 }

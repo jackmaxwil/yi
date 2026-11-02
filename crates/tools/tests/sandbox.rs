@@ -1742,5 +1742,89 @@ fn only_gits_transport_refusal_is_a_network_denial() -> TestResult {
         "python3 check.py",
     );
     assert_eq!(unrelated, None, "{unrelated:?}");
+    let merely_named = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "warning: no rule for the transport 'bluetooth' in this schema\n",
+        "python3 check.py",
+    );
+    assert_eq!(merely_named, None, "{merely_named:?}");
+    Ok(())
+}
+
+/// A fake Chrome run the way the daemon runs the plugin's script, reporting what its box lets it do.
+fn run_browser_box(home: &Path, session: &str, target: &Path) -> Result<String, Box<dyn Error>> {
+    let plugin = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+    let script = plugin.dir(home).join("chrome-box");
+    let output = yi_tools::command(script)
+        .env("AGENT_BROWSER_SESSION", session)
+        .env("BOX_LEAK", "from the daemon")
+        .arg(target)
+        .output()?;
+    Ok(format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
+/// The wall the whole plugin stands on: while it lives, any contained program can steer this Chrome
+/// over loopback, so what this box refuses is what that program cannot reach through it either.
+#[test]
+fn the_browser_box_holds_credentials_writes_sockets_and_all_but_the_web_session_s_internet()
+-> TestResult {
+    seatbelt()?;
+    // Outside temp, which this box writes: a tree there would prove nothing.
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let (root, project, home) = workspace_at(base, "browser-box")?;
+    let plugin = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+    let program = plugin.program(&home).ok_or("no program path")?;
+    std::fs::create_dir_all(plugin.dir(&home))?;
+    std::fs::write(&program, "#!/bin/sh\n")?;
+    let socket = std::env::temp_dir().join(format!("yi-box-{}", std::process::id()));
+    std::fs::remove_file(&socket).ok();
+    let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
+    let chrome = root.join("chrome");
+    std::fs::write(
+        &chrome,
+        format!(
+            "#!/bin/sh\n\
+             exec 2>&1\n\
+             echo \"args $*\"\n\
+             echo \"leak=[$BOX_LEAK]\"\n\
+             /bin/cat {key} && echo READ-KEY\n\
+             /usr/bin/touch {tree} && echo WROTE-TREE\n\
+             /usr/bin/touch {temp} && echo WROTE-TEMP\n\
+             /usr/bin/nc -U -w1 {socket} </dev/null && echo REACHED-SOCKET\n\
+             /usr/bin/curl -sSv --connect-timeout 1 http://192.0.2.1/\n",
+            key = home.join(".ssh/id_rsa").display(),
+            tree = project.join("written").display(),
+            temp = std::env::temp_dir().join("yi-browser-box-ok").display(),
+            socket = socket.display(),
+        ),
+    )?;
+    std::fs::set_permissions(&chrome, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+    yi_tools::plugin::write_browser_box(&home, &chrome)?;
+    let config = std::fs::read_to_string(plugin.dir(&home).join("config.json"))?;
+    assert!(config.contains("chrome-box"), "{config}");
+    let refused = "Operation not permitted";
+    for session in ["", "web", "other"] {
+        let shown = run_browser_box(&home, session, &chrome)?;
+        assert!(shown.contains("--no-sandbox"), "{session}: {shown}");
+        assert!(shown.contains("leak=[]"), "{session}: {shown}");
+        assert!(!shown.contains("PRIVATE KEY"), "{session}: {shown}");
+        assert!(!shown.contains("READ-KEY"), "{session}: {shown}");
+        assert!(!shown.contains("WROTE-TREE"), "{session}: {shown}");
+        assert!(shown.contains("WROTE-TEMP"), "{session}: {shown}");
+        assert!(!shown.contains("REACHED-SOCKET"), "{session}: {shown}");
+        let internet = |line: &str| line.contains("192.0.2.1") && line.contains(refused);
+        assert_eq!(
+            shown.lines().any(internet),
+            session != "web",
+            "{session}: {shown}"
+        );
+    }
+    std::fs::remove_file(&socket)?;
     Ok(())
 }
