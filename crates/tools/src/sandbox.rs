@@ -1,5 +1,8 @@
 mod browser;
 mod caches;
+mod git;
+pub use git::Sealed;
+use git::{HOST_RUN_BY_GIT, lane_writes, sealed};
 
 use std::path::{Path, PathBuf};
 
@@ -36,95 +39,6 @@ const NETWORK_POLICY: &str = "; loopback only, and no unix socket\n\
     (allow network-bind network-inbound (local ip \"localhost:*\"))\n\
     (allow network-outbound (remote ip \"localhost:*\"))\n";
 
-/// A git dir's escape hatches: `hooks` and both configs run under the host's next git, `info` and
-/// `alternates` steer what it reads, the pointers are what the next sandbox policy is built from.
-const HOST_RUN_BY_GIT: [&str; 7] = [
-    "hooks",
-    "config",
-    "config.worktree",
-    "info",
-    "objects/info/alternates",
-    "commondir",
-    "gitdir",
-];
-
-/// Module git dirs one profile build opens; past it none is, which only narrows what a submodule
-/// may write.
-const MODULE_WALK_MAX: usize = 256;
-
-/// A git directory closed whole to writes, and the roots inside it this session still writes: a
-/// contained process creates an admin dir or a module under a writable root, so the wall sits on
-/// the directory, never on the names one build found there.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sealed {
-    pub denied: PathBuf,
-    pub open: Vec<PathBuf>,
-}
-
-/// The two directories under `git_dirs` that hold admin dirs and submodules: a lane keeps its own
-/// admin dir and the module dirs it already has, and a name created after the build is sealed.
-fn sealed(git_dirs: &[PathBuf]) -> Vec<Sealed> {
-    let mut dirs: Vec<PathBuf> = git_dirs.to_vec();
-    dirs.extend((git_dirs.iter()).flat_map(|dir| module_dirs(&dir.join("modules"))));
-    let keeper = |parent: &Path| -> Vec<PathBuf> {
-        (dirs.iter())
-            .filter(|dir| dir.starts_with(parent))
-            .cloned()
-            .collect()
-    };
-    let mut sealed: Vec<Sealed> = dirs
-        .iter()
-        .map(|dir| dir.join("worktrees"))
-        .map(|denied| Sealed {
-            open: keeper(&denied),
-            denied,
-        })
-        .collect();
-    sealed.extend(
-        dirs.iter()
-            .map(|dir| dir.join("modules"))
-            .map(|denied| Sealed {
-                open: keeper(&denied),
-                denied,
-            }),
-    );
-    sealed
-}
-
-/// The module git dirs under `modules`, nested submodules included: a module's own object store
-/// stays writable, and one the build did not see is covered by the seal above it. Incident: a
-/// walk through every object store cost 256 directories before the first submodule was found.
-fn module_dirs(modules: &Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = Vec::new();
-    let mut walk = vec![modules.to_path_buf()];
-    let mut visited = 0usize;
-    while let Some(parent) = walk.pop() {
-        for child in directories(&parent) {
-            visited = visited.saturating_add(1);
-            if visited > MODULE_WALK_MAX {
-                return Vec::new();
-            }
-            // A module's dir is named after its path, so `modules/nested/sub` sits under a dir
-            // that is no module; only a dir holding HEAD is one, and only its own modules are
-            // walked on, never the object store beside them.
-            if child.join("HEAD").is_file() {
-                found.push(child.clone());
-                walk.push(child.join("modules"));
-            } else {
-                walk.push(child);
-            }
-        }
-    }
-    found
-}
-
-/// The real directories in `dir`, never a link: a contained process writes some of these trees.
-fn directories(dir: &Path) -> impl Iterator<Item = PathBuf> {
-    (std::fs::read_dir(dir).into_iter().flatten().flatten())
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .map(|entry| entry.path())
-}
-
 /// A directory denies every path under it but the roots it keeps open.
 fn denies_inside(path: &Path, store: &Path, open: &[PathBuf]) -> bool {
     path.starts_with(store) && !open.iter().any(|root| path.starts_with(root))
@@ -137,7 +51,7 @@ fn require_not(keys: impl Iterator<Item = String>) -> String {
 }
 
 impl Sandbox {
-    /// The worktree, its git dirs (a lane's index lives in the trunk's), and build scratch.
+    /// The worktree, what its git writes, and build scratch.
     pub fn for_workspace(cwd: &Path, home: &Path, session_dir: Option<&Path>) -> Self {
         let mut writable = vec![cwd.to_path_buf()];
         let git_dirs = yi_permission::git_dirs(cwd);
@@ -158,7 +72,7 @@ impl Sandbox {
         }
         deny_write.sort();
         deny_write.dedup();
-        writable.extend(git_dirs);
+        writable.extend(lane_writes(cwd, &git_dirs, home));
         if let Some(dir) = session_dir {
             writable.push(dir.to_path_buf());
         }
@@ -579,8 +493,16 @@ fn scrubbed_env() -> Vec<String> {
     std::iter::once("/usr/bin/env".to_owned())
         .chain(unset)
         .chain(std::iter::once(java_ipv4()))
+        .chain(NO_GIT_MAINTENANCE.map(str::to_owned))
         .collect()
 }
+
+/// A lane cannot write `packed-refs`, and `git commit`'s auto maintenance printed that error.
+const NO_GIT_MAINTENANCE: [&str; 3] = [
+    "GIT_CONFIG_COUNT=1",
+    "GIT_CONFIG_KEY_0=maintenance.auto",
+    "GIT_CONFIG_VALUE_0=false",
+];
 
 /// A JVM's dual-stack socket dials 127.0.0.1 as `::ffff:127.0.0.1`, which Seatbelt refuses; IPv4
 /// sockets keep Gradle, Maven and sbt on loopback. Appended to the value the run inherits.
@@ -818,7 +740,14 @@ pub fn sandbox_refusal(
         "deny file-write",
     ];
     if let Some(path) = refused_path(sandbox, cwd, exit_code, output, command) {
-        return Some(SandboxRefusal::Path(path));
+        // Git's own bookkeeping, which the command never named: no approval widens a git dir, so
+        // the next call asks and an approval runs it outside.
+        let bookkeeping = (yi_permission::git_dirs(cwd).iter()).any(|dir| path.starts_with(dir))
+            && !command.contains(".git");
+        return Some(match bookkeeping {
+            true => SandboxRefusal::Scopes(yi_permission::refused_scopes(command)),
+            false => SandboxRefusal::Path(path),
+        });
     }
     let code = exit_code?;
     let lower = output.to_lowercase();

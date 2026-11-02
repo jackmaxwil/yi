@@ -45,7 +45,8 @@ use yi_runtime::lane::land::{
     LaneHandle, bounded_name, format_lanes, host_of, open_pr_in, owner_repo, parse_jobs, pr_number,
 };
 use yi_runtime::lane::settle::{
-    Held, Prepared, Publish, Published, Quiescence, Unsettled, generation_of, prepare, publish,
+    Held, Prepared, Publish, Published, Quiescence, Unsettled, candidate_of, generation_of,
+    prepare, publish,
 };
 use yi_runtime::lane::{
     BranchName, ClaimBase, DEFAULT_SLOTS, Head, Lane, LaneError, Pool, SlotIndex, SlotView,
@@ -64,19 +65,7 @@ fn quiet() -> Quiescence {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
-    let output = yi_tools::command("git")
-        .current_dir(cwd)
-        .args(args)
-        .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    crate::worktree::git(cwd, args)
 }
 
 struct Rig {
@@ -664,6 +653,95 @@ fn a_clean_quit_keeps_uncommitted_work_from_the_next_claim() -> TestResult {
     Ok(())
 }
 
+/// A submodule at `name` in a lane: its own repository, its gitlink staged and committed, and the
+/// `.gitmodules` entry a checkout carries when `modules` asks for one.
+fn submodule(lane: &Path, name: &str, modules: bool) -> Result<PathBuf, Box<dyn Error>> {
+    let sub = lane.join(name);
+    std::fs::create_dir_all(&sub)?;
+    git(&sub, &["init", "-q", "-b", "main"])?;
+    git(&sub, &["config", "user.email", "t@example.invalid"])?;
+    git(&sub, &["config", "user.name", "t"])?;
+    std::fs::write(sub.join("file.txt"), "one\n")?;
+    git(&sub, &["add", "file.txt"])?;
+    git(&sub, &["commit", "-q", "-m", "first"])?;
+    if modules {
+        std::fs::write(
+            lane.join(".gitmodules"),
+            format!("[submodule \"{name}\"]\n\tpath = {name}\n\turl = ./nowhere\n"),
+        )?;
+        git(lane, &["add", ".gitmodules"])?;
+    }
+    let head = git(&sub, &["rev-parse", "HEAD"])?;
+    let link = format!("160000,{},{}", head.trim(), name);
+    git(lane, &["update-index", "--add", "--cacheinfo", &link])?;
+    git(lane, &["commit", "-q", "-m", "a submodule"])?;
+    Ok(sub)
+}
+
+/// Host git stays out of a submodule, so `status` cannot see work inside one. Dies with a populated
+/// gitlink read as clean: the lane went back to the pool, and the next claim wiped the only copy.
+#[test]
+fn work_inside_a_submodule_keeps_its_lane() -> TestResult {
+    let rig = Rig::new("quit-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = submodule(lane.path(), "sub", false)?;
+    std::fs::write(sub.join("edited.txt"), "only copy\n")?;
+    let text = format_lanes(&pool.list()?, None);
+    let line = text.lines().next().unwrap_or_default();
+    assert!(
+        line.contains("1 modified"),
+        "the listing counts a gitlink with no .gitmodules: {text}"
+    );
+    assert_eq!(lane.release()?.to_string(), "1 uncommitted path");
+    let refused = pool.claim("s-two", ClaimBase::Main);
+    assert!(
+        matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
+        "{refused:?}"
+    );
+    assert!(
+        sub.join("edited.txt").is_file(),
+        "the work survived the claim"
+    );
+    Ok(())
+}
+
+/// Dies with every populated submodule counted: each session left an orphan, until `claim` found
+/// the pool full in any repository that uses them.
+#[test]
+fn a_clean_submodule_frees_its_lane_and_an_edit_in_it_keeps_it() -> TestResult {
+    let rig = Rig::new("clean-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = submodule(lane.path(), "sub", false)?;
+    std::fs::write(sub.join("file.txt"), "edited\n")?;
+    assert_eq!(lane.release()?.to_string(), "1 uncommitted path");
+    let back = pool.claim("s-one", ClaimBase::Main)?;
+    std::fs::write(back.path().join("sub/file.txt"), "one\n")?;
+    assert_eq!(back.release()?.to_string(), "0 uncommitted paths");
+    let again = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = again.path().join("sub");
+    // The incident the parent's own status read names: a config that hides new files reads clean.
+    git(&sub, &["config", "status.showUntrackedFiles", "no"])?;
+    std::fs::write(sub.join("new.txt"), "work\n")?;
+    assert_eq!(again.release()?.to_string(), "1 uncommitted path");
+    Ok(())
+}
+
+/// Dies with a quoted gitlink path read as no directory: `ls-files` escapes a name beyond ASCII, so
+/// a submodule full of edits was skipped and its lane went back to the pool.
+#[test]
+fn an_edited_submodule_named_beyond_ascii_keeps_its_lane() -> TestResult {
+    let rig = Rig::new("quit-submodule-utf8")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = submodule(lane.path(), "sub-é", false)?;
+    std::fs::write(sub.join("file.txt"), "edited\n")?;
+    assert_eq!(lane.release()?.to_string(), "1 uncommitted path");
+    assert!(sub.join("file.txt").is_file(), "the work survived");
+    Ok(())
+}
+
 #[test]
 fn a_dropped_lane_keeps_its_dirty_tree() -> TestResult {
     let rig = Rig::new("drop-dirty")?;
@@ -696,6 +774,21 @@ fn a_slot_an_older_binary_released_dirty_is_never_wiped() -> TestResult {
             && line.ends_with(" — reap discards the uncommitted paths"),
         "the refusal's listing names the slot it counted: {text}"
     );
+    Ok(())
+}
+
+/// Dies with a listing that reads only the parent's status: the submodule's edit is invisible to
+/// it, so the row said clean while the claim refused the slot as dirty.
+#[test]
+fn a_listing_counts_work_inside_a_submodule() -> TestResult {
+    let rig = Rig::new("list-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = submodule(lane.path(), "sub", true)?;
+    std::fs::write(sub.join("file.txt"), "edited\n")?;
+    let text = format_lanes(&pool.list()?, None);
+    let line = text.lines().next().unwrap_or_default();
+    assert!(line.contains("1 modified"), "the listing counts it: {text}");
     Ok(())
 }
 
@@ -760,6 +853,67 @@ fn a_reap_past_the_status_cap_says_at_least() -> TestResult {
     Ok(())
 }
 
+/// A wipe runs `checkout -f` and `clean -qfd` at the lane's top, and git enters no submodule for
+/// either. Dies with the reap claiming work it left in place.
+#[test]
+fn a_reap_says_a_submodules_work_survived_it() -> TestResult {
+    let rig = Rig::new("reap-submodule")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let sub = submodule(lane.path(), "sub", false)?;
+    std::fs::write(sub.join("file.txt"), "only copy\n")?;
+    let slot = lane.slot();
+    lane.release()?;
+    let message = pool.reap(slot)?;
+    assert!(
+        message.contains("kept inside a submodule"),
+        "the reap says what survived: {message}"
+    );
+    assert!(
+        !message.contains("discarded"),
+        "and claims nothing it did not drop: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sub.join("file.txt"))?,
+        "only copy\n"
+    );
+    let refused = pool.claim("s-two", ClaimBase::Main);
+    assert!(
+        matches!(refused, Err(LaneError::PoolFull { .. })),
+        "the slot stays out of the pool while the work does: {refused:?}"
+    );
+    Ok(())
+}
+
+/// A lane a child ran `git init` in keeps that directory: `clean -fd` refuses to remove an
+/// untracked repository without a second `-f`. Dies with the survivor named a submodule's.
+#[test]
+fn a_reap_names_a_nested_repository_as_left_in_place() -> TestResult {
+    let rig = Rig::new("reap-nested")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let nested = lane.path().join("nested");
+    std::fs::create_dir_all(&nested)?;
+    git(&nested, &["init", "-q"])?;
+    std::fs::write(nested.join("file.txt"), "only copy\n")?;
+    let slot = lane.slot();
+    lane.release()?;
+    let message = pool.reap(slot)?;
+    assert!(
+        message.contains("kept in place"),
+        "the survivor is named for where it is: {message}"
+    );
+    assert!(
+        !message.contains("inside a submodule"),
+        "and not for a submodule nothing measured: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(nested.join("file.txt"))?,
+        "only copy\n"
+    );
+    Ok(())
+}
+
 /// A resume finds its own slot first: a lower slot freed meanwhile is not where its work is.
 #[test]
 fn a_resume_takes_its_own_dirty_slot_over_a_lower_free_one() -> TestResult {
@@ -795,7 +949,10 @@ fn a_discard_says_what_it_dropped_and_frees_the_slot() -> TestResult {
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-one", ClaimBase::Main)?;
     std::fs::write(lane.path().join("draft-é.txt"), "unsaved\n")?;
-    assert_eq!(lane.discard()?.to_string(), "1 uncommitted path");
+    assert_eq!(
+        lane.discard()?.discarded(),
+        "; 1 uncommitted path discarded"
+    );
     let next = pool.claim("s-two", ClaimBase::Main)?;
     assert_eq!(git(next.path(), &["status", "--porcelain"])?, "");
     Ok(())
@@ -2743,21 +2900,35 @@ async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dy
 
 /// A `name` hook in the rig's repository that sleeps two seconds the first time git runs it
 /// and leaves `hook-ran` behind.
-fn slow_hook(rig: &Rig, name: &str) -> TestResult {
-    let mark = rig.root.join("hook-ran");
-    let script = format!(
-        "#!/bin/sh\n[ -e '{0}' ] && exit 0\n: > '{0}'\nsleep 2\n",
-        mark.display()
-    );
-    write_hook(rig, name, &script)
+/// A git on PATH ahead of the real one, running `script` before it: the host runs no hook, so a
+/// shim is what slows it. nextest gives each test its own process, so it reaches no other test.
+fn shim_git(rig: &Rig, script: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::env::var_os("PATH").ok_or("no PATH")?;
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .ok_or("no git on PATH")?;
+    let dir = rig.root.join("shim");
+    std::fs::create_dir_all(&dir)?;
+    let body = format!("#!/bin/sh\n{script}\nexec '{}' \"$@\"\n", real.display());
+    std::fs::write(dir.join("git"), body)?;
+    std::fs::set_permissions(dir.join("git"), std::fs::Permissions::from_mode(0o755))?;
+    let joined = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path)))?;
+    unsafe { std::env::set_var("PATH", joined) };
+    Ok(())
 }
 
-fn write_hook(rig: &Rig, name: &str, script: &str) -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
-    let hook = rig.repo.join(".git/hooks").join(name);
-    std::fs::write(&hook, script)?;
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
-    Ok(())
+/// The first `verb` of the rig takes two seconds and leaves `git-ran`.
+fn slow_git(rig: &Rig, verb: &str) -> TestResult {
+    let mark = rig.root.join("git-ran");
+    shim_git(
+        rig,
+        &format!(
+            "[ \"$1\" = {verb} ] && [ ! -e '{0}' ] && {{ : > '{0}'; sleep 2; }}",
+            mark.display()
+        ),
+    )
 }
 
 /// Runs `work` on this current-thread runtime and asks `rlm.status` every 20 ms meanwhile:
@@ -2791,13 +2962,13 @@ async fn served_while<T: Send + 'static>(
 #[tokio::test]
 async fn handing_a_worktree_back_leaves_the_executor_free() -> TestResult {
     use yi_kernel::client::HostHandlers;
-    for (method, hook) in [
-        ("rlm.merge_worktree", "post-merge"),
-        ("rlm.discard_worktree", "pre-commit"),
-        ("rlm.delete_subagent", "pre-commit"),
+    for (method, verb) in [
+        ("rlm.merge_worktree", "merge"),
+        ("rlm.discard_worktree", "commit"),
+        ("rlm.delete_subagent", "commit"),
     ] {
-        let rig = Rig::new(hook)?;
-        slow_hook(&rig, hook)?;
+        let rig = Rig::new(verb)?;
+        slow_git(&rig, verb)?;
         let family = writer(&rig, "echo unsaved > draft.txt").await?;
         assert!(family.reaches("writer", "finished").await);
         if method == "rlm.delete_subagent" {
@@ -2811,7 +2982,7 @@ async fn handing_a_worktree_back_leaves_the_executor_free() -> TestResult {
         let asked = target.as_object().cloned().unwrap_or_default();
         let handing = registry.dispatch(method, asked).ok_or(method)?;
         let reply = served_while(&family, handing).await??;
-        assert!(rig.root.join("hook-ran").exists(), "{method}: {reply:?}");
+        assert!(rig.root.join("git-ran").exists(), "{method}: {reply:?}");
         if method == "rlm.delete_subagent" {
             assert!(reply.contains_key("disposition"), "{reply:?}");
         } else {
@@ -2822,17 +2993,17 @@ async fn handing_a_worktree_back_leaves_the_executor_free() -> TestResult {
 }
 
 /// Incident: a lease expiry settled the repossessed lane's git inside the expire task, so a
-/// slow hook held the session's one-thread runtime and every host call behind it.
+/// slow git held the session's one-thread runtime and every host call behind it.
 #[tokio::test]
 async fn a_lease_expiry_leaves_the_executor_free() -> TestResult {
     let rig = Rig::new("expiry")?;
-    slow_hook(&rig, "pre-commit")?;
+    slow_git(&rig, "commit")?;
     let family = writer(&rig, "echo unsaved > draft.txt; sleep 30").await?;
     family.host.revoke("writer", 0, "scope changed")?;
     let host = std::sync::Arc::clone(&family.host);
     let expired = served_while(&family, async move { host.expire().await }).await?;
     assert_eq!(expired, ["writer"]);
-    assert!(rig.root.join("hook-ran").exists());
+    assert!(rig.root.join("git-ran").exists());
     Ok(())
 }
 
@@ -3281,12 +3452,11 @@ async fn a_check_past_the_deadline_is_cut_while_the_executor_serves() -> TestRes
     Ok(())
 }
 
-/// A `post-checkout` hook that sleeps `seconds`, so every fresh slot's `worktree add` takes it.
+/// Every fresh slot's `worktree add` takes `seconds`.
 fn sleeping_checkout(rig: &Rig, seconds: u32) -> TestResult {
-    write_hook(
+    shim_git(
         rig,
-        "post-checkout",
-        &format!("#!/bin/sh\nsleep {seconds}\n"),
+        &format!("[ \"$1\" = worktree ] && [ \"$2\" = add ] && sleep {seconds}"),
     )
 }
 
@@ -3839,5 +4009,215 @@ fn gc_never_fetches_the_remote_main() -> TestResult {
 
     rig.pool(1)?.gc(&rig.repo, true)?;
     assert_eq!(std::fs::metadata(fetch_head)?.modified()?, old);
+    Ok(())
+}
+
+/// A tree whose hand-back must succeed whatever the repository's hooks and signing would do.
+async fn hand_back_commits(rig: &Rig) -> TestResult {
+    let family = writer(rig, "echo unsaved > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let reply = family.host.merge_worktree("writer", None)?;
+    assert_eq!(reply["merged"], true, "{reply:?}");
+    assert_eq!(
+        git(&rig.repo, &["show", "HEAD:draft.txt"])?.trim(),
+        "unsaved"
+    );
+    Ok(())
+}
+
+/// Dies with the host commit running the repository's hooks: the hand-back came back `Kept`.
+#[tokio::test]
+async fn a_failing_pre_commit_hook_does_not_stop_a_hand_back() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let rig = Rig::new("failing-hook")?;
+    let hook = rig.repo.join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n")?;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    hand_back_commits(&rig).await
+}
+
+/// Dies with the host commit signing: a repository set to sign, with no key, refused it.
+#[tokio::test]
+async fn commit_signing_with_no_key_does_not_stop_a_hand_back() -> TestResult {
+    let rig = Rig::new("signing")?;
+    git(&rig.repo, &["config", "commit.gpgsign", "true"])?;
+    git(&rig.repo, &["config", "gpg.program", "/usr/bin/false"])?;
+    hand_back_commits(&rig).await
+}
+
+/// Dies with no fallback: git refuses a commit with no identity, and a fresh box has none.
+#[tokio::test]
+async fn a_repository_with_no_identity_still_hands_back() -> TestResult {
+    let rig = Rig::new("no-identity")?;
+    git(&rig.repo, &["config", "--unset", "user.email"])?;
+    git(&rig.repo, &["config", "--unset", "user.name"])?;
+    git(&rig.repo, &["config", "user.useConfigOnly", "true"])?;
+    // nextest gives each test its own process, so this empty global config reaches no other.
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
+    hand_back_commits(&rig).await
+}
+
+/// Dies with an identity probe keyed on `user.email` alone: with the name unset and `useConfigOnly`
+/// on, git refuses the hand-back with `empty ident name … not allowed`.
+#[tokio::test]
+async fn a_repository_with_only_an_email_still_hands_back() -> TestResult {
+    let rig = Rig::new("email-only-identity")?;
+    git(&rig.repo, &["config", "--unset", "user.name"])?;
+    git(&rig.repo, &["config", "user.email", "t@example.invalid"])?;
+    git(&rig.repo, &["config", "user.useConfigOnly", "true"])?;
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
+    hand_back_commits(&rig).await
+}
+
+/// Dies with `git add -A` over everything: a build's output landed in the candidate. Source under
+/// a directory that merely shares the name still lands, and so does a tracked build file.
+#[tokio::test]
+async fn untracked_build_output_stays_out_and_source_named_alike_goes_in() -> TestResult {
+    let rig = Rig::new("build-output")?;
+    std::fs::create_dir_all(rig.repo.join("build"))?;
+    std::fs::write(rig.repo.join("build/keep.txt"), "old\n")?;
+    git(&rig.repo, &["add", "build"])?;
+    git(&rig.repo, &["commit", "-qm", "track a build file"])?;
+    let hold = "mkdir -p target/debug src/build node_modules/x .venv/lib dist; \
+        echo o > target/debug/x; echo o > node_modules/x/y; echo o > .venv/lib/z; echo o > dist/a; \
+        echo o > build/out; echo s > src/build/gen.rs; echo new > build/keep.txt";
+    let family = writer(&rig, hold).await?;
+    assert!(family.reaches("writer", "finished").await);
+    family.host.merge_worktree("writer", None)?;
+    let names = git(&rig.repo, &["ls-tree", "-r", "--name-only", "HEAD"])?;
+    assert!(
+        names.lines().any(|name| name == "src/build/gen.rs"),
+        "{names}"
+    );
+    assert!(!names.contains("target/"), "{names}");
+    assert!(!names.contains("node_modules/"), "{names}");
+    assert!(!names.contains(".venv/"), "{names}");
+    assert!(!names.contains("dist/"), "{names}");
+    assert!(!names.contains("build/out"), "{names}");
+    assert_eq!(
+        git(&rig.repo, &["show", "HEAD:build/keep.txt"])?.trim(),
+        "new"
+    );
+    Ok(())
+}
+
+/// Dies with no guard on `HEAD`: the admin `HEAD` is contained-writable, and a planted one walked
+/// the host's commit onto trunk.
+#[test]
+fn a_planted_head_cannot_walk_the_host_commit_onto_trunk() -> TestResult {
+    let rig = Rig::new("planted-head")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-planted", ClaimBase::Main)?;
+    let trunk_before = git(&rig.repo, &["rev-parse", "main"])?;
+    std::fs::write(lane.path().join("draft.txt"), "x\n")?;
+    let admin = git(lane.path(), &["rev-parse", "--absolute-git-dir"])?;
+    std::fs::write(
+        Path::new(admin.trim()).join("HEAD"),
+        "ref: refs/heads/main\n",
+    )?;
+    let branch = lane.branch().clone();
+    let refused = candidate_of(lane.path(), "s-planted", &branch, None, &quiet(), None);
+    assert!(
+        matches!(refused, Err(LaneError::ForeignHead { .. })),
+        "{refused:?}"
+    );
+    let kept = git(&rig.repo, &["branch", "yi/kept-by-a-gone-lane"]);
+    assert!(kept.is_ok(), "{kept:?}");
+    std::fs::write(
+        Path::new(admin.trim()).join("HEAD"),
+        "ref: refs/heads/yi/kept-by-a-gone-lane\n",
+    )?;
+    let refused = candidate_of(lane.path(), "s-planted", &branch, None, &quiet(), None);
+    assert!(
+        matches!(refused, Err(LaneError::ForeignHead { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(git(&rig.repo, &["rev-parse", "main"])?, trunk_before);
+    Ok(())
+}
+
+/// Dies with a relative `core.hooksPath` being honoured: it resolves inside the child's tree, so
+/// the child wrote what the host then ran.
+#[test]
+fn a_hook_in_the_childs_own_tree_never_runs_on_the_host() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let rig = Rig::new("relative-hooks")?;
+    git(&rig.repo, &["config", "core.hooksPath", ".husky"])?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-husky", ClaimBase::Main)?;
+    let marker = rig.root.join("ran-on-host");
+    let hooks = lane.path().join(".husky");
+    std::fs::create_dir_all(&hooks)?;
+    let hook = hooks.join("pre-commit");
+    std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display()))?;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    let branch = lane.branch().clone();
+    candidate_of(lane.path(), "s-husky", &branch, None, &quiet(), None)?;
+    assert!(!marker.exists(), "the child's hook ran on the host");
+    Ok(())
+}
+
+/// Dies with the lane code assuming `main`: a `master` repository's lane based on its own `HEAD`.
+#[test]
+fn a_claim_bases_on_the_trunk_origin_names() -> TestResult {
+    let rig = Rig::new("master-trunk")?;
+    let origin = rig.root.join("origin.git");
+    let origin_text = origin.to_string_lossy();
+    git(
+        &rig.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            &rig.repo.to_string_lossy(),
+            &origin_text,
+        ],
+    )?;
+    git(&origin, &["branch", "-q", "-m", "main", "master"])?;
+    git(&origin, &["symbolic-ref", "HEAD", "refs/heads/master"])?;
+    git(&rig.repo, &["remote", "add", "origin", &origin_text])?;
+    git(&rig.repo, &["fetch", "-q", "origin"])?;
+    git(&rig.repo, &["remote", "set-head", "origin", "master"])?;
+    git(
+        &rig.repo,
+        &["commit", "-q", "--allow-empty", "-m", "local only"],
+    )?;
+    let lane = rig.pool(1)?.claim("s-master", ClaimBase::Main)?;
+    assert_eq!(
+        git(lane.path(), &["rev-parse", "HEAD"])?,
+        git(&rig.repo, &["rev-parse", "origin/master"])?
+    );
+    Ok(())
+}
+
+/// Dies with the runner cutting a long `status -z`: the user's file sat in the cut middle, read as
+/// clean, and the ref-only restore wrote the child's bytes over it.
+#[tokio::test]
+async fn a_dirty_file_deep_in_a_long_status_keeps_its_bytes() -> TestResult {
+    let rig = Rig::new("long-status")?;
+    let hold = "mkdir -p m; printf 'child\\n' >> README.md; printf 'child\\n' > m/new.txt";
+    let family = writer(&rig, hold).await?;
+    assert!(family.reaches("writer", "finished").await);
+    std::fs::create_dir_all(rig.repo.join("a"))?;
+    std::fs::create_dir_all(rig.repo.join("m"))?;
+    std::fs::create_dir_all(rig.repo.join("z"))?;
+    for n in 0..1500 {
+        std::fs::write(rig.repo.join(format!("a/untracked-{n:05}.txt")), "x")?;
+        std::fs::write(rig.repo.join(format!("z/untracked-{n:05}.txt")), "x")?;
+    }
+    std::fs::write(rig.repo.join("README.md"), "base\nmine\n")?;
+    std::fs::write(rig.repo.join("m/new.txt"), "mine\n")?;
+    let reply = family.host.merge_worktree("writer", None)?;
+    assert_eq!(reply["published"], "ref_only", "{reply:?}");
+    assert_eq!(
+        std::fs::read_to_string(rig.repo.join("m/new.txt"))?,
+        "mine\n"
+    );
     Ok(())
 }

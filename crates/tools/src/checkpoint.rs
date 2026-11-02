@@ -224,7 +224,7 @@ impl Checkpoints {
             vec!["read-tree", tree.as_str()],
             vec!["checkout-index", "-a", "-f"],
         ] {
-            let mut process = host_git();
+            let mut process = host_git(&self.work_tree)?;
             process
                 .env("GIT_INDEX_FILE", &index)
                 .arg("--git-dir")
@@ -279,7 +279,7 @@ impl Checkpoints {
             .serial
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut process = host_git();
+        let mut process = host_git(&self.work_tree)?;
         process
             .arg("--git-dir")
             .arg(&self.git_dir)
@@ -301,17 +301,12 @@ impl Checkpoints {
     }
 }
 
-/// A git Yi drives on its own repository: a caller's `GIT_INDEX_FILE`, `GIT_WORK_TREE` or
-/// `GIT_DIR` never redirects it, and paths come back unquoted.
-fn host_git() -> std::process::Command {
-    let mut process = crate::process::keyless_command("git");
-    for (variable, _) in std::env::vars_os() {
-        if variable.to_string_lossy().starts_with("GIT_") {
-            process.env_remove(variable);
-        }
-    }
+/// The host's git with paths unquoted.
+fn host_git(cwd: &Path) -> Result<std::process::Command, CheckpointError> {
+    let mut process = crate::process::host_command("git", cwd)
+        .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
     process.args(["-c", "core.quotepath=false"]);
-    process
+    Ok(process)
 }
 
 /// Read relative to the earlier tree from `-z` rows (status NUL path NUL), with renames split by
@@ -346,7 +341,7 @@ pub fn work_tree(git_dir: &Path) -> Option<PathBuf> {
 /// Invariant: captures write no ref, so every object is unreachable and `prune` keeps what is
 /// younger than `keep` plus whatever a younger tree still names.
 pub fn prune(git_dir: &Path, keep: std::time::Duration) -> Result<(), CheckpointError> {
-    let output = host_git()
+    let output = host_git(git_dir)?
         .arg("--git-dir")
         .arg(git_dir)
         .arg("prune")

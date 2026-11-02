@@ -605,10 +605,11 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   directory asks (in home, any mention); with no path, `refused_scopes` remembers the program and
   verb and a later use asks. "Always allow" keeps a `Grant` (directory, tree root, program+verb),
   in memory, ≤ 1024 rules.
-- Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, git dirs minus
+- Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, a main checkout's git dir or
+  a linked worktree's admin dir, `objects`, own branch and stash, minus
   `hooks config config.worktree info commondir gitdir objects/info/alternates` in each git dir and
   submodule, `<git>/worktrees` and `<git>/modules` closed whole (a lane keeps its own admin dir and
-  the module dirs it already has), a `.git` that is no directory, session dir, tmp; reads deny the credential stores the read gate
+  the module dirs it already has), a `.git` that is no directory; session dir, tmp; reads deny the credential stores the read gate
   refuses (`~/.ssh ~/.gnupg ~/.aws ~/.kube ~/.docker ~/.yi/mcp/tokens ~/.yi/providers/tokens
   ~/.yi/oauth ~/.config/{gh,fgj,gcloud} ~/.netrc ~/.git-credentials ~/.npmrc ~/.pypirc
   ~/.cargo/credentials[.toml] ~/.password-store`, `credential_stores`, D323, D324) and the wall's `deny_read`, each
