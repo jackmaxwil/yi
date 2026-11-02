@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.877.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.878.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -294,6 +294,7 @@ A PR never edits a row here: it writes `ledger+`, `ledger~`, `ledger=` or `ledge
 | `agent-desktop` plugin | 17.1 | optional | M | M | `yi plugin add agent-desktop` (macOS, `host` shape: never by `--all`, never in an eval container) lets the model read and operate Mac apps by bash; asks once per app per session, never keeps a yes for a terminal, editor, settings or password app, refuses browsers and whatever takes the user's own mouse, keyboard or front app (`session start --cursor` draws an agent cursor instead), runs only its plain name outside the sandbox, and fences what it prints |
 | `agent-browser` plugin | 17.1 | optional | M | M | `yi plugin add agent-browser` (macOS, `host` shape: never by `--all`, never in an eval container) also installs `chrome` and lets the model drive a headless page by bash; Chrome runs in a sandbox that reads no credential and writes only temp. The default session has loopback alone and asks nothing; `--session web` has the internet and one yes covers it for the session; what the daemon itself would do asks every time; real logins and a visible window are refused in every mode, as is every command until the pinned program, its config and its script all stand, so a copy on PATH is refused; page text returns inside the external-data fence. |
 | contained git: a mirror and an outbox | 8 | core | H | M | a contained `git fetch` reads a host-run mirror and a `git push` lands in an outbox the host forwards after the spawn, with no question unless it is trunk, `main`, `master` or a tag; force and delete still ask (`crates/runtime/src/lane/remote.rs`) |
+| Linux containment: Landlock and the git-file seal | 8 | core | H | M | a contained command on Linux starts as `yi __contain`: writes reach its roots, reads a named list, and the host compares what its next git reads and puts back what changed. No network wall. A kernel that refuses the ruleset makes `Contain` an ask. |
 
 ## Decision log
 
@@ -301,6 +302,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D533 | Linux contains with Landlock through a re-exec of yi, and the host compares and restores the git files it cannot deny | Linux ran every contained command unsandboxed | make Sandbox::available false on Linux. Amends D205, D348, D350 |
 | D532 | one shadow store per repository with an index per tree | 22 MB and 2 s per lane and fork | key the store by path again; amends D401 |
 | D531 | forge commands leave by home config and tree recipes by pin | a contained forge CLI has no route to its login | drop the class and sandbox.hostRecipes |
 | D530 | a contained git reaches origin through a host mirror and an outbox; a non-main branch goes unasked, trunk, main, master and a tag ask a person with a diffstat | the owner's top friction | remove the rewrite in GitLane::assign and move the git verbs back to Egress; amends D205 |
