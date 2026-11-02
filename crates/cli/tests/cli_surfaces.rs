@@ -424,6 +424,13 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
 /// A granted directory that does not exist, or that the sandbox must keep closed, ended the run
 /// before the model answered; a good one let it through. The grant belongs to the run that named
 /// it: the ledger keeps none, so a `--continue` that omits the flag does not inherit it.
+/// The binary's answer, not this process's: a test binary has no `__contain`, so on Linux it alone
+/// would say no sandbox while the `yi` it runs refuses the grant.
+fn the_binary_contains() -> bool {
+    yi_tools::set_wrapper(std::path::PathBuf::from(env!("CARGO_BIN_EXE_yi")));
+    yi_tools::Sandbox::available()
+}
+
 #[test]
 fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> TestResult {
     let workspace = Workspace::new("allow-write")?;
@@ -433,7 +440,7 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
     );
     // A guarded dir is refused only under a containment profile: with none, nothing is contained
     // and a grant widens nothing. A dir that does not exist is refused on every host.
-    let guarded = if yi_tools::Sandbox::available() { 2 } else { 0 };
+    let guarded = if the_binary_contains() { 2 } else { 0 };
     for (dir, want) in [(&yi_dir, guarded), (&missing, 2)] {
         let dir = dir.to_string_lossy();
         let run = ask(&workspace, "look", &["--allow-write", &dir])?;
@@ -491,7 +498,7 @@ fn allow_write_from_config_refuses_a_protected_dir() -> TestResult {
     )?;
     let run = ask(&workspace, "look", &[])?;
     let refused = run.status.code() == Some(2);
-    assert_eq!(refused, yi_tools::Sandbox::available(), "{run:?}");
+    assert_eq!(refused, the_binary_contains(), "{run:?}");
     Ok(())
 }
 
@@ -3343,6 +3350,45 @@ fn the_gate_says_what_a_desktop_command_would_do() -> TestResult {
     }
     let refused = workspace.yi(&["gate", "agent-desktop launch firefox"])?;
     assert!(String::from_utf8_lossy(&refused.stdout).contains("agent-browser"));
+    Ok(())
+}
+
+/// The real binary's judgement of each kind of browser command, offline: with no box nothing runs
+/// outside, since a Chrome there reads every file, and with one the table decides.
+#[test]
+fn the_gate_says_what_a_browser_command_would_do() -> TestResult {
+    let workspace = Workspace::new("yi-gate-browser")?;
+    let unboxed = workspace.yi(&["gate", "agent-browser open http://localhost:3000"])?;
+    let shown = String::from_utf8_lossy(&unboxed.stdout).into_owned();
+    assert_eq!(shown.lines().next(), Some("auto: deny"), "{shown}");
+    assert!(shown.contains("yi plugin add agent-browser"), "{shown}");
+    let plugin = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+    let home = workspace.0.join("home");
+    std::fs::create_dir_all(plugin.dir(&home))?;
+    for file in [plugin.name, "config.json", "chrome-box"] {
+        std::fs::write(plugin.dir(&home).join(file), "")?;
+    }
+    for (command, first_line) in [
+        ("agent-browser open http://localhost:3000", "auto: allow"),
+        (
+            "agent-browser --session web open https://x.dev",
+            "auto: ask",
+        ),
+        ("agent-browser read https://x.dev", "auto: ask"),
+        ("agent-browser connect 9222", "auto: deny"),
+        ("agent-browser --headed open x", "auto: deny"),
+    ] {
+        let output = workspace.yi(&["gate", command])?;
+        let shown = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert_eq!(shown.lines().next(), Some(first_line), "{command}: {shown}");
+    }
+    // Contained where the host has a sandbox and asked where it has none, never let out.
+    let prefixed = workspace.yi(&["gate", "X=1 agent-browser open x"])?;
+    let shown = String::from_utf8_lossy(&prefixed.stdout).into_owned();
+    assert!(
+        matches!(shown.lines().next(), Some("auto: contain" | "auto: ask")),
+        "{shown}"
+    );
     Ok(())
 }
 

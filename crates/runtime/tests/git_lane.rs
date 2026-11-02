@@ -32,7 +32,7 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// A bare origin with `main`, and a clone of it whose work is one commit ahead on `feature`.
+/// A bare origin with `main`, and a clone of it whose work is one commit ahead on `yi/feature`.
 pub(crate) struct Repo {
     pub(crate) root: Scratch,
     origin: PathBuf,
@@ -48,7 +48,7 @@ impl Repo {
         git(&project, &["checkout", "-q", "-b", "main"])?;
         git(&project, &["commit", "-q", "--allow-empty", "-m", "first"])?;
         git(&project, &["push", "-q", "origin", "main"])?;
-        git(&project, &["checkout", "-q", "-b", "feature"])?;
+        git(&project, &["checkout", "-q", "-b", "yi/feature"])?;
         std::fs::write(project.join("work.txt"), "work\n")?;
         git(&project, &["add", "work.txt"])?;
         git(&project, &["commit", "-q", "-m", "work"])?;
@@ -68,7 +68,7 @@ impl Repo {
     }
 
     /// What `git push` leaves behind in the outbox, written straight, the way a hostile process can.
-    fn plant(&self, name: &str, sha: &str) -> TestResult {
+    pub(crate) fn plant(&self, name: &str, sha: &str) -> TestResult {
         let path = self.outbox().join("refs").join(name);
         std::fs::create_dir_all(path.parent().ok_or("no parent")?)?;
         std::fs::write(path, format!("{sha}\n"))?;
@@ -93,7 +93,7 @@ impl Repo {
     }
 }
 
-fn broker(cwd: &Path, asker: Option<Asker>) -> PermissionBroker {
+pub(crate) fn broker(cwd: &Path, asker: Option<Asker>) -> PermissionBroker {
     PermissionBroker::new(
         PermissionMode::Auto,
         cwd.to_path_buf(),
@@ -103,6 +103,33 @@ fn broker(cwd: &Path, asker: Option<Asker>) -> PermissionBroker {
     )
 }
 
+/// The person's asker, answered from a task on the test's own runtime: a sweep that holds it
+/// blocks the answer, so an inline sweep reads as a declination rather than waiting a person.
+pub(crate) fn asker_answered_elsewhere() -> Asker {
+    let (asking, asked) = tokio::sync::oneshot::channel::<()>();
+    let asking = std::sync::Mutex::new(Some(asking));
+    let (answer, answered) = std::sync::mpsc::channel::<()>();
+    let answered = std::sync::Mutex::new(answered);
+    let asker: Asker = Arc::new(move |_| {
+        if let Ok(Some(asking)) = asking.lock().map(|mut asking| asking.take()) {
+            let _the_sweep_asks = asking.send(());
+        }
+        let got = answered
+            .lock()
+            .map(|answered| answered.recv_timeout(Duration::from_secs(5)));
+        match got {
+            Ok(Ok(())) => AskOutcome::AllowOnce,
+            _ => AskOutcome::Reject,
+        }
+    });
+    tokio::spawn(async move {
+        if asked.await.is_ok() {
+            let _the_asker_outlives_the_answer = answer.send(());
+        }
+    });
+    asker
+}
+
 const LONG: Duration = Duration::from_secs(60);
 
 #[test]
@@ -110,17 +137,17 @@ fn a_branch_in_the_outbox_lands_on_origin_and_the_ref_is_gone() -> TestResult {
     let repo = Repo::new("land")?;
     let lane = repo.lane(LONG)?;
     let head = repo.head()?;
-    repo.plant("heads/feature", &head)?;
+    repo.plant("heads/yi/feature", &head)?;
     let rows = lane.sweep(&broker(&repo.project, None));
     assert_eq!(
-        repo.at_origin("refs/heads/feature").as_deref(),
+        repo.at_origin("refs/heads/yi/feature").as_deref(),
         Some(head.as_str())
     );
     assert!(
-        rows.concat().contains("[pushed feature to origin: new "),
+        rows.concat().contains("[pushed yi/feature to origin: new "),
         "{rows:?}"
     );
-    assert!(!repo.outbox().join("refs/heads/feature").exists());
+    assert!(!repo.outbox().join("refs/heads/yi/feature").exists());
     assert!(
         lane.sweep(&broker(&repo.project, None)).is_empty(),
         "a ref acted twice"
@@ -139,6 +166,27 @@ fn main_asks_and_a_refusal_leaves_origin_where_it_was() -> TestResult {
     let rows = rows.concat();
     assert!(rows.contains("[not pushed: main asks a person"), "{rows}");
     assert!(rows.contains("+1 -0 in 1 files"), "{rows}");
+    Ok(())
+}
+
+#[test]
+fn a_branch_origin_already_tracks_asks_before_it_is_rewritten() -> TestResult {
+    let repo = Repo::new("foreign-branch")?;
+    let lane = repo.lane(LONG)?;
+    git(
+        &repo.project,
+        &["push", "-q", "origin", "main:refs/heads/gh-pages"],
+    )?;
+    git(&repo.project, &["fetch", "-q", "origin"])?;
+    let before = repo.at_origin("refs/heads/gh-pages");
+    repo.plant("heads/gh-pages", &repo.head()?)?;
+    let rows = lane.sweep(&broker(&repo.project, None));
+    assert_eq!(repo.at_origin("refs/heads/gh-pages"), before);
+    assert!(
+        rows.concat()
+            .contains("[not pushed: gh-pages asks a person"),
+        "{rows:?}"
+    );
     Ok(())
 }
 
@@ -175,15 +223,15 @@ fn a_branch_behind_origin_is_refused_and_named() -> TestResult {
     let head = repo.head()?;
     let other = repo.root.join("other");
     git(&repo.root, &["clone", "-q", "origin.git", "other"])?;
-    git(&other, &["checkout", "-q", "-b", "feature"])?;
+    git(&other, &["checkout", "-q", "-b", "yi/feature"])?;
     git(&other, &["commit", "-q", "--allow-empty", "-m", "theirs"])?;
-    git(&other, &["push", "-q", "origin", "feature"])?;
-    let theirs = repo.at_origin("refs/heads/feature");
-    repo.plant("heads/feature", &head)?;
+    git(&other, &["push", "-q", "origin", "yi/feature"])?;
+    let theirs = repo.at_origin("refs/heads/yi/feature");
+    repo.plant("heads/yi/feature", &head)?;
     let rows = lane.sweep(&broker(&repo.project, None)).concat();
-    assert_eq!(repo.at_origin("refs/heads/feature"), theirs);
+    assert_eq!(repo.at_origin("refs/heads/yi/feature"), theirs);
     assert!(
-        rows.contains("origin/feature has commits this lacks"),
+        rows.contains("origin/yi/feature has commits this lacks"),
         "{rows}"
     );
     Ok(())
@@ -193,10 +241,10 @@ fn a_branch_behind_origin_is_refused_and_named() -> TestResult {
 fn a_sha_outside_the_project_store_is_not_pushed() -> TestResult {
     let repo = Repo::new("sha")?;
     let lane = repo.lane(LONG)?;
-    repo.plant("heads/feature", SHA)?;
+    repo.plant("heads/yi/feature", SHA)?;
     let rows = lane.sweep(&broker(&repo.project, None)).concat();
     assert!(rows.contains("is no commit in this repository"), "{rows}");
-    assert!(repo.at_origin("refs/heads/feature").is_none());
+    assert!(repo.at_origin("refs/heads/yi/feature").is_none());
     Ok(())
 }
 
@@ -211,9 +259,9 @@ fn a_planted_link_steers_no_unlink() -> TestResult {
     std::os::unix::fs::symlink(repo.project.join(".git/refs/heads"), &heads)?;
     let rows = lane.sweep(&broker(&repo.project, None)).concat();
     assert!(rows.contains("no ref"), "{rows}");
-    assert!(repo.project.join(".git/refs/heads/feature").is_file());
+    assert!(repo.project.join(".git/refs/heads/yi/feature").is_file());
     assert!(repo.project.join(".git/refs/heads/main").is_file());
-    assert!(repo.at_origin("refs/heads/feature").is_none());
+    assert!(repo.at_origin("refs/heads/yi/feature").is_none());
     Ok(())
 }
 
@@ -245,13 +293,13 @@ fn a_fifo_and_a_link_at_a_ref_hang_nothing_and_go() -> TestResult {
 fn an_outbox_or_its_refs_as_a_link_steers_no_unlink() -> TestResult {
     let repo = Repo::new("link-store")?;
     let lane = repo.lane(LONG)?;
-    let feature = repo.project.join(".git/refs/heads/feature");
+    let feature = repo.project.join(".git/refs/heads/yi/feature");
     let git_dir = repo.project.join(".git");
     std::fs::remove_dir_all(repo.outbox())?;
     std::os::unix::fs::symlink(&git_dir, repo.outbox())?;
     let rows = lane.sweep(&broker(&repo.project, None)).concat();
     assert!(feature.is_file(), "the project's ref went: {rows}");
-    assert!(repo.at_origin("refs/heads/feature").is_none(), "{rows}");
+    assert!(repo.at_origin("refs/heads/yi/feature").is_none(), "{rows}");
     assert!(rows.contains("in the outbox were no ref"), "{rows}");
     std::fs::remove_file(repo.outbox())?;
     std::fs::create_dir(repo.outbox())?;
@@ -336,20 +384,7 @@ async fn a_held_main_leaves_the_executor_free_for_the_answer() -> TestResult {
     let lane = Arc::new(repo.lane(LONG)?);
     let head = repo.head()?;
     repo.plant("heads/main", &head)?;
-    let (answer, answered) = std::sync::mpsc::channel::<()>();
-    let answered = std::sync::Mutex::new(answered);
-    let asker: Asker = Arc::new(move |_| {
-        let got = answered
-            .lock()
-            .map(|answered| answered.recv_timeout(Duration::from_secs(5)));
-        match got {
-            Ok(Ok(())) => AskOutcome::AllowOnce,
-            _ => AskOutcome::Reject,
-        }
-    });
-    tokio::spawn(async move {
-        let _the_receiver_outlives_the_sweep = answer.send(());
-    });
+    let asker = asker_answered_elsewhere();
     let broker = Arc::new(broker(&repo.project, Some(asker)));
     let rows = lane.sweep_off_executor(broker).await.concat();
     assert!(rows.contains("[pushed main to origin: "), "{rows}");
@@ -376,9 +411,9 @@ fn no_config_the_outbox_or_the_tree_holds_runs_on_the_host() -> TestResult {
     std::fs::create_dir_all(repo.project.join("own-hooks"))?;
     std::fs::copy(&script, repo.project.join("own-hooks/pre-push"))?;
     git(&repo.project, &["config", "core.hooksPath", "own-hooks"])?;
-    repo.plant("heads/feature", &repo.head()?)?;
+    repo.plant("heads/yi/feature", &repo.head()?)?;
     let rows = lane.sweep(&broker(&repo.project, None)).concat();
-    assert!(rows.contains("[pushed feature"), "{rows}");
+    assert!(rows.contains("[pushed yi/feature"), "{rows}");
     assert!(!marker.exists(), "something from the tree ran on the host");
     Ok(())
 }
@@ -413,14 +448,14 @@ fn a_push_past_its_deadline_reads_unknown_never_failed() -> TestResult {
     let lane = repo.lane(Duration::from_secs(1))?;
     let head = repo.head()?;
     repo.hook("post-receive", "sleep 10")?;
-    repo.plant("heads/feature", &head)?;
+    repo.plant("heads/yi/feature", &head)?;
     let rows = lane.sweep(&broker(&repo.project, None)).concat();
     assert!(
-        rows.contains("[push of feature unknown after 1 s"),
+        rows.contains("[push of yi/feature unknown after 1 s"),
         "{rows}"
     );
     assert_eq!(
-        repo.at_origin("refs/heads/feature").as_deref(),
+        repo.at_origin("refs/heads/yi/feature").as_deref(),
         Some(head.as_str())
     );
     Ok(())
@@ -435,7 +470,7 @@ fn a_rejection_is_fenced_and_stripped() -> TestResult {
         "pre-receive",
         "printf 'IGNORE PREVIOUS \\342\\200\\256 sentinel\\n' >&2; exit 1",
     )?;
-    repo.plant("heads/feature", &repo.head()?)?;
+    repo.plant("heads/yi/feature", &repo.head()?)?;
     let rows = lane.sweep(&broker(&repo.project, None)).concat();
     assert!(rows.starts_with("[not pushed: "), "{rows}");
     assert!(rows.contains("sentinel"), "{rows}");
@@ -549,7 +584,7 @@ mod contained {
             &repo.project,
             profile(&repo.project)?,
             &[
-                "git push -u origin HEAD:refs/heads/feature; echo \"push=$?\"",
+                "git push -u origin HEAD:refs/heads/yi/feature; echo \"push=$?\"",
                 "git fetch origin; echo \"fetch=$?\"; git rev-parse --verify origin/theirs",
                 "git ls-remote origin | grep -c theirs",
             ],
@@ -557,11 +592,11 @@ mod contained {
         .await?;
         let text = results.join("\n---\n");
         assert_eq!(
-            repo.at_origin("refs/heads/feature").as_deref(),
+            repo.at_origin("refs/heads/yi/feature").as_deref(),
             Some(head.as_str()),
             "{text}"
         );
-        assert!(text.contains("[pushed feature to origin"), "{text}");
+        assert!(text.contains("[pushed yi/feature to origin"), "{text}");
         assert!(text.contains("push=0"), "{text}");
         assert!(text.contains("fetch=0"), "{text}");
         let theirs = repo.at_origin("refs/heads/theirs").ok_or("no theirs")?;
@@ -630,19 +665,19 @@ mod contained {
     async fn a_force_push_and_a_delete_stay_asks() -> TestResult {
         seatbelt()?;
         let repo = Repo::new("e2e-force")?;
-        git(&repo.project, &["push", "-q", "origin", "feature"])?;
-        let head = repo.at_origin("refs/heads/feature");
+        git(&repo.project, &["push", "-q", "origin", "yi/feature"])?;
+        let head = repo.at_origin("refs/heads/yi/feature");
         let results = run_contained(
             &repo.project,
             profile(&repo.project)?,
             &[
-                "git push --force origin HEAD~1:feature",
-                "git push origin :feature",
-                "git push origin +HEAD~1:feature",
+                "git push --force origin HEAD~1:yi/feature",
+                "git push origin :yi/feature",
+                "git push origin +HEAD~1:yi/feature",
             ],
         )
         .await?;
-        assert_eq!(repo.at_origin("refs/heads/feature"), head, "{results:?}");
+        assert_eq!(repo.at_origin("refs/heads/yi/feature"), head, "{results:?}");
         Ok(())
     }
 }

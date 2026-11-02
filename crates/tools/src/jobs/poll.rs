@@ -8,7 +8,7 @@ use crate::tool::{ToolContext, ToolOutput, error_output, text_output};
 /// The source a job's words belong to when the program it ran is not Yi's own, so the runtime fences
 /// what it printed even when the poll names no command.
 fn external(command: &str) -> Option<&'static str> {
-    yi_permission::runs(command).then_some(yi_permission::DESKTOP_SOURCE)
+    yi_permission::source(command)
 }
 pub(crate) fn poll_job(input: &Map<String, Value>, context: &ToolContext) -> ToolOutput {
     let jobs = super::registry();

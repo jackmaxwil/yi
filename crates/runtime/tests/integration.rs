@@ -20,6 +20,8 @@ mod support;
 mod upstream;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/wiring.rs"]
+mod wiring;
 #[path = "support/worktree.rs"]
 mod worktree;
 

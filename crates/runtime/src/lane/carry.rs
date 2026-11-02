@@ -253,46 +253,28 @@ pub fn include_list(bytes: &[u8]) -> Result<(Vec<String>, usize), String> {
     Ok((patterns, listed))
 }
 
-/// One bad line is named and the rest still match; git's last matching line wins, so a `!x` refuses
-/// only the paths no later line keeps back. The set answers "no line names this path" in one pass.
-fn matcher(
-    patterns: &[String],
-    rows: &mut Vec<String>,
-) -> (globset::GlobSet, Vec<(globset::GlobMatcher, bool)>) {
+/// One bad pattern is named and the rest still match.
+fn matcher(patterns: &[String], rows: &mut Vec<String>) -> Option<globset::GlobSet> {
     let mut set = globset::GlobSetBuilder::new();
-    let mut rules = Vec::new();
-    for line in patterns {
-        let Some((pattern, dir_only, negate)) = yi_tools::ignore::pattern(line) else {
+    for pattern in patterns {
+        let trimmed = pattern.trim_start_matches('/').trim_end_matches('/');
+        if trimmed.starts_with('!') {
             rows.push(format!(
-                "[not carried: `{}` names nothing: a comment, a blank line or a bare `!`]",
-                crate::ext::sanitize(line)
-            ));
-            continue;
-        };
-        if dir_only {
-            rows.push(format!(
-                "[not carried: `{}` names a directory, and git reports an ignored directory as one entry; name the files it holds]",
-                crate::ext::sanitize(line)
+                "[not carried: pattern `{}` is a negation, which this list has no rule order for; list the files it names]",
+                crate::ext::sanitize(pattern)
             ));
             continue;
         }
-        match globset::GlobBuilder::new(&pattern)
-            .literal_separator(true)
-            .build()
-        {
-            Ok(glob) => {
-                set.add(glob.clone());
-                rules.push((glob.compile_matcher(), !negate));
-            }
+        match globset::Glob::new(trimmed) {
+            Ok(glob) => drop(set.add(glob)),
             Err(error) => rows.push(format!(
                 "[not carried: pattern `{}` does not parse: {}]",
-                crate::ext::sanitize(line),
+                crate::ext::sanitize(pattern),
                 error.kind()
             )),
         }
     }
-    let set = set.build().unwrap_or_else(|_| globset::GlobSet::empty());
-    (set, rules)
+    set.build().ok()
 }
 
 /// A path copied, or why not: the walk refuses a link on any component, so a path a contained
@@ -384,22 +366,13 @@ pub fn carry_includes(
     if patterns.is_empty() {
         return rows;
     }
-    let (names_any, rules) = matcher(&patterns, &mut rows);
-    if rules.is_empty() {
+    let Some(set) = matcher(&patterns, &mut rows) else {
         return rows;
-    }
-    let carried = |path: &str| {
-        names_any.is_match(path)
-            && rules
-                .iter()
-                .rev()
-                .find(|(rule, _)| rule.is_match(path))
-                .is_some_and(|(_, keep)| *keep)
     };
     let (mut copied, mut bytes) = (0usize, 0u64);
     let matched = (ignored.iter())
         .map(|path| path.trim_end_matches('/'))
-        .filter(|path| carried(path));
+        .filter(|path| set.is_match(path));
     for path in matched {
         if copied >= INCLUDE_FILES_MAX {
             rows.push(yi_tools::cut_row(
@@ -421,4 +394,22 @@ pub fn carry_includes(
         rows.push(format!("carried {copied} ignored files into the child"));
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matcher;
+
+    /// Dies with a matcher that reads `!keep.txt` as a file name: the exclusion matched nothing,
+    /// no row said so, and a file the person meant to leave behind was never mentioned.
+    #[test]
+    fn a_negated_include_pattern_is_named_not_matched() {
+        let mut rows = Vec::new();
+        let set = matcher(&["!keep.txt".to_owned()], &mut rows);
+        assert!(
+            rows.iter().any(|row| row.contains("is a negation")),
+            "{rows:?}"
+        );
+        assert!(!set.is_some_and(|set| set.is_match("keep.txt")));
+    }
 }

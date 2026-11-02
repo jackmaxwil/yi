@@ -484,7 +484,6 @@ impl Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     /// Dies with an index entry naming a path out of the tree: the admin dir that holds the index is
     /// contained-writable, so `..` or an absolute path would point host code at another tree.
     #[test]
@@ -534,6 +533,45 @@ mod tests {
         assert!(
             verdict.is_err(),
             "stale listing HEAD authorized removing new work"
+        );
+        Ok(())
+    }
+
+    /// Dies with a populated submodule counted dirty wherever no sandbox profile exists: the read
+    /// falls back to the lane's own runner, one directory down, and must still see work inside it.
+    #[test]
+    fn a_submodule_read_with_no_profile_sees_the_work_inside_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let until = || Some(std::time::Instant::now() + LIST_BUDGET);
+        let root = std::env::temp_dir().join(format!("yi-submodule-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (tree, sub) = (root.join("tree"), root.join("tree/sub"));
+        std::fs::create_dir_all(&sub)?;
+        for (dir, args) in [
+            (&tree, &["init", "-q", "-b", "main"][..]),
+            (&sub, &["init", "-q", "-b", "main"][..]),
+        ] {
+            git(dir, args)?;
+            git(dir, &["config", "user.email", "lanes@test"])?;
+            git(dir, &["config", "user.name", "lanes"])?;
+        }
+        std::fs::write(sub.join("file.txt"), "one\n")?;
+        git(&sub, &["add", "."])?;
+        git(&sub, &["commit", "-qm", "first"])?;
+
+        assert!(
+            submodule_is_clean(&tree, &tree.join("sub"), until(), None),
+            "clean reads clean"
+        );
+        assert!(
+            !submodule_is_clean(&tree, &tree.join("no-such-link"), until(), None),
+            "no .git is never clean"
+        );
+        git(&sub, &["config", "status.showUntrackedFiles", "no"])?;
+        std::fs::write(sub.join("new.txt"), "work\n")?;
+        assert!(
+            !submodule_is_clean(&tree, &tree.join("sub"), until(), None),
+            "a config cannot hide work"
         );
         Ok(())
     }

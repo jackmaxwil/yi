@@ -379,11 +379,6 @@ impl SubagentHost {
         self.checker.get().cloned().unwrap_or_default()
     }
 
-    /// A harness's check environment, installed once: a session's hooks and wall, or a test's.
-    pub fn set_checker(&self, checker: crate::goal::Checker) {
-        let _first_wins = self.checker.set(checker);
-    }
-
     /// Incident: a wait on an empty family exempted a repeated failing call from the breaker.
     pub(crate) fn waited_on(&self, live: bool) {
         if live || self.busy() {

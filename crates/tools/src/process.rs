@@ -39,10 +39,17 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
         reason = "process spawns live in yi-tools; every spawn routes through run_captured via this constructor"
     )]
     let mut process = Command::new(program);
-    if let Some(path) = crate::plugin::home().and_then(|home| crate::plugin::search_path(&home)) {
-        process.env("PATH", path);
+    if let Some(home) = crate::plugin::home() {
+        plugin_env(&mut process, &home);
     }
     process
+}
+
+fn plugin_env(process: &mut Command, home: &std::path::Path) {
+    if let Some(path) = crate::plugin::search_path(home) {
+        process.env("PATH", path);
+    }
+    process.envs(crate::plugin::browser_env(home));
 }
 
 /// [`command`] for a command the model wrote, whose output it reads: yi's provider keys never
@@ -55,21 +62,25 @@ pub fn keyless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     process
 }
 
-/// No copy of a host program outside the trees a contained process can write.
+/// Why a host program does not run.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("no `{program}` on PATH outside the trees a contained process can write")]
-pub struct HostProgramMissing {
-    program: String,
+#[non_exhaustive]
+pub enum HostRefused {
+    #[error("no `{program}` on PATH outside the trees a contained process can write")]
+    Missing { program: String },
+    #[error(transparent)]
+    Sealed(#[from] crate::sandbox::SealBroken),
 }
 
 /// A program Yi itself runs on the host, by absolute path. Incident: bare names resolved through
 /// PATH, so a tree's `bin` on it (direnv, an activated venv) ran a contained write on the host.
-pub fn host_command(program: &str, cwd: &Path) -> Result<Command, HostProgramMissing> {
-    let resolved = host_program(program, cwd).ok_or_else(|| HostProgramMissing {
+pub fn host_command(program: &str, cwd: &Path) -> Result<Command, HostRefused> {
+    let resolved = host_program(program, cwd).ok_or_else(|| HostRefused::Missing {
         program: program.to_owned(),
     })?;
     let mut process = keyless_command(resolved);
     if program == "git" {
+        crate::sandbox::verify_seal()?;
         host_git_config(&mut process);
     }
     Ok(process)
@@ -558,6 +569,26 @@ mod tests {
     use std::time::Instant;
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
+
+    /// A spawn missing these runs the daemon with no box: its Chrome could read every file.
+    #[test]
+    fn a_spawn_gives_the_browser_daemon_its_boxed_config() -> Fallible {
+        let home = std::env::temp_dir().join(format!("yi-plugin-env-{}", std::process::id()));
+        let plugin = crate::plugin::Plugin::named(crate::plugin::BROWSER).ok_or("no row")?;
+        std::fs::create_dir_all(plugin.dir(&home))?;
+        for file in [crate::plugin::BROWSER, "config.json", "chrome-box"] {
+            std::fs::write(plugin.dir(&home).join(file), "#!/bin/sh\n")?;
+        }
+        let mut process = command("/usr/bin/true");
+        plugin_env(&mut process, &home);
+        let config = (process.get_envs())
+            .find(|(name, _)| *name == "AGENT_BROWSER_CONFIG")
+            .and_then(|(_, value)| value);
+        let wanted = plugin.dir(&home).join("config.json");
+        assert_eq!(config, Some(wanted.as_os_str()));
+        std::fs::remove_dir_all(&home)?;
+        Ok(())
+    }
 
     #[test]
     fn an_uncut_stream_is_decoded_whole() {

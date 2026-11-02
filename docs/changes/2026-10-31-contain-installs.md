@@ -1,4 +1,6 @@
 ---
+version: 0.873.0
+decisions: D529
 issue: Closes #1932
 decision: a package install into the tree runs contained and unasked in auto; a global one, a publish and brew or gem still ask and leave | every install asked or failed now that the proxy gives them a network | restore the classify and host_need arms
 raise: tests +57, comments +5, crate kernel +1, crate permission +37, crate runtime +8
