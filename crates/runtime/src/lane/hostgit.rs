@@ -44,7 +44,7 @@ pub(crate) fn capture_named(
     sandbox: Option<&yi_tools::Sandbox>,
 ) -> Result<yi_tools::CommandCapture, String> {
     let capture =
-        run(cwd, program, args, deadline, cap).map_err(|error| format!("{label}: {error}"))?;
+        run(cwd, program, args, &[], deadline, cap).map_err(|error| format!("{label}: {error}"))?;
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }
@@ -62,17 +62,48 @@ fn run(
     cwd: &Path,
     program: &str,
     args: &[&str],
+    envs: &[(&str, &str)],
     deadline: std::time::Duration,
     cap: usize,
 ) -> Result<yi_tools::CommandCapture, String> {
     let _span = yi_types::trace::span("lane.capture").arg("program", program);
     let mut command = yi_tools::host_command(program, cwd).map_err(|error| error.to_string())?;
-    command.current_dir(cwd).args(args);
+    command
+        .current_dir(cwd)
+        .args(args)
+        .envs(envs.iter().copied());
     let deadline = std::time::Instant::now()
         .checked_add(deadline)
         .unwrap_or_else(std::time::Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
     yi_tools::run_captured(command, None, &cancelled, cap)
+}
+
+/// A git run against a temporary index: a snapshot commits what the tree holds without writing the
+/// index a person is using.
+pub(crate) fn git_indexed(cwd: &Path, index: &Path, args: &[&str]) -> Result<String, LaneError> {
+    let index = index.to_string_lossy().into_owned();
+    let capture = run(
+        cwd,
+        "git",
+        args,
+        &[("GIT_INDEX_FILE", &index)],
+        std::time::Duration::from_millis(GIT_TIMEOUT_MS),
+        super::PLUMBING_CAP,
+    )
+    .map_err(|output| LaneError::Git {
+        args: (args.iter()).map(|arg| (*arg).to_owned()).collect(),
+        exit_code: None,
+        output,
+    })?;
+    if capture.exit_code == Some(0) {
+        return Ok(capture.stdout);
+    }
+    Err(LaneError::Git {
+        args: (args.iter()).map(|arg| (*arg).to_owned()).collect(),
+        exit_code: capture.exit_code,
+        output: format!("{}{}", capture.stdout, capture.stderr),
+    })
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
@@ -113,6 +144,7 @@ pub(crate) fn git_capture(
         cwd,
         "git",
         args,
+        &[],
         until.saturating_duration_since(Instant::now()),
         cap,
     )

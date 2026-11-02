@@ -2,7 +2,6 @@
 //! outlives a check, scrubbed to cargo's bookkeeping so no borrower reads another's files.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -96,24 +95,7 @@ pub fn snapshot(tree: &Path) -> Result<Sha, LaneError> {
     )?;
     let (index, copy) = (PathBuf::from(index.trim()), temp_index(tree));
     let copied = std::fs::copy(&index, &copy);
-    let run = |args: &[&str]| -> Result<String, LaneError> {
-        let mut command = yi_tools::host_command("git", tree)
-            .map_err(|error| LaneError::Forge(error.to_string()))?;
-        command
-            .current_dir(tree)
-            .env("GIT_INDEX_FILE", &copy)
-            .args(args);
-        let never: yi_tools::CancelFlag = Arc::new(|| false);
-        let capture = yi_tools::run_captured(command, None, &never, super::PLUMBING_CAP)
-            .map_err(LaneError::Forge)?;
-        match capture.exit_code {
-            Some(0) => Ok(capture.stdout),
-            _ => Err(LaneError::Forge(format!(
-                "git {args:?}: {}",
-                capture.stderr
-            ))),
-        }
-    };
+    let run = |args: &[&str]| super::hostgit::git_indexed(tree, &copy, args);
     let result = copied
         .map_err(|error| LaneError::Forge(error.to_string()))
         .and_then(|_| {
