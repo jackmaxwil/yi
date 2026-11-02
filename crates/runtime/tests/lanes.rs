@@ -3236,28 +3236,25 @@ fn checked_merge(
 }
 
 /// Dies with the hand-back back on `prepare`: a slot and a checkout per merge, at 128 children the
-/// wait this exists to remove. A git too old for merge-tree proves the hand-back on the old road.
+/// wait this exists to remove. A git too old for merge-tree is proved on the road it must take.
 #[tokio::test]
 async fn a_hand_back_merges_in_the_object_store_with_no_staging_lane() -> TestResult {
     let rig = Rig::new("merge-tree-road")?;
     let version = git(&rig.repo, &["--version"])?;
     let native = yi_runtime::lane::stage::native_road(Some(&version));
-    let log = rig.root.join("git-log");
-    shim_git(&rig, &format!("echo \"$*\" >> '{}'", log.display()))?;
     let family = writer(&rig, "echo x > draft.txt").await?;
     assert!(family.reaches("writer", "finished").await);
     let reply = family.host.merge_worktree("writer", None)?;
     assert_eq!(reply["merged"], true, "{reply:?}");
-    let ran = std::fs::read_to_string(&log)?;
     assert_eq!(
-        ran.contains("merge-tree --write-tree"),
-        native,
-        "this host's git is {version}, so the merge-tree road must be the one that ran: {ran}"
+        git(&rig.repo, &["show", "HEAD:draft.txt"])?,
+        "x",
+        "{reply:?}"
     );
     assert_eq!(
-        !ran.lines().any(|line| line.contains(" merge --no-ff")),
-        native,
-        "this host's git is {version}: {ran}"
+        rig.home.join(".yi/lanes").exists(),
+        !native,
+        "this host's git is {version}, so only a road that checks out a tree claims a lane"
     );
     Ok(())
 }
