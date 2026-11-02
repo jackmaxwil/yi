@@ -306,6 +306,11 @@ pub fn grants(call: &crate::ToolCall<'_>, context: &crate::CatastrophicContext) 
             label: format!("`{scope}` in this tree"),
         }];
     }
+    // Invariant: a desktop command with no app to scope to gets no standing yes, not even exact:
+    // `press cmd+q` means something else in whichever app is in front next time.
+    if call.command.is_some_and(crate::desktop::drives) {
+        return Vec::new();
+    }
     vec![exact_call(call)]
 }
 

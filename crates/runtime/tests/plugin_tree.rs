@@ -206,3 +206,27 @@ fn every_chrome_asset_names_the_pinned_version_s_headless_shell() -> TestResult 
     assert_eq!(targets, ["linux64", "mac-arm64", "mac-x64"]);
     Ok(())
 }
+
+/// A host plugin is the program the model's bash runs by name, so an installed one must reach the
+/// child's PATH; a row on disk that nothing puts on PATH is a plugin the model cannot call.
+#[test]
+fn an_installed_host_plugin_is_on_the_child_path() -> TestResult {
+    let scratch = Scratch::new("plugin-host")?;
+    let home = scratch.home()?;
+    let desktop = Plugin::named("agent-desktop").ok_or("no agent-desktop row")?;
+    assert_eq!(desktop.shape, Shape::Host);
+    assert_eq!(
+        yi_tools::plugin::search_path(&home),
+        None,
+        "a fresh home has no program on PATH"
+    );
+    let program = desktop.program(&home).ok_or("no program path")?;
+    std::fs::create_dir_all(program.parent().ok_or("no parent")?)?;
+    std::fs::write(&program, PROGRAM)?;
+    let path = yi_tools::plugin::search_path(&home).ok_or("a host plugin is not on PATH")?;
+    let first = std::env::split_paths(&path)
+        .next()
+        .ok_or("no first entry")?;
+    assert_eq!(first, desktop.dir(&home));
+    Ok(())
+}
