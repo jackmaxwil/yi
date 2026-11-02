@@ -129,7 +129,7 @@ fn lease_env(lease: Option<&crate::egress::Lease>) -> impl Iterator<Item = (Stri
 }
 
 impl Checker {
-    pub(crate) fn new(
+    pub fn new(
         hooks: Option<Arc<crate::claude_hooks::Hooks>>,
         broker: Option<Arc<crate::permission::PermissionBroker>>,
         wall: crate::wall::Wall,

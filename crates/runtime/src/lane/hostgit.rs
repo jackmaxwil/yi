@@ -32,8 +32,8 @@ pub(crate) fn capture(
     .map(|capture| capture.stdout)
 }
 
-/// Incident: the lane sync ran under the sandbox wrapper and its refusal quoted the wrapper's
-/// whole argv, 17 KB of profile before the one line saying why; `label` is what the caller meant.
+/// The one spawn a host git gets: the door's `Command`, its cwd and args, the caller's deadline and
+/// the cap. Incident: a sandboxed refusal quoted 17 KB of wrapper argv before the line saying why.
 pub(crate) fn capture_named(
     cwd: &Path,
     label: &str,
@@ -43,16 +43,8 @@ pub(crate) fn capture_named(
     cap: usize,
     sandbox: Option<&yi_tools::Sandbox>,
 ) -> Result<yi_tools::CommandCapture, String> {
-    let _span = yi_types::trace::span("lane.capture").arg("program", program);
-    let mut command =
-        yi_tools::host_command(program, cwd).map_err(|error| format!("{label}: {error}"))?;
-    command.current_dir(cwd).args(args);
-    let deadline = std::time::Instant::now()
-        .checked_add(deadline)
-        .unwrap_or_else(std::time::Instant::now);
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, cap)
-        .map_err(|error| format!("{label}: {error}"))?;
+    let capture =
+        run(cwd, program, args, deadline, cap).map_err(|error| format!("{label}: {error}"))?;
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }
@@ -64,6 +56,23 @@ pub(crate) fn capture_named(
         .map(|refusal| format!("\n{}\n", yi_tools::denial_hint(&refusal)))
         .unwrap_or_default();
     Err(format!("{label} failed:\n{output}{denied}"))
+}
+
+fn run(
+    cwd: &Path,
+    program: &str,
+    args: &[&str],
+    deadline: std::time::Duration,
+    cap: usize,
+) -> Result<yi_tools::CommandCapture, String> {
+    let _span = yi_types::trace::span("lane.capture").arg("program", program);
+    let mut command = yi_tools::host_command(program, cwd).map_err(|error| error.to_string())?;
+    command.current_dir(cwd).args(args);
+    let deadline = std::time::Instant::now()
+        .checked_add(deadline)
+        .unwrap_or_else(std::time::Instant::now);
+    let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
+    yi_tools::run_captured(command, None, &cancelled, cap)
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
@@ -94,26 +103,24 @@ pub(crate) fn git_capture(
     deadline: Option<Instant>,
     cap: usize,
 ) -> Result<yi_tools::CommandCapture, LaneError> {
-    let _span = yi_types::trace::span("lane.git").arg("args", args.join(" "));
     past(deadline)?;
     let owned: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-    let mut command = yi_tools::host_command("git", cwd).map_err(|error| LaneError::Git {
-        args: owned.clone(),
-        exit_code: None,
-        output: error.to_string(),
-    })?;
-    command.current_dir(cwd).args(args);
     let own = Instant::now()
         .checked_add(Duration::from_millis(GIT_TIMEOUT_MS))
         .unwrap_or_else(Instant::now);
     let until = deadline.map_or(own, |at| own.min(at));
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= until);
-    let capture =
-        yi_tools::run_captured(command, None, &cancelled, cap).map_err(|error| LaneError::Git {
-            args: owned.clone(),
-            exit_code: None,
-            output: error,
-        })?;
+    let capture = run(
+        cwd,
+        "git",
+        args,
+        until.saturating_duration_since(Instant::now()),
+        cap,
+    )
+    .map_err(|output| LaneError::Git {
+        args: owned.clone(),
+        exit_code: None,
+        output,
+    })?;
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }

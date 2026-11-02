@@ -1,12 +1,11 @@
 //! Pooled git worktrees a session works in, and the hand-back ladder out of them.
 //! A root session never edits the trunk checkout; it claims a slot.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use yi_types::lane::SlotState;
 
-use reap::Uncommitted;
+use reap::{Uncommitted, Wiped};
 
 pub(crate) use hostgit::{PLUMBING_CAP, capture, capture_named, git, git_capture};
 
@@ -150,7 +149,7 @@ const HEAD_MAX_BYTES: u64 = 256;
 fn read_bounded(path: &Path) -> Result<String, LaneError> {
     use std::io::Read;
     let mut text = String::new();
-    File::open(path)
+    std::fs::File::open(path)
         .and_then(|file| file.take(HEAD_MAX_BYTES).read_to_string(&mut text))
         .map_err(io_error(path))?;
     Ok(text)
@@ -362,6 +361,7 @@ fn tree_state(
     status: Result<String, String>,
     base: Option<&Sha>,
     deadline: std::time::Instant,
+    home: &Path,
 ) -> TreeState {
     let Ok(status) = status else {
         return TreeState::Unread { step: "status" };
@@ -374,6 +374,10 @@ fn tree_state(
             modified = modified.saturating_add(1);
         }
     }
+    // The same count `Uncommitted` reads, through the one helper that keeps its budget and its
+    // unreadable-index default: a lane is never clean in a listing and dirty to its claim.
+    let dirty = reap::submodule_paths(0, path, Some(deadline), Some(home));
+    modified = modified.saturating_add(u32::try_from(dirty).unwrap_or(u32::MAX));
     let Some(base) = base else {
         return TreeState::Unread { step: "main" };
     };
@@ -523,13 +527,13 @@ impl Pool {
         yi_session::replace_file(&path, &bytes).map_err(io_error(&path))
     }
 
-    fn lock(&self) -> Result<File, LaneError> {
+    fn lock(&self) -> Result<std::fs::File, LaneError> {
         let path = self.dir.join("pool.lock");
         yi_session::lock_file(&path).map_err(io_error(&path))
     }
 
     /// Invariant: held while a live process holds the `.held` flock; named under a free one is an orphan.
-    fn probe(&self, slot: SlotIndex) -> Result<(File, Option<String>), LaneError> {
+    fn probe(&self, slot: SlotIndex) -> Result<(std::fs::File, Option<String>), LaneError> {
         let path = self.held_path(slot);
         match yi_session::try_lock_file(&path).map_err(io_error(&path))? {
             Ok(file) => Ok((file, None)),
@@ -566,7 +570,7 @@ impl Pool {
                 let branch = head(&path).ok().and_then(|head| head.branch().cloned());
                 Holder {
                     session,
-                    tree: tree_state(&path, status, base.as_ref(), deadline),
+                    tree: tree_state(&path, status, base.as_ref(), deadline, &self.home),
                     age: branch
                         .as_ref()
                         .and_then(|branch| age_of(&path, branch, deadline)),
@@ -884,7 +888,7 @@ pub struct Lane {
     /// The worktree lock names `session`: set by this process, so a bind to it again is a no-op.
     locked: bool,
     released: bool,
-    _held: File,
+    _held: std::fs::File,
 }
 
 /// Invariant: a dropped clean lane is handed back detached, a dirty one kept; only release warms.
@@ -954,33 +958,40 @@ impl Lane {
         Ok(())
     }
 
-    pub fn discard(self) -> Result<Uncommitted, LaneError> {
+    pub fn discard(self) -> Result<Wiped, LaneError> {
         let branch = self.branch.as_str().to_owned();
         let repo = self.pool.repo.clone();
-        let dropped = self.release_inner(false)?;
+        // Invariant: only a release warms; a discard deletes the branch a warmer would build for.
+        let wiped = self.take_slot(false)?;
         let _ = git(&repo, &["branch", "-q", "-D", &branch]);
-        Ok(dropped)
+        Ok(wiped)
     }
 
     /// A non-empty answer is the work that kept the slot as this session's orphan.
     pub fn release(self) -> Result<Uncommitted, LaneError> {
-        self.release_inner(true)
+        let mut lane = self;
+        lane.released = true;
+        let kept = Uncommitted::read(&lane.path, Some(lane.pool.home()))?;
+        if !kept.is_empty() {
+            return Ok(kept);
+        }
+        // The read above said the tree is clean, so the hand-back pays no second one.
+        let _ = lane.finish(true, Some(Wiped::default()))?;
+        Ok(Uncommitted::default())
     }
 
-    fn release_inner(mut self, quit: bool) -> Result<Uncommitted, LaneError> {
+    pub(super) fn take_slot(self, quit: bool) -> Result<Wiped, LaneError> {
+        self.finish(quit, None)
+    }
+
+    /// `wiped` is the measurement a caller already made of a tree it found clean; `None` wipes now.
+    fn finish(mut self, quit: bool, wiped: Option<Wiped>) -> Result<Wiped, LaneError> {
         self.released = true;
         let _pool = self.pool.lock()?;
-        if quit {
-            let kept = Uncommitted::read(&self.path)?;
-            if !kept.is_empty() {
-                return Ok(kept);
-            }
-        }
         self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-        let dropped = if quit {
-            Uncommitted::default()
-        } else {
-            self.pool.wipe(self.slot)?
+        let wiped = match wiped {
+            Some(wiped) => wiped,
+            None => self.pool.wipe(self.slot)?,
         };
         self.pool.clear_session(self.slot)?;
         if quit {
@@ -990,7 +1001,7 @@ impl Lane {
                 Err(error) => return Err(error),
             }
         }
-        Ok(dropped)
+        Ok(wiped)
     }
 
     pub fn sync(&self) -> Result<Option<String>, LaneError> {

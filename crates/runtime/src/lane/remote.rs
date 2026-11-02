@@ -83,29 +83,26 @@ impl GitLane {
         if let Some(lane) = lane {
             return lane.assign.clone();
         }
-        // Once a tree: a kernel asks per cell, and a changed answer would restart it.
+        // Only a found remote is kept: a kernel restarts when its block changes, and a remote
+        // added later must close the transport on the next call, not on the next process.
         let mut memo = NO_LANE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let memo = memo.get_or_insert_with(HashMap::new);
-        (memo.entry(cwd.to_path_buf()).or_insert_with(|| {
-            let remote = git(cwd, &["remote"]).map_or(true, |list| !list.trim().is_empty());
-            if !remote {
-                return Vec::new();
-            }
-            [
-                "GIT_CONFIG_COUNT=3",
-                "GIT_CONFIG_KEY_0=maintenance.auto",
-                "GIT_CONFIG_VALUE_0=false",
-                "GIT_CONFIG_KEY_1=protocol.allow",
-                "GIT_CONFIG_VALUE_1=never",
-                "GIT_CONFIG_KEY_2=protocol.file.allow",
-                "GIT_CONFIG_VALUE_2=always",
-            ]
-            .map(str::to_owned)
-            .to_vec()
-        }))
-        .clone()
+        if let Some(block) = memo.get(cwd) {
+            return block.clone();
+        }
+        let remote = git(cwd, &["remote"]).map_or(true, |list| !list.trim().is_empty());
+        if !remote {
+            return Vec::new();
+        }
+        let block = config_env(&[
+            ("maintenance.auto".to_owned(), "false".to_owned()),
+            ("protocol.allow".to_owned(), "never".to_owned()),
+            ("protocol.file.allow".to_owned(), "always".to_owned()),
+        ]);
+        memo.insert(cwd.to_path_buf(), block.clone());
+        block
     }
 
     /// One repository's lane, its pushes cut at `forward_timeout`.
@@ -142,14 +139,7 @@ impl GitLane {
             Some(pushurl) => (format!("url.{}.insteadOf", outbox.display()), pushurl),
             None => (format!("url.{}.pushInsteadOf", outbox.display()), url),
         });
-        let assign = std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
-            .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
-                [
-                    format!("GIT_CONFIG_KEY_{at}={key}"),
-                    format!("GIT_CONFIG_VALUE_{at}={value}"),
-                ]
-            }))
-            .collect();
+        let assign = config_env(&rules);
         let lane = Self {
             pool,
             mirror,
@@ -398,6 +388,17 @@ fn init_store(repo: &Path, store: &Path, objects: &Path) -> Result<(), LaneError
     write_alternates(store, objects)
 }
 
+fn config_env(rules: &[(String, String)]) -> Vec<String> {
+    std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
+        .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
+            [
+                format!("GIT_CONFIG_KEY_{at}={key}"),
+                format!("GIT_CONFIG_VALUE_{at}={value}"),
+            ]
+        }))
+        .collect()
+}
+
 fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
     let io = |error| super::io_error(store)(error);
     std::fs::create_dir_all(store.join("objects/info")).map_err(io)?;
@@ -408,7 +409,9 @@ fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
 /// Invariant: a word of the command is `git` and another is the remote read, so a file named
 /// `fetch.log` or a `grep pull` pays for no fetch it never asked for.
 fn reads_a_remote(command: &str) -> bool {
-    let words: Vec<&str> = command.split_whitespace().collect();
+    let words: Vec<&str> = command
+        .split(|c: char| c.is_whitespace() || ";&|()<>!".contains(c))
+        .collect();
     let git = words
         .iter()
         .any(|word| *word == "git" || word.ends_with("/git"));
@@ -439,6 +442,12 @@ mod tests {
         )
         .map_err(|error| error.to_string())?;
         assert_eq!(GitLane::assign_for(None, &bare), Vec::<String>::new());
+        git(
+            &bare,
+            &["remote", "add", "later", "https://example.invalid/r"],
+        )
+        .map_err(|error| error.to_string())?;
+        assert!(!GitLane::assign_for(None, &bare).is_empty());
         let assign = GitLane::assign_for(None, &forked);
         assert!(
             assign.contains(&"GIT_CONFIG_VALUE_1=never".to_owned()),
@@ -460,5 +469,13 @@ mod tests {
             "grep -n pull crates/runtime/src/lane/mod.rs"
         ));
         assert!(!super::reads_a_remote("tail -20 git fetch.log"));
+        for punctuated in [
+            "git fetch; git log",
+            "(git fetch)",
+            "!git fetch",
+            "git fetch>log",
+        ] {
+            assert!(super::reads_a_remote(punctuated), "{punctuated}");
+        }
     }
 }

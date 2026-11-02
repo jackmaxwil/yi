@@ -75,6 +75,18 @@ fn result_text(result: &yi_types::event::ToolResult) -> String {
     yi_types::message::join_text(&result.content, "\n")
 }
 
+/// The source a bash call's text came from when it is not Yi's own: a command that runs the desktop
+/// or browser program, or the shell tool's own mark on a background job that one started.
+fn external_source<'a>(command: &str, details: &'a Value) -> Option<std::borrow::Cow<'a, str>> {
+    if let Some(source) = yi_permission::source(command) {
+        return Some(std::borrow::Cow::Borrowed(source));
+    }
+    details
+        .get("externalSource")
+        .and_then(Value::as_str)
+        .map(std::borrow::Cow::Borrowed)
+}
+
 /// The predicates that hold after this call; the needles are the states the old
 /// producers branched on, and one ipython needle wins, in the order they were tried.
 fn facts_of(tool: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
@@ -509,6 +521,7 @@ impl ToolAdapter {
             job_owner: self.job_owner,
             program,
             fuse: yi_tools::Fuse::PROGRAM,
+            hold_opens: None,
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
@@ -792,6 +805,15 @@ impl ToolAdapter {
                         )
                         .await;
                     }
+                    if name == "bash"
+                        && let Some(source) = external_source(&command, &output.result.details)
+                    {
+                        for block in &mut output.result.content {
+                            if let yi_types::message::Content::Text { text, .. } = block {
+                                *text = crate::fetch::fence_untrusted(&source, text, None);
+                            }
+                        }
+                    }
                     let holds = facts_of(&name, &output);
                     let facts = crate::affordance::Facts {
                         holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -876,5 +898,29 @@ mod tests {
             "cd -P /home/u/.yi/other && cat ../sessions/x.jsonl"
         ));
         assert!(!refused("cd -- /home/u/.yi/other && cat notes.txt"));
+    }
+
+    /// Incident: a polled background job printed the app's words with no command for the fence to
+    /// read, so the shell tool marks the job and the fence follows the mark.
+    #[test]
+    fn a_polled_job_the_shell_tool_marked_is_fenced_as_its_source() {
+        let marked =
+            serde_json::json!({ "job": 3, "exitCode": 0, "externalSource": "agent-desktop" });
+        assert_eq!(
+            super::external_source("", &marked).as_deref(),
+            Some("agent-desktop")
+        );
+        assert_eq!(
+            super::external_source("agent-desktop status", &serde_json::json!({})).as_deref(),
+            Some("agent-desktop")
+        );
+        assert!(
+            super::external_source(
+                "ls ~/.yi/plugins/agent-desktop",
+                &serde_json::json!({ "job": 3 })
+            )
+            .is_none(),
+            "a command that merely names the program prints Yi's own listing"
+        );
     }
 }
