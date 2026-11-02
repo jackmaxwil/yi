@@ -106,7 +106,7 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
     );
 
     let own = Path::new("/home/user/.yi/kernel-connections/1-0");
-    let (program, prefix) = sandbox.kernel_prefix(own);
+    let (program, prefix) = sandbox.kernel_prefix(own, &[]);
     assert_eq!(program, "/usr/bin/sandbox-exec");
     assert!(
         prefix
@@ -793,7 +793,7 @@ fn a_contained_resolver_failure_reads_as_the_sandbox() -> TestResult {
             .map(|refusal| denial_hint(&refusal))
             .unwrap_or_default();
         assert!(
-            code != 0 && hint.contains("no network beyond 127.0.0.1 and ::1"),
+            code != 0 && hint.contains("only through its proxy on 127.0.0.1"),
             "`{command}` exited {code} with no sandbox hint: {output}"
         );
     }
@@ -1602,10 +1602,11 @@ fn a_store_at_home_or_above_it_adds_no_root() -> TestResult {
 }
 
 fn spawn_with(env: Vec<(String, String)>, rows: Vec<String>) -> yi_tools::SpawnFn {
-    Arc::new(move || {
+    Arc::new(move |_command: &str| {
         let rows = rows.clone();
         Ok(yi_tools::Spawn {
             env: env.clone(),
+            assign: Vec::new(),
             after: Box::new(move || rows),
         })
     })
@@ -1657,7 +1658,7 @@ fn a_refused_spawn_never_starts_and_says_why() -> TestResult {
     let (_root, project, home) = workspace("spawn-refused")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
     let marker = project.join("ran");
-    let refused: yi_tools::SpawnFn = Arc::new(|| {
+    let refused: yi_tools::SpawnFn = Arc::new(|_command: &str| {
         Err(yi_tools::SpawnRefused::Egress {
             why: "the egress proxy cannot listen".to_owned(),
         })
@@ -1693,6 +1694,30 @@ fn what_the_host_says_after_a_spawn_reaches_the_model() -> TestResult {
         capture.rows,
         vec!["[egress: refused a.example: test]".to_owned()]
     );
+    Ok(())
+}
+
+/// Dies with the generic `' not allowed` needle: a compiler echoing a phrase must not read as
+/// git's transport refusal, and git's own refusal must still classify and ask.
+#[test]
+fn only_gits_transport_refusal_is_a_network_denial() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let transport = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(128),
+        "fatal: transport 'https' not allowed\n",
+        "git fetch origin",
+    );
+    assert!(transport.is_some(), "git's transport refusal must classify");
+    let unrelated = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "ValueError: 'None' not allowed as a mode\n",
+        "python3 check.py",
+    );
+    assert_eq!(unrelated, None, "{unrelated:?}");
     Ok(())
 }
 

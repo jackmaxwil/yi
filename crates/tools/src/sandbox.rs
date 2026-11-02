@@ -272,16 +272,17 @@ impl Sandbox {
 
     /// The kernel's prefix: its profile plus read and write of `connection_dir`, which every
     /// other profile hides under the connection root (#599).
-    pub fn kernel_prefix(&self, connection_dir: &Path) -> (String, Vec<String>) {
+    pub fn kernel_prefix(&self, connection_dir: &Path, assign: &[String]) -> (String, Vec<String>) {
         (
             SEATBELT.to_owned(),
-            self.seatbelt_args(Some(connection_dir), true),
+            self.seatbelt_args(Some(connection_dir), true, assign),
         )
     }
 
-    fn seatbelt_args(&self, own: Option<&Path>, network: bool) -> Vec<String> {
+    fn seatbelt_args(&self, own: Option<&Path>, network: bool, assign: &[String]) -> Vec<String> {
         let mut wrapped = self.bound_policy(own, network, "");
         wrapped.extend(scrubbed_env());
+        wrapped.extend_from_slice(assign);
         wrapped
     }
 
@@ -444,18 +445,34 @@ impl Sandbox {
 
     /// `sandbox-exec -p <policy> -DKEY=value ... -- <program> <args>`.
     pub fn wrap(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
-        self.wrap_with(true, program, args)
+        self.wrap_with(true, &[], program, args)
+    }
+
+    /// [`Self::wrap`] with `assign` on `env`'s argv past the scrub, later than its own settings.
+    pub fn wrap_assigning(
+        &self,
+        assign: &[String],
+        program: &str,
+        args: &[&str],
+    ) -> (String, Vec<String>) {
+        self.wrap_with(true, assign, program, args)
     }
 
     /// [`Self::wrap`] with no network at all, loopback included: the document converter parses
     /// untrusted files and needs none.
     pub fn wrap_offline(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
-        self.wrap_with(false, program, args)
+        self.wrap_with(false, &[], program, args)
     }
 
-    fn wrap_with(&self, network: bool, program: &str, args: &[&str]) -> (String, Vec<String>) {
+    fn wrap_with(
+        &self,
+        network: bool,
+        assign: &[String],
+        program: &str,
+        args: &[&str],
+    ) -> (String, Vec<String>) {
         let _span = yi_types::trace::span("sandbox.wrap");
-        let mut wrapped = self.seatbelt_args(None, network);
+        let mut wrapped = self.seatbelt_args(None, network, assign);
         wrapped.push(program.to_owned());
         wrapped.extend(args.iter().map(|arg| (*arg).to_owned()));
         (SEATBELT.to_owned(), wrapped)
@@ -717,9 +734,11 @@ fn refused_path(
         .find(|path| sandbox.denies_write(path))
 }
 
-const NETWORK_DENIALS: [&str; 3] = [
+const NETWORK_DENIALS: [&str; 4] = [
     // curl, git and cargo: `Could not resolve host`, `Couldn't resolve host name`.
     "resolve host",
+    // git under the transport block a repository with no lane gets.
+    "transport '",
     // getaddrinfo's EAI_NONAME, as Python and ssh print it.
     "nodename nor servname",
     // `ping` to a host past loopback, which exits 2.
@@ -816,7 +835,7 @@ pub fn nested_sandbox_note(output: &str) -> Option<String> {
     ))
 }
 
-const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and has no network beyond 127.0.0.1 and ::1 (a dual-stack socket's `::ffff:127.0.0.1` is refused)";
+const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and reaches the network only through its proxy on 127.0.0.1 (a dual-stack socket's `::ffff:127.0.0.1` is refused)";
 
 /// The note under a kernel cell the sandbox refused, read off its streams and traceback (a
 /// `bash()` job's output too); the kernel has no retry outside, so it promises no question.

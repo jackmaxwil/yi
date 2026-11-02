@@ -619,7 +619,8 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   bash read belt judges a store argument by identity, a directory above one and a glob that reaches
   one; no unix socket (#599), and the only network is loopback, where a per-spawn CONNECT proxy
   decides by host name: the seed, `sandbox.egress`, a kept grant, then a person (#601). Package caches
-  are writable, never `.cargo/bin` or a config. Without it, `Contain`
+  are writable, never `.cargo/bin` or a config. A lane's git reaches origin through a host-run mirror and an
+  outbox the host forwards; trunk, `main`, `master` and a tag ask a person (#1933). Without it, `Contain`
   becomes a reviewable `Ask`.
 - With a classifier and an OpenRouter key, `classifier.approval` says when Jev's `noul` answers a
   reviewable auto-mode ask: `instant` (default) first, P(safe) ≥ 0.8 (0.9 if destructive) allows,

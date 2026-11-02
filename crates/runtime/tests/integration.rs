@@ -51,6 +51,7 @@ mod fetch_grep;
 mod fetch_session;
 mod gate;
 mod gate_battery;
+mod git_lane;
 mod goal_e2e;
 mod host_facts;
 mod injection_canary;

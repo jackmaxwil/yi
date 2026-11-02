@@ -547,12 +547,15 @@ fn start(
     let outer = Arc::clone(cancelled);
     let stopped = Arc::clone(&kill);
     let flag: CancelFlag = Arc::new(move || stopped.load(Ordering::SeqCst) || outer());
-    let wrapped =
-        (contained.as_ref()).map(|(sandbox, _)| sandbox.wrap(interpreter(), &["-c", &text]));
     let spawn = (contained.as_ref().and_then(|(_, spawn)| *spawn))
-        .map(|spawn| spawn())
+        .map(|spawn| spawn(shell_command))
         .transpose()
         .map_err(|refused| refused.to_string())?;
+    let assign = spawn
+        .as_ref()
+        .map_or(&[][..], |spawn| spawn.assign.as_slice());
+    let wrapped = (contained.as_ref())
+        .map(|(sandbox, _)| sandbox.wrap_assigning(assign, interpreter(), &["-c", &text]));
     let mut process = match &wrapped {
         Some((program, args)) => {
             let mut process = crate::keyless_command(program);

@@ -113,6 +113,33 @@ environment; a contained process can send data out through a seeded host with it
 writable `~/.cargo/registry` lets a contained process plant a `build.rs` your next terminal build
 runs. The last is the price of installs that work, and the decision that lands this says so.
 
+## Trust boundaries of the git lane
+
+A contained git reaches origin through two stores. Reads come from a mirror the host refreshes,
+outside every writable root. Pushes land in an outbox under the tree's admin dir, which the host
+empties after the spawn and forwards from the repository. A contained process writes the outbox,
+so it is hostile data and git never runs in it. Tests are in `crates/runtime/tests/git_lane.rs`.
+
+| boundary | what crosses | assume | instance | control | test |
+|---|---|---|---|---|---|
+| outbox → host | names and bytes under `refs/` | hostile, chosen by a contained process | T: a link at `yi-outbox`, `refs` or `refs/heads` steers a host unlink at a project's refs | a descriptor walk from the admin dir, `NOFOLLOW` on every component, `unlinkat` through the held parent | `a_planted_link_steers_no_unlink`, `an_outbox_or_its_refs_as_a_link_steers_no_unlink` |
+| | | | T: a link or hard link in the store makes the next start write where a process chose | laid out by descriptor; each file unlinked, then created exclusively | `starting_a_lane_writes_through_nothing_a_process_planted` |
+| | | | D: a FIFO, a deep tree, thousands of refs | `NONBLOCK`, depth 8, `outbox.names` and `outbox.refs` with a row each | `a_fifo_and_a_link_at_a_ref_hang_nothing_and_go`, `the_name_cap_holds_at_its_limit_and_says_so_one_past`, `the_ref_cap_holds_at_its_limit_and_says_so_one_past` |
+| | | | D: a kernel cell's push or a held main stalls a current-thread front end | the sweep runs off the executor | `a_held_main_leaves_the_executor_free_for_the_answer` |
+| | | | E: a ref at a commit the project never had, a hostile `config` | the commit must exist in the project's store; host git only ever runs in the repository | `a_sha_outside_the_project_store_is_not_pushed`, `no_config_the_outbox_or_the_tree_holds_runs_on_the_host` |
+| host → origin | a push the model asked for | a push may land and still time out | R: a timed-out push read as failed | `Forward::Unknown` never retries, and its row says to compare | `a_push_past_its_deadline_reads_unknown_never_failed` |
+| | | | E: a contained process lands on trunk or a tag | trunk, `main`, `master` and every tag ask a person with a diffstat; headless refuses | `main_asks_and_a_refusal_leaves_origin_where_it_was`, `a_contained_push_to_main_waits_for_a_person` |
+| origin → model | the remote's text on a rejection | hostile network text | I, T: an instruction or a token in a row | redacted, fenced, cut with a row | `a_rejection_is_fenced_and_stripped` |
+| config → argv | the origin URL in a rewrite rule | a URL may embed a credential | I: a credential on `env`'s argv | such a repository has no lane and asks as before | `a_credentialed_origin_has_no_lane_and_never_reaches_an_argument` |
+
+Spoofing has no instance beyond the proxy's: a process that writes a ref by hand has only the
+authority a `git push` would. Residual, stated: a script that fetches reads what the last refresh
+saw, since only a command's own text triggers one; the transport block for a repository with no
+lane stops an honest git and not a hostile one, because `git -c protocol.https.allow=always` or
+`env -u GIT_CONFIG_COUNT` undoes it; a `--here` session in a main checkout keeps
+`packed-refs` writable, so its guard on main is the name alone; and a contained process's `HEAD`
+can take an unchecked-out branch other than trunk, and push it as any branch.
+
 ## Trust boundaries of the plan journal (D193)
 
 The plan store (§13) takes inputs it does not produce: a child's kernel calling `plan.op`, a

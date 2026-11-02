@@ -199,12 +199,11 @@ pointer names where. A number that was in the cut part is not a number
 you have. Read the pointer before citing anything past the cut.
 
 Outside yolo mode every command runs contained where a sandbox exists.
-It leaves only when it needs the network, an install or a credential
+It leaves only when it needs git's network, a global install or a credential
 store, when its question said so, or when an "always" passed that exact
-command after a refusal naming no path, and each says so. Contained: no
-network beyond loopback, no unix socket, writes only under the working
-tree, its git directories, and tmp. A test that binds a unix socket or
-reaches past loopback fails there for that reason. The
+command after a refusal naming no path, and each says so. Contained: network
+only through a proxy, no unix socket, writes only under the working tree, its
+git directories, and tmp. A test that binds a unix socket fails there. The
 failure is about where you ran it; the repository's CI is where the
 answer lives.
 

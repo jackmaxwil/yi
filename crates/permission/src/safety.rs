@@ -364,6 +364,8 @@ fn git_class(argv: &[String]) -> Class {
                 || given(argv, "-f")
                 || has("--delete")
                 || has("--prune")
+                // `+x` forces and `:x` deletes, neither of which the outbox can carry.
+                || argv.iter().skip(1).any(|word| word.starts_with(['+', ':']))
         }
         "branch" | "tag" => given(argv, "-D") || given(argv, "-d") || has("--delete"),
         "stash" => matches!(
@@ -399,7 +401,7 @@ fn git_class(argv: &[String]) -> Class {
 /// runs `uploadpack` from `-c` on the host, which a proof must never send out unasked.
 fn git_network(argv: &[String]) -> bool {
     match git_subcommand(argv) {
-        Some("clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule") => true,
+        Some("submodule") => true,
         Some("remote") => (argv.iter())
             .skip_while(|token| *token != "remote")
             .skip(1)
@@ -414,6 +416,27 @@ fn subcommand_after<'a>(argv: &'a [String], after: &str) -> Option<&'a str> {
     argv.get(index.saturating_add(1))
         .map(String::as_str)
         .filter(|token| !token.starts_with('-'))
+}
+
+/// Flags that move an install out of the tree and the package caches, where the sandbox would
+/// refuse it after the download; `--location=global` is npm's long spelling of `-g`.
+const OUTSIDE_THE_TREE: [&str; 7] = [
+    "-g",
+    "--global",
+    "--location=global",
+    "--user",
+    "--target",
+    "--prefix",
+    "--root",
+];
+
+fn installs_outside(argv: &[String]) -> bool {
+    argv.iter().any(|token| {
+        let flag = token
+            .split_once('=')
+            .map_or(token.as_str(), |(flag, _)| flag);
+        OUTSIDE_THE_TREE.contains(&token.as_str()) || OUTSIDE_THE_TREE.contains(&flag)
+    })
 }
 
 fn cargo_class(argv: &[String]) -> Class {
@@ -518,7 +541,14 @@ pub fn classify(argv: &[String]) -> Class {
         }
         "uniq" if argv.len() > flags(argv).len().saturating_add(2) => Class::Unknown,
         "grep" | "awk" => Class::Safe,
-        "npm" | "pnpm" | "yarn" | "pip" | "pip3" | "brew" | "gem" => match subcommand(argv) {
+        "npm" | "pnpm" | "yarn" | "pip" | "pip3" => match subcommand(argv) {
+            Some("publish" | "link" | "login" | "global") => Class::Destructive,
+            Some("install" | "uninstall" | "remove" | "add") if installs_outside(argv) => {
+                Class::Destructive
+            }
+            _ => Class::Unknown,
+        },
+        "brew" | "gem" => match subcommand(argv) {
             Some("install" | "uninstall" | "remove" | "add" | "publish" | "link") => {
                 Class::Destructive
             }
@@ -891,11 +921,25 @@ pub fn host_need(argv: &[String]) -> Option<&'static str> {
     }
     let scope = scope(argv)?;
     let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
-    let git_network = name == "git" && unwrapped(argv).is_some_and(git_network);
+    // A forced push or a delete is what the outbox cannot carry, so its approval goes out.
+    let forced = |argv: &[String]| {
+        git_subcommand(argv) == Some("push") && git_class(argv) == Class::Destructive
+    };
+    let git_network =
+        name == "git" && unwrapped(argv).is_some_and(|argv| git_network(argv) || forced(argv));
     if HOST_PROGRAMS.contains(&name) || git_network {
         return Some("network");
     }
-    (name != "git" && matches!(verb, "add" | "install" | "login" | "publish")).then_some("installs")
+    // Into the tree, through the proxy, with the package caches writable: nothing to leave for.
+    let contained = matches!(verb, "add" | "install")
+        && !installs_outside(argv)
+        && matches!(
+            name,
+            "npm" | "pnpm" | "yarn" | "pip" | "pip3" | "uv" | "bun"
+        )
+        || (name == "cargo" && verb == "add");
+    (name != "git" && !contained && matches!(verb, "add" | "install" | "login" | "publish"))
+        .then_some("installs")
 }
 
 /// Options that move a command's tree or repository, and so its blast radius, elsewhere.

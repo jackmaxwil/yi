@@ -5,6 +5,7 @@ mod browser;
 mod catastrophic;
 mod decide;
 mod desktop;
+pub mod outbox;
 mod review;
 mod rules;
 mod safety;

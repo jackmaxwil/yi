@@ -939,7 +939,7 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         let project = Project {
             root: cwd.display().to_string(),
             writable,
-            protected_branches: vec!["main".to_owned()],
+            protected_branches: vec![crate::lane::hostgit::trunk(cwd).to_string()],
         };
         let approver = Approver::new(
             sidecar.clone(),

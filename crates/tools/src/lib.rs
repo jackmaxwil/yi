@@ -45,6 +45,7 @@ pub use process::{
     CommandCapture, HostProgramMissing, OUTPUT_CAP, command, edit_file, git_root, host_command,
     keyless_command, run_captured, spill_path,
 };
+pub use redact::Redactor;
 pub use reduce::{Involuntary, Reduced, VIEW_CEILING, reduce, rerun, view};
 pub use sandbox::{
     Sandbox, SandboxRefusal, denial_hint, exit_zero_note, kernel_cell_note, nested_sandbox_note,

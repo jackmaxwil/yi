@@ -278,7 +278,7 @@ fn a_kept_scope_is_not_a_session_pass() -> TestResult {
 fn a_configured_allow_does_not_carry_a_compound_out() -> TestResult {
     let rule = yi_runtime::ConfigRule::new("bash", "cargo *", yi_runtime::ConfigRuleAction::Allow)?;
     let (broker, asks) = counted(vec![rule], |_| AskOutcome::Reject);
-    let command = "cargo test && sort -o /Users/Shared/x input && cargo add serde";
+    let command = "cargo test && sort -o /Users/Shared/x input && npm publish";
     let outcome = broker.decide_call(
         "bash",
         ToolKind::Exec,
@@ -298,7 +298,7 @@ fn a_configured_allow_does_not_carry_a_compound_out() -> TestResult {
         ToolKind::Exec,
         true,
         "c2",
-        &bash_args("cargo add serde"),
+        &bash_args("npm publish"),
         None,
     );
     assert_eq!(
@@ -318,12 +318,12 @@ fn an_unparsed_command_never_leaves_unasked() -> TestResult {
     let cat = yi_runtime::ConfigRule::new("bash", "cat *", yi_runtime::ConfigRuleAction::Allow)?;
     let (broker, asks) = counted(vec![cargo, cat], |_| AskOutcome::Reject);
     let hidden = [
-        "cargo add serde\nsort -o /Users/Shared/x in",
-        "cargo add serde $(sort -o /Users/Shared/x in)",
-        "cargo add serde `sort -o /Users/Shared/x in`",
-        "cargo add \"$(sort -o /Users/Shared/x in)\"",
-        "cargo add serde <(sort -o /Users/Shared/x in)",
-        "cargo add serde &sort -o /Users/Shared/x in",
+        "cargo install serde\nsort -o /Users/Shared/x in",
+        "cargo install serde $(sort -o /Users/Shared/x in)",
+        "cargo install serde `sort -o /Users/Shared/x in`",
+        "cargo install serde \"$(sort -o /Users/Shared/x in)\"",
+        "cargo install serde <(sort -o /Users/Shared/x in)",
+        "cargo install serde &sort -o /Users/Shared/x in",
         "cat ~/.netrc\nsort -o /Users/Shared/x in",
         "cat ~/.netrc $(sort -o /Users/Shared/x in)",
     ];
@@ -355,7 +355,7 @@ fn a_headless_compound_says_to_split_it() -> TestResult {
         tokio::sync::broadcast::channel(8).0,
     )
     .with_sandbox(Some(sandbox(vec![project])));
-    let args = bash_args("cargo test && cargo add serde");
+    let args = bash_args("cargo test && npm publish");
     let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
     assert!(
         !outcome.allowed
