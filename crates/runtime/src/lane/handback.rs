@@ -1,9 +1,9 @@
 //! A kernel child's hand-back: its worktree settled, merged into the parent, and its check read.
 
-use super::fork::ChildTree;
+use super::fork::{ChildTree, SettledTree};
 use super::hostgit::git_by;
 use super::settle::*;
-use super::{BranchName, Sha};
+use super::{BranchName, Pool};
 use crate::subagent::{ChildRecord, SubagentHost};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -151,14 +151,45 @@ impl SubagentHost {
         let budget = Duration::from_millis(crate::goal::DEFAULT_CHECK_TIMEOUT_MS);
         let red = check
             .map(|check| red_check(lane.path(), check, deadline, budget, &self.checker()))
-            .transpose()?
-            .flatten();
+            .transpose();
+        let red = match red {
+            Ok(red) => red.flatten(),
+            Err(error) => {
+                self.put_back_worktree(target, lane);
+                return Err(error);
+            }
+        };
         let quiescence = quiescence_of_jobs(lane.path());
         // Invariant: a cut check spent the deadline, and the settle after it still keeps the work.
         let deadline = deadline.filter(|_| !red.as_ref().is_some_and(|(red, _)| red.cancelled));
-        let settled = lane
-            .settle(&quiescence, deadline)
-            .map_err(|(_kept, error)| error.to_string())?;
+        let settled = match lane.settle(&quiescence, deadline) {
+            Ok(settled) => settled,
+            Err((kept, error)) => {
+                self.put_back_worktree(target, *kept);
+                return Err(error.to_string());
+            }
+        };
+        let branch = settled.candidate.branch.clone();
+        self.land_settled(settled, red, check, &name, &pool, deadline)
+            .map_err(|error| match pool.branch_exists(&branch) {
+                Ok(true) if !error.contains(branch.as_str()) => format!(
+                    "{error}; the child's lane is released and its work is kept on branch {branch}"
+                ),
+                _ => error,
+            })
+    }
+
+    /// Past the settle the tree is gone and the commit is on its branch, so a failure from here on
+    /// has to say where the work went.
+    fn land_settled(
+        &self,
+        settled: SettledTree,
+        red: Option<(yi_tools::CommandCapture, String)>,
+        check: Option<&str>,
+        name: &str,
+        pool: &Pool,
+        deadline: Option<Instant>,
+    ) -> Result<Map<String, Value>, String> {
         let mut reply = settled.candidate.as_reply();
         let parent = self.options.cwd.clone();
         let files = changed_files(&parent, &settled.candidate, deadline)
@@ -184,13 +215,15 @@ impl SubagentHost {
             reply.insert("next".to_owned(), json!(next));
             return Ok(reply);
         }
-        let mut moved: Option<(Sha, Sha)> = None;
-        for _attempt in 0..2 {
+        let mut attempt = 0u8;
+        let (expected, found) = loop {
+            attempt = attempt.saturating_add(1);
             let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
             let generation = generation_of(&parent, deadline).map_err(|error| error.to_string())?;
             let session = format!("stage-{name}");
-            let prepared = prepare(
-                &pool,
+            let prepared = super::stage::merged(
+                pool,
+                &parent,
                 &session,
                 &generation,
                 &settled.candidate.commit,
@@ -253,15 +286,13 @@ impl SubagentHost {
                     );
                     return Ok(reply);
                 }
-                Publish::Moved { expected, found } => moved = Some((expected, found)),
+                Publish::Moved { expected, found } => {
+                    if attempt > 1 {
+                        break (expected, found);
+                    }
+                }
             }
-        }
-        let (expected, found) = moved.unwrap_or_else(|| {
-            (
-                settled.candidate.commit.clone(),
-                settled.candidate.commit.clone(),
-            )
-        });
+        };
         Err(format!(
             "the parent moved from {} to {} while the merge was prepared, twice; the candidate {} is retained on branch {}: merge that branch by hand, the child's lane is released",
             expected.short(),
@@ -281,9 +312,13 @@ impl SubagentHost {
             std::thread::sleep(Duration::from_millis(20));
         }
         let quiescence = quiescence_of_jobs(lane.path());
-        let settled = lane
-            .settle(&quiescence, self.deadline())
-            .map_err(|(_kept, error)| error.to_string())?;
+        let settled = match lane.settle(&quiescence, self.deadline()) {
+            Ok(settled) => settled,
+            Err((kept, error)) => {
+                self.put_back_worktree(target, *kept);
+                return Err(error.to_string());
+            }
+        };
         let candidate = settled.discard().map_err(|error| error.to_string())?;
         let mut reply = candidate.as_reply();
         reply.insert("discarded".to_owned(), Value::Bool(true));
@@ -297,6 +332,16 @@ impl SubagentHost {
         }
         reply.insert("merged".to_owned(), Value::Bool(false));
         Ok(reply)
+    }
+
+    /// A failure before the tree retired hands it back to the record, so a retry finds it and it
+    /// waits on no retention sweep with nothing naming it.
+    fn put_back_worktree(&self, target: &str, tree: ChildTree) {
+        if let Ok(mut children) = self.children.lock()
+            && let Ok((_, record)) = Self::record_mut(&mut children, target)
+        {
+            record.worktree = Some(tree);
+        }
     }
 
     /// Invariant: taken off the record, so a tree is never handed back twice; never for a
@@ -320,7 +365,7 @@ impl SubagentHost {
         let lane = record
             .worktree
             .take()
-            .ok_or_else(|| format!("child \"{target}\" has no worktree (isolation was none)"))?;
+            .ok_or_else(|| format!("child \"{target}\" has no worktree: isolation was none, or it was already merged or discarded"))?;
         Ok((lane, record.session_name.clone()))
     }
 }

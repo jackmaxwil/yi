@@ -902,7 +902,7 @@ fn subagent_host(
         plans_dir: plans_dir.to_path_buf(),
         family_live: Arc::clone(&wiring.kernels),
     }));
-    let _first_wins = host.checker.set(session.checker(&wiring.cwd));
+    host.set_checker(session.checker(&wiring.cwd));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
     let (handle, own) = (session.rules_handle(), wiring.own_paths(session));

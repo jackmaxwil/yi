@@ -19,6 +19,7 @@ mod names;
 pub mod reap;
 pub mod remote;
 pub mod settle;
+pub mod stage;
 pub mod toolchain;
 
 const GIT_TIMEOUT_MS: u64 = 120_000;
