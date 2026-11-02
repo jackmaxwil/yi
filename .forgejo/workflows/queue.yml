@@ -28,7 +28,7 @@ jobs:
       - name: anything to do
         id: work
         env:
-          FGJ_TOKEN: ${{ secrets.RECORDER_TOKEN }}
+          FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
         run: |
           labelled=$(fgj api --hostname git.example.invalid "repos/${{ github.repository }}/issues?type=pulls&state=open&labels=queue&limit=1" \
             | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' || echo 1)
@@ -43,7 +43,9 @@ jobs:
       - name: tick
         if: steps.work.outputs.run == 'yes'
         env:
-          FGJ_TOKEN: ${{ secrets.RECORDER_TOKEN }}
+          # Incident: the first tick died reading comments, since the recorder's token only pushes. The
+          # API goes as yi-bot, which already comments and labels for the fixer; git goes as the recorder.
+          FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
           MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
           # Rounds count from the same two authors the review job and the fixer read.
           YI_ROUND_AUTHORS: yi-bot,jack
