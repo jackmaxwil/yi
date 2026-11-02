@@ -40,10 +40,7 @@ pub(crate) struct ChildRecord {
     session_dir: PathBuf,
     pub(crate) trail: Option<PathBuf>,
     spawned_by: Option<String>,
-    pub(crate) worktree: Option<crate::lane::Lane>,
-    /// The worker share of the lane pool this child's checkout was taken from; dropped with
-    /// the lane, so a settled child stops holding a slot nobody is standing in.
-    pub(crate) lane_permit: Option<crate::plan::capacity::Permit>,
+    pub(crate) worktree: Option<crate::lane::fork::ChildTree>,
     /// The container this child's bash runs in; it goes when the record does (D286).
     _container: Option<crate::node::Container>,
     /// How the worktree goes at reap, once the engine has journaled it (plan section 6.6).
@@ -554,11 +551,13 @@ impl SubagentHost {
         if let Isolation::Container(image) = &isolation {
             crate::node::placeable(&self.options.home, image)?;
         }
-        let (worktree, lane_permit, left_out) = match isolation {
-            Isolation::None => (None, None, None),
+        let (worktree, left_out) = match isolation {
+            Isolation::None => (None, None),
             Isolation::Worktree | Isolation::Container(_) => {
-                let (lane, permit, left_out) = self.claim_child_lane(&child_id)?;
-                (Some(lane), Some(permit), left_out)
+                let in_image = matches!(isolation, Isolation::Container(_));
+                let (tree, rows) = self.fork_child_tree(&child_id, &kwargs, in_image)?;
+                let left_out = (!rows.is_empty()).then(|| rows.join("\n"));
+                (Some(tree), left_out)
             }
         };
         let cwd = worktree.as_ref().map(|lane| lane.path());
@@ -598,7 +597,6 @@ impl SubagentHost {
                     trail,
                     spawned_by: self.spawning_cell(),
                     worktree,
-                    lane_permit,
                     _container: container,
                     disposition: None,
                     managed: false,

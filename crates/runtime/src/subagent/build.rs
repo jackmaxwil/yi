@@ -33,56 +33,28 @@ impl Drop for Reservation<'_> {
 }
 
 impl SubagentHost {
-    /// A child lane branches from the parent's own HEAD, so its merge lands back in
-    /// the parent's checkout rather than on `main`.
-    pub(super) fn claim_child_lane(
+    /// A child's tree branches from the parent's own HEAD, so its merge lands back in the parent's
+    /// checkout rather than on `main`. No slot and no permit: family caps bound forks.
+    pub(super) fn fork_child_tree(
         &self,
         child_id: &str,
-    ) -> Result<
-        (
-            crate::lane::Lane,
-            crate::plan::capacity::Permit,
-            Option<String>,
-        ),
-        String,
-    > {
-        // The worker share, never the whole pool: a lane the workers take here is one the
-        // engine cannot verify a candidate in (plan section 7.6).
-        let permit = self
-            .capacity
-            .reserve(crate::plan::capacity::Purpose::Worker)
-            .map_err(|error| error.to_string())?;
+        kwargs: &Map<String, Value>,
+        contained_in_image: bool,
+    ) -> Result<(crate::lane::fork::ChildTree, Vec<String>), String> {
         let pool = crate::lane::Pool::open(
             &self.options.home,
             &self.options.cwd,
             self.options.lane_slots,
         )
         .map_err(|error| error.to_string())?;
-        let head = crate::lane::git(
-            &self.options.cwd,
-            &["rev-parse", "--verify", "HEAD^{commit}"],
-        )
-        .map_err(|error| error.to_string())?;
-        let head = crate::lane::Sha::parse(&head)
-            .ok_or_else(|| format!("git rev-parse printed a HEAD that is not a sha: {head}"))?;
-        let lane = pool
-            .claim(
-                child_id,
-                crate::lane::ClaimBase::Commit(head.as_str().to_owned()),
-            )
-            .map_err(|error| error.to_string())?;
-        // Invariant: a child is cut at the commit, so the parent's uncommitted edits are not in it.
-        let short = head.short();
-        let left_out = match crate::lane::reap::Uncommitted::read_briefly(&self.options.cwd, None) {
-            Ok(dirt) if dirt.is_empty() => None,
-            Ok(dirt) => Some(format!(
-                "the child starts at HEAD {short}, without {dirt} in your checkout: pass them as local:// context or spawn without a worktree"
-            )),
-            Err(why) => Some(format!(
-                "the child starts at HEAD {short}; uncommitted paths not counted: {why}"
-            )),
+        let denied = yi_permission::credential_stores(&self.options.home);
+        let plan = crate::lane::fork::Carry {
+            extra: parse_carry(kwargs)?,
+            denied,
+            first_use: !contained_in_image,
         };
-        Ok((lane, permit, left_out))
+        crate::lane::fork::ChildTree::fork(&pool, &self.options.cwd, child_id, &plan)
+            .map_err(|error| error.to_string())
     }
 
     /// Invariant: the roster lock is never held across a build, so `states` and `list` answer
@@ -282,6 +254,7 @@ pub(super) fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> 
                     | "thinking"
                     | "fork"
                     | "isolation"
+                    | "carry"
                     | "deny_write"
                     | "deny_read"
                     | "deny_url"
@@ -343,6 +316,34 @@ pub(super) fn parse_isolation(kwargs: &Map<String, Value>) -> Result<Isolation, 
         },
         Some(other) => Err(format!("rlm.run isolation must be a string, got {other}")),
     }
+}
+
+const CARRY_MAX: usize = 256;
+
+/// `carry=[".env"]`: ignored files a fork brings along. A name a model gave never becomes a ref.
+fn parse_carry(kwargs: &Map<String, Value>) -> Result<Vec<String>, String> {
+    let entries = match kwargs.get("carry") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(entries)) => entries,
+        Some(other) => {
+            return Err(format!(
+                "rlm.run carry must be a list of paths, got {other}"
+            ));
+        }
+    };
+    if entries.len() > CARRY_MAX {
+        return Err(format!(
+            "rlm.run carry names {} paths; the cap is {CARRY_MAX}",
+            entries.len()
+        ));
+    }
+    (entries.iter())
+        .map(|entry| {
+            let path = entry.as_str();
+            path.map(str::to_owned)
+                .ok_or_else(|| format!("rlm.run carry entries must be strings, got {entry}"))
+        })
+        .collect()
 }
 
 pub(super) fn parse_fork(kwargs: &Map<String, Value>) -> Result<Fork, String> {

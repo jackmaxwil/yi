@@ -365,20 +365,6 @@ async fn a_list_past_the_capture_cap_is_whole() -> TestResult {
     Ok(())
 }
 
-/// Dies with a lane whose state file lost its base under a parent that is itself a lane: the
-/// fallback reads from the parent's `HEAD`, and the trunk's would list the parent's own commit.
-#[tokio::test]
-async fn a_worktree_with_no_recorded_base_still_names_its_files() -> TestResult {
-    let (root, _repo, family) =
-        finished_child("nobase", "printf 'x\\n' >> README.md", true).await?;
-    for pool in std::fs::read_dir(root.join("home/.yi/lanes"))? {
-        std::fs::remove_file(pool?.path().join("0.json"))?;
-    }
-    let merged = family.host.merge_worktree("writer", None)?;
-    assert_eq!(files_of(&merged)?, [("README.md".to_owned(), 1, 0)]);
-    Ok(())
-}
-
 /// Dies with a child that changed nothing, whose reply must still carry `files` as an empty list.
 #[tokio::test]
 async fn a_child_that_changed_nothing_lists_no_files() -> TestResult {

@@ -58,13 +58,19 @@ impl HostRegistry {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
                     })?;
                 let cancelled: CancelFlag = Arc::new(|| false);
-                let id = yi_tools::jobs::spawn_job(
-                    command,
-                    &cwd,
-                    &cancelled,
-                    sandbox.as_ref(),
-                    spawn.as_ref(),
-                )?;
+                // A fork's first command carries its units and syncs its toolchain, which blocks.
+                let command = command.to_owned();
+                let id = tokio::task::spawn_blocking(move || {
+                    yi_tools::jobs::spawn_job(
+                        &command,
+                        &cwd,
+                        &cancelled,
+                        sandbox.as_ref(),
+                        spawn.as_ref(),
+                    )
+                })
+                .await
+                .map_err(|error| error.to_string())??;
                 lock(&spawned).push(id);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));

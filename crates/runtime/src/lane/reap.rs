@@ -37,29 +37,6 @@ impl Uncommitted {
         self
     }
 
-    /// One status read bounded by [`LIST_BUDGET`]; the error names why the paths went uncounted.
-    pub(crate) fn read_briefly(tree: &Path, home: Option<&Path>) -> Result<Self, String> {
-        let started = std::time::Instant::now();
-        let capture = super::capture_named(
-            tree,
-            "git status",
-            "git",
-            &STATUS,
-            LIST_BUDGET,
-            yi_tools::OUTPUT_CAP,
-            None,
-        );
-        capture
-            .map(|capture| Self::counted(&capture).with_submodules(tree, home, None))
-            .map_err(|error| {
-                if started.elapsed() >= LIST_BUDGET {
-                    format!("git status past LIST_BUDGET ({} s)", LIST_BUDGET.as_secs())
-                } else {
-                    briefly(&error)
-                }
-            })
-    }
-
     fn counted(status: &yi_tools::CommandCapture) -> Self {
         let (rows, cut) = (status.stdout.lines().count(), status.cut);
         // Invariant: a cut list is a head and a tail around a marker row; three lines may be no path.
@@ -183,24 +160,6 @@ impl std::fmt::Display for Uncommitted {
             (None, 1) => formatter.write_str("1 uncommitted path"),
             (None, n) => write!(formatter, "{n} uncommitted paths"),
         }
-    }
-}
-
-/// One failed read says why: the diagnostics past capture_named's label, and any cut it makes.
-fn briefly(error: &str) -> String {
-    let mut lines = error.lines();
-    let label = lines.next().unwrap_or_default();
-    let mut body = lines.filter(|line| !line.trim().is_empty());
-    let kept: Vec<&str> = body.by_ref().take(2).collect();
-    let more = body.count();
-    if kept.is_empty() {
-        return label.to_owned();
-    }
-    let joined = kept.join(" ");
-    if more == 0 {
-        format!("{label} {joined}")
-    } else {
-        format!("{label} {joined} [… {more} more]")
     }
 }
 
@@ -525,23 +484,6 @@ impl Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Dies when a failed status read drops git's own cause and keeps only capture_named's label.
-    #[test]
-    fn a_failed_read_keeps_the_diagnostic_and_names_its_cut() {
-        let two = briefly(
-            "git status failed:\nerror: bad signature 0x00000000\nfatal: index file corrupt\n",
-        );
-        assert_eq!(
-            two,
-            "git status failed: error: bad signature 0x00000000 fatal: index file corrupt"
-        );
-
-        let many = briefly("git status failed:\nwarning: a\nfatal: b\nhint: c\nhint: d\n");
-        assert_eq!(many, "git status failed: warning: a fatal: b [… 2 more]");
-        let bare = briefly("git status: No such file or directory (os error 2)");
-        assert_eq!(bare, "git status: No such file or directory (os error 2)");
-    }
-
     /// Dies with an index entry naming a path out of the tree: the admin dir that holds the index is
     /// contained-writable, so `..` or an absolute path would point host code at another tree.
     #[test]
@@ -591,6 +533,45 @@ mod tests {
         assert!(
             verdict.is_err(),
             "stale listing HEAD authorized removing new work"
+        );
+        Ok(())
+    }
+
+    /// Dies with a populated submodule counted dirty wherever no sandbox profile exists: the read
+    /// falls back to the lane's own runner, one directory down, and must still see work inside it.
+    #[test]
+    fn a_submodule_read_with_no_profile_sees_the_work_inside_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let until = || Some(std::time::Instant::now() + LIST_BUDGET);
+        let root = std::env::temp_dir().join(format!("yi-submodule-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (tree, sub) = (root.join("tree"), root.join("tree/sub"));
+        std::fs::create_dir_all(&sub)?;
+        for (dir, args) in [
+            (&tree, &["init", "-q", "-b", "main"][..]),
+            (&sub, &["init", "-q", "-b", "main"][..]),
+        ] {
+            git(dir, args)?;
+            git(dir, &["config", "user.email", "lanes@test"])?;
+            git(dir, &["config", "user.name", "lanes"])?;
+        }
+        std::fs::write(sub.join("file.txt"), "one\n")?;
+        git(&sub, &["add", "."])?;
+        git(&sub, &["commit", "-qm", "first"])?;
+
+        assert!(
+            submodule_is_clean(&tree, &tree.join("sub"), until(), None),
+            "clean reads clean"
+        );
+        assert!(
+            !submodule_is_clean(&tree, &tree.join("no-such-link"), until(), None),
+            "no .git is never clean"
+        );
+        git(&sub, &["config", "status.showUntrackedFiles", "no"])?;
+        std::fs::write(sub.join("new.txt"), "work\n")?;
+        assert!(
+            !submodule_is_clean(&tree, &tree.join("sub"), until(), None),
+            "a config cannot hide work"
         );
         Ok(())
     }

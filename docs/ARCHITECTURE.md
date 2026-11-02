@@ -140,6 +140,29 @@ lane stops an honest git and not a hostile one, because `git -c protocol.https.a
 `packed-refs` writable, so its guard on main is the name alone; and a contained process's `HEAD`
 can take an unchecked-out branch other than trunk, and push it as any branch.
 
+## Trust boundaries of a child's fork
+
+A worktree child's tree is a linked worktree under `~/.yi/forks`, cut at the parent's `HEAD` and filled
+by the cheapest copy this filesystem has. It claims no slot. A contained process wrote the parent's
+tree, so what the host reads there at a fork or a first command is hostile. Tests are in
+`crates/runtime/tests/child_forks.rs`.
+
+| boundary | what crosses | assume | instance | control | test |
+|---|---|---|---|---|---|
+| parent tree → host, at the fork | names, links, `.worktreeinclude`, `carry=` | hostile, swappable between check and copy | I: a listed file swapped for a link to `~/.ssh` | walked from a held directory with `NOFOLLOW` on every part, copied from the open descriptor | `a_wall_and_a_planted_link_copy_nothing` |
+| | | | I: a wall's path or a credential store listed | the session's `credential_stores` refuse it, with a row | `a_wall_and_a_planted_link_copy_nothing` |
+| | | | D: thousands of listed files, a deep tree | `fork.include_files`, `fork.include_bytes`, 64 KiB and 256 patterns, depth 256 on an explicit stack | `the_include_file_count_holds_at_its_limit_and_says_so_one_past` |
+| parent `target/` → child, at first use | dep-info rules | written by a contained build | T: a unit that names the parent's tree reads as Fresh, and the child tests its parent | classified by dep-info; one such unit drops its package; past a cap nothing carries | `a_child_builds_its_own_tree_and_reuses_only_what_names_nothing_in_it`, `a_unit_naming_the_tree_drops_its_whole_package_and_others_carry` |
+| | | | D: a huge or endless dep-info | 4 MiB a file, 65,536 files | `a_dep_info_at_its_limit_is_read_and_one_past_drops_the_unit`, `the_dep_info_count_holds_at_its_limit_and_refuses_one_past` |
+| `.yi/setup` → host | one script | a child's edit is a child's code | E: an edited setup run in the host's name | contained, and only as committed | `a_setup_edited_since_its_commit_is_skipped_by_name` |
+| child → the parent's next git | `.git`, its own admin dir | as any lane | see the lane and containment tables | contained as a lane is | `sandbox::` |
+
+Spoofing has no instance: the id is host-minted and a name a model gives never becomes a path or a
+ref. Repudiation: rows name what a fork left out and what it carried. Residual, stated: on Linux a
+hardlinked `.rlib` shares an inode with the parent's, so a contained child can write through to it,
+which the parent's next uncontained build uses. A process that left its job survives a discard, and
+the row says so.
+
 ## Trust boundaries of Linux containment
 
 A contained command starts as `yi __contain`, which applies a Landlock ruleset and execs. Rules only

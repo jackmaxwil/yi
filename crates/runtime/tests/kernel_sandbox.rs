@@ -1054,18 +1054,21 @@ async fn a_contained_kernels_push_is_forwarded_and_named() -> TestResult {
         .kernel_service()
         .ok_or("the wiring installs a kernel")?;
     let code = r#"import subprocess
-print(subprocess.run(["git", "push", "origin", "HEAD:refs/heads/from-kernel"], capture_output=True, text=True).returncode)"#;
+print(subprocess.run(["git", "push", "origin", "HEAD:refs/heads/yi/from-kernel"], capture_output=True, text=True).returncode)"#;
     let ran = cell(&kernel, code.to_owned()).await;
     kernel.dispose().await;
     let ran = ran?;
     assert!(
         ran.notes
             .iter()
-            .any(|note| note.contains("[pushed from-kernel to origin")),
+            .any(|note| note.contains("[pushed yi/from-kernel to origin")),
         "{:?} {:?}",
         ran.notes,
         ran.result
     );
-    assert_eq!(repo.at_origin("refs/heads/from-kernel"), Some(repo.head()?));
+    assert_eq!(
+        repo.at_origin("refs/heads/yi/from-kernel"),
+        Some(repo.head()?)
+    );
     Ok(())
 }
