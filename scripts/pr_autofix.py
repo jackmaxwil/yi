@@ -2805,12 +2805,15 @@ def selfcheck():
     try:
         stale = [{"number": n, "labels": [{"name": "autofix:failed"}], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}} for n in (1, 2, 3)]
         fresh = {"number": 4, "labels": [], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
-        forge_pr.fgj_api, forge_pr.repo = (lambda *a, **k: stale + [fresh]), (lambda: "o/r")
+        queued = {"number": 5, "labels": [{"name": "queue"}], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
+        forge_pr.fgj_api, forge_pr.repo = (lambda *a, **k: stale + [fresh, queued]), (lambda: "o/r")
         module.label_ids, module.spent_today, module.tidy = (lambda repo: {}), (lambda repo: 0.0), (lambda repo, pr: False)
         module.settle_base_red = lambda repo, bases: settled_bases.append(bases)
         module.attempt = lambda repo, pr, ids, asked=False: (tried_prs.append(pr["number"]) or
                                                               decide({l["name"] for l in pr["labels"]}, [], 9e9, False, True))
         cmd_autofix(type("A", (), {"number": None})())
+        if tried_prs[:1] != [5]:
+            errs.append(f"a pass did not start at the queued PR: {tried_prs}")
         if settled_bases != [{"main"}]:
             errs.append(f"a pass settled the red issues of {settled_bases}, not its PRs' bases")
         misses_left = [True]
