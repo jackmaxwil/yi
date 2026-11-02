@@ -817,6 +817,29 @@ const INSIDE: usize = 5_000;
 #[cfg(unix)]
 const ROUNDS: usize = 20_000;
 
+#[cfg(unix)]
+type KeyStore = (
+    Scratch,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+);
+
+/// A scratch, its home as `HOME` holding the key, its workspace, and the key itself.
+#[cfg(unix)]
+fn key_store(name: &str) -> Result<KeyStore, Box<dyn Error>> {
+    let scratch = Scratch::new(name)?;
+    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(workspace.join("d"))?;
+    let key = home.join(".ssh/id_rsa");
+    std::fs::write(&key, "FAKE KEY MARKER\n")?;
+    std::fs::write(workspace.join("d/id_rsa"), BENIGN)?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    Ok((scratch, home, workspace, key))
+}
+
 /// Runs checked calls, each with the swap timed to land at a different point of the call, until
 /// [`INSIDE`] swaps landed in the window; returns that count and how many calls reached the key.
 #[cfg(unix)]
@@ -826,16 +849,8 @@ fn race(
     args: &Map<String, Value>,
     reached: &dyn Fn(&yi_tools::ToolOutput, &std::path::Path) -> bool,
 ) -> Result<(usize, usize), Box<dyn Error>> {
-    let scratch = Scratch::new("yi-scope-swap")?;
-    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
-    std::fs::create_dir_all(home.join(".ssh"))?;
-    std::fs::create_dir_all(workspace.join("d"))?;
-    let key = home.join(".ssh/id_rsa");
-    std::fs::write(&key, "FAKE KEY MARKER\n")?;
+    let (_scratch, home, workspace, key) = key_store("yi-scope-swap")?;
     std::fs::write(workspace.join("x"), BENIGN)?;
-    std::fs::write(workspace.join("d/id_rsa"), BENIGN)?;
-    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
-    unsafe { std::env::set_var("HOME", &home) };
     let broker = PermissionBroker::new(
         PermissionMode::Yolo,
         workspace.clone(),
@@ -1002,15 +1017,7 @@ fn swapped_at_open(
     args: &dyn Fn(&dyn yi_tools::Tool, &yi_tools::ToolContext) -> Map<String, Value>,
     at: Option<usize>,
 ) -> Result<(usize, String, String), Box<dyn Error>> {
-    let scratch = Scratch::new("yi-scope-open")?;
-    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
-    std::fs::create_dir_all(home.join(".ssh"))?;
-    std::fs::create_dir_all(workspace.join("d"))?;
-    let key = home.join(".ssh/id_rsa");
-    std::fs::write(&key, "FAKE KEY MARKER\n")?;
-    std::fs::write(workspace.join("d/id_rsa"), BENIGN)?;
-    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
-    unsafe { std::env::set_var("HOME", &home) };
+    let (_scratch, home, workspace, key) = key_store("yi-scope-open")?;
     let tools = yi_tools::builtin_tools();
     let find = |name: &str| (tools.iter()).find(|candidate| candidate.name() == name);
     let tool_impl = find(tool).ok_or("no such tool")?;
