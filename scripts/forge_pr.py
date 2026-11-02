@@ -581,6 +581,10 @@ def unreviewed(number, pr):
 
 def cmd_merge(args):
     number = pull_number(args.number)
+    if getattr(args, "now", False):
+        import pr_queue
+
+        return pr_queue.cmd_merge_now(number)
     need = required()
     deadline = time.monotonic() + args.timeout * 60
     while True:
@@ -1005,7 +1009,13 @@ def build_parser():
     merge.add_argument("number", nargs="?")
     merge.add_argument("--no-wait", dest="wait", action="store_false")
     merge.add_argument("--timeout", type=int, default=40)
+    merge.add_argument("--now", action="store_true", help="the owner's explicit ask: force the merge, past the queue")
     merge.set_defaults(run=cmd_merge)
+    import pr_queue
+
+    queue = pr.add_parser("queue", help="add a reviewed PR to the merge queue; no number prints the queue")
+    queue.add_argument("number", nargs="?")
+    queue.set_defaults(run=pr_queue.cmd_queue)
     return parser
 
 

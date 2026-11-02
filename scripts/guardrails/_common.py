@@ -150,6 +150,12 @@ def base_commit():
                 return ref, found.stdout.strip()
     return None, None
 
+def skip_on_candidate(name):
+    """A queue candidate carries other PRs' growth, each already judged at its own fork."""
+    if os.environ.get("GITHUB_REF") == "refs/heads/queue/candidate":
+        print(f"skip {name}: judged at each PR's own fork")
+        sys.exit(0)
+
 def fork():
     return base_commit()[1]
 
