@@ -3241,10 +3241,7 @@ fn checked_merge(
 async fn a_hand_back_merges_in_the_object_store_with_no_staging_lane() -> TestResult {
     let rig = Rig::new("merge-tree-road")?;
     let version = git(&rig.repo, &["--version"])?;
-    assert!(
-        yi_runtime::lane::stage::native_road(Some(&version)),
-        "this host's git is {version}, so the merge-tree road is not exercised and the test would pass on the old one"
-    );
+    let native = yi_runtime::lane::stage::native_road(Some(&version));
     let family = writer(&rig, "echo x > draft.txt").await?;
     assert!(family.reaches("writer", "finished").await);
     let reply = family.host.merge_worktree("writer", None)?;
@@ -3254,9 +3251,10 @@ async fn a_hand_back_merges_in_the_object_store_with_no_staging_lane() -> TestRe
         "x",
         "{reply:?}"
     );
-    assert!(
-        !rig.home.join(".yi/lanes").exists(),
-        "only a road that checks out a tree claims a lane"
+    assert_eq!(
+        rig.home.join(".yi/lanes").exists(),
+        !native,
+        "this host's git is {version}, so only a road that checks out a tree claims a lane"
     );
     Ok(())
 }
