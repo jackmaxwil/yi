@@ -262,7 +262,7 @@ fn push_token(argv: &mut Vec<String>, token: &mut String, quoted: &mut bool) {
     *quoted = false;
 }
 
-pub(crate) fn program(argv0: &str) -> &str {
+pub fn program(argv0: &str) -> &str {
     argv0.rsplit('/').next().unwrap_or(argv0)
 }
 
@@ -329,7 +329,7 @@ const GIT_VALUED_OPTIONS: [&str; 6] = [
     "-c",
 ];
 
-pub(crate) fn git_subcommand(argv: &[String]) -> Option<&str> {
+pub fn git_subcommand(argv: &[String]) -> Option<&str> {
     let mut tokens = argv.iter().skip(1).map(String::as_str);
     while let Some(token) = tokens.next() {
         if GIT_VALUED_OPTIONS.contains(&token) {

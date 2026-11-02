@@ -93,17 +93,13 @@ impl GitLane {
             if !remote {
                 return Vec::new();
             }
-            [
-                "GIT_CONFIG_COUNT=3",
-                "GIT_CONFIG_KEY_0=maintenance.auto",
-                "GIT_CONFIG_VALUE_0=false",
-                "GIT_CONFIG_KEY_1=protocol.allow",
-                "GIT_CONFIG_VALUE_1=never",
-                "GIT_CONFIG_KEY_2=protocol.file.allow",
-                "GIT_CONFIG_VALUE_2=always",
+            let rules = [
+                ("maintenance.auto", "false"),
+                ("protocol.allow", "never"),
+                ("protocol.file.allow", "always"),
             ]
-            .map(str::to_owned)
-            .to_vec()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()));
+            config_env(&rules)
         }))
         .clone()
     }
@@ -142,14 +138,7 @@ impl GitLane {
             Some(pushurl) => (format!("url.{}.insteadOf", outbox.display()), pushurl),
             None => (format!("url.{}.pushInsteadOf", outbox.display()), url),
         });
-        let assign = std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
-            .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
-                [
-                    format!("GIT_CONFIG_KEY_{at}={key}"),
-                    format!("GIT_CONFIG_VALUE_{at}={value}"),
-                ]
-            }))
-            .collect();
+        let assign = config_env(&rules);
         let lane = Self {
             pool,
             mirror,
@@ -160,7 +149,6 @@ impl GitLane {
         let _an_empty_mirror_says_so_at_the_fetch = lane.sync_mirror();
         Some(lane)
     }
-
     /// `KEY=VALUE` for `env`'s argv, past its scrub: paths and an origin with no credentials.
     #[must_use]
     pub fn assign(&self) -> &[String] {
@@ -390,6 +378,18 @@ fn fenced(text: &str) -> String {
     format!("{fence}{}", cut.unwrap_or_default())
 }
 
+/// `GIT_CONFIG_*` for a child's env: the count and the `_N` suffixes derived from the list, so a
+/// key added is one key numbered and git never rejects the block as a mismatch.
+fn config_env(rules: &[(String, String)]) -> Vec<String> {
+    std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
+        .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
+            [
+                format!("GIT_CONFIG_KEY_{at}={key}"),
+                format!("GIT_CONFIG_VALUE_{at}={value}"),
+            ]
+        }))
+        .collect()
+}
 fn init_store(repo: &Path, store: &Path, objects: &Path) -> Result<(), LaneError> {
     if !store.join("HEAD").is_file() {
         let at = store.to_string_lossy().into_owned();
@@ -405,17 +405,19 @@ fn write_alternates(store: &Path, objects: &Path) -> Result<(), LaneError> {
     std::fs::write(alternates, format!("{}\n", objects.display())).map_err(io)
 }
 
-/// Invariant: a word of the command is `git` and another is the remote read, so a file named
-/// `fetch.log` or a `grep pull` pays for no fetch it never asked for.
+/// Invariant: a segment's program is `git` and its subcommand reads the remote, so `git log --grep
+/// fetch` or a path naming `origin/fetch` pays for no fetch it never asked for.
 fn reads_a_remote(command: &str) -> bool {
-    let words: Vec<&str> = command.split_whitespace().collect();
-    let git = words
-        .iter()
-        .any(|word| *word == "git" || word.ends_with("/git"));
-    let read = words
-        .iter()
-        .any(|word| matches!(*word, "fetch" | "pull" | "ls-remote"));
-    git && read
+    yi_permission::command_segments(command).iter().any(|argv| {
+        let Some(program) = argv.first().map(|argv0| yi_permission::program(argv0)) else {
+            return false;
+        };
+        program == "git"
+            && matches!(
+                yi_permission::git_subcommand(argv),
+                Some("fetch" | "pull" | "ls-remote")
+            )
+    })
 }
 
 #[cfg(test)]

@@ -51,7 +51,9 @@ impl Ignore {
     }
 }
 
-fn parse_line(line: &str, dir: &Path) -> Option<Rule> {
+/// One line of a gitignore-shaped file as git reads it: the pattern it compiles to, whether it
+/// names a directory only, and whether it negates. `None` for a comment, a blank or a bare `!`.
+pub fn pattern(line: &str) -> Option<(String, bool, bool)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
         return None;
@@ -75,6 +77,11 @@ fn parse_line(line: &str, dir: &Path) -> Option<Rule> {
     } else {
         format!("**/{}", line.trim_start_matches('/'))
     };
+    Some((pattern, dir_only, negate))
+}
+
+fn parse_line(line: &str, dir: &Path) -> Option<Rule> {
+    let (pattern, dir_only, negate) = pattern(line)?;
     let matcher = globset::GlobBuilder::new(&pattern)
         .literal_separator(true)
         .build()

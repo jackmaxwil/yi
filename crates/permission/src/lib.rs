@@ -27,6 +27,6 @@ pub use rules::{
     write_grant, write_grant_dir,
 };
 pub use safety::{
-    Class, Parsed, Verdict, classify, command_segments, host_need, parse, refused_scopes, verdict,
-    verdict_of, without_redirects, write_targets,
+    Class, Parsed, Verdict, classify, command_segments, git_subcommand, host_need, parse, program,
+    refused_scopes, verdict, verdict_of, without_redirects, write_targets,
 };

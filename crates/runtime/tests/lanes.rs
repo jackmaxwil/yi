@@ -3241,7 +3241,7 @@ fn checked_merge(
 async fn a_hand_back_merges_in_the_object_store_with_no_staging_lane() -> TestResult {
     let rig = Rig::new("merge-tree-road")?;
     let version = git(&rig.repo, &["--version"])?;
-    let native = yi_runtime::lane::stage::git_version(&version).is_some_and(|at| at >= (2, 43));
+    let native = yi_runtime::lane::stage::native_road(Some(&version));
     let log = rig.root.join("git-log");
     shim_git(&rig, &format!("echo \"$*\" >> '{}'", log.display()))?;
     let family = writer(&rig, "echo x > draft.txt").await?;
@@ -3249,13 +3249,16 @@ async fn a_hand_back_merges_in_the_object_store_with_no_staging_lane() -> TestRe
     let reply = family.host.merge_worktree("writer", None)?;
     assert_eq!(reply["merged"], true, "{reply:?}");
     let ran = std::fs::read_to_string(&log)?;
-    if native {
-        assert!(ran.contains("merge-tree --write-tree"), "{ran}");
-        assert!(
-            !ran.lines().any(|line| line.contains(" merge --no-ff")),
-            "{ran}"
-        );
-    }
+    assert_eq!(
+        ran.contains("merge-tree --write-tree"),
+        native,
+        "this host's git is {version}, so the merge-tree road must be the one that ran: {ran}"
+    );
+    assert_eq!(
+        !ran.lines().any(|line| line.contains(" merge --no-ff")),
+        native,
+        "this host's git is {version}: {ran}"
+    );
     Ok(())
 }
 
@@ -3291,6 +3294,48 @@ async fn a_checked_hand_back_merges_only_a_lane_whose_check_passes() -> TestResu
     Ok(())
 }
 
+/// Dies with the check's error dropping the tree: the work leaves the record with its lane
+/// unclaimed, so the retry answers "has no worktree" and the child's work is never merged.
+#[tokio::test]
+async fn a_check_the_hooks_refuse_keeps_the_work_on_the_record() -> TestResult {
+    let rig = Rig::new("check-refused")?;
+    let deny = rig.root.join("deny.sh");
+    std::fs::write(
+        &deny,
+        "#!/bin/sh\nprintf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"no checks here\"}}'\n",
+    )?;
+    let settings = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+        {"type": "command", "command": format!("sh '{}'", deny.display())}
+    ]}]}});
+    let home = rig.root.join("hook-home");
+    std::fs::create_dir_all(home.join(".claude"))?;
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        serde_json::to_vec(&settings)?,
+    )?;
+    let family = writer(&rig, "echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let managed = rig.root.join("managed");
+    family
+        .host
+        .set_checker(yi_runtime::goal::Checker::from_hooks(Some(
+            yi_runtime::claude_hooks::Hooks::load_from(&rig.repo, Some(&home), &managed),
+        )));
+    let refused = family
+        .host
+        .merge_worktree("writer", Some("test -f NEW"))
+        .err()
+        .ok_or("a check the hooks refuse merged anyway")?;
+    assert!(refused.contains("PreToolUse hook refused"), "{refused}");
+    assert!(
+        !rig.repo.join("draft.txt").exists(),
+        "a refused check merged"
+    );
+    let landed = family.host.merge_worktree("writer", None)?;
+    assert_eq!(landed["merged"], true, "{landed:?}");
+    assert_eq!(git(&rig.repo, &["show", "HEAD:draft.txt"])?, "x");
+    Ok(())
+}
 /// Dies with `check` read as an optional string: a list is no check, and the work lands unrun.
 #[tokio::test]
 async fn a_check_that_is_not_a_string_is_refused_and_merges_nothing() -> TestResult {
