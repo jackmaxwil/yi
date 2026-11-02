@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.865.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.867.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -247,6 +247,8 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D527 | every git the host runs goes through one door, by absolute path, with hooks, fsmonitor and signing off | a host hand-back ran the repository's hooks, a relative core.hooksPath is written by the child, and a tree's bin on PATH ran a contained write on the host | restore capture_named and git_capture to bare names |
+| D526 | a linked worktree's sandbox writes its admin dir, the shared objects, its own branch and the stash, never the rest of the common dir | a contained process deleted a sibling's ref and moved trunk | restore the common dir in lane_writes |
 | D525 | computer use and browser automation enter scope through plugins, paid for by deleting the Python client, and a plugin that drives this machine leaves the sandbox only through a table of its verbs | the owner, 2026-10-31: "Any app on my Mac", "remove the design doc ban"; a typed command in Terminal gets around the sandbox, so the gate is the feature | delete the row and the table, restore the §1.2 clause |
 | D524 | A feature-ledger edit is a line in the change file, applied by the recorder (extends D342) | 43 of 100 conflicted main merges touched a ledger row, a 2-4 KB line every feature appends to, and clause-per-line files clear only 17 of those 43 because most row edits replace text | Let branches edit rows again by dropping the `ledger-edit` check; the lines already recorded stay applied |
 | D523 | reply style is measured, not described — the identity prompt states nine rules (short sentences, list-first, two short paragraphs of prose, answer first, detail on request, no restating the question, no closing summary, no rule talk, brevity never drops an error, a warning or an undone item) and `evals/prose.py` scores a saved answer set on sentence length, list share, paragraph count, the tells and rule mentions | the prompt already banned the tells after #1400 and answers were still long and paragraph-shaped, so a ban list alone was not a contract | revert `evals/prose.py --gate` and the prompt text in one commit; no schema, no wire shape and no config key moves |

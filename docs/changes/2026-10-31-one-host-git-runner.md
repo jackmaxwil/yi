@@ -1,4 +1,6 @@
 ---
+version: 0.867.0
+decisions: D527
 issue: Closes #1520
 growth: +343 includes #1945's lines beneath it in this stack; the door (resolve by path, the config every host git takes), the guard on a planted HEAD, the identity fallback and trunk. Weighed: a memo of resolved paths, cut since a walk costs stats beside a spawn; four separate runners kept, which is the defect; hostgit.rs is mostly a move out of lane/mod.rs, past its size ceiling
 decision: every git the host runs goes through one door, by absolute path, with hooks, fsmonitor and signing off | a host hand-back ran the repository's hooks, a relative core.hooksPath is written by the child, and a tree's bin on PATH ran a contained write on the host | restore capture_named and git_capture to bare names
