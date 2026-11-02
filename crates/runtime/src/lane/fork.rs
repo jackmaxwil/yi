@@ -5,8 +5,6 @@
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{SyncSender, sync_channel};
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use yi_types::lane::SlotState;
@@ -16,7 +14,6 @@ use super::settle::{Candidate, Quiescence};
 use super::{BranchName, LIST_BUDGET, LaneError, PLUMBING_CAP, Pool, Sha, io_error};
 
 const SCRATCH_ROWS_MAX: usize = 3;
-const SWEEP_QUEUE: usize = 256;
 
 /// What git said about the parent's tree before a fork: what the child will not have.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -40,7 +37,7 @@ pub fn parent_state(status: &str) -> Option<ParentState> {
     let mut state = ParentState::default();
     let mut fields = status.split('\0').filter(|field| !field.is_empty());
     while let Some(row) = fields.next() {
-        let (code, path) = (row.get(..2)?, row.get(3..)?);
+        let (code, path) = super::settle::status_row(row)?;
         match code {
             "!!" => {
                 state.skipped.push(path.to_owned());
@@ -328,7 +325,6 @@ fn retire_at(pool: &Pool, path: &Path) {
     let tomb = path.with_extension("gone");
     if std::fs::rename(path, &tomb).is_ok() {
         let _the_next_sweep_prunes = git(pool.repo(), &["worktree", "prune", "--expire=now"]);
-        sweep_later(tomb);
     }
     for leftover in [path.with_extension("json"), path.with_extension("held")] {
         let _gone_already_is_fine = std::fs::remove_file(leftover);
@@ -375,27 +371,6 @@ pub fn is_held(tree: &Path) -> bool {
 #[must_use]
 pub fn forks_dir(home: &Path) -> PathBuf {
     home.join(".yi/forks")
-}
-
-/// A full queue leaves the tomb for retention, so nothing waits without bound.
-fn sweep_later(tomb: PathBuf) {
-    static SWEEPER: OnceLock<Mutex<Option<SyncSender<PathBuf>>>> = OnceLock::new();
-    let sender = SWEEPER.get_or_init(|| {
-        let (send, receive) = sync_channel::<PathBuf>(SWEEP_QUEUE);
-        let spawned = std::thread::Builder::new()
-            .name("yi-fork-sweep".to_owned())
-            .spawn(move || {
-                for tomb in receive {
-                    let _the_next_sweep_retries = std::fs::remove_dir_all(tomb);
-                }
-            });
-        Mutex::new(spawned.ok().map(|_| send))
-    });
-    if let Ok(sender) = sender.lock()
-        && let Some(sender) = &*sender
-    {
-        let _retention_finishes_a_full_queue = sender.try_send(tomb);
-    }
 }
 
 /// `settle`'s result: the branch and what it holds. The tree is gone, the branch stays.

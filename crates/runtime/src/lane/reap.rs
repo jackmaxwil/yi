@@ -542,6 +542,7 @@ mod tests {
     #[test]
     fn a_submodule_read_with_no_profile_sees_the_work_inside_it()
     -> Result<(), Box<dyn std::error::Error>> {
+        let until = || Some(std::time::Instant::now() + LIST_BUDGET);
         let root = std::env::temp_dir().join(format!("yi-submodule-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (tree, sub) = (root.join("tree"), root.join("tree/sub"));
@@ -559,17 +560,17 @@ mod tests {
         git(&sub, &["commit", "-qm", "first"])?;
 
         assert!(
-            submodule_is_clean(&tree, &tree.join("sub"), None, None),
+            submodule_is_clean(&tree, &tree.join("sub"), until(), None),
             "clean reads clean"
         );
         assert!(
-            !submodule_is_clean(&tree, &tree.join("no-such-link"), None, None),
+            !submodule_is_clean(&tree, &tree.join("no-such-link"), until(), None),
             "no .git is never clean"
         );
         git(&sub, &["config", "status.showUntrackedFiles", "no"])?;
         std::fs::write(sub.join("new.txt"), "work\n")?;
         assert!(
-            !submodule_is_clean(&tree, &tree.join("sub"), None, None),
+            !submodule_is_clean(&tree, &tree.join("sub"), until(), None),
             "a config cannot hide work"
         );
         Ok(())

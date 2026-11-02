@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::hostgit::{git, git_capture, trunk};
+use super::hostgit::{git, git_capture};
 use super::{BranchName, LaneError, Pool, Sha};
 use crate::permission::{AskOutcome, PermissionAsk, PermissionBroker};
 
@@ -62,16 +62,35 @@ pub struct GitLane {
 // ponytail: one lane per tree for the process's life; a `git remote set-url` by hand needs a restart.
 static LANES: Mutex<Option<HashMap<PathBuf, Option<Arc<GitLane>>>>> = Mutex::new(None);
 
+/// `GIT_CONFIG_*` for `env`'s argv: git reads the numbered rows in order, so the count is theirs.
+fn config_env(rules: Vec<(String, String)>) -> Vec<String> {
+    std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
+        .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
+            [
+                format!("GIT_CONFIG_KEY_{at}={key}"),
+                format!("GIT_CONFIG_VALUE_{at}={value}"),
+            ]
+        }))
+        .collect()
+}
+
 impl GitLane {
     /// `None` with no origin, no pool or a credentialed origin: `git push` then fails contained
     /// and its refusal asks, as it did before there was a lane.
     pub(crate) fn for_tree(cwd: &Path) -> Option<Arc<Self>> {
+        if let Some(lane) = LANES
+            .lock()
+            .ok()?
+            .get_or_insert_with(HashMap::new)
+            .get(cwd)
+            .cloned()
+        {
+            return lane;
+        }
+        let opened = Self::open(cwd, FORWARD_TIMEOUT).map(Arc::new);
         let mut lanes = LANES.lock().ok()?;
         let lanes = lanes.get_or_insert_with(HashMap::new);
-        lanes
-            .entry(cwd.to_path_buf())
-            .or_insert_with(|| Self::open(cwd, FORWARD_TIMEOUT).map(Arc::new))
-            .clone()
+        lanes.entry(cwd.to_path_buf()).or_insert(opened).clone()
     }
 
     /// What a contained git gets where a repository has an origin and no lane: no transport but a
@@ -93,17 +112,11 @@ impl GitLane {
             if !remote {
                 return Vec::new();
             }
-            [
-                "GIT_CONFIG_COUNT=3",
-                "GIT_CONFIG_KEY_0=maintenance.auto",
-                "GIT_CONFIG_VALUE_0=false",
-                "GIT_CONFIG_KEY_1=protocol.allow",
-                "GIT_CONFIG_VALUE_1=never",
-                "GIT_CONFIG_KEY_2=protocol.file.allow",
-                "GIT_CONFIG_VALUE_2=always",
-            ]
-            .map(str::to_owned)
-            .to_vec()
+            config_env(vec![
+                ("maintenance.auto".to_owned(), "false".to_owned()),
+                ("protocol.allow".to_owned(), "never".to_owned()),
+                ("protocol.file.allow".to_owned(), "always".to_owned()),
+            ])
         }))
         .clone()
     }
@@ -142,14 +155,7 @@ impl GitLane {
             Some(pushurl) => (format!("url.{}.insteadOf", outbox.display()), pushurl),
             None => (format!("url.{}.pushInsteadOf", outbox.display()), url),
         });
-        let assign = std::iter::once(format!("GIT_CONFIG_COUNT={}", rules.len()))
-            .chain(rules.iter().enumerate().flat_map(|(at, (key, value))| {
-                [
-                    format!("GIT_CONFIG_KEY_{at}={key}"),
-                    format!("GIT_CONFIG_VALUE_{at}={value}"),
-                ]
-            }))
-            .collect();
+        let assign = config_env(rules);
         let lane = Self {
             pool,
             mirror,
@@ -262,12 +268,7 @@ impl GitLane {
             Wanted::Branch(branch) => (format!("refs/heads/{branch}"), branch.to_string()),
             Wanted::Tag(tag) => (format!("refs/tags/{tag}"), format!("tag {tag}")),
         };
-        let held = match wanted {
-            Wanted::Tag(_) => true,
-            Wanted::Branch(branch) => {
-                *branch == trunk(repo) || matches!(branch.as_str(), "main" | "master")
-            }
-        };
+        let held = held(wanted);
         let stat = if held {
             self.diffstat(wanted, sha)
         } else {
@@ -418,6 +419,15 @@ fn reads_a_remote(command: &str) -> bool {
     git && read
 }
 
+/// A person's ref asks: the trunk and every branch the lane did not mint for a child, since a
+/// pushed `dev` or `release` is somebody else's deploy. A child's own `yi/` branch forwards.
+fn held(wanted: &Wanted) -> bool {
+    match wanted {
+        Wanted::Tag(_) => true,
+        Wanted::Branch(branch) => !branch.as_str().starts_with("yi/"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GitLane, git};
@@ -448,6 +458,22 @@ mod tests {
             assign.contains(&"GIT_CONFIG_KEY_2=protocol.file.allow".to_owned()),
             "{assign:?}"
         );
+        Ok(())
+    }
+
+    /// Dies with the trunk-name test: a contained child pushing `dev` reached origin as the user
+    /// without an ask, and its own `yi/` branch asked a person it never needed.
+    #[test]
+    fn only_a_childs_own_branch_forwards() -> Result<(), String> {
+        let ask = |name: &str| -> Result<bool, String> {
+            let branch = super::BranchName::parse(name).map_err(|error| error.to_string())?;
+            Ok(super::held(&super::Wanted::Branch(branch)))
+        };
+        assert!(ask("main")?);
+        assert!(ask("dev")?);
+        assert!(ask("jack/release")?);
+        assert!(!ask("yi/8c1f")?);
+        assert!(super::held(&super::Wanted::Tag("v1.0.0".to_owned())));
         Ok(())
     }
 

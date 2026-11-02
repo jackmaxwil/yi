@@ -258,6 +258,13 @@ fn matcher(patterns: &[String], rows: &mut Vec<String>) -> Option<globset::GlobS
     let mut set = globset::GlobSetBuilder::new();
     for pattern in patterns {
         let trimmed = pattern.trim_start_matches('/').trim_end_matches('/');
+        if trimmed.starts_with('!') {
+            rows.push(format!(
+                "[not carried: pattern `{}` is a negation, which this list has no rule order for; list the files it names]",
+                crate::ext::sanitize(pattern)
+            ));
+            continue;
+        }
         match globset::Glob::new(trimmed) {
             Ok(glob) => drop(set.add(glob)),
             Err(error) => rows.push(format!(
