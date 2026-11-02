@@ -28,13 +28,12 @@ fn flags() -> OFlags {
 
 /// The store's parent is the host's own path, its one component checked `NOFOLLOW`: the admin dir
 /// is writable, so `yi-outbox` itself can be a link at a project's git dir.
-fn open_store(store: &Path) -> rustix::io::Result<(OwnedFd, OwnedFd)> {
+fn open_parent(store: &Path) -> rustix::io::Result<(OwnedFd, &std::ffi::OsStr)> {
     let (Some(parent), Some(leaf)) = (store.parent(), store.file_name()) else {
         return Err(Errno::INVAL);
     };
     let parent = openat(CWD, parent, flags() | OFlags::DIRECTORY, Mode::empty())?;
-    let opened = openat(parent.as_fd(), leaf, flags(), Mode::empty())?;
-    Ok((parent, opened))
+    Ok((parent, leaf))
 }
 
 fn names_in(dir: &OwnedFd) -> (Vec<Vec<u8>>, bool) {
@@ -56,8 +55,9 @@ fn names_in(dir: &OwnedFd) -> (Vec<Vec<u8>>, bool) {
 /// loses the request and never the work, which is in the object store.
 pub fn take_refs(store: &Path, max: usize) -> Taken {
     let mut taken = Taken::default();
-    let root = open_store(store)
-        .and_then(|(_parent, store)| openat(store.as_fd(), "refs", flags(), Mode::empty()));
+    let root = open_parent(store)
+        .and_then(|(parent, leaf)| openat(parent.as_fd(), leaf, flags(), Mode::empty()))
+        .and_then(|store| openat(store.as_fd(), "refs", flags(), Mode::empty()));
     let root = match root {
         Ok(root) => root,
         Err(Errno::NOENT) => return taken,
@@ -141,10 +141,7 @@ fn fresh_file(dir: &OwnedFd, name: &str, bytes: &[u8]) -> std::io::Result<()> {
 /// The bare store a contained `git push` lands in. Git never runs in it on the host, so it is laid
 /// out by hand, on every start, over whatever a contained process left.
 pub fn init_store(store: &Path, objects: &Path) -> std::io::Result<()> {
-    let (Some(parent), Some(leaf)) = (store.parent(), store.file_name()) else {
-        return Err(Errno::INVAL.into());
-    };
-    let parent = openat(CWD, parent, flags() | OFlags::DIRECTORY, Mode::empty())?;
+    let (parent, leaf) = open_parent(store)?;
     let root = subdir(&parent, leaf)?;
     let refs = subdir(&root, "refs")?;
     subdir(&refs, "heads")?;

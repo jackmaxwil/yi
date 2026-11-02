@@ -262,7 +262,7 @@ fn push_token(argv: &mut Vec<String>, token: &mut String, quoted: &mut bool) {
     *quoted = false;
 }
 
-pub fn program_of(argv0: &str) -> &str {
+pub(crate) fn program(argv0: &str) -> &str {
     argv0.rsplit('/').next().unwrap_or(argv0)
 }
 
@@ -329,7 +329,7 @@ const GIT_VALUED_OPTIONS: [&str; 6] = [
     "-c",
 ];
 
-pub fn git_subcommand(argv: &[String]) -> Option<&str> {
+pub(crate) fn git_subcommand(argv: &[String]) -> Option<&str> {
     let mut tokens = argv.iter().skip(1).map(String::as_str);
     while let Some(token) = tokens.next() {
         if GIT_VALUED_OPTIONS.contains(&token) {
@@ -496,7 +496,7 @@ pub fn classify(argv: &[String]) -> Class {
     if assigned > 0 {
         return classify(argv.get(assigned..).unwrap_or_default()).max(Class::Unknown);
     }
-    let name = program_of(argv0);
+    let name = program(argv0);
     if wrapper(name) {
         let skip = if name == "timeout" { 2 } else { 1 };
         return match argv.get(1).is_some_and(|next| !next.starts_with('-')) {
@@ -519,7 +519,7 @@ pub fn classify(argv: &[String]) -> Class {
     if DESTRUCTIVE.binary_search(&name).is_ok() {
         return Class::Destructive;
     }
-    if name == crate::desktop::PROGRAM {
+    if name == crate::desktop::PROGRAM || name == crate::browser::PROGRAM {
         return match crate::desktop::judge(argv) {
             Some(crate::desktop::Judged::Free) => Class::Safe,
             _ => Class::Destructive,
@@ -572,7 +572,7 @@ fn worst_reading(rest: &[String]) -> Class {
         .filter_map(|at| rest.get(at..))
         .filter(|argv| {
             argv.first().is_some_and(|word| {
-                !word.starts_with('-') && !word.contains('=') && !wrapper(program_of(word))
+                !word.starts_with('-') && !word.contains('=') && !wrapper(program(word))
             })
         })
         .map(classify)
@@ -667,16 +667,20 @@ pub fn verdict_of(segments: &[Vec<String>]) -> Verdict {
                     ),
                 };
             }
-            Class::Egress => {
-                let git = (argv.iter().position(|word| program_of(word) == "git"))
-                    .and_then(|at| git_subcommand(argv.get(at..)?));
-                let reason = match git {
-                    Some(verb) => {
-                        format!("`git {verb}` needs the network; a contained run has none")
-                    }
-                    None => format!("`{shown}` needs a forge login; a contained run has none"),
+            Class::Egress if scope(argv).is_some_and(|scope| scope.starts_with("git")) => {
+                return Verdict::Ask {
+                    reason: format!(
+                        "`git {}` needs the network; a contained run has none",
+                        (argv.iter().position(|word| program(word) == "git"))
+                            .and_then(|at| git_subcommand(argv.get(at..)?))
+                            .unwrap_or_default()
+                    ),
                 };
-                return Verdict::Ask { reason };
+            }
+            Class::Egress => {
+                return Verdict::Ask {
+                    reason: format!("`{shown}` needs a forge login; a contained run has none"),
+                };
             }
             Class::Unknown => {
                 if unknown.is_none() {
@@ -711,7 +715,7 @@ pub(crate) fn unwrapped(argv: &[String]) -> Option<&[String]> {
     // A wrapper runs another program, so the scope is that program, not `timeout` or `nice`.
     while let Some(first) = argv.first() {
         let raw = first.trim_start_matches('\u{0}');
-        let token = program_of(raw);
+        let token = program(raw);
         let wrapper =
             PASSTHROUGH.binary_search(&token).is_ok() || matches!(token, "timeout" | "env");
         let carried = raw.starts_with('-')
@@ -728,7 +732,7 @@ pub(crate) fn unwrapped(argv: &[String]) -> Option<&[String]> {
 
 fn scope(argv: &[String]) -> Option<String> {
     let argv = unwrapped(argv)?;
-    let name = program_of(argv.first()?.trim_start_matches('\u{0}'));
+    let name = program(argv.first()?.trim_start_matches('\u{0}'));
     let verb = match name {
         "git" => git_subcommand(argv),
         name if VERB_PROGRAMS.binary_search(&name).is_ok() => subcommand(argv),
@@ -748,7 +752,7 @@ pub fn refused_scopes(command: &str) -> Vec<String> {
     };
     let reader = |argv: &&Vec<String>| {
         argv.first()
-            .is_some_and(|argv0| SAFE.binary_search(&program_of(argv0)).is_ok())
+            .is_some_and(|argv0| SAFE.binary_search(&program(argv0)).is_ok())
     };
     let tiers: [Vec<&Vec<String>>; 3] = [
         segments
@@ -890,14 +894,14 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
     for argv in &mut segments {
         while argv
             .first()
-            .is_some_and(|first| OPENERS.contains(&program_of(first)))
+            .is_some_and(|first| OPENERS.contains(&program(first)))
         {
             argv.remove(0);
         }
     }
     segments.retain(|argv| {
         argv.first()
-            .is_some_and(|first| !HEADERS.contains(&program_of(first)))
+            .is_some_and(|first| !HEADERS.contains(&program(first)))
     });
     segments
 }
@@ -916,11 +920,10 @@ pub fn command_segments(command: &str) -> Vec<Vec<String>> {
 /// Why one segment cannot run contained: `network` for a network program or git verb, `installs`
 /// for an install verb (a recipe named `install` writes outside the tree as a package manager does).
 pub fn host_need(argv: &[String]) -> Option<&'static str> {
-    if argv
-        .first()
-        .is_some_and(|argv0| argv0 == crate::desktop::PROGRAM)
-    {
-        return Some("desktop control");
+    match argv.first().map(String::as_str) {
+        Some(crate::desktop::PROGRAM) => return Some("desktop control"),
+        Some(crate::browser::PROGRAM) => return Some("browser control"),
+        _ => {}
     }
     let scope = scope(argv)?;
     let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
@@ -973,7 +976,7 @@ pub(crate) fn grant_scope(command: &str) -> Option<String> {
         match crate::desktop::judge(argv) {
             Some(crate::desktop::Judged::Free) => continue,
             Some(crate::desktop::Judged::App(app)) => {
-                scopes.push(format!("{} on {app}", crate::desktop::PROGRAM));
+                scopes.push(format!("{argv0} on {app}"));
                 continue;
             }
             Some(_) => return None,

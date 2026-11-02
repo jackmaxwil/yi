@@ -1147,137 +1147,6 @@ fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
     Ok(())
 }
 
-fn sandboxed_broker(asker: Asker) -> PermissionBroker {
-    let project = PathBuf::from("/home/user/project");
-    PermissionBroker::new(
-        PermissionMode::Auto,
-        project.clone(),
-        Vec::new(),
-        Some(asker),
-        tokio::sync::broadcast::channel(8).0,
-    )
-    .with_sandbox(Some(sandbox(vec![project])))
-}
-
-/// A broker in auto mode holding a sandbox, which answers every ask with `answer` and counts them.
-fn desktop_broker(answer: AskOutcome) -> (PermissionBroker, Arc<Mutex<Vec<Vec<String>>>>) {
-    let asks = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&asks);
-    let asker: Asker = Arc::new(move |ask| {
-        if let Ok(mut asks) = seen.lock() {
-            asks.push(ask.grants.iter().map(|grant| grant.label.clone()).collect());
-        }
-        answer
-    });
-    let broker = sandboxed_broker(asker);
-    (broker, asks)
-}
-
-fn bash(broker: &PermissionBroker, command: &str) -> yi_runtime::permission::CallOutcome {
-    broker.decide_call(
-        "bash",
-        ToolKind::Exec,
-        true,
-        "c1",
-        &bash_args(command),
-        None,
-    )
-}
-
-/// One yes per app: the sandbox refuses this program outright, so it has to run outside, and the
-/// answer for TextEdit must reach the next TextEdit command and nothing else.
-#[test]
-fn a_yes_for_one_desktop_app_covers_that_app_alone_and_runs_outside() -> TestResult {
-    let (broker, asks) = desktop_broker(AskOutcome::AllowAlways(0));
-    let first = bash(
-        &broker,
-        "agent-desktop snapshot --app TextEdit -i --compact",
-    );
-    assert!(first.allowed);
-    assert_eq!(first.containment, Containment::Uncontained);
-    let again = bash(&broker, "agent-desktop launch textedit");
-    assert!(again.allowed);
-    assert_eq!(again.containment, Containment::Uncontained);
-    assert_eq!(
-        asks.lock().map_err(|_| "poisoned")?.len(),
-        1,
-        "same app asked again"
-    );
-    bash(&broker, "agent-desktop snapshot --app Notes");
-    assert_eq!(
-        asks.lock().map_err(|_| "poisoned")?.len(),
-        2,
-        "another app rode the yes"
-    );
-    Ok(())
-}
-
-/// "Always" on a command with no app to scope to would keep the exact call, and `press cmd+q`
-/// means something else in whichever app is in front next time.
-#[test]
-fn a_desktop_command_with_no_app_is_offered_no_standing_yes_and_keeps_none() -> TestResult {
-    let (broker, asks) = desktop_broker(AskOutcome::AllowAlways(0));
-    for command in [
-        "agent-desktop snapshot -i",
-        "agent-desktop snapshot -i",
-        "agent-desktop snapshot --app Terminal",
-        "agent-desktop snapshot --app Terminal",
-    ] {
-        assert!(bash(&broker, command).allowed);
-    }
-    let asks = asks.lock().map_err(|_| "poisoned")?;
-    assert_eq!(asks.len(), 4, "a standing yes was kept: {asks:?}");
-    assert!(asks.iter().all(Vec::is_empty), "offered {asks:?}");
-    Ok(())
-}
-
-#[test]
-fn a_free_desktop_verb_runs_outside_unasked() -> TestResult {
-    let (broker, asks) = desktop_broker(AskOutcome::Reject);
-    let outcome = bash(&broker, "agent-desktop status");
-    assert!(outcome.allowed);
-    assert_eq!(outcome.containment, Containment::Uncontained);
-    assert!(asks.lock().map_err(|_| "poisoned")?.is_empty());
-    Ok(())
-}
-
-/// The sandbox is the backstop: a spelling that could run the model's own file, or point the record
-/// at the model's forgery, is asked about and, even approved, stays where the OS refuses it.
-#[test]
-fn a_desktop_command_by_any_other_spelling_stays_in_the_sandbox() -> TestResult {
-    for command in [
-        "./agent-desktop status",
-        "AGENT_DESKTOP_HOME=forged agent-desktop click @s1:e1",
-        "PATH=. agent-desktop click @s1:e1",
-        "timeout 5 agent-desktop status",
-    ] {
-        let (broker, asks) = desktop_broker(AskOutcome::AllowOnce);
-        let outcome = bash(&broker, command);
-        assert!(
-            matches!(outcome.containment, Containment::Contained { .. }),
-            "{command} left the sandbox"
-        );
-        assert!(
-            asks.lock().map_err(|_| "poisoned")?.len() <= 1,
-            "{command} asked twice"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn a_browser_is_refused_in_every_mode_and_names_agent_browser() -> TestResult {
-    let (broker, _) = desktop_broker(AskOutcome::AllowOnce);
-    broker.set_mode(PermissionMode::Yolo);
-    let outcome = bash(&broker, "agent-desktop snapshot --app Safari");
-    assert!(!outcome.allowed);
-    assert!(
-        outcome.reason.contains("agent-browser"),
-        "{}",
-        outcome.reason
-    );
-    Ok(())
-}
 mod forge {
     use super::*;
     use yi_types::config::HostRecipe;
@@ -1466,4 +1335,231 @@ mod forge {
         );
         Ok(())
     }
+}
+
+fn sandboxed_broker(asker: Asker) -> PermissionBroker {
+    let project = PathBuf::from("/home/user/project");
+    PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        Vec::new(),
+        Some(asker),
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(sandbox(vec![project])))
+}
+
+/// A broker in auto mode holding a sandbox, which answers every ask with `answer` and counts them.
+fn desktop_broker(answer: AskOutcome) -> (PermissionBroker, Arc<Mutex<Vec<Vec<String>>>>) {
+    let asks = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&asks);
+    let asker: Asker = Arc::new(move |ask| {
+        if let Ok(mut asks) = seen.lock() {
+            asks.push(ask.grants.iter().map(|grant| grant.label.clone()).collect());
+        }
+        answer
+    });
+    let broker = sandboxed_broker(asker);
+    (broker, asks)
+}
+
+fn bash(broker: &PermissionBroker, command: &str) -> yi_runtime::permission::CallOutcome {
+    broker.decide_call(
+        "bash",
+        ToolKind::Exec,
+        true,
+        "c1",
+        &bash_args(command),
+        None,
+    )
+}
+
+/// One yes per app: the sandbox refuses this program outright, so it has to run outside, and the
+/// answer for TextEdit must reach the next TextEdit command and nothing else.
+#[test]
+fn a_yes_for_one_desktop_app_covers_that_app_alone_and_runs_outside() -> TestResult {
+    let (broker, asks) = desktop_broker(AskOutcome::AllowAlways(0));
+    let first = bash(
+        &broker,
+        "agent-desktop snapshot --app TextEdit -i --compact",
+    );
+    assert!(first.allowed);
+    assert_eq!(first.containment, Containment::Uncontained);
+    let again = bash(&broker, "agent-desktop launch textedit");
+    assert!(again.allowed);
+    assert_eq!(again.containment, Containment::Uncontained);
+    assert_eq!(
+        asks.lock().map_err(|_| "poisoned")?.len(),
+        1,
+        "same app asked again"
+    );
+    bash(&broker, "agent-desktop snapshot --app Notes");
+    assert_eq!(
+        asks.lock().map_err(|_| "poisoned")?.len(),
+        2,
+        "another app rode the yes"
+    );
+    Ok(())
+}
+
+/// "Always" on a command with no app to scope to would keep the exact call, and `press cmd+q`
+/// means something else in whichever app is in front next time.
+#[test]
+fn a_desktop_command_with_no_app_is_offered_no_standing_yes_and_keeps_none() -> TestResult {
+    let (broker, asks) = desktop_broker(AskOutcome::AllowAlways(0));
+    for command in [
+        "agent-desktop snapshot -i",
+        "agent-desktop snapshot -i",
+        "agent-desktop snapshot --app Terminal",
+        "agent-desktop snapshot --app Terminal",
+    ] {
+        assert!(bash(&broker, command).allowed);
+    }
+    let asks = asks.lock().map_err(|_| "poisoned")?;
+    assert_eq!(asks.len(), 4, "a standing yes was kept: {asks:?}");
+    assert!(asks.iter().all(Vec::is_empty), "offered {asks:?}");
+    Ok(())
+}
+
+#[test]
+fn a_free_desktop_verb_runs_outside_unasked() -> TestResult {
+    let (broker, asks) = desktop_broker(AskOutcome::Reject);
+    let outcome = bash(&broker, "agent-desktop status");
+    assert!(outcome.allowed);
+    assert_eq!(outcome.containment, Containment::Uncontained);
+    assert!(asks.lock().map_err(|_| "poisoned")?.is_empty());
+    Ok(())
+}
+
+/// The gate reads HOME, which a test cannot set in its own process, so the named test runs again in a
+/// child whose home holds the box. True in that child; a filter matching no test exits 0, so count.
+fn in_a_boxed_home(test: &str) -> Result<bool, Box<dyn Error>> {
+    let here = std::env::var_os("HOME").map(PathBuf::from);
+    if here.is_some_and(|home| yi_permission::browser_boxed(&home)) {
+        return Ok(true);
+    }
+    let scratch = Scratch::new("yi-browser-boxed")?;
+    let home = scratch.home()?;
+    let plugin = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+    std::fs::create_dir_all(plugin.dir(&home))?;
+    for file in [plugin.name, "config.json", "chrome-box"] {
+        std::fs::write(plugin.dir(&home).join(file), "")?;
+    }
+    let child = yi_tools::command(std::env::current_exe()?)
+        .args(["--exact", test])
+        .env("HOME", &home)
+        .output()?;
+    let shown = String::from_utf8_lossy(&child.stdout);
+    assert!(
+        child.status.success() && shown.contains("1 passed"),
+        "{shown}"
+    );
+    Ok(false)
+}
+
+/// Chrome in the default session has only loopback and no credential, so nothing there needs a yes.
+#[test]
+fn the_local_browser_runs_outside_unasked() -> TestResult {
+    if !in_a_boxed_home("permission_scope::the_local_browser_runs_outside_unasked")? {
+        return Ok(());
+    }
+    let (broker, asks) = desktop_broker(AskOutcome::Reject);
+    let outcome = bash(&broker, "agent-browser open http://localhost:3000");
+    assert!(outcome.allowed);
+    assert_eq!(outcome.containment, Containment::Uncontained);
+    assert!(asks.lock().map_err(|_| "poisoned")?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn one_yes_covers_the_web_session_and_nothing_the_box_cannot_hold() -> TestResult {
+    if !in_a_boxed_home(
+        "permission_scope::one_yes_covers_the_web_session_and_nothing_the_box_cannot_hold",
+    )? {
+        return Ok(());
+    }
+    let (broker, asks) = desktop_broker(AskOutcome::AllowAlways(0));
+    for command in [
+        "agent-browser --session web open https://example.com",
+        "agent-browser --session web click @e3",
+    ] {
+        let outcome = bash(&broker, command);
+        assert!(outcome.allowed);
+        assert_eq!(outcome.containment, Containment::Uncontained);
+    }
+    assert_eq!(asks.lock().map_err(|_| "poisoned")?.len(), 1);
+    for command in [
+        "agent-browser read https://example.com",
+        "agent-browser read https://example.com",
+    ] {
+        assert!(bash(&broker, command).allowed);
+    }
+    let asks = asks.lock().map_err(|_| "poisoned")?;
+    assert_eq!(asks.len(), 3, "a yes reached past the box: {asks:?}");
+    assert!(asks.last().is_some_and(Vec::is_empty), "offered {asks:?}");
+    Ok(())
+}
+
+#[test]
+fn a_browser_command_by_any_other_spelling_stays_in_the_sandbox() -> TestResult {
+    if !in_a_boxed_home(
+        "permission_scope::a_browser_command_by_any_other_spelling_stays_in_the_sandbox",
+    )? {
+        return Ok(());
+    }
+    let (broker, _) = desktop_broker(AskOutcome::AllowOnce);
+    let plain = bash(&broker, "agent-browser open x");
+    assert_eq!(plain.containment, Containment::Uncontained);
+    for command in [
+        "./agent-browser open x",
+        "AGENT_BROWSER_EXECUTABLE_PATH=forged agent-browser open x",
+        "AGENT_BROWSER_SESSION=web agent-browser open x",
+        "timeout 5 agent-browser open x",
+    ] {
+        let (broker, _) = desktop_broker(AskOutcome::AllowOnce);
+        let outcome = bash(&broker, command);
+        assert!(
+            matches!(outcome.containment, Containment::Contained { .. }),
+            "{command} left the sandbox"
+        );
+    }
+    Ok(())
+}
+
+/// The sandbox is the backstop: a spelling that could run the model's own file, or point the record
+/// at the model's forgery, is asked about and, even approved, stays where the OS refuses it.
+#[test]
+fn a_desktop_command_by_any_other_spelling_stays_in_the_sandbox() -> TestResult {
+    for command in [
+        "./agent-desktop status",
+        "AGENT_DESKTOP_HOME=forged agent-desktop click @s1:e1",
+        "PATH=. agent-desktop click @s1:e1",
+        "timeout 5 agent-desktop status",
+    ] {
+        let (broker, asks) = desktop_broker(AskOutcome::AllowOnce);
+        let outcome = bash(&broker, command);
+        assert!(
+            matches!(outcome.containment, Containment::Contained { .. }),
+            "{command} left the sandbox"
+        );
+        assert!(
+            asks.lock().map_err(|_| "poisoned")?.len() <= 1,
+            "{command} asked twice"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_browser_is_refused_in_every_mode_and_names_agent_browser() -> TestResult {
+    let (broker, _) = desktop_broker(AskOutcome::AllowOnce);
+    broker.set_mode(PermissionMode::Yolo);
+    let outcome = bash(&broker, "agent-desktop snapshot --app Safari");
+    assert!(!outcome.allowed);
+    assert!(
+        outcome.reason.contains("agent-browser"),
+        "{}",
+        outcome.reason
+    );
+    Ok(())
 }

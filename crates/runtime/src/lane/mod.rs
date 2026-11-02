@@ -1,7 +1,6 @@
 //! Pooled git worktrees a session works in, and the hand-back ladder out of them.
 //! A root session never edits the trunk checkout; it claims a slot.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use yi_types::lane::SlotState;
@@ -62,7 +61,7 @@ const HEAD_MAX_BYTES: u64 = 256;
 fn read_bounded(path: &Path) -> Result<String, LaneError> {
     use std::io::Read;
     let mut text = String::new();
-    File::open(path)
+    std::fs::File::open(path)
         .and_then(|file| file.take(HEAD_MAX_BYTES).read_to_string(&mut text))
         .map_err(io_error(path))?;
     Ok(text)
@@ -440,13 +439,13 @@ impl Pool {
         yi_session::replace_file(&path, &bytes).map_err(io_error(&path))
     }
 
-    fn lock(&self) -> Result<File, LaneError> {
+    fn lock(&self) -> Result<std::fs::File, LaneError> {
         let path = self.dir.join("pool.lock");
         yi_session::lock_file(&path).map_err(io_error(&path))
     }
 
     /// Invariant: held while a live process holds the `.held` flock; named under a free one is an orphan.
-    fn probe(&self, slot: SlotIndex) -> Result<(File, Option<String>), LaneError> {
+    fn probe(&self, slot: SlotIndex) -> Result<(std::fs::File, Option<String>), LaneError> {
         let path = self.held_path(slot);
         match yi_session::try_lock_file(&path).map_err(io_error(&path))? {
             Ok(file) => Ok((file, None)),
@@ -801,7 +800,7 @@ pub struct Lane {
     /// The worktree lock names `session`: set by this process, so a bind to it again is a no-op.
     locked: bool,
     released: bool,
-    _held: File,
+    _held: std::fs::File,
 }
 
 /// Invariant: a dropped clean lane is handed back detached, a dirty one kept; only release warms.
