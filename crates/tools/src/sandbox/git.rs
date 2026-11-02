@@ -30,7 +30,7 @@ pub(super) fn lane_writes(cwd: &Path, git_dirs: &[PathBuf], home: &Path) -> Vec<
             common.join("logs").join(format!("{name}.lock")),
         ]
     };
-    let branches = own_branches(cwd, admin, common, home);
+    let branches = own_branches(cwd, home);
     let leaves: Vec<PathBuf> = (branches.iter())
         .map(|branch| format!("refs/heads/{branch}"))
         .chain(["refs/stash".to_owned()])
@@ -48,9 +48,9 @@ pub(super) fn lane_writes(cwd: &Path, git_dirs: &[PathBuf], home: &Path) -> Vec<
         .collect()
 }
 
-/// The branch a host-owned record gives this tree, and the one its `HEAD` names unless that is
-/// trunk, a sibling's or another lane's. Invariant: `HEAD` is contained-writable, so it alone grants none of those.
-fn own_branches(cwd: &Path, admin: &Path, common: &Path, home: &Path) -> Vec<String> {
+/// The branch a host-owned record gives this tree, and nothing else. Invariant: `HEAD` is
+/// contained-writable, so a tree whose record does not parse has no branch this profile may grant.
+fn own_branches(cwd: &Path, home: &Path) -> Vec<String> {
     let record = [home.join(".yi/lanes"), home.join(".yi/forks")]
         .iter()
         .any(|pool| cwd.starts_with(pool))
@@ -59,32 +59,7 @@ fn own_branches(cwd: &Path, admin: &Path, common: &Path, home: &Path) -> Vec<Str
         .and_then(|bytes| serde_json::from_slice::<yi_types::lane::SlotState>(&bytes).ok())
         .and_then(|state| state.session)
         .map(|session| yi_types::lane::branch_for_session(&session));
-    let named_by = |dir: &Path| {
-        let head = std::fs::read_to_string(dir.join("HEAD")).ok()?;
-        Some(head.trim().strip_prefix("ref: refs/heads/")?.to_owned())
-    };
-    let siblings = (std::fs::read_dir(common.join("worktrees"))
-        .into_iter()
-        .flatten()
-        .flatten())
-    .map(|entry| entry.path())
-    .filter(|dir| dir != admin);
-    let taken: Vec<String> = siblings
-        .chain([common.to_path_buf()])
-        .filter_map(|dir| named_by(&dir))
-        .collect();
-    // A tree with a host-owned record holds that branch; `HEAD` speaks only where nothing else can.
-    if record.is_some() {
-        return record.into_iter().collect();
-    }
-    let trunk = yi_permission::trunk_of(common);
-    let head = named_by(admin).filter(|branch| {
-        *branch != trunk
-            && !branch.starts_with("yi/")
-            && !taken.contains(branch)
-            && !branch.contains("..")
-    });
-    head.into_iter().collect()
+    record.into_iter().collect()
 }
 
 /// Module git dirs one profile build opens; past it none is, which only narrows what a submodule
@@ -104,7 +79,11 @@ pub struct Sealed {
 /// admin dir and the module dirs it already has, and a name created after the build is sealed.
 pub(super) fn sealed(git_dirs: &[PathBuf]) -> Vec<Sealed> {
     let mut dirs: Vec<PathBuf> = git_dirs.to_vec();
-    dirs.extend((git_dirs.iter()).flat_map(|dir| module_dirs(&dir.join("modules"))));
+    dirs.extend(
+        (git_dirs.iter())
+            .filter(|dir| dir.join("modules").is_dir())
+            .flat_map(|dir| module_dirs(&dir.join("modules"))),
+    );
     let keeper = |parent: &Path| -> Vec<PathBuf> {
         (dirs.iter())
             .filter(|dir| dir.starts_with(parent))
@@ -141,7 +120,7 @@ fn module_dirs(modules: &Path) -> Vec<PathBuf> {
         for child in directories(&parent) {
             visited = visited.saturating_add(1);
             if visited > MODULE_WALK_MAX {
-                return Vec::new();
+                return found;
             }
             // A module's dir is named after its path, so `modules/nested/sub` sits under a dir
             // that is no module; only a dir holding HEAD is one, and only its own modules are

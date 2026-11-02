@@ -3,19 +3,21 @@
 
 mod catastrophic;
 mod decide;
+mod desktop;
 pub mod outbox;
 mod review;
 mod rules;
 mod safety;
 
 pub use catastrophic::{
-    CatastrophicContext, ReadGate, beneath, command_reads_credentials, credential_stores,
+    CatastrophicContext, OpenHold, ReadGate, beneath, command_reads_credentials, credential_stores,
     denied_file, git_dirs, identities, is_catastrophic, lexical_normalize, lexically_beneath,
     read_is_catastrophic, resolve_links, resolve_target, trunk_of, wraps,
 };
 pub use decide::{
     Decision, Hold, HoldPattern, HoldSource, PermissionMode, ToolCall, decide, mode_fragment,
 };
+pub use desktop::{PROGRAM as DESKTOP_SOURCE, drives, runs};
 pub use review::{
     ActionId, ActionLedger, ActionState, LEDGER_CAP, RequestId, ReviewedAsk, UserVerdict,
 };
