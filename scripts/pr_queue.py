@@ -7,7 +7,7 @@
 Nothing is stored: the state is the `queue` label, the `queue/candidate` ref and that ref's statuses,
 so a crashed tick loses nothing. A red candidate stays until it is replaced, since it is the memory
 of what comes next. A retry's count rides the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
-import argparse, datetime, os, pathlib, re, shutil, subprocess, sys, tempfile, time
+import argparse, contextlib, io, os, pathlib, re, shutil, subprocess, sys, tempfile, time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "scripts/guardrails")]
@@ -255,7 +255,24 @@ def recipe_of(pr):
     return pr["number"], pr["head"]["sha"], pr["title"], pr["head"]["ref"]
 
 
+def record_main():
+    """Record what main has landed; False when main moved under the push."""
+    git("fetch", "-q", "origin", "main")
+    git("checkout", "-q", "--detach", "origin/main")
+    subprocess.run((sys.executable, str(ROOT / "scripts/record_changes.py")), cwd=ROOT, check=True)
+    if not git("status", "--porcelain", "docs").stdout.strip():
+        return True
+    git("add", "docs")
+    git("-c", "user.name=yi-ci", "-c", "user.email=ci@yi", "commit", "-q", "-m", "Record the change files main landed")
+    return git("push", "-q", "origin", "HEAD:main", check=False).returncode == 0
+
+
 def build(obs):
+    # Incident: the recorder's job waited on a runner and pushed while candidate d862f188 went green,
+    # so a green gate was thrown away. Recording first leaves that job nothing to push.
+    if not record_main():
+        print("queue: main moved under the recorder's push; the next tick builds")
+        return
     git("checkout", "-q", "-B", CANDIDATE, "origin/main")
     use_driver(ROOT)
     built = []
@@ -320,14 +337,8 @@ def finish(obs):
         for issue in closing(pr.get("body")):
             api("PATCH", f"issues/{issue}", {"state": "closed"})
         set_label(number, LABEL, False)
-    git("fetch", "-q", "origin", "main")
-    git("checkout", "-q", "--detach", "origin/main")
-    subprocess.run((sys.executable, str(ROOT / "scripts/record_changes.py")), cwd=ROOT, check=True)
-    if git("status", "--porcelain", "docs").stdout.strip():
-        git("add", "docs")
-        git("-c", "user.name=yi-ci", "-c", "user.email=ci@yi", "commit", "-q", "-m", "Record the change files main landed")
-        if git("push", "-q", "origin", "HEAD:main", check=False).returncode:
-            print("queue: the recorder's push was refused; the next push to main records")
+    if not record_main():
+        print("queue: the recorder's push was refused; the next push to main records")
     delete_ref()
     print(f"queue: landed {[n for n, _ in obs['members']]}")
 
@@ -488,8 +499,33 @@ def git_cases():
     return bad
 
 
+def build_cases():
+    """What build does around a record, with the forge and git replaced by a call list."""
+    bad = []
+    saved = {name: globals()[name] for name in ("git", "record_main", "use_driver", "merge_member")}
+    pr = {"number": 7, "title": "t", "head": {"sha": "h", "ref": "b"}}
+    for recorded, want_build in ((True, True), (False, False)):
+        calls = []
+        class Done:
+            stdout = "abc\n"
+        globals().update(git=lambda *a, **k: (calls.append(a[0:2]), Done)[1], use_driver=lambda cwd: None,
+                         merge_member=lambda *a: [],
+                         record_main=lambda recorded=recorded: (calls.append("record"), recorded)[1])
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                build({"queued": [pr]})
+        finally:
+            globals().update(saved)
+        built = ("checkout", "-q") in calls
+        if calls[:1] != ["record"]:
+            bad.append(f"a build ran before main was recorded: {calls[:2]}")
+        if built != want_build:
+            bad.append(f"a record that returned {recorded} read built={built}")
+    return bad
+
+
 def selfcheck():
-    bad = rule_cases() + git_cases()
+    bad = rule_cases() + git_cases() + build_cases()
     bad += [f"rule `{name}` disabled and every case still passes, so it refutes nothing"
             for name, _, _ in RULES if not rule_cases(name)]
     for gate in ("growth", "crate_size", "comments", "test_size"):
