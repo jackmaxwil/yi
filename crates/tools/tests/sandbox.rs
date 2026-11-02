@@ -887,7 +887,7 @@ fn linked_worktree(root: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
 }
 
 #[test]
-fn a_linked_worktree_sandbox_writes_its_gitdir_and_common_dir() -> TestResult {
+fn a_linked_worktree_sandbox_writes_its_gitdir_and_objects_not_the_common_dir() -> TestResult {
     let (root, _project, home) = workspace("gitdirs")?;
     let (trunk, lane) = linked_worktree(&root)?;
     let sandbox = Sandbox::for_workspace(&lane, &home, None);
@@ -899,13 +899,14 @@ fn a_linked_worktree_sandbox_writes_its_gitdir_and_common_dir() -> TestResult {
         .filter(|(key, _)| key.starts_with("WRITABLE_ROOT_"))
         .map(|(_, path)| PathBuf::from(path))
         .collect();
-    for wanted in [&gitdir, &common] {
+    for wanted in [&gitdir, &common.join("objects")] {
         assert!(
             roots.iter().any(|root| root == wanted),
             "{} must be writable, roots: {roots:?}",
             wanted.display()
         );
     }
+    assert!(!roots.contains(&common), "{roots:?}");
     Ok(())
 }
 
@@ -917,7 +918,7 @@ fn a_contained_git_commit_succeeds_in_a_linked_worktree() -> TestResult {
     let (_trunk, lane) = linked_worktree(&root)?;
     std::fs::write(lane.join("change.txt"), "from the lane\n")?;
     let sandbox = lane_profile(&root, &lane, &home)?;
-    let command = "git checkout -q -b feature && git add -A && \
+    let command = "git add -A && \
         GIT_CONFIG_GLOBAL=/dev/null git -c user.email=yi@example.com -c user.name=yi commit -q -m lane";
     let (code, output) = run(command, &lane, Some(&sandbox))?;
     assert_eq!(
@@ -964,10 +965,12 @@ fn lane_profile(root: &Path, lane: &Path, home: &Path) -> Result<Sandbox, Box<dy
     let mut sandbox = Sandbox::for_workspace(lane, home, None);
     let scratch = root.canonicalize()?;
     sandbox.writable.retain(|writable| {
-        writable
-            .canonicalize()
-            .is_ok_and(|resolved| resolved.starts_with(&scratch))
-            || writable == Path::new("/private/tmp")
+        (writable.ancestors())
+            .find_map(|dir| dir.canonicalize().ok())
+            .is_some_and(|resolved| resolved.starts_with(&scratch))
+            && writable
+                .canonicalize()
+                .map_or(true, |resolved| resolved != scratch)
     });
     Ok(sandbox)
 }
@@ -1043,6 +1046,7 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
         "ref: refs/heads/main\n",
     )?;
     std::fs::write(common.join("modules/nested/sub/config"), "")?;
+    std::fs::create_dir_all(common.join("refs/remotes/origin"))?;
     let sandbox = lane_profile(&root, &lane, &home)?;
     for target in [
         common.join("config.worktree"),
@@ -1050,6 +1054,7 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
         common.join("info/exclude"),
         common.join("modules/nested/sub/config"),
         common.join("objects/info/alternates"),
+        common.join("refs/remotes/origin/HEAD"),
     ] {
         let command = format!("printf x >> {}", target.display());
         let (code, output) = run(&command, &lane, Some(&sandbox))?;
@@ -1060,12 +1065,15 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
             target.display()
         );
     }
+    // A lane holds its own branch and nothing shared with its siblings, modules included; a main
+    // checkout's work inside a submodule still commits.
     let index = common.join("modules/nested/sub/index");
-    let (code, output) = run(
-        &format!("printf x > {}", index.display()),
-        &lane,
-        Some(&sandbox),
-    )?;
+    let write = format!("printf x > {}", index.display());
+    let (code, output) = run(&write, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "a lane reached a shared module: {output}");
+    let trunk = common.parent().ok_or("no trunk")?;
+    let main = lane_profile(&root, trunk, &home)?;
+    let (code, output) = run(&write, trunk, Some(&main))?;
     assert_eq!(code, 0, "work inside a submodule still commits: {output}");
     Ok(())
 }
@@ -1136,14 +1144,16 @@ fn a_seal_closes_an_admin_dir_or_a_module_the_build_never_saw() -> TestResult {
             target.display()
         );
     }
-    // A module the build did open keeps its object store: work inside a submodule still commits.
+    // A module the build did open keeps its object store in a main checkout, whose git dir is
+    // writable; a lane reaches none of it.
     let objects = module.join("objects/x");
     std::fs::create_dir_all(module.join("objects"))?;
-    let (code, output) = run(
-        &format!("printf x >> {}", objects.display()),
-        &lane,
-        Some(&sandbox),
-    )?;
+    let write = format!("printf x >> {}", objects.display());
+    let (code, output) = run(&write, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "a lane reached a shared module: {output}");
+    let trunk = common.parent().ok_or("no trunk")?;
+    let main = lane_profile(&root, trunk, &home)?;
+    let (code, output) = run(&write, trunk, Some(&main))?;
     assert_eq!(code, 0, "{} stays writable: {output}", objects.display());
     Ok(())
 }
@@ -1216,6 +1226,113 @@ fn a_contained_command_cannot_plant_a_dot_git_or_reach_another_lanes_admin() -> 
         Some(&sandbox),
     )?;
     assert_eq!(code, 0, "ordinary work still runs there: {output}");
+    Ok(())
+}
+
+const COMMIT: &str = "GIT_CONFIG_GLOBAL=/dev/null git -c user.email=y@e.com -c user.name=y commit -q --allow-empty -m m";
+
+/// A lane where the host puts one: a slot under `~/.yi/lanes`, its record naming the session, on the
+/// session's branch; and a sibling on its own. Returns the trunk, the lane and its profile.
+fn held_lane(root: &Path, home: &Path) -> Result<(PathBuf, PathBuf, Sandbox), Box<dyn Error>> {
+    let (trunk, _detached) = linked_worktree(root)?;
+    let pool = home.join(".yi/lanes/key");
+    std::fs::create_dir_all(&pool)?;
+    let lane = pool.join("0");
+    let text = lane.to_string_lossy();
+    git(&trunk, &["worktree", "add", "-q", "-b", "yi/held", &text])?;
+    std::fs::write(pool.join("0.json"), r#"{"session":"held"}"#)?;
+    let sibling = pool.join("1");
+    let text = sibling.to_string_lossy();
+    git(&trunk, &["worktree", "add", "-q", "-b", "yi/other", &text])?;
+    let sandbox = lane_profile(root, &lane, home)?;
+    Ok((trunk, lane, sandbox))
+}
+
+/// The work a lane exists for still runs with the common dir taken away, and git says nothing of
+/// the `packed-refs` it can no longer write.
+#[test]
+fn a_lane_commits_on_its_own_branch_and_stashes() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("own-refs")?;
+    let (_trunk, lane, sandbox) = held_lane(&root, &home)?;
+    let before = git(&lane, &["rev-parse", "HEAD"])?;
+    let (code, output) = run(COMMIT, &lane, Some(&sandbox))?;
+    assert_eq!(code, 0, "{output}");
+    assert!(!output.contains("packed-refs"), "{output}");
+    assert_ne!(git(&lane, &["rev-parse", "yi/held"])?, before);
+    let stash = "printf 'x\\n' >> README.md && git stash -q && git stash pop -q";
+    let (code, output) = run(stash, &lane, Some(&sandbox))?;
+    assert_eq!(code, 0, "{output}");
+    Ok(())
+}
+
+/// Incident: the whole common dir was writable, so a contained process deleted a sibling's ref and
+/// moved trunk.
+#[test]
+fn a_lane_cannot_move_trunk_or_a_siblings_branch() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("other-refs")?;
+    let (trunk, lane, sandbox) = held_lane(&root, &home)?;
+    let tip = git(&trunk, &["rev-parse", "main"])?;
+    let common = trunk.join(".git");
+    for attempt in [
+        format!(
+            "git update-ref refs/heads/main {tip}~0 && git update-ref refs/heads/main $(git commit-tree -m x $(git write-tree))"
+        ),
+        "git update-ref -d refs/heads/yi/other".to_owned(),
+        format!("rm {}", common.join("refs/heads/yi/other").display()),
+        format!("printf x >> {}", common.join("packed-refs").display()),
+        format!(
+            "printf '{tip} refs/heads/forged\\n' > {0}.lock; mv {0}.lock {0}",
+            common.join("packed-refs").display()
+        ),
+    ] {
+        run(&attempt, &lane, Some(&sandbox))?;
+    }
+    assert_eq!(git(&trunk, &["rev-parse", "main"])?, tip);
+    assert!(
+        git(&trunk, &["rev-parse", "yi/other"]).is_ok(),
+        "the sibling's ref went"
+    );
+    Ok(())
+}
+
+/// `HEAD` is contained-writable: a planted one must not grant trunk on the next spawn.
+#[test]
+fn a_planted_head_grants_nothing_on_the_next_spawn() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("planted-grant")?;
+    let (trunk, lane, _sandbox) = held_lane(&root, &home)?;
+    let admin = git(&lane, &["rev-parse", "--absolute-git-dir"])?;
+    let tip = git(&trunk, &["rev-parse", "main"])?;
+    git(&trunk, &["branch", "release"])?;
+    for planted in ["main", "yi/other", "release"] {
+        std::fs::write(
+            Path::new(&admin).join("HEAD"),
+            format!("ref: refs/heads/{planted}\n"),
+        )?;
+        let next = lane_profile(&root, &lane, &home)?;
+        let (code, output) = run(COMMIT, &lane, Some(&next))?;
+        assert_ne!(code, 0, "{planted}: {output}");
+    }
+    assert_eq!(git(&trunk, &["rev-parse", "main"])?, tip);
+    assert_eq!(git(&trunk, &["rev-parse", "release"])?, tip);
+    Ok(())
+}
+
+/// Dies with a refused ref naming a path the retry never spells: `retried_by` never matched
+/// `git switch -c x`, so the same refusal came back forever and nothing asked.
+#[test]
+fn a_new_branch_refused_in_a_lane_asks_the_next_time() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("switch")?;
+    let (_trunk, lane, sandbox) = held_lane(&root, &home)?;
+    let command = "git switch -q -c feature";
+    let (code, output) = run(command, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "{output}");
+    let refusal = sandbox_refusal(&sandbox, &lane, Some(code), &output, command).ok_or(output)?;
+    assert!(matches!(refusal, SandboxRefusal::Scopes(_)), "{refusal:?}");
+    assert!(refusal.retried_by(&sandbox, &lane, command));
     Ok(())
 }
 
