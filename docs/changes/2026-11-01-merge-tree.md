@@ -1,7 +1,7 @@
 ---
 issue: Closes #1938
 growth: +157 is one merge and its conflict rows. Weighed for deletion: dropping the old road, which leaves a runner on git 2.34 with no merge at all, since git before 2.43 crashes on --attr-source
-raise: tests +362, comments +16, crate runtime +161
+raise: tests +389, comments +17, crate runtime +180
 decision: Kernel hand-back merges by merge-tree --attr-source, and git merge in a lane below 2.43 | a slot per merge, and a checkout to write | revert the one call. Amends D475's order
 ---
 `rlm.merge_worktree` now merges in the object store, through `git merge-tree --write-tree`, so a hand-back takes no lane and writes no checkout. It reads attributes from the parent's commit, as `git merge` in a checkout of that commit would. A git older than 2.43, or a version that cannot be read, takes the old road; the plan engine stays on it, since it verifies in that directory.

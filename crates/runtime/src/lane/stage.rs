@@ -1,5 +1,5 @@
-//! A kernel child's hand-back merged in the object store: no checkout, so no slot per merge. The
-//! plan engine stays on [`super::settle::prepare`], since it verifies in that directory.
+//! A kernel child's hand-back merged in the object store on git 2.43 and later: no checkout, so no
+//! slot per merge. An older git takes the plan engine's [`super::settle::prepare`] and its directory.
 
 use std::path::Path;
 use std::sync::OnceLock;

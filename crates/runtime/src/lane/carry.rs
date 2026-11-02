@@ -253,13 +253,21 @@ pub fn include_list(bytes: &[u8]) -> Result<(Vec<String>, usize), String> {
     Ok((patterns, listed))
 }
 
-/// One bad pattern is named and the rest still match.
-fn matcher(patterns: &[String], rows: &mut Vec<String>) -> Option<globset::GlobSet> {
-    let mut set = globset::GlobSetBuilder::new();
+/// One bad pattern is named and the rest still match; a `!` line refuses what the others keep.
+fn matcher(
+    patterns: &[String],
+    rows: &mut Vec<String>,
+) -> Option<(globset::GlobSet, globset::GlobSet)> {
+    let mut keep = Vec::new();
+    let mut skip = Vec::new();
     for pattern in patterns {
-        let trimmed = pattern.trim_start_matches('/').trim_end_matches('/');
+        let (into, body) = match pattern.strip_prefix('!') {
+            Some(rest) => (&mut skip, rest),
+            None => (&mut keep, pattern.as_str()),
+        };
+        let trimmed = body.trim_start_matches('/').trim_end_matches('/');
         match globset::Glob::new(trimmed) {
-            Ok(glob) => drop(set.add(glob)),
+            Ok(glob) => into.push(glob),
             Err(error) => rows.push(format!(
                 "[not carried: pattern `{}` does not parse: {}]",
                 crate::ext::sanitize(pattern),
@@ -267,7 +275,14 @@ fn matcher(patterns: &[String], rows: &mut Vec<String>) -> Option<globset::GlobS
             )),
         }
     }
-    set.build().ok()
+    let build = |globs: Vec<globset::Glob>| {
+        let mut set = globset::GlobSetBuilder::new();
+        for glob in globs {
+            set.add(glob);
+        }
+        set.build().ok()
+    };
+    Some((build(keep)?, build(skip)?))
 }
 
 /// A path copied, or why not: the walk refuses a link on any component, so a path a contained
@@ -359,13 +374,13 @@ pub fn carry_includes(
     if patterns.is_empty() {
         return rows;
     }
-    let Some(set) = matcher(&patterns, &mut rows) else {
+    let Some((keep, skip)) = matcher(&patterns, &mut rows) else {
         return rows;
     };
     let (mut copied, mut bytes) = (0usize, 0u64);
     let matched = (ignored.iter())
         .map(|path| path.trim_end_matches('/'))
-        .filter(|path| set.is_match(path));
+        .filter(|path| keep.is_match(path) && !skip.is_match(path));
     for path in matched {
         if copied >= INCLUDE_FILES_MAX {
             rows.push(yi_tools::cut_row(

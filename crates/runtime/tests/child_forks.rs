@@ -606,6 +606,33 @@ fn only_a_file_both_listed_and_ignored_carries() -> TestResult {
     Ok(())
 }
 
+/// Dies with `!` read as a literal name: a broader line then carries what the exclusion refused.
+#[test]
+fn a_negated_pattern_refuses_what_a_broader_line_keeps() -> TestResult {
+    let rig = Rig::new("include-negate")?;
+    std::fs::write(
+        rig.repo.join(".worktreeinclude"),
+        ".env*\n!*.production.bak\n",
+    )?;
+    std::fs::write(rig.repo.join(".env.local"), "KEY=1\n")?;
+    std::fs::write(rig.repo.join(".env.production.bak"), "SECRET=1\n")?;
+    let into = rig.root.join("into");
+    std::fs::create_dir_all(&into)?;
+    let ignored = [".env.local".to_owned(), ".env.production.bak".to_owned()];
+    let rows = carry_includes(&rig.repo, &into, &ignored, &[], &[]);
+    assert_eq!(std::fs::read_to_string(into.join(".env.local"))?, "KEY=1\n");
+    assert!(
+        !into.join(".env.production.bak").exists(),
+        "a negated line refuses it: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("carried 1 ignored files")),
+        "{rows:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_include_file_count_holds_at_its_limit_and_says_so_one_past() -> TestResult {
     let rig = Rig::new("include-cap")?;

@@ -3236,14 +3236,12 @@ fn checked_merge(
 }
 
 /// Dies with the hand-back back on `prepare`: a slot and a checkout per merge, at 128 children the
-/// wait this exists to remove. A git too old for it takes the old road, so this asks only above it.
+/// wait this exists to remove. A git too old for merge-tree proves the hand-back on the old road.
 #[tokio::test]
 async fn a_hand_back_merges_in_the_object_store_with_no_staging_lane() -> TestResult {
     let rig = Rig::new("merge-tree-road")?;
     let version = git(&rig.repo, &["--version"])?;
-    if yi_runtime::lane::stage::git_version(&version).is_none_or(|at| at < (2, 43)) {
-        return Ok(());
-    }
+    let native = yi_runtime::lane::stage::git_version(&version).is_some_and(|at| at >= (2, 43));
     let log = rig.root.join("git-log");
     shim_git(&rig, &format!("echo \"$*\" >> '{}'", log.display()))?;
     let family = writer(&rig, "echo x > draft.txt").await?;
@@ -3251,11 +3249,13 @@ async fn a_hand_back_merges_in_the_object_store_with_no_staging_lane() -> TestRe
     let reply = family.host.merge_worktree("writer", None)?;
     assert_eq!(reply["merged"], true, "{reply:?}");
     let ran = std::fs::read_to_string(&log)?;
-    assert!(ran.contains("merge-tree --write-tree"), "{ran}");
-    assert!(
-        !ran.lines().any(|line| line.contains(" merge --no-ff")),
-        "{ran}"
-    );
+    if native {
+        assert!(ran.contains("merge-tree --write-tree"), "{ran}");
+        assert!(
+            !ran.lines().any(|line| line.contains(" merge --no-ff")),
+            "{ran}"
+        );
+    }
     Ok(())
 }
 

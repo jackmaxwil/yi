@@ -3,7 +3,7 @@
 use super::fork::{ChildTree, SettledTree};
 use super::hostgit::git_by;
 use super::settle::*;
-use super::{BranchName, Pool, Sha};
+use super::{BranchName, Pool};
 use crate::subagent::{ChildRecord, SubagentHost};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -215,8 +215,9 @@ impl SubagentHost {
             reply.insert("next".to_owned(), json!(next));
             return Ok(reply);
         }
-        let mut moved: Option<(Sha, Sha)> = None;
-        for _attempt in 0..2 {
+        let mut attempt = 0u8;
+        let (expected, found) = loop {
+            attempt = attempt.saturating_add(1);
             let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
             let generation = generation_of(&parent, deadline).map_err(|error| error.to_string())?;
             let session = format!("stage-{name}");
@@ -285,15 +286,13 @@ impl SubagentHost {
                     );
                     return Ok(reply);
                 }
-                Publish::Moved { expected, found } => moved = Some((expected, found)),
+                Publish::Moved { expected, found } => {
+                    if attempt > 1 {
+                        break (expected, found);
+                    }
+                }
             }
-        }
-        let (expected, found) = moved.unwrap_or_else(|| {
-            (
-                settled.candidate.commit.clone(),
-                settled.candidate.commit.clone(),
-            )
-        });
+        };
         Err(format!(
             "the parent moved from {} to {} while the merge was prepared, twice; the candidate {} is retained on branch {}: merge that branch by hand, the child's lane is released",
             expected.short(),
