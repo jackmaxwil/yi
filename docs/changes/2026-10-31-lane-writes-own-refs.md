@@ -1,4 +1,6 @@
 ---
+version: 0.866.0
+decisions: D526
 issue: Closes #1930
 decision: a linked worktree's sandbox writes its admin dir, the shared objects, its own branch and the stash, never the rest of the common dir | a contained process deleted a sibling's ref and moved trunk | restore the common dir in lane_writes
 raise: tests +722, comments +71, crate tools +163, crate runtime +427, crate permission +18, crate types +5
