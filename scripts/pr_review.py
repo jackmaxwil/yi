@@ -1067,7 +1067,7 @@ def replay_row(read, label):
     written before the v2 template fails it whatever its code is worth."""
     severity = {s: sum(f["severity"] == s for f in read["kept"]) for s in SEVERITIES}
     return {"pr": read["pr"]["number"], "label": label, "sha": read["sha"], "severity": severity,
-            "intake": sorted({f["lens"] for f in read["intake"]}), "dropped": read["dropped"], "outside": read.get("outside", 0),
+            "intake": sorted({f["lens"] for f in read["intake"]}), "dropped": read["dropped"], "outside": read.get("outside", 0), "unanswered": read["unanswered"],
             "findings": [{k: f[k] for k in ("lens", "severity", "claim", "path", "line")} for f in read["kept"]]}
 
 
@@ -1088,25 +1088,24 @@ def cmd_replay(args):
 
 
 def calibration(rows):
-    """Precision and recall of a high finding on the labelled replay rows, as (hits, of) pairs. The
-    newest row of a PR wins; only `bad` and `kept` are judged, and a PR whose reading went
-    unanswered is listed, never counted. The 2026-09-28 file names the counts `lens`."""
-    latest = {r["pr"]: dict(r, severity=r.get("severity") or r["lens"]) if "severity" in r or isinstance(r.get("lens"), dict) else r for r in rows}
+    """Invariant: a PR whose reading was unanswered, or partly silent, is listed, never counted.
+    The last row of a PR wins; only `bad` and `kept` are judged."""
+    latest = {r["pr"]: r for r in rows}
     judged = [r for r in latest.values() if r["label"] in ("bad", "kept")]
-    answered = [r for r in judged if "severity" in r]
+    answered = [r for r in judged if "severity" in r and not r.get("unanswered")]
     flagged = [r for r in answered if r["severity"]["high"]]
     bad = [r for r in answered if r["label"] == "bad"]
     kept = [r for r in answered if r["label"] == "kept"]
     return {"precision": (sum(r["label"] == "bad" for r in flagged), len(flagged)),
             "recall": (sum(bool(r["severity"]["high"]) for r in bad), len(bad)),
             "kept_clean": (sum(not r["severity"]["high"] for r in kept), len(kept)),
-            "unanswered": sorted(r["pr"] for r in judged if "severity" not in r),
+            "unanswered": sorted(r["pr"] for r in judged if r not in answered),
             "ignored": len(latest) - len(judged)}
 
 
 def cmd_calibrate(args):
-    """The numbers the shadow-to-blocking decision reads: precision and recall of a high finding on
-    the `just pr replay` rows. No threshold lives here; the owner reads the pairs."""
+    """Print precision, recall and kept-clean of a high finding over replay rows; no threshold here.
+    Files are read in argument order, so list them oldest first."""
     rows = [json.loads(line) for path in args.files for line in pathlib.Path(path).read_text().splitlines() if line.strip()]
     got = calibration(rows)
     for name, label in (("precision", "flagged PRs that are bad"), ("recall", "bad PRs flagged"), ("kept_clean", "kept PRs with no high")):
@@ -1743,24 +1742,36 @@ def selfcheck():
     assert intake(dict(pr, body=""), "", [], diffs.get, "apex/yi")[0]["lens"] == "template"
 
     read = {"pr": {"number": 340}, "sha": "abc", "intake": [{"lens": "template", "severity": "high"}],
-            "kept": [finding, dict(finding, severity="low")], "dropped": 2}
+            "kept": [finding, dict(finding, severity="low")], "dropped": 2, "unanswered": ["correctness lens"]}
     row = replay_row(read, "bad")
     assert row["severity"] == {"high": 1, "medium": 0, "low": 1} and row["intake"] == ["template"], row
+    assert row["unanswered"] == ["correctness lens"], "a silent lens must reach the calibration row"
 
     rows = [{"pr": 1, "label": "bad", "severity": {"high": 2, "medium": 0, "low": 0}},
             {"pr": 2, "label": "bad", "severity": {"high": 0, "medium": 3, "low": 0}},
             {"pr": 3, "label": "bad", "unanswered": "yi ask exited 3"},
-            {"pr": 8, "label": "bad", "lens": {"high": 1, "medium": 0, "low": 0}},
+            {"pr": 8, "label": "bad", "severity": {"high": 0, "medium": 0, "low": 0}, "unanswered": ["correctness lens"]},
             {"pr": 4, "label": "kept", "severity": {"high": 1, "medium": 0, "low": 0}},
             {"pr": 5, "label": "kept", "severity": {"high": 0, "medium": 0, "low": 4}},
             {"pr": 6, "label": "kept", "severity": {"high": 0, "medium": 1, "low": 0}},
             {"pr": 7, "label": "closed", "severity": {"high": 1, "medium": 0, "low": 0}},
             {"pr": 1, "label": "bad", "severity": {"high": 0, "medium": 0, "low": 0}}]
     got = calibration(rows[:-1])
-    assert (got["precision"], got["recall"], got["kept_clean"]) == ((2, 3), (2, 3), (2, 3)), got
-    assert got["unanswered"] == [3] and got["ignored"] == 1, got
-    assert calibration(rows)["recall"] == (1, 3), "a later reading of a PR replaces the earlier one"
+    assert (got["precision"], got["recall"], got["kept_clean"]) == ((1, 2), (1, 2), (2, 3)), got
+    assert got["unanswered"] == [3, 8] and got["ignored"] == 1, got
+    assert calibration(rows)["recall"] == (0, 2), "a later reading of a PR replaces the earlier one"
     assert calibration([])["precision"] == (0, 0), "no flagged PR is no precision, not a division"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        old, new = pathlib.Path(tmp, "old.jsonl"), pathlib.Path(tmp, "new.jsonl")
+        old.write_text("".join(json.dumps(r) + "\n" for r in rows[:-1]) + "\n")
+        new.write_text(json.dumps(rows[-1]) + "\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert cmd_calibrate(argparse.Namespace(files=[str(old), str(new)])) == 0
+        assert buf.getvalue().splitlines() == [
+            "precision   0/1 0%  flagged PRs that are bad", "recall      0/2 0%  bad PRs flagged",
+            "kept_clean  2/3 66%  kept PRs with no high", "unanswered [3, 8]  ignored 1 (labels other than bad and kept)"], buf.getvalue()
 
     repo_dir = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-wall-"))
     try:
