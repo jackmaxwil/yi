@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 from unittest import mock
@@ -996,22 +997,44 @@ def handed_over(work):
                  "UV_CACHE_DIR": str(home / ".cache/uv"), "RUSTUP_AUTO_INSTALL": "0"}
 
 
+def worker_python(work, executable=None, prefix=None):
+    """The interpreter the dropped-to user can run: a copy in the box when the runner's lives under a
+    root-only HOME. Incident: it could not exec /root/.local/bin/python3.12 and the whole gate died."""
+    executable = pathlib.Path(os.path.realpath(executable or sys.executable))
+    if all(os.stat(path).st_mode & 0o001 for path in (executable, *executable.parents)):
+        return str(executable), {}
+    prefix = pathlib.Path(os.path.realpath(prefix or sys.base_prefix))
+    try:
+        inside = executable.relative_to(prefix)
+    except ValueError:
+        return str(executable), {}
+    copy = work.parent / "python"
+    if not copy.exists():
+        shutil.copytree(prefix, copy, symlinks=True)
+        for path in (copy, *copy.rglob("*")):
+            mode = path.lstat().st_mode
+            with contextlib.suppress(OSError):
+                path.chmod(mode | (0o555 if path.is_dir() or mode & 0o100 else 0o444))
+    return str(copy / inside), {"PYTHONHOME": str(copy)}
+
+
 def in_worker(work, op, args):
     """`OPS[op]` in a new process that holds no token and, as root, runs as a user that owns only `work`.
     Output goes to files, not pipes: a daemon the PR left behind would hold a pipe open for ever."""
-    env, drop = {**scrubbed(), "TMPDIR": str(work / "tmp")}, {}
+    env, drop, python = {**scrubbed(), "TMPDIR": str(work / "tmp")}, {}, sys.executable
     if not os.geteuid():
         uid, moved = handed_over(work)
-        env, drop = {**env, **moved}, {"user": uid, "group": uid, "extra_groups": []}
+        python, carried = worker_python(work)
+        env, drop = {**env, **moved, **carried}, {"user": uid, "group": uid, "extra_groups": []}
     with tempfile.TemporaryFile("w+") as asked, tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
         json.dump({"op": op, "args": {"work": str(work), **args}}, asked)
         asked.seek(0)
         try:
-            subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()), "--worker"], cwd=work, env=env,
+            subprocess.run([python, str(pathlib.Path(__file__).resolve()), "--worker"], cwd=work, env=env,
                            stdin=asked, stdout=out, stderr=err, **drop)
         finally:
             if drop:
-                subprocess.run([sys.executable, "-c", "import os, signal; os.kill(-1, signal.SIGKILL)"], cwd="/", env=env, check=False, **drop)
+                subprocess.run([python, "-c", "import os, signal; os.kill(-1, signal.SIGKILL)"], cwd="/", env=env, check=False, **drop)
         out.seek(0)
         err.seek(0)
         said, died = out.read(), err.read()
@@ -2138,6 +2161,26 @@ sys.exit(7)
             pass
         finally:
             os.geteuid = real
+        box = pathlib.Path(tempfile.mkdtemp(prefix="autofix-python-"))
+        try:
+            box.chmod(0o755)
+            (box / "work").mkdir()
+            prefix = box / "prefix"
+            (prefix / "bin").mkdir(parents=True)
+            (prefix / "bin/python3").write_text("")
+            prefix.chmod(0o700)
+            (prefix / "bin/python3").chmod(0o700)
+            carried, moved = worker_python(box / "work", prefix / "bin/python3", prefix)
+            if carried != str(box / "python/bin/python3") or moved != {"PYTHONHOME": str(box / "python")}:
+                errs.append(f"a root-only interpreter was not carried into the box: {carried} {moved}")
+            if (box / "python/bin/python3").stat().st_mode & 0o005 != 0o005:
+                errs.append("the box's copy of the runner's interpreter is unreadable or unexecutable to its user")
+            if worker_python(box / "work", prefix / "bin/python3") != (os.path.realpath(prefix / "bin/python3"), {}):
+                errs.append("an interpreter outside the fixer's own prefix was not run where it is")
+            if worker_python(box / "work", "/bin/sh", box) != (os.path.realpath("/bin/sh"), {}):
+                errs.append("a reachable interpreter was copied instead of run where it is")
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
     finally:
         for key, value in saved.items():
             os.environ.pop(key, None) if value is None else os.environ.update({key: value})
