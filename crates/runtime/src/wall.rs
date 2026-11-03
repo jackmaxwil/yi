@@ -87,7 +87,7 @@ impl Wall {
         self.deny_write.extend(parent.deny_write.iter().cloned());
         self.deny_read.extend(parent.deny_read.iter().cloned());
         self.deny_url.extend(parent.deny_url.iter().cloned());
-        self.isolated |= parent.isolated;
+        self.isolated |= parent.isolated || parent.container.is_some();
         self
     }
 

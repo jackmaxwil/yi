@@ -1,7 +1,8 @@
 ---
 issue: Closes #1538
 decision: A contained member's kernel writes no family board, and its `kernel://` objects read as text | D240 granted the board to every child so D164's upward channel reached the root, but the grant is also write access to the one directory the root's unconfined kernel unpickles from, and the child it protects is exactly the one with a wall, a container or a checkout of its own | restore the grant in `session_sandbox` and let `Resolver::dump_kernel` hand back its path again
-raise: crate runtime +58, tests +221, comments +12
+ledger~: fetch: one addressable read path | `offset`/`limit` pages; a `kernel://` read | `offset`/`limit` pages; a `kernel://<agent>/<var>` object read answers as text for a member whose kernel may not write the family board, so the root loads no pickle a contained child authored (`kernel_sandbox::a_parent_kernel_loads_no_pickle_a_contained_child_wrote`); a `kernel://` read
+raise: crate runtime +58, tests +235, comments +12
 ---
 
 # Stop a parent kernel unpickling what a contained child wrote
@@ -13,7 +14,8 @@ kernel calls `dill.load` on: a walled child â€” the member D240 was protecting â
 `rlm.fetch("kernel://<child>/<var>")`.
 
 `Wall::contained` now answers the question both ends ask: any wall, a container, or a checkout
-of its own (`isolated`, set from the spawn's isolation and inherited through `Wall::under`).
+of its own (`isolated`, set from the spawn's isolation and inherited through `Wall::under`, which also
+sets it under a container parent, since the container itself is never handed down).
 `session_sandbox` names the board in that member's `deny_write`, which outranks the writable
 root `kernel_profile` grants: the child's kernel meets `EPERM` on `rlm.put`, and so does its
 `bash()`.
