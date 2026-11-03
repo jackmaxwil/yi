@@ -888,6 +888,76 @@ async fn a_probe_wait_in_a_sub_plan_is_armed_and_unblocks_it() -> TestResult {
     Ok(())
 }
 
+/// Dies with a `file://` wait unblocking on its first `exists:false` reading: the woken agent
+/// found no file and re-armed it seven times in one turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_wait_holds_until_the_file_exists() -> TestResult {
+    let dir = Scratch::new("yi-channel-file-wait")?;
+    let (_session, todos) = session(&[])?;
+    let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
+    let service = Arc::new(
+        HeartbeatService::new(Arc::clone(&store), dir.to_string_lossy())
+            .with_channels(dir.join("channels")),
+    );
+    service.bind_session("test".to_owned());
+    let wait = Todo::from_text("tell them to start the smoke test")?;
+    let label = wait.label.clone();
+    todos.apply(
+        Op::Append {
+            phase: None,
+            under: None,
+            items: vec![wait],
+        },
+        None,
+    )?;
+    todos.apply(
+        Op::Block {
+            label: label.clone(),
+            on: BlockedOn::Channel {
+                address: "file://build.done?every=1s".to_owned(),
+                filter: None,
+            },
+            note: "until the build finishes".to_owned(),
+            ask: None,
+        },
+        None,
+    )?;
+    service.watch(&todos.list());
+    let armed = waiting_on(&store, &label);
+    let [job] = armed.as_slice() else {
+        return Err(format!("armed {} times, not once", armed.len()).into());
+    };
+    let channel = Channel::at(
+        &job.channel
+            .as_ref()
+            .ok_or("the wait reads no channel")?
+            .path,
+    );
+    assert_eq!(clock::fire(&todos, job, &Firing::at(0))?, Fired::Idle);
+    assert!(
+        wait_until(8_000, || channel.last().is_some()).await,
+        "the file source never read the path"
+    );
+    let early = clock::fire(&todos, job, &Firing::at(0))?;
+    assert_eq!(early, Fired::Idle, "unblocked with no file");
+
+    std::fs::write(dir.join("build.done"), "")?;
+    let mut fired = Fired::Idle;
+    let landed = wait_until(15_000, || {
+        fired = clock::fire(&todos, job, &Firing::at(0)).unwrap_or(Fired::Idle);
+        fired != Fired::Idle
+    })
+    .await;
+    adapter::halt(true);
+    adapter::halt(false);
+    assert!(landed, "the file appeared and the wait never saw it");
+    assert!(
+        matches!(&fired, Fired::Delivered(inner, _) if **inner == Fired::Unblocked(label.clone())),
+        "{fired:?}"
+    );
+    Ok(())
+}
+
 /// Dies with the plan tool's `on` losing `filter` on its way to the wait: the wait would
 /// unblock on CI's first message, red or green.
 #[test]

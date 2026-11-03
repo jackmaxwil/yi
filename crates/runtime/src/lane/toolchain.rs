@@ -6,7 +6,7 @@ use yi_types::lane::{SeenLockfiles, WarmReceipt};
 
 use super::{LaneError, Pool, SlotIndex};
 
-const SYNC_TIMEOUT_MS: u64 = 600_000;
+pub(super) const SYNC_TIMEOUT_MS: u64 = 600_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Toolchain {
@@ -144,42 +144,53 @@ pub(super) fn mark_seen(pool: &Pool, hash: &str) -> Result<(), LaneError> {
     yi_session::replace_file(&path, &bytes).map_err(|source| LaneError::Io { path, source })
 }
 
+/// The same argv under the same profile: `contained` for a call that builds one, `wrapped` for a
+/// caller that reads several entries under one profile.
+pub(super) fn wrapped(
+    argv: &[&str],
+    sandbox: Option<&yi_tools::Sandbox>,
+) -> Option<(String, Vec<String>)> {
+    let (program, args) = argv.split_first()?;
+    Some(match sandbox {
+        Some(sandbox) => sandbox.wrap(program, args),
+        None => (
+            (*program).to_owned(),
+            args.iter().map(|arg| (*arg).to_owned()).collect(),
+        ),
+    })
+}
+
+/// A lane's own profile, from the home the pool holds: the one builder every contained lane git
+/// takes, so a seal added here reaches the submodule read too.
+pub(super) fn profile(tree: &Path, home: &Path) -> Option<yi_tools::Sandbox> {
+    yi_tools::Sandbox::available()
+        .then(|| yi_tools::Sandbox::for_workspace(tree, home, None).with_caches(home))
+}
+
 /// Seatbelt-contained like a bash call: slot and scratch writable, credentials unreadable.
 /// The sandbox rides along so a failed sync can carry the real refusal, not a guess from its text.
-fn contained(
+pub(super) fn contained(
     tree: &Path,
     home: &Path,
     argv: &[&str],
 ) -> Option<(String, Vec<String>, Option<yi_tools::Sandbox>)> {
-    let (program, args) = argv.split_first()?;
-    if yi_tools::Sandbox::available() {
-        let sandbox = yi_tools::Sandbox::for_workspace(tree, home, None).with_caches(home);
-        let (program, args) = sandbox.wrap(program, args);
-        return Some((program, args, Some(sandbox)));
-    }
-    Some((
-        (*program).to_owned(),
-        args.iter().map(|arg| (*arg).to_owned()).collect(),
-        None,
-    ))
+    let sandbox = profile(tree, home);
+    let (program, args) = wrapped(argv, sandbox.as_ref())?;
+    Some((program, args, sandbox))
 }
 
 /// Invariant: a matching lockfile hash makes the claim git-only; every lockfile present syncs.
-pub fn sync(pool: &Pool, slot: SlotIndex, tree: &Path) -> Result<Option<String>, LaneError> {
-    let _span = yi_types::trace::span("lane.toolchain_sync");
-    let toolchains = detect(tree);
-    let Some(hash) = lockfiles_key(tree, &toolchains) else {
-        return Ok(None);
-    };
-    let mut state = pool.read_state(slot)?;
-    if state.lockfile.as_deref() == Some(hash.as_str()) {
-        return Ok(None);
-    }
-    for toolchain in &toolchains {
+/// Each toolchain's sync, contained. No `mark_seen`: a child's lockfile must not whitelist the warmer.
+pub(super) fn sync_tree(
+    tree: &Path,
+    home: &Path,
+    toolchains: &[&Toolchain],
+) -> Result<(), LaneError> {
+    for toolchain in toolchains {
         let Some(argv) = toolchain.sync else {
             continue;
         };
-        let Some((program, args, sandbox)) = contained(tree, pool.home(), argv) else {
+        let Some((program, args, sandbox)) = contained(tree, home, argv) else {
             continue;
         };
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -194,6 +205,20 @@ pub fn sync(pool: &Pool, slot: SlotIndex, tree: &Path) -> Result<Option<String>,
         )
         .map_err(LaneError::Forge)?;
     }
+    Ok(())
+}
+
+pub fn sync(pool: &Pool, slot: SlotIndex, tree: &Path) -> Result<Option<String>, LaneError> {
+    let _span = yi_types::trace::span("lane.toolchain_sync");
+    let toolchains = detect(tree);
+    let Some(hash) = lockfiles_key(tree, &toolchains) else {
+        return Ok(None);
+    };
+    let mut state = pool.read_state(slot)?;
+    if state.lockfile.as_deref() == Some(hash.as_str()) {
+        return Ok(None);
+    }
+    sync_tree(tree, pool.home(), &toolchains)?;
     state.lockfile = Some(hash.clone());
     pool.write_state(slot, &state)?;
     mark_seen(pool, &hash)?;

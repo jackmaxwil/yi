@@ -154,19 +154,19 @@ impl RuntimeWiring {
     }
 
     /// The kernel's own profile, which its `bash()` jobs run under too (D241).
-    fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
+    pub(crate) fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
         self.session_sandbox()
             .map(|sandbox| crate::kernel::kernel_profile(&sandbox, Some(&self.family_dir())))
     }
 
     /// The kernel's own writable dir, unless it is the root's corpus (#580).
-    fn writable_kernel_dir(&self) -> Option<PathBuf> {
+    pub(crate) fn writable_kernel_dir(&self) -> Option<PathBuf> {
         (self.depth > 0 || self.sessions_dir.is_none()).then(|| self.kernel_dir())
     }
 
     /// The kernel's and its `bash()` jobs' profile holds the wall and a contained call's walled
     /// roots (#889), since a cell opens files past the tool seam; the board reads again.
-    fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
+    pub(crate) fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
         let private = self.writable_kernel_dir();
         let mut sandbox = crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())?;
         sandbox.host_owned.extend(self.sessions_dir.clone());
@@ -187,7 +187,7 @@ impl RuntimeWiring {
 
     /// A walled session's family spills, own transcript and kernel state, named as a kernel boots
     /// or a job spawns (a child's store attaches after its wiring); a root's state is not its corpus.
-    fn own_paths(&self, session: &AgentSession) -> Option<OwnPathsFn> {
+    pub(crate) fn own_paths(&self, session: &AgentSession) -> Option<OwnPathsFn> {
         let (store, wall) = (session.store_handle(), self.wall.clone());
         let spills = board_spills(&self.family_dir());
         let own = move |state: Option<&Path>| {
@@ -238,25 +238,6 @@ impl RuntimeWiring {
 /// A walled session's own paths as of the call, given its kernel's state dir: read again under
 /// its profile's denials.
 pub(crate) type OwnPathsFn = Arc<dyn Fn(Option<&Path>) -> Vec<PathBuf> + Send + Sync>;
-
-/// A kernel `bash()` job's profile, built as it spawns: the kernel's own plus every write
-/// grant kept since, so a grant reaches a kernel that was running before it (#600).
-fn job_profile(
-    wiring: &RuntimeWiring,
-    session: &AgentSession,
-) -> impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static {
-    let (profile, broker) = (wiring.exec_sandbox(), wiring.broker.clone());
-    let (own, state) = (wiring.own_paths(session), wiring.writable_kernel_dir());
-    move || {
-        let mut profile = profile.clone()?;
-        let kept = broker.iter().flat_map(|broker| broker.kept_writes());
-        profile.writable.extend(kept);
-        profile
-            .spared
-            .extend(own.iter().flat_map(|own| own(state.as_deref())));
-        Some(profile)
-    }
-}
 
 /// Every spawned child wires itself the same way at depth+1; the depth check in
 /// [`SubagentHost::spawn`] is what terminates the recursion.
@@ -309,7 +290,6 @@ fn wire_goal(
     service.register(registry);
     session.set_goal_service(service);
     let plan = crate::plan::attach_plan(session, plan_stale_turns, plans_dir.to_path_buf());
-    plan.register(registry);
     session.set_plan_service(plan);
 }
 
@@ -534,6 +514,7 @@ fn wire_plan_engine(
     tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
     plan: Option<PlanWiring>,
 ) {
+    crate::spec::wire(session, wiring, tools);
     let Some((engine, actor, todos)) = plan else {
         return;
     };
@@ -617,51 +598,9 @@ fn wire_plan_engine(
             eager: crate::todo::coupling::Eager::Prelude,
             children_running: Arc::new(move || children.busy()),
             inner,
+            deadline: wiring.deadline,
         },
     );
-}
-
-fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
-    let hold_sink: Option<crate::advisor::HoldSink> = wiring.broker.as_ref().map(|broker| {
-        let broker = Arc::clone(broker);
-        Arc::new(move |advice: &yi_types::advisor::Advice| {
-            let pattern = advice
-                .target
-                .as_deref()
-                .and_then(yi_permission::HoldPattern::new);
-            let Some(pattern) = pattern.filter(|_| broker.can_ask()) else {
-                return false;
-            };
-            broker.insert_hold(yi_permission::Hold {
-                pattern,
-                reason: advice.text.clone(),
-                source: yi_permission::HoldSource::Advisor,
-                expires_at_ms: Some(yi_session::now_ms().saturating_add(3_600_000)),
-            });
-            true
-        }) as crate::advisor::HoldSink
-    });
-    // §16: ADVISOR.md attention text, project-local, best-effort.
-    let attention = std::fs::read_to_string(wiring.cwd.join("ADVISOR.md")).ok();
-    let llm = wiring.advisor.clone().map(|model| {
-        // Its own conversation: the root's ledger estimate and hour prefix are not its (D315).
-        Arc::new(crate::advisor::review::LlmReviewer::new(
-            Arc::new(wiring.provider.for_child()),
-            model,
-            attention.clone(),
-        ))
-    });
-    let advisor = crate::advisor::attach_advisor(
-        session,
-        crate::advisor::AdvisorConfig {
-            attention,
-            reviewer: llm.is_some(),
-            rules_dir: Some(wiring.cwd.join(".yi/rules")),
-            ..crate::advisor::AdvisorConfig::default()
-        },
-        crate::advisor::AdvisorDeps { hold_sink, llm },
-    );
-    session.set_advisor(advisor);
 }
 
 /// A job this session started reports through its follow-up queue and wakes it when idle; the
@@ -757,8 +696,10 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     }
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
-    registry.register_mcp_stubs();
-    registry.register_exec(wiring.exec_home(), job_profile(&wiring, session));
+    registry.register_exec(
+        wiring.exec_home(),
+        crate::kernel_state::job_profile(&wiring, session),
+    );
     crate::kernel_state::register_host_stores(&mut registry, &wiring);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
@@ -827,7 +768,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::kernel_tools::register(&mut registry, tools_now, Arc::clone(&calls), root);
     let service = wire_kernel(session, &wiring, registry);
     host.attach_kernel(&service);
-    wire_advisor(session, &wiring);
+    crate::advisor::wire::attach(session, &wiring);
     if wiring.kernel_prewarm {
         let warm = Arc::clone(&service);
         tokio::spawn(async move { warm.prewarm().await });
@@ -918,7 +859,7 @@ fn subagent_host(
         plans_dir: plans_dir.to_path_buf(),
         family_live: Arc::clone(&wiring.kernels),
     }));
-    let _first_wins = host.checker.set(session.checker(&wiring.cwd));
+    host.set_checker(session.checker(&wiring.cwd));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
     let (handle, own) = (session.rules_handle(), wiring.own_paths(session));

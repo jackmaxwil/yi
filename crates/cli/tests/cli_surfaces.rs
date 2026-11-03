@@ -47,7 +47,12 @@ impl Workspace {
             .arg(self.0.join("home/sessions"))
             .arg("--cwd")
             .arg(self.project())
-            .env("HOME", self.0.join("home"))
+            .env("HOME", self.0.join("home"));
+        // Incident: a shell's OPENROUTER_API_KEY turned the keyless doctor FAIL into a live probe.
+        for (_, key) in yi_types::PROVIDER_KEY_VARS {
+            command.env_remove(key);
+        }
+        command
             .envs(env.iter().copied())
             .current_dir(self.project());
         Ok(command.output()?)
@@ -419,6 +424,13 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
 /// A granted directory that does not exist, or that the sandbox must keep closed, ended the run
 /// before the model answered; a good one let it through. The grant belongs to the run that named
 /// it: the ledger keeps none, so a `--continue` that omits the flag does not inherit it.
+/// The binary's answer, not this process's: a test binary has no `__contain`, so on Linux it alone
+/// would say no sandbox while the `yi` it runs refuses the grant.
+fn the_binary_contains() -> bool {
+    yi_tools::set_wrapper(std::path::PathBuf::from(env!("CARGO_BIN_EXE_yi")));
+    yi_tools::Sandbox::available()
+}
+
 #[test]
 fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> TestResult {
     let workspace = Workspace::new("allow-write")?;
@@ -428,7 +440,7 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
     );
     // A guarded dir is refused only under a containment profile: with none, nothing is contained
     // and a grant widens nothing. A dir that does not exist is refused on every host.
-    let guarded = if yi_tools::Sandbox::available() { 2 } else { 0 };
+    let guarded = if the_binary_contains() { 2 } else { 0 };
     for (dir, want) in [(&yi_dir, guarded), (&missing, 2)] {
         let dir = dir.to_string_lossy();
         let run = ask(&workspace, "look", &["--allow-write", &dir])?;
@@ -486,7 +498,7 @@ fn allow_write_from_config_refuses_a_protected_dir() -> TestResult {
     )?;
     let run = ask(&workspace, "look", &[])?;
     let refused = run.status.code() == Some(2);
-    assert_eq!(refused, yi_tools::Sandbox::available(), "{run:?}");
+    assert_eq!(refused, the_binary_contains(), "{run:?}");
     Ok(())
 }
 
@@ -1870,6 +1882,42 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
     Ok(())
 }
 
+/// Every `yi <verb>` a fenced README block tells a reader to copy is a verb `yi --help` prints:
+/// the README's commands are the first thing anyone runs.
+#[test]
+fn readme_fenced_commands_name_verbs_help_prints() -> TestResult {
+    let workspace = Workspace::new("readme")?;
+    let (verbs, _) = help_table(&stdout(&workspace.yi(&["--help"])?));
+    let readme =
+        std::fs::read_to_string(format!("{}/../../README.md", env!("CARGO_MANIFEST_DIR")))?;
+    let (mut fenced, mut wrong) = (false, Vec::new());
+    for line in readme.lines() {
+        let row = line.trim();
+        if row.starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        let row = row
+            .strip_prefix("$ ")
+            .or_else(|| row.strip_prefix("if "))
+            .unwrap_or(row);
+        let mut words = row.split_whitespace();
+        if !fenced || words.next() != Some("yi") {
+            continue;
+        }
+        let Some(verb) = words.next() else { continue };
+        let bare = verb.starts_with('-') || verb.starts_with('"') || verb.starts_with('#');
+        if !bare && !verbs.iter().any(|known| known.as_str() == verb) {
+            wrong.push(verb.to_owned());
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "README fenced commands: no such verb in yi --help: {wrong:?}"
+    );
+    Ok(())
+}
+
 /// Every axis `yi stats --by` accepts, read from its own refusal, is named by `yi --help` and by
 /// the zsh and fish descriptions; the name check above passes when both sides omit one.
 #[test]
@@ -3203,6 +3251,8 @@ fn loopback(
     Ok((port, bodies))
 }
 
+const OK_STREAM: &str = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+
 /// A root session sends its own id as OpenRouter's affinity key, the one its children inherit
 /// (D314): `build_session` hands the session id to the stream.
 #[test]
@@ -3216,10 +3266,7 @@ fn a_root_session_sends_its_id_as_the_openrouter_session() -> TestResult {
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
         "contextWindow": 100000, "maxTokens": 256}}});
     std::fs::write(catalog.join("openrouter.json"), entry.to_string())?;
-    let (port, bodies) = loopback(
-        "text/event-stream",
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
-    )?;
+    let (port, bodies) = loopback("text/event-stream", OK_STREAM)?;
     let proxy = format!("http://127.0.0.1:{port}");
     let answered = workspace.yi_env(
         &["ask", "--model", "openrouter/probe/flash", "--json", "hi"],
@@ -3242,6 +3289,41 @@ fn a_root_session_sends_its_id_as_the_openrouter_session() -> TestResult {
         })
         .ok_or("no session file")?;
     assert_eq!(body["session_id"], session.as_str(), "{body}");
+    Ok(())
+}
+#[test]
+fn ask_no_tools_omits_the_tool_table_from_the_real_request() -> TestResult {
+    let workspace = Workspace::new("ask-no-tools")?;
+    let catalog = workspace.0.join("home/.yi/catalog");
+    std::fs::create_dir_all(&catalog)?;
+    let entry = json!({"openai-completions": {"probe/flash": {
+        "id": "probe/flash", "name": "probe", "api": "openai-completions", "provider": "openrouter",
+        "baseUrl": "http://openrouter.ai.invalid/api/v1", "reasoning": false, "input": ["text"],
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": 100000, "maxTokens": 256}}});
+    std::fs::write(catalog.join("openrouter.json"), entry.to_string())?;
+    let (port, bodies) = loopback("text/event-stream", OK_STREAM)?;
+    let proxy = format!("http://127.0.0.1:{port}");
+    let answered = workspace.yi_env(
+        &[
+            "ask",
+            "--no-tools",
+            "--model",
+            "openrouter/probe/flash",
+            "hi",
+        ],
+        &[
+            ("OPENROUTER_API_KEY", "sk-test"),
+            ("HTTPS_PROXY", &proxy),
+            NO_KERNEL[0],
+        ],
+    )?;
+    assert_eq!(answered.status.code(), Some(0), "{answered:?}");
+    let body = bodies
+        .try_iter()
+        .find(|body| body.get("messages").is_some())
+        .ok_or_else(|| format!("no request: {}", String::from_utf8_lossy(&answered.stderr)))?;
+    assert!(body.get("tools").is_none(), "{body}");
     Ok(())
 }
 
@@ -3308,6 +3390,74 @@ fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
         (&ripwire["shape"], &chrome["shape"]),
         (&json!("program"), &json!("tree")),
         "the adapter carries programs and never the console's Chrome: {rows}"
+    );
+    let desktop = (rows.as_array().ok_or("not an array")?.iter())
+        .find(|row| row["name"] == "agent-desktop")
+        .ok_or("no agent-desktop row")?;
+    assert_eq!(
+        desktop["shape"],
+        json!("host"),
+        "the adapter must never carry a program that drives this machine: {rows}"
+    );
+    Ok(())
+}
+
+/// `yi gate` answers with the same decide() the tool seam calls, so this is the real binary's
+/// judgement of each kind of desktop command, offline, with nothing installed.
+#[test]
+fn the_gate_says_what_a_desktop_command_would_do() -> TestResult {
+    let workspace = Workspace::new("yi-gate-desktop")?;
+    for (command, first_line) in [
+        ("agent-desktop status", "auto: allow"),
+        ("agent-desktop snapshot --app TextEdit -i", "auto: ask"),
+        ("agent-desktop press cmd+q", "auto: deny"),
+        ("agent-desktop session start --cursor", "auto: allow"),
+        ("agent-desktop snapshot --app Safari", "auto: deny"),
+    ] {
+        let output = workspace.yi(&["gate", command])?;
+        let shown = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert_eq!(shown.lines().next(), Some(first_line), "{command}: {shown}");
+    }
+    let refused = workspace.yi(&["gate", "agent-desktop launch firefox"])?;
+    assert!(String::from_utf8_lossy(&refused.stdout).contains("agent-browser"));
+    Ok(())
+}
+
+/// The real binary's judgement of each kind of browser command, offline: with no box nothing runs
+/// outside, since a Chrome there reads every file, and with one the table decides.
+#[test]
+fn the_gate_says_what_a_browser_command_would_do() -> TestResult {
+    let workspace = Workspace::new("yi-gate-browser")?;
+    let unboxed = workspace.yi(&["gate", "agent-browser open http://localhost:3000"])?;
+    let shown = String::from_utf8_lossy(&unboxed.stdout).into_owned();
+    assert_eq!(shown.lines().next(), Some("auto: deny"), "{shown}");
+    assert!(shown.contains("yi plugin add agent-browser"), "{shown}");
+    let plugin = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+    let home = workspace.0.join("home");
+    std::fs::create_dir_all(plugin.dir(&home))?;
+    for file in [plugin.name, "config.json", "chrome-box"] {
+        std::fs::write(plugin.dir(&home).join(file), "")?;
+    }
+    for (command, first_line) in [
+        ("agent-browser open http://localhost:3000", "auto: allow"),
+        (
+            "agent-browser --session web open https://x.dev",
+            "auto: ask",
+        ),
+        ("agent-browser read https://x.dev", "auto: ask"),
+        ("agent-browser connect 9222", "auto: deny"),
+        ("agent-browser --headed open x", "auto: deny"),
+    ] {
+        let output = workspace.yi(&["gate", command])?;
+        let shown = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert_eq!(shown.lines().next(), Some(first_line), "{command}: {shown}");
+    }
+    // Contained where the host has a sandbox and asked where it has none, never let out.
+    let prefixed = workspace.yi(&["gate", "X=1 agent-browser open x"])?;
+    let shown = String::from_utf8_lossy(&prefixed.stdout).into_owned();
+    assert!(
+        matches!(shown.lines().next(), Some("auto: contain" | "auto: ask")),
+        "{shown}"
     );
     Ok(())
 }
@@ -3384,5 +3534,52 @@ fn a_bare_words_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(told_it_is_alone(&alone)?);
+    Ok(())
+}
+
+/// `yi models recommend --role` reads the cached snapshot offline, prints the citation, its
+/// age, the count left out and three tagged picks with their arithmetic, and leaves the config as it was.
+#[test]
+fn models_recommend_prints_three_tagged_picks_from_the_offline_snapshot() -> TestResult {
+    let workspace = Workspace::new("models-recommend")?;
+    let catalog = workspace.0.join("home/.yi/catalog");
+    std::fs::create_dir_all(&catalog)?;
+    let snapshot = json!({"fetchedMs": 0, "benchmarks": {"data": [
+        {"model_permaslug": "anthropic/claude-opus-5-20260723", "intelligence_index": 54.1},
+        {"model_permaslug": "deepseek/deepseek-v4-flash", "intelligence_index": 42},
+        {"model_permaslug": "z-ai/glm-5.1", "intelligence_index": 46},
+    ], "meta": {"as_of": "2026-09-05T00:00:00Z", "citation": "Artificial Analysis"}}});
+    std::fs::write(catalog.join("benchmarks.json"), snapshot.to_string())?;
+    let out = workspace.yi_env(
+        &["models", "recommend", "--role", "advisor"],
+        &[("OPENROUTER_API_KEY", "x")],
+    )?;
+    let text = stdout(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.starts_with("data: Artificial Analysis (CC BY 4.0), as of 2026-09-05T00:00:00Z\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("scored:") && text.contains("without an intelligence index"),
+        "{text}"
+    );
+    let tags: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|word| matches!(*word, "high" | "medium" | "low"))
+        .collect();
+    assert_eq!(tags, ["high", "medium", "low"], "{text}");
+    assert!(
+        text.contains("openrouter/anthropic/claude-opus-5") && text.contains("54.1^2 / $"),
+        "{text}"
+    );
+    let config = std::fs::read_to_string(workspace.0.join("home/.yi/config.json"))?;
+    assert_eq!(config, r#"{"kernel":{"prewarm":false}}"#);
     Ok(())
 }

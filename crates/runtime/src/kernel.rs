@@ -58,13 +58,29 @@ impl HostRegistry {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
                     })?;
                 let cancelled: CancelFlag = Arc::new(|| false);
-                let id = yi_tools::jobs::spawn_job(
-                    command,
-                    &cwd,
-                    &cancelled,
-                    sandbox.as_ref(),
-                    spawn.as_ref(),
-                )?;
+                // A fork's first command carries its units and syncs its toolchain, which blocks.
+                let command = command.to_owned();
+                let tree = payload.str_of("tree").map(str::to_owned);
+                let id = tokio::task::spawn_blocking(move || {
+                    let Some(name) = tree else {
+                        let (sandbox, spawn) = (sandbox.as_ref(), spawn.as_ref());
+                        return yi_tools::jobs::spawn_job(
+                            &command, &cwd, &cancelled, sandbox, spawn,
+                        );
+                    };
+                    let at =
+                        crate::subagent::tree::free_tree_path(&cwd, &name).ok_or_else(|| {
+                            format!("no free tree named \"{name}\": a child runs its own bash")
+                        })?;
+                    // No proxy or lane of its own: a fork's `bash` reaches loopback and no further.
+                    let sandbox = sandbox.map(|mut sandbox| {
+                        sandbox.writable.push(at.clone());
+                        sandbox
+                    });
+                    yi_tools::jobs::spawn_job(&command, &at, &cancelled, sandbox.as_ref(), None)
+                })
+                .await
+                .map_err(|error| error.to_string())??;
                 lock(&spawned).push(id);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));
@@ -119,20 +135,6 @@ impl HostRegistry {
                     .map_err(|error| error.to_string())?;
                 lock(&released).retain(|held| *held != id);
                 Ok(job_report_reply(&report))
-            })
-        });
-    }
-
-    /// `mcp.config` returns `{}` (Python raises its own KeyError), `mcp.refresh` throws, and
-    /// `mcp.begin_login` is never registered: a 401 must not open a browser.
-    pub fn register_mcp_stubs(&mut self) {
-        self.register("mcp.config", |_payload| Box::pin(async { Ok(Map::new()) }));
-        self.register("mcp.refresh", |_payload| {
-            Box::pin(async {
-                Err(
-                    "mcp.refresh is unavailable: run `yi mcp login <server>` on the host"
-                        .to_owned(),
-                )
             })
         });
     }
@@ -367,7 +369,16 @@ impl KernelService {
             .spared
             .extend(self.own_paths.iter().flat_map(|own| own(state)));
         let family = self.options.family_dir.as_deref().map(make_board);
-        Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix(&self.connection_dir))
+        let lane = (self.holder.as_ref()).and_then(|_| self.git_lane());
+        let assign = crate::lane::remote::GitLane::assign_for(lane.as_deref(), &self.options.cwd);
+        Some(
+            kernel_profile(&sandbox, family.as_deref())
+                .kernel_prefix(&self.connection_dir, &assign),
+        )
+    }
+
+    fn git_lane(&self) -> Option<Arc<crate::lane::remote::GitLane>> {
+        crate::lane::remote::GitLane::for_tree(&self.options.cwd)
     }
 
     /// `holder`'s proxy credentials on a contained kernel's boot: past a failure it refuses to
@@ -397,6 +408,10 @@ impl KernelService {
                 "RLM_SESSION_DIR".to_owned(),
                 session_dir.to_string_lossy().into_owned(),
             ));
+            // `%pip` installs here, the one place a contained kernel writes that outlives a cell.
+            let site = session_dir.join("site").to_string_lossy().into_owned();
+            env.push(("PIP_TARGET".to_owned(), site.clone()));
+            env.push(("PYTHONPATH".to_owned(), site));
         }
         if let Some(family_dir) = &self.options.family_dir {
             env.push((
@@ -416,6 +431,9 @@ impl KernelService {
         env.push(("RLM_GLOBAL_HARNESS_HOST".to_owned(), "1".to_owned()));
         if let Some(path) = yi_tools::plugin::search_path(&self.options.home) {
             env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
+        }
+        for (key, value) in yi_tools::plugin::browser_env(&self.options.home) {
+            env.push((key.to_owned(), value.to_string_lossy().into_owned()));
         }
         env
     }
@@ -443,6 +461,10 @@ impl KernelService {
             crate::kernel_state::state_dir(dir, self.options.per_session_state, key.as_deref())
         });
         let wrap = self.kernel_wrap(self.options.sandbox.as_ref(), state.as_deref());
+        if let Some(dir) = state.as_deref() {
+            // A sys.path entry missing at boot is cached as absent, and the install never imports.
+            let _a_failed_install_says_so = std::fs::create_dir_all(dir.join("site"));
+        }
         if wrap.is_none() && self.own_paths.is_some() {
             return Err(crate::gate::WALLED_KERNEL_UNCONFINED.to_owned());
         }
@@ -767,6 +789,9 @@ impl KernelService {
                             .map(crate::egress::Lease::take_rows)
                             .unwrap_or_default(),
                     );
+                    if let (Some((broker, _)), Some(lane)) = (&self.holder, self.git_lane()) {
+                        notes.extend(lane.sweep_off_executor(Arc::clone(broker)).await);
+                    }
                     return Ok(KernelCellOutcome {
                         result,
                         kernel_restarted,
@@ -944,6 +969,19 @@ mod tests {
         let path = path_of(&home).ok_or("no PATH for the kernel")?;
         let first = std::env::split_paths(&path).next();
         assert_eq!(first, Some(ripwire.dir(&home)));
+        // A cell's `agent-browser` missing this starts a Chrome with no box.
+        let browser = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+        std::fs::create_dir_all(browser.dir(&home))?;
+        for file in [browser.name, "config.json", "chrome-box"] {
+            std::fs::write(browser.dir(&home).join(file), "#!/bin/sh\n")?;
+        }
+        let env = KernelService::new(options(&home)).kernel_env(None);
+        let config = (env.into_iter())
+            .find_map(|(key, value)| (key == "AGENT_BROWSER_CONFIG").then_some(value));
+        assert_eq!(
+            config.as_deref().map(std::path::Path::new),
+            Some(browser.dir(&home).join("config.json").as_path())
+        );
         Ok(())
     }
 
@@ -1178,8 +1216,7 @@ mod tests {
     }
 
     fn service() -> KernelService {
-        let mut registry = HostRegistry::default();
-        registry.register_mcp_stubs();
+        let registry = HostRegistry::default();
         KernelService::new(KernelServiceOptions {
             cwd: std::env::temp_dir(),
             home: std::env::var_os("HOME")

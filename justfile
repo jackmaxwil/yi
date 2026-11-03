@@ -178,6 +178,7 @@ journeys:
     # The true-terminal journey has no cargo home: no test can hand the binary
     # a pty that answers its cursor-position query, so the harness runs here.
     cargo build -p yi-cli
+    python3 scripts/intake/journey.py
     home="$PWD/target/journeys"
     rm -rf "$home"
     mkdir -p "$home"
@@ -260,6 +261,9 @@ postmerge-evals:
 # Prefill the PR narrative's counted sections from the diff against main.
 pr-body:
     python3 scripts/pr_body.py
+
+intake *args:
+    python3 scripts/intake/bridge.py {{args}}
 
 # Finishing a branch, as verbs that check first (the yi-forge skill is the procedure):
 # ratchet the baselines alone, commit with a judged subject, push through the lane,

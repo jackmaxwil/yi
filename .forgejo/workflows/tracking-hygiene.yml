@@ -14,13 +14,18 @@ on:
     - cron: "17 5 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   tracking:
     runs-on: ubuntu-latest
     # Two REST walks over 85 issues; a minute is generous and a hang is a bug.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        with:
+          persist-credentials: false
       - name: re-measure every open milestone's due date
         env:
           FORGEJO_API_URL: ${{ github.api_url }}

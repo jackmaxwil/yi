@@ -21,7 +21,11 @@ fn d_bindings(args: &[String]) -> Vec<(&str, &str)> {
 }
 
 fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
-    let root = Scratch::new(&format!("yi-sandbox-{tag}"))?;
+    workspace_at(&std::env::temp_dir(), tag)
+}
+
+fn workspace_at(base: &Path, tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
+    let root = Scratch::new_at(base, &format!("yi-sandbox-{tag}"))?;
     let project = root.join("project");
     let home = root.join("home");
     std::fs::create_dir_all(&project)?;
@@ -102,7 +106,7 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
     );
 
     let own = Path::new("/home/user/.yi/kernel-connections/1-0");
-    let (program, prefix) = sandbox.kernel_prefix(own);
+    let (program, prefix) = sandbox.kernel_prefix(own, &[]);
     assert_eq!(program, "/usr/bin/sandbox-exec");
     assert!(
         prefix
@@ -654,9 +658,8 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
 #[test]
 fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestResult {
     seatbelt()?;
-    let (_root, project, _home) = workspace("spared")?;
-    // `Scratch` canonicalizes, so the other spelling is made: `/var` for `/private/var`.
-    let project = Path::new("/").join(project.strip_prefix("/private")?);
+    // Under `/tmp` whatever TMPDIR says: macOS always spells this root two ways.
+    let (_root, project, _home) = workspace_at(Path::new("/tmp"), "spared")?;
     let store = project.join("store");
     let (state, spill) = (store.join("state"), store.join("spill"));
     for (dir, text) in [(&state, "SPARED"), (&spill, "SPARED"), (&store, "WALLED")] {
@@ -664,9 +667,9 @@ fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestRes
         std::fs::write(dir.join("f"), text)?;
     }
     std::fs::create_dir_all(state.join("secret"))?;
-    // The spare names the root by another spelling (`/private/var` for `/var`), as a link may.
-    let spelled = state.canonicalize()?;
-    assert_ne!(spelled, state, "the scratch dir has one spelling only");
+    // The spare names the root by another spelling (`/tmp` for `/private/tmp`), as a link may.
+    let spelled = Path::new("/").join(state.strip_prefix("/private")?);
+    assert_eq!(spelled.canonicalize()?, state, "one root, two spellings");
     std::fs::write(state.join("secret/f"), "WALLED")?;
     let sandbox = Sandbox {
         writable: vec![project.clone(), state.clone()],
@@ -790,7 +793,7 @@ fn a_contained_resolver_failure_reads_as_the_sandbox() -> TestResult {
             .map(|refusal| denial_hint(&refusal))
             .unwrap_or_default();
         assert!(
-            code != 0 && hint.contains("no network beyond 127.0.0.1 and ::1"),
+            code != 0 && hint.contains("only through its proxy on 127.0.0.1"),
             "`{command}` exited {code} with no sandbox hint: {output}"
         );
     }
@@ -884,7 +887,7 @@ fn linked_worktree(root: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
 }
 
 #[test]
-fn a_linked_worktree_sandbox_writes_its_gitdir_and_common_dir() -> TestResult {
+fn a_linked_worktree_sandbox_writes_its_gitdir_and_objects_not_the_common_dir() -> TestResult {
     let (root, _project, home) = workspace("gitdirs")?;
     let (trunk, lane) = linked_worktree(&root)?;
     let sandbox = Sandbox::for_workspace(&lane, &home, None);
@@ -896,13 +899,14 @@ fn a_linked_worktree_sandbox_writes_its_gitdir_and_common_dir() -> TestResult {
         .filter(|(key, _)| key.starts_with("WRITABLE_ROOT_"))
         .map(|(_, path)| PathBuf::from(path))
         .collect();
-    for wanted in [&gitdir, &common] {
+    for wanted in [&gitdir, &common.join("objects")] {
         assert!(
             roots.iter().any(|root| root == wanted),
             "{} must be writable, roots: {roots:?}",
             wanted.display()
         );
     }
+    assert!(!roots.contains(&common), "{roots:?}");
     Ok(())
 }
 
@@ -914,7 +918,7 @@ fn a_contained_git_commit_succeeds_in_a_linked_worktree() -> TestResult {
     let (_trunk, lane) = linked_worktree(&root)?;
     std::fs::write(lane.join("change.txt"), "from the lane\n")?;
     let sandbox = lane_profile(&root, &lane, &home)?;
-    let command = "git checkout -q -b feature && git add -A && \
+    let command = "git add -A && \
         GIT_CONFIG_GLOBAL=/dev/null git -c user.email=yi@example.com -c user.name=yi commit -q -m lane";
     let (code, output) = run(command, &lane, Some(&sandbox))?;
     assert_eq!(
@@ -961,10 +965,12 @@ fn lane_profile(root: &Path, lane: &Path, home: &Path) -> Result<Sandbox, Box<dy
     let mut sandbox = Sandbox::for_workspace(lane, home, None);
     let scratch = root.canonicalize()?;
     sandbox.writable.retain(|writable| {
-        writable
-            .canonicalize()
-            .is_ok_and(|resolved| resolved.starts_with(&scratch))
-            || writable == Path::new("/private/tmp")
+        (writable.ancestors())
+            .find_map(|dir| dir.canonicalize().ok())
+            .is_some_and(|resolved| resolved.starts_with(&scratch))
+            && writable
+                .canonicalize()
+                .map_or(true, |resolved| resolved != scratch)
     });
     Ok(sandbox)
 }
@@ -1040,6 +1046,7 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
         "ref: refs/heads/main\n",
     )?;
     std::fs::write(common.join("modules/nested/sub/config"), "")?;
+    std::fs::create_dir_all(common.join("refs/remotes/origin"))?;
     let sandbox = lane_profile(&root, &lane, &home)?;
     for target in [
         common.join("config.worktree"),
@@ -1047,6 +1054,7 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
         common.join("info/exclude"),
         common.join("modules/nested/sub/config"),
         common.join("objects/info/alternates"),
+        common.join("refs/remotes/origin/HEAD"),
     ] {
         let command = format!("printf x >> {}", target.display());
         let (code, output) = run(&command, &lane, Some(&sandbox))?;
@@ -1057,12 +1065,15 @@ fn a_contained_command_cannot_write_what_host_git_reads() -> TestResult {
             target.display()
         );
     }
+    // A lane holds its own branch and nothing shared with its siblings, modules included; a main
+    // checkout's work inside a submodule still commits.
     let index = common.join("modules/nested/sub/index");
-    let (code, output) = run(
-        &format!("printf x > {}", index.display()),
-        &lane,
-        Some(&sandbox),
-    )?;
+    let write = format!("printf x > {}", index.display());
+    let (code, output) = run(&write, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "a lane reached a shared module: {output}");
+    let trunk = common.parent().ok_or("no trunk")?;
+    let main = lane_profile(&root, trunk, &home)?;
+    let (code, output) = run(&write, trunk, Some(&main))?;
     assert_eq!(code, 0, "work inside a submodule still commits: {output}");
     Ok(())
 }
@@ -1133,14 +1144,16 @@ fn a_seal_closes_an_admin_dir_or_a_module_the_build_never_saw() -> TestResult {
             target.display()
         );
     }
-    // A module the build did open keeps its object store: work inside a submodule still commits.
+    // A module the build did open keeps its object store in a main checkout, whose git dir is
+    // writable; a lane reaches none of it.
     let objects = module.join("objects/x");
     std::fs::create_dir_all(module.join("objects"))?;
-    let (code, output) = run(
-        &format!("printf x >> {}", objects.display()),
-        &lane,
-        Some(&sandbox),
-    )?;
+    let write = format!("printf x >> {}", objects.display());
+    let (code, output) = run(&write, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "a lane reached a shared module: {output}");
+    let trunk = common.parent().ok_or("no trunk")?;
+    let main = lane_profile(&root, trunk, &home)?;
+    let (code, output) = run(&write, trunk, Some(&main))?;
     assert_eq!(code, 0, "{} stays writable: {output}", objects.display());
     Ok(())
 }
@@ -1213,6 +1226,113 @@ fn a_contained_command_cannot_plant_a_dot_git_or_reach_another_lanes_admin() -> 
         Some(&sandbox),
     )?;
     assert_eq!(code, 0, "ordinary work still runs there: {output}");
+    Ok(())
+}
+
+const COMMIT: &str = "GIT_CONFIG_GLOBAL=/dev/null git -c user.email=y@e.com -c user.name=y commit -q --allow-empty -m m";
+
+/// A lane where the host puts one: a slot under `~/.yi/lanes`, its record naming the session, on the
+/// session's branch; and a sibling on its own. Returns the trunk, the lane and its profile.
+fn held_lane(root: &Path, home: &Path) -> Result<(PathBuf, PathBuf, Sandbox), Box<dyn Error>> {
+    let (trunk, _detached) = linked_worktree(root)?;
+    let pool = home.join(".yi/lanes/key");
+    std::fs::create_dir_all(&pool)?;
+    let lane = pool.join("0");
+    let text = lane.to_string_lossy();
+    git(&trunk, &["worktree", "add", "-q", "-b", "yi/held", &text])?;
+    std::fs::write(pool.join("0.json"), r#"{"session":"held"}"#)?;
+    let sibling = pool.join("1");
+    let text = sibling.to_string_lossy();
+    git(&trunk, &["worktree", "add", "-q", "-b", "yi/other", &text])?;
+    let sandbox = lane_profile(root, &lane, home)?;
+    Ok((trunk, lane, sandbox))
+}
+
+/// The work a lane exists for still runs with the common dir taken away, and git says nothing of
+/// the `packed-refs` it can no longer write.
+#[test]
+fn a_lane_commits_on_its_own_branch_and_stashes() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("own-refs")?;
+    let (_trunk, lane, sandbox) = held_lane(&root, &home)?;
+    let before = git(&lane, &["rev-parse", "HEAD"])?;
+    let (code, output) = run(COMMIT, &lane, Some(&sandbox))?;
+    assert_eq!(code, 0, "{output}");
+    assert!(!output.contains("packed-refs"), "{output}");
+    assert_ne!(git(&lane, &["rev-parse", "yi/held"])?, before);
+    let stash = "printf 'x\\n' >> README.md && git stash -q && git stash pop -q";
+    let (code, output) = run(stash, &lane, Some(&sandbox))?;
+    assert_eq!(code, 0, "{output}");
+    Ok(())
+}
+
+/// Incident: the whole common dir was writable, so a contained process deleted a sibling's ref and
+/// moved trunk.
+#[test]
+fn a_lane_cannot_move_trunk_or_a_siblings_branch() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("other-refs")?;
+    let (trunk, lane, sandbox) = held_lane(&root, &home)?;
+    let tip = git(&trunk, &["rev-parse", "main"])?;
+    let common = trunk.join(".git");
+    for attempt in [
+        format!(
+            "git update-ref refs/heads/main {tip}~0 && git update-ref refs/heads/main $(git commit-tree -m x $(git write-tree))"
+        ),
+        "git update-ref -d refs/heads/yi/other".to_owned(),
+        format!("rm {}", common.join("refs/heads/yi/other").display()),
+        format!("printf x >> {}", common.join("packed-refs").display()),
+        format!(
+            "printf '{tip} refs/heads/forged\\n' > {0}.lock; mv {0}.lock {0}",
+            common.join("packed-refs").display()
+        ),
+    ] {
+        run(&attempt, &lane, Some(&sandbox))?;
+    }
+    assert_eq!(git(&trunk, &["rev-parse", "main"])?, tip);
+    assert!(
+        git(&trunk, &["rev-parse", "yi/other"]).is_ok(),
+        "the sibling's ref went"
+    );
+    Ok(())
+}
+
+/// `HEAD` is contained-writable: a planted one must not grant trunk on the next spawn.
+#[test]
+fn a_planted_head_grants_nothing_on_the_next_spawn() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("planted-grant")?;
+    let (trunk, lane, _sandbox) = held_lane(&root, &home)?;
+    let admin = git(&lane, &["rev-parse", "--absolute-git-dir"])?;
+    let tip = git(&trunk, &["rev-parse", "main"])?;
+    git(&trunk, &["branch", "release"])?;
+    for planted in ["main", "yi/other", "release"] {
+        std::fs::write(
+            Path::new(&admin).join("HEAD"),
+            format!("ref: refs/heads/{planted}\n"),
+        )?;
+        let next = lane_profile(&root, &lane, &home)?;
+        let (code, output) = run(COMMIT, &lane, Some(&next))?;
+        assert_ne!(code, 0, "{planted}: {output}");
+    }
+    assert_eq!(git(&trunk, &["rev-parse", "main"])?, tip);
+    assert_eq!(git(&trunk, &["rev-parse", "release"])?, tip);
+    Ok(())
+}
+
+/// Dies with a refused ref naming a path the retry never spells: `retried_by` never matched
+/// `git switch -c x`, so the same refusal came back forever and nothing asked.
+#[test]
+fn a_new_branch_refused_in_a_lane_asks_the_next_time() -> TestResult {
+    seatbelt()?;
+    let (root, _project, home) = workspace("switch")?;
+    let (_trunk, lane, sandbox) = held_lane(&root, &home)?;
+    let command = "git switch -q -c feature";
+    let (code, output) = run(command, &lane, Some(&sandbox))?;
+    assert_ne!(code, 0, "{output}");
+    let refusal = sandbox_refusal(&sandbox, &lane, Some(code), &output, command).ok_or(output)?;
+    assert!(matches!(refusal, SandboxRefusal::Scopes(_)), "{refusal:?}");
+    assert!(refusal.retried_by(&sandbox, &lane, command));
     Ok(())
 }
 
@@ -1482,10 +1602,11 @@ fn a_store_at_home_or_above_it_adds_no_root() -> TestResult {
 }
 
 fn spawn_with(env: Vec<(String, String)>, rows: Vec<String>) -> yi_tools::SpawnFn {
-    Arc::new(move || {
+    Arc::new(move |_command: &str| {
         let rows = rows.clone();
         Ok(yi_tools::Spawn {
             env: env.clone(),
+            assign: Vec::new(),
             after: Box::new(move || rows),
         })
     })
@@ -1537,7 +1658,7 @@ fn a_refused_spawn_never_starts_and_says_why() -> TestResult {
     let (_root, project, home) = workspace("spawn-refused")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
     let marker = project.join("ran");
-    let refused: yi_tools::SpawnFn = Arc::new(|| {
+    let refused: yi_tools::SpawnFn = Arc::new(|_command: &str| {
         Err(yi_tools::SpawnRefused::Egress {
             why: "the egress proxy cannot listen".to_owned(),
         })
@@ -1573,5 +1694,137 @@ fn what_the_host_says_after_a_spawn_reaches_the_model() -> TestResult {
         capture.rows,
         vec!["[egress: refused a.example: test]".to_owned()]
     );
+    Ok(())
+}
+
+/// The transport needle was a bare `' not allowed`, so a tool refusing an argument read as a
+/// sandbox network denial and sent the person to an approval that could not help.
+#[test]
+fn a_tools_own_not_allowed_is_not_a_network_denial() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let found = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "error: hook 'pre-lint' not allowed\n",
+        "lint",
+    );
+    assert_eq!(found, None);
+    let git = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(128),
+        "fatal: transport 'file' not allowed\n",
+        "git fetch origin",
+    );
+    assert!(matches!(git, Some(SandboxRefusal::Scopes(_))), "{git:?}");
+    Ok(())
+}
+
+/// Dies with the generic `' not allowed` needle: a compiler echoing a phrase must not read as
+/// git's transport refusal, and git's own refusal must still classify and ask.
+#[test]
+fn only_gits_transport_refusal_is_a_network_denial() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let transport = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(128),
+        "fatal: transport 'https' not allowed\n",
+        "git fetch origin",
+    );
+    assert!(transport.is_some(), "git's transport refusal must classify");
+    let unrelated = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "ValueError: 'None' not allowed as a mode\n",
+        "python3 check.py",
+    );
+    assert_eq!(unrelated, None, "{unrelated:?}");
+    let merely_named = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "warning: no rule for the transport 'bluetooth' in this schema\n",
+        "python3 check.py",
+    );
+    assert_eq!(merely_named, None, "{merely_named:?}");
+    Ok(())
+}
+
+/// A fake Chrome run the way the daemon runs the plugin's script, reporting what its box lets it do.
+fn run_browser_box(home: &Path, session: &str, target: &Path) -> Result<String, Box<dyn Error>> {
+    let plugin = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+    let script = plugin.dir(home).join("chrome-box");
+    let output = yi_tools::command(script)
+        .env("AGENT_BROWSER_SESSION", session)
+        .env("BOX_LEAK", "from the daemon")
+        .arg(target)
+        .output()?;
+    Ok(format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
+/// The wall the whole plugin stands on: while it lives, any contained program can steer this Chrome
+/// over loopback, so what this box refuses is what that program cannot reach through it either.
+#[test]
+fn the_browser_box_holds_credentials_writes_sockets_and_all_but_the_web_session_s_internet()
+-> TestResult {
+    seatbelt()?;
+    // Outside temp, which this box writes: a tree there would prove nothing.
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let (root, project, home) = workspace_at(base, "browser-box")?;
+    let plugin = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+    let program = plugin.program(&home).ok_or("no program path")?;
+    std::fs::create_dir_all(plugin.dir(&home))?;
+    std::fs::write(&program, "#!/bin/sh\n")?;
+    let socket = std::env::temp_dir().join(format!("yi-box-{}", std::process::id()));
+    std::fs::remove_file(&socket).ok();
+    let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
+    let chrome = root.join("chrome");
+    std::fs::write(
+        &chrome,
+        format!(
+            "#!/bin/sh\n\
+             exec 2>&1\n\
+             echo \"args $*\"\n\
+             echo \"leak=[$BOX_LEAK]\"\n\
+             /bin/cat {key} && echo READ-KEY\n\
+             /usr/bin/touch {tree} && echo WROTE-TREE\n\
+             /usr/bin/touch {temp} && echo WROTE-TEMP\n\
+             /usr/bin/nc -U -w1 {socket} </dev/null && echo REACHED-SOCKET\n\
+             /usr/bin/curl -sSv --connect-timeout 1 http://192.0.2.1/\n",
+            key = home.join(".ssh/id_rsa").display(),
+            tree = project.join("written").display(),
+            temp = std::env::temp_dir().join("yi-browser-box-ok").display(),
+            socket = socket.display(),
+        ),
+    )?;
+    std::fs::set_permissions(&chrome, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+    yi_tools::plugin::write_browser_box(&home, &chrome)?;
+    let config = std::fs::read_to_string(plugin.dir(&home).join("config.json"))?;
+    assert!(config.contains("chrome-box"), "{config}");
+    let refused = "Operation not permitted";
+    for session in ["", "web", "other"] {
+        let shown = run_browser_box(&home, session, &chrome)?;
+        assert!(shown.contains("--no-sandbox"), "{session}: {shown}");
+        assert!(shown.contains("leak=[]"), "{session}: {shown}");
+        assert!(!shown.contains("PRIVATE KEY"), "{session}: {shown}");
+        assert!(!shown.contains("READ-KEY"), "{session}: {shown}");
+        assert!(!shown.contains("WROTE-TREE"), "{session}: {shown}");
+        assert!(shown.contains("WROTE-TEMP"), "{session}: {shown}");
+        assert!(!shown.contains("REACHED-SOCKET"), "{session}: {shown}");
+        let internet = |line: &str| line.contains("192.0.2.1") && line.contains(refused);
+        assert_eq!(
+            shown.lines().any(internet),
+            session != "web",
+            "{session}: {shown}"
+        );
+    }
+    std::fs::remove_file(&socket)?;
     Ok(())
 }

@@ -76,7 +76,7 @@ pub(crate) fn results(session: &AgentSession) -> Vec<String> {
 }
 
 /// One turn of queued bash calls under `sandbox`, with no asker: a question reads as a denial.
-async fn run_contained(
+pub(crate) async fn run_contained(
     project: &Path,
     sandbox: Sandbox,
     commands: &[&str],
@@ -85,7 +85,7 @@ async fn run_contained(
 }
 
 /// `commands` run from `holder` under a broker built for `project`, every question approved once.
-async fn run_approved(
+pub(crate) async fn run_approved(
     project: &Path,
     holder: &Path,
     sandbox: Sandbox,
