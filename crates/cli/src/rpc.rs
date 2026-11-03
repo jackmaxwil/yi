@@ -518,13 +518,14 @@ pub fn run_rpc(
 }
 
 /// An elision applied too, but it is not a summary: it says so, apart from a compaction's
-/// `applied`, and a failure carries its reason.
+/// `applied`, and a failure carries its reason. A refused `/compact` is still `scheduled`.
 fn compact_frame(
     outcome: &Result<yi_runtime::compaction::CompactOutcome, yi_runtime::compaction::CompactError>,
     running: bool,
 ) -> Value {
     let applied = outcome.as_ref().is_ok_and(|outcome| outcome.applied());
-    let mut frame = json!({"applied": applied, "scheduled": !applied && running});
+    let busy = matches!(outcome, Ok(yi_runtime::compaction::CompactOutcome::Busy));
+    let mut frame = json!({"applied": applied, "scheduled": busy || (!applied && running)});
     match outcome {
         Ok(yi_runtime::compaction::CompactOutcome::Elided(elision)) => {
             frame["elided"] = json!(elision.messages);
@@ -537,7 +538,7 @@ fn compact_frame(
 
 #[cfg(test)]
 mod tests {
-    use yi_runtime::compaction::{CompactError, CompactOutcome, Elision};
+    use yi_runtime::compaction::{CompactError, CompactOutcome, Elision, Tokens};
 
     #[test]
     fn a_compact_frame_tells_an_elision_and_a_failure_apart_from_a_summary() {
@@ -550,10 +551,13 @@ mod tests {
             frame(Ok(CompactOutcome::Elided(Elision {
                 messages: 5,
                 total: 9,
-                window: 1000
+                window: Tokens(1000)
             })))["elided"],
             5
         );
+        let busy = frame(Ok(CompactOutcome::Busy));
+        assert_eq!(busy["applied"], false);
+        assert_eq!(busy["scheduled"], true, "a refused /compact still runs");
         let failed = frame(Err(CompactError::NoSummary("upstream 529".to_owned())));
         assert_eq!(failed["applied"], false);
         assert!(

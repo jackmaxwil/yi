@@ -45,20 +45,20 @@ impl BriefLine {
 
 impl CompiledView {
     fn earlier_row(&self) -> String {
-        let demoted: usize = self
-            .earlier
-            .iter()
-            .filter_map(|line| span(line))
-            .map(|(_, _, lines)| lines)
-            .sum();
+        let (demoted, exact) = span_lines(&self.earlier);
+        let total = self.brief.len().saturating_add(demoted);
         cut_row(
             self.brief.len(),
-            self.brief.len().saturating_add(demoted),
-            "brief lines, the newest",
+            total,
+            if exact {
+                "brief lines, the newest"
+            } else {
+                "or more brief lines, the newest"
+            },
             "BRIEF_LINE_CAP",
             BRIEF_LINE_CAP,
             &format!(
-                "id spans below, merged past EARLIER_CAP {EARLIER_CAP}; read(\"history://self/since/0\")"
+                "id spans below (more than EARLIER_CAP {EARLIER_CAP} merge the oldest); read(\"history://self/since/0\")"
             ),
         )
     }
@@ -186,21 +186,38 @@ fn earlier_line(lines: &[BriefLine]) -> String {
     format!("(#{first}..#{last}, {} lines)", lines.len())
 }
 
-fn span(line: &str) -> Option<(&str, &str, usize)> {
+fn span(line: &str) -> Option<(&str, &str, Option<usize>)> {
     let inner = line.strip_prefix("(#")?.strip_suffix(')')?;
     let (first, rest) = inner.split_once("..#")?;
     match rest.split_once(", ") {
-        Some((last, count)) => Some((first, last, count.strip_suffix(" lines")?.parse().ok()?)),
-        None => Some((first, rest, 0)),
+        Some((last, count)) => Some((
+            first,
+            last,
+            Some(count.strip_suffix(" lines")?.parse().ok()?),
+        )),
+        None => Some((first, rest, None)),
     }
 }
 
+/// Lines the spans stand for, and whether every span said how many (a span stored before
+/// counts existed, or one that does not parse, did not).
+fn span_lines(lines: &[String]) -> (usize, bool) {
+    lines
+        .iter()
+        .fold((0, true), |(sum, exact), line| match span(line) {
+            Some((_, _, Some(n))) => (sum.saturating_add(n), exact),
+            _ => (sum, false),
+        })
+}
+
 fn merged_line(lines: &[String]) -> String {
-    let spans: Vec<(&str, &str, usize)> = lines.iter().filter_map(|line| span(line)).collect();
+    let spans: Vec<_> = lines.iter().filter_map(|line| span(line)).collect();
     let first = spans.first().map_or("?", |span| span.0);
     let last = spans.last().map_or(first, |span| span.1);
-    let count: usize = spans.iter().map(|span| span.2).sum();
-    format!("(#{first}..#{last}, {count} lines)")
+    match span_lines(lines) {
+        (count, true) => format!("(#{first}..#{last}, {count} lines)"),
+        _ => format!("(#{first}..#{last})"),
+    }
 }
 
 fn first_edit_index(attributed: &[Attributed]) -> BTreeMap<String, usize> {

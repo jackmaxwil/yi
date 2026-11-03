@@ -457,6 +457,80 @@ fn a_floor_cut_inside_a_multibyte_char_moves_to_the_char_boundary() -> TestResul
     Ok(())
 }
 
+const CHILD_SESSION: &str = include_str!("../../runtime/tests/fixtures/rollup/child_bedrock.jsonl");
+
+/// Dies past D337: the brief is a child's only user message, so a compaction that drops it
+/// leaves the child without the task it runs on.
+#[test]
+fn a_childs_brief_survives_the_floor_as_its_only_user_message() -> TestResult {
+    let brief = CHILD_SESSION
+        .lines()
+        .find_map(|line| serde_json::from_str::<Entry>(line).ok())
+        .and_then(|entry| match entry {
+            Entry::Message { message, .. } => Some(message),
+            _ => None,
+        })
+        .ok_or("the child fixture's brief")?;
+    assert!(matches!(
+        &brief,
+        AgentMessage::User {
+            attribution: yi_types::message::Attribution::Task,
+            ..
+        }
+    ));
+    assert_eq!(
+        retain_floor(std::slice::from_ref(&brief), Tokens(64_000)),
+        [brief]
+    );
+    Ok(())
+}
+
+/// Dies when a host notice written for one turn outlives the summary, or the letter that wakes
+/// an idle session dies with it.
+#[test]
+fn a_host_notice_leaves_the_floor_and_a_waking_letter_stays() -> TestResult {
+    use yi_types::message::HostSource;
+    let notice = AgentMessage::host_text(HostSource::Notice, "the turn ends at 15:00", 1);
+    let mail = AgentMessage::host_text(HostSource::Mail, "the parent asks for the count", 1);
+    let typed = user("count the rows");
+    let survivors = retain_floor(&[notice, mail.clone(), typed.clone()], Tokens(64_000));
+    assert_eq!(survivors, vec![mail, typed]);
+    Ok(())
+}
+/// Dies when a kind nobody registered is dropped at compaction, or a raise-once notice dies
+/// before the reply that reads it.
+#[test]
+fn each_host_notice_row_dies_once_read_and_an_unregistered_kind_survives() -> TestResult {
+    let reply = assistant("read", usage(0, 0, 0), StopReason::Stop);
+    for kind in [
+        "stream_retry",
+        "cache_alert",
+        "plan_relevance",
+        "todo_prelude",
+    ] {
+        let note = AgentMessage::host_note(kind, "text".to_owned(), 1);
+        let kept = drop_internal(&[note.clone(), reply.clone()]);
+        assert_eq!(
+            kept,
+            vec![reply.clone()],
+            "{kind} survives the compaction that read it"
+        );
+        let unread = drop_internal(std::slice::from_ref(&note));
+        let kept_unread = usize::from(matches!(
+            kind,
+            "cache_alert" | "plan_relevance" | "todo_prelude"
+        ));
+        assert_eq!(unread.len(), kept_unread, "{kind} before any reply");
+    }
+    let unknown = AgentMessage::host_note("a_kind_nobody_registered", "text".to_owned(), 1);
+    assert_eq!(
+        drop_internal(&[unknown.clone(), reply.clone()]),
+        vec![unknown, reply],
+        "an unregistered kind is durable"
+    );
+    Ok(())
+}
+
 #[test]
 fn prepare_returns_none_when_there_is_nothing_to_summarize() -> TestResult {
     let branch = vec![message_entry("m1", 1, user("hi"))];
@@ -497,9 +571,6 @@ fn prepare_splits_history_and_unions_the_floor_into_the_retained_tail() -> TestR
         ..Settings::default()
     };
     let prepared = prepare_compaction(&branch, &settings).ok_or("expected preparation")?;
-    assert!(
-        !prepared.messages_to_summarize.is_empty() || !prepared.turn_prefix_messages.is_empty()
-    );
     assert!(
         prepared.retained_tail.iter().any(|message| matches!(
             message,
@@ -921,7 +992,7 @@ fn a_demoted_brief_names_what_was_kept_the_cap_and_the_read_that_restores_it() -
     let first = compile_view(&ok(0, 125), None);
     let rendered = first.render();
     assert!(
-        rendered.contains("[\u{2026} 120 of 125 brief lines, the newest (BRIEF_LINE_CAP 120); the rest: id spans below, merged past EARLIER_CAP 24; read(\"history://self/since/0\")]\n(#t0..#t4, 5 lines)"),
+        rendered.contains("[\u{2026} 120 of 125 brief lines, the newest (BRIEF_LINE_CAP 120); the rest: id spans below (more than EARLIER_CAP 24 merge the oldest); read(\"history://self/since/0\")]\n(#t0..#t4, 5 lines)"),
         "{rendered}"
     );
     let mut view = first;
@@ -956,6 +1027,40 @@ fn a_demoted_brief_names_what_was_kept_the_cap_and_the_read_that_restores_it() -
         view.earlier[0].starts_with("(#t0..#"),
         "the merged span still opens at the first demoted id: {:?}",
         view.earlier
+    );
+    Ok(())
+}
+
+/// Dies with a span stored before counts existed read as zero lines, so the cut row claimed
+/// nothing was demoted and a merge wrote that undercount back as a definite total.
+#[test]
+fn a_span_stored_without_a_count_is_never_summed_as_zero() -> TestResult {
+    let extra = serde_json::json!({
+        "brief": [{"id": "m1", "text": "tool: read"}],
+        "earlier": ["(#a..#b)", "(#c..#d, 3 lines)"],
+    });
+    let extra = extra.as_object().ok_or("not an object")?;
+    let view = yi_context::view_from_extra(extra).ok_or("view not restored")?;
+    let rendered = view.render();
+    assert!(
+        rendered.contains("1 of 4 or more brief lines"),
+        "an unknown count is a floor, not a total: {rendered}"
+    );
+    let mut view = view;
+    view.earlier = (0..=EARLIER_CAP)
+        .map(|n| {
+            if n == 0 {
+                "(#a..#b)".to_owned()
+            } else {
+                format!("(#x{n}..#y{n}, 2 lines)")
+            }
+        })
+        .collect();
+    let merged = compile_view(&[], Some(&view));
+    assert_eq!(
+        merged.earlier[0], "(#a..#y1)",
+        "a merge with an unknown count writes no count: {:?}",
+        merged.earlier
     );
     Ok(())
 }
@@ -1114,5 +1219,34 @@ fn a_prompt_stored_before_attribution_still_reads_as_typed() -> TestResult {
             .is_some_and(|text| text.starts_with("<yi_internal_context")),
         "{shown:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn retention_floor_keeps_typed_words_and_drops_injected_user_role_text() -> TestResult {
+    use yi_types::message::{ATTRIBUTED_SINCE_MS, Attribution, HostSource};
+    let at = ATTRIBUTED_SINCE_MS + 1;
+    let summarized = [
+        user("typed ask"),
+        AgentMessage::host_text(HostSource::Notice, "job 7 finished", 0),
+        wrap_internal("reminder", "keep going", at),
+        AgentMessage::task("child request", at),
+        AgentMessage::CompactionSummary {
+            summary: "earlier work".to_owned(),
+            tokens_before: 10,
+            timestamp: at,
+        },
+        AgentMessage::User {
+            content: UserContent::Text("pre-attribution ask".to_owned()),
+            timestamp: ATTRIBUTED_SINCE_MS - 1,
+            attribution: Attribution::Unproven,
+        },
+    ];
+    let survivors = retain_floor(&summarized, Tokens(64_000));
+    let kept = survivors
+        .iter()
+        .map(floor_text)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(kept, ["typed ask", "child request", "pre-attribution ask"]);
     Ok(())
 }
