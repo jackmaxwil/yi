@@ -604,6 +604,9 @@ a child's fork: a linked worktree per child, cut at HEAD, third-party cargo unit
 Linux containment: Landlock and the git-file seal | `contain::kernel::a_write_outside_the_roots_and_a_read_of_a_store_are_refused`
 Linux containment: Landlock and the git-file seal | `contain::a_planted_config_is_put_back_and_refuses_one_git`
 console run chip | `drive::pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not`
+heartbeats: clock subscriptions | `todo_e2e::a_block_on_a_time_with_no_scheme_is_refused`
+heartbeats: clock subscriptions | `todo_e2e::an_address_outside_on_is_refused_and_prose_is_not`
+heartbeats: clock subscriptions | `channel_e2e::a_file_wait_holds_until_the_file_exists`
 `agent-browser` plugin | `cli_surfaces::the_gate_says_what_a_browser_command_would_do`
 `agent-browser` plugin | `permission_scope::the_local_browser_runs_outside_unasked`
 `agent-browser` plugin | `permission_scope::one_yes_covers_the_web_session_and_nothing_the_box_cannot_hold`
