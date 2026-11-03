@@ -84,30 +84,31 @@ pub fn internal_source(message: &AgentMessage) -> Option<&str> {
     text.ends_with("</yi_internal_context>").then_some(source)
 }
 
-/// Custom entry kinds that ride the §4.2 wrapper: rendered `<yi_internal_context source="…">`
-/// and dropped at compaction, so injected prompts never accumulate across windows.
-pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
-    match custom_type {
-        "heartbeat_prompt" => Some("heartbeat"),
-        "advisory" => Some("advisory"),
-        "goal_prompt" => Some("goal"),
-        "ledger_prompt" => Some("ledger"),
-        "plan_dispatch" => Some("dispatch"),
-        "reminder" => Some("reminder"),
-        "classifier" => Some("classifier"),
-        "fragment" => Some("fragment"),
-        "todo_intercept" => Some("todo"),
-        _ => None,
-    }
+/// A custom entry's lifetime: dropped with its window, dropped once a reply read it, or durable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lifetime {
+    Wrapped(&'static str),
+    OnceRead,
+    Durable,
 }
 
-const HOST_NUDGES: [&str; 5] = [
-    "todo_nudge",
-    "length_redrive",
-    "repeat_break",
-    "spend_alert",
-    "discovery",
-];
+pub(crate) fn lifetime_of(custom_type: &str) -> Lifetime {
+    match custom_type {
+        "heartbeat_prompt" => Lifetime::Wrapped("heartbeat"),
+        "advisory" => Lifetime::Wrapped("advisory"),
+        "goal_prompt" => Lifetime::Wrapped("goal"),
+        "ledger_prompt" => Lifetime::Wrapped("ledger"),
+        "plan_dispatch" => Lifetime::Wrapped("dispatch"),
+        "reminder" => Lifetime::Wrapped("reminder"),
+        "classifier" => Lifetime::Wrapped("classifier"),
+        "fragment" => Lifetime::Wrapped("fragment"),
+        "todo_intercept" => Lifetime::Wrapped("todo"),
+        "stream_retry" => Lifetime::Wrapped("stream_retry"),
+        "todo_nudge" | "length_redrive" | "repeat_break" | "spend_alert" | "discovery"
+        | "cache_alert" | "plan_relevance" | "todo_prelude" => Lifetime::OnceRead,
+        _ => Lifetime::Durable,
+    }
+}
 
 /// Removes wrapped internal context, so per-window injections die with it, and every host
 /// nudge a reply followed: one queued after the last reply is unread, and some are raised once.
@@ -121,8 +122,11 @@ pub fn drop_internal(messages: &[AgentMessage]) -> Vec<AgentMessage> {
         .filter(|(index, message)| {
             if let AgentMessage::Custom { custom_type, .. } = message {
                 let read = last_reply.is_some_and(|reply| reply > *index);
-                return internal_source_of_custom(custom_type).is_none()
-                    && !(read && HOST_NUDGES.contains(&custom_type.as_str()));
+                return match lifetime_of(custom_type) {
+                    Lifetime::Wrapped(_) => false,
+                    Lifetime::OnceRead => !read,
+                    Lifetime::Durable => true,
+                };
             }
             internal_source(message).is_none()
         })

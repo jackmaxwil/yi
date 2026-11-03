@@ -9,22 +9,24 @@ use crate::tools::{output_text, read_tool, temp_dir, view_fixture};
 type TestResult = Result<(), Box<dyn Error>>;
 
 /// The kernel is the one exec surface a static reader cannot follow: a `%%bash`
-/// cell is a shell command and reads like one, a Python cell is allowed in auto
-/// and gated by the phase-2 sandbox, and ask mode still stops both.
+/// cell is a shell command and reads like one, a Python cell is reversible only
+/// inside the sandbox, so auto asks before an uncontained one, and ask mode still stops both.
 #[test]
 fn a_shell_cell_is_read_as_a_shell_command() -> TestResult {
-    for (code, allowed) in [
-        ("%%bash\ncargo test", true),
-        ("%%bash\nrm -rf target", false),
-        ("!git status", true),
-        ("!git reset --hard", false),
-        ("total = sum(len(r) for r in results)", true),
+    for (code, contained, allowed) in [
+        ("%%bash\ncargo test", false, true),
+        ("%%bash\nrm -rf target", true, false),
+        ("!git status", false, true),
+        ("!git reset --hard", true, false),
+        ("total = sum(len(r) for r in results)", true, true),
+        ("print(1)", false, false),
     ] {
         let mut input = Map::new();
         input.insert("code".to_owned(), Value::String(code.to_owned()));
         let tool = IpythonTool {
             bridge: Arc::new(NoKernel),
             calls: None,
+            contained,
         };
         assert_eq!(!tool.irreversible(&input), allowed, "{code:?}");
     }
@@ -53,6 +55,7 @@ fn a_cell_hands_its_call_id_to_the_kernel() -> TestResult {
     let tool = IpythonTool {
         bridge: Arc::new(Recording(Arc::clone(&seen))),
         calls: None,
+        contained: true,
     };
     let mut input = Map::new();
     input.insert("code".to_owned(), Value::String("1".to_owned()));

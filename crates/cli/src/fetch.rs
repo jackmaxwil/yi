@@ -24,7 +24,7 @@ pub(crate) fn run(args: &Args) -> i32 {
     if let Some(dir) = configured_plans_dir(&workspace) {
         resolver = resolver.with_plans_dir(dir);
     }
-    resolver = resolver.with_mcp_read(Arc::new(McpOneShot));
+    resolver = resolver.with_mcp_read(Some(Arc::new(McpOneShot)));
     match resolver.fetch(&url) {
         Ok(fetched) => {
             print!("{}", fetched.text);

@@ -20,22 +20,32 @@ const WIRED: [&str; 7] = [
     "todo",
     "web_search",
 ];
-const ARGV: &str = r#"import json, os, sys
+const ARGV: &str = r#"import hashlib, json, os, sys
 spec = json.loads(sys.argv[1])
 call = json.load(sys.stdin)
 if not isinstance(call, dict):
     sys.exit("yi: the just wrapper takes a JSON object on stdin")
+pin = spec.get("sha256")
+if pin and hashlib.sha256(open(spec["justfile"], "rb").read()).hexdigest() != pin:
+    sys.exit("yi: the justfile changed since import; rerun `yi tool import just`")
 argv = ["just", "--justfile", spec["justfile"], spec["recipe"]]
-for name, variadic, default in spec["parameters"]:
+gap = None
+for name, variadic, default, required in spec["parameters"]:
     value = call.get(name)
+    if gap and value is not None:
+        sys.exit("yi: %s needs %s, whose default just computes, before %s" % (spec["recipe"], gap, name))
     if variadic:
         if value is not None:
             argv.extend(str(item) for item in (value if isinstance(value, list) else [value]))
         continue
     if value is None:
-        if default is None:
+        if default is not None:
+            value = default
+        elif required:
             sys.exit("yi: %s needs %s" % (spec["recipe"], name))
-        value = default
+        else:
+            gap = name
+            continue
     argv.append(str(value))
 os.execvp(argv[0], argv)"#;
 
@@ -66,6 +76,8 @@ pub(crate) struct Report {
     removed: Vec<String>,
     skipped: Vec<String>,
     conflicts: Vec<String>,
+    reads: Vec<String>,
+    demoted: Vec<String>,
     module_recipes: usize,
 }
 
@@ -151,6 +163,7 @@ pub(crate) fn recipes(dump: &str) -> Result<Dump, String> {
             continue;
         }
         let mut params = Vec::new();
+        let mut options = false;
         for param in recipe
             .get("parameters")
             .and_then(Value::as_array)
@@ -161,13 +174,22 @@ pub(crate) fn recipes(dump: &str) -> Result<Dump, String> {
                 continue;
             };
             let kind = text(param.get("kind")).unwrap_or_default();
-            let default = text(param.get("default"));
+            if ["long", "short"]
+                .iter()
+                .any(|key| param.get(key).is_some_and(|v| !v.is_null()))
+            {
+                options = true;
+            }
             params.push(Param {
                 name,
                 variadic: matches!(kind.as_str(), "star" | "plus"),
-                required: default.is_none() && kind != "star",
-                default,
+                required: param.get("default").is_none_or(Value::is_null) && kind != "star",
+                default: text(param.get("default")),
             });
+        }
+        if options {
+            skipped.push(name);
+            continue;
         }
         recipes.push(Recipe { name, doc, params });
     }
@@ -205,16 +227,13 @@ fn marker(doc: Option<&str>) -> Option<&'static str> {
     }
 }
 
-fn kind(recipe: &Recipe) -> &'static str {
-    match marker(recipe.doc.as_deref()) {
-        Some("read") => "read",
-        _ => "exec",
-    }
-}
-fn description(recipe: &Recipe) -> String {
+fn description(recipe: &Recipe, justfile: &Path) -> String {
+    let dir = justfile.parent().unwrap_or(justfile).display();
     match recipe.doc.as_deref().map(str::trim) {
-        Some(doc) if marker(Some(doc)).is_none() && !doc.is_empty() => doc.to_owned(),
-        _ => format!("Run the project's just recipe {}", recipe.name),
+        Some(doc) if marker(Some(doc)).is_none() && !doc.is_empty() => {
+            format!("{doc} (just recipe in {dir})")
+        }
+        _ => format!("Run just recipe {} in {dir}", recipe.name),
     }
 }
 
@@ -257,12 +276,12 @@ fn shell(text: &str) -> String {
     text.replace('\'', r"'\''")
 }
 
-fn wrapper(justfile: &Path, recipe: &Recipe) -> String {
+fn wrapper(justfile: &Path, recipe: &Recipe, pin: Option<&str>) -> String {
     let declaration = json!({
         "name": recipe.name,
-        "description": description(recipe),
+        "description": description(recipe, justfile),
         "input_schema": schema(recipe),
-        "kind": kind(recipe),
+        "kind": if pin.is_some() { "read" } else { "exec" },
     });
     let name = &recipe.name;
     let mut script = format!(
@@ -270,20 +289,19 @@ fn wrapper(justfile: &Path, recipe: &Recipe) -> String {
 {}
 set -eu
 if [ \"${{1:-}}\" = \"--schema\" ]; then
-  cat <<'JUST_SCHEMA'
-{declaration}
-JUST_SCHEMA
+  printf '%s\\n' '{}'
   exit 0
 fi
 ",
-        marker_line(justfile, name)
+        marker_line(justfile, name),
+        shell(&declaration.to_string())
     );
     let just = format!(
         "exec just --justfile '{}' '{}'",
         shell(&justfile.to_string_lossy()),
         shell(name)
     );
-    if recipe.params.is_empty() {
+    if recipe.params.is_empty() && pin.is_none() {
         script.push_str(&just);
         script.push('\n');
         return script;
@@ -294,8 +312,9 @@ fi
         "parameters": recipe
             .params
             .iter()
-            .map(|param| json!([param.name, param.variadic, param.default]))
+            .map(|param| json!([param.name, param.variadic, param.default, param.required]))
             .collect::<Vec<_>>(),
+        "sha256": pin,
     });
     script.push_str(&format!(
         "command -v python3 >/dev/null 2>&1 || {{
@@ -327,18 +346,6 @@ fn reserved() -> Vec<String> {
     names
 }
 
-#[cfg(unix)]
-fn executable(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-        .map_err(|error| format!("could not make {} executable: {error}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn executable(_path: &Path) -> Result<(), String> {
-    Ok(())
-}
-
 pub(crate) fn sync(
     dir: &Path,
     justfile: &Path,
@@ -360,7 +367,9 @@ pub(crate) fn sync(
                     .iter()
                     .find(|recipe| recipe.name == *name)
                     .ok_or_else(|| match skipped.iter().any(|skipped| skipped == name) {
-                        true => format!("{name} is private or marked `{SKIP}`"),
+                        true => format!(
+                            "{name} is private, marked `{SKIP}`, or takes option parameters"
+                        ),
                         false => format!("the justfile has no recipe named {name}"),
                     })
             })
@@ -385,11 +394,19 @@ pub(crate) fn sync(
         module_recipes,
         ..Report::default()
     };
+    let source = fs::read(justfile)
+        .map_err(|error| format!("could not read {}: {error}", justfile.display()))?;
+    let digest = yi_runtime::tarball::sha256_hex(&source);
+    let imports = String::from_utf8_lossy(&source).lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("import") || line.starts_with("mod ") || line.starts_with("mod?")
+    });
     let mut written = Vec::new();
     let mut planned = Vec::new();
     for recipe in &chosen {
         let path = dir.join(&recipe.name);
-        let body = wrapper(justfile, recipe);
+        let pin = (marker(recipe.doc.as_deref()) == Some("read") && !imports).then_some(&digest);
+        let body = wrapper(justfile, recipe, pin.map(String::as_str));
         let previous = match held(&path) {
             Held::Absent => None,
             Held::Foreign => {
@@ -414,6 +431,11 @@ pub(crate) fn sync(
                 Some(_) => Some(script),
             },
         };
+        if pin.is_some() {
+            report.reads.push(recipe.name.clone());
+        } else if marker(recipe.doc.as_deref()) == Some("read") {
+            report.demoted.push(recipe.name.clone());
+        }
         planned.push((recipe.name.as_str(), path, body, previous));
         written.push(recipe.name.as_str());
     }
@@ -427,11 +449,11 @@ pub(crate) fn sync(
         match previous {
             Some(script) if script == body => report.unchanged.push(name.to_owned()),
             Some(_) => {
-                write(&path, &body)?;
+                crate::update::write_exec(&path, body.as_bytes())?;
                 report.updated.push(name.to_owned());
             }
             None => {
-                write(&path, &body)?;
+                crate::update::write_exec(&path, body.as_bytes())?;
                 report.added.push(name.to_owned());
             }
         }
@@ -443,16 +465,12 @@ pub(crate) fn sync(
         &mut report.added,
         &mut report.removed,
         &mut report.conflicts,
+        &mut report.reads,
+        &mut report.demoted,
     ] {
         names.sort();
     }
     Ok(report)
-}
-
-fn write(path: &Path, body: &str) -> Result<(), String> {
-    fs::write(path, body)
-        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
-    executable(path)
 }
 
 /// Invariant: a file yi cannot read as text is a tool yi did not write, so it is neither
@@ -511,6 +529,14 @@ fn print(dir: &Path, justfile: &Path, report: &Report) {
         ("removed", &report.removed),
         ("left out", &report.skipped),
         ("conflict", &report.conflicts),
+        (
+            "read, runs without a prompt while the justfile is unchanged",
+            &report.reads,
+        ),
+        (
+            "yi: read ignored, the justfile has imports or modules",
+            &report.demoted,
+        ),
     ] {
         if !names.is_empty() {
             println!("  {label} {}: {}", names.len(), names.join(", "));

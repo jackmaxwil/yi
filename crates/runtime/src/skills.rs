@@ -46,8 +46,10 @@ pub fn discover_split(cwd: &Path, home: &Path) -> (Vec<Skill>, Vec<Skill>) {
     let root = crate::ext::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let present = |skill: &Skill| {
         let plugin = skill.frontmatter.get("requires").is_none_or(|name| {
-            yi_tools::plugin::Plugin::named(name)
-                .is_some_and(|plugin| plugin.skill_root(home).is_some())
+            yi_tools::plugin::Plugin::named(name).is_some_and(|plugin| {
+                plugin.installed(home).is_some()
+                    && (plugin.skills.is_empty() || plugin.skill_root(home).is_some())
+            })
         });
         plugin && within(skill, &root)
     };

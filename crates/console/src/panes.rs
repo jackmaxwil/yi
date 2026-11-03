@@ -237,6 +237,11 @@ pub(crate) fn down_from_top(from_bottom: usize) -> Option<usize> {
     (down < TOP / 2).then_some(down)
 }
 
+/// The first row of a `room`-tall window that keeps `cursor` in view: its last row once past it.
+pub(crate) fn first_row(cursor: usize, room: usize) -> usize {
+    cursor.saturating_add(1).saturating_sub(room)
+}
+
 pub(crate) fn windowed(
     all: &[Line<'static>],
     from_bottom: &mut usize,
@@ -271,6 +276,57 @@ fn cap_row(what: &str, cap: &str, next: &str, theme: &Theme) -> Line<'static> {
     )
 }
 
+fn cap_notice(noun: &str, cap: usize, tail: bool, total: usize, theme: &Theme) -> Line<'static> {
+    let what = format!(
+        "{noun} {} {cap} of {total} rows",
+        if tail { "last" } else { "first" }
+    );
+    cap_row(
+        &what,
+        &format!("notebook cap {cap}"),
+        "v shows every row",
+        theme,
+    )
+}
+
+fn cap_first(total: usize, cap: usize, tail: bool, full: bool) -> Option<usize> {
+    (total > cap && !full).then(|| if tail { total.saturating_sub(cap) } else { 0 })
+}
+
+/// Invariant: the notice sits where the rows it counts were dropped, so a tail cut leads with it.
+fn with_notice(
+    mut kept: Vec<Line<'static>>,
+    notice: Line<'static>,
+    tail: bool,
+) -> Vec<Line<'static>> {
+    if tail {
+        kept.insert(0, notice);
+    } else {
+        kept.push(notice);
+    }
+    kept
+}
+
+fn cap_rows(
+    mut rows: Vec<Line<'static>>,
+    (cap, tail, full): (usize, bool, bool),
+    noun: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let total = rows.len();
+    let Some(first) = cap_first(total, cap, tail, full) else {
+        return rows;
+    };
+    let notice = cap_notice(noun, cap, tail, total, theme);
+    let kept = if tail {
+        rows.split_off(first)
+    } else {
+        rows.truncate(cap);
+        rows
+    };
+    with_notice(kept, notice, tail)
+}
+
 fn capped(
     text: &str,
     lead: Span<'static>,
@@ -280,7 +336,7 @@ fn capped(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let indent = " ".repeat(lead.width());
-    let mut rows: Vec<Line<'static>> = text
+    let rows: Vec<Line<'static>> = text
         .lines()
         .flat_map(|line| {
             let line = Line::from(vec![
@@ -290,28 +346,47 @@ fn capped(
             yi_tui::wrap::wrap_line(&line, width, &indent)
         })
         .collect();
+    cap_rows(rows, (cap, tail, full), noun, theme)
+}
+
+fn trace_rows(
+    text: &str,
+    code: &str,
+    width: usize,
+    lead: Span<'static>,
+    (cap, tail, full): (usize, bool, bool),
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let indent = " ".repeat(lead.width());
+    let rows = yi_tui::pycell::traceback_rows(text);
     let total = rows.len();
-    if full || total <= cap {
-        return rows;
+    // Invariant: the marker names the exception even when the block is tail-capped, so it lands
+    // on the last exception raised and never on a row the cap cuts away.
+    let mark = rows
+        .iter()
+        .rposition(|(kind, _)| *kind == yi_tui::pycell::TraceRow::Raised)
+        .or_else(|| rows.iter().rposition(|(_, line)| !line.trim().is_empty()))
+        .unwrap_or(0);
+    let cut = cap_first(total, cap, tail, full);
+    let kept = match cut {
+        Some(first) if tail => first..total,
+        Some(_) => 0..cap.min(total),
+        None => 0..total,
+    };
+    let mut lang = yi_tui::highlight::lang_for(yi_tui::pycell::chip(code));
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for (at, (kind, line)) in rows.iter().enumerate().skip(kept.start).take(kept.len()) {
+        let mut spans = vec![if at == mark {
+            lead.clone()
+        } else {
+            Span::raw(indent.clone())
+        }];
+        spans.extend(yi_tui::pycell::row_spans(*kind, line, lang.as_mut(), theme));
+        out.extend(yi_tui::wrap::wrap_line(&Line::from(spans), width, &indent));
     }
-    let what = format!(
-        "{noun} {} {cap} of {total} rows",
-        if tail { "last" } else { "first" }
-    );
-    let row = cap_row(
-        &what,
-        &format!("notebook cap {cap}"),
-        "v shows every row",
-        theme,
-    );
-    if tail {
-        let mut kept = rows.split_off(total.saturating_sub(cap));
-        kept.insert(0, row);
-        kept
-    } else {
-        rows.truncate(cap);
-        rows.push(row);
-        rows
+    match cut {
+        Some(_) => with_notice(out, cap_notice("traceback", cap, tail, total, theme), tail),
+        None => out,
     }
 }
 
@@ -328,7 +403,7 @@ fn code_rows(code: &str, width: usize, full: bool, theme: &Theme) -> Vec<Line<'s
     } else {
         lines.len().min(CODE_ROWS)
     };
-    let mut lang = yi_tui::highlight::lang_for("python");
+    let mut lang = yi_tui::highlight::lang_for(yi_tui::pycell::chip(code));
     let base = Style::default().fg(theme.text);
     let mut out = Vec::new();
     for (index, line) in lines.iter().take(shown).enumerate() {
@@ -452,12 +527,12 @@ pub fn notebook_lines(
         }
         if let Some(trace) = &cell.error {
             let lead = Span::styled("✕ ", error);
-            out.extend(capped(
+            out.extend(trace_rows(
                 trace,
+                &cell.code,
+                width,
                 lead,
-                error,
-                shape(TRACE_ROWS, true),
-                "traceback",
+                (TRACE_ROWS, true, full),
                 theme,
             ));
         }

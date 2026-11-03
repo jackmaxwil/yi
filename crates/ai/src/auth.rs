@@ -109,12 +109,12 @@ fn stored(
     Some((live, headers))
 }
 
-/// The provider's key from the environment or the store at `root`; only [`key_in`] mints.
+/// The provider's key from the environment or the store at `root`.
 fn key_at(root: std::path::PathBuf, provider: &str) -> Option<Secret> {
     resolve_at(root, provider, None).map(|resolved| resolved.secret)
 }
 
-/// [`key_in`] without the mint: a session that opted out reads a sidecar key it never made.
+/// The provider's key from the environment or the `yi login` store under `home`.
 pub fn stored_key(home: &std::path::Path, provider: &str) -> Option<Secret> {
     key_at(Store::root_under(home), provider)
 }
@@ -159,29 +159,6 @@ fn resolve_at(
 
 pub fn api_key(provider: &str) -> Option<Secret> {
     resolve(provider).map(|resolved| resolved.secret)
-}
-
-/// The provider's key from the environment or the `yi login` store under `home`, minted there
-/// when neither has one: for a bearer Yi shares only with a process it starts itself.
-pub fn key_in(home: &std::path::Path, provider: &str) -> Result<Secret, String> {
-    if let Some(secret) = key_at(Store::root_under(home), provider) {
-        return Ok(secret);
-    }
-    let store = Store::open(Store::root_under(home));
-    let access = yi_oauth::pkce::hex(&yi_oauth::pkce::random_bytes(32)?);
-    let credential = yi_oauth::store::Credential {
-        kind: Kind::Key,
-        access: access.clone(),
-        refresh: None,
-        expires: None,
-        account: None,
-        org: None,
-        extra: serde_json::Map::new(),
-    };
-    store
-        .save(provider, &credential)
-        .map_err(|error| error.to_string())?;
-    Ok(Secret::new(access))
 }
 
 pub fn missing_message(provider: &str) -> String {

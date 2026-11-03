@@ -136,7 +136,12 @@ fn the_wrapper_schema_carries_each_recipe_parameter() -> TestResult {
 
     let build = space.schema("build")?;
     assert_eq!(build["name"], "build");
-    assert_eq!(build["description"], "Build the project");
+    let described = build["description"].as_str().unwrap_or_default();
+    assert!(
+        described.starts_with("Build the project (just recipe in ")
+            && described.ends_with("project)"),
+        "the description names the project it runs in: {described}"
+    );
     assert_eq!(build["kind"], "exec");
     assert_eq!(
         build["input_schema"]["properties"]["target"]["default"],
@@ -180,7 +185,7 @@ show value:
     assert!(imported.status.success(), "{imported:?}");
     let called = space.tool("show", r#"{"value":"my dir"}"#)?;
     assert!(called.status.success(), "{called:?}");
-    assert_eq!(String::from_utf8(called.stdout)?, "my dir\n");
+    assert_eq!(String::from_utf8_lossy(&called.stdout), "my dir\n");
     Ok(())
 }
 
@@ -213,7 +218,7 @@ show value:
     let called = space.tool_with_path("show", &fake, r#"{"value":"my dir/it's here"}"#)?;
     assert!(called.status.success(), "{called:?}");
     assert_eq!(
-        String::from_utf8(called.stdout)?,
+        String::from_utf8_lossy(&called.stdout),
         format!("[--justfile]\n[{justfile}]\n[show]\n[my dir/it's here]\n")
     );
     Ok(())
@@ -368,7 +373,7 @@ deploy env=\"prod\" region=\"us\":
     let called = space.tool("deploy", r#"{"region":"eu"}"#)?;
     assert!(called.status.success(), "{called:?}");
     assert_eq!(
-        String::from_utf8(called.stdout)?,
+        String::from_utf8_lossy(&called.stdout),
         "prod eu\n",
         "an omitted default keeps the supplied value in its own parameter"
     );
@@ -412,7 +417,7 @@ all +targets:
     let called = space.tool("all", r#"{"targets":["a","b c"]}"#)?;
     assert!(called.status.success(), "{called:?}");
     assert_eq!(
-        String::from_utf8(called.stdout)?,
+        String::from_utf8_lossy(&called.stdout),
         "<a>\n<b>\n<c>\n",
         "a variadic list spreads into one argv element per item"
     );
@@ -438,7 +443,7 @@ build:
     );
     let called = space.tool("build", "")?;
     assert!(called.status.success(), "{called:?}");
-    assert_eq!(String::from_utf8(called.stdout)?, "built\n");
+    assert_eq!(String::from_utf8_lossy(&called.stdout), "built\n");
     Ok(())
 }
 
@@ -545,5 +550,84 @@ fn naming_recipes_imports_only_those_and_skips_the_prune() -> TestResult {
     assert_eq!(refused.status.code(), Some(2), "{refused:?}");
     let complaint = String::from_utf8(refused.stderr)?;
     assert!(complaint.contains("marked `yi: skip`"), "{complaint}");
+    Ok(())
+}
+
+#[test]
+fn a_read_recipe_refuses_to_run_once_the_justfile_changes() -> TestResult {
+    let space = Workspace::new("pin", "# yi: read\nshow:\n    echo shown\n")?;
+    let imported = space.import(&["just"])?;
+    assert!(imported.status.success(), "{imported:?}");
+    assert!(
+        String::from_utf8(imported.stdout)?.contains("show"),
+        "the report names the read recipe"
+    );
+    let first = space.tool("show", "{}")?;
+    assert_eq!(
+        String::from_utf8_lossy(&first.stdout),
+        "shown\n",
+        "{first:?}"
+    );
+
+    space.justfile("# yi: read\nshow:\n    echo changed\n")?;
+    let second = space.tool("show", "{}")?;
+    assert!(!second.status.success(), "{second:?}");
+    assert!(String::from_utf8(second.stderr)?.contains("justfile changed since import"));
+    assert!(second.stdout.is_empty(), "the changed body must not run");
+    Ok(())
+}
+
+#[test]
+fn a_read_marker_is_ignored_when_the_justfile_imports_another() -> TestResult {
+    let space = Workspace::new(
+        "pin-import",
+        "import 'more.just'\n# yi: read\nshow:\n    echo shown\n",
+    )?;
+    std::fs::write(space.project.join("more.just"), "other:\n    echo other\n")?;
+    let imported = space.import(&["just"])?;
+    assert!(imported.status.success(), "{imported:?}");
+    assert_eq!(space.schema("show")?["kind"], "exec");
+    assert!(String::from_utf8(imported.stdout)?.contains("yi: read ignored"));
+    Ok(())
+}
+
+#[test]
+fn a_recipe_with_option_parameters_is_left_out_by_name() -> TestResult {
+    let space = Workspace::new(
+        "options",
+        "[arg(\"mode\", long=\"mode\")]\nbuild target mode=\"debug\":\n    echo {{target}} {{mode}}\n\nplain:\n    echo plain\n",
+    )?;
+    let imported = space.import(&["just"])?;
+    assert!(imported.status.success(), "{imported:?}");
+    assert!(
+        !space.path("build").exists(),
+        "a long option cannot ride the positional argv"
+    );
+    assert!(space.path("plain").exists());
+    assert!(String::from_utf8(imported.stdout)?.contains("left out 1: build"));
+    Ok(())
+}
+
+#[test]
+fn a_computed_default_is_optional_and_just_fills_it() -> TestResult {
+    let space = Workspace::new(
+        "computed",
+        "greet name=uppercase(\"world\"):\n    echo hello {{name}}\n",
+    )?;
+    let imported = space.import(&["just"])?;
+    assert!(imported.status.success(), "{imported:?}");
+    assert_eq!(space.schema("greet")?["input_schema"].get("required"), None);
+    let called = space.tool("greet", "{}")?;
+    assert_eq!(
+        String::from_utf8_lossy(&called.stdout),
+        "hello WORLD\n",
+        "{called:?}"
+    );
+    let given = space.tool("greet", r#"{"name":"yi"}"#)?;
+    assert_eq!(
+        String::from_utf8_lossy(&given.stdout),
+        "hello yi\n",
+        "{given:?}"
+    );
     Ok(())
 }
