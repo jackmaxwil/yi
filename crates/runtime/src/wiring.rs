@@ -892,7 +892,7 @@ fn subagent_host(
         provider: Arc::clone(&wiring.provider),
         notice: lifecycle_notice(session),
         events: session.events_sender(),
-        parent_messages: session.view_handle(),
+        parent_messages: session.history_handle(),
         cwd: wiring.cwd.clone(),
         home: wiring.home.clone(),
         lane_slots: wiring.lane_slots,

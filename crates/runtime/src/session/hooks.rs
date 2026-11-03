@@ -349,20 +349,9 @@ impl AgentSession {
         })
     }
 
+    /// What a fork is seeded with: the history as this session's requests send it, cut results as
+    /// placeholders, so a child never carries bytes this session's model already stopped seeing.
     pub fn history_handle(&self) -> Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move || {
-            shared
-                .messages
-                .lock()
-                .map(|messages| messages.clone())
-                .unwrap_or_default()
-        })
-    }
-
-    /// The history as the parent's own requests send it: its cuts rendered as placeholders, so a
-    /// fork seed never carries bytes the parent's model already stopped seeing.
-    pub fn view_handle(&self) -> Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {
             let messages = shared
@@ -370,7 +359,7 @@ impl AgentSession {
                 .lock()
                 .map(|messages| messages.clone())
                 .unwrap_or_default();
-            crate::reclaim::view(&shared.reclaimed, messages)
+            crate::reclaim::for_fork(&shared.reclaimed, messages)
         })
     }
 

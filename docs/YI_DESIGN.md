@@ -799,7 +799,7 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   `fork=all` refuses a model and seeds the child from the parent's view: its cut results rendered
   as the placeholders the parent's own requests carry, never the bytes behind them. `fork=N`
   counts typed turns only, never host notices; both keep what fits from the first cut point
-  compaction would take, inside 80% of the child's own route window, behind a `[… fork kept K
+  compaction would take, inside 80% of the child's own route window and under its compaction threshold, behind a `[… fork kept K
   of N` row when that ceiling cut; the seed is appended to the child's transcript, so a
   respawned service keeps it.
 - A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn

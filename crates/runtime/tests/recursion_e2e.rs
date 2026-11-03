@@ -705,13 +705,13 @@ async fn a_fork_budget_never_opens_on_a_tool_result() -> TestResult {
     Ok(())
 }
 
-/// Dies with the control: budget the seed at the window less compaction's reserve and a result
-/// the fork was meant to leave behind rides into the child's first request.
+/// Dies with the control: budget the seed at the window less compaction's reserve (111,616) and a
+/// 106,667-token result (bytes/3) under it but over 80% (102,400) rides into the first request.
 #[tokio::test]
 async fn a_fork_all_seed_stops_at_its_share_of_the_childs_window() -> TestResult {
     let forked = harness(0, 1, "forked")?;
     let mut args = Map::new();
-    args.insert("text".to_owned(), Value::String("x".repeat(315_000)));
+    args.insert("text".to_owned(), Value::String("x".to_owned()));
     {
         let mut parent = forked.parent.lock().map_err(|_| "poisoned")?;
         parent.push(AgentMessage::user_input(
@@ -724,7 +724,7 @@ async fn a_fork_all_seed_stops_at_its_share_of_the_childs_window() -> TestResult
         ));
         parent.push(serde_json::from_value(json!({
             "role": "toolResult", "toolCallId": "call-wide", "toolName": "ipython",
-            "content": [{"type": "text", "text": "x".repeat(315_000)}],
+            "content": [{"type": "text", "text": "x".repeat(320_000)}],
             "isError": false, "timestamp": 0
         }))?);
         parent.push(child_reply("loaded the frame"));
@@ -754,8 +754,8 @@ async fn a_fork_all_seed_stops_at_its_share_of_the_childs_window() -> TestResult
     Ok(())
 }
 
-/// Dies with the control: seed the fork from `history_handle` and the child re-reads a result
-/// the parent's own requests had already stopped carrying.
+/// Dies with the control: seed the fork from the raw history and the child re-reads a result the
+/// parent's own requests had stopped carrying, or follows a pointer into its own empty store.
 #[tokio::test]
 async fn a_fork_all_seed_carries_the_parents_cuts_not_the_bytes_behind_them() -> TestResult {
     let cut_text = "the whole 4000-byte build log".repeat(100);
@@ -791,7 +791,7 @@ async fn a_fork_all_seed_carries_the_parents_cuts_not_the_bytes_behind_them() ->
                     .chars()
                     .take(16)
                     .collect(),
-                entry_id: None,
+                entry_id: Some("e-log".to_owned()),
             }],
             reason: "breakeven".to_owned(),
             turn: 9,
@@ -800,7 +800,7 @@ async fn a_fork_all_seed_carries_the_parents_cuts_not_the_bytes_behind_them() ->
     }
     let parent = parent_session(&[]);
     parent.attach_store(store)?;
-    let view = (parent.view_handle())();
+    let view = (parent.history_handle())();
     assert!(
         matches!(
             view.get(2),
@@ -829,6 +829,7 @@ async fn a_fork_all_seed_carries_the_parents_cuts_not_the_bytes_behind_them() ->
             AgentMessage::ToolResult { content, .. }
                 if yi_types::message::join_text(content.as_slice(), "\n").starts_with("[reclaimed: bash")
                     && !yi_types::message::join_text(content.as_slice(), "\n").contains("the whole 4000-byte build log")
+                    && yi_types::message::join_text(content.as_slice(), "\n").contains("read(\"history://parent/e-log\")")
         )),
         "the child is seeded with the cut, not the bytes: {messages:?}"
     );

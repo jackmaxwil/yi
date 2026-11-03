@@ -468,8 +468,8 @@ fn seen_recently(host: &super::SubagentHost, text: &str) -> bool {
     seen.insert(crate::fetch::content_hash(text), now).is_some()
 }
 
-/// Cut where compaction cuts. Invariant: a fork seed fills at most this share of the child's
-/// own route window, so its first request still has room for the brief and the turn it was forked for.
+/// Cut where compaction cuts. Invariant: a seed fills at most this share of the child's window and
+/// never passes its compaction threshold, so the first request has room for the brief and its turn.
 const FORK_CEILING_PERCENT: u64 = 80;
 
 pub(super) fn seed_for_fork(
@@ -504,7 +504,19 @@ pub(super) fn seed_for_fork(
             .unwrap_or(0)
     });
     let tail = parent.get(start..).unwrap_or_default();
-    let budget = window.saturating_mul(FORK_CEILING_PERCENT) / 100;
+    let share = window.saturating_mul(FORK_CEILING_PERCENT) / 100;
+    let below = window.saturating_sub(yi_context::Settings::default().reserve_tokens.0);
+    let (budget, rule) = if share <= below {
+        (
+            share,
+            format!("{FORK_CEILING_PERCENT}% of the child's {window}-token window"),
+        )
+    } else {
+        (
+            below,
+            format!("the child's {window}-token window less the compaction reserve"),
+        )
+    };
     let first = crate::compaction::fitting_start(tail, yi_context::Tokens(budget));
     let kept = tail.get(first.unwrap_or(tail.len())..).unwrap_or_default();
     if kept.len() == tail.len() {
@@ -512,7 +524,7 @@ pub(super) fn seed_for_fork(
     }
     // The notice also keeps a cut seed from opening on an assistant turn.
     let notice = format!(
-        "[… fork kept {} of {} messages: {FORK_CEILING_PERCENT}% of the child's {window}-token window is {budget} tokens; history://parent/since/0 has the rest]",
+        "[… fork kept {} of {} messages: {rule} is {budget} tokens; history://parent/since/0 has the rest]",
         kept.len(),
         tail.len()
     );
@@ -535,4 +547,29 @@ pub(crate) fn seed(child: &AgentSession, mut seed: Vec<AgentMessage>, partition:
         }
     }
     child.seed_messages(seed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::seed_for_fork;
+    use crate::subagent::Fork;
+    use yi_types::message::{AgentMessage, UserContent};
+
+    #[test]
+    fn a_small_window_seed_stops_at_the_compaction_threshold() {
+        let parent = || {
+            vec![
+                AgentMessage::user_input(UserContent::Text("old".to_owned()), 0),
+                AgentMessage::user_input(UserContent::Text("x".repeat(80_000)), 0),
+                AgentMessage::user_input(UserContent::Text("now".to_owned()), 0),
+            ]
+        };
+        let seed = seed_for_fork(&parent, Fork::All, 32_768);
+        let notice = seed.first().map(|m| format!("{m:?}")).unwrap_or_default();
+        assert_eq!(seed.len(), 2, "only the last turn fits: {seed:?}");
+        assert!(
+            notice.contains("less the compaction reserve is 16384 tokens"),
+            "{notice}"
+        );
+    }
 }
