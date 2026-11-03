@@ -192,7 +192,7 @@ def gitleaks_ignores():
 
 
 def gitleaks_config(ignores, name):
-    patterns = [go_glob(pattern) for pattern in gitleaks_ignores()] + [r"(^|/)target/.*$"] if ignores else []
+    patterns = [go_glob(pattern) for pattern in gitleaks_ignores()] + [r"(^|/)target/.*$", r"(^|/)__pycache__/.*$"] if ignores else []
     rows = ",\n".join(f"  '''{pattern}'''" for pattern in patterns)
     path = ROOT / "target" / name
     path.parent.mkdir(parents=True, exist_ok=True)

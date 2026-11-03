@@ -55,4 +55,9 @@ regexes = [
   '''SECRET=hunter2''',
   '''consecutive-401''',
   '''gpt-5\.6-sol\.md''',
+  '''sk-ant-api03-Qz7r[T]2mW9xK4vB1nL6pD3s''',
+  '''sk-ant-api03-a[b]cdefghijklmnop''',
+  '''sk-pro[j]-4fJ9kL2mN7pQ1rS8tV3wX6yZ0aB5cD9eF2gH7iJ4kL1mN8oP3qR6''',
+  '''ghp_8Hk2Lm9Np4Qr7St1[U]v6Wx3Yz0Ab5Cd2Ef9Gh''',
+  '''AKIAIOSFOD[N]N7EXAMPLE''',
 ]
