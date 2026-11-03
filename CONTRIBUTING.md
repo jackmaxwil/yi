@@ -10,8 +10,7 @@ whose public half the owner has added to `scripts/intake/allowed_signers`.
 Set `gpg.format ssh`, `commit.gpgsign true` and your signing key, then push a
 linear history and open the pull request against `main`. Do not use a GitHub
 noreply address or web merge commits. The owner supplies and rotates signing
-keys through an ordinary owner-authored forge change; Max's login is not yet
-configured and must not be guessed.
+keys through an ordinary owner-authored forge change.
 
 Intake checks the signature, author and committer on every commit, the pinned
 head, size caps, paths, file modes, filenames, content and strict application
