@@ -34,6 +34,8 @@ pub enum CheckpointError {
     GitMissing(String),
     #[error("git {command} failed: {message}")]
     Git { command: String, message: String },
+    #[error("git {command} past its deadline")]
+    Deadline { command: String },
 }
 
 /// A shadow gitdir beside the project, never its own `.git`, so the user's branch, index and stash
@@ -47,7 +49,11 @@ pub struct Checkpoints {
     index: Option<PathBuf>,
     /// The per-path store this tree used before, which still holds its old sessions' trees.
     legacy: Option<PathBuf>,
+    /// Set only on the handle [`Self::capture_within`] makes.
+    until: Option<std::time::Instant>,
 }
+
+const SERIAL_LOCKS_MAX: usize = 1_024;
 
 // Per gitdir, not per handle: git fails hard on index.lock, and one shadow has several openers.
 fn serial_for(git_dir: &Path) -> Arc<Mutex<()>> {
@@ -56,6 +62,10 @@ fn serial_for(git_dir: &Path) -> Arc<Mutex<()>> {
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
+    // One index per tree, so a family's locks would otherwise outlive it.
+    if locks.len() >= SERIAL_LOCKS_MAX {
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
     Arc::clone(locks.entry(git_dir.to_path_buf()).or_default())
 }
 /// Not project content: the home holding the store, or, in a home that is itself the work tree,
@@ -110,6 +120,7 @@ impl Checkpoints {
             work_tree: project.to_path_buf(),
             staged: staged_for(checkpoint_root, project),
             git_dir,
+            until: None,
         };
         // Incident shape: first opens of one new store raced on `config.lock`, and the shadow
         // stayed `None` for the session.
@@ -138,6 +149,7 @@ impl Checkpoints {
                 staged: staged_for(checkpoint_root, project),
                 index: None,
                 legacy: None,
+                until: None,
             }),
             _ => Ok(shared),
         }
@@ -185,6 +197,24 @@ impl Checkpoints {
     pub fn capture(&self) -> Result<TreeId, CheckpointError> {
         self.stage()?;
         self.write_tree()
+    }
+
+    /// [`Self::capture`] that kills its git past `within`, then clears the lock it left. A second
+    /// process capturing this tree sees a failed capture, never a corrupt index.
+    pub fn capture_within(&self, within: std::time::Duration) -> Result<TreeId, CheckpointError> {
+        let Some(until) = std::time::Instant::now().checked_add(within) else {
+            return self.capture();
+        };
+        let bound = Self {
+            git_dir: self.git_dir.clone(),
+            work_tree: self.work_tree.clone(),
+            serial: Arc::clone(&self.serial),
+            staged: self.staged.clone(),
+            index: self.index.clone(),
+            legacy: None,
+            until: Some(until),
+        };
+        bound.capture()
     }
 
     /// A capture with `excluded` (paths relative to the project) left out of the tree; the
@@ -373,10 +403,24 @@ impl Checkpoints {
         if let Some(index) = &self.index {
             process.env("GIT_INDEX_FILE", index);
         }
-        let never: crate::tool::CancelFlag = Arc::new(|| false);
+        let index = (self.index.clone()).unwrap_or_else(|| self.git_dir.join("index"));
+        let lock = index.with_extension("lock");
+        let not_ours = lock.exists();
+        let until = self.until;
+        let past: crate::tool::CancelFlag =
+            Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
         let capture =
-            crate::process::run_captured(process, stdin.map(<[u8]>::to_vec), &never, usize::MAX)
+            crate::process::run_captured(process, stdin.map(<[u8]>::to_vec), &past, usize::MAX)
                 .map_err(CheckpointError::GitMissing)?;
+        if capture.cancelled {
+            // Invariant: the serial lock is this process's, so a lock there before the spawn is another's.
+            if !not_ours {
+                let _no_lock_is_fine = std::fs::remove_file(&lock);
+            }
+            return Err(CheckpointError::Deadline {
+                command: verb.to_owned(),
+            });
+        }
         if capture.exit_code != Some(0) {
             return Err(CheckpointError::Git {
                 command: verb.to_owned(),

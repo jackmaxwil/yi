@@ -10,7 +10,7 @@ use proptest::prelude::*;
 use yi_runtime::lane::Pool;
 use yi_runtime::lane::Sha;
 use yi_runtime::lane::settle::{Prepared, generation_of, prepare};
-use yi_runtime::lane::stage::{git_version, merge_tree_rows, merged};
+use yi_runtime::lane::stage::{folds, git_version, merge_tree_rows, merged};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -110,8 +110,8 @@ fn agree(rig: &Rig) -> Result<Answer, Box<dyn Error>> {
     let tip = git(&rig.repo, &["rev-parse", "candidate"])?;
     let candidate = Sha::parse(&tip).ok_or("no sha")?;
     let native = merged(&pool, &rig.repo, "s-native", &generation, &candidate, None)?;
-    let version = git_version(&git(&rig.repo, &["--version"])?).ok_or("no git version")?;
-    if let (Prepared::Merged(staging), true) = (&native, version >= (2, 43)) {
+    let can_fold = folds(&git(&rig.repo, &["--version"])?);
+    if let (Prepared::Merged(staging), true) = (&native, can_fold) {
         assert_eq!(staging.path(), None, "a merge in the store holds no lane");
     }
     let reference = prepare(&pool, "s-reference", &generation, &candidate, None)?;

@@ -21,6 +21,8 @@ pub mod remote;
 pub mod settle;
 pub mod stage;
 pub mod toolchain;
+pub mod tree;
+pub mod warm;
 
 const GIT_TIMEOUT_MS: u64 = 120_000;
 /// Incident: three slots refused a console's fourth session, new or resumed. Unset, the

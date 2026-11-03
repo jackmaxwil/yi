@@ -121,8 +121,10 @@ mod title;
 mod todo_coupling;
 mod todo_e2e;
 mod todo_mirror;
+mod tree_verbs;
 mod undo_to;
 mod wall_e2e;
+mod warm_checks;
 mod web_search;
 mod worker_prompt;
 

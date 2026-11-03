@@ -47,11 +47,15 @@ impl SubagentHost {
             self.options.lane_slots,
         )
         .map_err(|error| error.to_string())?;
+        if let Some(name) = kwargs.get("tree").and_then(Value::as_str) {
+            return self.take_free_tree(name).map(|tree| (tree, Vec::new()));
+        }
         let denied = yi_permission::credential_stores(&self.options.home);
         let plan = crate::lane::fork::Carry {
             extra: parse_carry(kwargs)?,
             denied,
             first_use: !contained_in_image,
+            ..crate::lane::fork::Carry::default()
         };
         crate::lane::fork::ChildTree::fork(&pool, &self.options.cwd, child_id, &plan)
             .map_err(|error| error.to_string())
@@ -255,6 +259,7 @@ pub(super) fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> 
                     | "fork"
                     | "isolation"
                     | "carry"
+                    | "tree"
                     | "deny_write"
                     | "deny_read"
                     | "deny_url"
@@ -302,6 +307,9 @@ pub enum Isolation {
 }
 
 pub(super) fn parse_isolation(kwargs: &Map<String, Value>) -> Result<Isolation, String> {
+    if kwargs.contains_key("tree") {
+        return Ok(Isolation::Worktree);
+    }
     match kwargs.get("isolation") {
         None | Some(Value::Null) => Ok(Isolation::None),
         Some(Value::String(value)) => match value.trim() {

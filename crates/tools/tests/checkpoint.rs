@@ -223,3 +223,124 @@ mod one_store {
         Ok(())
     }
 }
+
+mod deadline {
+    use crate::scratch::Scratch;
+    use std::error::Error;
+    use std::time::Duration;
+    use yi_tools::{CheckpointError, Checkpoints};
+
+    /// A git ahead of the real one on PATH, slow only for `add`. nextest gives each test its own
+    /// process, so it reaches no other test.
+    fn slow_add(dir: &Scratch) -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::var_os("PATH").ok_or("no PATH")?;
+        let real = (std::env::split_paths(&path).map(|dir| dir.join("git")))
+            .find(|candidate| candidate.is_file())
+            .ok_or("no git on PATH")?;
+        let marker = dir.join("slow");
+        let body = format!(
+            "#!/bin/sh\nif [ -e '{}' ]; then case \"$*\" in *' add '*) touch \"$GIT_INDEX_FILE.lock\"; sleep 30;; esac; fi\nexec '{}' \"$@\"\n",
+            marker.display(),
+            real.display()
+        );
+        let shim = dir.join("git");
+        std::fs::write(&shim, body)?;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))?;
+        let joined = std::env::join_paths(
+            std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&path)),
+        )?;
+        unsafe { std::env::set_var("PATH", joined) };
+        Ok(())
+    }
+
+    /// Dies with the lock left behind: every capture after a kill would fail on `index.lock`.
+    #[test]
+    fn a_killed_capture_clears_its_lock_and_the_next_one_works() -> Result<(), Box<dyn Error>> {
+        let (root, shim) = (
+            Scratch::new("yi-capture-kill")?,
+            Scratch::new("yi-capture-shim")?,
+        );
+        let project = root.join("project");
+        std::fs::create_dir_all(&project)?;
+        std::fs::write(project.join("a.txt"), "a\n")?;
+        slow_add(&shim)?;
+        let checkpoints = Checkpoints::open(&root.join("store"), &project)?;
+        std::fs::write(shim.join("slow"), "")?;
+        let begun = std::time::Instant::now();
+        let killed = checkpoints.capture_within(Duration::from_millis(200));
+        assert!(
+            matches!(killed, Err(CheckpointError::Deadline { .. })),
+            "{killed:?}"
+        );
+        assert!(
+            begun.elapsed() < Duration::from_secs(20),
+            "the kill did not end it"
+        );
+        std::fs::remove_file(shim.join("slow"))?;
+        assert!(checkpoints.capture_within(Duration::from_secs(30)).is_ok());
+        assert!(checkpoints.capture().is_ok());
+        Ok(())
+    }
+
+    /// Dies with the clean-up taking any lock: another process's would go, and two gits write one index.
+    #[test]
+    fn a_killed_capture_leaves_a_lock_that_was_there_before_it() -> Result<(), Box<dyn Error>> {
+        let (root, shim) = (
+            Scratch::new("yi-capture-other")?,
+            Scratch::new("yi-capture-shim2")?,
+        );
+        let project = root.join("project");
+        std::fs::create_dir_all(&project)?;
+        std::fs::write(project.join("a.txt"), "a\n")?;
+        slow_add(&shim)?;
+        let store = root.join("store");
+        let checkpoints = Checkpoints::open(&store, &project)?;
+        // The index exists only once a capture has written it.
+        checkpoints.capture()?;
+        let index = (std::fs::read_dir(&store)?.flatten())
+            .flat_map(|repo| {
+                std::fs::read_dir(repo.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+            })
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("HEAD"))
+            });
+        let repo = index
+            .and_then(|head| head.parent().map(std::path::Path::to_path_buf))
+            .ok_or("no store")?;
+        let theirs = repo.join(format!("{}.lock", index_name(&repo, &project)?));
+        std::fs::write(&theirs, "")?;
+        std::fs::write(shim.join("slow"), "")?;
+        let killed = checkpoints.capture_within(Duration::from_millis(200));
+        assert!(killed.is_err(), "{killed:?}");
+        assert!(theirs.exists(), "another process's lock went");
+        Ok(())
+    }
+
+    fn index_name(
+        repo: &std::path::Path,
+        _project: &std::path::Path,
+    ) -> Result<String, Box<dyn Error>> {
+        let found = (std::fs::read_dir(repo)?.flatten())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .find(|name| name.starts_with("index-"));
+        Ok(found.ok_or("no index in the store")?)
+    }
+
+    #[test]
+    fn within_its_deadline_a_capture_is_the_plain_one() -> Result<(), Box<dyn Error>> {
+        let root = Scratch::new("yi-capture-within")?;
+        let project = root.join("project");
+        std::fs::create_dir_all(&project)?;
+        std::fs::write(project.join("a.txt"), "a\n")?;
+        let checkpoints = Checkpoints::open(&root.join("store"), &project)?;
+        let bound = checkpoints.capture_within(Duration::from_secs(30))?;
+        assert_eq!(bound, checkpoints.capture()?);
+        Ok(())
+    }
+}
