@@ -113,9 +113,18 @@ fn a_click_on_a_served_link_brings_its_page_and_a_new_frame() -> TestResult {
     let chrome = yi_browser::find(None, pinned_chrome().as_deref())
         .map_err(|looked| format!("no Chrome: looked in {}", looked.join(", ")))?;
     let url = format!("http://127.0.0.1:{port}/");
+    let shim = dir.join("yi-shim");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nHOME='{}' exec '{}' \"$@\"\n",
+            home.display(),
+            crate::yi_bin::bin().display()
+        ),
+    )?;
+    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
     let mut browser = Browser::launch(
-        crate::yi_bin::bin(),
-        &[(std::ffi::OsStr::new("HOME"), home.as_os_str())],
+        &shim,
         &chrome,
         pinned_chrome().as_deref(),
         &dir.join("profile"),

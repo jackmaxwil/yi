@@ -428,7 +428,6 @@ fn launch(chrome: &mut Chrome, url: &str, size: (u32, u32), scale: u32) -> Engin
     let launched = std::env::current_exe().and_then(|yi| {
         Browser::launch(
             &yi,
-            &[],
             &chrome,
             pinned,
             &yi_browser::profile_dir(),

@@ -151,13 +151,8 @@ pub struct Browser {
 
 impl Browser {
     /// Starts `chrome` through `shim __fds`, which hands it this pipe pair on fds 3 and 4.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the shim's env rides beside chrome"
-    )]
     pub fn launch(
         shim: &Path,
-        envs: &[(&OsStr, &OsStr)],
         chrome: &Path,
         pinned: Option<&Path>,
         profile: &Path,
@@ -172,7 +167,6 @@ impl Browser {
             reason = "Chrome is the user's own program, started by the console that shows it"
         )]
         let mut child = std::process::Command::new(shim)
-            .envs(envs.iter().copied())
             .arg("__fds")
             .arg(chrome)
             .args(flags(no_sandbox(

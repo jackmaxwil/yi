@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
-/// Incident: a daemon on the real HOME started the owner's real classifier sidecar.
 use crate::yi_bin::yi_command;
 
+/// Incident: a daemon on the real HOME started the owner's real classifier sidecar.
 pub fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
     let home = dir.join("home");
     std::fs::create_dir_all(&home)?;

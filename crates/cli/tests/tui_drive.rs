@@ -1399,3 +1399,40 @@ fn a_chord_in_the_keys_config_stops_the_drive_naming_it() -> TestResult {
     assert!(stderr.contains("ctrl-x ctrl-e"), "{stderr}");
     Ok(())
 }
+
+#[test]
+fn a_failed_wait_frame_never_runs_the_steps_after_it() -> TestResult {
+    let dir = Scratch::new("yi-tui-failed-wait")?;
+    let home = dir.home()?;
+    let sessions = dir.join("sessions");
+    let keys = dir.join("keys");
+    std::fs::write(
+        &keys,
+        "wait-frame 25 never-on-screen\ntype hello\nkey enter\nwait-idle 10000\nquit\n",
+    )?;
+    let output = yi_command(&home)
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &sessions.display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+        ])
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("timed out after 25 ms"), "{stderr}");
+    assert!(stderr.contains("never-on-screen"), "{stderr}");
+    let transcript = session_files(&sessions)?
+        .into_iter()
+        .map(std::fs::read_to_string)
+        .collect::<Result<String, _>>()?;
+    assert!(
+        !transcript.contains("hello"),
+        "the failed wait must stop before Enter submits a prompt"
+    );
+    Ok(())
+}

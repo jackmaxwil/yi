@@ -9,12 +9,21 @@ from _common import ROOT, TESTS, fail
 
 NAME = 'CARGO_BIN_EXE_yi'
 HELPER = 'crates/cli/tests/support/yi_bin.rs'
+BARE = 'yi_bin::bin('
+BARE_OK = {'crates/cli/tests/tui_drive.rs', 'crates/cli/tests/monkey.rs', 'crates/cli/tests/browser.rs',
+           'crates/cli/tests/cli_surfaces.rs'}
 
 
 def strays(files, root=ROOT):
-    return [f"{f.relative_to(root)}: names {NAME} outside {HELPER}"
-            for f in files
-            if f.relative_to(root).as_posix() != HELPER and NAME in f.read_text()]
+    out = []
+    for f in files:
+        rel = f.relative_to(root).as_posix()
+        text = f.read_text()
+        if rel != HELPER and NAME in text:
+            out.append(f"{rel}: names {NAME} outside {HELPER}")
+        if rel != HELPER and rel not in BARE_OK and BARE in text:
+            out.append(f"{rel}: takes the bare binary path ({BARE}) without a HOME; use yi_command")
+    return out
 
 
 def test_files(root):
@@ -35,6 +44,10 @@ def selfcheck():
             bad.append("a test file naming the binary beside the helper is not refused")
         if strays([helper], root):
             bad.append("the helper itself is refused")
+        bare = root / "crates/cli/tests/bare.rs"
+        bare.write_text("Command::new(crate::yi_bin::bin());\n")
+        if not strays([bare], root):
+            bad.append("a bare yi_bin::bin( spawn outside the allowlist is not refused")
         outside = root / "crates/cli/src/lib.rs"
         outside.parent.mkdir(parents=True)
         outside.write_text(f"const B: &str = env!(\"{NAME}\");\n")
