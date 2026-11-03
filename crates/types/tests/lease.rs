@@ -93,3 +93,18 @@ fn a_spawn_line_names_its_cell_and_an_older_line_still_decodes() -> TestResult {
     assert_eq!(serde_json::to_string(&parsed)?, newer);
     Ok(())
 }
+
+#[test]
+fn enriched_child_rows_round_trip_without_changing_legacy_rows() -> TestResult {
+    use yi_types::subagent::{ChildTrail, ChildUpdate};
+    let update = r#"{"id":"sub-82050ef6","name":"scout","status":"completed","activity":"waiting","toolUseCount":2,"tokenCount":3516,"cost":0.012,"answerPreview":"Both rows replayed","exit":{"kind":"completed"},"session":"0199a1b2-c3d4","role":"reader","task":"Inspect replay ordering","elapsedMs":4000}"#;
+    let parsed: ChildUpdate = serde_json::from_str(update)?;
+    assert_eq!(serde_json::to_string(&parsed)?, update);
+    let spawned = r#"{"event":"spawned","name":"scout","id":"sub-82050ef6","session":"0199a1b2-c3d4","path":"children/sub-82050ef6/session.jsonl","brief":"5f2c9e","spawnedBy":"cell-1","role":"reader","task":"Inspect replay ordering"}"#;
+    let parsed: ChildTrail = serde_json::from_str(spawned)?;
+    assert_eq!(serde_json::to_string(&parsed)?, spawned);
+    let ended = r#"{"event":"ended","name":"scout","id":"sub-82050ef6","exit":{"kind":"completed"},"tokens":3516,"elapsedMs":4000,"cost":0.012,"answerPreview":"Both rows replayed"}"#;
+    let parsed: ChildTrail = serde_json::from_str(ended)?;
+    assert_eq!(serde_json::to_string(&parsed)?, ended);
+    Ok(())
+}

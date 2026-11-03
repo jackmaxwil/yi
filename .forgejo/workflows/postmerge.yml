@@ -11,6 +11,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   # One arm left, so the matrix (and its fail-fast: false) went with the macOS
   # row it existed for.
@@ -19,9 +22,11 @@ jobs:
     # spends real money per merge on its live suite, and a docs commit has nothing to run.
     if: github.event.head_commit.author.name != 'yi-ci'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the telemetry ledger pushes with its scoped token.
         with:
           fetch-depth: 0
       - run: rustup show
@@ -29,13 +34,13 @@ jobs:
       # dev profile, so a cache saved here — on refs/heads/main, the one scope
       # every pull request can read — is what makes a branch's first push warm
       # rather than cold.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: test
           cache-on-failure: true
       # The live ripwire journey and the browser journey read the plugins the table pins; the
       # cache keeps the downloads off the network until the table changes, and a failed add fails here.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           path: ~/.yi/plugins
           key: yi-plugins-${{ hashFiles('crates/tools/src/plugin.rs') }}
@@ -111,28 +116,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           fetch-depth: 0
+          persist-credentials: false
       - run: rustup show
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: ${{ matrix.lane }}
           cache-on-failure: true
+      # scripts/intake's selfcheck rewrites a scratch repo with the mirror's own filter, which
+      # the gate image does not ship; the pin is scripts/mirror/filter-repo.version.
+      - if: matrix.lane == 'guardrails'
+        run: |
+          uv tool install "git-filter-repo==$(cat scripts/mirror/filter-repo.version)"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: just lane ${{ matrix.lane }}
 
   # The version, the changelog and the decision log are views written from docs/changes (#975).
   # Off until the repository variable RECORD_CHANGES is `on`: the push to main needs a token that
   # branch protection lets through, and the first run, a backfill, is the owner's call.
   record:
-    if: vars.RECORD_CHANGES == 'on'
+    # The queue records its own landing, in the tick that pushed it.
+    if: vars.RECORD_CHANGES == 'on' && github.event.head_commit.author.name != 'yi-queue'
     concurrency:
       group: record-changes
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Forgejo mirror SHA is unverified offline; the recorder pushes with its scoped token.
         with:
           ref: main
           fetch-depth: 0

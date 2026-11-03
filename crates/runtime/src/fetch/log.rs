@@ -141,18 +141,14 @@ impl FetchLog {
     }
 }
 
-/// Over-supply is `unused`; under-supply is `unsupplied` — what nobody handed over.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Relevance {
     pub supplied: usize,
     pub referenced: usize,
     pub unused: Vec<String>,
-    pub unsupplied: Vec<String>,
 }
 
-fn measure(mut served: Vec<String>, supplied: &[Url]) -> Relevance {
-    served.sort_unstable();
-    served.dedup();
+fn measure(served: Vec<String>, supplied: &[Url]) -> Relevance {
     let named: Vec<String> = supplied.iter().map(base_of).collect();
     Relevance {
         supplied: named.len(),
@@ -161,10 +157,6 @@ fn measure(mut served: Vec<String>, supplied: &[Url]) -> Relevance {
             .iter()
             .filter(|url| !served.contains(&base_of(url)))
             .map(Url::to_string)
-            .collect(),
-        unsupplied: served
-            .into_iter()
-            .filter(|base| !named.contains(base))
             .collect(),
     }
 }
@@ -215,18 +207,15 @@ mod tests {
     }
 
     #[test]
-    fn relevance_names_both_the_unused_and_the_unsupplied() -> TestResult {
+    fn relevance_names_the_unused() -> TestResult {
         let log = FetchLog::new();
         let read: Url = "local://src/auth.rs".parse()?;
-        let found: Url = "local://src/token.rs".parse()?;
         log.record(&read, record_for(&read));
-        log.record(&found, record_for(&found));
         let handed: Url = "local://docs/auth.md".parse()?;
         let measured = log.relevance(&[read, handed.clone()]);
         assert_eq!(measured.supplied, 2);
         assert_eq!(measured.referenced, 1);
         assert_eq!(measured.unused, vec![handed.to_string()]);
-        assert_eq!(measured.unsupplied, vec![found.to_string()]);
         Ok(())
     }
 

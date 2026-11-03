@@ -138,7 +138,12 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
     std::fs::write(&note, "before\n")?;
     succeeded(&journey.yi(&["ask", "first"])?, "the opening ask")?;
     std::fs::write(&note, "between\n")?;
-    let script = write_script(&journey, "note.txt", "after\n")?;
+    let script = write_script(
+        &journey,
+        "write",
+        json!({"path": "note.txt", "content": "after\n"}),
+        "written",
+    )?;
     succeeded(
         &journey.yi(&["ask", "--continue", "--faux", &script, "second"])?,
         "the resume",
@@ -180,16 +185,20 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
     Ok(())
 }
 
-/// A `--faux` script whose one turn writes `content` to `path`, then says so.
-fn write_script(journey: &Journey, path: &str, content: &str) -> Result<String, Box<dyn Error>> {
+/// A `--faux` script whose one turn calls `tool` with `args`, then says `closing`.
+fn write_script(
+    journey: &Journey,
+    tool: &str,
+    args: serde_json::Value,
+    closing: &str,
+) -> Result<String, Box<dyn Error>> {
     use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
     use yi_types::message::StopReason;
-    let args = json!({"path": path, "content": content});
-    let call = faux_tool_call("c1", "write", args.as_object().cloned().unwrap_or_default());
+    let call = faux_tool_call("c1", tool, args.as_object().cloned().unwrap_or_default());
     let lines = [
         serde_json::to_string(&faux_assistant_message(vec![call], StopReason::ToolUse))?,
         serde_json::to_string(&faux_assistant_message(
-            vec![faux_text("written")],
+            vec![faux_text(closing)],
             StopReason::Stop,
         ))?,
     ];
@@ -467,6 +476,29 @@ fn an_ask_in_a_repository_runs_on_a_lane_and_hands_it_back() -> TestResult {
     Ok(())
 }
 
+/// A lockfile whose sync fails starts the session anyway and says so in one stderr warning.
+#[test]
+fn a_failed_lane_sync_warns_on_stderr_and_the_ask_still_runs() -> TestResult {
+    let journey = Journey::new("lane-sync")?;
+    let project = trunk(&journey)?;
+    std::fs::write(project.join("uv.lock"), "not a lockfile\n")?;
+    git_in(&project, &["add", "uv.lock"])?;
+    git_in(&project, &["commit", "-qm", "lock"])?;
+    let output = journey
+        .command(&["ask", "hello"])
+        .stderr(Stdio::piped())
+        .output()?;
+    let said = String::from_utf8_lossy(&output.stderr).into_owned();
+    succeeded(&output, "ask on an unsynced lane")?;
+    assert!(
+        said.lines()
+            .any(|line| line.starts_with("warning: lane 0: toolchain sync failed")),
+        "{said}"
+    );
+    journey.reclaim();
+    Ok(())
+}
+
 /// An orphaned lane with nothing to keep is what `doctor --fix` reaps; the pool reads idle after.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
@@ -524,7 +556,12 @@ fn doctor_fix_keeps_an_orphan_with_uncommitted_work() -> TestResult {
 fn a_quit_over_lane_work_says_which_slot_kept_it() -> TestResult {
     let journey = Journey::new("lane-kept")?;
     trunk(&journey)?;
-    let script = write_script(&journey, "notes-é.txt", "only copy\n")?;
+    let script = write_script(
+        &journey,
+        "write",
+        json!({"path": "notes-é.txt", "content": "only copy\n"}),
+        "written",
+    )?;
     let output = (journey.command(&["ask", "--lanes", "--faux", &script, "write the note"]))
         .stderr(Stdio::piped())
         .output()?;
@@ -794,52 +831,47 @@ fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
     Ok(())
 }
 
-/// The classifier is saved only once one answers at its URL; a dead URL saves nothing.
+/// The classifier is saved as Jev only when an OpenRouter key exists; with none it saves nothing.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
-fn setup_saves_the_classifier_only_once_one_answers() -> TestResult {
-    use std::io::{BufRead, BufReader, Read};
+fn setup_saves_jev_as_the_classifier_only_with_an_openrouter_key() -> TestResult {
     let journey = Journey::new("setup-classifier")?;
-    let closed = std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()?
-        .port();
-    let dead = setup(&journey, &format!("\n\ny\nn\nhttp://127.0.0.1:{closed}\n"))?;
+    let mut keyless = journey.command(&["setup"]);
+    keyless
+        .env_remove("OPENROUTER_API_KEY")
+        .stderr(Stdio::piped());
+    let refused = feed(keyless, "\n\ny\n")?;
     assert!(
-        String::from_utf8_lossy(&dead.stderr).contains("nothing saved for it"),
-        "{dead:?}"
+        String::from_utf8_lossy(&refused.stderr).contains("the classifier is not saved"),
+        "{refused:?}"
     );
     assert!(config_of(&journey)?.get("models").is_none());
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let sidecar = std::thread::spawn(move || -> std::io::Result<()> {
-        let (stream, _) = listener.accept()?;
-        let mut reader = BufReader::new(stream);
-        let mut length = 0usize;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line)? == 0 || line == "\r\n" {
-                break;
-            }
-            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                length = value.trim().parse().unwrap_or(0);
-            }
-        }
-        reader.read_exact(&mut vec![0; length])?;
-        let body = r#"{"answers":{"probe":{"choice":"yes","answer_confidence":0.9}},"routing":{"model":"english"}}"#;
-        let reply = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
-            body.len()
-        );
-        reader.get_mut().write_all(reply.as_bytes())
-    });
-    let live = setup(&journey, &format!("\n\ny\nn\nhttp://127.0.0.1:{port}\n"))?;
-    assert!(live.status.success(), "{live:?}");
-    sidecar.join().map_err(|_| "sidecar thread")??;
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::write(
+        &file,
+        r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:8000"}}"#,
+    )?;
+    let mut keyed = journey.command(&["setup"]);
+    keyed.env("OPENROUTER_API_KEY", "sk-or-journey");
+    let saved = feed(keyed, "\n\ny\n")?;
+    assert!(saved.status.success(), "{saved:?}");
     let config = config_of(&journey)?;
-    assert_eq!(config["models"]["classifier"], "english");
+    assert_eq!(config["models"]["classifier"], "typesafe/jev-1.13");
+    assert!(
+        config.get("classifier").is_none(),
+        "the Laya sidecar's URL is cleared: {config}"
+    );
+    std::fs::write(
+        &file,
+        r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:9000"}}"#,
+    )?;
+    let mut own = journey.command(&["setup"]);
+    own.env("OPENROUTER_API_KEY", "sk-or-journey");
+    assert!(feed(own, "\n\ny\n")?.status.success());
     assert_eq!(
-        config["classifier"]["url"],
-        format!("http://127.0.0.1:{port}")
+        config_of(&journey)?["classifier"]["url"],
+        "http://127.0.0.1:9000",
+        "a URL the user set is kept"
     );
     journey.reclaim();
     Ok(())
@@ -902,32 +934,6 @@ fn setup_writes_through_a_dangling_config_link() -> TestResult {
     Ok(())
 }
 
-/// A failed laya install still saves the answers given before it.
-#[test]
-#[ignore = "tier-2 journey: `just journeys`"]
-fn setup_keeps_the_earlier_answers_when_the_install_fails() -> TestResult {
-    let journey = Journey::new("setup-install")?;
-    let closed = std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()?
-        .port();
-    let mut command = journey.command(&["setup"]);
-    command.env("PATH", "");
-    let saved = feed(
-        command,
-        &format!("\nask\ny\ny\nhttp://127.0.0.1:{closed}\n"),
-    )?;
-    assert!(saved.status.success(), "{saved:?}");
-    assert!(
-        String::from_utf8_lossy(&saved.stderr).contains("laya-serve did not install"),
-        "{saved:?}"
-    );
-    let config = config_of(&journey)?;
-    assert_eq!(config["permissions"]["mode"], "ask");
-    assert!(config.get("models").is_none(), "{config}");
-    journey.reclaim();
-    Ok(())
-}
-
 /// The background sweep a session start triggers is the cleanup a user never runs by hand;
 /// the journey reads the home the binary was given, not the developer's.
 #[expect(
@@ -964,6 +970,44 @@ fn a_session_start_sweeps_an_aged_orphan_without_yi_gc() -> TestResult {
         !orphan.exists(),
         "the orphan a session start was meant to sweep stayed"
     );
+    journey.reclaim();
+    Ok(())
+}
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn an_exiting_ask_kills_its_background_bash_process_group() -> TestResult {
+    let journey = Journey::new("exit-bash-job")?;
+    let group = journey.project().join("job-pgid");
+    let script = write_script(
+        &journey,
+        "bash",
+        json!({"command": "echo $$ > job-pgid; exec sleep 300", "wait": 5}),
+        "done",
+    )?;
+    succeeded(
+        &journey.yi(&["ask", "--yolo", "--faux", &script, "start the command"])?,
+        "headless ask",
+    )?;
+    let group = std::fs::read_to_string(group)?.trim().to_owned();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the probe asks the OS whether the job's process group outlived yi"
+    )]
+    let alive = Command::new("/bin/sh")
+        .args(["-c", "kill -0 \"-$1\" 2>/dev/null", "sh", &group])
+        .status()?
+        .success();
+    if alive {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a red probe leaves the machine as it found it"
+        )]
+        let _stopped = Command::new("/bin/sh")
+            .args(["-c", "kill -KILL \"-$1\" 2>/dev/null", "sh", &group])
+            .status();
+        return Err(format!("background bash process group {group} remained alive").into());
+    }
     journey.reclaim();
     Ok(())
 }

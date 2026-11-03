@@ -275,6 +275,7 @@ pub fn ipython_tool(
         service.cell_calls.get_or_init(|| Arc::clone(calls));
     }
     Arc::new(yi_tools::IpythonTool {
+        contained: service.contained(),
         bridge: service,
         calls,
     })
@@ -285,10 +286,10 @@ pub(crate) fn worker_ipython(
     wiring: &crate::wiring::RuntimeWiring,
 ) -> Arc<dyn yi_tools::Tool> {
     let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
+    crate::kernel_state::register_host_stores(&mut registry, wiring);
     registry.register_exec(
-        wiring.cwd.clone(),
-        crate::wiring::job_profile(wiring, child),
+        wiring.exec_home(),
+        crate::kernel_state::job_profile(wiring, child),
     );
     let calls = Arc::new(Calls::default());
     register(
