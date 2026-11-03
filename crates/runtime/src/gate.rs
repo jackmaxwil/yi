@@ -74,10 +74,10 @@ impl Report {
 /// What a model can do with no one to approve a call; `--yolo` and allow rules are a person's.
 pub(crate) const MODEL_REMEDIES: &str = "Split the command, keep the writes inside the working tree, or ask the user to approve this call.";
 
-/// Nobody can answer a request in a headless session, so the text names what the model has.
+/// The model got here by asking the user, so it is not told to ask again.
 pub(crate) fn unaskable(request: impl std::fmt::Display, description: &str) -> String {
     format!(
-        "Request {request} cannot be put to anyone: no interactive surface is available. {description} {MODEL_REMEDIES}"
+        "Request {request} cannot be put to anyone: no interactive surface is available. {description} Split the command, keep the writes inside the working tree, or report in your final answer that this call needs the user's approval."
     )
 }
 
@@ -108,12 +108,12 @@ pub(crate) fn headless_refusal(
                 false => format!("an interactive run asks to widen it by `{}`", dir.display()),
             };
             format!(
-                "{HEAD} writing `{}`, and {widen}. Keep the writes inside the working tree (for a build, set CARGO_TARGET_DIR under it), split the command, or ask the user to approve this run.",
+                "{HEAD} writing `{}`, and {widen}. {MODEL_REMEDIES} For a build, set CARGO_TARGET_DIR under the working tree.",
                 path.display()
             )
         }
         yi_tools::SandboxRefusal::Scopes(_) => format!(
-            "{HEAD}, naming no path (a nested sandbox, or the network past loopback), and only an interactive approval runs it outside the sandbox. Split the command, keep the writes inside the working tree, or ask the user to approve it."
+            "{HEAD}, naming no path (a nested sandbox, or the network past loopback), and only an interactive approval runs it outside the sandbox. {MODEL_REMEDIES}"
         ),
     }
 }
@@ -155,7 +155,7 @@ pub(crate) const WALLED_KERNEL_UNCONFINED: &str = "ipython is unavailable to a w
 /// An allowed compound, part of which must leave the sandbox, with no one to ask.
 pub(crate) fn headless_split(why: &str) -> String {
     format!(
-        "Permission required but no interactive surface is available: part of this command must run outside the sandbox ({why}) and would take the rest with it. Split it into separate calls, keep the writes inside the working tree, or ask the user to approve it."
+        "Permission required but no interactive surface is available: part of this command must run outside the sandbox ({why}) and would take the rest with it. {MODEL_REMEDIES}"
     )
 }
 
@@ -170,7 +170,7 @@ pub(crate) fn named_rule(
         let entry = Value::String(format!("{tool} {}", globset::escape(display)));
         let said = std::mem::take(&mut outcome.reason);
         outcome.reason = format!(
-            "{said} Allow exactly this call with the permissions.allow entry {entry} in ~/.yi/config.json."
+            "{said} The user can allow exactly this call with the permissions.allow entry {entry} in ~/.yi/config.json."
         );
     }
     outcome
@@ -286,7 +286,7 @@ pub fn render(report: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Report, compile_ask, headless_refusal, headless_split, named_rule};
+    use super::{Report, compile_ask, headless_refusal, headless_split, named_rule, unaskable};
     use crate::permission::{CallOutcome, Containment};
     use yi_permission::Decision;
 
@@ -336,5 +336,31 @@ mod tests {
             }
             assert!(!lowered.contains("--yolo"), "{text}");
         }
+    }
+
+    /// Dies with the default headless denial ending in a bare order to edit the user's config, and
+    /// `ask_user` answering a model that asked the user with "ask the user".
+    #[test]
+    fn a_headless_denial_passes_the_allow_entry_on_and_ask_user_does_not_loop() {
+        let reason = Report::reason_of(&compile_ask(
+            Decision::Ask {
+                title: "bash requires permission".to_owned(),
+                description: "writes outside the workspace".to_owned(),
+                reviewable: true,
+            },
+            false,
+        ));
+        let outcome = CallOutcome {
+            allowed: false,
+            reason,
+            containment: Containment::Uncontained,
+        };
+        let named = named_rule(outcome, true, ("bash", "make build")).reason;
+        assert!(named.contains("ask the user to approve"), "{named}");
+        assert!(named.contains("The user can allow exactly"), "{named}");
+        assert!(!named.contains(" Allow exactly"), "{named}");
+        let answer = unaskable(7, "writes outside the workspace").to_lowercase();
+        assert!(!answer.contains("ask the user"), "{answer}");
+        assert!(answer.contains("final answer"), "{answer}");
     }
 }

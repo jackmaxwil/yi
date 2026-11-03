@@ -385,15 +385,20 @@ fn suggestion(key: &str) -> Option<&'static str> {
         .map(|(_, known)| known)
 }
 
+/// A key starts at a token edge and carries a digit in its run: `disk-backed-storage-layer`
+/// holds `sk-` and a long run after it, and is a word.
 fn key_run(token: &str, prefix: &str, min: usize) -> bool {
-    token.find(prefix).is_some_and(|at| {
-        token
+    token.match_indices(prefix).any(|(at, _)| {
+        let edge = token.get(..at).and_then(|head| head.chars().next_back());
+        let run: Vec<u8> = token
             .get(at.saturating_add(prefix.len())..)
             .unwrap_or("")
             .bytes()
             .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
-            .count()
-            >= min
+            .collect();
+        edge.is_none_or(|c| !c.is_alphanumeric())
+            && run.len() >= min
+            && run.iter().any(u8::is_ascii_digit)
     })
 }
 
@@ -416,7 +421,7 @@ fn secret_in(text: &str) -> Option<&'static str> {
 }
 
 fn loops(text: &str) -> bool {
-    text.contains("<<<yi-external") || text.to_ascii_lowercase().contains("<memory")
+    text.contains("<<<yi-external")
 }
 
 pub fn draft(markdown: &str, overlay: &[(String, String)]) -> Result<Draft, DocError> {
@@ -696,12 +701,30 @@ mod tests {
 
     #[test]
     fn fences_and_secrets_are_refused() {
-        let fenced = TEMPLATE.replace("48 GB", "<memory name=\"x\">");
-        assert_eq!(draft(&fenced, &[]), Err(DocError::LoopGuard));
-        let keyed = TEMPLATE.replace("48 GB", "sk-ant-api03-abcdefghijklmnop");
-        assert_eq!(draft(&keyed, &[]), Err(DocError::Secret("an API key")));
-        let task = TEMPLATE.replace("48 GB", "task-oriented sk-short");
-        assert!(draft(&task, &[]).is_ok());
+        let with = |text: &str| draft(&TEMPLATE.replace("48 GB", text), &[]);
+        assert_eq!(with("<<<yi-external"), Err(DocError::LoopGuard));
+        assert!(
+            with("<memory name=\"x\">").is_ok(),
+            "no host code writes a memory tag"
+        );
+        for words in [
+            "disk-backed-storage-layer",
+            "risk-based-queue-management",
+            "task-oriented sk-short",
+        ] {
+            assert!(with(words).is_ok(), "{words}");
+        }
+        for (key, kind) in [
+            ("sk-ant-".to_owned() + &"Qz7rT2mW".repeat(2), "an API key"),
+            ("sk-proj-4fJ9kL2m/N7pQ1rS8".replace('/', ""), "an API key"),
+            (format!("ghp_{}", "8Hk2Lm9Np4".repeat(3)), "a GitHub token"),
+            ("AKIAIOSFODNN7/EXAMPLE".replace('/', ""), "an AWS key"),
+        ] {
+            for before in ["", "key=", "\"", "(", "token: "] {
+                assert_eq!(with(&format!("{before}{key}")), Err(DocError::Secret(kind)));
+            }
+            assert!(with(&format!("x{key}")).is_ok(), "x{key}");
+        }
     }
 
     #[test]

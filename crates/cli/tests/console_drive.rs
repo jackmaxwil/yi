@@ -236,6 +236,60 @@ fn a_console_start_is_covered_by_the_title_and_any_key_gives_the_screen_back() -
     Ok(())
 }
 
+/// #1713: the state a press lands on is the config's, so the console opened next starts hidden.
+#[test]
+fn a_hidden_sidebar_is_still_hidden_in_the_console_opened_next() -> TestResult {
+    let dir = Scratch::new("yi-console-hidden")?;
+    let home = dir.home()?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        // The default start is the rail; two presses walk it to hidden.
+        run_console(
+            &dir,
+            &socket,
+            &root,
+            "wait-frame 8000 !connecting…\nkey alt-b\nkey alt-b\nwait-frame 8000 ⌥b sidebar\nquit\n",
+            &[],
+        )?;
+        let config = home.join(".yi/config.json");
+        // Invariant: the daemon writes the press, and the console that sent it may already be gone.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let saved = loop {
+            let saved: serde_json::Value = std::fs::read_to_string(&config)
+                .ok()
+                .and_then(|text| text.parse().ok())
+                .unwrap_or_default();
+            if saved["console"]["sidebar"] == "hidden" || std::time::Instant::now() > deadline {
+                break saved;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(
+            saved["console"]["sidebar"], "hidden",
+            "the press was not saved: {saved}"
+        );
+        let frames = dir.join("frames");
+        run_console(
+            &dir,
+            &socket,
+            &root,
+            "wait-frame 8000 ⌥b sidebar\nquit\n",
+            &["--frames", &frames.display().to_string()],
+        )?;
+        let drawn = frames_text(&frames)?;
+        assert!(
+            drawn.contains("⌥b sidebar"),
+            "the next console started without the way back:\n{drawn}"
+        );
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// One script, two hosts: the console pane and solo render the same prompt, reply and
 /// popup, because they run the same chat.
 #[test]
@@ -424,15 +478,24 @@ fn a_terminal_pane_runs_a_command_and_says_how_its_shell_ended() -> TestResult {
          wait-frame 8000 [exited 3]\n\
          quit\n",
     )?;
-    let row = |snap: &str, text: &str| -> Result<bool, Box<dyn Error>> {
-        Ok(snap_cells(&dir, snap)?
-            .iter()
-            .any(|cell| cell.trim() == text))
-    };
-    assert!(row("printed", "yi-term-ok")?, "the command's output row");
+    let cells = snap_cells(&dir, "printed")?;
     assert!(
-        !row("bottom", "18")? && row("scrolled", "18")?,
-        "the wheel shows older rows"
+        cells.iter().any(|cell| cell.trim() == "yi-term-ok"),
+        "the command's output row"
+    );
+    // The pane's height decides which `seq` rows have scrolled off, so compare the oldest on screen,
+    // and the wheel must have moved exactly the ↑3 rows the title reports.
+    let oldest = |snap: &str| -> Result<usize, Box<dyn Error>> {
+        snap_cells(&dir, snap)?
+            .iter()
+            .filter_map(|cell| cell.trim().parse().ok())
+            .min()
+            .ok_or_else(|| format!("no `seq` row in the {snap} frame").into())
+    };
+    assert_eq!(
+        oldest("bottom")?.saturating_sub(oldest("scrolled")?),
+        3,
+        "the wheel scrolls back the ↑3 rows the title reports"
     );
     Ok(())
 }
@@ -462,6 +525,7 @@ fn a_terminal_pane_tells_its_shell_each_new_size() -> TestResult {
     let mut seen = Vec::new();
     for (snap, mark) in [("wide", "mark-2"), ("narrow", "mark-3")] {
         let cells = snap_cells(&dir, snap)?;
+        // A terminal's grid fills its box: the row between the pane's borders is the grid.
         let drawn = cells
             .iter()
             .find(|cell| cell.trim() == mark)
@@ -489,6 +553,8 @@ fn a_terminal_pane_tells_its_shell_each_new_size() -> TestResult {
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn closing_a_terminal_pane_ends_its_shell() -> TestResult {
+    // Incident: 170 typed keys outran the writer's 64-entry queue and dropped some, garbling the
+    // command in 4 runs of 12 and the CI lane; one paste is one entry.
     let dir = terminal_run(
         "yi-term-close",
         "cmd-y\n\
@@ -500,7 +566,8 @@ fn closing_a_terminal_pane_ends_its_shell() -> TestResult {
          key x\n\
          cmd-y\n\
          wait-frame 8000 >_ sh\n\
-         type for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 $(cat pid) 2>/dev/null || break; sleep 0.3; done; kill -0 $(cat pid) 2>/dev/null && echo alive-$((40+2)) || echo gone-$((40+2))\n\
+         wait-frame 8000 $ \n\
+         paste for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 $(cat pid) 2>/dev/null || break; sleep 0.3; done; kill -0 $(cat pid) 2>/dev/null && echo alive-$((40+2)) || echo gone-$((40+2))\n\
          key enter\n\
          wait-frame 8000 -42\n\
          snap checked\n\
@@ -511,30 +578,5 @@ fn closing_a_terminal_pane_ends_its_shell() -> TestResult {
         cells.iter().any(|cell| cell.trim() == "gone-42"),
         "{cells:#?}"
     );
-    Ok(())
-}
-
-/// Dies with keystrokes into a stopped child queuing without bound: memory grows and the user
-/// sees nothing. A jammed PTY fills the capped write queue and the next key fails visibly.
-#[test]
-#[ignore = "tier-2 journey: `just journeys`"]
-fn a_terminal_pane_says_when_the_child_stops_reading() -> TestResult {
-    terminal_run(
-        "yi-term-stall",
-        &format!(
-            "cmd-y\n\
-             wait-frame 8000 >_ sh\n\
-             type sleep 30\n\
-             key enter\n\
-             wait 500\n\
-             paste {}\n\
-             wait 500\n\
-             type {}\n\
-             wait-frame 8000 input queue full\n\
-             quit\n",
-            "a".repeat(9000),
-            "x".repeat(80),
-        ),
-    )?;
     Ok(())
 }

@@ -17,9 +17,14 @@ use yi_types::permission::{
     Answerer, PermissionRecord, RuleDecision, RuleKind, SessionPermissionRule,
 };
 
+mod egress;
+mod forge;
+mod inflight;
+use inflight::InFlight;
 mod hooked;
 pub(crate) use hooked::claude_dir;
 mod kept;
+pub(crate) use kept::protected;
 mod late;
 use late::{Answered, Late};
 
@@ -96,6 +101,8 @@ pub struct PermissionBroker {
     unattended: bool,
     /// Loaded once from the root's tree and shared down: a lane child reads the root's project.
     claude_hooks: std::sync::OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
+    egress: egress::Named,
+    host_recipes: std::sync::OnceLock<Vec<yi_types::config::HostRecipe>>,
 }
 
 pub struct CallOutcome {
@@ -110,9 +117,6 @@ pub enum Containment {
     /// Inside the sandbox, with these directories writable besides the holder's tree.
     Contained {
         widen: Vec<PathBuf>,
-        /// The gate allowed the call outright, so it may run where no sandbox can hold it: an
-        /// `exec://` source, which only ever runs on the host.
-        gate_allowed: bool,
     },
     Uncontained,
 }
@@ -139,26 +143,6 @@ pub(crate) fn leaves_sandbox(
         Some(why) => Some((why, parsed && needs.iter().all(Option::is_some))),
         None => reads(command).map(|why| (why, false)),
     }
-}
-
-/// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
-/// daemon socket), a credential store, or a git path the host runs.
-pub(crate) fn protected(sandbox: Option<&yi_tools::Sandbox>, dir: &Path) -> bool {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let yi = home.iter().map(|home| home.join(".yi"));
-    let overlaps = |guarded: &PathBuf| {
-        let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
-        [guarded, &real]
-            .iter()
-            .any(|guarded| dir.starts_with(guarded) || guarded.starts_with(dir))
-    };
-    home.as_deref()
-        .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
-        || (sandbox.into_iter())
-            .flat_map(|s| s.deny_read.iter().chain(&s.deny_write).chain(&s.host_owned))
-            .cloned()
-            .chain(yi)
-            .any(|guarded| overlaps(&guarded))
 }
 
 pub(crate) fn extract_targets(
@@ -232,6 +216,8 @@ impl PermissionBroker {
             walled: false,
             unattended: false,
             claude_hooks: std::sync::OnceLock::new(),
+            egress: egress::Named::default(),
+            host_recipes: std::sync::OnceLock::new(),
         }
     }
 
@@ -330,13 +316,10 @@ impl PermissionBroker {
             .cloned()
     }
 
-    fn containment_with(&self, refused: Option<PathBuf>, gate_allowed: bool) -> Containment {
+    fn containment_with(&self, refused: Option<PathBuf>) -> Containment {
         let mut widen = self.kept_writes();
         widen.extend(refused);
-        Containment::Contained {
-            widen,
-            gate_allowed,
-        }
+        Containment::Contained { widen }
     }
 
     /// An allowed bash call runs contained unless it must leave (#600 stage 2b); `Err` asks, as a
@@ -376,7 +359,7 @@ impl PermissionBroker {
             None => Ok(CallOutcome {
                 allowed: true,
                 reason,
-                containment: self.containment_with(None, true),
+                containment: self.containment_with(None),
             }),
             Some(yi_tools::SandboxRefusal::Scopes(_)) if passed => Ok(outside(format!(
                 "{reason}; it runs outside the sandbox (an \"always\" kept this exact command after a refusal naming no path)"
@@ -405,7 +388,7 @@ impl PermissionBroker {
             return outside(why);
         }
         match refusal {
-            None => (self.containment_with(None, false), String::new()),
+            None => (self.containment_with(None), String::new()),
             Some(yi_tools::SandboxRefusal::Scopes(_)) => outside("the refusal named no path"),
             Some(yi_tools::SandboxRefusal::Path(path)) => {
                 let dir = path.parent().unwrap_or(path);
@@ -414,7 +397,7 @@ impl PermissionBroker {
                     return outside(&format!("`{}` is protected", dir.display()));
                 }
                 let note = format!("; approving widens this run by `{}`", dir.display());
-                (self.containment_with(Some(dir), false), note)
+                (self.containment_with(Some(dir)), note)
             }
         }
     }
@@ -433,6 +416,7 @@ impl PermissionBroker {
                 deny_read: base.deny_read.clone(),
                 host_owned: base.host_owned.clone(),
                 ..yi_tools::Sandbox::for_workspace(cwd, Path::new(&home), None)
+                    .with_caches(Path::new(&home))
             },
             None => base.clone(),
         };
@@ -522,6 +506,9 @@ impl PermissionBroker {
         } else {
             None
         };
+        if let Some(outcome) = self.host_recipe(command) {
+            return outcome;
+        }
         let cwd_text = self.cwd.to_string_lossy().into_owned();
         let (rule_kind, canonical, display) = match command {
             Some(command) => (
@@ -586,6 +573,7 @@ impl PermissionBroker {
             &active_holds,
             &self.context,
         );
+        let decision = self.forge_gate(command, decision);
         let judged = hooked::Judged {
             call: &call,
             config_rules: &self.config_rules,
@@ -621,7 +609,7 @@ impl PermissionBroker {
                 return CallOutcome {
                     allowed: true,
                     reason,
-                    containment: self.containment_with(None, false),
+                    containment: self.containment_with(None),
                 };
             }
             // A containment Yi cannot enforce, or one the sandbox already refused, is the same
@@ -1133,32 +1121,5 @@ impl PermissionBroker {
         answered.unwrap_or_else(|| {
             Answered::Person(self.asker.as_ref().map_or(AskOutcome::Reject, |a| a(ask)))
         })
-    }
-}
-
-struct InFlight<'a> {
-    set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
-    request: RequestId,
-}
-
-impl<'a> InFlight<'a> {
-    fn claim(
-        set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
-        request: RequestId,
-    ) -> Option<Self> {
-        let inserted = set
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(request);
-        inserted.then(|| Self { set, request })
-    }
-}
-
-impl Drop for InFlight<'_> {
-    fn drop(&mut self) {
-        self.set
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.request);
     }
 }
