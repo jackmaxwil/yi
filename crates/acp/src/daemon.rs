@@ -14,6 +14,7 @@ use yi_types::mail::Envelope;
 use crate::negotiate;
 
 mod mail;
+use mail::SUPERVISOR;
 
 pub struct DaemonOptions {
     pub socket: PathBuf,
@@ -28,9 +29,6 @@ pub struct DaemonOptions {
 }
 
 type ClientId = u64;
-
-/// The id the daemon itself sends requests under; no client ever holds it.
-const SUPERVISOR: ClientId = 0;
 
 const CLIENT_QUEUE: usize = 4096;
 
@@ -79,6 +77,8 @@ struct SessionEntry {
     /// client has attached since, so its asks are refused instead of parked for nobody.
     headless: bool,
     owed: Vec<Envelope>,
+    /// Invariant: true only while a live worker holds the session, never for a ledger row.
+    loaded: bool,
 }
 
 impl SessionEntry {
@@ -101,6 +101,7 @@ impl SessionEntry {
             provisional: false,
             headless: false,
             owed: Vec::new(),
+            loaded: false,
         }
     }
 
@@ -587,7 +588,7 @@ impl Supervisor {
             let answered = frame.get("result").is_some();
             let viewer = (client != SUPERVISOR).then_some(client);
             if client == SUPERVISOR && !answered {
-                return self.forget_failed_wake(resumed);
+                return self.forget_failed_wake(resumed, &frame);
             }
             if let Some(session_id) = frame
                 .pointer("/result/sessionId")
@@ -604,11 +605,12 @@ impl Supervisor {
                         entry.root = request_root;
                         entry.attached.extend(viewer);
                         entry.provisional = false;
+                        entry.loaded = true;
                         entry.name = name.or(entry.name.take());
                     }
                     None => {
                         let mut entry = SessionEntry::new(request_root, viewer);
-                        entry.name = name;
+                        (entry.name, entry.loaded) = (name, true);
                         self.sessions.insert(session_id.clone(), entry);
                     }
                 }
@@ -653,6 +655,7 @@ impl Supervisor {
             return;
         };
         let transition = state.is_some();
+        let owed = mail::owed_by_ask(entry, &method, &frame, state.as_deref());
         if let Some(state) = state {
             entry.last_event_ms = now_ms();
             entry.last_state = Some(state);
@@ -670,7 +673,6 @@ impl Supervisor {
             entry.name = named;
         }
         let detached = entry.attached.is_empty();
-        let owed = mail::owed_by_ask(entry, &method, &frame);
         if transition && detached {
             entry.unseen = entry.unseen.saturating_add(1);
         }
@@ -679,8 +681,7 @@ impl Supervisor {
             self.persist();
         }
         if let Some(owed) = owed {
-            self.refuse_ask(root, &session_id, &frame, &owed);
-            return;
+            return self.refuse_ask(root, &session_id, &frame, &owed);
         }
         if detached {
             // Requests (frames with an id) park for the next attach; a
@@ -713,8 +714,7 @@ impl Supervisor {
 
     fn flush_parked(&mut self, session_id: &str, client: ClientId) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
-            entry.headless = false;
-            entry.owed.clear();
+            (entry.headless, entry.owed) = (false, Vec::new());
         }
         if let Some(queue) = self.parked.remove(session_id) {
             for frame in queue {
@@ -739,11 +739,13 @@ impl Supervisor {
                 self.send_client(request.client, exited);
             }
         }
+        self.tell_exited(&root);
         // Invariant: a pin outlives its worker, or the next persist writes the ledger without it.
         self.sessions
             .retain(|_, entry| entry.root != root || entry.pinned_ms.is_some());
         for entry in self.sessions.values_mut().filter(|e| e.root == root) {
             entry.attached.clear();
+            entry.loaded = false;
             entry.last_state = entry.last_state.take().map(|_| "idle".to_owned());
         }
         self.parked
@@ -936,10 +938,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
             next_request: 0,
             input: input_tx.clone(),
         };
-        mail::poll(
-            supervisor.options.session_dir.join("channels"),
-            input_tx.clone(),
-        );
+        mail::poll(&supervisor.options.session_dir, input_tx.clone());
         let accept_input = input_tx.clone();
         tokio::spawn(async move {
             let mut next_client: ClientId = 0;
@@ -1002,6 +1001,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
+    use yi_runtime::post::Waiting;
 
     #[test]
     fn the_ledger_writer_lands_the_newest_snapshot_and_flushes_on_close() -> Result<(), String> {
@@ -1110,7 +1110,7 @@ mod tests {
     }
 
     /// Dies with a session the daemon started for a mailed request parking its ask for a client
-    /// that never comes: the worker must be refused at once and the asker told by a failure.
+    /// that never comes, or with a ledger row skipped as held because a sibling in its repo is.
     #[tokio::test]
     async fn an_ask_from_a_mail_started_session_is_refused_and_the_asker_told() -> Result<(), String>
     {
@@ -1118,6 +1118,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let channels = dir.join("channels");
         std::fs::create_dir_all(&channels).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(dir.join("repo")).map_err(|error| error.to_string())?;
+        let header = r#"{"kind":"header","version":4,"id":"sleeper","createdAt":1,"cwd":"/repo"}"#;
+        std::fs::write(dir.join("repo/1_sleeper.jsonl"), format!("{header}\n"))
+            .map_err(|error| error.to_string())?;
         let mut supervisor = supervisor_with_rows();
         let (input, mut inputs) = mpsc::unbounded_channel();
         (supervisor.input, supervisor.options.session_dir) = (input, dir.clone());
@@ -1126,9 +1130,27 @@ mod tests {
             "kind": "request", "conversation": "asker-1", "seq": 1, "sentAt": 1, "body": "tidy",
         }))
         .map_err(|error| error.to_string())?;
-        let mut sleeper = SessionEntry::new("/repo".to_owned(), None);
-        (sleeper.headless, sleeper.owed) = (true, vec![request]);
-        supervisor.sessions.insert("sleeper".to_owned(), sleeper);
+        let mut stub = tokio::process::Command::new("cat");
+        stub.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = stub.spawn().map_err(|error| error.to_string())?;
+        let stdin = child.stdin.take().ok_or("the stub worker has no stdin")?;
+        supervisor
+            .workers
+            .insert("/repo".to_owned(), Worker { child, stdin });
+        let mut sibling = SessionEntry::new("/repo".to_owned(), None);
+        sibling.loaded = true;
+        supervisor.sessions.insert("sibling".to_owned(), sibling);
+        let ledger_row = SessionEntry::new("/repo".to_owned(), None);
+        supervisor.sessions.insert("sleeper".to_owned(), ledger_row);
+        let session = "sleeper".to_owned();
+        supervisor.wake(vec![Waiting { session, request }]).await;
+        let resumed = supervisor
+            .requests
+            .values()
+            .any(|r| r.resumed.as_deref() == Some("sleeper"));
+        assert!(resumed, "the stopped session was not resumed");
         let ask = json!({"jsonrpc": "2.0", "id": "perm_1", "method": "session/request_permission",
             "params": {"sessionId": "sleeper", "title": "Run rm -rf build"}});
         supervisor.handle_worker_line("/repo".to_owned(), ask.clone(), ask.to_string());
