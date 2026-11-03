@@ -3,7 +3,7 @@ use yi_types::plan::canonical::{ArtifactRef, Digest, canonical_bytes};
 use yi_types::plan::contract::MANIFEST_FORMAT;
 use yi_types::plan::ids::INLINE_NOTE_MAX_BYTES;
 
-use yi_types::plan::doc::{Isolation, PlanId, PlanState, Todo, TodoLabel, TodoState};
+use yi_types::plan::doc::{GoalText, Isolation, PlanId, PlanState, Todo, TodoLabel, TodoState};
 
 use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
 use super::state::{self, Decided, RootState, root_of};
@@ -308,13 +308,17 @@ impl PlanEngine {
                 (id, self.store.load(&root, false)?.state)
             }
             Err(error) => {
-                let Op::Set {
-                    goal: Some(goal),
-                    rows,
-                } = &op
-                else {
+                let Op::Set { goal, rows } = &op else {
                     return Err(error);
                 };
+                let goal = match (goal, rows.first()) {
+                    (Some(goal), _) => goal.clone(),
+                    (None, Some(row)) => {
+                        GoalText::new(row.spec.label.to_string()).map_err(PlanOpError::Doc)?
+                    }
+                    (None, None) => return Err(error),
+                };
+                let goal = &goal;
                 let id = self.store.allocate(goal).map_err(PlanOpError::from)?;
                 let init = Op::Init {
                     goal: goal.clone(),
