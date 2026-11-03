@@ -159,7 +159,9 @@ fn a_goal_check_passes_the_bash_hooks_before_it_runs() -> TestResult {
         Arc::new(|_, _: yi_types::schedule::DeliveryMode| {}),
         case.cwd.clone(),
     )
-    .with_claude_hooks(yi_runtime::claude_hooks::Hooks::load(&case.cwd));
+    .with_checker(yi_runtime::goal::Checker::from_hooks(
+        yi_runtime::claude_hooks::Hooks::load(&case.cwd),
+    ));
     let marker = case.cwd.join("checked");
     let check = format!("touch {}", marker.display());
     service.create("checked", None, Some(check), None)?;
@@ -216,7 +218,7 @@ fn a_goal_check_keeps_the_configuration_frozen_at_attachment() -> TestResult {
         Arc::new(|_, _: yi_types::schedule::DeliveryMode| {}),
         case.cwd.clone(),
     )
-    .with_claude_hooks(hooks);
+    .with_checker(yi_runtime::goal::Checker::from_hooks(hooks));
     let marker = case.cwd.join("checked");
     service.create(
         "checked",

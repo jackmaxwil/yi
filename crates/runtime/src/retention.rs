@@ -27,12 +27,18 @@ struct Row {
     trim: fn(&Path) -> bool,
 }
 
-const ROWS: [Row; 2] = [
+const ROWS: [Row; 3] = [
     Row {
         store: "checkpoints",
         root: crate::checkpoint::checkpoint_root,
         judge: checkpoint_fate,
         trim: trim_checkpoint,
+    },
+    Row {
+        store: "forks",
+        root: crate::lane::fork::forks_dir,
+        judge: fork_fate,
+        trim: trim_fork,
     },
     Row {
         store: "browser profiles",
@@ -57,15 +63,7 @@ fn checkpoint_fate(dir: &Path, idle: Duration) -> Fate {
     let Some(project) = yi_tools::checkpoint::work_tree(dir) else {
         return Fate::Keep;
     };
-    let unmounted = project
-        .ancestors()
-        .find(|up| up.exists())
-        .is_some_and(|up| {
-            MOUNT_ROOTS.iter().any(|root| up == Path::new(root))
-                || up
-                    .parent()
-                    .is_some_and(|parent| USER_MOUNTS.iter().any(|root| parent == Path::new(root)))
-        });
+    let unmounted = is_unmounted(&project);
     match project.try_exists() {
         Ok(false) if !unmounted && idle > ORPHAN_AFTER => Fate::Remove,
         Ok(false) | Err(_) => Fate::Keep,
@@ -74,7 +72,42 @@ fn checkpoint_fate(dir: &Path, idle: Duration) -> Fate {
     }
 }
 
+fn is_unmounted(project: &Path) -> bool {
+    project
+        .ancestors()
+        .find(|up| up.exists())
+        .is_some_and(|up| {
+            MOUNT_ROOTS.iter().any(|root| up == Path::new(root))
+                || up
+                    .parent()
+                    .is_some_and(|parent| USER_MOUNTS.iter().any(|root| parent == Path::new(root)))
+        })
+}
+
+/// A live holder keeps its tree. A dead one's goes once idle, its work on its branch first; with its
+/// repository gone there is no branch to keep it on.
+fn fork_fate(dir: &Path, idle: Duration) -> Fate {
+    if crate::lane::fork::is_held(dir) {
+        return Fate::Keep;
+    }
+    let pointer = std::fs::read_to_string(dir.join(".git")).unwrap_or_default();
+    let admin = Path::new(pointer.trim().trim_start_matches("gitdir: "));
+    match admin.try_exists() {
+        Ok(false) if !is_unmounted(admin) && idle > ORPHAN_AFTER => Fate::Remove,
+        Ok(false) | Err(_) => Fate::Keep,
+        Ok(true) if idle > SWEEP_EVERY => Fate::Trim,
+        Ok(true) => Fate::Keep,
+    }
+}
+
+fn trim_fork(dir: &Path) -> bool {
+    // `<home>/.yi/forks/<id>`.
+    let home = dir.ancestors().nth(3);
+    home.is_some_and(|home| crate::lane::fork::reclaim(home, dir))
+}
+
 fn trim_checkpoint(dir: &Path) -> bool {
+    yi_tools::checkpoint::drop_old_indexes(dir, ORPHAN_AFTER);
     yi_tools::checkpoint::prune(dir, SNAPSHOTS_KEPT).is_ok()
 }
 

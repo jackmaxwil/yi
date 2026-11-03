@@ -176,6 +176,11 @@ async fn complete(
 }
 
 impl SubagentHost {
+    /// A harness's check environment, installed once: a session's hooks and wall, or a test's.
+    pub fn set_checker(&self, checker: crate::goal::Checker) {
+        let _first_wins = self.checker.set(checker);
+    }
+
     pub(super) async fn run_child(
         self: Arc<Self>,
         child_id: String,
