@@ -365,11 +365,15 @@ pub enum AcpForkPosition {
     Other(String),
 }
 
-/// `_yi/committed`: a user or assistant message as the worker saved it, so a client can act on
-/// a reply it watched stream through the entry's id.
+/// `_yi/committed`: a user or assistant message with intervening active-main entries, so a
+/// client can connect a live message through ancestors that are not visible in its transcript.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcpCommitted {
     pub entry: crate::entry::Entry,
+    /// Ancestors after the prior commit cursor, oldest first;
+    /// [`AcpCommitted::entry`] is the suffix's final item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestors: Vec<crate::entry::Entry>,
 }
 
 /// A `select` session config option; `currentValue` is one of the `options` values.

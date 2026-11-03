@@ -274,9 +274,10 @@ impl App {
                 );
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
             }
-            Decoded::Committed(entry) => {
+            Decoded::Committed(committed) => {
                 for chat in self.state.chats_mut(id) {
-                    chat.port.commit((*entry).clone());
+                    chat.port
+                        .commit(committed.entry.clone(), committed.ancestors.clone());
                 }
             }
             Decoded::Notice(text) => {

@@ -1779,6 +1779,80 @@ fn typed_on(frames: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// Hidden entries on main ride the next committed message oldest-first, including while a tool runs.
+#[test]
+fn committed_updates_include_ordered_model_and_tool_entries() -> TestResult {
+    let dir = temp_dir("committed-ancestors")?;
+    let go = dir.join("go");
+    let wait = format!(
+        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
+        go.display()
+    );
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "bash", "id": "wait", "args": {"command": wait}}),
+            json!({"text": "finished"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    prompt(
+        &mut client,
+        "prompt",
+        &session_id,
+        json!([{"type": "text", "text": "wait"}]),
+    )?;
+    read_allowing(&mut client, |frame| {
+        frame["params"]["update"]["sessionUpdate"] == "tool_call_update"
+            && frame["params"]["update"]["status"] == "in_progress"
+    })?;
+    client.request(
+        "model",
+        "session/set_config_option",
+        json!({
+            "sessionId": session_id,
+            "configId": "model",
+            "type": "id",
+            "value": "openrouter/anthropic/claude-opus-5",
+        }),
+    )?;
+    std::fs::write(&go, "")?;
+    let frames = read_allowing(&mut client, is_idle)?;
+    let updates = updates_of(&frames, "_yi/committed");
+    let target = updates.last().ok_or("no committed target update")?;
+    let update = &target["params"]["update"];
+    assert_eq!(update["entry"]["message"]["content"][0]["text"], "finished");
+    let ancestors = update["ancestors"]
+        .as_array()
+        .ok_or("no committed ancestors")?;
+    let model_index = ancestors
+        .iter()
+        .position(|entry| entry["type"] == "model_change")
+        .ok_or("no ModelChange ancestor")?;
+    let result_index = ancestors
+        .iter()
+        .position(|entry| entry["message"]["role"] == "toolResult")
+        .ok_or("no ToolResult ancestor")?;
+    assert!(
+        model_index < result_index,
+        "hidden ancestry is out of order: {ancestors:?}"
+    );
+    let ancestor_seqs = ancestors
+        .iter()
+        .map(|entry| entry["seq"].as_u64().ok_or("ancestor has no sequence"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let target_seq = update["entry"]["seq"]
+        .as_u64()
+        .ok_or("target has no sequence")?;
+    assert!(
+        ancestor_seqs.windows(2).all(|pair| pair[0] < pair[1])
+            && ancestor_seqs.last().is_some_and(|seq| *seq < target_seq),
+        "not oldest-first through the target: {update}"
+    );
+    client.finish()
+}
+
 /// The worker names each saved message as it lands, so a console can act on a reply it watched
 /// stream; a fork at that reply holds the turn up to it, and the source keeps its later turn.
 #[test]

@@ -11,14 +11,14 @@ mod resident;
 pub mod review;
 pub mod update;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinHandle;
 use yi_runtime::session_store::{
     CreateOptions, JsonlRepo, SessionRepo, SharedSession, lock_session,
 };
@@ -328,26 +328,20 @@ impl AcpState {
         let context_window = session.model().context_window;
         let prompts = PendingPrompts::default();
         let last_active = Arc::new(AtomicU64::new(daemon::now_ms()));
-        let mut parent = Parent {
-            forward: Forward {
+        let mut parent = Parent::new(
+            Forward {
                 session_id: session_id.clone(),
                 child: None,
                 seq: Arc::new(AtomicU64::new(0)),
                 sink: Arc::clone(&self.sink),
             },
-            session: Arc::clone(&session),
-            host: Arc::clone(&host),
-            ids: IdMap::with_prompts(context_window, Arc::clone(&prompts)),
-            children: JoinSet::new(),
-            seen: HashSet::new(),
-            last_goal: Value::Null,
-            last_workdir: Value::Null,
-            last_claims: Value::Null,
-            last_plan: Value::Null,
-            titled: lock_session(store).name().is_some(),
-            launch_cwd: self.cwd.clone(),
-            last_active: Arc::clone(&last_active),
-        };
+            Arc::clone(&session),
+            Arc::clone(&host),
+            IdMap::with_prompts(context_window, Arc::clone(&prompts)),
+            store,
+            self.cwd.clone(),
+            Arc::clone(&last_active),
+        );
         parent.watch_workdir();
         parent.watch_claims();
         parent.watch_plan();
