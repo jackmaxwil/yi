@@ -1,9 +1,9 @@
 ---
 name: checker
 description: >
-  Make a child that cannot see your work write the checks: a worker walled
-  from history turns the task text into a program of PASS and FAIL lines, and
-  you start each requirement row with the check that proves it. Use when a
+  Needs an interactive root or an allow rule: make a child that cannot see
+  your work write the checks. A worker walled from history turns the task
+  text into a program of PASS and FAIL lines, and you start each requirement row with the check that proves it. Use when a
   person will grade the result against checks you cannot read, or when you
   wrote both the work and its test. Do NOT use for a task whose acceptance is
   already a command; run that command.

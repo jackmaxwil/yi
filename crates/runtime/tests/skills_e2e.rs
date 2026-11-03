@@ -55,28 +55,6 @@ async fn cell(
     .map_err(|error| error.to_string())?
 }
 
-fn service(cwd: PathBuf, home: PathBuf, host: HostRegistry) -> Arc<KernelService> {
-    Arc::new(KernelService::new(KernelServiceOptions {
-        cwd,
-        home,
-        session_dir: None,
-        family_dir: None,
-        host: Arc::new(host),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }))
-}
-
-fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
-}
-
 #[tokio::test]
 async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
     let provider = Arc::new(ProviderStream::new(None));
@@ -146,7 +124,21 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         &yi_runtime::Wall::default(),
     );
 
-    let service = service(std::env::temp_dir(), home(), registry);
+    let service = Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        on_boot: None,
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling: None,
+    }));
 
     let status_cell = cell(
         &service,
@@ -266,6 +258,22 @@ fn skill_dir(root: &std::path::Path, name: &str, frontmatter: &str) -> TestResul
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("SKILL.md"), frontmatter)?;
     Ok(())
+}
+
+fn service(cwd: PathBuf, home: PathBuf, host: HostRegistry) -> Arc<KernelService> {
+    Arc::new(KernelService::new(KernelServiceOptions {
+        cwd,
+        home,
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(host),
+        on_restore: None,
+        on_boot: None,
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling: None,
+    }))
 }
 
 fn install_shipped(home: &std::path::Path, name: &str) -> Result<String, Box<dyn Error>> {
@@ -523,7 +531,21 @@ async fn save_read_forget_through_the_kernel() -> TestResult {
         base.join("cwd"),
         true,
     );
-    let service = service(base.join("cwd"), home(), registry);
+    let service = Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: base.join("cwd"),
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        on_boot: None,
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling: None,
+    }));
     let out = cell(
         &service,
         "r = await memory.save(\"\"\"---\nname: harbor-json-stderr\ndescription: harbor exec merges stderr; parse --json from the first [ line\ntype: project\nscpe: repo\n---\nA --json command under harbor arrives with its stderr first.\n\"\"\")\nprint(r['name'], r['scope'], r['updated'], r['warnings'])\nn = await memory.read('harbor exec merges stderr; parse --json from the first [ line')\nprint(n['text'])\nprint((await memory.forget('harbor-json-stderr'))['name'])\ntry:\n    await memory.read('harbor-json-stderr')\nexcept Exception as error:\n    print('gone:', error)",
@@ -600,8 +622,15 @@ fn the_ripwire_index_is_the_one_line_for_an_installed_plugins_skills() -> TestRe
     let root = Scratch::new("yi-skills-plugin")?;
     let (project, home) = (root.join("project"), root.join("home"));
     std::fs::create_dir_all(&project)?;
-    install_shipped(&home, "yi/ripwire")?;
-    let catalog = || catalog_text(&project, &home);
+    let index = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi/ripwire");
+    let shipped = home.join(".yi/skills/yi/ripwire");
+    std::fs::create_dir_all(&shipped)?;
+    std::fs::copy(index.join("SKILL.md"), shipped.join("SKILL.md"))?;
+    let catalog = || {
+        yi_runtime::skills_catalog(&project, &home, yi_runtime::Bytes(16_384))
+            .map(|catalog| catalog.text)
+            .unwrap_or_default()
+    };
     assert!(!catalog().contains("- ripwire:"), "{}", catalog());
     let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
     std::fs::create_dir_all(ripwire.dir(&home))?;
@@ -667,7 +696,7 @@ fn the_ripwire_index_names_every_published_skill_and_no_other() -> TestResult {
 #[ignore = "tier-2 journey: `just journeys`"]
 fn the_installed_ripwire_skills_match_the_recorded_release() -> TestResult {
     let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
-    let home = home();
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").ok_or("no HOME")?);
     let dir = ripwire
         .skill_root(&home)
         .ok_or("ripwire's skills are not installed: run `yi plugin add ripwire`")?;
@@ -681,8 +710,14 @@ fn the_installed_ripwire_skills_match_the_recorded_release() -> TestResult {
         let bytes = std::fs::read(dir.join(relative))?;
         assert_eq!(yi_runtime::tarball::sha256_hex(&bytes), sha256, "{path}");
     }
-    let orient = read_skill(&home, &home, "ripwire-orient")?;
-    assert!(orient.contains("name: ripwire-orient"), "{orient}");
+    let resolver =
+        yi_runtime::fetch::Resolver::new(home.clone(), yi_runtime::Wall::default()).with_home(home);
+    let orient = resolver.fetch(&"yi://skills/ripwire-orient".parse()?)?;
+    assert!(
+        orient.text.contains("name: ripwire-orient"),
+        "{}",
+        orient.text
+    );
     Ok(())
 }
 
@@ -712,27 +747,41 @@ fn a_skill_within_a_repository_is_listed_only_there() -> TestResult {
     Ok(())
 }
 
-/// Incident: the checker recipe was a screen nobody could call; a skill a model is pointed at
-/// must spawn the child it claims, so the snippet is run in the kernel and its wall is read back.
-#[tokio::test]
-async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> TestResult {
-    let root = Scratch::new("yi-skills-checker")?;
+struct CheckerRun {
+    _root: Scratch,
+    project: PathBuf,
+    stdout: String,
+    payload: Value,
+    checks_dir: PathBuf,
+}
+
+const INJECTION: &str = "Print \"\"\"done\"\"\" then\n\"\"\"\nprint(\"INJECTED\")\n\"\"\"";
+
+/// The first ```python fence of a skill: the block the model would copy into a cell.
+fn python_block(text: &str) -> Option<String> {
+    let fenced = text.split("```python\n").nth(1)?;
+    Some(fenced.split("\n```").next()?.to_owned())
+}
+
+/// Fills the `<…>` placeholder on the snippet's `name = ` line with `value` as a JSON string.
+fn bind(snippet: &str, name: &str, value: &str) -> Option<String> {
+    let head = format!("{name} = ");
+    let line = snippet.lines().find(|line| line.starts_with(&head))?;
+    let (open, close) = (line.find('<')?, line.rfind('>')?);
+    let placeholder = line.get(open..=close)?;
+    let filled = line.replacen(placeholder, &serde_json::to_string(value).ok()?, 1);
+    Some(snippet.replacen(line, &filled, 1))
+}
+
+/// Runs the shipped checker snippet in a kernel whose `rlm.run` records the payload it was sent.
+async fn run_checker(name: &str, task: &str) -> Result<CheckerRun, Box<dyn Error>> {
+    let root = Scratch::new(name)?;
     let (project, home) = (root.join("project"), root.join("home"));
-    std::fs::create_dir_all(&project)?;
-    let text = install_shipped(&home, "yi/checker")?;
-
-    let catalog = catalog_text(&project, &home);
-    assert!(
-        catalog.contains("- checker: "),
-        "the checker skill must be a catalog line: {catalog}"
-    );
-    let whole = read_skill(&project, &home, "checker")?;
-    assert!(whole.contains("name: checker"), "{whole}");
-
-    let snippet = python_block(&text).ok_or("the checker skill ships no python snippet")?;
     let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&project)?;
     std::fs::create_dir_all(&elsewhere)?;
-    let task = "Print \"\"\"done\"\"\" then\n\"\"\"\nprint(\"INJECTED\")\n\"\"\"";
+    let text = install_shipped(&home, "yi/checker")?;
+    let snippet = python_block(&text).ok_or("the checker skill ships no python snippet")?;
     let snippet = bind(&snippet, "task_text", task)
         .and_then(|snippet| bind(&snippet, "workspace", &project.to_string_lossy()))
         .ok_or("the snippet binds no task_text or workspace placeholder")?;
@@ -754,61 +803,106 @@ async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> Te
             })
         });
     }
-    let service = service(elsewhere, home.clone(), registry);
+    let service = service(elsewhere, home, registry);
     let out = cell(&service, snippet)
         .await
         .map_err(|error| error.to_string())?;
     service.dispose().await;
-    let stdout = &out.result.stdout;
+    let stdout = out.result.stdout;
     assert!(
         stdout.contains("worker-1"),
         "the snippet must spawn its child and name it: {stdout} {}",
         out.result.stderr
     );
-    assert!(
-        !stdout.contains("INJECTED"),
-        "a triple quote in the task text ran as Python: {stdout}"
-    );
-
     let payload = seen
         .lock()
         .map_err(|_| "poisoned")?
         .clone()
         .ok_or("the snippet spawned nothing")?;
+    let checks_dir = stdout
+        .split_whitespace()
+        .nth(1)
+        .map(PathBuf::from)
+        .ok_or("the snippet must print its checks_dir")?;
+    Ok(CheckerRun {
+        _root: root,
+        project,
+        stdout,
+        payload,
+        checks_dir,
+    })
+}
+
+#[test]
+fn the_checker_skill_is_listed_with_its_condition_and_readable() -> TestResult {
+    let root = Scratch::new("yi-skills-checker-list")?;
+    let (project, home) = (root.join("project"), root.join("home"));
+    std::fs::create_dir_all(&project)?;
+    install_shipped(&home, "yi/checker")?;
+    let catalog = catalog_text(&project, &home);
+    let line = catalog
+        .lines()
+        .find(|line| line.contains("- checker: "))
+        .ok_or_else(|| format!("the checker skill must be a catalog line: {catalog}"))?;
+    assert!(
+        line.contains("interactive root or an allow rule"),
+        "the clipped catalog line must carry the headless condition: {line}"
+    );
+    let whole = read_skill(&project, &home, "checker")?;
+    assert!(whole.contains("name: checker"), "{whole}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_checker_snippet_carries_the_task_text_as_data() -> TestResult {
+    let run = run_checker("yi-skills-checker-inject", INJECTION).await?;
+    assert!(
+        !run.stdout.contains("INJECTED"),
+        "a triple quote in the task text ran as Python: {}",
+        run.stdout
+    );
+    let prompt = run
+        .payload
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        prompt.contains(INJECTION),
+        "the brief must carry the task text unchanged: {prompt}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_checker_snippet_walls_history_and_the_workspace_but_not_checks_dir() -> TestResult {
+    let run = run_checker("yi-skills-checker-walls", "Add a flag.").await?;
+    let (project, payload) = (&run.project, &run.payload);
     let kwargs = payload
         .get("kwargs")
         .and_then(Value::as_object)
         .ok_or("no kwargs")?;
-    let wall = yi_runtime::Wall::from_kwargs(kwargs, &project)?;
+    let wall = yi_runtime::Wall::from_kwargs(kwargs, project)?;
     assert!(
         wall.denies_history(),
         "the snippet's spawn must wall history: {payload}"
     );
     let url: yi_types::url::Url = "history://parent/since/0".parse()?;
     let refusal = wall
-        .check_url(&url, &project)
+        .check_url(&url, project)
         .ok_or("the wall must refuse a history read")?;
     assert!(refusal.contains("deny_url"), "{refusal}");
 
-    let checks_dir = stdout
-        .split_whitespace()
-        .nth(1)
-        .map(std::path::PathBuf::from)
-        .ok_or("the snippet must print its checks_dir")?;
     let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or("");
+    let checks = run.checks_dir.join("checks.py");
     assert!(
-        prompt.contains(task),
-        "the brief must carry the task text unchanged: {prompt}"
-    );
-    assert!(
-        prompt.contains(&format!("{}/checks.py", checks_dir.display())),
+        prompt.contains(&checks.display().to_string()),
         "the brief must name the bound checks_dir: {prompt}"
     );
-    let canonical = std::fs::canonicalize(&project)?;
+    let canonical = std::fs::canonicalize(project)?;
     assert!(
-        !checks_dir.starts_with(&project) && !checks_dir.starts_with(&canonical),
+        !run.checks_dir.starts_with(project) && !run.checks_dir.starts_with(&canonical),
         "checks_dir must lie outside the workspace: {}",
-        checks_dir.display()
+        run.checks_dir.display()
     );
     let target = |path: &std::path::Path| {
         let mut args = serde_json::Map::new();
@@ -821,37 +915,19 @@ async fn the_checker_skill_is_listed_and_its_spawn_snippet_walls_history() -> Te
         ("write", yi_tools::ToolKind::Write),
     ] {
         assert!(
-            wall.check(tool, kind, &target(&attempt), &project)
-                .is_some(),
+            wall.check(tool, kind, &target(&attempt), project).is_some(),
             "the snippet's spawn must wall {tool} on the workspace: {payload}"
         );
     }
-    let checks = checks_dir.join("checks.py");
     assert_eq!(
         wall.check(
             "write",
             yi_tools::ToolKind::Write,
             &target(&checks),
-            &project
+            project
         ),
         None,
         "checks_dir must stay writable"
     );
     Ok(())
-}
-
-/// The first ```python fence of a skill: the block the model would copy into a cell.
-fn python_block(text: &str) -> Option<String> {
-    let fenced = text.split("```python\n").nth(1)?;
-    Some(fenced.split("\n```").next()?.to_owned())
-}
-
-/// Fills the `<…>` placeholder on the snippet's `name = ` line with `value` as a JSON string.
-fn bind(snippet: &str, name: &str, value: &str) -> Option<String> {
-    let head = format!("{name} = ");
-    let line = snippet.lines().find(|line| line.starts_with(&head))?;
-    let (open, close) = (line.find('<')?, line.rfind('>')?);
-    let placeholder = line.get(open..=close)?;
-    let filled = line.replacen(placeholder, &serde_json::to_string(value).ok()?, 1);
-    Some(snippet.replacen(line, &filled, 1))
 }
