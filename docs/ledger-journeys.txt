@@ -8,6 +8,8 @@ entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_type
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
+context P1–P19; prefix-aligned P7 | `compaction_faux::compaction_floors_a_host_notice_and_keeps_the_waking_letter`
+context P1–P19; prefix-aligned P7 | `primitives::each_host_notice_row_dies_once_read_and_an_unregistered_kind_survives`
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_render_compaction_spends_no_summarizer_request`
 context P1–P19; prefix-aligned P7 | `compaction_faux::the_retention_floor_keeps_the_users_typed_words_and_drops_host_text` (T1)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_second_compaction_while_one_is_in_flight_is_refused` (T1)
@@ -41,6 +43,7 @@ bash reduce (launch set) | `tools::a_line_past_the_clip_is_clipped_and_the_row_n
 bash reduce (launch set) | `session_faux::a_job_that_exits_mid_turn_lands_its_view_as_a_poll_reads_it`
 bash reduce (launch set) | `kernel_cell::a_shell_cell_keeps_its_failing_test_and_summary_inline`
 bash reduce (launch set) | `kernel_data_surface::a_cut_cell_stream_names_a_file_with_every_character`
+bash reduce (launch set) | `journeys::an_exiting_ask_kills_its_background_bash_process_group` (T2)
 file checkpoints + /undo | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 file checkpoints + /undo | `tools::a_capture_leaves_out_a_home_that_lives_inside_the_project`
 kernel + ipython + rlm() subagents | `reader_retry::schema_failure_gets_one_retry_and_a_second_failure_is_refused`
