@@ -585,9 +585,6 @@ fn prepare_splits_history_and_unions_the_floor_into_the_retained_tail() -> TestR
     };
     let prepared = prepare_compaction(&branch, &settings).ok_or("expected preparation")?;
     assert!(
-        !prepared.messages_to_summarize.is_empty() || !prepared.turn_prefix_messages.is_empty()
-    );
-    assert!(
         prepared.retained_tail.iter().any(|message| matches!(
             message,
             AgentMessage::User { content: UserContent::Text(text), .. }

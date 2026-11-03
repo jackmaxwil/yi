@@ -154,13 +154,13 @@ impl RuntimeWiring {
     }
 
     /// The kernel's own profile, which its `bash()` jobs run under too (D241).
-    fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
+    pub(crate) fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
         self.session_sandbox()
             .map(|sandbox| crate::kernel::kernel_profile(&sandbox, Some(&self.family_dir())))
     }
 
     /// The kernel's own writable dir, unless it is the root's corpus (#580).
-    fn writable_kernel_dir(&self) -> Option<PathBuf> {
+    pub(crate) fn writable_kernel_dir(&self) -> Option<PathBuf> {
         (self.depth > 0 || self.sessions_dir.is_none()).then(|| self.kernel_dir())
     }
 
@@ -187,7 +187,7 @@ impl RuntimeWiring {
 
     /// A walled session's family spills, own transcript and kernel state, named as a kernel boots
     /// or a job spawns (a child's store attaches after its wiring); a root's state is not its corpus.
-    fn own_paths(&self, session: &AgentSession) -> Option<OwnPathsFn> {
+    pub(crate) fn own_paths(&self, session: &AgentSession) -> Option<OwnPathsFn> {
         let (store, wall) = (session.store_handle(), self.wall.clone());
         let spills = board_spills(&self.family_dir());
         let own = move |state: Option<&Path>| {
@@ -238,25 +238,6 @@ impl RuntimeWiring {
 /// A walled session's own paths as of the call, given its kernel's state dir: read again under
 /// its profile's denials.
 pub(crate) type OwnPathsFn = Arc<dyn Fn(Option<&Path>) -> Vec<PathBuf> + Send + Sync>;
-
-/// A kernel `bash()` job's profile, built as it spawns: the kernel's own plus every write
-/// grant kept since, so a grant reaches a kernel that was running before it (#600).
-fn job_profile(
-    wiring: &RuntimeWiring,
-    session: &AgentSession,
-) -> impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static {
-    let (profile, broker) = (wiring.exec_sandbox(), wiring.broker.clone());
-    let (own, state) = (wiring.own_paths(session), wiring.writable_kernel_dir());
-    move || {
-        let mut profile = profile.clone()?;
-        let kept = broker.iter().flat_map(|broker| broker.kept_writes());
-        profile.writable.extend(kept);
-        profile
-            .spared
-            .extend(own.iter().flat_map(|own| own(state.as_deref())));
-        Some(profile)
-    }
-}
 
 /// Every spawned child wires itself the same way at depth+1; the depth check in
 /// [`SubagentHost::spawn`] is what terminates the recursion.
@@ -480,7 +461,7 @@ fn wire_plan_request(
     // Invariant: a verification never outlives the run (D177): the verifier and every lane
     // settle read the session's deadline too.
     let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
-        .with_claude_hooks(session.claude_hooks(&cwd));
+        .with_checker(session.checker(&cwd));
     if let Some(deadline) = session.deadline()
         && let Some(ends) = deadline.started.checked_add(deadline.total)
     {
@@ -738,7 +719,7 @@ fn wire_kernel(
             }));
         }),
     );
-    let service = crate::kernel::KernelService::new(options);
+    let service = crate::kernel::KernelService::new(options).with_holder(wiring);
     Arc::new(service.with_own_paths(wiring.own_paths(session)))
 }
 
@@ -758,7 +739,10 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
-    registry.register_exec(wiring.cwd.clone(), job_profile(&wiring, session));
+    registry.register_exec(
+        wiring.exec_home(),
+        crate::kernel_state::job_profile(&wiring, session),
+    );
     crate::kernel_state::register_host_stores(&mut registry, &wiring);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
@@ -789,6 +773,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
             })
         });
     }
+    session.hold_gate(wiring.broker.clone(), wiring.wall.clone());
     let host = subagent_host(session, &wiring, &plans_dir);
     host.register(&mut registry);
     crate::mailbox::register_receive(session, &host, &mut registry);
@@ -870,7 +855,6 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::rules::attach_rules(session, Arc::clone(&engine));
     session.set_rules_engine(Arc::clone(&engine));
     wire_compacted(session, &service, &plans_dir, engine);
-    session.set_wall(wiring.wall.clone());
     // Owner, overriding D340's per-session spills: "I accept the security hole. It has more
     // value than this esoteric risk"; the board is the family's, so every member reads them.
     session.set_spills(board_spills(&wiring.family_dir()));
@@ -918,7 +902,7 @@ fn subagent_host(
         plans_dir: plans_dir.to_path_buf(),
         family_live: Arc::clone(&wiring.kernels),
     }));
-    let _first_wins = host.claude_hooks.set(session.claude_hooks(&wiring.cwd));
+    host.set_checker(session.checker(&wiring.cwd));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
     let (handle, own) = (session.rules_handle(), wiring.own_paths(session));
