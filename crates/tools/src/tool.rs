@@ -351,7 +351,7 @@ impl Cap {
                 "no read converts a document this large, whatever the page selection".to_owned()
             }
             Self::Document { pages: true } => {
-                format!("read path={shown} pages=1- for the pages it can convert")
+                format!("read path={shown} pages=1-50 for the pages it can convert")
             }
             Self::Paged => {
                 "no read reaches past this: the file is too large to convert at any page selection"
@@ -408,6 +408,12 @@ fn replace(
     let Ok(mut staged) = options.write(true).create_new(true).open(&temp) else {
         return fell_back(file);
     };
+    // Invariant: a sibling takes this process's owner and the directory's group, so a file whose
+    // owner or group differs is written in place to keep both.
+    if staged.metadata().map(|staged| owners(&staged)).ok() != Some(owners(&meta)) {
+        let _already_gone = std::fs::remove_file(&temp);
+        return fell_back(file);
+    }
     let staged_ok = (|| {
         staged.set_permissions(meta.permissions())?;
         staged.write_all(content)?;
@@ -447,6 +453,17 @@ fn links(meta: &std::fs::Metadata) -> u64 {
 #[cfg(not(unix))]
 fn links(_meta: &std::fs::Metadata) -> u64 {
     1
+}
+
+#[cfg(unix)]
+fn owners(meta: &std::fs::Metadata) -> (u32, u32) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.uid(), meta.gid())
+}
+
+#[cfg(not(unix))]
+fn owners(_meta: &std::fs::Metadata) -> (u32, u32) {
+    (0, 0)
 }
 
 pub fn resolve_path(context: &ToolContext, path: &str) -> PathBuf {

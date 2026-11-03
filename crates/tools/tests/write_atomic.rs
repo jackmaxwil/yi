@@ -82,3 +82,22 @@ fn a_rewritten_file_keeps_its_mode() -> TestResult {
     assert_eq!(mode, 0o750);
     Ok(())
 }
+
+/// A sibling renamed over a group-shared file handed it the directory's group instead.
+#[test]
+fn a_rewritten_file_keeps_a_group_its_directory_does_not_have() -> TestResult {
+    use std::os::unix::fs::MetadataExt;
+    let dir = temp_dir("write-atomic-group")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let path = dir.join("shared.txt");
+    fs::write(&path, "old\n")?;
+    let dir_gid = fs::metadata(&*dir)?.gid();
+    let gid = (0..=1000)
+        .filter(|gid| *gid != dir_gid)
+        .find(|gid| std::os::unix::fs::chown(&path, None, Some(*gid)).is_ok())
+        .ok_or("no group other than the directory's could be set")?;
+    write("shared.txt", "new\n", &context)?;
+    assert_eq!(fs::read_to_string(&path)?, "new\n");
+    assert_eq!(fs::metadata(&path)?.gid(), gid);
+    Ok(())
+}

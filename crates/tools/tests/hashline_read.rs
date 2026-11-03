@@ -174,7 +174,12 @@ fn a_pdf_past_the_read_cap_reads_unpaged_under_the_converter_ceiling() -> TestRe
     let text = output_text(&past);
     assert!(past.is_error, "{text}");
     assert!(text.contains("INPUT_CEILING 268435456"), "{text}");
-    assert!(text.contains("pages=1-"), "{text}");
+    assert!(text.contains("pages=1-50"), "{text}");
+    let mut args = path_args("path", "huge.pdf");
+    args.insert("pages".to_owned(), json!("1-50"));
+    let remedy = HashlineReadTool::new(Arc::clone(&state)).execute(args, &context);
+    let text = output_text(&remedy);
+    assert!(!text.contains("not a 1-based list"), "{text}");
     Ok(())
 }
 
