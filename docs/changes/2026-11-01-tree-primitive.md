@@ -1,4 +1,6 @@
 ---
+version: 0.888.0
+decisions: D538
 issue: Closes #1941
 growth: +921 is eight verbs over names and the plumbing under them. Weighed for deletion: t.log and t.rewind, kept because a seen-red run needs both; `publish`, cut, since git commit and the outbox already land; a call log per tree, cut until a recipe asks
 raise: tests +474, comments +40, over-cap +2, crate runtime +897

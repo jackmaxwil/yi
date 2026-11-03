@@ -1,4 +1,6 @@
 ---
+version: 0.886.0
+decisions: D536
 issue: Closes #1939
 growth: +412 is the pool, scrub, snapshot and ticket table with their limits. Weighed for deletion: sharing nothing, a target per check, which is the 176 s at 128 children this replaces; and the ticket table, which a cell's 600 s abort makes necessary
 raise: tests +416, comments +24, crate runtime +317
