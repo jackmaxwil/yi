@@ -1,347 +1,18 @@
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, Content, StopReason};
 use yi_types::model::{LlmContext, Model};
+
+mod encode;
 
 use crate::breakpoints::Encoded;
 use crate::catalog::calculate_cost;
-use crate::compat::developer_role;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
-use crate::openai::{OpenAiOptions, mapped_effort};
+use crate::openai::OpenAiOptions;
 use crate::request::{assistant_content_mut, content_end_events};
-use crate::transform::{system_text, transform_messages};
-
-mod convert;
-
-pub fn normalize_responses_tool_call_id(id: &str) -> String {
-    id.chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric()
-                || character == '_'
-                || character == '-'
-                || character == '|'
-            {
-                character
-            } else {
-                '_'
-            }
-        })
-        .take(128)
-        .collect()
-}
-
-fn call_and_item(id: &str) -> (&str, Option<&str>) {
-    match id.split_once('|') {
-        Some((call, item)) if !item.is_empty() => (call, Some(item)),
-        _ => (id, None),
-    }
-}
-
-fn combined_id(call_id: &str, item_id: &str) -> String {
-    if item_id.is_empty() {
-        call_id.to_owned()
-    } else {
-        format!("{call_id}|{item_id}")
-    }
-}
-
-fn convert_user(content: &UserContent) -> Option<Value> {
-    match content {
-        UserContent::Text(text) => Some(json!({
-            "role": "user",
-            "content": [{"type": "input_text", "text": text}],
-        })),
-        UserContent::Blocks(blocks) => {
-            let parts: Vec<Value> = blocks
-                .iter()
-                .filter_map(|block| match block {
-                    Content::Text { text, .. } => Some(json!({"type": "input_text", "text": text})),
-                    Content::Image { data, mime_type } => Some(json!({
-                        "type": "input_image",
-                        "detail": "auto",
-                        "image_url": format!("data:{mime_type};base64,{data}"),
-                    })),
-                    _ => None,
-                })
-                .collect();
-            (!parts.is_empty()).then(|| json!({"role": "user", "content": parts}))
-        }
-    }
-}
-
-/// The one raw argument a freeform (custom) tool call carries. C8 scopes freeform to the
-/// hashline edit tool; thread a per-tool key when a second freeform tool exists.
-const FREEFORM_ARGUMENT: &str = "patch";
-
-fn convert_assistant(
-    content: &[Content],
-    freeform: &std::collections::BTreeSet<String>,
-) -> Vec<Value> {
-    let mut items = Vec::new();
-    for block in content {
-        match block {
-            Content::Thinking {
-                thinking_signature, ..
-            } => {
-                if let Some(signature) = thinking_signature
-                    && let Ok(item) = serde_json::from_str::<Value>(signature)
-                    && item.get("type").and_then(Value::as_str) == Some("reasoning")
-                {
-                    items.push(item);
-                }
-            }
-            Content::Text {
-                text,
-                text_signature,
-            } if !text.is_empty() => {
-                let mut item = json!({
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{"type": "output_text", "text": text, "annotations": []}],
-                });
-                if let Some(id) = text_signature.as_ref().filter(|value| !value.is_empty()) {
-                    item["id"] = json!(id);
-                }
-                items.push(item);
-            }
-            Content::ToolCall {
-                id,
-                name,
-                arguments,
-                ..
-            } => {
-                let (call_id, item_id) = call_and_item(id);
-                let mut item = if freeform.contains(name) {
-                    let input = arguments
-                        .get(FREEFORM_ARGUMENT)
-                        .and_then(Value::as_str)
-                        .map_or_else(
-                            || Value::Object(arguments.clone()).to_string(),
-                            str::to_owned,
-                        );
-                    json!({
-                        "type": "custom_tool_call",
-                        "call_id": call_id,
-                        "name": name,
-                        "input": input,
-                    })
-                } else {
-                    json!({
-                        "type": "function_call",
-                        "call_id": call_id,
-                        "name": name,
-                        "arguments": Value::Object(arguments.clone()).to_string(),
-                    })
-                };
-                if let Some(item_id) = item_id {
-                    item["id"] = json!(item_id);
-                }
-                items.push(item);
-            }
-            _ => {}
-        }
-    }
-    items
-}
-
-fn convert_tool_result(
-    tool_call_id: &str,
-    content: &[Content],
-    vision: bool,
-    is_freeform: bool,
-) -> Value {
-    let kind = if is_freeform {
-        "custom_tool_call_output"
-    } else {
-        "function_call_output"
-    };
-    let (call_id, _) = call_and_item(tool_call_id);
-    let text: String = yi_types::message::join_text(content, "\n");
-    let images: Vec<Value> = if vision {
-        content
-            .iter()
-            .filter_map(|block| match block {
-                Content::Image { data, mime_type } => Some(json!({
-                    "type": "input_image",
-                    "detail": "auto",
-                    "image_url": format!("data:{mime_type};base64,{data}"),
-                })),
-                _ => None,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    if images.is_empty() {
-        let output = if text.is_empty() {
-            "(no tool output)"
-        } else {
-            text.as_str()
-        };
-        json!({
-            "type": kind,
-            "call_id": call_id,
-            "output": output,
-        })
-    } else {
-        let mut parts = Vec::new();
-        if !text.is_empty() {
-            parts.push(json!({"type": "input_text", "text": text}));
-        }
-        parts.extend(images);
-        json!({
-            "type": kind,
-            "call_id": call_id,
-            "output": parts,
-        })
-    }
-}
-
-fn freeform_names(context: &LlmContext) -> std::collections::BTreeSet<String> {
-    context
-        .tools
-        .iter()
-        .flatten()
-        .filter(|tool| tool.freeform.is_some())
-        .map(|tool| tool.name.clone())
-        .collect()
-}
-
-/// The system and history items, then the per-request items that render after them.
-fn convert_input(model: &Model, context: &LlmContext) -> (Vec<Value>, Vec<Value>) {
-    let _span = yi_types::trace::span("ai.convert_messages");
-    let mut input = Vec::new();
-    // The `openai-codex` backend takes the system text as top-level `instructions`;
-    // sending it as an input message too would bill it twice.
-    let codex = model.provider == "openai-codex";
-    if !context.system_prompt.is_empty() && !codex {
-        let role = if developer_role(model) {
-            "developer"
-        } else {
-            "system"
-        };
-        input.push(json!({"role": role, "content": system_text(&context.system_prompt)}));
-    }
-    let vision = model.input.iter().any(|kind| kind == "image");
-    let freeform = freeform_names(context);
-    let history = transform_messages(
-        &context.messages,
-        model,
-        Some(normalize_responses_tool_call_id),
-    );
-    let transient = transform_messages(
-        &context.transient,
-        model,
-        Some(normalize_responses_tool_call_id),
-    );
-    let items = |messages: &[AgentMessage]| {
-        let mut out = Vec::new();
-        for message in messages {
-            match message {
-                AgentMessage::User { content, .. } => {
-                    if let Some(item) = convert_user(content) {
-                        out.push(item);
-                    }
-                }
-                AgentMessage::Assistant { content, .. } => {
-                    out.extend(convert_assistant(content, &freeform));
-                }
-                AgentMessage::ToolResult {
-                    tool_call_id,
-                    tool_name,
-                    content,
-                    ..
-                } => out.push(convert_tool_result(
-                    tool_call_id,
-                    content,
-                    vision,
-                    freeform.contains(tool_name),
-                )),
-                _ => {}
-            }
-        }
-        out
-    };
-    input.extend(items(&history));
-    (input, items(&transient))
-}
-
-/// A custom tool call's raw text becomes the one argument the tool schema
-/// names, so the tool layer never learns which wire shape delivered it.
-fn freeform_arguments(input: &str) -> Map<String, Value> {
-    let mut arguments = Map::new();
-    arguments.insert(
-        FREEFORM_ARGUMENT.to_owned(),
-        Value::String(input.to_owned()),
-    );
-    arguments
-}
-
-fn apply_reasoning(model: &Model, options: &OpenAiOptions, params: &mut Value) {
-    let off = model
-        .thinking_level_map
-        .as_ref()
-        .and_then(|map| map.get("off"));
-    match options.reasoning_effort {
-        Some(effort) => {
-            if let Some(mapped) = mapped_effort(model, effort) {
-                params["reasoning"] = json!({"effort": mapped});
-                params["include"] = json!(["reasoning.encrypted_content"]);
-            }
-        }
-        None if model.reasoning && !matches!(off, Some(Value::Null)) => {
-            params["reasoning"] = json!({
-                "effort": off.and_then(Value::as_str).unwrap_or("none")
-            });
-        }
-        None => {}
-    }
-}
-
-pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Encoded {
-    let _span = yi_types::trace::span("ai.build_params")
-        .arg("api", "responses")
-        .arg("messages", context.messages.len());
-    let (input, transient) = convert_input(model, context);
-    let mut params = json!({
-        "model": model.id,
-        "input": input,
-        "stream": true,
-        "store": false,
-    });
-    if model.provider == "openai-codex" {
-        params["instructions"] = json!(system_text(&context.system_prompt));
-    }
-    if let Some(session_id) = &options.session_id {
-        params["prompt_cache_key"] = json!(session_id);
-    }
-    if let Some(ttl) = crate::openai::prompt_cache_retention(model) {
-        params["prompt_cache_retention"] = json!(ttl);
-    }
-    if let Some(schema) = &context.schema {
-        params["text"]["format"] = crate::schema::responses(schema);
-    }
-    if let Some(max_tokens) = options.max_tokens {
-        params["max_output_tokens"] = json!(max_tokens);
-    }
-    if let Some(tools) = &context.tools
-        && !tools.is_empty()
-    {
-        params["tools"] = Value::Array(convert::convert_tools(
-            tools,
-            crate::compat::strict_tools(model),
-        ));
-    }
-    if let Some(choice) = &context.tool_choice {
-        params["tool_choice"] = convert::convert_tool_choice(choice, context.tools.as_deref());
-    }
-    apply_reasoning(model, options, &mut params);
-    // No explicit breakpoint is known to be accepted on this wire; the provider caches its own
-    // prefix, and the per-request facts still render last (design §11).
-    Encoded::provider_prefix(params, "input", transient)
-}
+pub use encode::{build_params, normalize_responses_tool_call_id};
+use encode::{combined_id, freeform_arguments};
 
 fn parse_usage(raw: &Value, model: &Model) -> yi_types::message::Usage {
     let get = |value: &Value, key: &str| value.get(key).and_then(Value::as_i64).unwrap_or(0);
@@ -648,13 +319,18 @@ impl EventMapper {
             return;
         }
         slot.partial_args.push_str(chunk);
-        let Some(content_index) = self.materialize_args(slot_index) else {
-            return;
-        };
         events.push(AssistantMessageEvent::ToolCallDelta {
-            content_index,
+            content_index: slot.content_index,
             delta: chunk.to_owned(),
         });
+    }
+
+    fn settle_open_calls(&mut self) {
+        for slot_index in 0..self.tools.len() {
+            if self.tools.get(slot_index).is_some_and(|slot| !slot.ended) {
+                let _ = self.materialize_args(slot_index);
+            }
+        }
     }
 
     fn end_tool(
@@ -771,6 +447,7 @@ impl EventMapper {
             .or_else(|| payload.get("message"))
             .and_then(Value::as_str)
             .unwrap_or("response.failed");
+        self.settle_open_calls();
         self.failed = true;
         crate::request::fail_message(&mut self.output, message)
     }
@@ -886,6 +563,7 @@ impl EventMapper {
         if self.closed {
             return Vec::new();
         }
+        self.settle_open_calls();
         self.closed = true;
         if self.failed {
             return Vec::new();
@@ -910,6 +588,7 @@ impl EventMapper {
     }
 
     pub fn fail(&mut self, message: &str) -> AssistantMessageEvent {
+        self.settle_open_calls();
         self.failed = true;
         crate::request::fail_message(&mut self.output, message)
     }
