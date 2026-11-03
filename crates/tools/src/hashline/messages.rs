@@ -561,8 +561,8 @@ of a multi-line construct. For only this statement use `{plain}`.",
     message
 }
 
-pub const EDIT_REMOVED_CAP: usize = 8;
-pub const EDIT_REMOVED_CLIP: usize = 120;
+const EDIT_REMOVED_CAP: usize = 8;
+const EDIT_REMOVED_CLIP: usize = 120;
 
 pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore) -> String {
     let mut out = vec![result.header.clone()];
@@ -587,6 +587,7 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
             (None, Some(line)) => format!("{op}; {counts} at line {line}"),
             (None, None) => format!("{op}; {counts}"),
         });
+        let gone = format!("the file no longer holds them; read(\"{}\")", result.path);
         let mut clipped = 0_usize;
         for (line, text) in removed.iter().take(EDIT_REMOVED_CAP) {
             let (text, was_clipped) = crate::tool::clip(text, EDIT_REMOVED_CLIP);
@@ -600,7 +601,7 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
                 "removed rows clipped",
                 "EDIT_REMOVED_CLIP",
                 EDIT_REMOVED_CLIP,
-                "details.patch",
+                &gone,
             ));
         }
         if removed.len() > EDIT_REMOVED_CAP {
@@ -610,10 +611,7 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
                 "removed rows",
                 "EDIT_REMOVED_CAP",
                 EDIT_REMOVED_CAP,
-                &format!(
-                    "the file no longer holds them; read(\"{}\") shows what is there now",
-                    result.path
-                ),
+                &gone,
             ));
         }
         // Invariant: the prior seen set rebases onto the new tag (#473), and the rows the

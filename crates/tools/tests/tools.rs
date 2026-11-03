@@ -3666,7 +3666,7 @@ fn a_removed_row_wider_than_the_clip_is_cut_and_marked() -> TestResult {
     assert!(!reply.contains(&"x".repeat(121)), "{reply}");
     assert!(reply.contains("1 of 1 removed rows clipped"), "{reply}");
     assert!(reply.contains("EDIT_REMOVED_CLIP 120"), "{reply}");
-    assert!(reply.contains("details.patch"), "{reply}");
+    assert!(reply.contains("the file no longer holds them"), "{reply}");
     Ok(())
 }
 
@@ -3704,7 +3704,7 @@ fn clipped_removed_rows_are_counted_over_the_printed_rows() -> TestResult {
     assert!(!edit.is_error, "{reply}");
     assert!(
         reply.lines().any(|line| line
-            == "[\u{2026} 2 of 8 removed rows clipped (EDIT_REMOVED_CLIP 120); the rest: details.patch]"),
+            == "[\u{2026} 2 of 8 removed rows clipped (EDIT_REMOVED_CLIP 120); the rest: the file no longer holds them; read(\"c.txt\")]"),
         "{reply}"
     );
     Ok(())
