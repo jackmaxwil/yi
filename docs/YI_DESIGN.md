@@ -1431,8 +1431,8 @@ They cover allowlist and base shape, signatures, identities, pinned head, all
 four caps at the cap and the cap plus one, unique mapping and linear history,
 the composed review/mirror/intake wall (compared case-insensitively, since the owner builds on a case-insensitive disk; both sides of a rename; any `.cargo` directory), symlinks, submodules, executable-bit
 transitions, binary data, LFS, hostile filenames, secrets,
-mirror replacement literals, network literals (URLs, IPs, `localhost`, hostnames on common TLDs, and a hostname on any TLD that follows `@`, is an scp or rsync `host:` destination, is the first argument of a network command, or carries a port; a file extension such as `go` or `toml` is a file in `name.ext:42`, and `rs`, `md`, `py` or `sh` count only on a well-known port), `unsafe` blocks, items and attributes, build-time execution,
-dependency edits and strict application. `build.rs` is always denied. Secret
+mirror replacement literals, network literals (URLs, IPs, `localhost`, hostnames on common TLDs, and a hostname on any TLD that follows `@`, is an scp or rsync `host:` destination, is the first argument of a network command, or carries a port; a file extension such as `go` or `toml` is a file in `name.ext:42`, and `rs`, `md`, `py` or `sh` count only on a well-known port), `unsafe` blocks, items and attributes, build-time execution (a `build.rs`, a manifest's `build` key or `[build-dependencies]` section, a `proc-macro` crate, and `vendor/`, denied whole because the workspace patches a dependency from it),
+dependency edits, both sides of a delete, and strict application. `build.rs` is always denied. Secret
 scanning uses the unmodified `scripts/mirror/deny.txt` patterns with no fixture
 ignore. Filenames reject traversal, absolute paths, controls, backslashes,
 case-fold collisions and non-ASCII/confusables. Application runs `git apply
@@ -1447,13 +1447,14 @@ request therefore carries no tool table. Lens output is
 lines, fails closed on invalid output or transport failure, and lets the lens
 add but never remove a refusal.
 
-Dry-run prints one `ALLOW` or exact `REFUSE` per open PR and wraps the transport
+Dry-run prints one `ALLOW` or exact `REFUSE` per open PR, following the PR list to its last page, and wraps the transport
 so every write raises. A passing injected import creates one squash commit and
 deterministic branch `gh/<login>/<number>-<sha8>`, re-reads the head and current
 main before push, and emits a deterministic draft with `external` and
 `autofix:hold`, never `run-ci`, `live` or `autofix`. Its body fences GitHub prose
 as untrusted data. The audit comment records full head/base/import ids, branch,
-rule hashes, every decision, actor and any override. Overrides authenticate the
+rule hashes, every decision, actor and any override. A refusal names every line it refused and an
+override carries all of them, so an owner cannot waive a hit that was never shown. Overrides authenticate the
 owner, re-pin the full head, accept only one of `commits`, `files`, `lines`,
 `bytes`, `network-literal`, `unsafe` or `lens`, rerun every other check and are
 recorded with reason and original refusal.

@@ -213,7 +213,7 @@ def deny_rule(path: str) -> Optional[str]:
         return ".cargo"
     if pr_review.walled([path]):
         return next(rule for rule in pr_review.WALL if path.startswith(rule))
-    extra = ("scripts/mirror/", "scripts/intake/", "deny.toml", "rust-toolchain.toml", "allowed_signers", ".gitguardian.yaml")
+    extra = ("scripts/mirror/", "scripts/intake/", "vendor/", "deny.toml", "rust-toolchain.toml", "allowed_signers", ".gitguardian.yaml")
     rule = next((rule for rule in extra if path == rule.rstrip("/") or path.startswith(rule)), None)
     if rule:
         return rule
@@ -352,37 +352,58 @@ HOSTNAME = re.compile(
     rf"|\b(?:curl|wget|ssh|sftp|nc|ncat|telnet|ping|dig|nslookup)\b(?:\s+-\S+(?:\s+(?:\d+|\"[^\"]*\"|'[^']*'))?)*\s+{ANY_HOST}"
 )
 # The keyword may sit alone before its brace on the next line, so a prose line ending in it is refused too.
-UNSAFE = re.compile(r"\bunsafe\s*(?:\{|//|/\*|$)|\bunsafe\s+(?:fn|impl|trait|extern)\b|(?:#!?\[|cfg_attr\().*\bunsafe\s*\(|^\s*unsafe\s*\(")
+UNSAFE = re.compile(r"\bunsafe\s*(?:\{|//|/\*|$)|\bunsafe\s+(?:fn|impl|trait|extern)\b|\bunsafe\(")
+# A colon-separated hex run is an address only with `::` or all eight groups; `12:30:45` and
+# `aa:bb:cc` are a clock and a MAC.
+IPV6 = re.compile(r"(?i)(?<![\w:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:)+:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?)(?![\w:])")
 
 
 def network_literal(text: str) -> Optional[str]:
     if re.search(r"(?i)\b[a-z][a-z0-9+.-]*://", text):
         return "URL"
-    if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text) or re.search(r"(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b", text):
+    if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text) or IPV6.search(text):
         return "IP literal"
     if re.search(r"(?i)\blocalhost\b", text) or HOSTNAME.search(text):
         return "hostname"
     return None
 
 
+def listed(hits: list[Any], label: Callable[[Any], str], cap: int = 5) -> str:
+    """A refusal names every hit, so an owner override cannot waive lines never shown."""
+    shown = ", ".join(f"'{label(hit)}'" for hit in hits[:cap])
+    return shown if len(hits) <= cap else f"{shown} and {len(hits) - cap} more of {len(hits)}"
+
+
 def check_19_network(case: Case) -> Any:
-    for line in added_lines(case):
-        kind = network_literal(line.text)
-        if kind:
-            return refusal("network-literal", f"'{line.path}:{line.line}' contains {kind}; owner review is required")
-    return ALLOW
+    hits = [(line, kind) for line in added_lines(case) if (kind := network_literal(line.text))]
+    if not hits:
+        return ALLOW
+    kinds = "/".join(sorted({kind for _, kind in hits}))
+    verb = "contains" if len(hits) == 1 else "contain"
+    return refusal("network-literal", f"{listed([line for line, _ in hits], ref)} {verb} {kinds}; owner review is required")
 
 
 def check_20_unsafe(case: Case) -> Any:
-    for line in added_lines(case):
-        if UNSAFE.search(line.text):
-            return refusal("unsafe", f"'{line.path}:{line.line}' adds unsafe")
-    return ALLOW
+    hits = [line for line in added_lines(case) if UNSAFE.search(line.text)]
+    if not hits:
+        return ALLOW
+    return refusal("unsafe", f"{listed(hits, ref)} {'adds' if len(hits) == 1 else 'add'} unsafe")
+
+
+def ref(line: AddedLine) -> str:
+    return f"{line.path}:{line.line}"
 
 
 def dependency_path(path: str) -> bool:
     path = path.lower()
     return path in ("cargo.toml", "cargo.lock") or (path.startswith("crates/") and path.endswith("/cargo.toml"))
+
+
+def is_manifest(path: str) -> bool:
+    return path.lower().rsplit("/", 1)[-1] == "cargo.toml"
+
+
+BUILD_KEY = re.compile(r"^\s*(?:\[[^]]*build-dependencies[^]]*\]|build\s*=\s*\S)")
 
 
 def check_21_build(case: Case) -> Any:
@@ -391,8 +412,10 @@ def check_21_build(case: Case) -> Any:
             number = change.added[0].line if change.added else 1
             return refusal("build", f"'{change.path}:{number}' adds build-time execution build.rs")
     for line in added_lines(case):
-        if re.search(r"\bproc-macro\s*=\s*true\b", line.text):
+        if re.search(r"\bproc[-_]macro\s*=\s*true\b", line.text):
             return refusal("build", f"'{line.path}:{line.line}' adds build-time execution proc-macro")
+        if is_manifest(line.path) and BUILD_KEY.search(line.text):
+            return refusal("build", f"'{line.path}:{line.line}' adds build-time execution build script or build-dependency section")
         if re.match(r"^\s*\[(?:[^]]*\.)?dependencies(?:\.[^]]+)?\]\s*$", line.text):
             return refusal("build", f"'{line.path}:{line.line}' adds build-time execution dependency section")
     return ALLOW
@@ -402,8 +425,9 @@ def check_22_dependencies(case: Case) -> Any:
     if case.contributor.get("dependencies", False):
         return ALLOW
     for change in case.changes:
-        if dependency_path(change.path):
-            return refusal("dependencies", f"'{change.path}' changes dependencies without per-login permission")
+        for path in (change.path, change.old_path):
+            if path and dependency_path(path):
+                return refusal("dependencies", f"'{path}' changes dependencies without per-login permission")
     return ALLOW
 
 
@@ -445,7 +469,7 @@ def check_24_lens(case: Case) -> Any:
             return refusal("lens unavailable", "invalid lens output")
         reasons.append(item["reason"])
     if reasons:
-        return refusal("lens", bounded(reasons[0], 500))
+        return refusal("lens", bounded("; ".join(reasons), 500))
     return ALLOW
 
 
@@ -1012,8 +1036,8 @@ def land_case(transport: Any, case: Case) -> Any:
 
 
 def poll(transport: Any) -> int:
-    for row in transport.github("GET", f"repos/{GITHUB_REPO}/pulls?state=open&per_page=100"):
-        case = transport.load_case(row["number"])
+    for number in open_numbers(transport):
+        case = transport.load_case(number)
         pull = forge_pull_for(transport, case)
         if pull is None:
             result = import_case(case, transport).decision
@@ -1023,6 +1047,18 @@ def poll(transport: Any) -> int:
             continue
         print(f"PR #{case.number}: {result if isinstance(result, str) else result.text}")
     return 0
+
+
+def open_numbers(transport: Any) -> list[int]:
+    """Invariant: a dry run decides on every open PR, so the page is followed to the last short one."""
+    numbers: list[int] = []
+    page = 1
+    while True:
+        rows = transport.github("GET", f"repos/{GITHUB_REPO}/pulls?state=open&per_page=100&page={page}")
+        numbers.extend(row["number"] for row in rows)
+        if len(rows) < 100:
+            return numbers
+        page += 1
 
 
 def cli(argv: Optional[list[str]] = None) -> int:
@@ -1053,7 +1089,7 @@ def cli(argv: Optional[list[str]] = None) -> int:
             return 0 if decision == ALLOW else 1
         if args.poll:
             return poll(transport)
-        numbers = [args.number] if args.number else [row["number"] for row in transport.github("GET", f"repos/{GITHUB_REPO}/pulls?state=open&per_page=100")]
+        numbers = [args.number] if args.number else open_numbers(transport)
         for number in numbers:
             case = sealed.load_case(number)
             if sealed is transport:

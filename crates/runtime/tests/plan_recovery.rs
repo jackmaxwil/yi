@@ -527,7 +527,7 @@ fn incomplete_tail_is_preserved_and_repaired_by_policy() -> TestResult {
     );
     assert!(matches!(
         reading.damage,
-        Some(yi_runtime::plan::journal::Damage::TornTail { .. })
+        Some(yi_runtime::journal::Damage::TornTail { .. })
     ));
     let recovered = recovery::run(&rig.store, &rig.id, &Unknown)?;
     let side = recovered.torn.ok_or("the tail was not set aside")?;
