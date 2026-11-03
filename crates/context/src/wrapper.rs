@@ -103,10 +103,9 @@ pub(crate) fn lifetime_of(custom_type: &str) -> Lifetime {
         "classifier" => Lifetime::Wrapped("classifier"),
         "fragment" => Lifetime::Wrapped("fragment"),
         "todo_intercept" => Lifetime::Wrapped("todo"),
-        "todo_prelude" => Lifetime::Wrapped("todo_prelude"),
         "stream_retry" => Lifetime::Wrapped("stream_retry"),
         "todo_nudge" | "length_redrive" | "repeat_break" | "spend_alert" | "discovery"
-        | "cache_alert" | "plan_relevance" => Lifetime::OnceRead,
+        | "cache_alert" | "plan_relevance" | "todo_prelude" => Lifetime::OnceRead,
         _ => Lifetime::Durable,
     }
 }
