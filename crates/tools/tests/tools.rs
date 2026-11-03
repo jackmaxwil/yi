@@ -2459,6 +2459,10 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
     );
     assert!(!edit.is_error, "{}", output_text(&edit));
     assert_eq!(fs::read_to_string(dir.join("a.txt"))?, "one\nTWO\nthree\n");
+    assert!(
+        !text.contains("answers this:"),
+        "a tagged view names no second anchor source: {text}"
+    );
 
     let piped = bash.execute(args(&[("command", json!("cat a.txt | head -1"))]), &context);
     let piped_text = output_text(&piped);
@@ -2633,7 +2637,6 @@ fn a_shell_read_names_the_dedicated_tool_first() -> TestResult {
         ("cat notes.txt", "read"),
         ("head -2 notes.txt", "read"),
         ("sed -n '1,2p' notes.txt", "read"),
-        ("find . -name '*.txt'", "read"),
         ("grep -rn needle .", "grep"),
         ("grep -rn needle . | wc -l", "grep"),
         ("cat notes.txt && head -1 notes.txt", "read"),
@@ -2690,6 +2693,10 @@ fn a_write_a_vcs_or_build_call_gets_no_dedicated_tool_row() -> TestResult {
         "tree -o out.html .",
         "sed -ni '1p' notes.txt",
         "less -o log.txt notes.txt",
+        "less notes.txt",
+        "find . -name '*.txt'",
+        "fd txt",
+        "tree .",
         "cat notes.txt\nrm -f copy.txt",
         "NO_COLOR=1 rm -f copy.txt",
     ];

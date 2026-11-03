@@ -872,6 +872,9 @@ impl Tool for BashTool {
             context,
             &mut text,
         );
+        if bridge == "tag" {
+            text = crate::steer::without_read_row(&text);
+        }
         let details = json!({
             "exitCode": exit_code,
             "truncated": capture.truncated,

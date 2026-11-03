@@ -43,6 +43,14 @@ pub(crate) fn shell_read_hint(command: &str) -> Option<String> {
     Some(row.to_owned())
 }
 
+/// Invariant: a view the hashline bridge tagged already carries its edit anchor in the header
+/// above, so the row claiming a shell print leaves anchors out would contradict it.
+pub(crate) fn without_read_row(text: &str) -> String {
+    text.split_inclusive('\n')
+        .filter(|row| row.trim_end_matches('\n') != READ_ROW)
+        .collect()
+}
+
 fn shell_read(verb: &str, rest: &[&str]) -> Option<&'static str> {
     let quiet = rest.iter().any(|word| {
         matches!(*word, "--quiet" | "--silent")
@@ -50,8 +58,8 @@ fn shell_read(verb: &str, rest: &[&str]) -> Option<&'static str> {
     });
     match verb_category(verb, rest) {
         "search" => Some(GREP_ROW),
-        "read" | "list_files" => match verb {
-            "wc" | "file" | "stat" | "ls" => None,
+        "read" => match verb {
+            "wc" | "file" | "stat" => None,
             "sed" if !quiet => None,
             _ => Some(READ_ROW),
         },
