@@ -34,3 +34,6 @@ before claiming any task done; quote failures verbatim, do not paraphrase them.
 - No tracking check runs offline. A green `just check` says nothing about whether the work is
   registered, sized or dated — it cannot reach the forge and never tries. The PR job
   (check_pr_metadata.py) and the weekly hygiene job are where that is enforced.
+- `check_scan` runs pinned zizmor, gitleaks and Semgrep in the full lane; `--fast` announces a
+  skip. Outside CI a missing tool or cold offline cache prints `skip scan (<reason>)`; CI fails
+  that skip. `scan.json` only shrinks, suppressions print reasons, and mirror history has its own count.

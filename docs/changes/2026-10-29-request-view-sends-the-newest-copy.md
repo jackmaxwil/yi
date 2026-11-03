@@ -1,0 +1,8 @@
+---
+version: 0.915.0
+issue: Closes #1559
+raise: crate context +28, crate runtime +11, tests +234, comments +5
+ledger+: pure loop + event enum | a cut turn's re-drive is dropped from a request once a reply answered it, and the record keeps it (`loop_events::a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail`)
+ledger+: goals + autonomous | one continuation per request, the newest copy, the older ones staying in the record (`goal_e2e::three_idle_continuations_reach_the_next_request_as_one_newest_copy`, `goal_e2e::continuations_an_older_build_recorded_are_superseded_too`)
+---
+A request carries one goal continuation, the newest, and a re-drive's quoted reasoning only until a reply answers it. Every idle `AgentEnd` under an Active goal queued another 4.87 KB of constant continuation instructions, and nothing left the window before compaction, so a long goal re-sent each copy on every request; the request view now keeps only the newest (`docs/ARCHITECTURE.md` goals row, `goal_e2e::three_idle_continuations_reach_the_next_request_as_one_newest_copy`). A second reasoning cut's re-drive quotes the last 8,000 chars of the cut turn, and a read re-drive rode every later request with that derivation inside it; once an assistant reply follows it, the request drops the whole re-drive while the session record keeps it (`loop_events::a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail`). Only the request view changed: `convert_to_llm` gains `spent_in_request`, no message is dropped from the record, and the goal's edit and budget notices now persist `details.goalNotice: true` so a `goal_prompt` without it, an older build's continuation included, is superseded (`goal_e2e::continuations_an_older_build_recorded_are_superseded_too`).
