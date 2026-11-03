@@ -8,15 +8,21 @@
 # lanes on the developer's own mac before every push, which is where macOS
 # coverage now comes from. `permissions:` blocks are omitted because Forgejo
 # ignores them; the token below is the one the runner scopes to this repo.
+#
+# An imported GitHub PR carries `external` and waits for the owner's `run-ci`: a `pull_request`
+# run reads this head's copy, but intake denies `.forgejo/`, so an imported head is main's copy.
 name: pr
 
 on:
   pull_request:
+  # The merge queue's candidate (scripts/pr_queue.py): the three lanes run on it, and no token does.
+  push:
+    branches: [queue/candidate]
 
 # A newer push to the same PR supersedes the old run; the old one would only
 # hold runners the queue needs (59 of 451 runs kept going after a newer push).
 concurrency:
-  group: pr-${{ github.event.pull_request.number }}
+  group: pr-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 # Each job is capped at 5 CPUs but sees the runner VM's 16; without these,
@@ -25,6 +31,8 @@ concurrency:
 env:
   CARGO_BUILD_JOBS: "5"
   NEXTEST_TEST_THREADS: "5"
+  # A kernel with no Landlock fails the suite rather than skipping what proves the sandbox.
+  YI_SANDBOX_REQUIRED: "1"
   # Incident: upload-artifact runs on Node, which ignores the system store, and failed every
   # chunk with "unable to get local issuer certificate" against the forge's internal CA.
   NODE_EXTRA_CA_CERTS: /etc/ssl/certs/buildhost-root-ca.pem
@@ -40,11 +48,14 @@ jobs:
     # — that the gate regenerated nothing — into each lane, so splitting the
     # run does not drop it. The rules stay in the justfile (D84); this file
     # only says which lane on which runner.
+    # The label hold: an external PR's code runs only after the owner's `run-ci`, on the
+    # disposable `external` runner. Without that runner the job queues and never executes.
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'external') || contains(github.event.pull_request.labels.*.name, 'run-ci') }}
     strategy:
       fail-fast: false
       matrix:
         lane: [lint, guardrails, test]
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'external') && 'external' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # check_commit_style.py resolves origin/main and refuses to pass blind on
@@ -69,6 +80,12 @@ jobs:
           # main saves (postmerge `warm`); a PR's own multi-GB save is readable
           # only by later runs of that PR and costs the shared disk every push.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # scripts/intake's selfcheck rewrites a scratch repo with the mirror's own filter, which
+      # the gate image does not ship; the pin is scripts/mirror/filter-repo.version.
+      - if: matrix.lane == 'guardrails'
+        run: |
+          uv tool install "git-filter-repo==$(cat scripts/mirror/filter-repo.version)"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: just lane ${{ matrix.lane }}
       # A failing test keeps a copy of its scratch dir under target/tmp/failed, and every console
       # drive run its frames under target/tmp/drive.
@@ -90,7 +107,10 @@ jobs:
   # is pinned to it. Its own job, so the three gate lanes do not each re-run a
   # one-second python script.
   title:
-    runs-on: ubuntu-latest
+    # Same hold as `gate`, and the same runner question: this job holds the repo token, so an
+    # external head's scripts are replaced by main's before any of them runs.
+    if: ${{ github.event_name == 'pull_request' && (!contains(github.event.pull_request.labels.*.name, 'external') || contains(github.event.pull_request.labels.*.name, 'run-ci')) }}
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'external') && 'external' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the body job fetches main with the checkout's scoped token.
@@ -99,6 +119,9 @@ jobs:
       # The body rule measures this branch against the merge base, the way
       # pr_body.py does — the fetch is what gives it an origin/main to find.
       - run: git fetch --no-tags origin main
+      - name: an external head runs main's scripts beside the token
+        if: contains(github.event.pull_request.labels.*.name, 'external')
+        run: git checkout FETCH_HEAD -- scripts/
       - env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -138,7 +161,8 @@ jobs:
   live:
     # Advisory and paid, and 19% of yi's PR runner time: it runs when the PR
     # carries the `live` label at push time (label, then push or re-run).
-    if: contains(github.event.pull_request.labels.*.name, 'live')
+    # Never on an external PR: the design's table lists live as a job contributor code gets.
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'live') && !contains(github.event.pull_request.labels.*.name, 'external')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

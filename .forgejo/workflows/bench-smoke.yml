@@ -13,6 +13,8 @@ permissions: {}
 
 jobs:
   the-bench-runner-drives-its-own-daemon:
+    # The design's table: bench never runs on an imported external PR.
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'external') }}
     runs-on: bench
     timeout-minutes: 10
     steps:

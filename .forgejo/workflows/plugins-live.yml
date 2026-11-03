@@ -17,6 +17,8 @@ permissions:
 
 jobs:
   the-pinned-plugins-answer-as-yi-reads:
+    # Same hold as the gate: a contributor's plugin code waits for the owner's run-ci.
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'external') || contains(github.event.pull_request.labels.*.name, 'run-ci') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

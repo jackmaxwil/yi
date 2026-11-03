@@ -557,10 +557,9 @@ impl AgentSession {
         settings: yi_context::Settings,
         summarizer: Option<Model>,
     ) {
-        let mut compactor = crate::compaction::Compactor::default();
-        compactor.settings = settings;
-        compactor.summarizer = summarizer;
-        self.compactor = Some(Arc::new(compactor));
+        self.compactor = Some(Arc::new(crate::compaction::Compactor::new(
+            settings, summarizer,
+        )));
     }
 
     pub fn compactor(&self) -> Option<Arc<crate::compaction::Compactor>> {
@@ -982,7 +981,7 @@ impl AgentSession {
             )
             .await;
         match replaced {
-            Ok(Some(replaced)) => {
+            Ok(crate::compaction::Compacted::Applied(replaced)) => {
                 if let Ok(mut slot) = self.shared.messages.lock() {
                     *slot = replaced.messages;
                 }
@@ -999,7 +998,7 @@ impl AgentSession {
                     .elision
                     .map_or(CompactOutcome::Summarized, CompactOutcome::Elided))
             }
-            Ok(None) => Ok(CompactOutcome::NotApplied),
+            Ok(compacted) => Ok(compacted.outcome()),
             Err(error) => {
                 run::failed_compaction(&self.parts(), &error);
                 Err(error)

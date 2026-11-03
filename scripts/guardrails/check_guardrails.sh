@@ -58,6 +58,7 @@ run "$PY" scripts/guardrails/check_commit_style.py
 run "$PY" scripts/guardrails/check_glob_reexport.py
 run "$PY" scripts/guardrails/check_orphans.py
 run "$PY" scripts/guardrails/check_panic.py
+run "$PY" scripts/guardrails/check_host_git.py
 run "$PY" scripts/guardrails/check_changes.py
 run "$PY" scripts/guardrails/check_comments.py
 run "$PY" scripts/guardrails/check_file_size.py
@@ -86,6 +87,10 @@ run "$PY" scripts/guardrails/check_prompt_examples.py
 run env PYTHONPATH=python/yi_runtime/src "$PY" -m unittest discover -q -s python/yi_runtime/tests
 run "$PY" -m unittest discover -q -s adapters
 run "$PY" evals/selftest.py
+# A prompt's rules are text, so a rewording that drops one passes every other gate; the
+# scorer's cases are hand-counted, which is where it is proved to judge anything at all (#1862).
+run "$PY" evals/prose.py --gate
+run "$PY" evals/prose.py --selfcheck
 # The mined artifacts carry session text, so §10's planted-fake redaction proof is a
 # gate, not a habit: its only executable check is this flag.
 run "$PY" skills/yi/session-mining/extract.py --selfcheck
@@ -149,6 +154,7 @@ fi
 # A baseline edit that rides beside code is how growth hid before the ratchets had their own
 # commits; the deletion carve-out is a rule over file statuses, so only this flag proves it.
 run "$PY" scripts/guardrails/check_commit_style.py --selfcheck
+run "$PY" scripts/pr_queue.py --selfcheck
 # The landing verbs decide from the forge's answers — behind, failed, ready — and a
 # decision read wrong retries a refusal forever; only this flag walks the table.
 run "$PY" scripts/forge_pr.py --selfcheck
@@ -156,6 +162,7 @@ run "$PY" scripts/forge_pr.py --selfcheck
 # decisions are the gate: the quote check, the refute tally, the marker's author, the
 # delta range and the fixer's wall; only this flag walks them without a forge or a model.
 run "$PY" scripts/pr_review.py --selfcheck
+run "$PY" scripts/intake/bridge.py --selfcheck
 # The autofixer pushes to people's branches, so its table, its wall and its marker check are
 # proved here on a scratch merge with a stand-in model, never a forge.
 run "$PY" scripts/pr_autofix.py --selfcheck
@@ -165,6 +172,7 @@ run "$PY" scripts/bot_meter.py --selfcheck
 # judge anything at all: each scan is disabled in turn and the selfcheck must fail
 # for that scan's own reason (D109).
 run "$PY" scripts/guardrails/check_orphans.py --selfcheck
+run "$PY" scripts/guardrails/check_host_git.py --selfcheck
 # The public surface is what the mirror publishes, modelled on filter-repo's own
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck

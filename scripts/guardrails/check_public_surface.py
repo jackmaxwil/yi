@@ -8,7 +8,10 @@ pattern in deny.txt. A file that names the estate fails here until it is exclude
 drops it from the mirror, or its text is replaced: one list does both, so the gate cannot drift
 from the mirror. `--stdin` holds the rewritten history sync.sh pipes in, a `git log -p` whose
 commits each open on a \x1e line, to the same patterns with nothing substituted: every blob
-line, message and identity the mirror would publish.
+line, message and identity the mirror would publish. A branch's own commit messages are held to
+them here too, substituted as the mirror does.
+Incident: two messages quoting a planted address stopped the mirror for days, because only that
+post-merge run read messages. Identities go through mailmap.txt, which this does not model.
 
 The paths .gitguardian.yaml ignores are the planted fakes and vendored upstream samples and are
 not scanned. filter-repo substitutes nothing in a binary blob, so neither does this. The mirror
@@ -16,7 +19,7 @@ itself carries no rules, and there the gate announces a skip.
 """
 import fnmatch, re, subprocess, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, fail
+from _common import ROOT, base_commit, fail, git, scratch_repo
 
 RULES = ROOT / "scripts/mirror"
 
@@ -72,6 +75,35 @@ def tree(deny, swaps, prefixes):
         errs += leaks(rel, data.decode("utf-8", "replace"), deny, [] if binary else swaps)
     return errs
 
+def messages(log, deny, swaps):
+    errs = []
+    for record in filter(None, log.split("\x1e")):
+        sha, _, body = record.partition("\n")
+        errs += leaks(sha, body, deny, swaps)
+    return errs
+
+def branch_messages(deny, swaps):
+    base = base_commit()[1]
+    if base is None:
+        return ["no origin/main or main to compare against, so this branch's messages went unread"]
+    log = git("log", "--format=%x1e%h%n%B", "HEAD", "--not", base)
+    if log.returncode != 0:
+        return [f"git log failed: {log.stderr.strip()}"]
+    return messages(log.stdout, deny, swaps)
+
+def wired():
+    seed = {"scripts/mirror/deny.txt": "(?i)estate\\.lan\n", "scripts/mirror/exclude.txt": "scripts/\n",
+            "scripts/mirror/replace.txt": "git.estate.lan==>git.example.invalid\n", ".gitguardian.yaml": "paths-ignore: []\n"}
+    gate = ("python3", "scripts/guardrails/check_public_surface.py")
+    with scratch_repo("public-surface-", seed) as (_, run):
+        commit = lambda m: run("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", m)
+        commit("Name the host\n\nserved from git.estate.lan")
+        passed = run(*gate)
+        assert passed.returncode == 0, f"a message the mirror rewrites was refused: {passed.stdout}"
+        commit("Name the host\n\nserved from ESTATE.LAN")
+        refused = run(*gate)
+        assert refused.returncode == 1 and "ESTATE.LAN" in refused.stdout, f"a denied message passed: {refused.stdout}"
+
 def selfcheck():
     deny = [re.compile(r"(?i)estate\.lan")]
     swaps = swaps_of(["git.estate.lan==>git.example.invalid", "gone"])
@@ -103,6 +135,10 @@ def selfcheck():
     ):
         assert not any(fnmatch.fnmatch(path, g) for g in unscanned()), (
             f"public-surface scanning skips real source: {path}")
+    # A message is judged as the mirror rewrites it, and a hit names its own commit.
+    log = "\x1eaaa\nhost git.estate.lan\n\n\x1ebbb\nsubject\n\nsays ESTATE.LAN\n"
+    assert messages(log, deny, swaps) == ["bbb:3: says ESTATE.LAN"]
+    wired()
     print("ok   public_surface --selfcheck")
 
 def main():
@@ -114,9 +150,9 @@ def main():
     if "--stdin" in sys.argv:
         return fail(history(sys.stdin, deny, unscanned()), "public_surface --stdin")
     swaps = swaps_of(rule_lines(RULES / "replace.txt", comments=False))
-    errs = tree(deny, swaps, rule_lines(RULES / "exclude.txt"))
-    hint = ["the mirror would publish these: drop the path in scripts/mirror/exclude.txt,",
-            "or substitute the text in replace.txt (docs/FORGE.md, D172)"]
+    errs = tree(deny, swaps, rule_lines(RULES / "exclude.txt")) + branch_messages(deny, swaps)
+    hint = ["the mirror would publish these: drop the path in scripts/mirror/exclude.txt, reword",
+            "a commit's message, or substitute the text in replace.txt (docs/FORGE.md, D172)"]
     fail(errs + hint if errs else [], "public_surface")
 
 if __name__ == "__main__":
