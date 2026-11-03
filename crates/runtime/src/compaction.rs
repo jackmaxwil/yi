@@ -2,10 +2,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yi_context::{
-    Preparation, Settings, Tokens, compose_summary, convert_to_llm, drop_internal,
-    estimate_context, estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
+    Preparation, Settings, Tokens, compose_summary, drop_internal, estimate_context,
+    estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
     serialize_conversation, should_compact,
 };
+
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
@@ -151,13 +152,17 @@ impl Drop for Closing {
     }
 }
 
+/// The loop's view stage, cuts included: the compaction sends the bytes the loop last sent.
+pub type Convert = Arc<dyn Fn(&[AgentMessage]) -> Vec<AgentMessage> + Send + Sync>;
+
 /// What the loop sends beside its messages (its tool choice past the first request is none): a
 /// compaction on the session's model sends the same, so its prefix is a cache read (design §7).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LoopRequest {
     pub system_prompt: String,
     pub tools: Option<Vec<ToolDef>>,
     pub effort: Effort,
+    pub convert: Convert,
 }
 
 impl LoopRequest {
@@ -166,12 +171,14 @@ impl LoopRequest {
         system_prompt: String,
         tools: &[Arc<dyn yi_loop::AgentTool>],
         effort: Effort,
+        convert: Convert,
     ) -> Self {
         let tools: Vec<ToolDef> = tools.iter().map(|tool| tool.definition()).collect();
         Self {
             system_prompt,
             tools: (!tools.is_empty()).then_some(tools),
             effort,
+            convert,
         }
     }
 }
@@ -681,13 +688,14 @@ impl Compactor {
             cache_ttl: yi_types::model::Ttl::Min5,
             system_prompt: loop_request.system_prompt.clone(),
             messages: {
-                let mut converted = convert_to_llm(window_messages);
                 // A cold attempt sends no tools, and Anthropic refuses tool blocks without them
-                // (#948): it reads the history as text.
-                if !warm {
-                    let text = serialize_conversation(&converted);
-                    converted = vec![AgentMessage::task(&text, 0)];
-                }
+                // (#948): it reads the history as text, whole, since no cache is gained by a cut.
+                let mut converted = if warm {
+                    (loop_request.convert)(window_messages)
+                } else {
+                    let text = serialize_conversation(&yi_context::convert_to_llm(window_messages));
+                    vec![AgentMessage::task(&text, 0)]
+                };
                 let key = yi_context::user_key(window_messages, inputs.as_deref().unwrap_or(&[]));
                 converted.push(directive_message(&prepared, instructions.as_deref(), &key));
                 converted
