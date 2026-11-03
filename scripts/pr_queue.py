@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The merge queue's tick: gate a PR merged onto current main, then fast-forward main to that commit.
+"""The merge queue's tick: gate a PR merged onto current main, then push it and its record in one ref update.
 
     pr_queue.py               one tick, in the mode the MERGE_QUEUE variable names (shadow, on)
     pr_queue.py --selfcheck   every rule with each one disabled in turn, and the git steps for real
@@ -109,7 +109,7 @@ def closing(body):
 
 
 def use_driver(cwd):
-    git("config", "merge.baseline.driver", f"{sys.executable} {ROOT / 'scripts/merge_baseline.py'} %O %A %B", cwd=cwd)
+    git("config", "merge.baseline.driver", "python3 scripts/merge_baseline.py %O %A %B", cwd=cwd)
 
 
 def same_tree(base, tip, recipe):
@@ -293,6 +293,19 @@ def record_main(root=ROOT):
     return True
 
 
+def record_candidate(candidate):
+    """The tip to push and whether its record is included or needs no write; False means the recorder refused."""
+    git("checkout", "-q", "--detach", candidate)
+    if subprocess.run((sys.executable, str(ROOT / "scripts/record_changes.py")), cwd=ROOT, check=False).returncode:
+        print("queue: the recorder refused, so the candidate lands unrecorded; finish retries")
+        return candidate, False
+    if git("status", "--porcelain", "docs").stdout.strip():
+        git("add", "docs")
+        # Invariant: the push's head stays yi-queue's, so postmerge skips the record it already contains.
+        git(*IDENTITY, "commit", "-q", "--author=yi-queue <queue@yi>", "-m", "Record the change files main landed")
+    return git("rev-parse", "HEAD").stdout.strip(), True
+
+
 def build(obs, mode):
     # Incident: the recorder's job waited on a runner and pushed while candidate d862f188 went green,
     # so a green gate was thrown away. A shadow candidate never lands, so it has nothing to protect.
@@ -355,7 +368,7 @@ def eject(obs):
     delete_ref()
 
 
-def finish(obs):
+def finish(obs, recorded=False):
     """Idempotent, so a tick killed after the push does this through the `landed` rule instead."""
     for number, _ in obs["members"]:
         pr = forge_pr.pull(number)
@@ -369,7 +382,7 @@ def finish(obs):
                 print(f"queue: gave up closing #{issue}: {refused}")
                 comment(number, f"Landed, but the forge refused to close #{issue}: {refused}. It needs closing by hand.")
         set_label(number, LABEL, False)
-    if not record_main():
+    if not recorded and not record_main():
         print("queue: the recorder's push was refused; the next push to main records")
     delete_ref()
     print(f"queue: landed {[n for n, _ in obs['members']]}")
@@ -387,11 +400,12 @@ def land(obs, mode):
         for number, head in obs["members"]:
             comment(number, shadow_note(obs["candidate"], head, obs["base"]))
         return delete_ref()
-    pushed = git("push", "-q", "origin", f"{obs['candidate']}:refs/heads/main", check=False)
+    tip, recorded = record_candidate(obs["candidate"])
+    pushed = git("push", "-q", "origin", f"{tip}:refs/heads/main", check=False)
     if pushed.returncode:
         print(f"queue: main refused the push, so the candidate goes: {pushed.stderr.strip()[:200]}")
         return delete_ref()
-    finish(obs)
+    finish(obs, recorded=recorded)
 
 
 def tick(mode):
@@ -623,6 +637,48 @@ def record_cases():
         race.unlink()
     return bad
 
+def landing_cases():
+    """A candidate and its record reach main through one push, with the record on the candidate."""
+    bad = []
+    with tempfile.TemporaryDirectory(prefix="yi-land-") as tmp:
+        tmp = pathlib.Path(tmp)
+        origin, root = tmp / "origin.git", tmp / "w"
+        subprocess.run(("git", "init", "-q", "--bare", "-b", "main", str(origin)), check=True)
+        subprocess.run(("git", "clone", "-q", str(origin), str(root)), capture_output=True, check=True)
+        sh = lambda *a: git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a, cwd=root, check=False)
+        (root / "docs").mkdir()
+        (root / "scripts").mkdir()
+        (root / "docs/r.txt").write_text("seed\n")
+        (root / "scripts/record_changes.py").write_text("import pathlib\nwith pathlib.Path('docs/r.txt').open('a') as f:\n    f.write('recorded\\n')\n")
+        sh("add", "."), sh("commit", "-qm", "seed"), sh("push", "-q", "origin", "HEAD:main")
+        base = sh("rev-parse", "HEAD").stdout.strip()
+        (root / "candidate.txt").write_text("candidate\n")
+        sh("add", "."), sh("commit", "-qm", "candidate")
+        candidate = sh("rev-parse", "HEAD").stdout.strip()
+        pushes = tmp / "pushes"
+        hook = origin / "hooks/pre-receive"
+        hook.write_text(f"#!/bin/sh\necho push >> '{pushes}'\n")
+        hook.chmod(0o755)
+        obs = {"base": base, "candidate": candidate, "members": [(7, candidate)]}
+        pr = {"title": "A title", "head": {"ref": "topic"}, "body": ""}
+        real_git, real_record_main = git, record_main
+        at_root = lambda *a, **kw: real_git(*a, **{"cwd": root, **kw})
+        with mock.patch.object(forge_pr, "pull", lambda number: pr), \
+                mock.patch.multiple(sys.modules[__name__], same_tree=lambda *a: True, git=at_root, ROOT=root,
+                                    record_main=lambda: real_record_main(root), set_label=mock.DEFAULT, delete_ref=mock.DEFAULT):
+            land(obs, "on")
+        landed = git("rev-parse", "main", cwd=origin).stdout.strip()
+        count = len(pushes.read_text().splitlines()) if pushes.exists() else 0
+        if count != 1:
+            bad.append(f"a landing and its record took {count} pushes, not one")
+        if git("rev-parse", f"{landed}^", cwd=origin).stdout.strip() != candidate:
+            bad.append("main's record commit is not on the gated candidate")
+        if git("log", "-1", "--format=%an", landed, cwd=origin).stdout.strip() != "yi-queue":
+            bad.append("a recorded landing's head is not yi-queue's, so postmerge would record it again")
+        if git("show", "main:docs/r.txt", cwd=origin).stdout != "seed\nrecorded\n":
+            bad.append("the landing did not include the recorder's write")
+    return bad
+
 
 def shadow_cases():
     """Shadow's real paths with the forge stubbed: a head is announced once, and nothing lands or records."""
@@ -730,7 +786,7 @@ def forge_cases():
 
 
 def selfcheck():
-    bad = rule_cases() + git_cases() + build_cases() + record_cases() + shadow_cases() + forge_cases()
+    bad = rule_cases() + git_cases() + build_cases() + record_cases() + landing_cases() + shadow_cases() + forge_cases()
     bad += [f"rule `{name}` disabled and every case still passes, so it refutes nothing"
             for name, _, _ in RULES if not rule_cases(name)]
     for gate in ("growth", "crate_size", "comments", "test_size"):

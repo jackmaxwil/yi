@@ -14,6 +14,7 @@ them without a server.
 """
 import argparse
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -516,7 +517,7 @@ def report(pr, jobs, need, verdict):
         print(f"  {jobs.get(job, 'not run'):<10} {job}")
     hints = {
         "draft": f"a draft; the forge will not merge it — just pr ready {pr['number']} once it is reviewed",
-        "behind": f"main moved under it — just pr update {pr['number']}",
+        "behind": f"main moved under it — just pr queue {pr['number']} with MERGE_QUEUE=on, or just pr update {pr['number']}",
         "failed:title": f"the title job refused — just pr check {pr['number']} prints why",
         "pending": "the gate is still running",
         "green": f"green — just pr merge {pr['number']}",
@@ -595,10 +596,19 @@ def cmd_merge(args):
             print(f"#{number} merged")
             return 0
         if verdict == "behind":
-            print(f"#{number} is behind main; updating")
-            if cmd_update(argparse.Namespace(number=number)):
-                print(f"merge: stopped — the forge refused to update #{number}; merge origin/main by hand")
-                return 1
+            if pr.get("mergeable") is False:
+                print(f"#{number} conflicts with main; updating to surface it")
+                if cmd_update(argparse.Namespace(number=number)):
+                    print(f"merge: stopped — the forge refused to update #{number}; merge origin/main by hand")
+                    return 1
+            elif os.environ.get("MERGE_QUEUE") == "on":
+                import pr_queue
+
+                print(f"#{number} is behind main without a conflict; queueing it")
+                return pr_queue.cmd_queue(argparse.Namespace(number=number))
+            else:
+                report(pr, jobs, need, verdict)
+                return 2
         elif verdict == "green":
             if errs := unreviewed(number, pr):
                 for err in errs:
@@ -813,7 +823,8 @@ def selfcheck():
     finally:
         globals().update(fakes)
     assert held == 1 and not posted and "needs two review rounds" in merging.getvalue(), "a green PR without rounds is not merged"
-    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
+    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "mergeable": False,
+                                     "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
                      jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: True, decide=lambda *a: "behind",
                      fgj_api=lambda method, path, payload=None: {"message": "merge conflict"})
     try:
@@ -822,6 +833,22 @@ def selfcheck():
     finally:
         globals().update(fakes)
     assert refused == 1 and "refused to update" in conflicted.getvalue(), "a refused update stops the merge loop"
+    import os, pr_queue
+    from unittest import mock
+
+    queued = []
+    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "mergeable": True,
+                                     "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
+                     jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: True, decide=lambda *a: "behind",
+                     fgj_api=lambda method, path, payload=None: queued.append(path) or {})
+    try:
+        with mock.patch.dict(os.environ, {"MERGE_QUEUE": "on"}), \
+                mock.patch.object(pr_queue, "cmd_queue", lambda args: queued.append(args.number) or 0):
+            with contextlib.redirect_stdout(io.StringIO()):
+                clean = cmd_merge(argparse.Namespace(number=7, timeout=0, wait=False))
+    finally:
+        globals().update(fakes)
+    assert clean == 0 and queued == [7], f"a behind-clean PR was updated, not queued: exit={clean}, calls={queued}"
 
     def merge_on_fake_forge(protected, statuses):
         """cmd_merge for #7 against a forge whose rule lists `protected` and whose head `abc1234` ran
