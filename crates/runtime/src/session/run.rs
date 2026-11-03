@@ -762,8 +762,10 @@ pub(super) fn loop_request(
     session: &super::AgentSession,
     effort: Effort,
 ) -> crate::compaction::LoopRequest {
-    let convert = crate::reclaim::convert(Some(session.reclaimed()));
-    crate::compaction::LoopRequest::new(session.system_prompt(), &session.tools(), effort, convert)
+    let tools = session.tools();
+    let reads = tools.iter().any(|tool| tool.definition().name == "read");
+    let convert = crate::reclaim::convert(reads.then_some(session.reclaimed()));
+    crate::compaction::LoopRequest::new(session.system_prompt(), &tools, effort, convert)
 }
 
 #[cfg(test)]

@@ -688,13 +688,14 @@ impl Compactor {
             cache_ttl: yi_types::model::Ttl::Min5,
             system_prompt: loop_request.system_prompt.clone(),
             messages: {
-                let mut converted = (loop_request.convert)(window_messages);
                 // A cold attempt sends no tools, and Anthropic refuses tool blocks without them
-                // (#948): it reads the history as text.
-                if !warm {
-                    let text = serialize_conversation(&converted);
-                    converted = vec![AgentMessage::task(&text, 0)];
-                }
+                // (#948): it reads the history as text, whole, since no cache is gained by a cut.
+                let mut converted = if warm {
+                    (loop_request.convert)(window_messages)
+                } else {
+                    let text = serialize_conversation(&yi_context::convert_to_llm(window_messages));
+                    vec![AgentMessage::task(&text, 0)]
+                };
                 let key = yi_context::user_key(window_messages, inputs.as_deref().unwrap_or(&[]));
                 converted.push(directive_message(&prepared, instructions.as_deref(), &key));
                 converted

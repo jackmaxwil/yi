@@ -2308,18 +2308,10 @@ fn compaction_drops_the_host_nudges_it_retained() -> Result<(), Box<dyn Error>> 
 #[tokio::test(flavor = "multi_thread")]
 async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
 -> Result<(), Box<dyn Error>> {
-    let call = |n: usize| {
-        let call = serde_json::json!({"tool_calls": [{"index": 0, "id": format!("call_{n}"),
-            "type": "function", "function": {"name": "read", "arguments": format!("{{\"n\":{n}}}")}}]});
-        sse_reply(&call, "tool_calls")
-    };
-    let mut replies: Vec<String> = (0..8).map(call).collect();
+    let mut replies = read_calls(8);
     replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
     let (port, served) = openrouter_stand_in(replies)?;
-    let session = openrouter_session_with(port, 200_000, Settings::default())?;
-    let mut model = session.model();
-    (model.id, model.cost.input) = ("openai/gpt-5.5".to_owned(), serde_json::Number::from(1u64));
-    session.set_model(model);
+    let session = priced_session_with(port, Settings::default())?;
     session.set_tools(vec![Arc::new(LongResult("read"))]);
     let store = crate::support::memory_store("reclaim-bytes");
     session.attach_store(Arc::clone(&store))?;
@@ -2327,18 +2319,7 @@ async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
     session.wait_idle().await;
     let bodies = served.join().map_err(|_| "the stand-in panicked")?;
     let cut = |body: &String| -> Result<Vec<String>, serde_json::Error> {
-        let body: serde_json::Value = serde_json::from_str(body)?;
-        let messages = body["messages"].as_array().cloned().unwrap_or_default();
-        let parts = messages
-            .iter()
-            .flat_map(|message| match &message["content"] {
-                serde_json::Value::Array(parts) => parts.clone(),
-                text => vec![serde_json::json!({ "text": text })],
-            });
-        let lines = parts.filter_map(|part| part["text"].as_str().map(str::to_owned));
-        Ok(lines
-            .filter(|text| text.starts_with("[reclaimed: read"))
-            .collect())
+        Ok(cut_lines(&serde_json::from_str(body)?))
     };
     let shown: Vec<Vec<String>> = bodies.iter().map(cut).collect::<Result<_, _>>()?;
     let first = shown
@@ -2443,11 +2424,17 @@ impl yi_loop::AgentTool for SchedulingRead {
 
 /// A measured model whose input price lets a cut pay, so the run records one.
 fn priced_session(port: u16) -> Result<AgentSession, Box<dyn Error>> {
-    let settings = Settings {
-        enabled: true,
-        reserve_tokens: Tokens(1_000),
-        keep_recent_tokens: Tokens(1_500),
-    };
+    priced_session_with(
+        port,
+        Settings {
+            enabled: true,
+            reserve_tokens: Tokens(1_000),
+            keep_recent_tokens: Tokens(1_500),
+        },
+    )
+}
+
+fn priced_session_with(port: u16, settings: Settings) -> Result<AgentSession, Box<dyn Error>> {
     let session = openrouter_session_with(port, 200_000, settings)?;
     let mut model = session.model();
     (model.id, model.cost.input) = ("openai/gpt-5.5".to_owned(), serde_json::Number::from(1u64));
@@ -2582,6 +2569,34 @@ async fn a_manual_compaction_sends_the_cuts_on_record() -> Result<(), Box<dyn Er
     );
     Ok(())
 }
+/// #1517: a session whose tool table lacks `read` sends the loop's whole results on `/compact`,
+/// whatever cuts its ledger holds, because a cut names `read` as its restore.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_manual_compaction_without_read_sends_results_whole() -> Result<(), Box<dyn Error>> {
+    let mut replies = read_calls(8);
+    replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
+    replies.push(sse_reply(
+        &serde_json::json!({"content": "## Goal\nProbe"}),
+        "stop",
+    ));
+    let (port, served) = openrouter_stand_in(replies)?;
+    let session = priced_session(port)?;
+    session.set_tools(vec![Arc::new(LongResult("read"))]);
+    session.attach_store(crate::support::memory_store("reclaim-noread"))?;
+    session.prompt("read the probe eight times")?;
+    session.wait_idle().await;
+    session.set_tools(vec![Arc::new(LongResult("other"))]);
+    session.compact_now().await?;
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let request: serde_json::Value =
+        serde_json::from_str(bodies.last().ok_or("no compaction request")?)?;
+    assert!(
+        cut_lines(&request).is_empty(),
+        "a session without `read` was sent cut placeholders: {request}"
+    );
+    Ok(())
+}
+
 /// Dies with a host notice or a wrapped reminder carried into the kept tail as the user's words.
 #[tokio::test]
 async fn the_retention_floor_keeps_the_users_typed_words_and_drops_host_text()
