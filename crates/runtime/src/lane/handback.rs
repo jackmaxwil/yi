@@ -3,7 +3,7 @@
 use super::fork::{ChildTree, SettledTree};
 use super::hostgit::git_by;
 use super::settle::*;
-use super::{BranchName, Pool};
+use super::{BranchName, Pool, Sha};
 use crate::subagent::{ChildRecord, SubagentHost};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -81,6 +81,40 @@ impl SubagentHost {
         Ok(())
     }
 
+    /// A result's check on the child's tree as it stands: a fork's in a warm directory, so what it
+    /// ignored stays out; a child with no tree of its own, in place.
+    pub(crate) fn child_check(&self, name: &str, check: &str) -> Result<(), String> {
+        let timeout = crate::goal::DEFAULT_CHECK_TIMEOUT_MS;
+        let cwd = self
+            .cwd_of(name)
+            .unwrap_or_else(|| self.options.cwd.clone());
+        let checker = self.checker();
+        if !cwd.starts_with(super::fork::forks_dir(&self.options.home)) {
+            return crate::goal::run_check(check, &cwd, timeout, &checker);
+        }
+        let pool = super::Pool::open(&self.options.home, &cwd, self.options.lane_slots)
+            .map_err(|error| error.to_string())?;
+        let commit =
+            super::warm::snapshot(&cwd, self.deadline()).map_err(|error| error.to_string())?;
+        let run = warm_run(
+            &pool,
+            &commit,
+            &cwd,
+            check,
+            self.deadline(),
+            Duration::from_millis(timeout),
+            &checker,
+        )?;
+        match run.verdict {
+            super::warm::Verdict::Green => Ok(()),
+            super::warm::Verdict::Red { exit } => {
+                let code = exit.map_or_else(|| "signal".to_owned(), |code| code.to_string());
+                Err(format!("exit {code}\n{}", run.output()))
+            }
+            super::warm::Verdict::Abstain { why } => Err(format!("it did not run: {why}")),
+        }
+    }
+
     /// The one settle a reap or a delete runs: the branch kept, or deleted once its pin is the
     /// record's. A settle refused before the release puts the lane back, so the slot stays held.
     pub fn settle_lane(
@@ -148,20 +182,7 @@ impl SubagentHost {
         let (lane, name) = self.take_settled_worktree(target)?;
         let pool = lane.pool().clone();
         let deadline = self.deadline();
-        let budget = Duration::from_millis(crate::goal::DEFAULT_CHECK_TIMEOUT_MS);
-        let red = check
-            .map(|check| red_check(lane.path(), check, deadline, budget, &self.checker()))
-            .transpose();
-        let red = match red {
-            Ok(red) => red.flatten(),
-            Err(error) => {
-                self.put_back_worktree(target, lane);
-                return Err(error);
-            }
-        };
         let quiescence = quiescence_of_jobs(lane.path());
-        // Invariant: a cut check spent the deadline, and the settle after it still keeps the work.
-        let deadline = deadline.filter(|_| !red.as_ref().is_some_and(|(red, _)| red.cancelled));
         let settled = match lane.settle(&quiescence, deadline) {
             Ok(settled) => settled,
             Err((kept, error)) => {
@@ -170,7 +191,7 @@ impl SubagentHost {
             }
         };
         let branch = settled.candidate.branch.clone();
-        self.land_settled(settled, red, check, &name, &pool, deadline)
+        self.land_settled(settled, check, &name, &pool, deadline)
             .map_err(|error| match pool.branch_exists(&branch) {
                 Ok(true) if !error.contains(branch.as_str()) => format!(
                     "{error}; the child's lane is released and its work is kept on branch {branch}"
@@ -184,7 +205,6 @@ impl SubagentHost {
     fn land_settled(
         &self,
         settled: SettledTree,
-        red: Option<(yi_tools::CommandCapture, String)>,
         check: Option<&str>,
         name: &str,
         pool: &Pool,
@@ -195,6 +215,21 @@ impl SubagentHost {
         let files = changed_files(&parent, &settled.candidate, deadline)
             .map_err(|error| error.to_string())?;
         reply.insert("files".to_owned(), files);
+        let budget = Duration::from_millis(crate::goal::DEFAULT_CHECK_TIMEOUT_MS);
+        let red = check
+            .map(|check| {
+                red_check(
+                    pool,
+                    &settled.candidate.commit,
+                    &parent,
+                    check,
+                    deadline,
+                    budget,
+                    &self.checker(),
+                )
+            })
+            .transpose()?
+            .flatten();
         if let Some((capture, cap)) = red {
             let kept = settled.candidate.branch.as_str();
             let commit = settled.candidate.commit.as_str();
@@ -362,6 +397,15 @@ impl SubagentHost {
                 "child \"{target}\" is still running; wait for it before touching its worktree"
             ));
         }
+        if record
+            .worktree
+            .as_ref()
+            .is_some_and(ChildTree::carries_dirt)
+        {
+            return Err(format!(
+                "child \"{target}\" took a tree that carries uncommitted files, which a commit would claim as its work: merge it with h.tree.merge() from the tree it came from"
+            ));
+        }
         let lane = record
             .worktree
             .take()
@@ -370,26 +414,71 @@ impl SubagentHost {
     }
 }
 
-/// A hand-back's `check` in the lane, under the session deadline or `budget` with none; `None`
-/// is a pass, otherwise the capture and the cap that bounded it.
+/// A hand-back's `check` on the settled commit, under the session deadline or `budget` with none;
+/// `None` is a pass, otherwise the capture and what bounded it. Past a bound is no pass either.
 fn red_check(
-    path: &Path,
+    pool: &super::Pool,
+    commit: &Sha,
+    parent: &Path,
     check: &str,
     deadline: Option<Instant>,
     budget: Duration,
     checker: &crate::goal::Checker,
 ) -> Result<Option<(yi_tools::CommandCapture, String)>, String> {
-    let until = deadline.or_else(|| Instant::now().checked_add(budget));
-    let until = until.unwrap_or_else(Instant::now);
-    let capture = crate::goal::run_check_in(path, check, &[], None, until, None, checker)?;
-    if capture.exit_code == Some(0) && !capture.cancelled {
-        return Ok(None);
-    }
+    let run = warm_run(pool, commit, parent, check, deadline, budget, checker)?;
     let cap = deadline.map_or_else(
         || format!("the {} ms check timeout", budget.as_millis()),
         |_| "the session deadline".to_owned(),
     );
-    Ok(Some((capture, cap)))
+    Ok(match (run.verdict, run.capture) {
+        (super::warm::Verdict::Green, _) => None,
+        (_, Some(capture)) => Some((capture, cap)),
+        (super::warm::Verdict::Red { .. }, None) => Some((never_ran(), cap)),
+        (super::warm::Verdict::Abstain { why }, None) => return Err(why),
+    })
+}
+
+/// A check in a warm directory: the queue the session deadline or [`super::warm::CHECK_QUEUE`]
+/// allows, and the budget that deadline leaves. One shape, so the two callers cannot drift.
+fn warm_run(
+    pool: &super::Pool,
+    commit: &Sha,
+    parent: &Path,
+    check: &str,
+    deadline: Option<Instant>,
+    budget: Duration,
+    checker: &crate::goal::Checker,
+) -> Result<super::warm::WarmRun, String> {
+    let warm = pool.warm().map_err(|error| error.to_string())?;
+    let queue_until = deadline
+        .or_else(|| Instant::now().checked_add(super::warm::CHECK_QUEUE))
+        .unwrap_or_else(Instant::now);
+    let left = deadline.map(|at| at.saturating_duration_since(Instant::now()));
+    let checked = left.map_or(budget, |left| left.min(budget));
+    Ok(super::warm::check_commit(
+        &warm,
+        commit,
+        parent,
+        check,
+        queue_until,
+        checked,
+        checker,
+    ))
+}
+
+/// No process behind it: a verdict's reply reads this as a check that was cut, with its reason.
+fn never_ran() -> yi_tools::CommandCapture {
+    yi_tools::CommandCapture {
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: None,
+        cancelled: true,
+        truncated: false,
+        kill_error: None,
+        spill: None,
+        cut: None,
+        rows: Vec::new(),
+    }
 }
 
 /// A red check's `{exit, tail}` through [`crate::goal::check_view`]; its rerun is the check on
@@ -411,32 +500,4 @@ fn verdict(
     });
     let exit = capture.exit_code.filter(|_| !capture.cancelled);
     json!({"exit": exit, "tail": format!("{}{view}", cut.unwrap_or_default())})
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    #[test]
-    fn a_check_with_no_session_deadline_is_cut_at_its_budget()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let budget = Duration::from_millis(300);
-        let red = super::red_check(
-            &std::env::temp_dir(),
-            "sleep 30",
-            None,
-            budget,
-            &Default::default(),
-        )?;
-        let (capture, cap) = red.ok_or("a cut check passed")?;
-        let parent = std::env::temp_dir();
-        let verdict = super::verdict(&capture, &cap, &parent, "sleep 30", "abc");
-        assert!(verdict["exit"].is_null(), "{verdict}");
-        let tail = verdict["tail"].as_str().unwrap_or_default();
-        assert!(
-            tail.starts_with("[… cut at the 300 ms check timeout; the rest: bash ("),
-            "{tail}"
-        );
-        Ok(())
-    }
 }

@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.883.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.889.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -163,6 +163,19 @@ hardlinked `.rlib` shares an inode with the parent's, so a contained child can w
 which the parent's next uncontained build uses. A process that left its job survives a discard, and
 the row says so.
 
+## Trust boundaries of warm directories
+
+A kernel check runs in one of `node.slots` directories: one trust domain per family. The scrub removes what an honest check leaves, not what a hostile one plants.
+Tests: `warm_checks.rs`.
+
+| boundary | instance | control | test |
+|---|---|---|---|
+| borrower → next | I: ignored output read by the next | `clean -ffdx` but `target` | `an_ignored_report_from_one_borrower_is_gone_for_the_next` |
+| | T: a stale binary passes with no build | `target/<profile>` keeps cargo's bookkeeping | `a_stale_binary_is_gone_and_cargos_bookkeeping_stays` |
+| | **T: a `.rlib` planted for the next borrower** | **residual** | |
+| check → pool | D: a dirty slot reads orphaned | scrub at release | `a_check_that_writes_and_edits_still_frees_its_directory` |
+| waiting → model | R: a cut check read as red; D: tickets | `Abstain` is no verdict; `check.tickets` 256 | `past_its_budget_a_check_is_no_verdict_on_the_work` |
+
 ## Trust boundaries of Linux containment
 
 A contained command starts as `yi __contain`, which applies a Landlock ruleset and execs. Rules only
@@ -319,6 +332,7 @@ A PR never edits a row here: it writes `ledger+`, `ledger~`, `ledger=` or `ledge
 | contained git: a mirror and an outbox | 8 | core | H | M | a contained `git fetch` reads a host-run mirror and a `git push` lands in an outbox the host forwards after the spawn, with no question unless it is trunk, `main`, `master` or a tag; force and delete still ask (`crates/runtime/src/lane/remote.rs`) |
 | Linux containment: Landlock and the git-file seal | 8 | core | H | M | a contained command on Linux starts as `yi __contain`: writes reach its roots, reads a named list, and the host compares what its next git reads and puts back what changed. No network wall. A kernel that refuses the ruleset makes `Contain` an ask. |
 | a child's fork: a linked worktree per child, cut at HEAD, third-party cargo units carried | 14 | core | H | H | a worktree child takes a tree under `~/.yi/forks` rather than a slot: a directory clone on APFS, a plain checkout elsewhere. Its first writing command carries the cargo units whose dep-info names nothing in the tree, syncs the toolchain and runs a committed `.yi/setup`. `.worktreeinclude` and `carry=` copy ignored files. A discard stops its jobs. |
+| `Tree`: fork, check, merge and rewind files from the kernel | 14 | core | H | M | `rlm.tree()` names a set of files, committed or not. `t.fork()` copies them cheaply and `rlm.run(brief, tree=f)` gives a child that tree; `t.check(cmd)` runs in a warm directory, `t.merge(...)` folds others in with no commit, `t.diff()` carries `would_conflict`, and `tree://<name>/` lists changes with no kernel. |
 
 ## Decision log
 
@@ -326,6 +340,9 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D538 | Tree is the kernel's filesystem noun over named uncommitted files, and isolation stays for plan documents | one text at any depth, and a child that sees a person's uncommitted edits | remove register_tree and rlm.Tree. Amends YI_DESIGN sections 3, 11 and 14 |
+| D537 | A mutating tool call is a capture point, off the tool's thread, and restore scope stays the turn's pair of checkpoints | a tree's history is what bisecting and a per-child log read | drop note_mutating_call |
+| D536 | Kernel checks and the plan's candidate check run in a per-repo pool of node.slots warm directories, scrubbed to cargo's bookkeeping, and report exit and output only | 43 s against 176 s at 128 children | call run_check_in on the path again. Amends D475 |
 | D535 | Kernel hand-back merges by merge-tree --attr-source, and git merge in a lane below 2.43 | a slot per merge, and a checkout to write | revert the one call. Amends D475's order |
 | D534 | A worktree child is a linked worktree under ~/.yi/forks, cut at HEAD, carrying only cargo units whose dep-info names nothing in its tree; no slot or worker permit | 64 GB and 524 s at 128 children | restore claim_child_lane. Amends D119, D286 |
 | D533 | Linux contains with Landlock through a re-exec of yi, and the host compares and restores the git files it cannot deny | Linux ran every contained command unsandboxed | make Sandbox::available false on Linux. Amends D205, D348, D350 |

@@ -23,6 +23,8 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 
 ### 1.2 Not in scope
 A top-level feature enters only when one leaves, and this list changes in the same commit.
+`isolation=` as the kernel's noun for a child's files left when `Tree` entered: it stays an alias plan
+documents carry, cut at `HEAD` and merged by commit (§14) ·
 A resident MCP client or MCP as a registered tool · ACP v1 · automatic skill creation,
 refinement or self-extension · embeddings and semantic search · resident LSP or DAP servers · a
 JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WASM · document
