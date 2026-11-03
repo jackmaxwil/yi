@@ -1,4 +1,6 @@
 ---
+version: 0.901.0
+decisions: D541
 issue: Closes #680
 decision: the shadow-to-blocking promotion criteria are read, not coded: `just pr calibrate <replay.jsonl>` prints precision, recall and kept-clean of a high finding over the labelled `just pr replay` rows (last row of a PR wins, unanswered or partly silent readings listed apart), and `pr_review.MODE` stays `blocking` as D322 set it | stage 5 of the PR lifecycle asked for a calibration query on the labelled set; a hard-coded threshold would be a constant the plan says is data from stage 1 | delete `cmd_calibrate` and `calibration` from scripts/pr_review.py and the `calibrate` parser in scripts/forge_pr.py
 ---

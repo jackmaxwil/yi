@@ -249,11 +249,14 @@ def view_edits(was, now, old_rows=False):
 
 
 def tree_edits(base):
-    """ADR files and change files main already holds, edited or deleted here."""
+    """ADR, change and archive files main already holds, edited or deleted here."""
     errs = []
-    for path in git("diff", "--name-only", "--no-renames", base, "--", "docs/solutions/adr", DIR).stdout.splitlines():
+    for path in git("diff", "--name-only", "--no-renames", base, "--", "docs/solutions/adr", DIR, "docs/archive").stdout.splitlines():
         exists_at_fork = at(base, path) is not None
-        if path.startswith("docs/solutions/adr/"):
+        if path.startswith("docs/archive/"):
+            if exists_at_fork:
+                errs.append(f"{path}: archived rows live only here; add a new file instead")
+        elif path.startswith("docs/solutions/adr/"):
             errs.append(f"{path}: ADRs are rendered from the decision log by the recorder")
         elif exists_at_fork:
             errs.append(f"{path}: main holds this change file; add a new one instead")
@@ -267,7 +270,7 @@ def recorded(base):
     import record_changes
     writes, fork_names = record_changes.expected_at(ROOT, base), held(base)
     changed = {p for p in git("diff", "--name-only", "--no-renames", base, "--", "docs/CHANGELOG.md", "docs/ARCHITECTURE.md",
-                              "docs/solutions", DIR).stdout.split() if not p.startswith(f"{DIR}/") or p[len(DIR) + 1:] in fork_names}
+                              "docs/solutions", "docs/archive", DIR).stdout.split() if not p.startswith(f"{DIR}/") or p[len(DIR) + 1:] in fork_names}
     return bool(writes) and changed <= writes.keys() and all(
         (ROOT / p).is_file() and (ROOT / p).read_text() == text for p, text in writes.items())
 
@@ -416,6 +419,20 @@ def fork_cases():
         (tmp / DIR / "2026-10-01-grow.md").write_text(change.replace("---\nGrow.", "---\n"))
         if verdict()["test_size"] != 1:
             bad.append("a change file this gate refuses still lent its raise")
+    seed = {"docs/CHANGELOG.md": "# Changelog\n", "docs/ARCHITECTURE.md": "version: 0.1.0\n", "docs/archive/changelog-a.md": "| 0.1.0 | d | one |\n"}
+    seed |= {"docs/changes/2026-10-01-x.md": "---\nversion: 0.1.0\nissue: Refs #1\n---\nx\n", "docs/solutions/README.md": "", **{f"scripts/{n}": (ROOT / "scripts" / n).read_bytes() for n in ("record_changes.py", "adr.py", "pr_body.py")}}
+    with scratch_repo("yi-changes-", seed) as (tmp, run):
+        gate = lambda: run(sys.executable, "scripts/guardrails/check_changes.py")
+        (tmp / "docs/archive/changelog-b.md").write_text("new\n")
+        if gate().returncode:
+            bad.append(f"a new archive file was refused: {gate().stdout}")
+        (tmp / "docs/archive/changelog-a.md").write_text("| 0.1.0 | d | edited |\n")
+        refused = gate()
+        if refused.returncode != 1 or "archived rows live only here" not in refused.stdout + refused.stderr:
+            bad.append(f"an edited archive file exited {refused.returncode}: {refused.stdout}{refused.stderr[-200:]}")
+        (tmp / "docs/archive/changelog-a.md").unlink()
+        if gate().returncode != 1:
+            bad.append("a deleted archive file was accepted")
     return bad
 
 

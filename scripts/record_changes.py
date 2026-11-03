@@ -25,6 +25,7 @@ ARCH, LOG, INDEX = "docs/ARCHITECTURE.md", "docs/CHANGELOG.md", "docs/solutions/
 LOG_HEADER = "| ver | date | change |"
 ROW_ID = re.compile(r"^\| D(\d+) \|")
 LIVE = CAP * 3 // 4
+SLACK = 1000
 
 
 def git(root, *args):
@@ -105,16 +106,27 @@ def shrink(log):
     old = rows[keep:]
     if not old:
         return log, {}
-    hi, lo = (row.split(" | ")[0][2:] for row in (old[0], old[-1]))
-    path = f"docs/archive/changelog-{lo}-to-{hi}.md"
-    pointer = f"Rows for {hi} back to {lo} live in [{path[5:]}]({path[5:]})."
+    chunks, cur, used = [], [], 0
+    for row in reversed(old):
+        if cur and used + len(row.encode()) + 1 > CAP - SLACK:
+            chunks.append(cur[::-1])
+            cur, used = [], 0
+        cur.append(row)
+        used += len(row.encode()) + 1
+    chunks.append(cur[::-1])
+    files, pointers = {}, []
+    for chunk in reversed(chunks):
+        hi, lo = (row.split(" | ")[0][2:] for row in (chunk[0], chunk[-1]))
+        path = f"docs/archive/changelog-{lo}-to-{hi}.md"
+        pointers.append(f"Rows for {hi} back to {lo} live in [{path[5:]}]({path[5:]}).")
+        head = (f"# Changelog archive: {lo} to {hi}\n\nRows of [../CHANGELOG.md](../CHANGELOG.md), moved here verbatim so the\n"
+                f"live file stays under the committed-blob cap. Newest first, as there.\n\n{LOG_HEADER}\n|---|---|---|\n")
+        files[path] = head + "\n".join(chunk) + "\n"
     tail = lines[end:] if lines[end:end + 1] == [""] else [""] + lines[end:]
-    shrunk = "\n".join(lines[:first] + rows[:keep] + tail[:1] + [pointer, ""] + tail[1:])
-    if len(shrunk.encode()) > CAP:
+    shrunk = "\n".join(lines[:first] + rows[:keep] + tail[:1] + pointers + [""] + tail[1:])
+    if any(len(t.encode()) > CAP for t in [shrunk, *files.values()]):
         return log, {}
-    head = (f"# Changelog archive: {lo} to {hi}\n\nRows of [../CHANGELOG.md](../CHANGELOG.md), moved here verbatim so the\n"
-            f"live file stays under the committed-blob cap. Newest first, as there.\n\n{LOG_HEADER}\n|---|---|---|\n")
-    return shrunk, {path: head + "\n".join(old) + "\n"}
+    return shrunk, files
 
 
 def archive_cases():
@@ -137,6 +149,9 @@ def archive_cases():
         bad.append(f"the archive is {path}, or the live file does not point at it: {log[-300:]!r}")
     if shrink(log) != (log, {}):
         bad.append("an archived changelog was archived again")
+    log, files = shrink(build([row(n, 9000) for n in range(120, 0, -1)]))
+    if len(files) < 2 or any(len(t.encode()) > CAP for t in [log, *files.values()]):
+        bad.append(f"a changelog past {CAP + LIVE} bytes left {len(files)} archive file(s) of {[len(t.encode()) for t in files.values()]} bytes")
     big = build([row(1, CAP)])
     if shrink(big) != (big, {}):
         bad.append("a changelog no archive could bring under the cap was cut")
@@ -464,8 +479,20 @@ def selfcheck():
             after = re.search(rf"{LOG} \d+ -> (\d+) bytes", capped.stdout)
             if capped.returncode or status() != f" M {LOG}\n" or (tmp / LOG).read_text() != log + "\n" * pad:
                 bad.append(f"a changelog recorded to {size + pad} bytes exited {capped.returncode}, status {status()!r}")
-            if after and (int(after.group(1)) < size + pad) != archived:
-                bad.append(f"a changelog recorded to {size + pad} bytes, the cap {'plus one' if archived else 'itself'}, ended at {after.group(1)}")
+            if not after or (int(after.group(1)) < size + pad) != archived:
+                bad.append(f"a changelog recorded to {size + pad} bytes, the cap {'plus one' if archived else 'itself'}, ended at {after and after.group(1)}")
+        (tmp / LOG).write_text(log + "\n" * (CAP - size + 1))
+        spare = pathlib.Path(tempfile.mkdtemp(prefix="yi-record-over-"))
+        shutil.copytree(tmp, spare, dirs_exist_ok=True)
+        real_run = subprocess.run((sys.executable, "-B", "scripts/record_changes.py", "--backfill"), cwd=spare, capture_output=True, text=True)
+        made = [p for p in (spare / "docs/archive").glob("changelog-*.md")] if (spare / "docs/archive").is_dir() else []
+        if real_run.returncode or len(made) != 1 or "?? docs/archive/" not in git(spare, "status", "--porcelain") or len((spare / LOG).read_bytes()) > LIVE + SLACK:
+            bad.append(f"recording a changelog past the cap exited {real_run.returncode}, wrote {len(made)} archive file(s): {real_run.stdout[-200:]}")
+        shutil.rmtree(spare, ignore_errors=True)
+        (tmp / LOG).write_text(insert_row(log, LOG_HEADER, f"| 0.1.0 | 2026-09-01 | {'x' * CAP} |"))
+        stuck = run("scripts/record_changes.py", "--dry-run", "--backfill")
+        if stuck.returncode != 1 or f"past blob_size's {CAP}" not in stuck.stdout:
+            bad.append(f"a changelog archiving could not fit exited {stuck.returncode}: {stuck.stdout[-200:]!r}")
         (tmp / LOG).write_text(log)
         sh("checkout", "-q", "-b", "topic")
         run("scripts/record_changes.py", "--backfill")
