@@ -34,6 +34,7 @@ pub fn process_pending_editor<B: ratatui::backend::Backend>(
         return;
     }
     app.pending_editor = false;
+    // nosemgrep: yi-rust-temp-dir draft_file uses random salt, create_new and mode 0600.
     let written = draft_file(&std::env::temp_dir()).and_then(|(path, mut file)| {
         file.write_all(app.composer.text().as_bytes())?;
         Ok(path)

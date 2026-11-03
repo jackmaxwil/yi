@@ -269,8 +269,7 @@ mod tests {
         use std::sync::Arc;
         use yi_runtime::{HostRegistry, KernelService, KernelServiceOptions};
 
-        let mut registry = HostRegistry::default();
-        registry.register_mcp_stubs();
+        let registry = HostRegistry::default();
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let service = KernelService::new(KernelServiceOptions {
             cwd: std::env::temp_dir(),

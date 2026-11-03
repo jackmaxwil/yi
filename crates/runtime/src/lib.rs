@@ -12,6 +12,7 @@ pub mod checkpoint;
 pub mod classifier;
 pub mod claude_hooks;
 pub mod compaction;
+pub mod egress;
 pub mod environment;
 pub mod ext;
 pub mod family;
@@ -57,6 +58,7 @@ pub mod session;
 pub mod settings;
 pub mod skills;
 pub mod slash;
+pub mod spec;
 pub mod spend;
 pub mod subagent;
 pub mod telemetry;
@@ -68,8 +70,8 @@ pub mod web_search;
 pub mod wiring;
 
 pub use checkpoint::{
-    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes, undo_to,
-    wire_turn_checkpoints,
+    RecordedCheckpoint, UndoOutcome, describe_undo, over_budget, recorded, snapshots_off_row, undo,
+    undo_notes, undo_to, wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
 
@@ -100,11 +102,17 @@ pub use tools::ToolAdapter;
 pub use wall::Wall;
 pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
+pub use yi_ai::recommend;
 pub use yi_ai::request::ProxyConfig;
 pub use yi_ai::roots;
 pub use yi_ai::search;
 pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
 pub use yi_kernel::tarball;
+
+/// Stops shell jobs whose reaper would otherwise end with this process.
+pub fn kill_running_jobs() {
+    yi_tools::jobs::registry().kill_running();
+}
 
 /// None where the platform has no sandbox: a contained decision then degrades
 /// to a question rather than to an unenforced allowance.
@@ -113,8 +121,11 @@ pub fn workspace_sandbox(
     home: &std::path::Path,
     session_dir: Option<&std::path::Path>,
 ) -> Option<yi_tools::Sandbox> {
-    yi_tools::Sandbox::available().then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir))
+    yi_tools::Sandbox::available()
+        .then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir).with_caches(home))
 }
+
+pub use yi_tools::set_wrapper as set_sandbox_wrapper;
 
 static IDENTITY: std::sync::LazyLock<String> = crate::packed::packed!("identity");
 static DOCTRINE: std::sync::LazyLock<String> = crate::packed::packed!("doctrine");

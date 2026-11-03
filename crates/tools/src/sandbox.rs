@@ -1,3 +1,13 @@
+mod browser;
+mod caches;
+mod contain;
+mod git;
+mod seal;
+pub use contain::set_wrapper;
+pub use git::Sealed;
+use git::{HOST_RUN_BY_GIT, lane_writes, sealed};
+pub use seal::{SealBroken, reseal, verify as verify_seal, writes_sealed};
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -16,6 +26,9 @@ pub struct Sandbox {
     pub deny_read: Vec<PathBuf>,
     /// Paths inside a writable root that host code runs or reads back (D205).
     pub deny_write: Vec<PathBuf>,
+    /// Directories closed whole to writes, holding the admin dirs and modules a contained process
+    /// would otherwise create under a writable root.
+    pub sealed: Vec<Sealed>,
     /// Stores only the host writes, the session corpus above all (its JSONL is the ledger kept
     /// rules replay from): denied to writes, save a writable root nested inside one.
     pub host_owned: Vec<PathBuf>,
@@ -30,20 +43,40 @@ const NETWORK_POLICY: &str = "; loopback only, and no unix socket\n\
     (allow network-bind network-inbound (local ip \"localhost:*\"))\n\
     (allow network-outbound (remote ip \"localhost:*\"))\n";
 
-/// A git dir's escape hatches: `hooks` and `config` run under the host's next git, and the
-/// pointers are what the next sandbox policy is built from.
-const HOST_RUN_BY_GIT: [&str; 4] = ["hooks", "config", "commondir", "gitdir"];
+/// A directory denies every path under it but the roots it keeps open.
+fn denies_inside(path: &Path, store: &Path, open: &[PathBuf]) -> bool {
+    path.starts_with(store) && !open.iter().any(|root| path.starts_with(root))
+}
+
+/// The `require-not` clauses a denial needs for the `-D` keys it keeps open.
+fn require_not(keys: impl Iterator<Item = String>) -> String {
+    keys.map(|key| format!(" (require-not (subpath (param \"{key}\")))"))
+        .collect()
+}
 
 impl Sandbox {
-    /// The worktree, its git dirs (a lane's index lives in the trunk's), and build scratch.
+    /// The worktree, what its git writes, and build scratch.
     pub fn for_workspace(cwd: &Path, home: &Path, session_dir: Option<&Path>) -> Self {
         let mut writable = vec![cwd.to_path_buf()];
         let git_dirs = yi_permission::git_dirs(cwd);
-        let deny_write = git_dirs
-            .iter()
-            .flat_map(|dir| HOST_RUN_BY_GIT.iter().map(|leaf| dir.join(leaf)))
+        let sealed = sealed(&git_dirs);
+        let leaves = |dir: &PathBuf| HOST_RUN_BY_GIT.map(|leaf| dir.join(leaf));
+        let mut deny_write: Vec<PathBuf> = (git_dirs.iter().flat_map(leaves))
+            .chain(
+                sealed
+                    .iter()
+                    .flat_map(|sealed| sealed.open.iter())
+                    .flat_map(leaves),
+            )
             .collect();
-        writable.extend(git_dirs);
+        // Invariant: a `.git` that is no directory, or none yet, tells the host's next git where
+        // its config lives.
+        if !cwd.join(".git").is_dir() {
+            deny_write.push(cwd.join(".git"));
+        }
+        deny_write.sort();
+        deny_write.dedup();
+        writable.extend(lane_writes(cwd, &git_dirs, home));
         if let Some(dir) = session_dir {
             writable.push(dir.to_path_buf());
         }
@@ -55,6 +88,7 @@ impl Sandbox {
             // The stores the read gate refuses, so a contained `cat` meets the same list (D323).
             deny_read: yi_permission::credential_stores(home),
             deny_write,
+            sealed,
             host_owned: vec![home.join(".yi/sessions")],
             spared: Vec::new(),
         }
@@ -63,6 +97,9 @@ impl Sandbox {
     /// Incident: macOS refuses a sandbox inside a sandbox, and 67 runtime tests died on
     /// `sandbox_apply: Operation not permitted` under the workspace one; a probe tells.
     pub fn available() -> bool {
+        if cfg!(target_os = "linux") {
+            return contain::available();
+        }
         static APPLIES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         cfg!(target_os = "macos")
             && Path::new(SEATBELT).is_file()
@@ -98,12 +135,20 @@ impl Sandbox {
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|byte| byte.is_ascii_digit()));
         let granted = tty || path == Path::new("/dev/null") || path == Path::new("/dev/ptmx");
         let owned = self.host_owned.iter().any(|store| {
-            let (store, exempt) = (resolve_aliases(store), self.exempt(store));
-            path.starts_with(&store) && !exempt.iter().any(|root| path.starts_with(root))
+            let store = resolve_aliases(store);
+            denies_inside(&path, &store, &self.exempt(&store))
+        });
+        let sealed = self.sealed.iter().any(|sealed| {
+            let denied = &sealed.denied;
+            let inside = path.starts_with(denied) || path.starts_with(resolve_aliases(denied));
+            inside
+                && !(sealed.open.iter())
+                    .any(|root| path.starts_with(root) || path.starts_with(resolve_aliases(root)))
         });
         !granted
             && (!under(&self.writable)
                 || under(&self.deny_write)
+                || sealed
                 || under(&self.deny_read)
                 || owned)
     }
@@ -154,6 +199,20 @@ impl Sandbox {
                 format!("HOST_OWNED_{index}_RESOLVED"),
                 yi_permission::resolve_links(store),
             ));
+        }
+        for (index, sealed) in self.sealed.iter().enumerate() {
+            params.push((format!("SEALED_{index}"), resolve_aliases(&sealed.denied)));
+            params.push((
+                format!("SEALED_{index}_RESOLVED"),
+                yi_permission::resolve_links(&sealed.denied),
+            ));
+            for (open, dir) in sealed.open.iter().enumerate() {
+                params.push((format!("SEALED_OPEN_{index}_{open}"), resolve_aliases(dir)));
+                params.push((
+                    format!("SEALED_OPEN_{index}_{open}_RESOLVED"),
+                    yi_permission::resolve_links(dir),
+                ));
+            }
         }
         for (index, dir) in self.spared.iter().enumerate() {
             // Its parent resolved, never the path: a link planted there would widen the grant.
@@ -220,26 +279,35 @@ impl Sandbox {
 
     /// The kernel's prefix: its profile plus read and write of `connection_dir`, which every
     /// other profile hides under the connection root (#599).
-    pub fn kernel_prefix(&self, connection_dir: &Path) -> (String, Vec<String>) {
+    pub fn kernel_prefix(&self, connection_dir: &Path, assign: &[String]) -> (String, Vec<String>) {
+        if let Some(wrapper) = contain::wrapper() {
+            let args = self.contain_args(Some(connection_dir), assign);
+            return (wrapper.to_string_lossy().into_owned(), args);
+        }
         (
             SEATBELT.to_owned(),
-            self.seatbelt_args(Some(connection_dir), true),
+            self.seatbelt_args(Some(connection_dir), true, assign),
         )
     }
 
-    /// `-p <policy> -DKEY=value ... -- env -u …`: the rules and their bindings come from one
-    /// reading of the filesystem, so a link swapped between the two cannot unbind a rule.
-    fn seatbelt_args(&self, own: Option<&Path>, network: bool) -> Vec<String> {
+    fn seatbelt_args(&self, own: Option<&Path>, network: bool, assign: &[String]) -> Vec<String> {
+        let mut wrapped = self.bound_policy(own, network, "");
+        wrapped.extend(scrubbed_env());
+        wrapped.extend_from_slice(assign);
+        wrapped
+    }
+
+    /// `-p <policy> -DKEY=value ... --`: the rules and their bindings come from one reading of the
+    /// filesystem, so a link swapped between the two cannot unbind a rule.
+    fn bound_policy(&self, own: Option<&Path>, network: bool, extra: &str) -> Vec<String> {
         let parents = self.denied_parents();
-        let mut wrapped = vec![
-            "-p".to_owned(),
-            self.policy_for(parents.len(), own.is_some(), network),
-        ];
+        let mut policy = self.policy_for(parents.len(), own.is_some(), network);
+        policy.push_str(extra);
+        let mut wrapped = vec!["-p".to_owned(), policy];
         for (key, value) in self.params_for(&parents, own) {
             wrapped.push(format!("-D{key}={}", value.to_string_lossy()));
         }
         wrapped.push("--".to_owned());
-        wrapped.extend(scrubbed_env());
         wrapped
     }
 
@@ -254,6 +322,7 @@ impl Sandbox {
         let mut parents: Vec<PathBuf> = (self.deny_write.iter())
             .chain(&self.deny_read)
             .chain(&self.host_owned)
+            .chain(self.sealed.iter().map(|sealed| &sealed.denied))
             .flat_map(|path| [resolve_aliases(path), yi_permission::resolve_links(path)])
             .flat_map(|path| {
                 path.ancestors()
@@ -315,21 +384,34 @@ impl Sandbox {
                 "(deny file-write-unlink (require-all (literal (param \"{key}\")) (vnode-type DIRECTORY)))"
             ));
         }
+        // Before every denial below it, so a leaf inside an open root still loses: the seal closes
+        // a directory a contained process would otherwise create under a writable root.
+        for (index, sealed) in self.sealed.iter().enumerate() {
+            let open = require_not((0..sealed.open.len()).flat_map(|open| {
+                [
+                    format!("SEALED_OPEN_{index}_{open}"),
+                    format!("SEALED_OPEN_{index}_{open}_RESOLVED"),
+                ]
+            }));
+            anchors.push(format!(
+                "(deny file-write* (require-all (require-any (subpath (param \"SEALED_{index}\")) (subpath (param \"SEALED_{index}_RESOLVED\"))){open}))"
+            ));
+        }
         // A path hidden from reads is not writable either: renamed, it would leave its rule behind;
         // a spared writable root under it reads, so the other rules decide its writes.
-        let spared: String = (self.spared.iter().enumerate())
-            .filter(|(_, dir)| {
-                let dir = resolve_aliases(dir);
-                (self.writable.iter()).any(|root| resolve_aliases(root) == dir)
-            })
-            .flat_map(|(index, _)| {
-                [
-                    format!("SPARED_{index}"),
-                    format!("SPARED_{index}_RESOLVED"),
-                ]
-            })
-            .map(|key| format!(" (require-not (subpath (param \"{key}\")))"))
-            .collect();
+        let spared = require_not(
+            (self.spared.iter().enumerate())
+                .filter(|(_, dir)| {
+                    let dir = resolve_aliases(dir);
+                    (self.writable.iter()).any(|root| resolve_aliases(root) == dir)
+                })
+                .flat_map(|(index, _)| {
+                    [
+                        format!("SPARED_{index}"),
+                        format!("SPARED_{index}_RESOLVED"),
+                    ]
+                }),
+        );
         let denied = ((0..self.deny_write.len()).map(|index| (format!("DENY_WRITE_{index}"), "")))
             .chain((0..self.deny_read.len()).map(|index| {
                 let exempt = if self.inside_spare(index) {
@@ -346,12 +428,11 @@ impl Sandbox {
         }
         for (index, store) in self.host_owned.iter().enumerate() {
             let exempt = self.exempt(store);
-            let keep: String = (self.writable.iter().enumerate())
-                .filter(|(_, root)| exempt.contains(&resolve_aliases(root)))
-                .map(|(root, _)| {
-                    format!(" (require-not (subpath (param \"WRITABLE_ROOT_{root}\")))")
-                })
-                .collect();
+            let keep = require_not(
+                (self.writable.iter().enumerate())
+                    .filter(|(_, root)| exempt.contains(&resolve_aliases(root)))
+                    .map(|(root, _)| format!("WRITABLE_ROOT_{root}")),
+            );
             for key in [
                 format!("HOST_OWNED_{index}"),
                 format!("HOST_OWNED_{index}_RESOLVED"),
@@ -375,21 +456,45 @@ impl Sandbox {
 
     /// `sandbox-exec -p <policy> -DKEY=value ... -- <program> <args>`.
     pub fn wrap(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
-        self.wrap_with(true, program, args)
+        self.wrap_with(true, &[], program, args)
+    }
+
+    /// [`Self::wrap`] with `assign` on `env`'s argv past the scrub, later than its own settings.
+    pub fn wrap_assigning(
+        &self,
+        assign: &[String],
+        program: &str,
+        args: &[&str],
+    ) -> (String, Vec<String>) {
+        self.wrap_with(true, assign, program, args)
     }
 
     /// [`Self::wrap`] with no network at all, loopback included: the document converter parses
     /// untrusted files and needs none.
     pub fn wrap_offline(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
-        self.wrap_with(false, program, args)
+        self.wrap_with(false, &[], program, args)
     }
 
-    fn wrap_with(&self, network: bool, program: &str, args: &[&str]) -> (String, Vec<String>) {
+    fn wrap_with(
+        &self,
+        network: bool,
+        assign: &[String],
+        program: &str,
+        args: &[&str],
+    ) -> (String, Vec<String>) {
         let _span = yi_types::trace::span("sandbox.wrap");
-        let mut wrapped = self.seatbelt_args(None, network);
+        let wrapper = contain::wrapper();
+        let mut wrapped = match wrapper {
+            Some(_) => self.contain_args(None, assign),
+            None => self.seatbelt_args(None, network, assign),
+        };
         wrapped.push(program.to_owned());
         wrapped.extend(args.iter().map(|arg| (*arg).to_owned()));
-        (SEATBELT.to_owned(), wrapped)
+        let launcher = wrapper.map_or_else(
+            || SEATBELT.to_owned(),
+            |path| path.to_string_lossy().into_owned(),
+        );
+        (launcher, wrapped)
     }
 }
 
@@ -428,8 +533,16 @@ fn scrubbed_env() -> Vec<String> {
     std::iter::once("/usr/bin/env".to_owned())
         .chain(unset)
         .chain(std::iter::once(java_ipv4()))
+        .chain(NO_GIT_MAINTENANCE.map(str::to_owned))
         .collect()
 }
+
+/// A lane cannot write `packed-refs`, and `git commit`'s auto maintenance printed that error.
+const NO_GIT_MAINTENANCE: [&str; 3] = [
+    "GIT_CONFIG_COUNT=1",
+    "GIT_CONFIG_KEY_0=maintenance.auto",
+    "GIT_CONFIG_VALUE_0=false",
+];
 
 /// A JVM's dual-stack socket dials 127.0.0.1 as `::ffff:127.0.0.1`, which Seatbelt refuses; IPv4
 /// sockets keep Gradle, Maven and sbt on loopback. Appended to the value the run inherits.
@@ -592,8 +705,13 @@ fn errno_path(line: &str) -> Option<&str> {
         return None;
     }
     let line = line.trim_end();
-    let line = line.strip_suffix(" (os error 1)").unwrap_or(line);
-    let raw = match line.strip_suffix(": Operation not permitted") {
+    let line = (line
+        .strip_suffix(" (os error 1)")
+        .or_else(|| line.strip_suffix(" (os error 13)")))
+    .unwrap_or(line);
+    // Landlock refuses with EACCES where Seatbelt gives EPERM.
+    let tail = line.strip_suffix(": Operation not permitted");
+    let raw = match tail.or_else(|| line.strip_suffix(": Permission denied")) {
         // `touch: /x`, or a quoted path: git's `'/x/.git'`, uv's `` `/x` ``.
         Some(head) => head
             .rsplit_once(": ")
@@ -604,10 +722,14 @@ fn errno_path(line: &str) -> Option<&str> {
                 let quote = word.chars().next().filter(|c| matches!(c, '\'' | '`'))?;
                 (word.len() > 2 && word.ends_with(quote)).then_some(word)
             })?,
-        None => match line.split_once("[Errno 1] Operation not permitted: ") {
+        None => match (line.split_once("[Errno 1] Operation not permitted: "))
+            .or_else(|| line.split_once("[Errno 13] Permission denied: "))
+        {
             Some((_, path)) => path,
             // `Error: EPERM: operation not permitted, open '/x'`
-            None => (line.split_once("EPERM: operation not permitted, ")?.1)
+            None => ((line.split_once("EPERM: operation not permitted, "))
+                .or_else(|| line.split_once("EACCES: permission denied, "))?
+                .1)
                 .rsplit(char::is_whitespace)
                 .next()?,
         },
@@ -649,6 +771,14 @@ const NETWORK_DENIALS: [&str; 3] = [
     "sendto: operation not permitted",
 ];
 
+/// Incident: a bare `transport '` needle read a tool's own message as git's transport refusal.
+fn git_transport_refusal(lower: &str) -> bool {
+    lower.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("fatal: transport '") && line.ends_with("' not allowed")
+    })
+}
+
 /// A denied write target counts at any exit; else a non-zero exit naming a denial, a network
 /// denial also past a shell-failure exit. Exit 0 never records a scope: see [`exit_zero_note`].
 pub fn sandbox_refusal(
@@ -667,13 +797,22 @@ pub fn sandbox_refusal(
         "deny file-write",
     ];
     if let Some(path) = refused_path(sandbox, cwd, exit_code, output, command) {
-        return Some(SandboxRefusal::Path(path));
+        // Git's own bookkeeping, which the command never named: no approval widens a git dir, so
+        // the next call asks and an approval runs it outside.
+        let bookkeeping = (yi_permission::git_dirs(cwd).iter()).any(|dir| path.starts_with(dir))
+            && !command.contains(".git");
+        return Some(match bookkeeping {
+            true => SandboxRefusal::Scopes(yi_permission::refused_scopes(command)),
+            false => SandboxRefusal::Path(path),
+        });
     }
     let code = exit_code?;
     let lower = output.to_lowercase();
     let contains = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
     let refused = code != 0
-        && (contains(&NETWORK_DENIALS) || (!QUICK_REJECT.contains(&code) && contains(&DENIALS)));
+        && (contains(&NETWORK_DENIALS)
+            || git_transport_refusal(&lower)
+            || (!QUICK_REJECT.contains(&code) && contains(&DENIALS)));
     refused.then(|| SandboxRefusal::Scopes(yi_permission::refused_scopes(command)))
 }
 
@@ -732,7 +871,7 @@ pub fn nested_sandbox_note(output: &str) -> Option<String> {
     ))
 }
 
-const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and has no network beyond 127.0.0.1 and ::1 (a dual-stack socket's `::ffff:127.0.0.1` is refused)";
+const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and reaches the network only through its proxy on 127.0.0.1 (a dual-stack socket's `::ffff:127.0.0.1` is refused)";
 
 /// The note under a kernel cell the sandbox refused, read off its streams and traceback (a
 /// `bash()` job's output too); the kernel has no retry outside, so it promises no question.

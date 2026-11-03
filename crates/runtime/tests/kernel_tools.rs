@@ -118,7 +118,6 @@ async fn run_cells(
     let mut session = session(cwd, codes);
     let calls = Arc::new(Calls::default());
     let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
     let table = session.tools_handle();
     register(&mut registry, table, Arc::clone(&calls), true);
     let service = Arc::new(KernelService::new(KernelServiceOptions {

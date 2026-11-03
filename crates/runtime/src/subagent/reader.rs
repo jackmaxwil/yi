@@ -232,6 +232,7 @@ pub fn session(
                 .with_transcripts(Arc::new(crate::fetch::ParentTranscript(
                     build.link.host.clone(),
                 )))
+                .with_member_trees(Arc::new(crate::fetch::ParentTrees(build.link.host.clone())))
                 .with_plans_dir(host.options.plans_dir.clone())
         }
         None => resolver,
