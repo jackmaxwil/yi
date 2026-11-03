@@ -54,6 +54,7 @@ pub mod reclaim;
 pub mod record;
 pub mod schedule;
 pub mod settings;
+pub mod spec;
 pub mod status_mark;
 pub mod subagent;
 pub mod telemetry;
