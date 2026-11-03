@@ -126,6 +126,7 @@ worktrees:
 # Point git at the versioned hooks (per-repo, shared by every worktree).
 install-hooks:
     git config core.hooksPath scripts/hooks
+    git config merge.baseline.driver 'python3 scripts/merge_baseline.py %O %A %B'
     @echo "hooks installed: scripts/hooks"
 
 # Tier 1, every commit: source-only checks, no build and no suite. The three share nothing

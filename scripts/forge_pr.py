@@ -592,6 +592,9 @@ def cmd_merge(args):
         pr = pull(number)
         jobs = jobs_of(pr)
         verdict = decide(pr, jobs, need, is_behind(pr))
+        if verdict == "behind" and pr.get("mergeable") is not False and os.environ.get("MERGE_QUEUE") != "on":
+            # Invariant: main's rule no longer blocks an outdated branch, so a clean behind PR merges as it stands.
+            verdict = decide(pr, jobs, need, False)
         if verdict == "merged":
             print(f"#{number} merged")
             return 0
@@ -601,14 +604,11 @@ def cmd_merge(args):
                 if cmd_update(argparse.Namespace(number=number)):
                     print(f"merge: stopped — the forge refused to update #{number}; merge origin/main by hand")
                     return 1
-            elif os.environ.get("MERGE_QUEUE") == "on":
+            else:
                 import pr_queue
 
                 print(f"#{number} is behind main without a conflict; queueing it")
                 return pr_queue.cmd_queue(argparse.Namespace(number=number))
-            else:
-                report(pr, jobs, need, verdict)
-                return 2
         elif verdict == "green":
             if errs := unreviewed(number, pr):
                 for err in errs:
@@ -849,6 +849,18 @@ def selfcheck():
     finally:
         globals().update(fakes)
     assert clean == 0 and queued == [7], f"a behind-clean PR was updated, not queued: exit={clean}, calls={queued}"
+    merged = []
+    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "mergeable": True, "merged": bool(merged),
+                                     "state": "open", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
+                     jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: True, unreviewed=lambda n, pr: [],
+                     decide=lambda pr, jobs, need, behind: "merged" if pr["merged"] else "behind" if behind else "green",
+                     fgj_api=lambda method, path, payload=None: merged.append(path) or {})
+    try:
+        with mock.patch.dict(os.environ, {"MERGE_QUEUE": "off"}), contextlib.redirect_stdout(io.StringIO()):
+            cmd_merge(argparse.Namespace(number=7, timeout=0, wait=False))
+    finally:
+        globals().update(fakes)
+    assert merged and merged[0].endswith("pulls/7/merge"), f"a behind-clean PR with the queue off was not merged: {merged}"
 
     def merge_on_fake_forge(protected, statuses):
         """cmd_merge for #7 against a forge whose rule lists `protected` and whose head `abc1234` ran
