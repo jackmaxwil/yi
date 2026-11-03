@@ -50,6 +50,8 @@ def silenced(text, off=""):
 
 def label(value):
     """Lanes named by one `runs-on` value: bare, quoted, or a `[a, b]` flow list; none for an expression."""
+    if chosen := re.fullmatch(r"\$\{\{ contains\([^{}]*\) && '([\w-]+)' \|\| '([\w-]+)' \}\}", value):
+        return list(chosen.groups())
     parts = value[1:-1].split(",") if value.startswith("[") and value.endswith("]") else [value]
     out = []
     for part in parts:
@@ -154,6 +156,9 @@ def selfcheck(off=""):
             bad.append(f"a review `runs-on` spelled as {name} is not read as the gate's lane")
     if shared_lane(gate, apart, off):
         bad.append("a review job on a lane of its own is refused")
+    chosen = "jobs:\n  review:\n    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'x') && 'x' || 'ubuntu-latest' }}\n"
+    if shared_lane(gate, chosen, off) != [("review", "ubuntu-latest")]:
+        bad.append("a `runs-on` choosing between two named lanes is not read as both")
     if not unread_lane(expr, off):
         bad.append("a `runs-on` that is an expression is dropped instead of refused")
     if not no_skills("steps:\n  - run: rustup show\n", off):

@@ -7,57 +7,146 @@ use super::{
     ClaimBase, Head, LIST_BUDGET, LaneError, Pool, STATUS, Sha, SlotIndex, git, git_capture, head,
 };
 
-/// Uncommitted paths one status read named; past the capture cap the count is a floor.
+/// Uncommitted paths one status read named; past the capture cap the count is a floor, and
+/// `submodules` is how many of them a gitlink read attributed, so a survivor can name its cause.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Uncommitted {
     paths: usize,
     cut: Option<(usize, usize)>,
+    submodules: usize,
 }
 
 impl Uncommitted {
-    pub(crate) fn read(tree: &Path) -> Result<Self, LaneError> {
-        Ok(Self::counted(&git_capture(tree, &STATUS)?))
+    pub(crate) fn read(tree: &Path, home: Option<&Path>) -> Result<Self, LaneError> {
+        let status = git_capture(tree, &STATUS, &[], None, yi_tools::OUTPUT_CAP)?;
+        Ok(Self::counted(&status).with_submodules(tree, home, None))
     }
 
-    /// One status read bounded by [`LIST_BUDGET`]; the error names why the paths went uncounted.
-    pub(crate) fn read_briefly(tree: &Path) -> Result<Self, String> {
-        let started = std::time::Instant::now();
-        let capture = super::capture_named(
-            tree,
-            "git status",
-            "git",
-            &STATUS,
-            LIST_BUDGET,
-            yi_tools::OUTPUT_CAP,
-            None,
-        );
-        capture
-            .map(|capture| Self::counted(&capture))
-            .map_err(|error| {
-                if started.elapsed() >= LIST_BUDGET {
-                    format!("git status past LIST_BUDGET ({} s)", LIST_BUDGET.as_secs())
-                } else {
-                    briefly(&error)
-                }
-            })
+    /// Invariant: host git never enters a submodule, whose config it cannot trust, so `status` is
+    /// blind to work inside one. A listing reads the same count, so no lane is clean in one place.
+    fn with_submodules(
+        mut self,
+        tree: &Path,
+        home: Option<&Path>,
+        until: Option<std::time::Instant>,
+    ) -> Self {
+        // One budget for the whole read: a hung git in one submodule must not stall every spawn.
+        let until = until.or_else(|| std::time::Instant::now().checked_add(LIST_BUDGET));
+        self.submodules = dirty_submodules(tree, until, home).unwrap_or(1);
+        self.paths = self.paths.saturating_add(self.submodules);
+        self
     }
+
     fn counted(status: &yi_tools::CommandCapture) -> Self {
         let (rows, cut) = (status.stdout.lines().count(), status.cut);
         // Invariant: a cut list is a head and a tail around a marker row; three lines may be no path.
         let paths = rows.saturating_sub(if cut.is_some() { 3 } else { 0 });
-        Self { paths, cut }
+        Self {
+            paths,
+            cut,
+            submodules: 0,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
         self.paths == 0 && self.cut.is_none()
     }
 
-    pub(crate) fn discarded(&self) -> String {
+    /// What a wipe removed: the read before it less what the same read says survived it.
+    fn without(&self, after: &Self) -> Self {
+        Self {
+            paths: self.paths.saturating_sub(after.paths),
+            cut: self.cut,
+            submodules: after.submodules.min(self.submodules),
+        }
+    }
+
+    /// A survivor says what held it, never a cause nothing read: a gitlink count is what a
+    /// checkout cannot reach, and the rest is in place because `clean -fd` left it there.
+    fn described(&self) -> String {
+        let inside = self.submodules.min(self.paths);
+        let outside = self.paths.saturating_sub(inside);
+        match (inside, outside) {
+            (0, _) => format!("{self} kept in place, outside git's reach"),
+            (_, 0) => format!("{self} kept inside a submodule"),
+            (_, _) => format!("{self} kept: {inside} inside a submodule, {outside} in place"),
+        }
+    }
+
+    fn discarded(&self) -> String {
         if self.is_empty() {
             return String::new();
         }
         format!("; {self} discarded")
     }
+}
+
+/// What a wipe removed and what it could not reach: git never enters a submodule without being
+/// asked, so its worktree holds edits the parent's checkout and clean leave in place.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Wiped {
+    lost: Uncommitted,
+    kept: Uncommitted,
+}
+
+impl Wiped {
+    /// The sentence a reap or a discard adds: the paths it dropped, and the ones that survived.
+    pub fn discarded(&self) -> String {
+        let kept = if self.kept.is_empty() {
+            String::new()
+        } else {
+            format!("; {}", self.kept.described())
+        };
+        format!("{}{kept}", self.lost.discarded())
+    }
+}
+
+/// The count a status read adds for the gitlinks holding work, one path for an unreadable index:
+/// the claim decision and a listing take it from here, so one budget and one default decide both.
+pub(crate) fn submodule_paths(
+    paths: usize,
+    tree: &Path,
+    until: Option<std::time::Instant>,
+    home: Option<&Path>,
+) -> usize {
+    paths.saturating_add(dirty_submodules(tree, until, home).unwrap_or(1))
+}
+
+/// The populated gitlinks with work inside them, `None` when the index cannot be read; the claim
+/// decision and a listing both read it, so one answer exists for whether a lane is dirty.
+pub(crate) fn dirty_submodules(
+    tree: &Path,
+    until: Option<std::time::Instant>,
+    home: Option<&Path>,
+) -> Option<usize> {
+    let stage = super::hostgit::git_capped(
+        tree,
+        &["ls-files", "--stage", "-z"],
+        until,
+        super::PLUMBING_CAP,
+    )
+    .ok()?;
+    let links: Vec<PathBuf> = (stage.split('\0'))
+        .filter_map(|row| row.split_once('\t'))
+        .filter(|(meta, _)| meta.starts_with("160000 "))
+        .filter_map(|(_, path)| gitlink(tree, path))
+        .filter(|dir| std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some()))
+        .collect();
+    // Invariant: a tree with no populated gitlink pays one index read, never a profile build.
+    if links.is_empty() {
+        return Some(0);
+    }
+    // Invariant: one builder for a lane's profile, from the home the pool holds; a caller with no
+    // pool reads the host's own, so a seal added to `profile` reaches a submodule read too.
+    let home = home
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    let sandbox = home
+        .as_deref()
+        .and_then(|home| super::toolchain::profile(tree, home));
+    let links =
+        (links.iter()).filter(|dir| !submodule_is_clean(tree, dir, until, sandbox.as_ref()));
+    Some(links.count())
 }
 
 impl std::fmt::Display for Uncommitted {
@@ -71,24 +160,6 @@ impl std::fmt::Display for Uncommitted {
             (None, 1) => formatter.write_str("1 uncommitted path"),
             (None, n) => write!(formatter, "{n} uncommitted paths"),
         }
-    }
-}
-
-/// One failed read says why: the diagnostics past capture_named's label, and any cut it makes.
-fn briefly(error: &str) -> String {
-    let mut lines = error.lines();
-    let label = lines.next().unwrap_or_default();
-    let mut body = lines.filter(|line| !line.trim().is_empty());
-    let kept: Vec<&str> = body.by_ref().take(2).collect();
-    let more = body.count();
-    if kept.is_empty() {
-        return label.to_owned();
-    }
-    let joined = kept.join(" ");
-    if more == 0 {
-        format!("{label} {joined}")
-    } else {
-        format!("{label} {joined} [… {more} more]")
     }
 }
 
@@ -162,36 +233,106 @@ impl Pool {
 
     /// Whether `git status` names a path in a slot's tree; an unreadable status counts as dirty.
     pub(super) fn dirty(&self, slot: SlotIndex) -> bool {
-        !Uncommitted::read(&self.slot_path(slot)).is_ok_and(|tree| tree.is_empty())
+        !Uncommitted::read(&self.slot_path(slot), Some(&self.home))
+            .is_ok_and(|tree| tree.is_empty())
     }
 
     /// Invariant: the only wipe of a session's work; a claim checks out only over a clean tree.
-    pub(super) fn wipe(&self, slot: SlotIndex) -> Result<Uncommitted, LaneError> {
+    pub(super) fn wipe(&self, slot: SlotIndex) -> Result<Wiped, LaneError> {
         let path = self.slot_path(slot);
-        let lost = Uncommitted::read(&path)?;
-        if !lost.is_empty() {
-            git(&path, &["checkout", "-q", "-f"])?;
-            git(&path, &["clean", "-qfd"])?;
+        let lost = Uncommitted::read(&path, Some(&self.home))?;
+        // Nothing to drop: the answer is the same, and a clean hand-back pays no confirming read.
+        if lost.is_empty() {
+            return Ok(Wiped {
+                lost,
+                kept: Uncommitted::default(),
+            });
         }
-        Ok(lost)
+        git(&path, &["checkout", "-q", "-f"])?;
+        git(&path, &["clean", "-qfd"])?;
+        // What the same read says now: the paths a wipe leaves are the ones it did not drop, and a
+        // tree it cannot read is not one it emptied, so the failure is the caller's, never a zero.
+        let kept = Uncommitted::read(&path, Some(&self.home))?;
+        Ok(Wiped {
+            lost: lost.without(&kept),
+            kept,
+        })
     }
 }
 
-struct Tree {
-    path: PathBuf,
-    locked: bool,
+/// A gitlink's working tree, never a path out of it: the index sits in a lane's contained-writable
+/// admin dir, so an entry naming `..` or an absolute directory would point host code at another tree.
+fn gitlink(tree: &Path, path: &str) -> Option<PathBuf> {
+    let rel = Path::new(path);
+    let normal = |part: std::path::Component<'_>| matches!(part, std::path::Component::Normal(_));
+    if rel.is_absolute() || !rel.components().all(normal) {
+        return None;
+    }
+    Some(tree.join(rel))
 }
 
-fn parse(listing: &str) -> Vec<Tree> {
+/// `status` under the tree's own profile, so a clean filter a child planted runs contained, and
+/// without Seatbelt still with hooks and fsmonitor off. A dir with no `.git` is never clean.
+fn submodule_is_clean(
+    tree: &Path,
+    dir: &Path,
+    until: Option<std::time::Instant>,
+    sandbox: Option<&yi_tools::Sandbox>,
+) -> bool {
+    let Some(until) = until.filter(|at| std::time::Instant::now() < *at) else {
+        return false;
+    };
+    let Ok(path) = dir.strip_prefix(tree) else {
+        return false;
+    };
+    if !dir.join(".git").exists() {
+        return false;
+    }
+    // The flags the parent's own read carries, from the constant that holds them.
+    let argv: Vec<String> = [
+        "git".to_owned(),
+        "-C".to_owned(),
+        path.to_string_lossy().into_owned(),
+    ]
+    .into_iter()
+    .chain(STATUS.iter().map(|arg| (*arg).to_owned()))
+    .collect();
+    let named: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let Some((program, args)) = super::toolchain::wrapped(&named, sandbox) else {
+        return false;
+    };
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    super::capture_named(
+        tree,
+        "git status in a submodule",
+        &program,
+        &borrowed,
+        until.saturating_duration_since(std::time::Instant::now()),
+        yi_tools::OUTPUT_CAP,
+        sandbox,
+    )
+    .is_ok_and(|capture| capture.stdout.trim().is_empty())
+}
+
+pub(super) struct Tree {
+    pub(super) path: PathBuf,
+    locked: bool,
+    pub(super) branch: Option<String>,
+}
+
+pub(super) fn parse(listing: &str) -> Vec<Tree> {
     let mut trees = Vec::new();
     for block in listing.split("\n\n") {
         let mut tree = Tree {
             path: PathBuf::new(),
             locked: false,
+            branch: None,
         };
         for line in block.lines() {
             if let Some(path) = line.strip_prefix("worktree ") {
                 tree.path = PathBuf::from(path);
+            } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+                tree.branch = Some(branch.to_owned());
             } else if line == "locked" || line.starts_with("locked ") {
                 tree.locked = true;
             }
@@ -207,7 +348,13 @@ impl Pool {
     /// Invariant: nothing is removed that holds work; a live lane is flocked, an outside tree is
     /// locked, a commit `main` lacks or a dirty tree stays, and every kept tree says why. Dry run is read-only.
     pub fn gc(&self, cwd: &Path, dry_run: bool) -> Result<Vec<String>, LaneError> {
-        let listing = git_capture(&self.repo, &["worktree", "list", "--porcelain"])?;
+        let listing = git_capture(
+            &self.repo,
+            &["worktree", "list", "--porcelain"],
+            &[],
+            None,
+            super::PLUMBING_CAP,
+        )?;
         let deadline = std::time::Instant::now()
             .checked_add(LIST_BUDGET)
             .unwrap_or_else(std::time::Instant::now);
@@ -224,8 +371,8 @@ impl Pool {
         let mut lines = Vec::new();
         if let Some((kept, total)) = listing.cut {
             lines.push(format!(
-                "[worktree list cut: read {kept} of {total} bytes, OUTPUT_CAP {}; later worktrees not judged]",
-                yi_tools::OUTPUT_CAP
+                "[worktree list cut: read {kept} of {total} bytes, lane.plumbing_cap {}; later worktrees not judged]",
+                super::PLUMBING_CAP
             ));
         }
         for tree in parse(&listing.stdout).into_iter().skip(1) {
@@ -326,7 +473,8 @@ impl Pool {
         if !status {
             return Ok(());
         }
-        let dirty = Uncommitted::read(&tree.path).map_err(|e| format!("status unreadable: {e}"))?;
+        let dirty = Uncommitted::read(&tree.path, Some(&self.home))
+            .map_err(|e| format!("status unreadable: {e}"))?;
         match dirty.is_empty() {
             true => Ok(()),
             false => Err(dirty.to_string()),
@@ -337,20 +485,15 @@ impl Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Dies when a failed status read drops git's own cause and keeps only capture_named's label.
+    /// Dies with an index entry naming a path out of the tree: the admin dir that holds the index is
+    /// contained-writable, so `..` or an absolute path would point host code at another tree.
     #[test]
-    fn a_failed_read_keeps_the_diagnostic_and_names_its_cut() {
-        let two = briefly(
-            "git status failed:\nerror: bad signature 0x00000000\nfatal: index file corrupt\n",
-        );
-        assert_eq!(
-            two,
-            "git status failed: error: bad signature 0x00000000 fatal: index file corrupt"
-        );
-        let many = briefly("git status failed:\nwarning: a\nfatal: b\nhint: c\nhint: d\n");
-        assert_eq!(many, "git status failed: warning: a fatal: b [… 2 more]");
-        let bare = briefly("git status: No such file or directory (os error 2)");
-        assert_eq!(bare, "git status: No such file or directory (os error 2)");
+    fn a_gitlink_outside_the_tree_is_no_link() {
+        let tree = Path::new("/lane");
+        assert_eq!(gitlink(tree, "sub"), Some(PathBuf::from("/lane/sub")));
+        assert_eq!(gitlink(tree, "../other"), None);
+        assert_eq!(gitlink(tree, "/etc"), None);
+        assert_eq!(gitlink(tree, "a/../b"), None);
     }
 
     #[test]
@@ -391,6 +534,45 @@ mod tests {
         assert!(
             verdict.is_err(),
             "stale listing HEAD authorized removing new work"
+        );
+        Ok(())
+    }
+
+    /// Dies with a populated submodule counted dirty wherever no sandbox profile exists: the read
+    /// falls back to the lane's own runner, one directory down, and must still see work inside it.
+    #[test]
+    fn a_submodule_read_with_no_profile_sees_the_work_inside_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let until = || Some(std::time::Instant::now() + LIST_BUDGET);
+        let root = std::env::temp_dir().join(format!("yi-submodule-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (tree, sub) = (root.join("tree"), root.join("tree/sub"));
+        std::fs::create_dir_all(&sub)?;
+        for (dir, args) in [
+            (&tree, &["init", "-q", "-b", "main"][..]),
+            (&sub, &["init", "-q", "-b", "main"][..]),
+        ] {
+            git(dir, args)?;
+            git(dir, &["config", "user.email", "lanes@test"])?;
+            git(dir, &["config", "user.name", "lanes"])?;
+        }
+        std::fs::write(sub.join("file.txt"), "one\n")?;
+        git(&sub, &["add", "."])?;
+        git(&sub, &["commit", "-qm", "first"])?;
+
+        assert!(
+            submodule_is_clean(&tree, &tree.join("sub"), until(), None),
+            "clean reads clean"
+        );
+        assert!(
+            !submodule_is_clean(&tree, &tree.join("no-such-link"), until(), None),
+            "no .git is never clean"
+        );
+        git(&sub, &["config", "status.showUntrackedFiles", "no"])?;
+        std::fs::write(sub.join("new.txt"), "work\n")?;
+        assert!(
+            !submodule_is_clean(&tree, &tree.join("sub"), until(), None),
+            "a config cannot hide work"
         );
         Ok(())
     }

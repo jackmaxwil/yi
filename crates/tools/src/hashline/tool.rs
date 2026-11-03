@@ -939,9 +939,7 @@ impl Tool for HashlineEditTool {
         let mut host_clipboard = std::mem::take(clipboard);
         drop(parsing);
         let applying = yi_types::trace::span("edit.apply");
-        let mut patcher = Patcher::new(snapshots, context.cwd.clone());
-        patcher.walls = context.write_walls();
-        patcher.program = context.program;
+        let mut patcher = Patcher::for_call(snapshots, context);
         let results = patcher.apply(&patch, &mut host_clipboard);
         drop(applying);
         *clipboard = host_clipboard;

@@ -6,7 +6,7 @@ use yi_types::kernel::BootstrapVersion;
 pub(crate) use crate::lock::acquire_bootstrap_lock;
 pub use crate::lock::{process_is_running, remove_stale_venvs};
 
-pub const BOOTSTRAP_SCHEMA: u64 = 1;
+pub const BOOTSTRAP_SCHEMA: u64 = 2;
 const PYTHON_VERSION: &str = "3.11";
 /// Incident: host replies ride ipykernel internals (`kernel.control_handlers`), unpinned.
 const IPYKERNEL_REQUIREMENT: &str = "ipykernel>=7,<8";
@@ -65,7 +65,7 @@ const DOCUMENT_PROBE_KEY: &str = "documentProbe";
 fn document_probe_hash() -> String {
     format!("{:016x}", fnv1a(DOCUMENT_FORMATS_PROBE.as_bytes()))
 }
-pub const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = [\"create_memory\",\"update_memory\",\"delete_memory\",\"create_skill\",\"update_skill\",\"delete_skill\",\"create_subagent\",\"update_subagent\",\"delete_subagent\",\"create_prompt_note\",\"update_prompt_note\",\"delete_prompt_note\",\"record_refinement\"]; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert callable(rlm); assert all(hasattr(rlm, _name) for _name in rlm.__all__); assert not hasattr(rlm, 'rlm'); assert all(callable(getattr(rlm.harness, _method, None)) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not inspect.iscoroutinefunction(rlm.bash); assert hasattr(rlm.BashHandle, '__await__'); assert not hasattr(rlm, 'background'); from pathlib import Path as _P; assert rlm.RLMSubagent(rlm_child_id='c', active_session_id=None, session_id=None, session_name='kid', session_dir=_P('.'), status='idle').name == 'kid'";
+pub const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; assert callable(rlm.tree); import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = [\"create_memory\",\"update_memory\",\"delete_memory\",\"create_skill\",\"update_skill\",\"delete_skill\",\"create_subagent\",\"update_subagent\",\"delete_subagent\",\"create_prompt_note\",\"update_prompt_note\",\"delete_prompt_note\",\"record_refinement\"]; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert callable(rlm); assert all(hasattr(rlm, _name) for _name in rlm.__all__); assert not hasattr(rlm, 'rlm'); assert all(callable(getattr(rlm.harness, _method, None)) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not inspect.iscoroutinefunction(rlm.bash); assert hasattr(rlm.BashHandle, '__await__'); assert not hasattr(rlm, 'background'); from pathlib import Path as _P; assert rlm.RLMSubagent(rlm_child_id='c', active_session_id=None, session_id=None, session_name='kid', session_dir=_P('.'), status='idle').name == 'kid'";
 const BOOTSTRAP_VERSION_FILE: &str = ".bootstrap-version";
 /// `python/yi_runtime` and `python/skills`, deflated by `build.rs`.
 const PYTHON_EMBED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/python.zz"));
@@ -496,6 +496,7 @@ fn create_venv(toolchain: &Toolchain, venv_text: &str) -> Result<(), String> {
                 &[
                     "venv",
                     venv_text,
+                    "--seed",
                     "--python",
                     &python,
                     "--system-site-packages",
