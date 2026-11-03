@@ -308,7 +308,7 @@ impl PlanEngine {
                 (id, self.store.load(&root, false)?.state)
             }
             Err(error) => {
-                let Op::Set { goal, rows } = &op else {
+                let Op::Set { goal, rows, .. } = &op else {
                     return Err(error);
                 };
                 let goal = match (goal, rows.first()) {
