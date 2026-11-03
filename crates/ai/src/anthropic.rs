@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
@@ -9,6 +9,7 @@ use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, Too
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, Ttl, encode};
 use crate::catalog::calculate_cost;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
+use crate::request::object;
 use crate::request::{assistant_block_mut, assistant_content_mut, push_assistant_block};
 use crate::transform::{normalize_anthropic_tool_call_id, transform_messages};
 
@@ -89,13 +90,13 @@ fn content_blocks(content: &[Content]) -> Value {
 
 /// Rendered messages beside, per rendered message, the index of the message it came from,
 /// which is what a breakpoint position names.
-fn convert_messages(messages: &[AgentMessage]) -> (Vec<Value>, Vec<Option<usize>>) {
+fn convert_messages(messages: &[Cow<'_, AgentMessage>]) -> (Vec<Value>, Vec<Option<usize>>) {
     let _span = yi_types::trace::span("ai.convert_messages");
     let mut params: Vec<Value> = Vec::new();
     let mut origins: Vec<Option<usize>> = Vec::new();
     let mut index = 0;
     while index < messages.len() {
-        match &messages[index] {
+        match messages[index].as_ref() {
             AgentMessage::User { content, .. } => {
                 let value = match content {
                     UserContent::Text(text) => {
@@ -127,7 +128,7 @@ fn convert_messages(messages: &[AgentMessage]) -> (Vec<Value>, Vec<Option<usize>
                         Value::Array(converted)
                     }
                 };
-                params.push(json!({"role": "user", "content": value}));
+                params.push(object([("role", json!("user")), ("content", value)]));
                 origins.push(Some(index));
             }
             AgentMessage::Assistant { content, .. } => {
@@ -185,7 +186,10 @@ fn convert_messages(messages: &[AgentMessage]) -> (Vec<Value>, Vec<Option<usize>
                     }
                 }
                 if !blocks.is_empty() {
-                    params.push(json!({"role": "assistant", "content": blocks}));
+                    params.push(object([
+                        ("role", json!("assistant")),
+                        ("content", Value::Array(blocks)),
+                    ]));
                     origins.push(Some(index));
                 }
             }
@@ -196,18 +200,21 @@ fn convert_messages(messages: &[AgentMessage]) -> (Vec<Value>, Vec<Option<usize>
                     content,
                     is_error,
                     ..
-                }) = messages.get(index)
+                }) = messages.get(index).map(AsRef::as_ref)
                 {
-                    results.push(json!({
-                        "type": "tool_result",
-                        "tool_use_id": tool_call_id,
-                        "content": content_blocks(content),
-                        "is_error": is_error,
-                    }));
+                    results.push(object([
+                        ("type", json!("tool_result")),
+                        ("tool_use_id", json!(tool_call_id)),
+                        ("content", content_blocks(content)),
+                        ("is_error", json!(is_error)),
+                    ]));
                     index += 1;
                 }
                 index -= 1;
-                params.push(json!({"role": "user", "content": results}));
+                params.push(object([
+                    ("role", json!("user")),
+                    ("content", Value::Array(results)),
+                ]));
                 origins.push(Some(index));
             }
             _ => {}
@@ -294,12 +301,15 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
         context.shared_through,
     );
     let (messages, origins) = convert_messages(&history);
-    let mut params = json!({
-        "model": model.id,
-        "messages": messages,
-        "max_tokens": options.max_tokens.unwrap_or(model.max_tokens),
-        "stream": true,
-    });
+    let mut params = object([
+        ("model", json!(model.id)),
+        ("messages", Value::Array(messages)),
+        (
+            "max_tokens",
+            json!(options.max_tokens.unwrap_or(model.max_tokens)),
+        ),
+        ("stream", json!(true)),
+    ]);
     if !context.system_prompt.is_empty() {
         params["system"] = Value::Array(system_blocks(&context.system_prompt));
     }
@@ -617,17 +627,8 @@ impl Mapper {
                         .get("partial_json")
                         .and_then(Value::as_str)
                         .unwrap_or("");
-                    let parsed =
-                        if let Some(Some(buffer)) = self.partial_json.get_mut(content_index) {
-                            buffer.push_str(chunk);
-                            parse_streaming_json(buffer)
-                        } else {
-                            Map::new()
-                        };
-                    if let Some(Content::ToolCall { arguments, .. }) =
-                        assistant_block_mut(&mut self.output, content_index)
-                    {
-                        *arguments = parsed;
+                    if let Some(Some(buffer)) = self.partial_json.get_mut(content_index) {
+                        buffer.push_str(chunk);
                     }
                     events.push(AssistantMessageEvent::ToolCallDelta {
                         content_index,
@@ -672,22 +673,7 @@ impl Mapper {
                     });
                 }
                 Some(Content::ToolCall { .. }) => {
-                    let final_arguments = self
-                        .partial_json
-                        .get(content_index)
-                        .and_then(|buffer| buffer.as_deref())
-                        .map(parse_streaming_json)
-                        .unwrap_or_default();
-                    if let Some(Content::ToolCall { arguments, .. }) =
-                        assistant_block_mut(&mut self.output, content_index)
-                    {
-                        if !final_arguments.is_empty() || arguments.is_empty() {
-                            *arguments = final_arguments;
-                        }
-                        if let Cow::Owned(fixed) = crate::leak::unleak(arguments) {
-                            *arguments = fixed;
-                        }
-                    }
+                    self.settle_call(content_index);
                     if let Some(block) =
                         assistant_block_mut(&mut self.output, content_index).cloned()
                     {
@@ -767,7 +753,39 @@ impl Mapper {
     }
 
     pub fn fail(&mut self, message: &str) -> AssistantMessageEvent {
+        self.settle_open_calls();
         crate::request::fail_message(&mut self.output, message)
+    }
+
+    fn settle_open_calls(&mut self) {
+        for content_index in 0..self.partial_json.len() {
+            if self
+                .partial_json
+                .get(content_index)
+                .is_some_and(Option::is_some)
+            {
+                self.settle_call(content_index);
+            }
+        }
+    }
+
+    fn settle_call(&mut self, content_index: usize) {
+        let parsed = self
+            .partial_json
+            .get_mut(content_index)
+            .and_then(Option::take)
+            .map(|buffer| parse_streaming_json(&buffer))
+            .unwrap_or_default();
+        if let Some(Content::ToolCall { arguments, .. }) =
+            assistant_block_mut(&mut self.output, content_index)
+        {
+            if !parsed.is_empty() || arguments.is_empty() {
+                *arguments = parsed;
+            }
+            if let Cow::Owned(fixed) = crate::leak::unleak(arguments) {
+                *arguments = fixed;
+            }
+        }
     }
 
     pub fn start_event(&self) -> AssistantMessageEvent {
@@ -823,9 +841,13 @@ fn run_request(
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
     let stripped = crate::request::Stripped::default();
-    let pumped = crate::request::pump_sse_with_resend(
+    let resent = match crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::send_stripping_cache(&url, &headers, body, proxy, &retried, &stripped),
+        || {
+            crate::request::send_stripping_cache(
+                &url, &headers, body, proxy, stop, &retried, &stripped,
+            )
+        },
         |sse| {
             let kind = sse.event.as_deref().unwrap_or("");
             if kind == "error" {
@@ -841,9 +863,19 @@ fn run_request(
             }
             Ok(true)
         },
-    );
-    let resent =
-        pumped.map_err(|message| crate::request::auth_hint(&message, oauth, &model.provider))?;
+    ) {
+        Ok(resent) => resent,
+        // Incident: an error after the first delta threw the whole turn away, because the fresh
+        // mapper below was failed instead of the running one; the text and usage were billed.
+        Err(message) => {
+            let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
+                &message,
+                oauth,
+                &model.provider,
+            )));
+            return Ok(());
+        }
+    };
     crate::request::note_reply(&mut mapper.output, resent, &stripped);
     let _ = sender.blocking_send(mapper.finish());
     Ok(())

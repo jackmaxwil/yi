@@ -42,8 +42,8 @@ does not exist are all named there.
 
 ## Root cause across callers
 
-When the cause is found, `grep` (or `grid uses`) every caller of what you
-are about to change. A guard where all callers route through beats a guard
+When the cause is found, `grep` every caller of what you are about to
+change. A guard where all callers route through beats a guard
 per caller; the report named one symptom of a shared cause, and fixing only
 the named path leaves the siblings broken.
 

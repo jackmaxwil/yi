@@ -43,9 +43,12 @@ fn host_view(source: &str, content: &UserContent, timestamp: u64) -> AgentMessag
 /// are the requester's words; kinds with no LLM representation drop.
 pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     let _span = yi_types::trace::span("context.convert_to_llm").arg("messages", messages.len());
+    let spent = crate::wrapper::spent_in_request(messages);
     messages
         .iter()
-        .filter_map(|message| match message {
+        .enumerate()
+        .filter(|(index, message)| !spent(*index, message))
+        .filter_map(|(_, message)| match message {
             AgentMessage::BashExecution {
                 command,
                 output,
@@ -77,8 +80,8 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                 content,
                 timestamp,
                 ..
-            } => match crate::wrapper::internal_source_of_custom(custom_type) {
-                Some(source) => Some(crate::wrapper::wrap_internal(
+            } => match crate::wrapper::lifetime_of(custom_type) {
+                crate::wrapper::Lifetime::Wrapped(source) => Some(crate::wrapper::wrap_internal(
                     source,
                     match content {
                         yi_types::message::UserContent::Text(text) => text,
@@ -86,7 +89,9 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                     },
                     *timestamp,
                 )),
-                None => Some(host_view(custom_type, content, *timestamp)),
+                crate::wrapper::Lifetime::OnceRead | crate::wrapper::Lifetime::Durable => {
+                    Some(host_view(custom_type, content, *timestamp))
+                }
             },
             AgentMessage::BranchSummary {
                 summary, timestamp, ..

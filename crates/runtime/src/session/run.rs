@@ -5,6 +5,7 @@ use yi_loop::{LoopConfig, LoopContext, run_loop};
 use yi_types::event::AgentEvent;
 use yi_types::mail::Delivery;
 use yi_types::message::{AgentMessage, Attribution, StopReason};
+use yi_types::model::Effort;
 
 use super::{
     RunParts, SessionError, Shared, Status, dispatch_ext, extensions_of, hooks, persist_message,
@@ -356,6 +357,33 @@ async fn settle(parts: RunParts, ended_clean: bool) {
     }
 }
 
+/// Invariant: the screen's sidecar call holds neither the host's lock nor the session's worker,
+/// so a hung endpoint costs one blocking thread instead of the turn it was asked for.
+async fn screen_pending(shared: &Arc<Shared>) {
+    let Some(host) = extensions_of(shared) else {
+        return;
+    };
+    let Some((screeners, pending)) = host
+        .lock()
+        .ok()
+        .map(|mut host| (host.screeners(), host.take_pending()))
+    else {
+        return;
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let mut screened = Vec::with_capacity(pending.len());
+    for text in pending {
+        let outcome = screeners.screen_off_reactor(text.kind(), text.text()).await;
+        screened.push((text, outcome));
+    }
+    let store = store_of(shared);
+    if let Ok(mut host) = host.lock() {
+        host.attach_screened(screened, store.as_ref());
+    }
+}
+
 async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -> bool {
     let RunParts {
         shared,
@@ -367,6 +395,9 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
         tool_cwd,
     } = parts.clone();
     let capture = start_capture(&shared);
+    // The first request's fence carries the screen's mark, so the parked attach is drained here:
+    // this task can await the blocking thread, the prompting thread it came from cannot.
+    screen_pending(&shared).await;
     let assembling = yi_types::trace::span("turn.context");
     let mut context = LoopContext {
         system_prompt: {
@@ -392,9 +423,10 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
     config.reuse = shared.reuse.lock().map(|reuse| *reuse).unwrap_or_default();
     // A cut names `read` as its restore, so a session without it, a narrow reader, cuts nothing.
     let reads = (context.tools.iter()).any(|tool| tool.definition().name == "read");
+    let cut = Arc::clone(&shared.reclaimed);
     let stores = Arc::clone(&shared);
     let overlay = crate::reclaim::Overlay::new(
-        Arc::clone(&shared.reclaimed),
+        Arc::clone(&cut),
         Box::new(move || super::store_of(&stores)),
         model.clone(),
     );
@@ -402,6 +434,8 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
         true => Box::new(move |messages| overlay.view(yi_context::convert_to_llm(messages))),
         false => Box::new(yi_context::convert_to_llm),
     };
+    // The compaction repeats the loop's prefix, so it renders the cuts already on record.
+    let convert = crate::reclaim::convert(reads.then_some(cut));
     if let Some(compactor) = compactor.clone() {
         compactor.open_run(&prompt);
         let stores = Arc::clone(&shared);
@@ -415,8 +449,14 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
             Arc::clone(&provider),
             {
                 let (system, tools) = (context.system_prompt.clone(), context.tools.clone());
+                let convert = Arc::clone(&convert);
                 Arc::new(move |effort| {
-                    crate::compaction::LoopRequest::new(system.clone(), &tools, effort)
+                    crate::compaction::LoopRequest::new(
+                        system.clone(),
+                        &tools,
+                        effort,
+                        Arc::clone(&convert),
+                    )
                 })
             },
             Arc::new(move || store_of(&stores)),
@@ -539,6 +579,9 @@ fn emit_event(
             telemetry.on_event(&event);
         }
         crate::environment::GitSummary::note_event(&shared.tree_generation, &event);
+        if let Some(spec) = shared.spec.lock().ok().and_then(|slot| slot.clone()) {
+            crate::spec::note_event(&spec, &event);
+        }
         let _ = shared.events.send(event);
     }
 }
@@ -715,6 +758,17 @@ fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, promp
         coupling.map_or((None, None), |c| (Some(c.on_turn), Some(c.intercept_stop)));
     super::answer::wire(config, shared, observe, gate);
     config.waiting = shared.waits.lock().ok().and_then(|slot| slot.clone());
+}
+
+/// The loop's request with the cuts on record rendered: a manual `/compact` repeats its prefix.
+pub(super) fn loop_request(
+    session: &super::AgentSession,
+    effort: Effort,
+) -> crate::compaction::LoopRequest {
+    let tools = session.tools();
+    let reads = tools.iter().any(|tool| tool.definition().name == "read");
+    let convert = crate::reclaim::convert(reads.then_some(session.reclaimed()));
+    crate::compaction::LoopRequest::new(session.system_prompt(), &tools, effort, convert)
 }
 
 #[cfg(test)]

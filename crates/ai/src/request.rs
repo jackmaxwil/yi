@@ -3,9 +3,9 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::{AssistantMessageEvent, Wait};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::Model;
-use yi_types::telemetry::QUOTA_STAMP;
+use yi_types::telemetry::{QUOTA_STAMP, REFUSED_STAMP};
 
-use crate::retry::{RetryPolicy, is_retryable_status, quota_exhausted, retry_delay};
+use crate::retry::{RetryPolicy, is_retryable_status, quota_exhausted, server_wait, wait_for};
 use crate::sse::SseEvent;
 
 pub fn empty_assistant(model: &Model) -> AgentMessage {
@@ -43,6 +43,29 @@ pub(crate) fn assistant_block_mut(
     assistant_content_mut(message)?.get_mut(index)
 }
 
+/// A JSON object whose values move in; `json!` copies every interpolated value, an image too.
+pub(crate) fn object<const N: usize>(fields: [(&str, Value); N]) -> Value {
+    Value::Object(
+        fields
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}
+
+pub(crate) fn image_url(data: &str, mime_type: &str) -> Value {
+    object([
+        ("type", serde_json::json!("image_url")),
+        (
+            "image_url",
+            object([(
+                "url",
+                Value::String(format!("data:{mime_type};base64,{data}")),
+            )]),
+        ),
+    ])
+}
+
 pub(crate) fn push_assistant_block(message: &mut AgentMessage, block: Content) -> usize {
     let Some(content) = assistant_content_mut(message) else {
         return 0;
@@ -55,7 +78,6 @@ pub(crate) fn content_end_events(
     output: &mut AgentMessage,
     mut include_tool: impl FnMut(usize) -> bool,
 ) -> Vec<AssistantMessageEvent> {
-    crate::leak::recover_in(output);
     assistant_content_mut(output)
         .cloned()
         .unwrap_or_default()
@@ -151,11 +173,14 @@ pub fn host_of(url: &str) -> &str {
     rest.split_once(':').map_or(rest, |(host, _)| host)
 }
 
-fn agent(url: &str, proxy: Option<&ProxyConfig>) -> ureq::Agent {
+pub const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn agent(url: &str, proxy: Option<&ProxyConfig>, read_timeout: std::time::Duration) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
         .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(std::time::Duration::from_secs(20));
+        .timeout_read(read_timeout)
+        .timeout_write(read_timeout);
     if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
         builder = builder.proxy(proxy.clone());
     }
@@ -181,7 +206,9 @@ pub fn get_json(
     proxy: Option<&ProxyConfig>,
     cap: usize,
 ) -> Result<Value, String> {
-    let mut request = agent(url, proxy).get(url).set("accept", "application/json");
+    let mut request = agent(url, proxy, DEFAULT_READ_TIMEOUT)
+        .get(url)
+        .set("accept", "application/json");
     for (name, value) in headers {
         request = request.set(name, value);
     }
@@ -195,18 +222,47 @@ pub fn post_json(
     body: &str,
     proxy: Option<&ProxyConfig>,
     cap: usize,
-) -> Result<Value, String> {
-    let mut request = agent(url, proxy)
+    read_timeout: std::time::Duration,
+) -> Result<Value, PostJsonError> {
+    let mut request = agent(url, proxy, read_timeout)
         .post(url)
         .set("accept", "application/json")
         .set("content-type", "application/json");
     for (name, value) in headers {
         request = request.set(name, value);
     }
-    let response = request
-        .send_string(body)
-        .map_err(|error| format!("{url}: {error}"))?;
-    read_capped(response, url, cap)
+    let response = request.send_string(body).map_err(|error| match error {
+        ureq::Error::Status(status, _) => PostJsonError::Http { status },
+        ureq::Error::Transport(error) => PostJsonError::Transport(format!("{url}: {error}")),
+    })?;
+    if !(200..300).contains(&response.status()) {
+        return Err(PostJsonError::Http {
+            status: response.status(),
+        });
+    }
+    read_capped(response, url, cap).map_err(PostJsonError::Protocol)
+}
+
+fn http_status_message(status: u16) -> &'static str {
+    match status {
+        401 | 403 => "the key was refused",
+        402 => "out of credits",
+        404 => "the model or engine was not found",
+        408 | 429 => "rate limited or timed out; retry later",
+        400..=499 => "the request was refused",
+        500..=599 => "the provider failed; retry later",
+        _ => "unexpected status",
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PostJsonError {
+    #[error("{0}")]
+    Transport(String),
+    #[error("HTTP {status}: {}", http_status_message(*status))]
+    Http { status: u16 },
+    #[error("{0}")]
+    Protocol(String),
 }
 
 pub fn waiting(sender: &Sender<AssistantMessageEvent>) -> impl Fn(Wait) + '_ {
@@ -226,7 +282,11 @@ fn stream_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
     let builder = ureq::AgentBuilder::new()
         .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(30))
-        .timeout_read(std::time::Duration::from_secs(60));
+        .timeout_read(std::time::Duration::from_secs(60))
+        // ureq keeps one idle connection per host by default, so a later turn of the session
+        // dialed again: the family's eight live streams is the width worth keeping.
+        .max_idle_connections(16)
+        .max_idle_connections_per_host(16);
     if let Some(proxy) = proxy {
         return builder.proxy(proxy.clone()).build();
     }
@@ -301,9 +361,18 @@ pub fn send_with_retry(
     headers: &[(String, String)],
     body: &crate::breakpoints::Encoded,
     proxy: Option<&ProxyConfig>,
+    stop: Option<&std::sync::atomic::AtomicBool>,
     on_retry: &dyn Fn(Wait),
 ) -> Result<ureq::Response, String> {
-    send_stripping_cache(url, headers, body, proxy, on_retry, &Stripped::default())
+    send_stripping_cache(
+        url,
+        headers,
+        body,
+        proxy,
+        stop,
+        on_retry,
+        &Stripped::default(),
+    )
 }
 
 /// One POST, retried by the policy; a cache-field 400 is asked again without the fields.
@@ -312,6 +381,7 @@ pub fn send_stripping_cache(
     headers: &[(String, String)],
     body: &crate::breakpoints::Encoded,
     proxy: Option<&ProxyConfig>,
+    stop: Option<&std::sync::atomic::AtomicBool>,
     on_retry: &dyn Fn(Wait),
     stripped: &Stripped,
 ) -> Result<ureq::Response, String> {
@@ -346,6 +416,11 @@ pub fn send_stripping_cache(
                 let retry_after = response
                     .header("retry-after")
                     .and_then(|value| value.parse::<f64>().ok());
+                let asked = match response.header("x-should-retry") {
+                    Some(value) if value.eq_ignore_ascii_case("true") => Some(true),
+                    Some(value) if value.eq_ignore_ascii_case("false") => Some(false),
+                    _ => None,
+                };
                 let text = response.into_string().unwrap_or_default();
                 if status == 400
                     && bare.is_none()
@@ -365,22 +440,47 @@ pub fn send_stripping_cache(
                 if quota_exhausted(status, &text, url) {
                     return Err(format!("HTTP {status} {QUOTA_STAMP} {text}"));
                 }
-                let retryable = is_retryable_status(status)
+                let retryable = asked.unwrap_or_else(|| is_retryable_status(status))
                     && attempt < policy.max_attempts
                     && started.elapsed() < policy.max_total_wall;
+                if asked == Some(false) {
+                    return Err(format!(
+                        "HTTP {status} {REFUSED_STAMP} x-should-retry: false: {text}"
+                    ));
+                }
                 if !retryable {
                     return Err(format!("HTTP {status}: {text}"));
                 }
-                let delay = retry_delay(attempt, retry_after_ms, retry_after, &policy);
+                let delay = match wait_for(
+                    attempt,
+                    server_wait(retry_after_ms, retry_after),
+                    &policy,
+                ) {
+                    Ok(delay) => delay,
+                    Err(wait) => {
+                        return Err(format!(
+                            "HTTP {status} {REFUSED_STAMP} the provider asked to wait {wait:?}, past the {:?} retry cap: {text}",
+                            policy.max_delay
+                        ));
+                    }
+                };
                 attempt = attempt.saturating_add(1);
-                announce(on_retry, attempt, &policy, delay, format!("HTTP {status}"));
-                if let Some(delay) = delay {
-                    std::thread::sleep(delay);
+                announce(
+                    on_retry,
+                    attempt,
+                    &policy,
+                    Some(delay),
+                    format!("HTTP {status}"),
+                );
+                if !sleep_in_slices(delay, stop) {
+                    return Err(format!(
+                        "HTTP {status}: the turn was cut during the {delay:?} retry wait"
+                    ));
                 }
             }
             Err(error) => {
                 if attempt < policy.max_attempts && started.elapsed() < policy.max_total_wall {
-                    let delay = retry_delay(attempt, None, None, &policy);
+                    let delay = crate::retry::retry_delay(attempt);
                     attempt = attempt.saturating_add(1);
                     // Incident: ureq writes the URL first, so an 80-char cut kept it and lost why.
                     let reason = match &error {
@@ -388,9 +488,9 @@ pub fn send_stripping_cache(
                         ureq::Error::Status(..) => error.to_string(),
                     };
                     let cause: String = reason.chars().take(80).collect();
-                    announce(on_retry, attempt, &policy, delay, cause);
-                    if let Some(delay) = delay {
-                        std::thread::sleep(delay);
+                    announce(on_retry, attempt, &policy, Some(delay), cause);
+                    if !sleep_in_slices(delay, stop) {
+                        return Err(format!("the turn was cut during the {delay:?} retry wait"));
                     }
                     continue;
                 }
@@ -398,6 +498,26 @@ pub fn send_stripping_cache(
             }
         }
     }
+}
+
+/// A backoff slept in one call cannot be interrupted: a cut then waits the whole wait out and
+/// sends the request the loop no longer wants. Slices end it within 100 ms of the cut.
+fn sleep_in_slices(
+    total: std::time::Duration,
+    stop: Option<&std::sync::atomic::AtomicBool>,
+) -> bool {
+    const SLICE: std::time::Duration = std::time::Duration::from_millis(100);
+    let cut = || stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
+    let mut left = total;
+    while !left.is_zero() {
+        if cut() {
+            return false;
+        }
+        let step = left.min(SLICE);
+        std::thread::sleep(step);
+        left = left.saturating_sub(step);
+    }
+    !cut()
 }
 
 fn announce(
@@ -426,6 +546,7 @@ pub fn pump_sse(
     let mut decoder = crate::sse::SseDecoder::default();
     let mut buffer = [0u8; 8192];
     let mut pending: Vec<u8> = Vec::new();
+    let mut consumed: u64 = 0;
     // the loop's cut is read between events; dropping the reader closes the connection (D163).
     let cut = || stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
     loop {
@@ -438,13 +559,34 @@ pub fn pump_sse(
             break;
         }
         pending.extend_from_slice(buffer.get(..read).unwrap_or_default());
-        let Ok(chunk) = std::str::from_utf8(&pending) else {
-            continue;
+        // Incident: a chunk boundary inside a multi-byte character, or an invalid byte, was skipped
+        // and the loop spun on a buffer that could never decode, stalling to the 60 s read timeout.
+        let (valid, invalid) = match std::str::from_utf8(&pending) {
+            Ok(_) => (pending.len(), None),
+            Err(error) => (
+                error.valid_up_to(),
+                error.error_len().map(|_| error.valid_up_to()),
+            ),
         };
-        let chunk = chunk.to_owned();
-        pending.clear();
+        if let Some(at) = invalid {
+            return Err(format!(
+                "the stream carried an invalid UTF-8 byte at offset {}",
+                consumed.saturating_add(u64::try_from(at).unwrap_or(u64::MAX))
+            ));
+        }
+        let chunk = pending
+            .get(..valid)
+            .and_then(|head| std::str::from_utf8(head).ok())
+            .unwrap_or_default()
+            .to_owned();
+        pending.drain(..valid);
+        consumed = consumed.saturating_add(u64::try_from(valid).unwrap_or(u64::MAX));
         for event in decoder.feed(&chunk) {
-            if cut() || !on_event(event)? {
+            if cut() {
+                return Ok(());
+            }
+            if !on_event(event)? {
+                drain_to_eof(reader);
                 return Ok(());
             }
         }
@@ -455,6 +597,46 @@ pub fn pump_sse(
         }
     }
     Ok(())
+}
+
+/// Incident: `response.completed` ends the Responses stream before the body's terminator, so the
+/// dropped reader never reached the pool. Reading on for 2 s hands the connection back to ureq.
+fn drain_to_eof(reader: Box<dyn std::io::Read + Send + Sync + 'static>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    const DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
+    const MAX_DRAINS: usize = 16;
+    static DRAINING: AtomicUsize = AtomicUsize::new(0);
+    // Incident: a read parks its thread on ureq's 60 s socket timeout past the 2 s wait, so a wide
+    // swarm leaked a thread and socket per turn; past MAX_DRAINS the connection is dropped unpooled.
+    if DRAINING.fetch_add(1, Ordering::Relaxed) >= MAX_DRAINS {
+        DRAINING.fetch_sub(1, Ordering::Relaxed);
+        return;
+    }
+    let (done, drained) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("yi-stream-drain".to_owned())
+        .spawn(move || {
+            let mut reader = reader;
+            let deadline = std::time::Instant::now() + DRAIN;
+            let mut sink = [0u8; 8192];
+            while std::time::Instant::now() < deadline {
+                match std::io::Read::read(&mut reader, &mut sink) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            drop(reader);
+            DRAINING.fetch_sub(1, Ordering::Relaxed);
+            let _ = done.send(());
+        });
+    match spawned {
+        Ok(_) => {
+            let _ = drained.recv_timeout(DRAIN);
+        }
+        Err(_) => {
+            DRAINING.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// a body that died before its first event is sent once more; the first error returns (D146).
@@ -668,14 +850,27 @@ pub fn merge_headers(
     merged
 }
 
-/// The bearer header a chat-completions route is sent with, live headers merged over it.
-pub fn bearer_headers(
+pub fn openai_bearer_post(
+    url: &str,
     model: &Model,
-    api_key: &str,
-    extra: &[(String, String)],
-) -> Vec<(String, String)> {
-    let headers = headers_for(model, vec![("authorization", format!("Bearer {api_key}"))]);
-    merge_headers(headers, extra.to_vec())
+    body: &crate::breakpoints::Encoded,
+    wire: Wire<'_>,
+    on_retry: &dyn Fn(Wait),
+    stripped: &Stripped,
+) -> Result<ureq::Response, String> {
+    let headers = headers_for(
+        model,
+        vec![("authorization", format!("Bearer {}", wire.api_key))],
+    );
+    send_stripping_cache(
+        url,
+        &merge_headers(headers, wire.extra.to_vec()),
+        body,
+        wire.proxy,
+        wire.stop,
+        on_retry,
+        stripped,
+    )
 }
 
 /// What one request needs beside its body: the key, the proxy, and the loop's cut flag.

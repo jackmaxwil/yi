@@ -305,6 +305,7 @@ fn a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go() -> TestResult
         &r.session,
         Arc::clone(&r.todos),
         Options {
+            deadline: None,
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
@@ -373,6 +374,7 @@ fn only_a_state_suppresses_the_interception() -> TestResult {
         &r.session,
         Arc::clone(&r.todos),
         Options {
+            deadline: None,
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
@@ -426,6 +428,7 @@ fn a_turn_that_ends_on_ask_user_is_not_an_empty_stop() -> TestResult {
         &r.session,
         Arc::clone(&r.todos),
         Options {
+            deadline: None,
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
@@ -449,6 +452,7 @@ fn terminal_stops_are_never_re_driven_and_empty_stops_are_capped() -> TestResult
         &r.session,
         Arc::clone(&r.todos),
         Options {
+            deadline: None,
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
@@ -493,6 +497,7 @@ fn a_multi_step_prompt_gets_the_prelude_and_force_is_opt_in() -> TestResult {
         &r.session,
         Arc::clone(&r.todos),
         Options {
+            deadline: None,
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
@@ -512,6 +517,7 @@ fn a_multi_step_prompt_gets_the_prelude_and_force_is_opt_in() -> TestResult {
         &r.session,
         Arc::clone(&r.todos),
         Options {
+            deadline: None,
             eager: Eager::Force,
             children_running: Arc::new(|| false),
             inner: None,
@@ -529,6 +535,7 @@ fn prelude_hooks(r: &Rig) -> yi_runtime::session::TurnCoupling {
         &r.session,
         Arc::clone(&r.todos),
         Options {
+            deadline: None,
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
@@ -983,6 +990,7 @@ fn the_cycle_counter_survives_a_resume() -> TestResult {
         &r.session,
         Arc::clone(&r.todos),
         Options {
+            deadline: None,
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
@@ -999,6 +1007,7 @@ fn the_cycle_counter_survives_a_resume() -> TestResult {
         &r.session,
         Arc::clone(&r.todos),
         Options {
+            deadline: None,
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
@@ -1031,6 +1040,184 @@ fn a_new_session_starts_with_no_todos_and_a_resume_brings_them_back() -> TestRes
         r.todos.list().progress().total,
         2,
         "the resume lost the list"
+    );
+    Ok(())
+}
+
+fn spec_scratch(name: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let dir = std::env::temp_dir().join(format!("yi334-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+fn spec_check(work: &std::path::Path, body: &str) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::write(work.join("check.py"), body)?;
+    Ok(())
+}
+
+fn spec_store(
+    r: &Rig,
+    work: &std::path::Path,
+) -> Result<Arc<yi_runtime::spec::SpecStore>, Box<dyn std::error::Error>> {
+    let store = yi_runtime::spec::SpecStore::new(
+        r.session.store_handle(),
+        work.to_path_buf(),
+        work.join(".yi-spec"),
+        true,
+        None,
+        None,
+    );
+    r.session.set_spec(Arc::clone(&store));
+    Ok(store)
+}
+
+fn spec_hooks(r: &Rig, deadline: Option<std::time::Duration>) -> yi_runtime::session::TurnCoupling {
+    coupling(
+        &r.session,
+        Arc::clone(&r.todos),
+        Options {
+            deadline,
+            eager: Eager::Prelude,
+            children_running: Arc::new(|| false),
+            inner: None,
+        },
+    )
+}
+
+fn stop_once(hooks: &yi_runtime::session::TurnCoupling, text: &str) -> Option<AgentMessage> {
+    let message = stop(text);
+    let snapshot = TurnSnapshot {
+        message: &message,
+        tool_results: &[],
+    };
+    (hooks.intercept_stop)(&snapshot)
+}
+
+const GREEN_CHECK: &str = "import pathlib,sys\ntry:\n    ok=pathlib.Path('out.txt').read_text().strip()=='done'\nexcept OSError:\n    ok=False\nprint(('ok 1 - R1 writes out.txt' if ok else 'not ok 1 - R1 out.txt is missing'))\nsys.exit(0 if ok else 1)\n";
+
+fn frozen_red(r: &Rig, work: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let store = spec_store(r, work)?;
+    spec_check(work, GREEN_CHECK)?;
+    store
+        .freeze(
+            vec![("Write out.txt".to_owned(), yi_types::spec::Kind::F2p)],
+            &["out.txt".to_owned()],
+            "python3 check.py",
+        )
+        .map_err(|error| format!("freeze refused: {error:?}"))?;
+    Ok(())
+}
+
+/// The stop is judged by the harness-run check: an enumerated request that froze nothing is
+/// refused with the count the request made, never accepted on the model's prose.
+#[test]
+fn a_clean_stop_with_no_spec_is_refused_with_the_enumerated_count() -> TestResult {
+    let r = rig("spec-missing")?;
+    let work = spec_scratch("missing")?;
+    let _store = spec_store(&r, &work)?;
+    let hooks = spec_hooks(&r, None);
+    let prompt = user("Do three things:\n1. write the parser\n2. add its test\n3. update the docs");
+    let _ = (hooks.on_prompt)(&prompt);
+    let message = stop_once(&hooks, "Done.")
+        .ok_or("a stop with no spec on an enumerated request must be refused")?;
+    let (kind, _, text) = custom_type(&message);
+    assert_eq!(kind, INTERCEPT_CUSTOM_TYPE);
+    assert!(text.contains("No spec exists"), "{text}");
+    assert!(text.contains("enumerates 3 items"), "{text}");
+    Ok(())
+}
+
+/// A frozen check whose last run is green and newer than the last write is the one clean stop
+/// the rule accepts.
+#[test]
+fn a_green_spec_run_after_the_last_write_lets_the_stop_through() -> TestResult {
+    let r = rig("spec-green")?;
+    let work = spec_scratch("green")?;
+    frozen_red(&r, &work)?;
+    let store = spec_store(&r, &work)?;
+    std::fs::write(work.join("out.txt"), "done\n")?;
+    store.note_write();
+    store.run(yi_types::spec::RunKind::Run)?;
+    let hooks = spec_hooks(&r, None);
+    let left = stop_once(&hooks, "Done.");
+    if let Some(message) = left {
+        return Err(format!("refused a green spec: {}", custom_type(&message).2).into());
+    }
+    Ok(())
+}
+
+/// A red requirement refuses the stop and names the id with the check's own diagnostic line,
+/// so the model fixes the code rather than restating the claim.
+#[test]
+fn a_red_spec_refuses_the_stop_and_names_the_requirement() -> TestResult {
+    let r = rig("spec-red")?;
+    let work = spec_scratch("red")?;
+    frozen_red(&r, &work)?;
+    let store = spec_store(&r, &work)?;
+    store.run(yi_types::spec::RunKind::Run)?;
+    let hooks = spec_hooks(&r, None);
+    let message = stop_once(&hooks, "Done.").ok_or("a red requirement must refuse the stop")?;
+    let (kind, _, text) = custom_type(&message);
+    assert_eq!(kind, INTERCEPT_CUSTOM_TYPE);
+    assert!(text.contains("R1"), "{text}");
+    assert!(text.contains("out.txt is missing"), "{text}");
+    Ok(())
+}
+
+/// A write after the last run makes the run stale, and the stop runs the check itself: the
+/// model's own bash call naming the checker is not a run.
+#[test]
+fn a_write_after_the_last_run_makes_the_stop_run_the_check_itself() -> TestResult {
+    let r = rig("spec-stale")?;
+    let work = spec_scratch("stale")?;
+    frozen_red(&r, &work)?;
+    let store = spec_store(&r, &work)?;
+    std::fs::write(work.join("out.txt"), "done\n")?;
+    store.run(yi_types::spec::RunKind::Run)?;
+    std::fs::remove_file(work.join("out.txt"))?;
+    store.note_write();
+    let hooks = spec_hooks(&r, None);
+    let message =
+        stop_once(&hooks, "Done.").ok_or("a stale run must be re-run and refused when red")?;
+    let (_, _, text) = custom_type(&message);
+    assert!(text.contains("out.txt is missing"), "{text}");
+    Ok(())
+}
+
+/// The refusal repeats under a deadline; with no clock the same refusal waives after three and
+/// records that it did.
+#[test]
+fn the_refusal_repeats_under_a_deadline_and_waives_at_three_without_one() -> TestResult {
+    let r = rig("spec-clock")?;
+    let work = spec_scratch("clock")?;
+    frozen_red(&r, &work)?;
+    let store = spec_store(&r, &work)?;
+    store.run(yi_types::spec::RunKind::Run)?;
+    let clocked = spec_hooks(&r, Some(std::time::Duration::from_secs(600)));
+    for _ in 0..5 {
+        assert!(
+            stop_once(&clocked, "Done.").is_some(),
+            "the clock is the only other exit"
+        );
+    }
+    let open = spec_hooks(&r, None);
+    for attempt in 1..=yi_runtime::spec::gate::REFUSAL_CAP {
+        assert!(
+            stop_once(&open, "Done.").is_some(),
+            "refusal {attempt} under the cap must refuse"
+        );
+    }
+    assert!(
+        stop_once(&open, "Done.").is_none(),
+        "past the cap with no clock the refusal waives"
+    );
+    let waived = intercept_records(&r.store);
+    assert!(
+        waived
+            .iter()
+            .any(|record| record.reason == yi_runtime::spec::gate::WAIVED),
+        "the waiver is recorded: {waived:?}"
     );
     Ok(())
 }

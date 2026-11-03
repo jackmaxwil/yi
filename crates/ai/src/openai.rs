@@ -1,18 +1,22 @@
 use serde_json::{Value, json};
-use tokio::sync::mpsc::{Receiver, Sender};
+use std::borrow::Cow;
+use tokio::sync::mpsc::Receiver;
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{
     AgentMessage, Content, RAW_STOP_IN_BAND_ERROR, StopReason, Usage, UserContent,
 };
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
+mod stream;
+
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::{
     compat_bool, developer_role, moonshot, nested_reasoning, replays_reasoning_content,
 };
-use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
+use crate::json_salvage::parse_streaming_json;
 use crate::request::{assistant_block_mut, content_end_events, push_assistant_block};
+use crate::request::{image_url, object};
 use crate::transform::{system_text, transform_messages};
 
 const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasoning_text"];
@@ -103,14 +107,14 @@ pub fn normalize_openai_tool_call_id(id: &str) -> String {
 /// of the message it came from, which is what a breakpoint position names.
 fn convert_messages(
     model: &Model,
-    transformed: &[AgentMessage],
+    transformed: &[Cow<'_, AgentMessage>],
     params: &mut Vec<Value>,
     origins: &mut Vec<Option<usize>>,
 ) {
     let _span = yi_types::trace::span("ai.convert_messages");
     let mut index = 0;
     while index < transformed.len() {
-        match &transformed[index] {
+        match transformed[index].as_ref() {
             AgentMessage::User { content, .. } => match content {
                 UserContent::Text(text) => {
                     params.push(json!({"role": "user", "content": text}));
@@ -123,15 +127,15 @@ fn convert_messages(
                             Content::Text { text, .. } => {
                                 Some(json!({"type": "text", "text": text}))
                             }
-                            Content::Image { data, mime_type } => Some(json!({
-                                "type": "image_url",
-                                "image_url": {"url": format!("data:{mime_type};base64,{data}")},
-                            })),
+                            Content::Image { data, mime_type } => Some(image_url(data, mime_type)),
                             _ => None,
                         })
                         .collect();
                     if !parts.is_empty() {
-                        params.push(json!({"role": "user", "content": parts}));
+                        params.push(object([
+                            ("role", json!("user")),
+                            ("content", Value::Array(parts)),
+                        ]));
                         origins.push(Some(index));
                     }
                 }
@@ -217,7 +221,7 @@ fn assistant_param(model: &Model, content: &[Content]) -> Option<Value> {
 
 fn push_tool_results(
     model: &Model,
-    transformed: &[AgentMessage],
+    transformed: &[Cow<'_, AgentMessage>],
     start: usize,
     params: &mut Vec<Value>,
     origins: &mut Vec<Option<usize>>,
@@ -229,7 +233,7 @@ fn push_tool_results(
             tool_call_id,
             content,
             ..
-        }) = transformed.get(index)
+        }) = transformed.get(index).map(AsRef::as_ref)
         {
             let text: String = yi_types::message::join_text(content, "\n");
             let has_images = content
@@ -242,19 +246,16 @@ fn push_tool_results(
             } else {
                 "(no tool output)".to_owned()
             };
-            params.push(json!({
-                "role": "tool",
-                "content": body,
-                "tool_call_id": tool_call_id,
-            }));
+            params.push(object([
+                ("role", json!("tool")),
+                ("content", Value::String(body)),
+                ("tool_call_id", json!(tool_call_id)),
+            ]));
             origins.push(Some(index));
             if has_images && model.input.iter().any(|kind| kind == "image") {
                 for block in content {
                     if let Content::Image { data, mime_type } = block {
-                        images.push(json!({
-                            "type": "image_url",
-                            "image_url": {"url": format!("data:{mime_type};base64,{data}")},
-                        }));
+                        images.push(image_url(data, mime_type));
                     }
                 }
             }
@@ -265,7 +266,10 @@ fn push_tool_results(
             let mut parts =
                 vec![json!({"type": "text", "text": "Attached image(s) from tool result:"})];
             parts.extend(images);
-            params.push(json!({"role": "user", "content": parts}));
+            params.push(object([
+                ("role", json!("user")),
+                ("content", Value::Array(parts)),
+            ]));
             // Synthesized, so no position names it: the mark stays on the tool message's text.
             origins.push(None);
         }
@@ -332,12 +336,12 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         origins.push(None);
     }
     convert_messages(model, &history, &mut messages, &mut origins);
-    let mut params = json!({
-        "model": model.id,
-        "messages": messages,
-        "stream": true,
-        "stream_options": {"include_usage": true},
-    });
+    let mut params = object([
+        ("model", json!(model.id)),
+        ("messages", Value::Array(messages)),
+        ("stream", json!(true)),
+        ("stream_options", json!({"include_usage": true})),
+    ]);
     let transient = transform_messages(
         &context.transient,
         model,
@@ -498,9 +502,12 @@ fn map_finish_reason(reason: &str) -> (StopReason, Option<String>) {
     }
 }
 
-fn parse_chunk_usage(raw: &Value, model: &Model) -> Usage {
-    let get = |value: &Value, key: &str| value.get(key).and_then(Value::as_i64).unwrap_or(0);
-    let prompt = get(raw, "prompt_tokens");
+pub(crate) fn parse_chunk_usage(raw: &Value, model: &Model) -> Usage {
+    let prompt = raw
+        .get("prompt_tokens")
+        .or_else(|| raw.get("input_tokens"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     let details = raw.get("prompt_tokens_details");
     let cache_read = details
         .and_then(|value| value.get("cached_tokens"))
@@ -515,7 +522,11 @@ fn parse_chunk_usage(raw: &Value, model: &Model) -> Usage {
     let input = prompt
         .saturating_sub(cache_read)
         .saturating_sub(cache_write);
-    let output = get(raw, "completion_tokens");
+    let output = raw
+        .get("completion_tokens")
+        .or_else(|| raw.get("output_tokens"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     let mut usage = Usage::zero();
     usage.input = input;
     usage.output = output;
@@ -554,6 +565,7 @@ pub struct ChunkMapper {
     thinking_index: Option<usize>,
     tools: Vec<ToolSlot>,
     has_finish_reason: bool,
+    refusal: String,
 }
 
 impl ChunkMapper {
@@ -565,6 +577,7 @@ impl ChunkMapper {
             thinking_index: None,
             tools: Vec::new(),
             has_finish_reason: false,
+            refusal: String::new(),
         }
     }
 
@@ -637,6 +650,9 @@ impl ChunkMapper {
         };
         self.on_text_delta(delta, &mut events);
         self.on_thinking_delta(delta, &mut events);
+        if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
+            self.refusal.push_str(refusal);
+        }
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tool_call in tool_calls {
                 self.on_tool_call_delta(tool_call, &mut events);
@@ -752,7 +768,7 @@ impl ChunkMapper {
                     });
                     self.tools.len().saturating_sub(1)
                 });
-            let (content_index, parsed, delta_text) = {
+            let (content_index, delta_text) = {
                 let Some(slot) = self.tools.get_mut(slot_position) else {
                     return;
                 };
@@ -765,16 +781,11 @@ impl ChunkMapper {
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 slot.partial_args.push_str(arguments);
-                (
-                    slot.content_index,
-                    parse_streaming_json(&slot.partial_args),
-                    arguments.to_owned(),
-                )
+                (slot.content_index, arguments.to_owned())
             };
             if let Some(Content::ToolCall {
                 id: block_id,
                 name: block_name,
-                arguments,
                 ..
             }) = assistant_block_mut(&mut self.output, content_index)
             {
@@ -784,7 +795,6 @@ impl ChunkMapper {
                 if block_name.is_empty() && !name.is_empty() {
                     *block_name = name.to_owned();
                 }
-                *arguments = parsed;
             }
             events.push(AssistantMessageEvent::ToolCallDelta {
                 content_index,
@@ -794,7 +804,16 @@ impl ChunkMapper {
     }
 
     pub fn finish(mut self) -> Vec<AssistantMessageEvent> {
+        self.settle_calls();
+        crate::leak::recover_in(&mut self.output);
         let mut events = content_end_events(&mut self.output, |_| true);
+        // Incident: a refusal arrived as `delta.refusal` and the turn ended as an empty Stop, so
+        // the loop read it as an answer with no text. It is the provider's answer, named.
+        if !self.refusal.is_empty() {
+            let refusal = std::mem::take(&mut self.refusal);
+            events.push(self.fail(&format!("The model refused: {refusal}")));
+            return events;
+        }
         let pending = matches!(
             &self.output,
             AgentMessage::Assistant {
@@ -811,7 +830,18 @@ impl ChunkMapper {
     }
 
     pub fn fail(&mut self, message: &str) -> AssistantMessageEvent {
+        self.settle_calls();
         crate::request::fail_message(&mut self.output, message)
+    }
+
+    fn settle_calls(&mut self) {
+        for slot in &self.tools {
+            if let Some(Content::ToolCall { arguments, .. }) =
+                assistant_block_mut(&mut self.output, slot.content_index)
+            {
+                *arguments = parse_streaming_json(&slot.partial_args);
+            }
+        }
     }
 
     /// The stream was dropped at the reasoning budget (D163): no finish reason will come, and
@@ -822,137 +852,6 @@ impl ChunkMapper {
             *stop_reason = StopReason::Length;
         }
     }
-}
-
-/// A turn whose stream never reached its usage chunk, settled from the generation record
-/// (D163); with a hook, the fetch is returned as a job to start once the turn has ended.
-fn settle_from_record(
-    output: &mut AgentMessage,
-    model: &Model,
-    wire: &crate::request::Wire<'_>,
-) -> Option<crate::settle::Job> {
-    let AgentMessage::Assistant {
-        usage,
-        response_id: Some(id),
-        ..
-    } = output
-    else {
-        return None;
-    };
-    if !usage.unknown || !crate::settle::settles(model) {
-        return None;
-    }
-    if let Some(hook) = wire.settle {
-        let (hook, model, id) = (hook.clone(), model.clone(), id.clone());
-        let (key, proxy) = (wire.api_key.to_owned(), wire.proxy.cloned());
-        return Some(crate::settle::job(move || {
-            if let Some((settled, upstream)) =
-                crate::settle::generation_usage(&model, &key, proxy.as_ref(), &id)
-            {
-                (hook.0)(settled, upstream);
-            }
-        }));
-    }
-    if let Some((settled, upstream)) =
-        crate::settle::generation_usage(model, wire.api_key, wire.proxy, id)
-    {
-        *usage = settled;
-        if let Some(upstream) = upstream {
-            crate::request::note_upstream(output, &upstream);
-        }
-    }
-    None
-}
-
-fn detach_settlement(job: Option<crate::settle::Job>) {
-    if let Some(job) = job {
-        crate::settle::detach(job);
-    }
-}
-
-fn run_request(
-    model: &Model,
-    body: &Encoded,
-    wire: crate::request::Wire<'_>,
-    sender: &Sender<AssistantMessageEvent>,
-) -> Result<(), String> {
-    let crate::request::Wire {
-        api_key,
-        proxy,
-        stop,
-        extra,
-        oauth,
-        settle: _,
-    } = wire;
-    let url = format!("{}/chat/completions", model.base_url);
-    let mut mapper = ChunkMapper::new(model);
-    let _ = sender.blocking_send(mapper.start_event());
-    let retried = crate::request::waiting(sender);
-    let stripped = crate::request::Stripped::default();
-    let pumped = crate::request::pump_sse_with_resend(
-        stop,
-        || {
-            crate::request::send_stripping_cache(
-                &url,
-                &crate::request::bearer_headers(model, api_key, extra),
-                body,
-                proxy,
-                &retried,
-                &stripped,
-            )
-        },
-        |sse| {
-            if sse.data == "[DONE]" {
-                return Ok(true);
-            }
-            if let Ok(payload) = parse_json_with_repair(&sse.data) {
-                for event in mapper.push_chunk(&payload) {
-                    let _ = sender.blocking_send(event);
-                }
-            }
-            Ok(true)
-        },
-    );
-    crate::request::record_stripped(&mut mapper.output, &stripped);
-    let resent = match pumped {
-        Ok(resent) => resent,
-        // a stream that died after its first chunk was billed for what it generated: the
-        // error turn is settled from the record (D79, #331); one that died before any chunk
-        // has no record and stays unknown
-        Err(message) => {
-            detach_settlement(settle_from_record(&mut mapper.output, model, &wire));
-            let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
-                &message,
-                oauth,
-                &model.provider,
-            )));
-            return Ok(());
-        }
-    };
-    crate::request::note_reply(&mut mapper.output, resent, &stripped);
-    // a cut dropped the stream before its finish and usage chunks: the turn ends as a length
-    // stop and is settled from the generation record (D163)
-    let cut = stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
-    if cut {
-        mapper.cut();
-    }
-    // an in-band error chunk ends the stream before its usage chunk: settled the same way (D175)
-    let failed = matches!(
-        mapper.output,
-        AgentMessage::Assistant {
-            stop_reason: StopReason::Error,
-            ..
-        }
-    );
-    detach_settlement(
-        (cut || failed)
-            .then(|| settle_from_record(&mut mapper.output, model, &wire))
-            .flatten(),
-    );
-    for event in mapper.finish() {
-        let _ = sender.blocking_send(event);
-    }
-    Ok(())
 }
 
 pub fn stream(
@@ -973,6 +872,6 @@ pub fn stream(
             oauth: options.oauth,
             settle: options.settle.clone(),
         },
-        run_request,
+        stream::run_request,
     )
 }

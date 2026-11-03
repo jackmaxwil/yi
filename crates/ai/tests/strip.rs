@@ -84,6 +84,7 @@ fn a_400_naming_a_cache_field_is_resent_once_without_it() -> TestResult {
         &[],
         &marked_body(),
         None,
+        None,
         &|_| {},
         &stripped,
     )?;
@@ -123,6 +124,7 @@ fn a_400_that_names_no_cache_field_is_not_resent() -> TestResult {
         &url(port),
         &[],
         &marked_body(),
+        None,
         None,
         &|_| {},
         &stripped,
