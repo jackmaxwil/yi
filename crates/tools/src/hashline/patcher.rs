@@ -105,6 +105,14 @@ impl<'a> Patcher<'a> {
         }
     }
 
+    pub fn for_call(snapshots: &'a mut SnapshotStore, context: &crate::ToolContext) -> Self {
+        let mut patcher = Self::new(snapshots, context.cwd.clone());
+        patcher.walls = context.write_walls();
+        patcher.program = context.program;
+        patcher.gate.hold_opens(context.hold_opens.clone());
+        patcher
+    }
+
     fn write(&self, path: &Path, content: &str) -> std::io::Result<()> {
         let mut file = self.gate.open_write(path, &self.walls)?;
         crate::tool::overwrite(&mut file, content.as_bytes())

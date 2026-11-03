@@ -44,17 +44,18 @@ macro_rules! levers {
             /// Invariant: an override is refused, never clamped: an unknown key, a lever that
             /// is not tunable, a value that is not an integer, a value outside the range.
             fn set(&mut self, key: &str, value: &Value) -> Result<(), String> {
+                let Some(spec) = Self::SPECS.iter().find(|spec| spec.key == key) else {
+                    return Err(format!("unknown lever {key}"));
+                };
+                if !spec.tunable {
+                    return Err(format!("{key} is not tunable"));
+                }
+                let number = value
+                    .as_i64()
+                    .filter(|number| (spec.min..=spec.max).contains(number))
+                    .ok_or_else(|| format!("{key} wants an integer in {}..={}, not {value}", spec.min, spec.max))?;
                 match key {
-                    $($key => {
-                        if !$tunable {
-                            return Err(format!("{key} is not tunable"));
-                        }
-                        let number = value
-                            .as_i64()
-                            .filter(|number| ($min..=$max).contains(number))
-                            .ok_or_else(|| format!("{key} wants an integer in {}..={}, not {value}", $min, $max))?;
-                        self.$field = <$ty>::try_from(number).map_err(|error| format!("{key}: {error}"))?;
-                    })*
+                    $($key => self.$field = <$ty>::try_from(number).map_err(|error| format!("{key}: {error}"))?,)*
                     _ => return Err(format!("unknown lever {key}")),
                 }
                 Ok(())
@@ -84,7 +85,7 @@ levers! {
     todo_empty_stop_cap: u32 = "todo.empty_stop_cap", todo_gate::EMPTY_STOP_CAP, 1..=8, true;
     todo_ladder_top: u8 = "todo.ladder_top", todo_gate::LADDER_TOP, 1..=3, false;
     family_max_children: usize = "family.max_children", subagent::DEFAULT_MAX_CHILDREN, 2..=128, true;
-    family_cap: usize = "family.cap", subagent::FAMILY_CAP, 4..=128, true;
+    family_cap: usize = "family.cap", subagent::FAMILY_CAP, 4..=129, true;
     family_depth: u8 = "family.depth", yi_types::config::DEFAULT_MAX_DEPTH, 1..=3, false;
     family_stuck_idle_s: u64 = "family.stuck_idle_s", family::STUCK_IDLE_MS / 1000, 60..=1800, true;
     mail_wait_min_ms: u64 = "mail.wait_min_ms", mailbox::WAIT_MIN_MS, 100..=10000, false;
@@ -107,6 +108,7 @@ levers! {
     review_timeout_s: u64 = "review.timeout_s", auto_review::REVIEW_TIMEOUT.as_secs(), 10..=120, true;
     graph_next_lines: usize = "graph.next_lines", crate::todo::text::NEXT_LINES, 1..=5, true;
     reclaim_keep_turns: u64 = "reclaim.keep_turns", crate::reclaim::KEEP_TURNS, 1..=1000, true;
+    compaction_render: u8 = "compaction.render", crate::compaction::RENDER, 0..=1, true;
 }
 
 impl Default for Levers {
