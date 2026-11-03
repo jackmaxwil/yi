@@ -182,14 +182,19 @@ fn should_terminate(finalized: &[Finalized]) -> bool {
 
 async fn execute_one(
     tools: &[Arc<dyn AgentTool>],
-    names: &[String],
     call: ExtractedCall,
     signal: &InterruptSignal,
 ) -> Finalized {
+    let names: Vec<String> = tools
+        .iter()
+        .map(|tool| tool.definition().name.clone())
+        .collect();
     let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
     // One deterministic repair, then the call fails with the real error.
-    let resolved = crate::repair::repair_tool_name(&call.name, &borrowed).unwrap_or(&call.name);
-    let Some(tool) = crate::repair::named(tools, names, resolved) else {
+    let resolved = crate::repair::repair_tool_name(&call.name, &borrowed)
+        .map(str::to_owned)
+        .unwrap_or_else(|| call.name.clone());
+    let Some(tool) = tools.iter().find(|tool| tool.definition().name == resolved) else {
         let text = format!("Tool {} not found", call.name);
         return Finalized {
             call,
@@ -251,13 +256,12 @@ fn stamp_details(item: &mut Finalized, duration_ms: u64) {
 
 async fn execute_timed(
     tools: &[Arc<dyn AgentTool>],
-    names: &[String],
     call: ExtractedCall,
     signal: &InterruptSignal,
 ) -> Finalized {
     let started = std::time::Instant::now();
     let _span = yi_types::trace::span("tool.call").arg("tool", call.name.as_str());
-    let mut item = execute_one(tools, names, call, signal).await;
+    let mut item = execute_one(tools, call, signal).await;
     let duration = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     stamp_details(&mut item, duration);
     item
@@ -300,15 +304,12 @@ async fn execute_tool_calls(
     signal: &InterruptSignal,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> (Vec<Finalized>, bool) {
-    let names: Vec<String> = context
-        .tools
-        .iter()
-        .map(|tool| tool.definition().name)
-        .collect();
     let parallel_ok = |call: &ExtractedCall| {
         mode == ExecutionMode::Parallel
-            && crate::repair::named(&context.tools, &names, &call.name)
-                .is_some_and(|tool| tool.execution_mode(&call.arguments) == ExecutionMode::Parallel)
+            && context.tools.iter().any(|tool| {
+                tool.definition().name == call.name
+                    && tool.execution_mode(&call.arguments) == ExecutionMode::Parallel
+            })
     };
     let mut finalized = Vec::new();
     let mut queue = calls.into_iter().peekable();
@@ -331,7 +332,7 @@ async fn execute_tool_calls(
         let items = join_all(
             batch
                 .into_iter()
-                .map(|call| Box::pin(execute_timed(&context.tools, &names, call, signal)))
+                .map(|call| Box::pin(execute_timed(&context.tools, call, signal)))
                 .collect(),
         )
         .await;

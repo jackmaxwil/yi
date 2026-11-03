@@ -672,22 +672,7 @@ impl Mapper {
                     });
                 }
                 Some(Content::ToolCall { .. }) => {
-                    let final_arguments = self
-                        .partial_json
-                        .get_mut(content_index)
-                        .and_then(Option::take)
-                        .map(|buffer| parse_streaming_json(&buffer))
-                        .unwrap_or_default();
-                    if let Some(Content::ToolCall { arguments, .. }) =
-                        assistant_block_mut(&mut self.output, content_index)
-                    {
-                        if !final_arguments.is_empty() || arguments.is_empty() {
-                            *arguments = final_arguments;
-                        }
-                        if let Cow::Owned(fixed) = crate::leak::unleak(arguments) {
-                            *arguments = fixed;
-                        }
-                    }
+                    self.settle_call(content_index);
                     if let Some(block) =
                         assistant_block_mut(&mut self.output, content_index).cloned()
                     {
@@ -772,16 +757,32 @@ impl Mapper {
     }
 
     fn settle_open_calls(&mut self) {
-        for (content_index, buffer) in self.partial_json.iter_mut().enumerate() {
-            let Some(buffer) = buffer.take() else {
-                continue;
-            };
-            let parsed = parse_streaming_json(&buffer);
-            if let Some(Content::ToolCall { arguments, .. }) =
-                assistant_block_mut(&mut self.output, content_index)
-                && (!parsed.is_empty() || arguments.is_empty())
+        for content_index in 0..self.partial_json.len() {
+            if self
+                .partial_json
+                .get(content_index)
+                .is_some_and(Option::is_some)
             {
+                self.settle_call(content_index);
+            }
+        }
+    }
+
+    fn settle_call(&mut self, content_index: usize) {
+        let parsed = self
+            .partial_json
+            .get_mut(content_index)
+            .and_then(Option::take)
+            .map(|buffer| parse_streaming_json(&buffer))
+            .unwrap_or_default();
+        if let Some(Content::ToolCall { arguments, .. }) =
+            assistant_block_mut(&mut self.output, content_index)
+        {
+            if !parsed.is_empty() || arguments.is_empty() {
                 *arguments = parsed;
+            }
+            if let Cow::Owned(fixed) = crate::leak::unleak(arguments) {
+                *arguments = fixed;
             }
         }
     }

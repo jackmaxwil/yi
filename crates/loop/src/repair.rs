@@ -35,8 +35,3 @@ fn normalize(name: &str) -> String {
         .unwrap_or(without_suffix)
         .to_owned()
 }
-
-pub(crate) fn named<'t, T>(items: &'t [T], names: &[String], requested: &str) -> Option<&'t T> {
-    let index = names.iter().position(|name| name == requested)?;
-    items.get(index)
-}

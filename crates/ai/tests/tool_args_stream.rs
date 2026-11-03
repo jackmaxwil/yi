@@ -233,3 +233,14 @@ fn a_stream_cut_mid_call_keeps_the_best_effort_object() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn an_anthropic_cut_repairs_a_leaked_argument_like_a_normal_stop() -> TestResult {
+    let leaked = r#"{"done<arg_key>evidence": "tests pass"}"#;
+    let repaired = yi_ai::leak::unleak(&parse_streaming_json(leaked)).into_owned();
+    assert_ne!(repaired, parse_streaming_json(leaked), "fixture must leak");
+    let mut live = Live::open(Adapter::Anthropic);
+    let _ = live.delta(leaked);
+    assert_eq!(error_arguments(&live.cut()), Some(&repaired));
+    Ok(())
+}
