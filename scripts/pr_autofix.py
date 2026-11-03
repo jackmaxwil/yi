@@ -1038,7 +1038,7 @@ def in_worker(work, op, args):
                            stdin=asked, stdout=out, stderr=err, **drop)
         finally:
             if drop:
-                subprocess.run([python, "-c", "import os, signal; os.kill(-1, signal.SIGKILL)"], cwd="/", env=env, check=False, **drop)
+                subprocess.run([PYTHON, "-c", "import os, signal; os.kill(-1, signal.SIGKILL)"], cwd="/", env=env, check=False, **drop)
         out.seek(0)
         err.seek(0)
         said, died = out.read(), err.read()
