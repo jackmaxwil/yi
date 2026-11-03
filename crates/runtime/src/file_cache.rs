@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// Invariant: inode catches replacement with length and mtime retained; a caller that must
 /// also catch an in-place rewrite with restored metadata supplies the file's last line.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Stamp {
     dev: u64,
     ino: u64,
