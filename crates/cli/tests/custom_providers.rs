@@ -188,16 +188,13 @@ fn a_declared_provider_with_no_key_is_refused_before_any_request() -> TestResult
     let row = providers_row(&home, &[])?;
     assert_eq!(row["status"], "fail", "{row}");
     let detail = row["detail"].as_str().unwrap_or_default();
-    assert!(
-        detail.ends_with("no key (export LOCALGW_API_KEY or set apiKeyEnv)"),
-        "{row}"
-    );
+    assert!(detail.ends_with("no key (export LOCALGW_API_KEY)"), "{row}");
     Ok(())
 }
 
-/// A key only the yi-oauth store holds is named by the file it actually lives at.
+/// A key only the yi-oauth store holds names the store, whose file names sanitize the id.
 #[test]
-fn a_stored_key_names_the_token_file_it_came_from() -> TestResult {
+fn a_stored_key_names_the_store_it_came_from() -> TestResult {
     let home = Home::new("stored", &localgw(1, json!({})))?;
     let tokens = home.dir.join("home/.yi/providers/tokens");
     std::fs::create_dir_all(&tokens)?;
@@ -209,7 +206,7 @@ fn a_stored_key_names_the_token_file_it_came_from() -> TestResult {
     assert_eq!(row["status"], "ok", "{row}");
     let detail = row["detail"].as_str().unwrap_or_default();
     assert!(
-        detail.ends_with("key from ~/.yi/providers/tokens/localgw.json"),
+        detail.ends_with("key from the yi-oauth store in ~/.yi/providers/tokens"),
         "{row}"
     );
     Ok(())

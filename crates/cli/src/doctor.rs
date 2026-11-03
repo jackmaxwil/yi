@@ -173,13 +173,13 @@ fn custom_providers(site: &Site) -> Finding {
         {
             "key from apiKey".to_owned()
         } else if yi_runtime::auth::stored_key(&site.home, id).is_some() {
-            format!("key from ~/.yi/providers/tokens/{id}.json")
+            "key from the yi-oauth store in ~/.yi/providers/tokens".to_owned()
         } else {
             missing = true;
-            let env = (provider.api_key_env.as_deref())
-                .map(|variable| format!("export {variable} or "))
-                .unwrap_or_default();
-            format!("no key ({env}set apiKeyEnv)")
+            match provider.api_key_env.as_deref() {
+                Some(variable) => format!("no key (export {variable})"),
+                None => "no key (set apiKeyEnv)".to_owned(),
+            }
         };
         rows.push(format!(
             "{id} {} model(s) at {}, {from}",

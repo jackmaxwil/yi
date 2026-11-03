@@ -98,6 +98,26 @@ impl TryFrom<std::collections::BTreeMap<String, CustomProvider>> for Providers {
                 "providers: `{bad}` is not a provider id (empty, or holds `/`)"
             ));
         }
+        for (id, provider) in &map {
+            let url = &provider.base_url;
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return Err(format!(
+                    "providers.{id}.baseUrl: `{url}` is not an http(s) URL"
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            if provider.models.is_empty() {
+                return Err(format!("providers.{id}.models: declares no model"));
+            }
+            if let Some(bad) = (provider.models.iter())
+                .find(|model| !seen.insert(&model.id) || model.id.is_empty())
+            {
+                return Err(format!(
+                    "providers.{id}.models: `{}` is empty or declared twice",
+                    bad.id
+                ));
+            }
+        }
         Ok(Self(map))
     }
 }

@@ -21,17 +21,4 @@ while IFS= read -r flag; do
   [ -n "$flag" ] && remap+=("$flag")
 done <<< "$remap_text"
 
-
-build="${CARGO_TARGET_DIR:-target}"
-previous=""
-for argument in "$@"; do
-  [ "$previous" = "--target" ] && build="$build/$argument"
-  previous="$argument"
-done
-
-env RUSTFLAGS="${RUSTFLAGS:-} ${remap[*]}" cargo build --profile dist -p yi-cli "$@"
-
-bin="$build/dist/yi"
-if [ "$(uname -s)" = Linux ] && command -v objcopy >/dev/null && [ -x "$bin" ]; then
-  objcopy --remove-section=.eh_frame --remove-section=.eh_frame_hdr "$bin"
-fi
+exec env RUSTFLAGS="${RUSTFLAGS:-} ${remap[*]}" cargo build --profile dist -p yi-cli "$@"

@@ -39,10 +39,10 @@ pub struct Resolved {
 }
 
 /// Where a `config.json` provider's key is: `apiKeyEnv`'s variable, else the literal `apiKey`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct CustomKey {
     pub env: Option<String>,
-    pub literal: Option<String>,
+    pub literal: Option<Secret>,
 }
 
 static CUSTOM_KEYS: std::sync::OnceLock<Vec<(String, CustomKey)>> = std::sync::OnceLock::new();
@@ -72,7 +72,7 @@ fn env_key(provider: &str) -> Option<Secret> {
         .and_then(|variable| std::env::var(variable).ok())
         .filter(|value| !value.is_empty());
     from_env
-        .or_else(|| custom_key(provider)?.literal.clone())
+        .or_else(|| Some(custom_key(provider)?.literal.as_ref()?.expose().to_owned()))
         .filter(|value| !value.is_empty())
         .map(Secret::new)
 }

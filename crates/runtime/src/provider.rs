@@ -53,7 +53,7 @@ pub fn set_custom_providers(providers: &yi_types::config::Providers) {
             .map(|(id, provider)| {
                 let key = yi_ai::auth::CustomKey {
                     env: provider.api_key_env.clone(),
-                    literal: provider.api_key.clone(),
+                    literal: provider.api_key.clone().map(yi_ai::auth::Secret::new),
                 };
                 (id.to_owned(), key)
             })
