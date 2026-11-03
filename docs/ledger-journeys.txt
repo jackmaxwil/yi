@@ -415,6 +415,7 @@ lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an e
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_ref_only_hand_back_lists_the_edits_it_kept`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_fast_forward_hand_back_keeps_nothing_and_says_so_by_omission`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_claim_rebuilds_a_slot_git_still_registers_without_its_directory`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_resume_past_a_deleted_lanes_directory_reclaims_a_branch_a_dead_slot_registers`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_conflicting_hand_back_names_the_branch_it_kept_and_how_to_use_it`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_checked_hand_back_merges_only_a_lane_whose_check_passes`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_check_past_the_deadline_is_cut_while_the_executor_serves`

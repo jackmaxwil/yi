@@ -380,6 +380,30 @@ fn a_resume_past_a_deleted_lanes_directory_reclaims_a_branch_a_dead_slot_registe
     Ok(())
 }
 
+/// Incident: git lists a worktree by realpath, so a symlinked home matched no registration and the
+/// sweep cleared nothing.
+#[test]
+fn a_claim_past_a_deleted_lanes_directory_matches_through_a_symlinked_home() -> TestResult {
+    let rig = Rig::new("lanes-gone-link")?;
+    let real = rig.root.join("real");
+    std::fs::create_dir_all(&real)?;
+    let link = rig.root.join("link");
+    std::os::unix::fs::symlink(&real, &link)?;
+    let pool = Pool::open(&link, &rig.repo, 1)?;
+    let lane = pool.claim("s-gone", ClaimBase::Main)?;
+    let slot = lane.slot();
+    drop(lane);
+    let path = pool.dir().join(slot.to_string());
+    git(
+        &rig.repo,
+        &["worktree", "lock", "--reason", "x", &path.to_string_lossy()],
+    )?;
+    std::fs::remove_dir_all(real.join(".yi/lanes"))?;
+    let back = pool.claim("s-back", ClaimBase::Main)?;
+    assert_eq!(back.slot(), slot);
+    Ok(())
+}
+
 /// A `pid-` session cannot be resumed and a drive that died at startup left three of them:
 /// the pool was full of slots holding nothing, and only a hand-run reap freed it.
 #[test]
