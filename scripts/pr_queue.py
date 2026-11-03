@@ -274,7 +274,9 @@ def record_main(root=ROOT):
     """Record what main has landed; False only when main moved under the push."""
     git("fetch", "-q", "origin", "main", cwd=root)
     git("checkout", "-q", "--detach", "origin/main", cwd=root)
-    subprocess.run((sys.executable, str(root / "scripts/record_changes.py")), cwd=root, check=True)
+    if subprocess.run((sys.executable, str(root / "scripts/record_changes.py")), cwd=root, check=False).returncode:
+        print("queue: the recorder refused, so main stays unrecorded; its lines above say why")
+        return True
     if not git("status", "--porcelain", "docs", cwd=root).stdout.strip():
         return True
     git("add", "docs", cwd=root)
@@ -600,6 +602,14 @@ def record_cases():
         if not kept or tip() != was or "refused with main unmoved" not in out.getvalue() or "protected" not in out.getvalue():
             bad.append(f"a refusal with main unmoved answered {kept}: {out.getvalue()!r}")
         hook.unlink()
+
+        script.write_text("import sys\nprint('record: refused, nothing written')\nsys.exit(1)\n")
+        was, out = tip(), io.StringIO()
+        with contextlib.redirect_stdout(out):
+            kept = record_main(root)
+        if not kept or tip() != was or "recorder refused" not in out.getvalue():
+            bad.append(f"a recorder's refusal stopped the tick: {kept}, {out.getvalue()!r}")
+        script.write_text(recorder)
 
         # The race itself: another pusher wins between the recorder's commit and its push.
         sh(other, "pull", "-q", "origin", "main")
