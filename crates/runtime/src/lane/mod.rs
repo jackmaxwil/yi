@@ -21,6 +21,7 @@ pub mod remote;
 pub mod settle;
 pub mod stage;
 pub mod toolchain;
+pub mod tree;
 pub mod warm;
 
 const GIT_TIMEOUT_MS: u64 = 120_000;

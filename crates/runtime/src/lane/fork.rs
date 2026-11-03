@@ -50,10 +50,10 @@ pub fn parent_state(status: &str) -> Option<ParentState> {
             _ => {
                 state.tracked_dirt = true;
                 state.left_out = state.left_out.saturating_add(1);
-                if code.starts_with('R') || code.starts_with('C') {
-                    let _the_old_name = fields.next();
-                }
             }
+        }
+        if code.starts_with('R') || code.starts_with('C') {
+            let _the_old_name = fields.next();
         }
     }
     Some(state)
@@ -66,6 +66,10 @@ pub struct Carry {
     pub extra: Vec<String>,
     pub denied: Vec<PathBuf>,
     pub first_use: bool,
+    /// The parent's uncommitted files come too: a `Tree`'s fork, never a plain `isolation`.
+    pub dirt: bool,
+    /// Cut here rather than at the parent's `HEAD`.
+    pub at: Option<Sha>,
 }
 
 /// Before a fresh tree's first command: the cargo units that name nothing in it, the toolchain, and
@@ -131,6 +135,7 @@ pub struct ChildTree {
     base: Sha,
     pool: Pool,
     session: String,
+    dirt: bool,
     _held: File,
 }
 
@@ -149,6 +154,11 @@ impl ChildTree {
 
     pub fn base(&self) -> &Sha {
         &self.base
+    }
+
+    /// Committing this tree would commit a person's edits as the child's.
+    pub fn carries_dirt(&self) -> bool {
+        self.dirt
     }
 
     /// What a host needs to read the candidate without the tree.
@@ -176,6 +186,7 @@ impl ChildTree {
         let parent = top.as_path();
         let base =
             Sha::parse(&head).ok_or_else(|| LaneError::Forge(format!("HEAD is no sha: {head}")))?;
+        let base = plan.at.clone().unwrap_or(base);
         let until = Instant::now().checked_add(LIST_BUDGET);
         let args = ["status", "--porcelain", "-z", "--ignored"];
         let status = git_capped(parent, &args, until, PLUMBING_CAP);
@@ -216,15 +227,21 @@ impl ChildTree {
             base,
             pool: pool.clone(),
             session: child_id.to_owned(),
+            dirt: plan.dirt,
             _held: held,
         };
         let mut rows = Vec::new();
-        let cloned = state
+        let copied = state
             .as_ref()
-            .filter(|_| !parent.join(".gitmodules").exists())
-            .is_some_and(|state| cheap_copy(parent, &tree, state).is_ok());
+            .filter(|_| plan.at.is_none() && !parent.join(".gitmodules").exists());
+        let cloned =
+            copied.is_some_and(|state| cheap_copy(parent, &tree, state, plan.dirt).is_ok());
         if !cloned {
             tree.plain_checkout()?;
+            if plan.dirt {
+                let files = super::warm::snapshot(parent, None)?;
+                super::tree::rewind(tree.path(), &files, &[])?;
+            }
         }
         let ignored = state
             .as_ref()
@@ -239,6 +256,7 @@ impl ChildTree {
         rows.extend(
             state
                 .as_ref()
+                .filter(|_| !plan.dirt)
                 .map(|state| left_out_row(state, &tree))
                 .unwrap_or_default(),
         );
@@ -439,8 +457,14 @@ fn left_out_row(state: &ParentState, tree: &ChildTree) -> Vec<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn cheap_copy(parent: &Path, tree: &ChildTree, state: &ParentState) -> Result<(), LaneError> {
-    let skipped: HashSet<PathBuf> = (state.skipped.iter())
+fn cheap_copy(
+    parent: &Path,
+    tree: &ChildTree,
+    state: &ParentState,
+    dirt: bool,
+) -> Result<(), LaneError> {
+    let listed = if dirt { &state.ignored } else { &state.skipped };
+    let skipped: HashSet<PathBuf> = (listed.iter())
         .map(|path| PathBuf::from(path.trim_end_matches('/')))
         .collect();
     clone_walk(parent, tree.path(), &skipped).map_err(io_error(tree.path()))?;
@@ -454,14 +478,19 @@ fn cheap_copy(parent: &Path, tree: &ChildTree, state: &ParentState) -> Result<()
     copy_index().map_err(io_error(tree.path()))?;
     // Exit 1 is "something needs updating", which the reset below answers.
     let _stat_refresh = git(tree.path(), &["update-index", "-q", "--refresh"]);
-    if state.tracked_dirt {
+    if state.tracked_dirt && !dirt {
         git(tree.path(), &["reset", "-q", "--hard", tree.base.as_str()])?;
     }
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn cheap_copy(_parent: &Path, _tree: &ChildTree, _state: &ParentState) -> Result<(), LaneError> {
+fn cheap_copy(
+    _parent: &Path,
+    _tree: &ChildTree,
+    _state: &ParentState,
+    _dirt: bool,
+) -> Result<(), LaneError> {
     Err(LaneError::Forge(
         "no cheap copy on this platform".to_owned(),
     ))

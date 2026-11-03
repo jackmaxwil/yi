@@ -16,6 +16,7 @@ use crate::schedule::GateFn;
 use crate::session::AgentSession;
 
 mod build;
+pub(crate) mod tree;
 pub use build::{Fork, Isolation};
 use build::{parse_fork, parse_isolation};
 pub mod models;
@@ -1028,11 +1029,5 @@ impl SubagentHost {
             .unwrap_or_default();
             Box::pin(async move { Ok(reply) })
         });
-    }
-}
-
-impl crate::fetch::MemberTrees for SubagentHost {
-    fn cwd_of(&self, agent: &str) -> Option<PathBuf> {
-        SubagentHost::cwd_of(self, agent)
     }
 }
