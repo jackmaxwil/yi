@@ -529,6 +529,53 @@ async fn save_read_forget_through_the_kernel() -> TestResult {
 
 /// Yi's `ripwire` index, the shipped file, stands in for ripwire's own skills: one catalog line
 /// while ripwire is installed by yi, none otherwise, and the skills it points at are never listed.
+/// A plugin that publishes no skills has no `skills/` directory, so its pointer skill needs the
+/// install itself to appear, and must stay hidden without it.
+#[test]
+fn the_desktop_pointer_is_listed_only_when_its_skill_less_plugin_is_installed() -> TestResult {
+    let root = Scratch::new("yi-skills-desktop")?;
+    let (project, home) = (root.join("project"), root.join("home"));
+    std::fs::create_dir_all(&project)?;
+    let index = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi/desktop");
+    let shipped = home.join(".yi/skills/yi/desktop");
+    std::fs::create_dir_all(&shipped)?;
+    std::fs::copy(index.join("SKILL.md"), shipped.join("SKILL.md"))?;
+    let catalog = || {
+        yi_runtime::skills_catalog(&project, &home, yi_runtime::Bytes(16_384))
+            .map(|catalog| catalog.text)
+            .unwrap_or_default()
+    };
+    assert!(!catalog().contains("- desktop:"), "{}", catalog());
+    let plugin = yi_tools::plugin::Plugin::named("agent-desktop").ok_or("no row")?;
+    std::fs::create_dir_all(plugin.dir(&home))?;
+    std::fs::write(plugin.dir(&home).join("agent-desktop"), "#!/bin/sh\n")?;
+    assert!(catalog().contains("- desktop:"), "{}", catalog());
+    Ok(())
+}
+
+#[test]
+fn the_agent_browser_pointer_is_listed_only_when_its_plugin_is_installed() -> TestResult {
+    let root = Scratch::new("yi-skills-agent-browser")?;
+    let (project, home) = (root.join("project"), root.join("home"));
+    std::fs::create_dir_all(&project)?;
+    let index =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi/agent-browser");
+    let shipped = home.join(".yi/skills/yi/agent-browser");
+    std::fs::create_dir_all(&shipped)?;
+    std::fs::copy(index.join("SKILL.md"), shipped.join("SKILL.md"))?;
+    let catalog = || {
+        yi_runtime::skills_catalog(&project, &home, yi_runtime::Bytes(16_384))
+            .map(|catalog| catalog.text)
+            .unwrap_or_default()
+    };
+    assert!(!catalog().contains("- agent-browser:"), "{}", catalog());
+    let plugin = yi_tools::plugin::Plugin::named("agent-browser").ok_or("no row")?;
+    std::fs::create_dir_all(plugin.dir(&home))?;
+    std::fs::write(plugin.dir(&home).join("agent-browser"), "#!/bin/sh\n")?;
+    assert!(catalog().contains("- agent-browser:"), "{}", catalog());
+    Ok(())
+}
+
 #[test]
 fn the_ripwire_index_is_the_one_line_for_an_installed_plugins_skills() -> TestResult {
     let root = Scratch::new("yi-skills-plugin")?;

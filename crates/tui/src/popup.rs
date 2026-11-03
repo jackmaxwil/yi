@@ -159,3 +159,6 @@ impl BottomView for ListPopup {
 pub fn walk_files(root: &std::path::Path, cap: usize) -> Vec<String> {
     yi_runtime::list_files(root, cap)
 }
+
+/// One ignore engine, shared with the `glob` and `grep` tools.
+pub use yi_runtime::Ignore;

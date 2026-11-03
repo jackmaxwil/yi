@@ -8,16 +8,21 @@ mod checker;
 mod own;
 #[path = "../../types/tests/support/recorded.rs"]
 mod recorded;
+mod reminder_zone;
 #[path = "../../types/tests/support/repo.rs"]
 mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+#[path = "../../tools/tests/support/seatbelt.rs"]
+mod seatbelt_support;
 #[path = "support/family.rs"]
 mod support;
 #[path = "support/upstream.rs"]
 mod upstream;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/wiring.rs"]
+mod wiring;
 #[path = "support/worktree.rs"]
 mod worktree;
 
@@ -31,6 +36,8 @@ mod breakpoints;
 mod cache_miss;
 mod caps_runtime;
 mod channel_e2e;
+mod check_probe;
+mod child_forks;
 mod child_trail;
 mod child_transcript;
 mod claims;
@@ -39,6 +46,7 @@ mod claude_hooks;
 mod compaction_faux;
 mod documents;
 mod effort_session;
+mod egress;
 mod environment;
 mod ext_e2e;
 mod family;
@@ -47,6 +55,7 @@ mod fetch_grep;
 mod fetch_session;
 mod gate;
 mod gate_battery;
+mod git_lane;
 mod goal_e2e;
 mod host_facts;
 mod injection_canary;
@@ -60,7 +69,9 @@ mod kernel_tools;
 mod lanes;
 mod levers;
 mod memory_journal;
+mod merge_tree;
 mod node;
+mod permission_auto;
 mod permission_scope;
 mod plan_arms;
 mod plan_authority;
@@ -111,8 +122,11 @@ mod title;
 mod todo_coupling;
 mod todo_e2e;
 mod todo_mirror;
+mod tree_verbs;
 mod undo_to;
 mod wall_e2e;
+mod warm_checks;
+mod web_search;
 mod worker_prompt;
 
 /// A real `pytest -v` run (#1153): 32,955 B, its FAILED row at line 223 of 419 and the verdict

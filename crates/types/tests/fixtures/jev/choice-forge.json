@@ -1,0 +1,41 @@
+{
+ "request": {
+  "model": "typesafe/jev-1.13",
+  "state": {
+   "message": "push this branch and open the PR"
+  },
+  "questions": {
+   "skill": {
+    "type": "choice",
+    "instructions": "Which of these methods does the user's message ask for? Answer none unless one clearly does.",
+    "criteria": {
+     "yi-forge": "Finish a yi branch on the forge",
+     "yi-ideate": "Brainstorm and write up a Yi design",
+     "none": "no listed method applies"
+    }
+   }
+  }
+ },
+ "response": {
+  "model": "typesafe/jev-1.13-20260917",
+  "answers": {
+   "skill": {
+    "type": "choice",
+    "choice": "yi-forge",
+    "probabilities": {
+     "yi-forge": 0.85,
+     "yi-ideate": 0,
+     "none": 0.15
+    },
+    "confidence": 0.77
+   }
+  },
+  "usage": {
+   "input_tokens": 366,
+   "output_tokens": 45,
+   "cost": 1.5372e-05
+  },
+  "id": "gen-dec-1793258120-xh6yXebHJqbn7LSyqNQN",
+  "provider": "TypeSafe"
+ }
+}

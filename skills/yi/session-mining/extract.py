@@ -31,9 +31,9 @@ SCHEMA_VERSION = 2
 # first call outside this set is the session's first productive action.
 READ_ONLY_TOOLS = frozenset({"read", "glob", "grep"})
 
-# One vocabulary, third use: READ_ONLY_VERBS / READ_ONLY_GIT / read_only_segment
-# in crates/tools/src/builtins.rs, which the permission layer already reads. A
-# verb added there and not here silently ends orientation early.
+# The miner's own read-only vocabulary: crates/tools/src/builtins.rs asks the
+# permission classifier instead, which a log sweep cannot run. A verb missing
+# here ends orientation early; it is a coarse floor, never the gate.
 READ_ONLY_VERBS = frozenset(
     "ls cat head tail wc pwd echo printf which type file stat du df date env"
     " printenv grep rg ag find fd diff true".split()
@@ -70,8 +70,6 @@ CREDENTIAL_SUBPATHS = [
 # These three are hand-copied out of Rust, so --selfcheck reads the Rust back
 # and compares. An asserted invariant nobody runs is how a mirror drifts.
 RUST_MIRRORS = (
-    ("crates/tools/src/builtins.rs", "READ_ONLY_VERBS", READ_ONLY_VERBS),
-    ("crates/tools/src/builtins.rs", "READ_ONLY_GIT", READ_ONLY_GIT),
     (
         "crates/permission/src/catastrophic.rs",
         "PROTECTED_CREDENTIAL_SUBPATHS",
@@ -275,8 +273,7 @@ def read_only_segment(segment):
 
 
 def read_only_command(command):
-    """Port of read_only_segment in crates/tools/src/builtins.rs: every segment
-    of the command must be read-only, so `ls && rm -rf x` is not."""
+    """Every segment of the command must be read-only, so `ls && rm -rf x` is not."""
     parts = [p for chunk in re.split(r"[|;\n]", command) for p in chunk.split("&&")]
     return bool(command.strip()) and all(read_only_segment(p) for p in parts)
 
