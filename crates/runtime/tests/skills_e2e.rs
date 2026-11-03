@@ -785,7 +785,6 @@ async fn run_checker(name: &str, task: &str) -> Result<CheckerRun, Box<dyn Error
         .ok_or("the snippet binds no task_text or workspace placeholder")?;
     let seen: Arc<std::sync::Mutex<Option<Value>>> = Arc::new(std::sync::Mutex::new(None));
     let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
     {
         let seen = Arc::clone(&seen);
         registry.register("rlm.run", move |payload| {
