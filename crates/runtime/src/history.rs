@@ -275,10 +275,13 @@ pub fn units_of(file: &Path) -> Vec<Unit> {
 pub struct Corpus {
     dirs: Mutex<BTreeMap<PathBuf, Belongs>>,
     files: Mutex<BTreeMap<PathBuf, Arc<Slot<Vec<Unit>>>>>,
-    index: Mutex<Option<(Key, Arc<Index>)>>,
+    indexes: Mutex<BTreeMap<Vec<PathBuf>, Held>>,
 }
 
 type Key = Vec<(PathBuf, Option<Stamp>)>;
+type Held = Arc<Mutex<Option<(Key, Arc<Index>)>>>;
+
+const INDEX_SETS: usize = 8;
 
 pub struct Index {
     units: Vec<Arc<Vec<Unit>>>,
@@ -353,14 +356,23 @@ impl Corpus {
             });
             key.push((file.clone(), stamp));
         }
-        let mut held = self.index.lock().unwrap_or_else(PoisonError::into_inner);
+        let cell = {
+            let mut sets = self.indexes.lock().unwrap_or_else(PoisonError::into_inner);
+            if sets.len() >= INDEX_SETS && !sets.contains_key(files) {
+                sets.clear();
+            }
+            Arc::clone(sets.entry(files.to_vec()).or_default())
+        };
+        let mut held = cell.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((seen, index)) = held.as_ref()
             && *seen == key
         {
             return Arc::clone(index);
         }
         let index = Arc::new(Index::new(units));
-        *held = Some((key, Arc::clone(&index)));
+        if key.iter().all(|(_, stamp)| stamp.is_some()) {
+            *held = Some((key, Arc::clone(&index)));
+        }
         index
     }
 }
@@ -735,6 +747,36 @@ mod tests {
         assert_eq!(built.len(), 8);
         assert!(built.iter().all(|index| Arc::ptr_eq(index, first)));
         assert_eq!(search_reply(first, "buildhost", 0, 8, 0)["total"], 40);
+        Ok(())
+    }
+
+    #[test]
+    fn two_file_sets_keep_their_own_index_and_never_wait_on_each_other()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Scratch::new("yi-history-sets")?;
+        let (sessions, cwd) = (root.join("sessions"), root.join("cwd"));
+        fs::create_dir_all(&cwd)?;
+        for n in 0..6 {
+            session(&sessions, &cwd, &format!("s-{n}"), &[user("buildhost lane")]);
+        }
+        let corpus = Corpus::default();
+        let files = corpus.sessions(&sessions, &cwd).files;
+        let (a, b) = files.split_at(3);
+        let first = corpus.index(a);
+        let other = corpus.index(b);
+        assert!(Arc::ptr_eq(&first, &corpus.index(a)));
+        assert!(!Arc::ptr_eq(&first, &other));
+        let cell = {
+            let sets = corpus.indexes.lock().map_err(|_| "poisoned")?;
+            Arc::clone(sets.get(a).ok_or("no cell for set a")?)
+        };
+        let _building = cell.lock().map_err(|_| "poisoned")?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| tx.send(corpus.index(b)));
+            let served = rx.recv_timeout(std::time::Duration::from_secs(5));
+            assert!(served.is_ok_and(|index| Arc::ptr_eq(&index, &other)));
+        });
         Ok(())
     }
 
