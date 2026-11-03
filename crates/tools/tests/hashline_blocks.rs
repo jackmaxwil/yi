@@ -22,16 +22,27 @@ fn find(dir: &Scratch, path: &str, needle: &str) -> String {
     text
 }
 
+fn block_span(output: &str) -> Option<(usize, usize)> {
+    let rest = output.split("[find: block at lines ").nth(1)?;
+    let (a, rest) = rest.split_once('-')?;
+    let (b, _) = rest.split_once(' ')?;
+    Some((a.parse().ok()?, b.parse().ok()?))
+}
+
+fn line_of(text: &str, needle: &str) -> Option<usize> {
+    text.lines().position(|l| l.contains(needle)).map(|i| i + 1)
+}
+
 #[test]
 fn a_multiline_python_signature_resolves_through_the_function_body() -> TestResult {
     let dir = temp_dir("hashline-python-signature")?;
-    fs::write(
-        dir.join("input.py"),
-        include_str!("../../../python/yi_runtime/src/rlm/__init__.py"),
-    )?;
+    let source = include_str!("../../../python/yi_runtime/src/rlm/__init__.py");
+    fs::write(dir.join("input.py"), source)?;
     let output = find(&dir, "input.py", "async def result(");
-    assert!(
-        output.contains("[find: block at lines 319-380 of"),
+    let start = line_of(source, "async def result(");
+    assert_eq!(
+        block_span(&output),
+        start.map(|s| (s, s.saturating_add(61))),
         "{output}"
     );
 
@@ -51,10 +62,13 @@ fn a_multiline_python_signature_resolves_through_the_function_body() -> TestResu
 #[test]
 fn rust_lifetimes_do_not_hide_braces_and_character_literals_stay_unchanged() -> TestResult {
     let dir = temp_dir("hashline-rust-lifetimes")?;
-    fs::write(dir.join("leak.rs"), include_str!("../../ai/src/leak.rs"))?;
+    let source = include_str!("../../ai/src/leak.rs");
+    fs::write(dir.join("leak.rs"), source)?;
     let output = find(&dir, "leak.rs", "fn between<'a>");
-    assert!(
-        output.contains("[find: block at lines 93-101 of"),
+    let start = line_of(source, "fn between<'a>");
+    assert_eq!(
+        block_span(&output),
+        start.map(|s| (s, s.saturating_add(8))),
         "{output}"
     );
 
