@@ -10,12 +10,23 @@ const STOP: [&str; 61] = [
     "there", "here", "all", "any", "some", "more", "most",
 ];
 
+const MARKS: [(char, char); 6] = [
+    ('\u{300}', '\u{36f}'),
+    ('\u{900}', '\u{dff}'),
+    ('\u{e00}', '\u{fff}'),
+    ('\u{1ab0}', '\u{1aff}'),
+    ('\u{1dc0}', '\u{1dff}'),
+    ('\u{20d0}', '\u{20ff}'),
+];
+
+/// Incident: `is_alphanumeric` is false for a virama or a decomposed accent, so a Hindi word
+/// or an NFD "résumé" split mid-word; the blocks in `MARKS` hold those marks and join.
 fn word(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
+    c.is_alphanumeric() || c == '_' || MARKS.iter().any(|(lo, hi)| (*lo..=*hi).contains(&c))
 }
 
 pub fn tokens(text: &str) -> Vec<String> {
-    let lower: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let lower: Vec<char> = text.to_lowercase().chars().collect();
     let mut out = Vec::new();
     let mut at = 0usize;
     while at < lower.len() {
@@ -129,8 +140,31 @@ mod tests {
                 "reset",
                 "hard",
                 "yi/daemon.sock",
-                "scripts/forge_pr.py"
+                "scripts/forge_pr.py",
+                "é"
             ]
+        );
+    }
+
+    #[test]
+    fn a_combining_mark_never_ends_a_token() {
+        assert_eq!(tokens("हिन्दी"), vec!["हिन्दी"]);
+        assert_eq!(tokens("re\u{301}sume\u{301}"), vec!["re\u{301}sume\u{301}"]);
+    }
+
+    #[test]
+    fn an_accented_query_ranks_the_note_that_has_the_word_and_not_the_one_that_has_a_fragment() {
+        let bm = Bm25::new([
+            "Le Résumé du démarrage tient en une page",
+            "the sum of the inputs",
+        ]);
+        assert_eq!(tokens("RÉSUMÉ démarrage"), vec!["résumé", "démarrage"]);
+        assert_eq!(
+            bm.rank("résumé")
+                .iter()
+                .map(|hit| hit.0)
+                .collect::<Vec<_>>(),
+            vec![0]
         );
     }
 
