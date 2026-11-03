@@ -120,28 +120,30 @@ pub fn build_snapshot_code(
                  "enumerate", "zip", "any", "all", "abs", "round", "id", "hash", "format"}}
         names = _b.set()
         flags = ast.PyCF_ONLY_AST | ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
-        try:
-            for cell in cells:
+        for cell in cells:
+            try:
                 source = ip.transform_cell(cell) if ip is not None else cell
-                for node in ast.walk(_b.compile(source, "<cell>", "exec", flags)):
-                    if _b.isinstance(node, ast.Name) and not _b.isinstance(node.ctx, ast.Load):
-                        names.add(node.id)
-                    elif _b.isinstance(node, (ast.Global, ast.Nonlocal)):
-                        names.update(node.names)
-                    elif _b.isinstance(node, (ast.Attribute, ast.Subscript)) and _b.isinstance(node.value, ast.Name):
-                        names.add(node.value.id)
-                    elif _b.isinstance(node, ast.Call):
-                        called = node.func
-                        if _b.isinstance(called, ast.Name):
-                            names.add(called.id)
-                            if called.id in pure and called.id not in ns:
-                                continue
-                        for arg in node.args + [keyword.value for keyword in node.keywords]:
-                            arg = arg.value if _b.isinstance(arg, ast.Starred) else arg
-                            if _b.isinstance(arg, ast.Name):
-                                names.add(arg.id)
-        except _b.Exception:
-            return None
+                tree = _b.compile(source, "<cell>", "exec", flags)
+            except _b.Exception:
+                # Invariant: a cell that does not compile ran nothing, so it changed no name.
+                continue
+            for node in ast.walk(tree):
+                if _b.isinstance(node, ast.Name) and not _b.isinstance(node.ctx, ast.Load):
+                    names.add(node.id)
+                elif _b.isinstance(node, (ast.Global, ast.Nonlocal)):
+                    names.update(node.names)
+                elif _b.isinstance(node, (ast.Attribute, ast.Subscript)) and _b.isinstance(node.value, ast.Name):
+                    names.add(node.value.id)
+                elif _b.isinstance(node, ast.Call):
+                    called = node.func
+                    if _b.isinstance(called, ast.Name):
+                        names.add(called.id)
+                        if called.id in pure and called.id not in ns:
+                            continue
+                    for arg in node.args + [keyword.value for keyword in node.keywords]:
+                        arg = arg.value if _b.isinstance(arg, ast.Starred) else arg
+                        if _b.isinstance(arg, ast.Name):
+                            names.add(arg.id)
         for name in _b.list(names):
             if _b.isinstance(ns.get(name), types.FunctionType):
                 names.update(ns[name].__code__.co_names)
@@ -432,12 +434,19 @@ pub(crate) struct Checkpoints {
     full_at: AtomicU64,
     /// The last snapshot left a name out (over a cap, or unpicklable).
     lossy: std::sync::atomic::AtomicBool,
+    /// Invariant: an incremental pass committed since the last full one, so blobs it reused
+    /// may miss a mutation no cell named; the dispose flush owes a full pass.
+    partial: std::sync::atomic::AtomicBool,
     sources: std::sync::Mutex<Vec<String>>,
 }
 
 impl Checkpoints {
     pub(crate) fn behind(&self) -> bool {
         self.saved.load(Ordering::SeqCst) < self.cells.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn flush_owed(&self) -> bool {
+        self.behind() || self.partial.load(Ordering::SeqCst)
     }
 
     fn sources(&self) -> Vec<String> {
@@ -520,6 +529,11 @@ impl KernelManager {
             || seen.saturating_sub(checkpoints.full_at.load(Ordering::SeqCst))
                 >= FULL_SNAPSHOT_EVERY;
         let _span = yi_types::trace::span("kernel.snapshot").arg("full", full);
+        if full {
+            // Invariant: an attempt, not a commit, moves this; else a full pass that outruns the
+            // debounce bound makes every later pass full, and each one times out too.
+            checkpoints.full_at.fetch_max(seen, Ordering::SeqCst);
+        }
         let sources = checkpoints.sources();
         let code = build_snapshot_code(
             &config.path,
@@ -554,9 +568,7 @@ impl KernelManager {
         if let Some(parsed) = &parsed {
             checkpoints.forget(sources.len());
             checkpoints.saved.fetch_max(seen, Ordering::SeqCst);
-            if full {
-                checkpoints.full_at.fetch_max(seen, Ordering::SeqCst);
-            }
+            checkpoints.partial.store(!full, Ordering::SeqCst);
             checkpoints
                 .lossy
                 .store(!parsed.skipped.is_empty(), Ordering::SeqCst);

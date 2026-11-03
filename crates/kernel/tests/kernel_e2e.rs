@@ -618,6 +618,95 @@ async fn a_read_only_cell_leaves_untouched_variables_undilled() -> TestResult {
     Ok(())
 }
 
+/// A cell that fails to compile ran nothing, so it must not force the next pass to re-dill
+/// every variable.
+#[tokio::test]
+async fn a_syntax_error_cell_keeps_the_next_pass_incremental() -> TestResult {
+    let dir = Scratch::new("yi-snap-syntax")?;
+    let kernel = manager_with_snapshot(debounced(&dir))?;
+    kernel
+        .execute(
+            "class Counted:\n    dumps = 0\n    def __reduce__(self):\n        Counted.dumps += 1\n        return (Counted, ())\nbig = Counted()",
+            ExecuteOptions::default(),
+        )
+        .await?;
+    settle(&kernel).await?;
+    kernel.execute("x = (", ExecuteOptions::default()).await?;
+    kernel
+        .execute("print(1)", ExecuteOptions::default())
+        .await?;
+    settle(&kernel).await?;
+    let count = kernel
+        .execute("print(Counted.dumps)", ExecuteOptions::default())
+        .await?;
+    kernel.dispose().await;
+    assert_eq!(count.stdout.trim(), "1", "{}", count.stderr);
+    Ok(())
+}
+
+/// A full pass that outruns the debounce bound must not make every later pass full: the cell
+/// after it still checkpoints.
+#[tokio::test]
+async fn a_timed_out_full_pass_leaves_later_cells_checkpointed() -> TestResult {
+    let dir = Scratch::new("yi-snap-slow")?;
+    let marker = snapshot_path_in(&dir).with_extension("slow");
+    let kernel = manager_with_snapshot(debounced(&dir))?;
+    let define = format!(
+        "import time\nSLOW = False\nclass Slow:\n    def __reduce__(self):\n        if SLOW:\n            open({:?}, 'w').close()\n            time.sleep(8)\n        return (Slow, ())\nslow = Slow()",
+        marker.to_string_lossy()
+    );
+    kernel.execute(&define, ExecuteOptions::default()).await?;
+    settle(&kernel).await?;
+    kernel
+        .execute("SLOW = True", ExecuteOptions::default())
+        .await?;
+    settle(&kernel).await?;
+    for _ in 2..19 {
+        kernel
+            .execute("print(1)", ExecuteOptions::default())
+            .await?;
+        settle(&kernel).await?;
+    }
+    kernel
+        .execute("print(1)", ExecuteOptions::default())
+        .await?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !marker.exists() {
+        if std::time::Instant::now() > deadline {
+            return Err("the twentieth cell never started a full pass".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    kernel.execute("z = 5", ExecuteOptions::default()).await?;
+    let caught_up = settle(&kernel).await;
+    kernel
+        .execute("SLOW = False", ExecuteOptions::default())
+        .await?;
+    kernel.dispose().await;
+    caught_up
+}
+
+/// A mutation reached only through a nested reference keeps the outer name's id, type and size,
+/// so an incremental pass reuses its blob; the dispose flush is full and saves it.
+#[tokio::test]
+async fn dispose_heals_a_nested_mutation_no_cell_named() -> TestResult {
+    let dir = Scratch::new("yi-snap-nested")?;
+    let first = manager_with_snapshot(debounced(&dir))?;
+    for code in ["a = [[1]]", "b = a[0]", "b.append(2)"] {
+        first.execute(code, ExecuteOptions::default()).await?;
+        settle(&first).await?;
+    }
+    first.dispose().await;
+    let second = manager_with_snapshot(debounced(&dir))?;
+    second.restore_state().await.ok_or("restore result")?;
+    let probe = second
+        .execute("print(a)", ExecuteOptions::default())
+        .await?;
+    second.dispose().await;
+    assert_eq!(probe.stdout.trim(), "[[1, 2]]", "{}", probe.stderr);
+    Ok(())
+}
+
 /// A name bound to the object a cell mutated through an alias is saved with the mutation, even
 /// when the mutation leaves the object's size unchanged.
 #[tokio::test]

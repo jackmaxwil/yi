@@ -998,7 +998,7 @@ impl KernelManager {
         let generation = inner.start_generation.load(Ordering::SeqCst);
         // Final namespace flush while the kernel is live, bounded so a wedged kernel cannot
         // hang dispose; the debounced on-disk copy is the fallback past that bound.
-        if inner.snapshot.is_some() && self.is_running() && inner.checkpoints.behind() {
+        if inner.snapshot.is_some() && self.is_running() && inner.checkpoints.flush_owed() {
             inner.clear_snapshot_timer();
             let deadline = std::time::Duration::from_millis(SNAPSHOT_DISPOSE_TIMEOUT_MS);
             let _ = tokio::time::timeout(deadline, self.snapshot_state()).await;
