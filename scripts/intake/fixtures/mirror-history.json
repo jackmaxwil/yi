@@ -1,0 +1,28 @@
+{
+  "producer": "git clone --bare of this repository followed by its filter-repo rules",
+  "filter_repo_version": "a40bce548d2c",
+  "commit_map_rows": 6080,
+  "commits": [
+    {
+      "forge": "53c7af144af22d8460e45f96d6337ecba4470d8f",
+      "mirror": "9fe7949daf44499e699b130e58d33dd8e9a035aa",
+      "forge_tree": "58ee91aaff56d9239fdd58f0f8bd9e20d560b172",
+      "mirror_tree": "6aa2cc2944158a9cef1b7349c5c7d95838b3309d",
+      "subject": "Merge pull request 'Return counts by state plus the movers from rlm.wait' (#1704) from jack/ns-086-b1-wait-digest into main"
+    },
+    {
+      "forge": "dcdab6e4341532acb3f308da75e4e9ed30847483",
+      "mirror": "a4f8dd337679b32dfe4ce2e61d029ef6c934d3bb",
+      "forge_tree": "fec91888d1ee9cc1f12b37f49b9894deaaf9e162",
+      "mirror_tree": "61fbfad16ca84355b324a15a74265706c32c5e6c",
+      "subject": "Merge pull request 'End a headless run with a typed final event and a quota exit code' (#1686) from jack/yi-1673-typed-stop into main"
+    },
+    {
+      "forge": "cd2b783e95a04cd812617d07ddb5f11e6eb0837f",
+      "mirror": "3da94b41eb6e6f4416b2c8a17893296c2456e125",
+      "forge_tree": "d511c8c1b85c72d66fbe3af26e52bf4ad0298616",
+      "mirror_tree": "9b1bb8b25434261629802fde0137ba3b889cb964",
+      "subject": "Merge pull request 'Refresh the model catalog before the review bot first calls a model' (#1701) from jack/review-catalog-refresh into main"
+    }
+  ]
+}

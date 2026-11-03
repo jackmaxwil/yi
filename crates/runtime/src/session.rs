@@ -70,6 +70,8 @@ struct Shared {
     status: Mutex<Status>,
     last_usage: Mutex<Option<Usage>>,
     store: Mutex<Option<yi_session::SharedSession>>,
+    /// The session's own screen of outside text; a second session never inherits it.
+    screen: crate::classifier::Screeners,
     store_error: Mutex<Option<String>>,
     events: broadcast::Sender<AgentEvent>,
     tree_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -89,6 +91,7 @@ struct Shared {
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
+    spec: Mutex<Option<Arc<crate::spec::SpecStore>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     deadline: OnceLock<Deadline>,
     turn_cap: Mutex<Option<u32>>,
@@ -194,6 +197,13 @@ pub struct AgentSession {
     on_attach: Mutex<Vec<Box<hooks::LedgerFold>>>,
 }
 
+/// A late-bound handle: the slot is written once at wiring and read by every clone of the session.
+fn fill<T: ?Sized>(slot: &Mutex<Option<Arc<T>>>, value: Arc<T>) {
+    if let Ok(mut held) = slot.lock() {
+        *held = Some(value);
+    }
+}
+
 impl AgentSession {
     pub fn new(config: SessionConfig, provider: Arc<ProviderStream>) -> Self {
         let (events, _) = broadcast::channel(1024);
@@ -214,6 +224,7 @@ impl AgentSession {
                 status: Mutex::new(Status::Idle),
                 last_usage: Mutex::new(None),
                 store: Mutex::new(None),
+                screen: crate::classifier::Screeners::default(),
                 store_error: Mutex::new(None),
                 events,
                 tree_generation: Arc::default(),
@@ -228,6 +239,7 @@ impl AgentSession {
                 lane: Mutex::new(None),
                 telemetry: Mutex::new(None),
                 todos: Mutex::new(None),
+                spec: Mutex::new(None),
                 rules: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
@@ -269,9 +281,7 @@ impl AgentSession {
     }
 
     pub fn set_kernel_service(&self, service: Arc<crate::kernel::KernelService>) {
-        if let Ok(mut slot) = self.kernel.lock() {
-            *slot = Some(service);
-        }
+        fill(&self.kernel, service);
     }
 
     pub fn kernel_service(&self) -> Option<Arc<crate::kernel::KernelService>> {
@@ -279,20 +289,6 @@ impl AgentSession {
             .lock()
             .ok()
             .and_then(|slot| slot.as_ref().map(Arc::clone))
-    }
-
-    pub fn install_extensions(&self, host: crate::ext::Host) {
-        if let Ok(mut slot) = self.shared.ext.lock() {
-            *slot = Some(Arc::new(Mutex::new(host)));
-        }
-        let deliver = self.deliver_hook();
-        if let Some(host) = self.extensions()
-            && let Ok(mut host) = host.lock()
-        {
-            host.set_deliver(Arc::new(move |message| {
-                deliver(message, false);
-            }));
-        }
     }
 
     /// The attached store's id, read when asked: the store may attach after wiring.
@@ -368,9 +364,7 @@ impl AgentSession {
     }
 
     pub fn set_todos(&self, todos: Arc<crate::todo::TodoStore>) {
-        if let Ok(mut slot) = self.shared.todos.lock() {
-            *slot = Some(todos);
-        }
+        fill(&self.shared.todos, todos);
     }
 
     pub fn todos_handle(
@@ -394,10 +388,23 @@ impl AgentSession {
             .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
+    pub fn set_spec(&self, spec: Arc<crate::spec::SpecStore>) {
+        fill(&self.shared.spec, spec);
+    }
+
+    pub fn spec_handle(&self) -> crate::spec::SpecHandle {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            shared
+                .spec
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(Arc::clone))
+        })
+    }
+
     pub fn set_lane(&self, lane: Arc<crate::lane::land::LaneHandle>) {
-        if let Ok(mut slot) = self.shared.lane.lock() {
-            *slot = Some(lane);
-        }
+        fill(&self.shared.lane, lane);
     }
 
     pub fn lane(&self) -> Option<Arc<crate::lane::land::LaneHandle>> {
@@ -412,21 +419,15 @@ impl AgentSession {
     }
 
     pub fn set_turn_start_hook(&self, hook: Arc<TurnHook>) {
-        if let Ok(mut slot) = self.shared.on_turn_start.lock() {
-            *slot = Some(hook);
-        }
+        fill(&self.shared.on_turn_start, hook);
     }
 
     pub fn set_turn_end_hook(&self, hook: Arc<TurnHook>) {
-        if let Ok(mut slot) = self.shared.on_turn_end.lock() {
-            *slot = Some(hook);
-        }
+        fill(&self.shared.on_turn_end, hook);
     }
 
     pub fn set_advisor(&self, advisor: Arc<crate::advisor::AdvisorRuntime>) {
-        if let Ok(mut slot) = self.advisor.lock() {
-            *slot = Some(advisor);
-        }
+        fill(&self.advisor, advisor);
     }
 
     pub fn permission_broker(&self) -> Option<Arc<crate::permission::PermissionBroker>> {
@@ -438,21 +439,15 @@ impl AgentSession {
     }
 
     pub fn set_schedule(&self, heartbeats: Arc<crate::schedule::HeartbeatService>) {
-        if let Ok(mut slot) = self.schedule.lock() {
-            *slot = Some(heartbeats);
-        }
+        fill(&self.schedule, heartbeats);
     }
 
     pub fn set_goal_service(&self, service: Arc<crate::goal::GoalService>) {
-        if let Ok(mut slot) = self.goal.lock() {
-            *slot = Some(service);
-        }
+        fill(&self.goal, service);
     }
 
     pub fn set_rules_engine(&self, engine: Arc<crate::rules::RuleEngine>) {
-        if let Ok(mut slot) = self.shared.rules.lock() {
-            *slot = Some(engine);
-        }
+        fill(&self.shared.rules, engine);
     }
 
     pub fn set_wall(&self, wall: crate::wall::Wall) {
@@ -495,9 +490,7 @@ impl AgentSession {
     }
 
     pub fn set_plan_service(&self, service: Arc<crate::plan::PlanService>) {
-        if let Ok(mut slot) = self.plan.lock() {
-            *slot = Some(service);
-        }
+        fill(&self.plan, service);
     }
 
     pub fn plan_service(&self) -> Option<Arc<crate::plan::PlanService>> {
@@ -508,9 +501,7 @@ impl AgentSession {
     }
 
     pub fn set_memory(&self, activity: Arc<crate::memory::Activity>) {
-        if let Ok(mut slot) = self.memory.lock() {
-            *slot = Some(activity);
-        }
+        fill(&self.memory, activity);
     }
 
     pub fn memory(&self) -> Option<Arc<crate::memory::Activity>> {
@@ -542,15 +533,11 @@ impl AgentSession {
     }
 
     pub fn set_waits(&self, count: Arc<dyn Fn() -> u64 + Send + Sync>) {
-        if let Ok(mut slot) = self.shared.waits.lock() {
-            *slot = Some(count);
-        }
+        fill(&self.shared.waits, count);
     }
 
     pub fn set_on_compacted(&self, hook: Arc<dyn Fn() + Send + Sync>) {
-        if let Ok(mut slot) = self.on_compacted.lock() {
-            *slot = Some(hook);
-        }
+        fill(&self.on_compacted, hook);
     }
 
     /// Checked at every message boundary inside the tool loop, so a tool-heavy
@@ -568,10 +555,9 @@ impl AgentSession {
         settings: yi_context::Settings,
         summarizer: Option<Model>,
     ) {
-        let mut compactor = crate::compaction::Compactor::default();
-        compactor.settings = settings;
-        compactor.summarizer = summarizer;
-        self.compactor = Some(Arc::new(compactor));
+        self.compactor = Some(Arc::new(crate::compaction::Compactor::new(
+            settings, summarizer,
+        )));
     }
 
     pub fn compactor(&self) -> Option<Arc<crate::compaction::Compactor>> {
@@ -579,9 +565,7 @@ impl AgentSession {
     }
 
     pub fn set_telemetry(&self, telemetry: Arc<crate::telemetry::Telemetry>) {
-        if let Ok(mut slot) = self.shared.telemetry.lock() {
-            *slot = Some(telemetry);
-        }
+        fill(&self.shared.telemetry, telemetry);
     }
 
     pub fn telemetry(&self) -> Option<Arc<crate::telemetry::Telemetry>> {
@@ -736,7 +720,7 @@ impl AgentSession {
             *messages = loaded;
         }
         if let Ok(mut queue) = self.shared.steer.lock() {
-            for message in crate::mail::unread(&entries) {
+            for message in crate::mail::resumed(&store, &entries) {
                 run::push(&mut queue, Queued::new(message, false, None));
             }
         }
@@ -978,8 +962,7 @@ impl AgentSession {
         }
         let messages = self.messages();
         let (model, effort) = hooks::settings_of(&self.shared);
-        let request =
-            crate::compaction::LoopRequest::new(self.system_prompt(), &self.tools(), effort);
+        let request = run::loop_request(self, effort);
         let store = self.store();
         let signal = yi_loop::interrupt::InterruptSignal::default();
         let replaced = compactor
@@ -993,7 +976,7 @@ impl AgentSession {
             )
             .await;
         match replaced {
-            Ok(Some(replaced)) => {
+            Ok(crate::compaction::Compacted::Applied(replaced)) => {
                 if let Ok(mut slot) = self.shared.messages.lock() {
                     *slot = replaced.messages;
                 }
@@ -1010,7 +993,7 @@ impl AgentSession {
                     .elision
                     .map_or(CompactOutcome::Summarized, CompactOutcome::Elided))
             }
-            Ok(None) => Ok(CompactOutcome::NotApplied),
+            Ok(compacted) => Ok(compacted.outcome()),
             Err(error) => {
                 run::failed_compaction(&self.parts(), &error);
                 Err(error)

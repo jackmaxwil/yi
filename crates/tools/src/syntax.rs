@@ -101,7 +101,7 @@ pub fn verdict(path: &Path) -> Option<String> {
     let mut check = command(resolved);
     check.args(flags).env(
         "PYTHONPYCACHEPREFIX",
-        std::env::temp_dir().join("yi-pycache"),
+        std::env::temp_dir().join("yi-pycache"), // nosemgrep: yi-rust-temp-dir Disposable pycache shares no durable state.
     );
     // Incident: rustfmt given a path follows `mod` declarations, so checking a crate root re-read
     // the whole tree (0.53 s); its text on stdin keeps the check to the one file.

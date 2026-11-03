@@ -84,6 +84,7 @@ fn patterns(input: &Map<String, Value>) -> Result<Vec<String>, Box<ToolOutput>> 
     }
 }
 
+#[derive(Default)]
 struct Options {
     literal: bool,
     ignore_case: bool,
@@ -229,16 +230,15 @@ struct Collected {
     total: usize,
     collection_capped: bool,
     binary_skipped: usize,
+    refused: usize,
     documents_searched: usize,
     documents_unsearched: Vec<String>,
     walled: crate::builtins::Walked,
 }
 
-impl Collected {
-    fn label(&self) -> String {
-        let floor = self.collection_capped.then_some("at least ");
-        format!("{}{}", floor.unwrap_or_default(), self.total)
-    }
+fn label(collected: &Collected) -> String {
+    let floor = collected.collection_capped.then_some("at least ");
+    format!("{}{}", floor.unwrap_or_default(), collected.total)
 }
 
 /// A search converts at most this many documents it has no copy of; the rest are counted.
@@ -330,6 +330,7 @@ fn collect(
     let mut retained = 0_usize;
     let mut collection_capped = false;
     let mut binary_skipped = 0_usize;
+    let mut refused = 0_usize;
     let mut documents_searched = 0_usize;
     let mut documents_unsearched: Vec<String> = Vec::new();
     let (cwd, deny, gate) = (&context.cwd, &context.deny_read, context.read_gate());
@@ -342,7 +343,11 @@ fn collect(
         if include.is_some_and(|include| !include.matches(path)) {
             return true;
         }
-        let Ok(bytes) = gate.open(path, deny).and_then(crate::tool::read_all) else {
+        let opened = gate.open(path, deny).and_then(crate::tool::read_all);
+        let Ok(bytes) = opened else {
+            refused += usize::from(
+                opened.is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied),
+            );
             return true;
         };
         let converted = match documents.as_mut() {
@@ -419,6 +424,7 @@ fn collect(
         total,
         collection_capped,
         binary_skipped,
+        refused,
         documents_searched,
         documents_unsearched,
         walled,
@@ -604,17 +610,7 @@ impl GrepTool {
         let Ok(matcher) = regex::Regex::new(&source) else {
             return (Vec::new(), 0);
         };
-        let options = Options {
-            literal: false,
-            ignore_case: false,
-            multiline: false,
-            def: false,
-            count: false,
-            block: false,
-            files_only: false,
-            replace: None,
-            apply: false,
-        };
+        let options = Options::default();
         let kind = skip.and_then(|(path, _)| Path::new(path).extension()?.to_str());
         let same_kind = kind.and_then(|kind| rooted_glob(&same_language(kind), root).ok());
         let mut scope = ToolContext::new(root.to_path_buf());
@@ -928,6 +924,10 @@ fn cut_notices(collected: &Collected, context_asked: usize, context: &ToolContex
             collected.binary_skipped
         ));
     }
+    if collected.refused > 0 {
+        let why = "a key store, a device or the workspace .git is not opened by any call";
+        rows.push(format!("[{} file(s) refused: {why}]", collected.refused));
+    }
     rows
 }
 
@@ -1022,7 +1022,7 @@ impl Tool for GrepTool {
         }
         let block = options.block;
         let page_cap = if block { BLOCK_PAGE_CAP } else { PAGE_CAP };
-        let total_label = collected.label();
+        let total_label = label(&collected);
         let mut rows: Vec<String> = Vec::new();
         let shown;
         if options.count {

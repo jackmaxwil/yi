@@ -195,6 +195,9 @@ before claiming any task done; quote failures verbatim, do not paraphrase them.
 - No tracking check runs offline. A green `just check` says nothing about whether the work is
   registered, sized or dated — it cannot reach the forge and never tries. The PR job
   (check_pr_metadata.py) and the weekly hygiene job are where that is enforced.
+- `check_scan` runs pinned zizmor, gitleaks and Semgrep in the full lane; `--fast` announces a
+  skip. Outside CI a missing tool or cold offline cache prints `skip scan (<reason>)`; CI fails
+  that skip. `scan.json` only shrinks, suppressions print reasons, and mirror history has its own count.
 
 
 
@@ -550,8 +553,9 @@ trailing blanks and the counts drift (the duplicated-list bug).
   register is on the forge (095), so the change and the issue have to name each other or neither
   can be found from the other. Ratchets, doc fixes and in-band repairs are exempt by
   construction: they add no ledger row and move no bytes past the band.
-- A user-visible behavior change updates the ARCHITECTURE feature ledger and,
-  when structural, adds its change file — in the same change as the code.
+- A user-visible behavior change writes `ledger+`, `ledger~`, `ledger=` or `ledger-` lines in its
+  change file, in the same change as the code. The recorder applies them to the ARCHITECTURE
+  feature ledger after the merge; a branch that edits a row is refused and told the lines to write.
 - A landed decision gets its ADR under docs/solutions/adr/ (one file per decision-log row,
   rendered from the row by the recorder rather than hand-drifted) and a line in the docs/solutions index.
 - Never `git add -A` in a shared tree: it swallows the other session's uncommitted files. Stage

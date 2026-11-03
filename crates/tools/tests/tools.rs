@@ -588,6 +588,57 @@ fn a_capture_leaves_out_a_shadow_that_lives_inside_the_project() -> TestResult {
     Ok(())
 }
 
+/// Dies with a probe home inside the work tree stored in the shadow on every turn: `yi --here`
+/// in a scratch dir whose HOME sat under it wrote the home's churn into `~/.yi/checkpoints`.
+#[test]
+fn a_capture_leaves_out_a_home_that_lives_inside_the_project() -> TestResult {
+    let project = temp_dir("checkpoint-home-inside-project")?;
+    let home = project.join("home");
+    fs::create_dir_all(home.join(".cache/uv"))?;
+    fs::write(project.join("notes.txt"), "alpha\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&home.join(".yi/checkpoints"), &project)?;
+    let first = checkpoints.capture()?;
+    fs::write(home.join(".cache/uv/wheel.bin"), "churn\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a change under the session home moved the tree"
+    );
+    assert_eq!(checkpoints.show(&first, "notes.txt")?, "alpha\n");
+    Ok(())
+}
+
+/// Dies with the exclusion narrowed back to the store: `yi` in `~` jumps to its shadow and back,
+/// and a venv rebuilt under `~/.cache` is stored again on every turn.
+#[test]
+fn a_capture_keeps_the_project_when_the_project_is_the_home() -> TestResult {
+    let home = temp_dir("checkpoint-project-is-home")?;
+    fs::write(home.join("notes.txt"), "alpha\n")?;
+    fs::create_dir_all(home.join(".yi/sessions"))?;
+    fs::create_dir_all(home.join(".cache/uv"))?;
+    let checkpoints = yi_tools::Checkpoints::open(&home.join(".yi/checkpoints"), &home)?;
+    let first = checkpoints.capture()?;
+    fs::write(home.join(".yi/sessions/churn.jsonl"), "{}\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a change under the state dir of a home that is the tree moved the tree"
+    );
+    fs::write(home.join(".cache/uv/wheel.bin"), "churn\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a venv rebuilt under the caches of a home that is the tree moved the tree"
+    );
+    fs::write(home.join("notes.txt"), "beta\n")?;
+    assert_ne!(
+        checkpoints.capture()?,
+        first,
+        "an edited file in a home that is the tree left the tree still"
+    );
+    Ok(())
+}
+
 #[test]
 fn checkpoint_restore_undoes_a_rename() -> TestResult {
     let project = temp_dir("checkpoint-rename-project")?;
@@ -1288,16 +1339,28 @@ fn a_job_wait_returns_as_the_job_settles() -> TestResult {
     let mut context = ToolContext::new(dir.to_path_buf());
     context.auto_background = Some(std::time::Duration::from_millis(80));
     let mut waited = std::time::Duration::ZERO;
-    for _ in 0..5 {
+    let mut backgrounded = 0;
+    // Incident: under full-suite load the 80 ms timer lost to `sleep 0.1`, so an inline finish
+    // is retried; the budget below still measures only the waits that ran.
+    for _ in 0..20 {
         let started = tool.execute(args(&[("command", json!("sleep 0.1"))]), &context);
-        let job = started.result.details.get("job").and_then(Value::as_u64);
-        let job = job.ok_or("no job id")?;
+        let Some(job) = started.result.details.get("job").and_then(Value::as_u64) else {
+            continue;
+        };
         let polling = std::time::Instant::now();
         let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(5))]), &context);
         waited += polling.elapsed();
         let finished = text_of(&polled.result.content);
         assert!(finished.contains("finished (exit 0)"), "{finished}");
+        backgrounded += 1;
+        if backgrounded == 5 {
+            break;
+        }
     }
+    assert_eq!(
+        backgrounded, 5,
+        "twenty attempts never backgrounded a 100 ms sleep"
+    );
     assert!(
         waited < std::time::Duration::from_millis(500),
         "five waits took {waited:?}"
@@ -1773,7 +1836,7 @@ fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
     for command in [
         "ls -la && git log --oneline -5 2>/dev/null",
         "cat Cargo.toml | grep name",
-        "RUST_LOG=debug rg needle src; wc -l src/lib.rs",
+        "rg needle src; wc -l src/lib.rs",
     ] {
         assert!(
             !tool.irreversible(&args(&[("command", json!(command))])),
@@ -1786,6 +1849,7 @@ fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
         "git status && git commit -m x",
         "echo hi > notes.txt",
         "cat $(rm -rf /tmp/x)",
+        "LD_PRELOAD=x.so rg needle src",
     ] {
         assert!(
             tool.irreversible(&args(&[("command", json!(command))])),
@@ -1989,6 +2053,7 @@ fn a_cell_that_fails_to_finish_keeps_the_calls_it_made() -> TestResult {
     let tool = yi_tools::IpythonTool {
         bridge: Arc::new(DeadKernel),
         calls: Some(Arc::clone(&calls) as Arc<dyn yi_tools::CellCalls>),
+        contained: true,
     };
     let output = tool.execute(
         args(&[("code", json!("1"))]),
@@ -2406,12 +2471,16 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
     );
     assert!(!edit.is_error, "{}", output_text(&edit));
     assert_eq!(fs::read_to_string(dir.join("a.txt"))?, "one\nTWO\nthree\n");
+    assert!(
+        !text.contains("answers this:"),
+        "a tagged view names no second anchor source: {text}"
+    );
 
     let piped = bash.execute(args(&[("command", json!("cat a.txt | head -1"))]), &context);
+    let piped_text = output_text(&piped);
     assert!(
-        !output_text(&piped).starts_with('['),
-        "{}",
-        output_text(&piped)
+        piped_text.starts_with("[read answers this:") && !piped_text.contains("[a.txt#"),
+        "a compound view carries no tag: {piped_text}"
     );
     assert_eq!(piped.result.details["bridge"], json!("compound"));
     Ok(())
@@ -2568,6 +2637,89 @@ fn a_read_only_command_is_a_read_kind_call() {
             "{command}"
         );
     }
+}
+/// A read-only shell call answers with the dedicated tool as its first row, above the output.
+#[test]
+fn a_shell_read_names_the_dedicated_tool_first() -> TestResult {
+    let dir = temp_dir("bash-steer")?;
+    fs::write(dir.join("notes.txt"), "needle\nsecond\nthird\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let bash = BashTool::default();
+    let table = [
+        ("cat notes.txt", "read"),
+        ("head -2 notes.txt", "read"),
+        ("sed -n '1,2p' notes.txt", "read"),
+        ("grep -rn needle .", "grep"),
+        ("grep -rn needle . | wc -l", "grep"),
+        ("cat notes.txt && head -1 notes.txt", "read"),
+        (
+            r#"grep -rn "needle\|expect(" . --include=*.txt | grep -v test | wc -l"#,
+            "grep",
+        ),
+        ("grep -E 'needle|x' notes.txt", "grep"),
+        ("head -2 notes.txt | grep needle", "grep"),
+        ("cat notes.txt | grep needle", "grep"),
+        ("NO_COLOR=1 grep -rn needle .", "grep"),
+        ("RUST_LOG=debug cat notes.txt", "read"),
+        ("sed -n '1,2p' notes.txt\ngrep -n needle notes.txt", "grep"),
+        ("cat notes.txt\n", "read"),
+    ];
+    for (command, tool) in table {
+        let text = output_text(&bash.execute(args(&[("command", json!(command))]), &context));
+        let rows: Vec<&str> = text.lines().collect();
+        let hint = rows
+            .iter()
+            .position(|row| row.starts_with(&format!("[{tool} answers this:")));
+        let above = rows.iter().position(|row| *row == "second");
+        assert!(
+            hint.is_some_and(|at| at <= 1),
+            "{command} put no {tool} row first: {text}"
+        );
+        assert!(
+            above.is_none_or(|at| hint.is_some_and(|hint| hint < at)),
+            "{command} printed the file above its {tool} row: {text}"
+        );
+    }
+    Ok(())
+}
+
+/// A write, a vcs or build pipeline, and a filter outside the read set keep their bare output.
+#[test]
+fn a_write_a_vcs_or_build_call_gets_no_dedicated_tool_row() -> TestResult {
+    let dir = temp_dir("bash-steer-silent")?;
+    fs::write(dir.join("notes.txt"), "needle\nsecond\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let bash = BashTool::default();
+    let table = [
+        "cat notes.txt > copy.txt",
+        "git log -1",
+        "cargo --version | tail -1",
+        "head -c 6 notes.txt | tr a-z A-Z",
+        "cat notes.txt & true",
+        "sed -n -i.bak '1p' notes.txt",
+        "sed -n '1,2w out.txt' notes.txt",
+        "find . -name '*.o' -delete",
+        "find . -name '*.o' -exec true {} +",
+        "fd -x true",
+        "rg --pre true needle",
+        "tree -o out.html .",
+        "sed -ni '1p' notes.txt",
+        "less -o log.txt notes.txt",
+        "less notes.txt",
+        "find . -name '*.txt'",
+        "fd txt",
+        "tree .",
+        "cat notes.txt\nrm -f copy.txt",
+        "NO_COLOR=1 rm -f copy.txt",
+    ];
+    for command in table {
+        let text = output_text(&bash.execute(args(&[("command", json!(command))]), &context));
+        assert!(
+            !text.contains("answers this:"),
+            "{command} was steered: {text}"
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -3048,6 +3200,40 @@ fn every_cut_view_names_its_cap() -> TestResult {
         "{text}"
     );
     assert!(text.contains("[1 binary files skipped"), "{text}");
+    Ok(())
+}
+
+/// A refused file is named: grep over a guarded key store answered "No matches found", which
+/// reads as a search that found nothing rather than one the gate never ran.
+#[test]
+fn a_refused_file_is_named_rather_than_no_matches() -> TestResult {
+    let dir = temp_dir("grep-refused")?;
+    let home = temp_dir("grep-refused-home")?;
+    fs::create_dir_all(home.join(".yi/mcp"))?;
+    let store = home.join(".yi/mcp/sessions.json");
+    fs::write(&store, "{\"token\":\"sk-live\"}\n")?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &*home) };
+    fs::write(dir.join("notes.txt"), "alpha\n")?;
+    let link = dir.join("keys.json");
+    fs::hard_link(&store, &link)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let grep = GrepTool::default();
+
+    let named = grep.execute(
+        args(&[("pattern", json!("sk-live")), ("path", json!("keys.json"))]),
+        &context,
+    );
+    let text = output_text(&named);
+    assert!(
+        text.contains("[1 file(s) refused: a key store, a device or the workspace .git"),
+        "{text}"
+    );
+
+    let walked = grep.execute(args(&[("pattern", json!("sk-live"))]), &context);
+    let text = output_text(&walked);
+    assert!(text.contains("[1 file(s) refused"), "{text}");
+    assert!(!text.contains("sk-live"), "{text}");
     Ok(())
 }
 
@@ -4229,7 +4415,6 @@ fn bash_inherits_no_provider_key() -> TestResult {
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
         "GEMINI_API_KEY",
-        "LAYA_API_KEY",
     ];
     for name in keys.iter().chain(&["YI_906_ORDINARY"]) {
         // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.

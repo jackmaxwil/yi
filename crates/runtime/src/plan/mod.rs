@@ -4,9 +4,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::plan::doc::{
-    Check, DocError, Plan, PlanId, PlanState, TodoState, TodoStateName, TouchCount,
-};
+use yi_types::plan::doc::{Check, Plan, PlanState, TodoState, TodoStateName, TouchCount};
 use yi_types::schedule::DeliveryMode;
 
 use crate::goal::{DeliverFn, StoreHandle};
@@ -17,13 +15,13 @@ pub mod artifact;
 pub(crate) mod ask;
 pub mod authority;
 mod brief;
+pub(crate) mod cache;
 pub mod capacity;
 pub mod declare;
 pub mod dispatch;
 pub mod done;
 pub mod finish;
 pub mod import;
-pub mod journal;
 mod kinds;
 pub mod ledger;
 pub mod loop_coupling;
@@ -85,15 +83,12 @@ pub fn resolve_plans_dir(configured: Option<PathBuf>, workspace: &Path) -> PathB
 pub enum CanonicalPlanError {
     #[error("no plan is open under {dir}")]
     NoPlanOpen { dir: PathBuf },
-    #[error("the session's plan pointer {id:?} is not a plan id: {cause}")]
-    Pointer { id: String, cause: DocError },
     #[error(transparent)]
     Store(#[from] StoreError),
 }
 
-/// The one plan the session is working: the fact's doc pointer when the host wrote one, else
-/// the Active root among those this session claims. The directory is shared by every
-/// session in the workspace, so a root another session opened is never this one's plan.
+/// The one plan the session is working: the Active root among those this session claims. The
+/// directory is shared by every session in the workspace, so a root another opened is not it.
 pub fn canonical_plan(store: &StoreHandle, plans_dir: &Path) -> Result<Plan, CanonicalPlanError> {
     let no_plan = || CanonicalPlanError::NoPlanOpen {
         dir: plans_dir.to_path_buf(),
@@ -104,15 +99,7 @@ pub fn canonical_plan(store: &StoreHandle, plans_dir: &Path) -> Result<Plan, Can
     let Some(handle) = store() else {
         return Err(no_plan());
     };
-    let pointer = yi_session::lock_session(&handle)
-        .plan()
-        .and_then(|fact| fact.doc);
     let plans = PlanStore::open(plans_dir.to_path_buf())?;
-    if let Some(raw) = pointer {
-        let id = PlanId::new(raw.as_str())
-            .map_err(|cause| CanonicalPlanError::Pointer { id: raw, cause })?;
-        return Ok(plans.read(&id)?);
-    }
     let owned = ledger::Owned::of(std::slice::from_ref(&handle));
     for id in plans
         .roots()?
@@ -434,23 +421,6 @@ impl PlanService {
                 (self.deliver)(crate::rules::reminder(text), DeliveryMode::Steer);
             }
         }
-    }
-
-    pub fn register(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
-        let service = Arc::clone(self);
-        registry.register("plan.get", move |_payload| {
-            let service = Arc::clone(&service);
-            Box::pin(async move {
-                // The read touches the plans directory; keep it off the executor.
-                tokio::task::spawn_blocking(move || service.get())
-                    .await
-                    .map_err(|error| format!("plan.get task failed: {error}"))?
-                    .and_then(|value| match value {
-                        Value::Object(map) => Ok(map),
-                        other => Err(format!("plan payload was not an object: {other}")),
-                    })
-            })
-        });
     }
 }
 

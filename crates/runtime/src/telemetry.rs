@@ -168,6 +168,19 @@ impl Telemetry {
                     .get("durationMs")
                     .and_then(serde_json::Value::as_u64);
                 span.ok = Some(!is_error);
+                if let Some(usage) = &result.usage {
+                    fill_usage(&mut span, usage);
+                }
+                span.provider = result
+                    .details
+                    .get("provider")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                span.model = result
+                    .details
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
                 span.class = is_error.then(|| {
                     let kind = yi_types::event::ToolErrorKind::from_details(&result.details)
                         .unwrap_or("tool_error");
