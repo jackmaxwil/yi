@@ -1,4 +1,6 @@
 ---
+version: 0.892.0
+decisions: D539
 issue: Refs #1992
 growth: +214 weighed the day words and clock shapes against the twin `parse_iso_ms` this branch deleted, and the two-way parse table the note guard replaced
 raise: crate runtime +214, tests +429, comments +16
