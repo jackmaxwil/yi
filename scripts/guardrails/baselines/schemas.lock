@@ -322,7 +322,7 @@
   "spec::Run": "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct Run { pub at: u64, pub kind: RunKind, pub duration: Duration, pub tail: String, pub outcome: Outcome, }",
   "spec::RunKind": "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"lowercase\", tag = \"kind\", content = \"mutant\")] pub enum RunKind { Baseline, Run, Refute(Mutant), }",
   "spec::Spec": "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] #[serde(rename_all = \"lowercase\", tag = \"state\")] pub enum Spec { Draft(Draft), Frozen(Box<Frozen>), }",
-  "spec::SpecError": "#[derive(Debug)] #[non_exhaustive] pub enum SpecError { BadId(String), BadKind(String), EmptyCheck, NotFrozen, AlreadyFrozen, UnknownId(ReqId), ChildCannotFreeze, NotFinite(f64), Poisoned, Io { path: PathBuf, source: std::io::Error, }, }",
+  "spec::SpecError": "#[derive(Debug)] #[non_exhaustive] pub enum SpecError { BadId(String), BadKind(String), EmptyCheck, NotFrozen, AlreadyFrozen, UnknownId(ReqId), ChildCannotFreeze, NotFinite(f64), Poisoned, Outside(PathBuf), Io { path: PathBuf, source: std::io::Error, }, }",
   "spec::SpecRecord": "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] #[serde(rename_all = \"camelCase\")] pub struct SpecRecord { pub at: u64, pub op: String, pub spec: Spec, #[serde(flatten)] pub extra: Map<String, Value>, }",
   "spec::Status": "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"lowercase\")] pub enum Status { Green, Red, Missing, }",
   "status_mark::StatusMark": "#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum StatusMark { NeedsYou, Working, Stuck, DoneUnseen, Idle, Failed, Unknown, }",
