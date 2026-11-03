@@ -351,6 +351,11 @@ class RLMSpawnHandle:
             )
         return loop.run_until_complete(read).state
 
+    @property
+    def tree(self) -> "Tree":
+        """This child's tree, by name: ``await h.tree.diff()``, ``await h.tree.check(cmd)``."""
+        return Tree(self.name)
+
     def __repr__(self) -> str:
         head = (
             f"RLMSpawnHandle(name={self.name!r}, model={self.model!r}, "
@@ -596,6 +601,9 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``fork`` seeds the child with this session's history: 'none' (default), 'all'
     (inherits the parent model, so ``model``/``thinking`` are refused with it), or a
     positive turn count for the last N turns.
+    ``carry=['.env']`` copies gitignored files into a worktree child, which starts without them.
+    ``tree=f`` gives a child a ``Tree`` from ``t.fork()``, uncommitted files and all: merge it back
+    with ``t.merge(h.tree)``, never ``merge_worktree``, which would commit those files as its own.
     ``isolation='worktree'`` gives the child its own checkout; hand it back with
     ``merge_worktree`` or ``discard_worktree``. ``isolation='container:<image>'`` is the
     same checkout and hand-back, with the child's bash run in a container of that image
@@ -633,6 +641,8 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
     kwargs = _resolve_context(kwargs)
+    if "tree" in kwargs:
+        kwargs["tree"] = str(kwargs["tree"])
     partition = kwargs.get("partition")
     if not partition:
         return _spawn_handle_from_payload(await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs}))
@@ -1356,10 +1366,11 @@ class BashHandle:
     ``asyncio.wait_for`` (or ``asyncio.timeout``) when one is needed.
     """
 
-    def __init__(self, command: str) -> None:
+    def __init__(self, command: str, tree: str | None = None) -> None:
         if not isinstance(command, str) or not command.strip():
             raise ValueError("command must be a non-empty str")
         self._command = command
+        self._payload: dict[str, Any] = {"command": command, **({"tree": tree} if tree else {})}
         self._cursor = 0
         self._report: dict[str, Any] | None = None
         try:
@@ -1367,11 +1378,11 @@ class BashHandle:
         except RuntimeError:
             self._spawn: asyncio.Future[dict[str, Any]] | None = None
         else:
-            self._spawn = asyncio.ensure_future(host_request("exec.spawn", {"command": command}), loop=loop)
+            self._spawn = asyncio.ensure_future(host_request("exec.spawn", self._payload), loop=loop)
 
     async def _id(self) -> int:
         if self._spawn is None:
-            self._spawn = asyncio.ensure_future(host_request("exec.spawn", {"command": self._command}))
+            self._spawn = asyncio.ensure_future(host_request("exec.spawn", self._payload))
         reply = await asyncio.shield(self._spawn)
         job = reply.get("job_id")
         if not isinstance(job, int):
@@ -1454,6 +1465,84 @@ class BashHandle:
             asyncio.get_running_loop().create_task(_reap())
         except RuntimeError:
             pass
+
+
+class Tree:
+    """A named set of files you can fork, diff, check, merge and throw away, committed or not.
+
+    ``rlm.tree()`` is this session's own. ``f = await t.fork("fix")`` copies its files, uncommitted
+    ones included, cheaply. ``rlm.run(brief, tree=f)`` gives a child that tree, and ``h.tree`` reads
+    any worktree child's. A name is a label, never a path.
+    """
+
+    def __init__(self, name: str = "self", next: str = "") -> None:
+        self.name, self.next = name, next
+
+    def __str__(self) -> str:
+        return self.name
+
+    def __repr__(self) -> str:
+        head = f"Tree({self.name!r})"
+        return f"{head}\n{self.next}" if self.next else head
+
+    async def _ask(self, verb: str, **fields: Any) -> dict[str, Any]:
+        sent = {key: value for key, value in fields.items() if value is not None}
+        return await host_request(f"tree.{verb}", {"tree": self.name, **sent})
+
+    @_handed_out
+    async def fork(self, name: str | None = None, *, at: str | None = None, carry: list[str] | None = None) -> "Tree":
+        """A new tree from this one, or from ``at``, a tree id from ``t.head()``, cut clean."""
+        reply = await host_request("tree.fork", {k: v for k, v in {"from": self.name, "name": name, "at": at, "carry": carry}.items() if v is not None})
+        return Tree(reply["name"], reply.get("next", ""))
+
+    @_handed_out
+    async def head(self) -> str:
+        """A tree id naming these files now. Give it to ``fork(at=)``, ``rewind`` or ``diff(against=)``."""
+        return (await self._ask("head"))["tree"]
+
+    @_handed_out
+    async def log(self, limit: int = 20) -> list[str]:
+        """This tree's commits, newest first, one a row."""
+        return (await self._ask("log", limit=limit))["rows"]
+
+    @_handed_out
+    async def diff(self, against: str | None = None, path: str | None = None) -> Reply:
+        """Files changed since the cut, plus ``would_conflict``: the paths a merge into this session
+        would stop on, or None if the trial itself failed. ``path`` gives one file's patch."""
+        return Reply(await self._ask("diff", against=against, path=path), "t.diff()", "d.files")
+
+    @_handed_out
+    async def check(self, cmd: str, wait_s: float | None = None) -> Reply:
+        """``cmd`` on these files in a warm directory: ``state`` is green, red, abstain or running.
+        Running means call again with the same ``cmd``; it reads the same run."""
+        return Reply(await self._ask("check", cmd=cmd, wait_s=wait_s), "t.check()", "c.state")
+
+    @_handed_out
+    async def merge(self, *others: Any) -> Reply:
+        """Other trees' files into this one, no commit. ``summary`` says how many; one that
+        conflicted moved nothing and is named in ``conflicts``."""
+        names = [str(getattr(other, "name", other)) for other in others]
+        return Reply(await self._ask("merge", others=names), "t.merge()", "m.summary")
+
+    @_handed_out
+    async def rewind(self, to: str, paths: list[str] | None = None) -> None:
+        """These files back to ``to``, a tree id. ``paths`` limits it. Commits stay where they are."""
+        await self._ask("rewind", to=to, paths=paths)
+
+    @_handed_out
+    async def discard(self) -> dict[str, Any]:
+        """Stop what runs in a free tree and remove it. A child's goes through ``rlm.discard_worktree``."""
+        return await self._ask("discard")
+
+    def bash(self, command: str) -> "BashHandle":
+        """``bash(command)`` in a free tree: contained, loopback only."""
+        return BashHandle(command, tree=self.name)
+
+
+@_public
+def tree(name: str = "self") -> Tree:
+    """A tree by name, ``self`` being this session's own. See ``Tree``."""
+    return Tree(name)
 
 
 @_public

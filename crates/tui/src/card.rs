@@ -81,7 +81,7 @@ pub fn rail_style(theme: &Theme, status: ToolStatus) -> Style {
 pub fn tool_hue(theme: &Theme, name: &str) -> Color {
     match name {
         "bash" => theme.orange,
-        "read" | "get_context" | "grep" => theme.cyan,
+        "read" | "get_context" | "grep" | "web_search" => theme.cyan,
         "edit" | "write" => theme.magenta,
         "ipython" => theme.teal,
         "todo" | "plan" | "annotate" => theme.purple,
@@ -148,8 +148,8 @@ pub fn card(
             rows.push(Line::from(spans));
         }
     }
-    let ground = theme.user_style();
     for row in body {
+        let ground = theme.user_style();
         let used = line_width(&row) + INSET.len();
         let mut spans = vec![Span::styled(INSET, ground)];
         spans.extend(

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use serde_json::Value;
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::plan::doc::{BlockedOn, Note, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState};
@@ -10,8 +8,8 @@ use yi_types::todo::TodoList;
 use yi_types::url::Url;
 
 use super::{
-    HeartbeatService, JobSpec, JobStore, RunOutcome, new_job, next_run_at_for_schedule,
-    parse_iso_ms, parse_schedule, shared,
+    HeartbeatService, JobSpec, JobStore, RunOutcome, Zone, new_job, next_run_at_for_schedule,
+    parse_local_ms, parse_schedule, shared,
 };
 use crate::todo::{Op, TodoStore};
 
@@ -62,11 +60,23 @@ pub(super) fn firing(schedule: &CronSchedule, first: u64, now: u64) -> Firing {
 /// A wait's schedule: `at <ISO>` keeps its time even once past, so a restart after it fires at
 /// once; anything else is the heartbeat grammar, counted from now.
 pub fn wait_schedule(address: &str, now: u64) -> Result<(CronSchedule, u64), String> {
+    wait_schedule_in(address, now, &Zone::local())
+}
+
+/// [`wait_schedule`] read in `zone`: a time naming no offset is wall time there, as `time:` is.
+pub fn wait_schedule_in(
+    address: &str,
+    now: u64,
+    zone: &Zone,
+) -> Result<(CronSchedule, u64), String> {
     let text = address
         .strip_prefix(CLOCK_SCHEME)
         .ok_or_else(|| format!("{address:?} is not a clock:// address"))?
         .trim();
-    if let Some(when) = text.strip_prefix("at ").and_then(parse_iso_ms) {
+    if let Some(when) = text
+        .strip_prefix("at ")
+        .and_then(|when| parse_local_ms(when, zone))
+    {
         let schedule = CronSchedule {
             kind: ScheduleKind::Once,
             expression: text.to_owned(),
@@ -97,7 +107,16 @@ pub type Wait = (Option<PlanId>, TodoLabel, BlockedOn);
 /// is an `exec` wait on its command's exit, so a plan written before channels still unblocks.
 pub fn wait_of(on: &BlockedOn) -> Option<(String, Option<String>)> {
     match on {
-        BlockedOn::Channel { address, filter } => Some((address.clone(), filter.clone())),
+        // Incident: `file://build.done` unblocked on its first `exists:false` reading, and the woken
+        // agent re-armed it seven times in one turn while the file never appeared.
+        BlockedOn::Channel { address, filter } => Some((
+            address.clone(),
+            filter.clone().or_else(|| {
+                address
+                    .starts_with("file://")
+                    .then(|| "exists=true".to_owned())
+            }),
+        )),
         BlockedOn::External {
             probe: Some(command),
         } => Some((
@@ -159,10 +178,10 @@ pub fn fire_with_hooks(
     todos: &TodoStore,
     job: &Job,
     firing: &Firing,
-    hooks: Option<&Arc<crate::claude_hooks::Hooks>>,
+    checker: Option<&crate::goal::Checker>,
 ) -> Result<Fired, String> {
     match (&job.channel, &job.unblocks) {
-        (Some(sub), _) => super::channel::fire_with_hooks(todos, job, sub, hooks),
+        (Some(sub), _) => super::channel::fire_with_hooks(todos, job, sub, checker),
         (None, Some(label)) => unblock(todos, job, label, CLOCK_ACTOR),
         (None, None) => create(todos, job, firing),
     }
