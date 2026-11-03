@@ -6,44 +6,32 @@ use scratch::Scratch;
 
 use std::error::Error;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
 use yi_runtime::plan::acceptance::Phase;
-use yi_runtime::plan::ops::{Actor, Delegate, Op, OpRequest, PlanEngine, PlanOpError};
+use yi_runtime::plan::ops::{Actor, Op, OpRequest, PlanEngine, PlanOpError};
 use yi_runtime::plan::store::PlanStore;
 use yi_runtime::plan::tool::PlanTool;
 use yi_runtime::plan::verify::session_has;
 use yi_tools::{Tool, ToolContext};
-use yi_types::plan::canonical::Digest;
+use yi_types::plan::canonical::{Chained, Digest};
 use yi_types::plan::contract::{CheckerManifest, Decider};
-use yi_types::plan::doc::{
-    AgentId, Delegation, Isolation, Plan, TodoAddr, TodoLabel, TodoState, TodoStateName,
-};
-use yi_types::url::Url;
+use yi_types::plan::doc::{AgentId, Isolation, Plan, TodoLabel, TodoState, TodoStateName};
+
+use crate::plan_ops::Stub;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-#[derive(Default)]
-struct Stub(AtomicU32);
-
-impl Delegate for Stub {
-    fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
-        let serial = self.0.fetch_add(1, Ordering::SeqCst);
-        AgentId::new(format!("child-{serial}")).map_err(|error| error.to_string())
-    }
-
-    fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
-        Ok(None)
-    }
-    fn finishes(&self) -> bool {
-        true
-    }
+fn stub() -> Arc<Stub> {
+    let stub = Stub::default();
+    stub.finishing.store(true, Ordering::SeqCst);
+    Arc::new(stub)
 }
-
 struct Rig {
     temp: Scratch,
     store: PlanStore,
+    delegate: Arc<Stub>,
     engine: Arc<PlanEngine>,
     tool: PlanTool,
 }
@@ -51,11 +39,13 @@ struct Rig {
 fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
     let temp = Scratch::new(&format!("yi-plan-declare-{name}"))?;
     let store = PlanStore::open(temp.to_path_buf())?;
-    let engine = Arc::new(PlanEngine::new(store.clone(), Arc::new(Stub::default())));
+    let delegate = stub();
+    let engine = Arc::new(PlanEngine::new(store.clone(), delegate.clone()));
     let tool = PlanTool::new(Arc::clone(&engine), Actor::Owner);
     Ok(Rig {
         temp,
         store,
+        delegate,
         engine,
         tool,
     })
@@ -409,9 +399,7 @@ impl yi_runtime::plan::recovery::Liveness for Gone {
 #[test]
 fn an_owner_step_on_a_todo_whose_child_is_gone_takes_the_normal_road() -> TestResult {
     let rig = rig("gone")?;
-    let engine = Arc::new(
-        PlanEngine::new(rig.store.clone(), Arc::new(Stub::default())).with_liveness(Arc::new(Gone)),
-    );
+    let engine = Arc::new(PlanEngine::new(rig.store.clone(), stub()).with_liveness(Arc::new(Gone)));
     let gone = Rig {
         tool: PlanTool::new(Arc::clone(&engine), Actor::Owner),
         engine,
@@ -811,6 +799,51 @@ fn a_whole_plan_set_lands_and_each_unreachable_row_says_why() -> TestResult {
     Ok(())
 }
 
+/// Dies with the repair loop journaling a refusal per pass: a set carrying three repairable graph
+/// problems wrote one refusal record for each pass before the set landed.
+#[test]
+fn a_whole_plan_set_repaired_three_times_journals_one_record() -> TestResult {
+    let rig = rig("apply-repair-journal")?;
+    opened(&rig, json!([{"label": "keep"}]))?;
+    let rows = json!([
+        {"label": "keep"},
+        {"label": "Survey", "after": ["Build"]},
+        {"label": "Build", "after": ["Survey"]},
+        {"label": "Ship", "after": ["missing"]},
+        {"label": "Note"},
+        {"label": "Note"},
+    ]);
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": rows}));
+    assert!(!refused, "{text}");
+    let id = rig.store.roots()?.into_iter().next().ok_or("no plan")?;
+    let records = rig.store.journal(&id).read()?.records;
+    let ops: Vec<&str> = records
+        .iter()
+        .map(|record| record.record.op.as_str())
+        .collect();
+    assert_eq!(
+        ops,
+        ["init", "set"],
+        "one record per applied op and none per repair pass"
+    );
+    Ok(())
+}
+
+/// Dies with a goal-less first set refused: with no plan open the dry pass saw no plan, skipped
+/// the repair, and the real apply refused the dangling `after` it used to repair.
+#[test]
+fn a_goalless_set_on_an_empty_store_is_repaired_and_journals_two_records() -> TestResult {
+    let rig = rig("apply-repair-open")?;
+    let rows = json!([{"label": "Ship", "after": ["missing"]}]);
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": rows}));
+    assert!(!refused, "{text}");
+    let id = rig.store.roots()?.into_iter().next().ok_or("no plan")?;
+    let records = rig.store.journal(&id).read()?.records;
+    let ops: Vec<&str> = records.iter().map(|r| r.record.op.as_str()).collect();
+    assert_eq!(ops, ["init", "set"]);
+    Ok(())
+}
+
 /// Dies with a stale-view refusal on a repeated set: the same whole plan sent twice is the same
 /// plan, so the second call lands with nothing to say.
 #[test]
@@ -975,6 +1008,26 @@ fn a_set_keeps_the_rows_it_does_not_name_and_drops_a_struck_one() -> TestResult 
     Ok(())
 }
 
+#[test]
+fn a_set_keeps_an_unnamed_running_delegated_todo() -> TestResult {
+    let rig = rig("set-keeps-running")?;
+    opened(
+        &rig,
+        json!([
+            {"label": "running job", "delegation": {"spec": {}, "accept": {"command": "true"}}},
+            {"label": "polish"}
+        ]),
+    )?;
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "list": "- [x] polish\n- [ ] ship"}),
+    );
+    assert!(!refused, "{text}");
+    assert_eq!(rig.delegate.reaps.load(Ordering::SeqCst), 0);
+    assert!(matches!(state_of(&rig, "running job")?.as_str(), "Running"));
+    Ok(())
+}
+
 /// Dies with a row state the set cannot reach: with only set shown, failing, reopening, unblocking
 /// and splitting a todo are row states, and each must land through the engine's own op.
 #[test]
@@ -1044,5 +1097,67 @@ fn a_program_gets_the_plan_it_changed_and_the_model_none() -> TestResult {
     assert_eq!(plan["goal"], "ship the release");
     context.program = false;
     assert!(rig.tool.execute(input, &context).value.is_none());
+    Ok(())
+}
+
+/// Dies with a set record that pads every row it did not name: a two-row set on a thirty-todo
+/// plan wrote a 1,769-byte record, and every replay re-read rows nobody changed.
+#[test]
+fn a_set_record_names_only_the_rows_it_changes() -> TestResult {
+    let rig = rig("set-record")?;
+    let todos = (0..30)
+        .map(|at| json!({"label": format!("step {at:02}")}))
+        .collect::<Vec<_>>();
+    let plan = opened(&rig, Value::Array(todos))?;
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "todos": [
+            {"label": "step 00", "state": "done"}, {"label": "step 01", "state": "done"}]}),
+    );
+    assert!(!refused, "{text}");
+    let records = rig.store.journal(&plan.id).read()?.records;
+    let last = records.last().ok_or("no record")?;
+    assert_eq!(last.record.op, "set");
+    let line = String::from_utf8(last.line()?)?;
+    let rows = last.args["rows"].as_array().ok_or("no rows")?.len();
+    assert!(
+        line.len() <= 1024,
+        "the set record is {} bytes over {rows} rows",
+        line.len()
+    );
+    assert_eq!(rows, 2, "the record carries the rows it names");
+    let after = rig.store.read(&plan.id)?;
+    assert_eq!(after.todos.len(), 30, "the unnamed rows stay");
+    assert_eq!(state_of(&rig, "step 00")?, "Done");
+    assert_eq!(state_of(&rig, "step 02")?, "Pending");
+    Ok(())
+}
+
+/// Dies with a set that opens a plan after a finished one and journals `keep_rest`: the new plan
+/// has nothing to keep, so the rows the finished plan held must ride in the record itself.
+#[test]
+fn a_set_that_opens_a_plan_carries_the_rows_in_its_record() -> TestResult {
+    let rig = rig("set-opens")?;
+    let first = opened(&rig, json!([{"label": "first"}]))?;
+    let (refused, text) = call(&rig, json!({"op": "done", "label": "first"}));
+    assert!(!refused, "{text}");
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "next round", "todos": [{"label": "second"}]}),
+    );
+    assert!(!refused, "{text}");
+    let id = (rig.store.roots()?.into_iter())
+        .find(|id| *id != first.id)
+        .ok_or("no new plan")?;
+    let records = rig.store.journal(&id).read()?.records;
+    let set = (records.iter())
+        .find(|record| record.record.op == "set")
+        .ok_or("no set record")?;
+    assert_eq!(set.args["rows"].as_array().map(Vec::len), Some(2));
+    assert!(set.args.get("keep_rest").is_none(), "{}", set.args);
+    let labels: Vec<String> = (rig.store.read(&id)?.todos.iter())
+        .map(|todo| todo.label.to_string())
+        .collect();
+    assert_eq!(labels, ["second", "first"]);
     Ok(())
 }

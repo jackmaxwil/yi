@@ -1,6 +1,7 @@
 pub mod digest;
 pub mod guard;
 pub mod review;
+pub(crate) mod wire;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
