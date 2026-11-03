@@ -93,17 +93,27 @@ fn classifier_answers(site: &Site) -> Finding {
     let Ok((config, _)) = read_config(&site.home) else {
         return ok("see config");
     };
-    let Some(yi_runtime::classifier::Endpoint {
-        checkpoint: model,
-        url,
-    }) = yi_runtime::classifier::endpoint(&config)
-    else {
-        return ok("off; `yi setup` offers it");
+    let at = match yi_runtime::classifier::arm(&config) {
+        yi_runtime::classifier::Armed::Off => return ok("off; `yi setup` offers it"),
+        yi_runtime::classifier::Armed::Refused(why) => return fail(why),
+        yi_runtime::classifier::Armed::At(at) => at,
     };
-    match yi_runtime::classifier::probe(&url, &model) {
-        Ok(()) => ok(format!("{model} answers at {url}")),
+    let Some(key) = yi_runtime::auth::stored_key(&site.home, "openrouter") else {
+        return fail(format!(
+            "{} at {} needs an OpenRouter key; {}",
+            at.model,
+            at.url,
+            yi_runtime::auth::missing_message("openrouter")
+        ));
+    };
+    match yi_runtime::classifier::probe(&at, Some(key.expose())) {
+        Ok(ms) => ok(format!(
+            "{} at {} answered in {ms} ms; typed messages, judged commands and the working directory leave the machine",
+            at.model, at.url
+        )),
         Err(error) => fail(format!(
-            "no answer at {url} ({error}); start laya-serve or run `yi setup`"
+            "{} at {} did not answer: {error}; check the network, the key (`yi auth openrouter`) and `classifier.url`",
+            at.model, at.url
         )),
     }
 }

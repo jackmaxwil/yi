@@ -537,24 +537,22 @@ pub fn leaving_running(
         | Op::Fail { label, .. }
         | Op::Block { label, .. }
         | Op::Accept { label, .. } => named(label),
-        Op::Set { rows, .. } => plan
-            .todos
-            .iter()
-            .filter(|todo| live(todo) && !rows.iter().any(|row| row.spec.label == todo.label))
+        Op::Set {
+            rows, keep_rest, ..
+        } => (plan.todos.iter())
+            .filter(|todo| !keep_rest && live(todo))
+            .filter(|todo| !rows.iter().any(|row| row.spec.label == todo.label))
             .map(|todo| (id.clone(), todo.clone()))
             .collect(),
         Op::Supersede { .. } => {
-            let mut out: Vec<(PlanId, Todo)> = plan
-                .todos
-                .iter()
+            let mut out: Vec<(PlanId, Todo)> = (plan.todos.iter())
                 .filter(|todo| live(todo))
                 .map(|todo| (id.clone(), todo.clone()))
                 .collect();
             for sub in state.kin(id) {
                 if let Some(plan) = state.plans.get(&sub) {
                     out.extend(
-                        plan.todos
-                            .iter()
+                        (plan.todos.iter())
                             .filter(|todo| live(todo))
                             .map(|todo| (sub.clone(), todo.clone())),
                     );
@@ -708,7 +706,9 @@ pub fn apply_op(
             applied.subplan = Some(apply_decompose(state, id, label, todos, decided)?);
         }
         Op::Supersede { reason, todos } => apply_supersede(state, id, reason, todos, decided)?,
-        Op::Set { rows, .. } => apply_set(state.plan_mut(id)?, rows)?,
+        Op::Set {
+            rows, keep_rest, ..
+        } => apply_set(state.plan_mut(id)?, rows, *keep_rest)?,
         Op::FuseReset => {
             let root = root_of(id)?;
             state.plan_mut(&root)?.reset_spawns();
@@ -1035,18 +1035,16 @@ fn apply_supersede(
     Ok(())
 }
 
-/// The checklist is the whole cut: a surviving label keeps its edges, delegation and
-/// sub-plan, a new one starts plain, a missing one leaves, and every state is as written.
-fn apply_set(plan: &mut Plan, rows: &[SetRow]) -> Result<(), PlanOpError> {
+/// Invariant: a named label keeps its delegation and sub-plan, a new one starts plain; with
+/// `keep_rest` an unnamed row stays, after the named ones, edges intact, and without it leaves.
+fn apply_set(plan: &mut Plan, rows: &[SetRow], keep_rest: bool) -> Result<(), PlanOpError> {
     let mut todos: Vec<Todo> = Vec::with_capacity(rows.len());
-    let kept: Vec<&TodoLabel> = rows.iter().map(|row| &row.spec.label).collect();
     for row in rows {
-        let existing = plan.todos.iter().find(|todo| todo.label == row.spec.label);
-        let mut todo = existing
-            .cloned()
-            .unwrap_or_else(|| new_todo(row.spec.clone()));
+        let found = plan.todos.iter().find(|todo| todo.label == row.spec.label);
+        let mut todo = found.cloned().unwrap_or_else(|| new_todo(row.spec.clone()));
         todo.children = row.spec.children.clone();
-        todo.after.retain(|after| kept.contains(&after));
+        todo.after
+            .retain(|after| keep_rest || rows.iter().any(|row| row.spec.label == *after));
         if let Some(contract) = &row.spec.contract {
             todo.contract = Some(contract.clone());
         }
@@ -1076,7 +1074,9 @@ fn apply_set(plan: &mut Plan, rows: &[SetRow]) -> Result<(), PlanOpError> {
         }
         todos.push(todo);
     }
-    plan.todos = todos;
+    plan.todos
+        .retain(|t| keep_rest && rows.iter().all(|r| r.spec.label != t.label));
+    plan.todos.splice(0..0, todos);
     plan.version = plan.version.bump();
     validate_plan(plan)
 }

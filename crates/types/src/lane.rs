@@ -131,3 +131,8 @@ pub struct BranchDiff {
     pub patch: String,
     pub untracked: usize,
 }
+
+/// The branch a session or child holds in its tree.
+pub fn branch_for_session(session: &str) -> String {
+    format!("yi/{session}")
+}

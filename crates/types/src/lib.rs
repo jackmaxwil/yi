@@ -7,12 +7,11 @@ pub const SECRET_NAME_MARKS: [&str; 5] = ["KEY", "TOKEN", "SECRET", "PASSWORD", 
 
 /// Each provider's key variable, by provider name. No host process running code the model wrote
 /// or can edit (bash, the kernel, checks, lane setup) inherits one, contained or not (#906).
-pub const PROVIDER_KEY_VARS: [(&str, &str); 5] = [
+pub const PROVIDER_KEY_VARS: [(&str, &str); 4] = [
     ("anthropic", "ANTHROPIC_API_KEY"),
     ("openai", "OPENAI_API_KEY"),
     ("openrouter", "OPENROUTER_API_KEY"),
     ("google", "GEMINI_API_KEY"),
-    ("laya", "LAYA_API_KEY"),
 ];
 
 /// The providers the compiled-in catalog carries, in its load order; a custom provider in
@@ -39,7 +38,9 @@ pub mod checkpoint;
 pub mod classifier;
 pub mod compaction;
 pub mod config;
+pub mod desktop;
 pub mod diff;
+pub mod egress;
 pub mod encoding;
 pub mod entry;
 pub mod event;
@@ -65,6 +66,7 @@ pub mod reclaim;
 pub mod record;
 pub mod schedule;
 pub mod settings;
+pub mod spec;
 pub mod status_mark;
 pub mod subagent;
 pub mod telemetry;

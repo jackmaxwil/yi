@@ -81,8 +81,9 @@ pub fn branch_diff_capped(root: &Path, cap: usize) -> Option<yi_types::lane::Bra
         )
         .ok()
     };
-    let base = git(&["merge-base", "HEAD", "origin/main"])
-        .or_else(|| git(&["merge-base", "HEAD", "main"]))?
+    let trunk = crate::lane::hostgit::trunk(root);
+    let base = git(&["merge-base", "HEAD", &format!("origin/{trunk}")])
+        .or_else(|| git(&["merge-base", "HEAD", trunk.as_str()]))?
         .trim()
         .to_owned();
     let numstat = whole(&["diff", "--numstat", &base, "HEAD"])?;
@@ -156,13 +157,16 @@ impl GitSummary {
     }
 
     pub fn note_event(generation: &AtomicU64, event: &AgentEvent) {
-        let changed = matches!(event, AgentEvent::AgentStart)
-            || matches!(event, AgentEvent::ToolExecutionEnd { tool_name, result, .. }
-                if WRITERS.contains(&tool_name.as_str())
-                    || result.details.get("applied").and_then(serde_json::Value::as_u64) > Some(0));
-        if changed {
+        if matches!(event, AgentEvent::AgentStart) || Self::wrote(event) {
             generation.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    /// Whether this event's tool call changed the workspace, which a spec run no longer covers.
+    pub fn wrote(event: &AgentEvent) -> bool {
+        matches!(event, AgentEvent::ToolExecutionEnd { tool_name, result, .. }
+            if WRITERS.contains(&tool_name.as_str())
+                || result.details.get("applied").and_then(serde_json::Value::as_u64) > Some(0))
     }
 
     /// Invariant: the lock is held across the read, so callers at once run `git status` once.
@@ -347,6 +351,7 @@ pub fn hook(
     let todos = session.todos_handle();
     let deadline = session.deadline();
     let kernel = session.kernel_state_handle();
+    let spec = session.spec_handle();
     let clock = Mutex::new(None);
     let summary = GitSummary::new(cwd.clone(), session.tree_generation());
     Arc::new(move || {
@@ -429,6 +434,9 @@ pub fn hook(
         }
         if let Some(state) = kernel() {
             lines.push(format!("kernel: {state}"));
+        }
+        if let Some(line) = spec().and_then(|store| store.line()) {
+            lines.push(line);
         }
         if let Some(line) = crate::family::children_line(&host.states()) {
             lines.push(line);

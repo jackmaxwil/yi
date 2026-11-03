@@ -5,6 +5,7 @@ use crate::scratch::Scratch;
 use std::error::Error;
 
 use serde_json::json;
+use unicode_width::UnicodeWidthStr;
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme};
@@ -21,15 +22,8 @@ fn theme() -> Theme {
 fn app() -> App {
     App::new(
         TuiOptions {
-            model: common::test_model("faux-1"),
             session_name: "cells".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
+            ..common::options()
         },
         theme(),
         default_keymap(),
@@ -74,10 +68,35 @@ fn ended_with(
     });
 }
 
-/// Eight rows of looking crowds out the answer that follows it, so the run
-/// groups under one bullet with a verb column.
 #[test]
-fn a_run_of_read_only_calls_commits_as_one_cell() -> TestResult {
+fn a_running_tool_reserves_its_three_row_result_and_elision_space() -> TestResult {
+    let mut cell = ToolCell {
+        name: "bash".to_owned(),
+        call_id: "c1".to_owned(),
+        status: ToolStatus::Running,
+        summary: ToolCell::summary_of("bash", "printf 'one\\ntwo\\nthree\\n'"),
+        digest: None,
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 1,
+        details: serde_json::Value::Null,
+    };
+    let running = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
+    cell.status = ToolStatus::Done;
+    cell.preview = ["one", "two", "three"].map(str::to_owned).to_vec();
+    cell.digest = Some("one".to_owned());
+    let done = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
+    assert_eq!(running, done, "the card moved when its result landed");
+    cell.preview = vec!["one".to_owned()];
+    let short = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
+    assert_eq!(running, short, "a one-row result collapsed the card");
+    Ok(())
+}
+
+/// Eight rows of looking crowds out the answer that follows it, so the sources of a run cost
+/// the transcript one dim row.
+#[test]
+fn a_run_of_read_only_calls_commits_as_one_row() -> TestResult {
     let mut app = app();
     for (index, (tool, arg)) in [("read", "src/lib.rs"), ("grep", "ToolCell")]
         .into_iter()
@@ -94,12 +113,135 @@ fn a_run_of_read_only_calls_commits_as_one_cell() -> TestResult {
         messages: Vec::new(),
     });
     let committed = flat(&app.take_commits());
-    let joined = committed.join("\n");
+    assert_eq!(
+        committed.first().map(String::as_str),
+        Some("→ src/lib.rs  ✱ ToolCell")
+    );
+    assert!(
+        !committed.iter().any(|row| row.contains("Explored")),
+        "{committed:?}"
+    );
+    Ok(())
+}
+
+/// A lone read shows while it runs as the cell it commits as, so its row does not shrink into a
+/// citation line and then grow back into a card when the run closes.
+#[test]
+fn a_lone_read_shows_live_as_the_cell_it_commits() -> TestResult {
+    let mut app = app();
+    started(&mut app, "r", "read", "src/lib.rs");
+    ended(&mut app, "r", "read", "1:fn main() {}");
+    assert!(app.take_commits().is_empty(), "the run is still open");
+    let live = common::rows_sized(&mut app, 80, 24)?;
+    app.reduce_agent(AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let landed = flat(&app.take_commits());
+    let card = landed.get(..2).ok_or(format!("no card: {landed:#?}"))?;
+    assert!(card[0].starts_with("│ → Read src/lib.rs"), "{landed:#?}");
+    assert_eq!(
+        live.get(..2),
+        Some(card),
+        "the live row and the landed row differ: {live:#?} / {landed:#?}"
+    );
+    assert!(
+        !live.iter().any(|row| row.trim() == "→ src/lib.rs"),
+        "a lone read drew the citation row while it ran: {live:#?}"
+    );
+    Ok(())
+}
+
+/// The head, the rail and the per-call rows are still one key away: verbose mode is the
+/// answer to "which call earned this".
+#[test]
+fn verbose_mode_still_lists_every_call_of_the_run() -> TestResult {
+    let mut rows = two_sources();
+    if let Some(read) = rows.first_mut() {
+        read.digest = Some("2 lines".to_owned());
+    }
+    let sources = Cell::Explored(rows);
+    let row = flat(&sources.lines(80, &theme(), TranscriptMode::Normal, 0));
+    assert_eq!(row, ["→ src/lib.rs  ✱ ToolCell"]);
+    assert!(!row.join("").contains("2 lines"), "{row:?}");
+    let block = flat(&sources.lines(80, &theme(), TranscriptMode::Verbose, 0));
+    let joined = block.join("\n");
     assert!(joined.contains("✱ Explored ×2"), "{joined}");
     assert!(joined.contains("Read   src/lib.rs"), "{joined}");
     assert!(joined.contains("Search"), "{joined}");
-    // One bullet, not three.
-    assert_eq!(committed.iter().filter(|row| row.contains('✱')).count(), 1);
+    assert!(
+        joined.contains("2 lines"),
+        "the digest the read earned: {joined}"
+    );
+    Ok(())
+}
+
+fn source(tool: &str, arg: &str) -> ToolCell {
+    ToolCell {
+        name: tool.to_owned(),
+        call_id: format!("{tool}:{arg}"),
+        status: ToolStatus::Done,
+        summary: ToolCell::summary_of(tool, arg),
+        digest: None,
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 0,
+        details: serde_json::Value::Null,
+    }
+}
+
+fn two_sources() -> Vec<ToolCell> {
+    vec![source("read", "src/lib.rs"), source("grep", "ToolCell")]
+}
+
+/// Nine sources with long titles: one row, the ones that fit, and the count it could not, at
+/// both widths the owner named.
+#[test]
+fn nine_sources_are_one_row_cut_with_the_count() -> TestResult {
+    let long = |n: usize| format!("crates/yi-collector-{n}/src/a-rather-long-module-name-{n}.rs");
+    let rows: Vec<ToolCell> = (1..=9).map(|n| source("read", &long(n))).collect();
+    let cell = Cell::Explored(rows);
+    let at = |width: usize| flat(&cell.lines(width, &theme(), TranscriptMode::Normal, 0));
+    let one = ["→ crates/yi-collector-1/src/a-rather-long-module-name-1.rs +8"];
+    let three = [
+        "→ crates/yi-collector-1/src/a-rather-long-module-name-1.rs  → crates/yi-collector-2/src/a-rather-long-module-name-2.rs  → crates/yi-collector-3/src/a-rather-long-module-name-3.rs +6",
+    ];
+    assert_eq!(at(80), one);
+    assert_eq!(at(120), one);
+    assert_eq!(at(200), three);
+    Ok(())
+}
+
+/// A source wider than the row is cut with `…` where it is cut, so a path that does not exist is
+/// never read as the real one, and a lone one too wide still says it was cut.
+#[test]
+fn a_source_wider_than_the_row_is_cut_with_an_ellipsis() -> TestResult {
+    let long = |n: usize| format!("crates/yi-collector-{n}/src/a-rather-long-module-name-{n}.rs");
+    let at = |rows: Vec<ToolCell>, width: usize| {
+        flat(&Cell::Explored(rows).lines(width, &theme(), TranscriptMode::Normal, 0)).join("")
+    };
+    let run: Vec<ToolCell> = (1..=9).map(|n| source("read", &long(n))).collect();
+    let row = at(run, 40);
+    assert!(row.ends_with("… +8"), "{row}");
+    assert!(!row.contains("a-rather-long-module-name-1.rs"), "{row}");
+    assert!(UnicodeWidthStr::width(row.as_str()) <= 40, "{row}");
+    let lone = at(vec![source("read", &long(1))], 40);
+    assert_eq!(lone.matches('…').count(), 1, "{lone}");
+    assert!(!lone.contains("long-module-name-1.rs"), "{lone}");
+    assert!(UnicodeWidthStr::width(lone.as_str()) <= 40, "{lone}");
+    Ok(())
+}
+#[test]
+fn one_source_is_a_row_and_no_source_is_none() -> TestResult {
+    let one = Cell::Explored(vec![source("read", "src/lib.rs")]);
+    assert_eq!(
+        flat(&one.lines(80, &theme(), TranscriptMode::Normal, 0)),
+        ["→ src/lib.rs"]
+    );
+    let none = Cell::Explored(Vec::new());
+    assert!(
+        flat(&none.lines(80, &theme(), TranscriptMode::Normal, 0)).is_empty(),
+        "no source is no row"
+    );
     Ok(())
 }
 
@@ -131,7 +273,7 @@ fn a_writing_call_closes_the_run_in_order() -> TestResult {
     started(&mut app, "w", "bash", "cargo test");
     ended(&mut app, "w", "bash", "ok");
     let committed = flat(&app.take_commits());
-    let explored = committed.iter().position(|row| row.contains("Explored"));
+    let explored = committed.iter().position(|row| row.contains("→ a.rs"));
     let bash = committed
         .iter()
         .position(|row| row.contains("$ cargo test"));
