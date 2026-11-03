@@ -18,7 +18,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "scripts/guardrails")]
 import adr
 from _common import BLOB_ALLOW as ALLOW, BLOB_CAP as CAP, row_key, table_rows
-from check_changes import DECISIONS, DIR, LEDGER_FROM, VERSION, apply_ledger, changelog_rows, parse, table
+from check_changes import DECISIONS, DIR, VERSION, apply_ledger, changelog_rows, parse, table
 
 ARCH, LOG, INDEX = "docs/ARCHITECTURE.md", "docs/CHANGELOG.md", "docs/solutions/README.md"
 LOG_HEADER = "| ver | date | change |"
@@ -262,8 +262,7 @@ def verify(tmp, recorded, bad):
 
 
 def ledger_selfcheck(tmp, sh, run, gate, bad):
-    """Two files on one row record in landing order, a stale `~` keeps its text, and a row edit is
-    judged by when it was committed."""
+    """Two files on one row record in landing order, and a stale `~` keeps its text."""
     rows = table_rows((tmp / ARCH).read_text(), "Feature ledger")
     key, first = row_key(rows[0]), rows[0]
     sh("checkout", "-q", "main")
@@ -300,10 +299,11 @@ def ledger_selfcheck(tmp, sh, run, gate, bad):
     arch = (tmp / ARCH).read_text()
     (tmp / ARCH).write_text(arch.replace("clause from b", "clause edited"))
     sh("commit", "-qam", "old edit", date="2026-10-20")
-    if gate().returncode:
-        bad.append(f"an edit committed before LEDGER_FROM was refused: {gate().stdout.strip()}")
+    refused = gate()
+    if not refused.returncode or "ledger~:" not in refused.stdout and "ledger+:" not in refused.stdout:
+        bad.append(f"an older direct edit read {refused.returncode}: {refused.stdout[-200:]!r}")
     (tmp / ARCH).write_text((tmp / ARCH).read_text().replace("clause from a", "another edit"))
-    sh("commit", "-qam", "new edit", date=LEDGER_FROM)
+    sh("commit", "-qam", "new edit", date="2026-11-03")
     refused = gate()
     if not refused.returncode or "ledger~:" not in refused.stdout and "ledger+:" not in refused.stdout:
         bad.append(f"a new edit batched with an old one read {refused.returncode}: {refused.stdout[-200:]!r}")

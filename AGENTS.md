@@ -555,7 +555,8 @@ trailing blanks and the counts drift (the duplicated-list bug).
   construction: they add no ledger row and move no bytes past the band.
 - A user-visible behavior change writes `ledger+`, `ledger~`, `ledger=` or `ledger-` lines in its
   change file, in the same change as the code. The recorder applies them to the ARCHITECTURE
-  feature ledger after the merge; a branch that edits a row is refused and told the lines to write.
+  feature ledger after the merge; a branch that edits a row directly is refused and told the lines
+  to write, whenever that edit was committed.
 - A landed decision gets its ADR under docs/solutions/adr/ (one file per decision-log row,
   rendered from the row by the recorder rather than hand-drifted) and a line in the docs/solutions index.
 - Never `git add -A` in a shared tree: it swallows the other session's uncommitted files. Stage
