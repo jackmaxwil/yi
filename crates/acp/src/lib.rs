@@ -915,23 +915,16 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
             match incoming.id {
                 Some(id) => {
                     let _span = yi_types::trace::span(format!("acp {}", incoming.method));
-                    let (outcome, leaving) = match incoming.method.as_str() {
-                        "session/prompt" => (state.prompt(id.clone(), &params), false),
-                        // The final kernel flush is awaited before this process leaves, so a
-                        // replacement cannot answer success and then lose a variable.
-                        "_yi/prepare_replace" => {
-                            let answer = state.prepare_replace().await;
-                            let leaving = answer["prepared"] == json!(true);
-                            (Some(Ok(answer)), leaving)
-                        }
-                        "_yi/restore" => (Some(Ok(state.restore(&params))), false),
-                        _ => (Some(state.handle(&incoming.method, &params)), false),
+                    // The worker keeps serving after a prepared answer: the supervisor retires it by
+                    // closing stdin, so a refusal it already sent stays true.
+                    let outcome = match incoming.method.as_str() {
+                        "session/prompt" => state.prompt(id.clone(), &params),
+                        "_yi/prepare_replace" => Some(Ok(state.prepare_replace().await)),
+                        "_yi/restore" => Some(Ok(state.restore(&params))),
+                        _ => Some(state.handle(&incoming.method, &params)),
                     };
                     if let Some(outcome) = outcome {
                         respond(&sink, id, outcome);
-                    }
-                    if leaving {
-                        break;
                     }
                 }
                 None => {

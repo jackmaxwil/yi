@@ -35,10 +35,12 @@ struct Swap {
     client: ClientId,
     request: Value,
     stage: Stage,
+    sessions: Vec<String>,
+    retiring: Option<tokio::process::Child>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Stage {
+pub(crate) enum Stage {
     Preparing,
     Exiting,
     Restoring,
@@ -131,26 +133,13 @@ impl Supervisor {
             }
         };
         let Some(generation) = self.workers.get(&root).map(|worker| worker.generation) else {
-            // Nothing to retire: the requested binary is what this root serves from now on.
-            self.swap.binaries.insert(root.clone(), binary.clone());
-            let spawned = self.spawn_worker(&root);
-            if let Err(error) = spawned {
-                self.swap.binaries.remove(&root);
-                let why = format!("worker replacement failed for {root}: {error}");
-                return self.send_client(client, error_frame(id, BUSY, &why));
-            }
-            let to = self
-                .workers
-                .get(&root)
-                .map_or(0, |worker| worker.generation);
-            let result = json!({
-                "replacementId": 0,
-                "from": 0,
-                "to": to,
-                "binary": binary.display().to_string(),
-                "sessions": [],
-            });
-            return self.send_client(client, result_frame(id, result));
+            let mut served: Vec<&str> = self.workers.keys().map(String::as_str).collect();
+            served.sort_unstable();
+            let refused = format!(
+                "no worker serves {root}; nothing was replaced; served roots: [{}]",
+                served.join(", ")
+            );
+            return self.send_client(client, error_frame(id, INVALID_PARAMS, &refused));
         };
         self.swap.next_id = self.swap.next_id.wrapping_add(1);
         let replacement = self.swap.next_id;
@@ -163,6 +152,8 @@ impl Supervisor {
                 client,
                 request: id,
                 stage: Stage::Preparing,
+                sessions: Vec::new(),
+                retiring: None,
             },
         );
         let prepare = json!({
@@ -175,15 +166,15 @@ impl Supervisor {
             self.refuse_swap(&root, "the worker exited before it answered");
             return;
         }
-        self.schedule_timeout(&root, replacement, PREPARE_TIMEOUT);
+        self.schedule_timeout(&root, replacement, Stage::Preparing, PREPARE_TIMEOUT);
     }
 
-    fn schedule_timeout(&self, root: &str, id: u64, after: Duration) {
+    fn schedule_timeout(&self, root: &str, id: u64, stage: Stage, after: Duration) {
         let input = self.input.clone();
         let root = root.to_owned();
         tokio::spawn(async move {
             tokio::time::sleep(after).await;
-            let _ = input.send(Input::SwapTimeout(root, id));
+            let _ = input.send(Input::SwapTimeout(root, id, stage));
         });
     }
 
@@ -219,12 +210,24 @@ impl Supervisor {
                     self.refuse_swap(root, &blockers.join("; "));
                     return;
                 }
+                // Invariant: only an accepted prepared answer retires the worker; closing its stdin
+                // ends it, and one still alive at the timeout is killed.
+                let retiring = self.workers.remove(root).map(|worker| worker.child);
                 if let Some(swap) = self.swap.active.get_mut(root) {
                     swap.stage = Stage::Exiting;
+                    swap.retiring = retiring;
+                    swap.sessions = frame
+                        .pointer("/result/sessions")
+                        .and_then(Value::as_array)
+                        .map(|rows| {
+                            rows.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default();
                 }
-                // The prepared worker exits on its own; a worker that does not is killed at
-                // the timeout rather than left serving a build the caller already replaced.
-                self.schedule_timeout(root, id, PREPARE_TIMEOUT);
+                self.schedule_timeout(root, id, Stage::Exiting, PREPARE_TIMEOUT);
             }
             Stage::Restoring if reply == format!("{RESTORE_ID}{id}") => {
                 let failed: Vec<String> = frame
@@ -255,24 +258,13 @@ impl Supervisor {
     /// The prepared worker closed: the requested binary takes its place, then the sessions it
     /// owned are loaded again and the attached clients are told to resume.
     pub(crate) async fn swap_exited(&mut self, root: &str) {
-        let Some((id, binary, sessions)) = self.swap.active.get(root).map(|swap| {
-            (
-                swap.id,
-                swap.binary.clone(),
-                self.sessions
-                    .iter()
-                    .filter(|(_, entry)| entry.root == root)
-                    .map(|(session_id, _)| session_id.clone())
-                    .collect::<Vec<String>>(),
-            )
-        }) else {
+        let Some(swap) = self.swap.active.get_mut(root) else {
             return;
         };
-        if let Some(swap) = self.swap.active.get_mut(root) {
-            swap.stage = Stage::Restoring;
-        }
-        if let Some(mut worker) = self.workers.remove(root) {
-            let _reaped = worker.child.start_kill();
+        swap.stage = Stage::Restoring;
+        let (id, binary, sessions) = (swap.id, swap.binary.clone(), swap.sessions.clone());
+        if let Some(mut child) = swap.retiring.take() {
+            let _reaped = child.start_kill();
         }
         self.swap.binaries.insert(root.to_owned(), binary);
         if let Err(error) = self.spawn_worker(root) {
@@ -297,19 +289,16 @@ impl Supervisor {
             );
             return;
         }
-        self.schedule_timeout(root, id, RESTORE_TIMEOUT);
+        self.schedule_timeout(root, id, Stage::Restoring, RESTORE_TIMEOUT);
     }
 
-    pub(crate) fn swap_timeout(&mut self, root: &str, id: u64) {
-        let Some((stage, generation)) = self
-            .swap
-            .active
-            .get(root)
-            .filter(|swap| swap.id == id)
-            .map(|swap| (swap.stage, swap.generation))
-        else {
+    /// Each timer is its own stage's deadline: one that fires after its stage passed is void.
+    pub(crate) fn swap_timeout(&mut self, root: &str, id: u64, stage: Stage) {
+        let current =
+            (self.swap.active.get(root)).is_some_and(|swap| swap.id == id && swap.stage == stage);
+        if !current {
             return;
-        };
+        }
         match stage {
             Stage::Preparing => {
                 let why = format!(
@@ -319,10 +308,13 @@ impl Supervisor {
                 self.refuse_swap(root, &why);
             }
             Stage::Exiting => {
-                if let Some(worker) = self.workers.get_mut(root)
-                    && worker.generation == generation
-                {
-                    let _killed = worker.child.start_kill();
+                let retiring = self
+                    .swap
+                    .active
+                    .get_mut(root)
+                    .and_then(|swap| swap.retiring.as_mut());
+                if let Some(child) = retiring {
+                    let _killed = child.start_kill();
                 }
             }
             Stage::Restoring => {
@@ -453,9 +445,9 @@ impl AcpState {
                     child.update.id.as_str()
                 ));
             }
-            for job in yi_runtime::running_jobs(session.job_owner()) {
-                blockers.push(format!("session {id} has a running job: {job}"));
-            }
+        }
+        for job in yi_runtime::running_jobs() {
+            blockers.push(format!("a job is running: {job}"));
         }
         let asking = self
             .pending
@@ -480,6 +472,11 @@ impl AcpState {
             if let Some(kernel) = handle.session.kernel_service() {
                 kernel.dispose().await;
             }
+        }
+        // A scheduler wake can start a turn while the disposes are awaited, so ask again.
+        let blockers = self.replace_blockers();
+        if !blockers.is_empty() {
+            return json!({"prepared": false, "blockers": blockers, "sessions": []});
         }
         json!({"prepared": true, "blockers": [], "sessions": sessions})
     }

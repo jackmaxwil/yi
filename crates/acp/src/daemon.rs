@@ -32,7 +32,7 @@ pub(crate) enum Input {
     WorkerLine(String, u64, Value, String),
     WorkerReply(String, Value),
     WorkerClosed(String, u64),
-    SwapTimeout(String, u64),
+    SwapTimeout(String, u64, crate::swap::Stage),
     Answer(ClientId, String),
     Shutdown,
 }
@@ -976,7 +976,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                         supervisor.handle_worker_closed(root);
                     }
                 }
-                Input::SwapTimeout(root, id) => supervisor.swap_timeout(&root, id),
+                Input::SwapTimeout(root, id, stage) => supervisor.swap_timeout(&root, id, stage),
                 Input::Answer(client, line) => supervisor.send_client(client, line),
                 Input::Shutdown => break,
             }
@@ -1100,6 +1100,26 @@ mod tests {
             .get("pinned")
             .ok_or("the pinned row goes")?;
         assert_eq!(row.pinned_ms, Some(1));
+        Ok(())
+    }
+
+    /// Dies with a misspelled root (`--cwd .`, a trailing slash) answered as a successful swap
+    /// while the worker that serves the console keeps the old build.
+    #[tokio::test]
+    async fn replacing_a_root_no_worker_serves_refuses_and_spawns_nothing() -> Result<(), String> {
+        let mut supervisor = supervisor_with_rows();
+        let (sink, mut replies) = mpsc::channel(4);
+        supervisor.clients.insert(7, sink);
+        let binary = std::env::current_exe().map_err(|error| error.to_string())?;
+        let frame = json!({"params": {"cwd": "/repo/", "binary": binary.display().to_string()}});
+        supervisor.replace(7, Some(json!(1)), &frame).await;
+        let reply = replies.try_recv().map_err(|error| error.to_string())?;
+        assert!(reply.contains("no worker serves /repo/"), "{reply}");
+        assert!(supervisor.workers.is_empty(), "a worker was spawned");
+        assert!(
+            supervisor.swap.binaries.is_empty(),
+            "the binary was adopted"
+        );
         Ok(())
     }
 
