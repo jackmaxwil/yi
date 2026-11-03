@@ -2,8 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use crate::process::command;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeId(String);
 
@@ -36,16 +34,26 @@ pub enum CheckpointError {
     GitMissing(String),
     #[error("git {command} failed: {message}")]
     Git { command: String, message: String },
+    #[error("git {command} past its deadline")]
+    Deadline { command: String },
 }
 
-/// A shadow gitdir beside the project, never its own `.git`: checkpoints must
-/// not touch the user's branch, index or stash.
+/// A shadow gitdir beside the project, never its own `.git`, so the user's branch, index and stash
+/// stay untouched. One per repository: its worktrees share the objects, each with its own index.
 pub struct Checkpoints {
     git_dir: PathBuf,
     work_tree: PathBuf,
     serial: Arc<Mutex<()>>,
     staged: Vec<String>,
+    /// `None` is a store from before one was shared, whose own `index` is this tree's.
+    index: Option<PathBuf>,
+    /// The per-path store this tree used before, which still holds its old sessions' trees.
+    legacy: Option<PathBuf>,
+    /// Set only on the handle [`Self::capture_within`] makes.
+    until: Option<std::time::Instant>,
 }
+
+const SERIAL_LOCKS_MAX: usize = 1_024;
 
 // Per gitdir, not per handle: git fails hard on index.lock, and one shadow has several openers.
 fn serial_for(git_dir: &Path) -> Arc<Mutex<()>> {
@@ -54,36 +62,159 @@ fn serial_for(git_dir: &Path) -> Arc<Mutex<()>> {
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
+    // One index per tree, so a family's locks would otherwise outlive it.
+    if locks.len() >= SERIAL_LOCKS_MAX {
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
     Arc::clone(locks.entry(git_dir.to_path_buf()).or_default())
+}
+/// Not project content: the home holding the store, or, in a home that is itself the work tree,
+/// the store and the caches spared beside it. Incident: a probe home there stored its venv again.
+fn not_project_content(checkpoint_root: &Path, project: &Path) -> Vec<PathBuf> {
+    let subtree = checkpoint_root
+        .parent()
+        .filter(|dir| dir.file_name().is_some_and(|name| name == ".yi"))
+        .and_then(Path::parent);
+    match subtree {
+        Some(home) if real(home) == real(project) => [".yi", ".cache", ".local", ".cargo"]
+            .into_iter()
+            .map(|spared| home.join(spared))
+            .collect(),
+        Some(home) => vec![home.to_path_buf()],
+        None => vec![checkpoint_root.to_path_buf()],
+    }
+}
+
+fn real(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn staged_for(checkpoint_root: &Path, project: &Path) -> Vec<String> {
+    let mut staged = ["add", "--all", "--", "."].map(str::to_owned).to_vec();
+    // Incident: `yi` started in `~` staged the shadow into itself, each capture slower.
+    for root in not_project_content(checkpoint_root, project) {
+        if let Ok(inside) = real(&root).strip_prefix(real(project)) {
+            staged.push(format!(":(exclude,literal){}", inside.to_string_lossy()));
+        }
+    }
+    staged
 }
 
 impl Checkpoints {
     pub fn open(checkpoint_root: &Path, project: &Path) -> Result<Self, CheckpointError> {
-        let git_dir = checkpoint_root.join(project_key(project));
+        let common = yi_permission::git_dirs(project).pop();
+        let keyed = common.as_deref().unwrap_or(project);
+        let git_dir = checkpoint_root.join(project_key(keyed));
+        // `core.worktree` names the repository's main tree, which is what retention asks about.
+        let main_tree = (common.as_deref())
+            .and_then(Path::parent)
+            .unwrap_or(project);
         std::fs::create_dir_all(&git_dir)
             .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
-        let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let mut staged = ["add", "--all", "--", "."].map(str::to_owned).to_vec();
-        // Incident: `yi` started in `~` staged the shadow into itself, each capture slower.
-        if let Ok(inside) = real(checkpoint_root).strip_prefix(real(project)) {
-            staged.push(format!(":(exclude,literal){}", inside.to_string_lossy()));
-        }
+        let old = checkpoint_root.join(project_key(project));
+        let index = git_dir.join(format!("index-{}", project_key(project)));
         let checkpoints = Self {
-            serial: serial_for(&git_dir),
-            git_dir,
+            serial: serial_for(&index),
+            legacy: (old != git_dir && old.join("HEAD").exists()).then_some(old),
+            index: Some(index),
             work_tree: project.to_path_buf(),
-            staged,
+            staged: staged_for(checkpoint_root, project),
+            git_dir,
+            until: None,
         };
+        // Incident shape: first opens of one new store raced on `config.lock`, and the shadow
+        // stayed `None` for the session.
+        let creating = serial_for(&checkpoints.git_dir);
+        let _creating = creating.lock().unwrap_or_else(PoisonError::into_inner);
         if !checkpoints.git_dir.join("HEAD").exists() {
-            checkpoints.git(&["init", "--quiet"])?;
+            checkpoints.init(main_tree)?;
         }
+        checkpoints.sync_exclude(common.as_deref());
         Ok(checkpoints)
+    }
+
+    /// The store that holds `tree`: this repository's, else the per-path one an older session
+    /// wrote, which then serves the whole operation.
+    pub fn open_holding(
+        checkpoint_root: &Path,
+        project: &Path,
+        tree: &TreeId,
+    ) -> Result<Self, CheckpointError> {
+        let shared = Self::open(checkpoint_root, project)?;
+        match &shared.legacy {
+            Some(old) if !shared.holds(tree) => Ok(Self {
+                serial: serial_for(old),
+                git_dir: old.clone(),
+                work_tree: project.to_path_buf(),
+                staged: staged_for(checkpoint_root, project),
+                index: None,
+                legacy: None,
+                until: None,
+            }),
+            _ => Ok(shared),
+        }
+    }
+
+    #[must_use]
+    pub fn holds(&self, tree: &TreeId) -> bool {
+        self.git(&["cat-file", "-e", tree.as_str()]).is_ok()
+    }
+
+    fn init(&self, main_tree: &Path) -> Result<(), CheckpointError> {
+        let output = host_git(main_tree)?
+            .arg("--git-dir")
+            .arg(&self.git_dir)
+            .arg("--work-tree")
+            .arg(main_tree)
+            .args(["init", "--quiet"])
+            .current_dir(main_tree)
+            .output()
+            .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(CheckpointError::Git {
+            command: "init".to_owned(),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+    }
+
+    /// The project's `info/exclude` is a repository's own ignore list, and a shadow has its own
+    /// `info`. Copied at open only when the bytes differ, so an edit reaches the next session.
+    fn sync_exclude(&self, common: Option<&Path>) {
+        let source = common.map(|common| common.join("info/exclude"));
+        let wanted = source.and_then(|source| std::fs::read(source).ok());
+        let target = self.git_dir.join("info/exclude");
+        if let Some(wanted) =
+            wanted.filter(|bytes| std::fs::read(&target).ok().as_ref() != Some(bytes))
+        {
+            let _no_list_only_narrows_nothing = std::fs::create_dir_all(self.git_dir.join("info"))
+                .and_then(|()| std::fs::write(target, wanted));
+        }
     }
 
     /// Honours the project's own ignore rules, read from the work tree.
     pub fn capture(&self) -> Result<TreeId, CheckpointError> {
         self.stage()?;
         self.write_tree()
+    }
+
+    /// [`Self::capture`] that kills its git past `within`, then clears the lock it left. A second
+    /// process capturing this tree sees a failed capture, never a corrupt index.
+    pub fn capture_within(&self, within: std::time::Duration) -> Result<TreeId, CheckpointError> {
+        let Some(until) = std::time::Instant::now().checked_add(within) else {
+            return self.capture();
+        };
+        let bound = Self {
+            git_dir: self.git_dir.clone(),
+            work_tree: self.work_tree.clone(),
+            serial: Arc::clone(&self.serial),
+            staged: self.staged.clone(),
+            index: self.index.clone(),
+            legacy: None,
+            until: Some(until),
+        };
+        bound.capture()
     }
 
     /// A capture with `excluded` (paths relative to the project) left out of the tree; the
@@ -111,6 +242,7 @@ impl Checkpoints {
             "diff",
             "--no-renames",
             "--name-status",
+            "-z",
             "--cached",
             tree.as_str(),
         ])?;
@@ -133,6 +265,7 @@ impl Checkpoints {
                     "diff",
                     "--no-renames",
                     "--name-status",
+                    "-z",
                     tree.as_str(),
                     since.as_str(),
                 ])?;
@@ -149,17 +282,30 @@ impl Checkpoints {
                     .collect()
             }
         };
+        let mut pathspecs = Vec::new();
         for change in &changes {
-            let path = change.path.to_string_lossy().into_owned();
             match change.kind {
                 ChangeKind::Restored => {
-                    self.git(&["checkout", tree.as_str(), "--", &path])?;
+                    pathspecs.extend_from_slice(b":(literal)");
+                    pathspecs.extend_from_slice(change.path.to_string_lossy().as_bytes());
+                    pathspecs.push(0);
                 }
                 ChangeKind::Deleted => {
-                    let _absent_is_the_goal = std::fs::remove_file(self.work_tree.join(&path));
+                    let _absent_is_the_goal =
+                        std::fs::remove_file(self.work_tree.join(&change.path));
                 }
                 ChangeKind::Kept => {}
             }
+        }
+        // Invariant: an empty pathspec makes `checkout <tree>` a switch, so none runs then.
+        if !pathspecs.is_empty() {
+            let checkout = [
+                "checkout",
+                tree.as_str(),
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ];
+            self.git_fed(&checkout, Some(&pathspecs))?;
         }
         self.stage()?;
         Ok(changes)
@@ -190,7 +336,7 @@ impl Checkpoints {
             vec!["read-tree", tree.as_str()],
             vec!["checkout-index", "-a", "-f"],
         ] {
-            let mut process = command("git");
+            let mut process = host_git(&self.work_tree)?;
             process
                 .env("GIT_INDEX_FILE", &index)
                 .arg("--git-dir")
@@ -235,13 +381,17 @@ impl Checkpoints {
     }
 
     fn git(&self, args: &[&str]) -> Result<String, CheckpointError> {
+        self.git_fed(args, None)
+    }
+
+    fn git_fed(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<String, CheckpointError> {
         let verb = args.first().copied().unwrap_or_default();
         let _span = yi_types::trace::span("checkpoint.git").arg("verb", verb);
         let _serialized = self
             .serial
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut process = command("git");
+        let mut process = host_git(&self.work_tree)?;
         process
             .arg("--git-dir")
             .arg(&self.git_dir)
@@ -249,31 +399,52 @@ impl Checkpoints {
             .arg(&self.work_tree)
             .args(args)
             .current_dir(&self.work_tree);
-        let output = process
-            .output()
-            .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
-        if !output.status.success() {
-            return Err(CheckpointError::Git {
-                command: args.first().copied().unwrap_or_default().to_owned(),
-                message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        // Invariant: in the store's root, so its `.lock` still moves the dir mtime retention reads.
+        if let Some(index) = &self.index {
+            process.env("GIT_INDEX_FILE", index);
+        }
+        let index = (self.index.clone()).unwrap_or_else(|| self.git_dir.join("index"));
+        let lock = index.with_extension("lock");
+        let not_ours = lock.exists();
+        let until = self.until;
+        let past: crate::tool::CancelFlag =
+            Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
+        let capture =
+            crate::process::run_captured(process, stdin.map(<[u8]>::to_vec), &past, usize::MAX)
+                .map_err(CheckpointError::GitMissing)?;
+        if capture.cancelled {
+            // Invariant: the serial lock is this process's, so a lock there before the spawn is another's.
+            if !not_ours {
+                let _no_lock_is_fine = std::fs::remove_file(&lock);
+            }
+            return Err(CheckpointError::Deadline {
+                command: verb.to_owned(),
             });
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        if capture.exit_code != Some(0) {
+            return Err(CheckpointError::Git {
+                command: verb.to_owned(),
+                message: capture.stderr.trim().to_owned(),
+            });
+        }
+        Ok(capture.stdout)
     }
 }
 
-/// Read relative to the earlier tree, with renames split by `--no-renames` (an `R` row named
-/// a path the tree lacks): `A` is a path the turn added, everything else one to check out.
+/// The host's git with paths unquoted.
+fn host_git(cwd: &Path) -> Result<std::process::Command, CheckpointError> {
+    let mut process = crate::process::host_command("git", cwd)
+        .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
+    process.args(["-c", "core.quotepath=false"]);
+    Ok(process)
+}
+
+/// Read relative to the earlier tree from `-z` rows (status NUL path NUL), with renames split by
+/// `--no-renames`: `A` is a path the turn added, everything else one to check out.
 fn parse_changes(diff: &str) -> Vec<Change> {
+    let mut fields = diff.split('\0');
     let mut changes = Vec::new();
-    for line in diff.lines() {
-        let mut fields = line.split('\t');
-        let Some(status) = fields.next() else {
-            continue;
-        };
-        let Some(path) = fields.next_back() else {
-            continue;
-        };
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
         let kind = match status.chars().next() {
             Some('A') => ChangeKind::Deleted,
             Some(_) => ChangeKind::Restored,
@@ -297,10 +468,25 @@ pub fn work_tree(git_dir: &Path) -> Option<PathBuf> {
     (!value.starts_with('"') && !value.contains('\\')).then(|| PathBuf::from(value))
 }
 
+/// A worktree's index left behind once the tree is gone: only a cache of what the next capture
+/// would stat again, so it goes with no effect but one slow capture.
+pub fn drop_old_indexes(git_dir: &Path, older_than: std::time::Duration) {
+    let entries = std::fs::read_dir(git_dir).into_iter().flatten().flatten();
+    for entry in entries.filter(|entry| entry.file_name().to_string_lossy().starts_with("index-")) {
+        let age = entry.metadata().and_then(|meta| meta.modified()).ok();
+        if age
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age > older_than)
+        {
+            let _gone_already_is_fine = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Invariant: captures write no ref, so every object is unreachable and `prune` keeps what is
 /// younger than `keep` plus whatever a younger tree still names.
 pub fn prune(git_dir: &Path, keep: std::time::Duration) -> Result<(), CheckpointError> {
-    let output = command("git")
+    let output = host_git(git_dir)?
         .arg("--git-dir")
         .arg(git_dir)
         .arg("prune")

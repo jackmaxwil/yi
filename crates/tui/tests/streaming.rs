@@ -15,15 +15,8 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 fn app(rows: usize) -> App {
     let mut app = App::new(
         TuiOptions {
-            model: common::test_model("faux-1"),
             session_name: "streaming".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
+            ..common::options()
         },
         Theme::new(ColorTier::TrueColor, true),
         default_keymap(),
@@ -408,7 +401,7 @@ fn a_fence_inside_a_list_item_commits_as_it_streams() {
 fn live_rows(app: &mut App) -> Vec<String> {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    let layout = yi_tui::render::layout_chat(app, None, None, 40);
+    let layout = yi_tui::render::layout_chat(app, None, None, u16::MAX);
     let area = Rect::new(0, 0, 80, layout.rows().min(40));
     let mut buffer = Buffer::empty(area);
     yi_tui::render::paint_chat(app, &layout, &mut buffer, area);

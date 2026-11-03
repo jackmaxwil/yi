@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 
 use serde_json::{Map, Value, json};
-use yi_types::message::Content;
+use yi_types::message::{AgentMessage, Content};
 
 pub(crate) const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasoning_text"];
 const CARRY_FIELD: &str = "field";
@@ -82,13 +82,43 @@ impl ReasoningCarry {
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.details.is_empty()
+    /// Sealed after the block's own events: a turn whose only reasoning was an encrypted detail
+    /// still carries it, because the next tool turn is refused without it.
+    pub(crate) fn seal(&mut self, output: &mut AgentMessage, index: &mut Option<usize>) {
+        if self.details.is_empty() {
+            return;
+        }
+        let content_index = match *index {
+            Some(existing) => existing,
+            None => crate::request::push_assistant_block(
+                output,
+                Content::Thinking {
+                    thinking: String::new(),
+                    thinking_signature: None,
+                    redacted: None,
+                    reasoning_field: None,
+                    reasoning_details: None,
+                },
+            ),
+        };
+        *index = Some(content_index);
+        if let Some(Content::Thinking {
+            thinking_signature,
+            reasoning_field,
+            reasoning_details,
+            ..
+        }) = crate::request::assistant_block_mut(output, content_index)
+            && let Some(sealed) = self.envelope(thinking_signature.as_deref())
+        {
+            *thinking_signature = Some(sealed.signature);
+            *reasoning_field = Some(sealed.field);
+            *reasoning_details = Some(sealed.details);
+        }
     }
 
     /// The block's new signature, or `None` when no details arrived; the plain delta field name
     /// stays as it was, so a turn with no details still sends none.
-    pub(crate) fn seal(&mut self, signature: Option<&str>) -> Option<SealedReasoning> {
+    fn envelope(&mut self, signature: Option<&str>) -> Option<SealedReasoning> {
         if self.details.is_empty() {
             return None;
         }

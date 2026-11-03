@@ -1,18 +1,28 @@
 //! Pooled git worktrees a session works in, and the hand-back ladder out of them.
 //! A root session never edits the trunk checkout; it claims a slot.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use yi_types::lane::SlotState;
 
-use reap::Uncommitted;
+use reap::{Uncommitted, Wiped};
 
+pub(crate) use hostgit::{PLUMBING_CAP, capture, capture_named, git, git_capture};
+pub use names::{BranchName, Head, Sha};
+
+pub mod carry;
+pub mod fork;
+pub mod handback;
+pub(crate) mod hostgit;
 pub mod land;
+mod names;
 pub mod reap;
+pub mod remote;
 pub mod settle;
+pub mod stage;
 pub mod toolchain;
+pub mod tree;
+pub mod warm;
 
 const GIT_TIMEOUT_MS: u64 = 120_000;
 /// Incident: three slots refused a console's fourth session, new or resumed. Unset, the
@@ -28,7 +38,6 @@ pub fn forbid_fetch() {
     FETCH_FORBIDDEN.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 const WARMER_EXIT_WAIT_MS: u64 = 30_000;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SlotIndex(u8);
 
@@ -51,103 +60,12 @@ impl std::str::FromStr for SlotIndex {
     }
 }
 
-/// Invariant: checked against git's ref-format charset once; `git` never sees a flag.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchName(String);
-
-impl BranchName {
-    pub fn parse(text: &str) -> Result<Self, LaneError> {
-        let reason = if text.is_empty() {
-            Some("empty")
-        } else if text.starts_with('-') {
-            Some("leading dash")
-        } else if text.contains("..") || text.contains("//") {
-            Some("repeated separator")
-        } else if text.ends_with('/') || text.ends_with('.') || text.ends_with(".lock") {
-            Some("trailing separator")
-        } else if !text
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
-        {
-            Some("character outside [A-Za-z0-9._/-]")
-        } else {
-            None
-        };
-        match reason {
-            Some(reason) => Err(LaneError::Branch {
-                text: text.to_owned(),
-                reason,
-            }),
-            None => Ok(Self(text.to_owned())),
-        }
-    }
-
-    pub fn for_session(session: &str) -> Result<Self, LaneError> {
-        Self::parse(&format!("yi/{session}"))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for BranchName {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-/// Invariant: forty hex digits, checked once; a sha reaches git argv only through this.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sha(String);
-
-impl Sha {
-    pub fn parse(text: &str) -> Option<Self> {
-        let text = text.trim();
-        (text.len() == 40 && text.bytes().all(|b| b.is_ascii_hexdigit()))
-            .then(|| Self(text.to_owned()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn short(&self) -> &str {
-        self.0.get(..8).unwrap_or(&self.0)
-    }
-}
-
-/// What `.git/HEAD` names: the one reader the status row, the environment block
-/// and the pool share, a file read with no git process behind it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Head {
-    Branch(BranchName),
-    Detached(Sha),
-}
-
-impl Head {
-    pub fn branch(&self) -> Option<&BranchName> {
-        match self {
-            Self::Branch(branch) => Some(branch),
-            Self::Detached(_) => None,
-        }
-    }
-
-    /// The branch name, or the short sha when detached: one spelling on every surface.
-    pub fn label(&self) -> String {
-        match self {
-            Self::Branch(branch) => branch.to_string(),
-            Self::Detached(sha) => sha.short().to_owned(),
-        }
-    }
-}
-
 const HEAD_MAX_BYTES: u64 = 256;
 
 fn read_bounded(path: &Path) -> Result<String, LaneError> {
     use std::io::Read;
     let mut text = String::new();
-    File::open(path)
+    std::fs::File::open(path)
         .and_then(|file| file.take(HEAD_MAX_BYTES).read_to_string(&mut text))
         .map_err(io_error(path))?;
     Ok(text)
@@ -207,6 +125,17 @@ pub enum LaneError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("git {}: output cut at {kept} of {total} bytes (lane.plumbing_cap {cap}); nothing read past it", args.join(" "))]
+    Cut {
+        args: Vec<String>,
+        kept: usize,
+        total: usize,
+        cap: usize,
+    },
+    #[error(
+        "HEAD names {head}, trunk or a branch checked out elsewhere; the host commits nothing there"
+    )]
+    ForeignHead { head: String },
     #[error("{0} is not inside a git repository")]
     NotARepo(PathBuf),
     #[error("{path}: HEAD unreadable: {reason}")]
@@ -236,88 +165,6 @@ fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> LaneError + '_ {
         path: path.to_path_buf(),
         source,
     }
-}
-
-pub(crate) fn capture(
-    cwd: &Path,
-    program: &str,
-    args: &[&str],
-    deadline: std::time::Duration,
-) -> Result<String, String> {
-    let label = format!("{program} {}", args.join(" "));
-    capture_named(
-        cwd,
-        &label,
-        program,
-        args,
-        deadline,
-        yi_tools::OUTPUT_CAP,
-        None,
-    )
-    .map(|capture| capture.stdout)
-}
-
-/// Incident: the lane sync ran under the sandbox wrapper and its refusal quoted the wrapper's
-/// whole argv, 17 KB of profile before the one line saying why; `label` is what the caller meant.
-pub(crate) fn capture_named(
-    cwd: &Path,
-    label: &str,
-    program: &str,
-    args: &[&str],
-    deadline: std::time::Duration,
-    cap: usize,
-    sandbox: Option<&yi_tools::Sandbox>,
-) -> Result<yi_tools::CommandCapture, String> {
-    let _span = yi_types::trace::span("lane.capture").arg("program", program);
-    let mut command = yi_tools::keyless_command(program);
-    command.current_dir(cwd).args(args);
-    let deadline = std::time::Instant::now()
-        .checked_add(deadline)
-        .unwrap_or_else(std::time::Instant::now);
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, cap)
-        .map_err(|error| format!("{label}: {error}"))?;
-    if capture.exit_code == Some(0) {
-        return Ok(capture);
-    }
-    let output = format!("{}{}", capture.stdout, capture.stderr);
-    let denied = sandbox
-        .and_then(|sandbox| {
-            yi_tools::sandbox_refusal(sandbox, cwd, capture.exit_code, &output, label)
-        })
-        .map(|refusal| format!("\n{}\n", yi_tools::denial_hint(&refusal)))
-        .unwrap_or_default();
-    Err(format!("{label} failed:\n{output}{denied}"))
-}
-
-pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
-    git_capture(cwd, args).map(|capture| capture.stdout)
-}
-
-fn git_capture(cwd: &Path, args: &[&str]) -> Result<yi_tools::CommandCapture, LaneError> {
-    let _span = yi_types::trace::span("lane.git").arg("args", args.join(" "));
-    let mut command = yi_tools::command("git");
-    command.current_dir(cwd).args(args);
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_millis(GIT_TIMEOUT_MS))
-        .unwrap_or_else(std::time::Instant::now);
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
-    let owned: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-    let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP).map_err(
-        |error| LaneError::Git {
-            args: owned.clone(),
-            exit_code: None,
-            output: error,
-        },
-    )?;
-    if capture.exit_code == Some(0) {
-        return Ok(capture);
-    }
-    Err(LaneError::Git {
-        args: owned,
-        exit_code: capture.exit_code,
-        output: format!("{}{}", capture.stdout, capture.stderr),
-    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,6 +277,7 @@ fn tree_state(
     status: Result<String, String>,
     base: Option<&Sha>,
     deadline: std::time::Instant,
+    home: &Path,
 ) -> TreeState {
     let Ok(status) = status else {
         return TreeState::Unread { step: "status" };
@@ -442,6 +290,10 @@ fn tree_state(
             modified = modified.saturating_add(1);
         }
     }
+    // The same count `Uncommitted` reads, through the one helper that keeps its budget and its
+    // unreadable-index default: a lane is never clean in a listing and dirty to its claim.
+    let dirty = reap::submodule_paths(0, path, Some(deadline), Some(home));
+    modified = modified.saturating_add(u32::try_from(dirty).unwrap_or(u32::MAX));
     let Some(base) = base else {
         return TreeState::Unread { step: "main" };
     };
@@ -591,13 +443,13 @@ impl Pool {
         yi_session::replace_file(&path, &bytes).map_err(io_error(&path))
     }
 
-    fn lock(&self) -> Result<File, LaneError> {
+    fn lock(&self) -> Result<std::fs::File, LaneError> {
         let path = self.dir.join("pool.lock");
         yi_session::lock_file(&path).map_err(io_error(&path))
     }
 
     /// Invariant: held while a live process holds the `.held` flock; named under a free one is an orphan.
-    fn probe(&self, slot: SlotIndex) -> Result<(File, Option<String>), LaneError> {
+    fn probe(&self, slot: SlotIndex) -> Result<(std::fs::File, Option<String>), LaneError> {
         let path = self.held_path(slot);
         match yi_session::try_lock_file(&path).map_err(io_error(&path))? {
             Ok(file) => Ok((file, None)),
@@ -619,20 +471,7 @@ impl Pool {
             .checked_add(LIST_BUDGET)
             .unwrap_or_else(std::time::Instant::now);
         // Invariant: a listing never fetches; `behind` counts against the `main` last seen.
-        let base = probe_git(
-            &self.repo,
-            &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
-            deadline,
-        )
-        .or_else(|_| {
-            probe_git(
-                &self.repo,
-                &["rev-parse", "--verify", "-q", "main^{commit}"],
-                deadline,
-            )
-        })
-        .ok()
-        .and_then(|text| Sha::parse(&text));
+        let base = self.local_main(deadline);
         let mut views = Vec::new();
         for n in 0..self.slots {
             let slot = SlotIndex(n);
@@ -647,7 +486,7 @@ impl Pool {
                 let branch = head(&path).ok().and_then(|head| head.branch().cloned());
                 Holder {
                     session,
-                    tree: tree_state(&path, status, base.as_ref(), deadline),
+                    tree: tree_state(&path, status, base.as_ref(), deadline, &self.home),
                     age: branch
                         .as_ref()
                         .and_then(|branch| age_of(&path, branch, deadline)),
@@ -703,7 +542,8 @@ impl Pool {
         {
             return false;
         }
-        let _ = git(&self.repo, &["fetch", "-q", "origin", "main"]);
+        let trunk = hostgit::trunk(&self.repo);
+        let _ = git(&self.repo, &["fetch", "-q", "origin", trunk.as_str()]);
         true
     }
 
@@ -721,38 +561,59 @@ impl Pool {
         });
     }
 
+    fn resolve_commit(&self, candidate: &str) -> Result<String, LaneError> {
+        let spec = format!("{candidate}^{{commit}}");
+        git(&self.repo, &["rev-parse", "--verify", "-q", &spec]).map(|sha| sha.trim().to_owned())
+    }
+
+    fn local_main(&self, deadline: std::time::Instant) -> Option<Sha> {
+        let trunk = hostgit::trunk(&self.repo);
+        let (remote, local) = (
+            format!("origin/{trunk}^{{commit}}"),
+            format!("{trunk}^{{commit}}"),
+        );
+        probe_git(
+            &self.repo,
+            &["rev-parse", "--verify", "-q", &remote],
+            deadline,
+        )
+        .or_else(|_| {
+            probe_git(
+                &self.repo,
+                &["rev-parse", "--verify", "-q", &local],
+                deadline,
+            )
+        })
+        .ok()
+        .and_then(|text| Sha::parse(&text))
+    }
+
     fn resolve(&self, base: &ClaimBase, background: bool) -> Result<String, LaneError> {
-        let candidates: Vec<String> = match base {
-            ClaimBase::Main => {
-                let known = background.then(|| {
-                    git(
-                        &self.repo,
-                        &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
-                    )
-                });
-                if let Some(Ok(sha)) = &known {
-                    self.refresh_in_background();
-                    return Ok(sha.trim().to_owned());
-                }
-                let fetched = self.fetch_if_stale();
-                let missing = known.is_some() && !fetched;
-                ["origin/main", "main", "HEAD"]
-                    .into_iter()
-                    .filter(|name| !missing || *name != "origin/main")
-                    .map(str::to_owned)
-                    .collect()
+        match base {
+            ClaimBase::Commit(sha) => return self.resolve_commit(sha),
+            ClaimBase::Main => {}
+        }
+        let trunk = hostgit::trunk(&self.repo);
+        let known = background.then(|| self.resolve_commit(&format!("origin/{trunk}")));
+        if let Some(Ok(sha)) = &known {
+            self.refresh_in_background();
+            return Ok(sha.clone());
+        }
+        let fetched = self.fetch_if_stale();
+        let missing = known.is_some() && !fetched;
+        if missing {
+            if let Ok(sha) = self.resolve_commit(trunk.as_str()) {
+                return Ok(sha);
             }
-            ClaimBase::Commit(sha) => vec![sha.clone()],
-        };
-        let mut last = None;
-        for candidate in candidates {
-            let spec = format!("{candidate}^{{commit}}");
-            match git(&self.repo, &["rev-parse", "--verify", "-q", &spec]) {
-                Ok(sha) => return Ok(sha.trim().to_owned()),
-                Err(error) => last = Some(error),
+        } else {
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(GIT_TIMEOUT_MS))
+                .unwrap_or_else(std::time::Instant::now);
+            if let Some(sha) = self.local_main(deadline) {
+                return Ok(sha.as_str().to_owned());
             }
         }
-        Err(last.unwrap_or(LaneError::NotARepo(self.repo.clone())))
+        self.resolve_commit("HEAD")
     }
 
     /// How many lanes this pool holds, so a caller can size its own share of them.
@@ -762,7 +623,7 @@ impl Pool {
 
     pub fn claim(&self, session: &str, base: ClaimBase) -> Result<Lane, LaneError> {
         let _span = yi_types::trace::span("lane.claim");
-        let _pool = self.lock()?;
+        let pool_lock = self.lock()?;
         let (mut held, mut orphans) = (0_u8, 0_u8);
         let mut free = None;
         // A resumed session's tree holds its only copy of the work, so its gone slot is kept.
@@ -788,37 +649,37 @@ impl Pool {
         }
         for n in 0..self.slots {
             let slot = SlotIndex(n);
-            if !self.slot_path(slot).is_dir() {
-                free = Some((slot, None, true));
-                break;
-            }
+            // Invariant: the guard comes before the directory test, so a slot another claimer
+            // is still creating reads held and two claimers never pick one fresh slot.
             let (guard, holder) = self.probe(slot)?;
             if holder.is_some() {
                 held = held.saturating_add(1);
                 continue;
+            }
+            if !self.slot_path(slot).is_dir() {
+                free = Some((slot, guard, true));
+                break;
             }
             if self.repo_gone(slot) {
                 self.stop_warmer(slot)?;
                 let path = self.slot_path(slot);
                 std::fs::remove_dir_all(&path).map_err(io_error(&path))?;
                 self.write_state(slot, &SlotState::default())?;
-                free = Some((slot, Some(guard), true));
+                free = Some((slot, guard, true));
                 break;
             }
             match self.read_state(slot)?.session {
                 Some(_) if self.abandoned(slot)? => {
                     self.detach(slot, self.branch_of(slot).as_deref())?;
-                    let mut state = self.read_state(slot)?;
-                    state.session = None;
-                    self.write_state(slot, &state)?;
-                    free = Some((slot, Some(guard), false));
+                    self.clear_session(slot)?;
+                    free = Some((slot, guard, false));
                     break;
                 }
                 Some(_) => orphans = orphans.saturating_add(1),
                 // Invariant: a dirty tree with no session is an older binary's quit, never free.
                 None if self.dirty(slot) => orphans = orphans.saturating_add(1),
                 None => {
-                    free = Some((slot, Some(guard), false));
+                    free = Some((slot, guard, false));
                     break;
                 }
             }
@@ -830,10 +691,7 @@ impl Pool {
                 orphans,
             });
         };
-        let guard = match guard {
-            Some(guard) => guard,
-            None => self.probe(slot)?.0,
-        };
+        drop(pool_lock);
         let branch = BranchName::for_session(session)?;
         let sha = self.resolve(&base, true)?;
         let path = self.slot_path(slot);
@@ -852,7 +710,7 @@ impl Pool {
             checkout.extend(["-B", branch.as_str(), &sha]);
         }
         if fresh {
-            git(&self.repo, &add)?;
+            self.rebuild(&add)?;
         } else {
             self.stop_warmer(slot)?;
             git(&path, &checkout)?;
@@ -895,39 +753,6 @@ impl Pool {
             released: false,
             _held: guard,
         })
-    }
-
-    /// Incident: a killed install leaves half a tree, so the lockfile hash is forgotten too.
-    fn stop_warmer(&self, slot: SlotIndex) -> Result<(), LaneError> {
-        let mut state = self.read_state(slot)?;
-        let Some(pid) = state.warm.as_ref().and_then(|warm| warm.pid) else {
-            return Ok(());
-        };
-        let running = || yi_kernel::bootstrap::process_is_running(pid).map_err(io_error(&self.dir));
-        if !running()? {
-            return Ok(());
-        }
-        let term = ["-c", r#"kill -TERM "$1""#, "kill", &pid.to_string()];
-        let _the_poll_below_sees_a_failed_term =
-            capture(&self.dir, "/bin/sh", &term, probe_deadline());
-        let started = std::time::Instant::now();
-        let _span = yi_types::trace::span("lane.warmer_exit");
-        let mut pace = yi_types::backoff::backoff(std::time::Duration::from_millis(200));
-        while running()? {
-            if started.elapsed().as_millis() >= u128::from(WARMER_EXIT_WAIT_MS) {
-                return Err(LaneError::WarmerStuck {
-                    slot,
-                    pid,
-                    waited_ms: WARMER_EXIT_WAIT_MS,
-                });
-            }
-            std::thread::sleep(pace());
-        }
-        if let Some(warm) = state.warm.as_mut() {
-            warm.pid = None;
-        }
-        state.lockfile = None;
-        self.write_state(slot, &state)
     }
 
     /// Incident: a repository recreated at its path left slots whose `.git` named a gone gitdir.
@@ -979,7 +804,7 @@ pub struct Lane {
     /// The worktree lock names `session`: set by this process, so a bind to it again is a no-op.
     locked: bool,
     released: bool,
-    _held: File,
+    _held: std::fs::File,
 }
 
 /// Invariant: a dropped clean lane is handed back detached, a dirty one kept; only release warms.
@@ -994,9 +819,7 @@ impl Drop for Lane {
                 return Ok(());
             }
             self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-            let mut state = self.pool.read_state(self.slot)?;
-            state.session = None;
-            self.pool.write_state(self.slot, &state)
+            self.pool.clear_session(self.slot)
         });
     }
 }
@@ -1051,37 +874,42 @@ impl Lane {
         Ok(())
     }
 
-    pub fn discard(self) -> Result<Uncommitted, LaneError> {
+    pub fn discard(self) -> Result<Wiped, LaneError> {
         let branch = self.branch.as_str().to_owned();
         let repo = self.pool.repo.clone();
-        let dropped = self.release_inner(false)?;
+        // Invariant: only a release warms; a discard deletes the branch a warmer would build for.
+        let wiped = self.take_slot(false)?;
         let _ = git(&repo, &["branch", "-q", "-D", &branch]);
-        Ok(dropped)
+        Ok(wiped)
     }
 
     /// A non-empty answer is the work that kept the slot as this session's orphan.
     pub fn release(self) -> Result<Uncommitted, LaneError> {
-        self.release_inner(true)
+        let mut lane = self;
+        lane.released = true;
+        let kept = Uncommitted::read(&lane.path, Some(lane.pool.home()))?;
+        if !kept.is_empty() {
+            return Ok(kept);
+        }
+        // The read above said the tree is clean, so the hand-back pays no second one.
+        let _ = lane.finish(true, Some(Wiped::default()))?;
+        Ok(Uncommitted::default())
     }
 
-    fn release_inner(mut self, quit: bool) -> Result<Uncommitted, LaneError> {
+    pub(super) fn take_slot(self, quit: bool) -> Result<Wiped, LaneError> {
+        self.finish(quit, None)
+    }
+
+    /// `wiped` is the measurement a caller already made of a tree it found clean; `None` wipes now.
+    fn finish(mut self, quit: bool, wiped: Option<Wiped>) -> Result<Wiped, LaneError> {
         self.released = true;
         let _pool = self.pool.lock()?;
-        if quit {
-            let kept = Uncommitted::read(&self.path)?;
-            if !kept.is_empty() {
-                return Ok(kept);
-            }
-        }
         self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-        let dropped = if quit {
-            Uncommitted::default()
-        } else {
-            self.pool.wipe(self.slot)?
+        let wiped = match wiped {
+            Some(wiped) => wiped,
+            None => self.pool.wipe(self.slot)?,
         };
-        let mut state = self.pool.read_state(self.slot)?;
-        state.session = None;
-        self.pool.write_state(self.slot, &state)?;
+        self.pool.clear_session(self.slot)?;
         if quit {
             // Invariant: an unseen lockfile stays cold; that is not a failure.
             match toolchain::warm(&self.pool, self.slot) {
@@ -1089,7 +917,7 @@ impl Lane {
                 Err(error) => return Err(error),
             }
         }
-        Ok(dropped)
+        Ok(wiped)
     }
 
     pub fn sync(&self) -> Result<Option<String>, LaneError> {

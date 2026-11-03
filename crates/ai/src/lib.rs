@@ -15,10 +15,12 @@ pub mod leak;
 pub mod openai;
 pub mod openai_responses;
 pub(crate) mod reasoning;
+pub mod recommend;
 pub mod refresh;
 pub mod request;
 pub mod retry;
 pub mod roots;
+pub mod search;
 
 pub mod schema;
 pub mod settle;

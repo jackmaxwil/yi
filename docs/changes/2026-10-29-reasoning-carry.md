@@ -1,7 +1,8 @@
 ---
 issue: Closes #1525
 growth: +211 the reasoning carry: `crates/ai/src/reasoning.rs` split out of `openai.rs`, whose 1,082 production lines were past the file ceiling, plus the per-index details accumulator, the signature envelope and the two wire helpers; weighed for deletion: a `reasoningDetails` field on `Content::Thinking` (45 construction sites across the workspace for one wire), a second encoding of the same block signature (field name as JSON, already the plain name), and keeping the details only as prose (loses the signature the next tool turn is refused without)
-raise: crate ai +205, crate types +6, tests +227, comments +11
+raise: crate ai +208, crate types +6, tests +227, comments +11
+ledger+: pure loop + event enum | a chat turn's `reasoning_details` and a Google `thought_signature` ride back on the next request byte for byte, and a Responses request for a level asks for `reasoning.summary: "auto"` (`openrouter::the_second_request_carries_the_reply_reasoning_details_byte_for_byte`, `openrouter::the_tool_call_keeps_geminis_thought_signature_on_the_next_request`, `openai_responses::responses_params_are_not_chat_completions`)
 ---
 A thinking model's turn now hands its reasoning back to the provider on the next request. The chat mapper keeps OpenRouter's `reasoning_details` array, joined per index as the stream sent it, on the turn's thinking block and echoes it byte for byte on the assistant message of the next turn, and keeps a Google `thought_signature` off a tool call's `extra_content` and returns it there, so a Gemini or DeepSeek tool loop stops 400ing on its second request. A Responses request for a level asks for `reasoning.summary: "auto"` beside its effort, so a summary reaches the transcript; a turn that asks for no thinking asks for no summary. A turn whose only reasoning was an encrypted detail still carries it, sealed after the block's own events.
 

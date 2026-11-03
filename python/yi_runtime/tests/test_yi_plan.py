@@ -352,5 +352,32 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sub["emit"]._doc["after"], ["parse"], "a sibling edge names the batch, not the parent plan")
 
 
+    async def test_the_fake_host_refuses_an_edge_where_the_engine_refuses_it(self) -> None:
+        """Dies with the hand-copied table: `add_edge` once applied in any state, the engine's refuses a running todo."""
+        FakeHost()
+        plan = await Plan.create("ship it")
+        hold = await plan.todo(key="hold")
+        work = await plan.todo(key="work")
+        await work.start()
+        with self.assertRaises(PlanError) as refused:
+            await plan._op("add_edge", {"todo": work.label, "after": hold.label})
+        self.assertEqual(refused.exception.kind, "illegal_step")
+        await work.fail("probe disagreed")
+        await plan._op("add_edge", {"todo": work.label, "after": hold.label})
+        await plan.refresh()
+        self.assertEqual(plan["work"]._doc["after"], [hold.label], "a failed todo takes an edge")
+
+    async def test_the_fake_host_accepts_a_failed_todo_the_way_the_engine_does(self) -> None:
+        """The engine lets the user accept a blocked, running or failed todo; the fake once raised on the op."""
+        FakeHost()
+        plan = await Plan.create("ship it")
+        work = await plan.todo(key="work")
+        await work.start()
+        await work.fail("probe disagreed")
+        await plan._op("accepted_by_user", {"label": work.label})
+        await plan.refresh()
+        self.assertEqual(plan["work"]._doc["state"], "done")
+
+
 if __name__ == "__main__":
     unittest.main()
