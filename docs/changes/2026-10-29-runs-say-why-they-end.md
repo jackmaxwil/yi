@@ -1,7 +1,8 @@
 ---
 issue: Closes #1516
-growth: +243 the reason on every end, its five loop exits and the done.rs seam the file cap forced; weighed for deletion: the duplicate end() body, yi ask's second inference of the end, and the blocked-row skip that no reachable list needed
-raise: crate cli +59, crate loop +15, crate runtime +129, crate tui +2, crate types +38, tests +598, comments +8
+growth: +253 the reason on every end, its five loop exits and the done.rs seam the file cap forced; weighed for deletion: the duplicate end() body, yi ask's second inference of the end, and the blocked-row skip that no reachable list needed
+raise: crate cli +59, crate loop +15, crate runtime +139, crate tui +2, crate types +38, tests +607, comments +8
+ledger~: goals + autonomous | p, error-turn blocks | p released after three runs that changed nothing
 ---
 
 A run now says why it ended. `AgentEnd` carries `reason`, a closed `RunEnd` vocabulary — `stop`, `error`, `aborted`, `length`, `guard`, `drained`, or an unknown tag re-emitted verbatim — filled at all five of the loop's exits, by the debug failed-turn end as `error`, and left absent by synthetic ends; a producer that sends no reason leaves the bytes of `agent_end` exactly as they were, so a Pi client and an older driver read the same line. `yi ask` decides its exit and its `no_answer` line from that reason instead of rebuilding it from the last reply's stop: a run whose `agent_end` says `error` closes as `error` and exits 1 even when the reply before it stopped cleanly.

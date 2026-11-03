@@ -42,8 +42,10 @@ fn drive_home() -> PathBuf {
     std::env::temp_dir().join(format!("yi-console-home-{}", std::process::id()))
 }
 
-fn scratch_socket(name: &str) -> std::io::Result<(Scratch, PathBuf)> {
-    let dir = Scratch::new(&format!("yi-console-test-{name}"))?;
+/// Incident: a long test name in this dir put the socket past macOS's 104-byte `sun_path`, and
+/// the console reported `connect: path must be shorte` instead of the run under test.
+fn scratch_socket() -> std::io::Result<(Scratch, PathBuf)> {
+    let dir = Scratch::new("yi-console")?;
     let socket = dir.join("sock");
     Ok((dir, socket))
 }
@@ -645,7 +647,7 @@ fn run_console(
     size: (u16, u16),
 ) -> TestResult {
     let (width, height) = size;
-    let (dir, socket) = scratch_socket(name)?;
+    let (dir, socket) = scratch_socket()?;
     let server = fixture.map(|fixture| spawn_fixture(socket.clone(), fixture));
     let steps = parse_script(script)?;
     // Incident: the flaky drive tests fail by error or by an assertion after this returns, and
@@ -692,7 +694,7 @@ fn run_console(
 /// long line otherwise outruns the deadline the scene author asked for.
 #[test]
 fn paced_type_step_respects_the_deadline() -> TestResult {
-    let (_dir, socket) = scratch_socket("paced-type-deadline")?;
+    let (_dir, socket) = scratch_socket()?;
     let steps = parse_script("type-ms 200\ntype 0123456789abcdefghij")?;
     let started = Instant::now();
     let code = run_headless(
@@ -726,6 +728,41 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
         elapsed < Duration::from_millis(2500),
         "a paced type step ran past the deadline unchecked: {elapsed:?}"
     );
+    Ok(())
+}
+
+fn oracle_screen() -> Result<ratatui::Terminal<yi_tui::capture::RecordingBackend>, Box<dyn Error>> {
+    let mut terminal = ratatui::Terminal::new(yi_tui::capture::RecordingBackend::new(8, 5, None)?)?;
+    terminal.draw(|frame| {
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Paragraph;
+        frame.render_widget(Paragraph::new("foobar"), Rect::new(0, 0, 8, 1));
+        frame.render_widget(Paragraph::new("foo"), Rect::new(5, 2, 3, 1));
+        frame.render_widget(Paragraph::new("bar"), Rect::new(0, 3, 3, 1));
+        frame.render_widget(Paragraph::new(" padded "), Rect::new(0, 4, 8, 1));
+    })?;
+    Ok(terminal)
+}
+
+#[test]
+fn drive_needles_match_rows_and_wait_row_requires_the_whole_row() -> TestResult {
+    let terminal = oracle_screen()?;
+    for (needle, whole, wanted) in [
+        ("foo\"\n\"bar", false, false),
+        ("foobar", false, true),
+        ("padded", true, true),
+        ("pad", true, false),
+    ] {
+        assert_eq!(
+            yi_tui::drive::frame_matches(terminal.backend(), needle, whole),
+            wanted,
+            "{needle:?}"
+        );
+    }
+    assert!(matches!(
+        yi_tui::drive::parse_script("wait-row 100 padded")?.as_slice(),
+        [yi_tui::drive::Step::WaitRow(100, true, text)] if text == "padded"
+    ));
     Ok(())
 }
 
@@ -814,20 +851,28 @@ fn prompt_stream(frame: &Value) -> Vec<Value> {
     frames
 }
 
+fn recorded_permission(path: &str) -> Vec<Value> {
+    path.lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
 fn permission_request() -> Vec<Value> {
     vec![json!({
-        "jsonrpc": "2.0",
-        "id": "perm_s-alpha_1",
-        "method": "session/request_permission",
-        "params": {
-            "sessionId": "s-alpha",
-            "title": "run rm -rf target",
-            "options": [
-                {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
-                {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
-            ],
-        },
+        "jsonrpc": "2.0", "id": "perm_s-alpha_1", "method": "session/request_permission",
+        "params": {"sessionId": "s-alpha", "title": "run rm -rf target", "options": [
+            {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
+            {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
+        ]},
     })]
+}
+
+fn recorded_permission_request() -> Vec<Value> {
+    recorded_permission(include_str!("fixtures/frames/permission-first.jsonl"))
+}
+
+fn second_permission_request() -> Vec<Value> {
+    recorded_permission(include_str!("fixtures/frames/permission-second.jsonl"))
 }
 
 fn permission_answer(frame: &Value) -> Vec<Value> {
@@ -850,6 +895,16 @@ fn permission_answer(frame: &Value) -> Vec<Value> {
         json!({"sessionUpdate": "state_update", "state": "idle"}),
     ));
     frames
+}
+
+fn reject_and_continue(frame: &Value) -> Vec<Value> {
+    let option = frame
+        .pointer("/result/outcome/optionId")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    (option == "reject_once")
+        .then(second_permission_request)
+        .unwrap_or_default()
 }
 
 /// A drive run that times out fails by error, not by panic; its frames still stay behind.
@@ -1158,6 +1213,29 @@ fn permission_request_blocks_then_answers() -> TestResult {
          key y\n\
          wait-frame 5000 approved, continuing\n\
          wait-frame 5000 !rm -rf target\n\
+         quit\n",
+    )
+}
+
+#[test]
+fn rejecting_an_ask_closes_it_and_the_next_ask_opens() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.extend([
+        Step::Push(recorded_permission_request),
+        Step::Expect("<response>", reject_and_continue),
+        Step::Expect("<response>", permission_answer),
+    ]);
+    run(
+        "permission-reject-second",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 mkdir permission-marker\n\
+         key n\n\
+         wait-frame 5000 !mkdir permission-marker\n\
+         wait-frame 5000 mkdir permission-marker\n\
+         key y\n\
+         wait-frame 5000 approved, continuing\n\
          quit\n",
     )
 }
@@ -5151,18 +5229,18 @@ fn denial_ends_the_turn(frame: &Value) -> Vec<Value> {
 #[test]
 fn closing_the_pane_that_holds_an_approval_cancels_it() -> TestResult {
     let mut fixture = session_fixture();
-    fixture.push(Step::Push(permission_request));
+    fixture.push(Step::Push(recorded_permission_request));
     fixture.push(Step::Expect("<response>", denial_ends_the_turn));
     let frame = run_frames(
         "close-cancels-ask",
         fixture,
         "wait-frame 5000 s-alpha\n\
          key enter\n\
-         wait-frame 5000 rm -rf target\n\
+         wait-frame 5000 mkdir permission-marker\n\
          key alt-v\n\
          key alt-left\n\
          key alt-x\n\
-         wait-frame 5000 !rm -rf target\n\
+         wait-frame 5000 !mkdir permission-marker\n\
          wait-frame 5000 !needs your a\n\
          quit\n",
     )?;
@@ -5786,5 +5864,54 @@ fn a_resumed_sessions_tracked_edit_does_not_open_review_by_itself() -> TestResul
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 tracked-answered\nquit\n",
     )?;
     assert!(!frame.contains("Review"), "{frame}");
+    Ok(())
+}
+
+const FENCED_REPLY: &str =
+    "Run this from the main checkout:\n\n```bash\ngit pull --ff-only origin main\n```\n";
+
+fn resume_fenced(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("how do I update")),
+                entry("e2", Some("e1"), 2, &assistant(FENCED_REPLY)),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 2})),
+    ]
+}
+
+/// Dies with a chip nothing answers: the press on it must open a terminal beside the chat, and
+/// a press on the fence's own label, one cell left of the chip, must not.
+#[test]
+fn pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not() -> TestResult {
+    // Invariant: a shell opens only in a directory that exists; no machine is born with /tmp/demo-root.
+    std::fs::create_dir_all("/tmp/demo-root")?;
+    let open = |click: &str| {
+        run_frames(
+            "run-chip",
+            replayed_session(resume_fenced),
+            &format!("wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 ▶ run\n{click}\nquit\n"),
+        )
+    };
+    let terminal = |frame: &str| {
+        frame
+            .lines()
+            .any(|row| row.contains(">_ ") && row.contains(" · demo-root"))
+    };
+    let pressed = open("mouse down 31 8\nmouse up 31 8\nwait-frame 5000 · demo-root")?;
+    assert!(
+        terminal(&pressed),
+        "no terminal pane after the press: {pressed}"
+    );
+    let label = open("mouse down 25 8\nmouse up 25 8")?;
+    assert!(
+        !terminal(&label),
+        "the fence label opened a terminal: {label}"
+    );
     Ok(())
 }

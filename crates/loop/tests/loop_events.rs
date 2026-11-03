@@ -10,7 +10,7 @@ use yi_loop::interrupt::InterruptSignal;
 use yi_loop::tool::{AgentTool, ToolFuture, ToolOutcome, error_tool_result};
 use yi_loop::{ExecutionMode, LoopConfig, LoopContext, run_loop};
 use yi_types::event::{AgentEvent, AssistantMessageEvent, RunEnd};
-use yi_types::message::{AgentMessage, StopReason};
+use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model, ModelCost, ToolChoice, ToolDef};
 
 fn faux_model() -> Model {
@@ -901,9 +901,9 @@ fn glm_5_3_flash() -> Option<Model> {
 }
 
 /// A recorded cut turn of `chars` reasoning chars (the transcript's `reasoningChars`; the text
-/// itself was dropped at the cut, so filler stands in) whose last line names `label`.
-fn recorded_cut(chars: usize, label: usize) -> AgentMessage {
-    let last = format!("\nwhere turn {label} stopped: the upper bound still needs its induction");
+/// itself was dropped at the cut, so filler stands in) whose last line names `label` and `last`.
+fn recorded_cut(chars: usize, label: usize, last: &str) -> AgentMessage {
+    let last = format!("\nwhere turn {label} stopped: {last}");
     let filler = "the bound holds at n=4, check n=5 again, ".repeat(chars / 40 + 1);
     let thinking: String = filler
         .chars()
@@ -997,7 +997,13 @@ async fn from_the_second_cut_glm_5_3_flash_is_shown_where_its_reasoning_stopped(
     let script = recorded
         .iter()
         .enumerate()
-        .map(|(index, chars)| recorded_cut(*chars, index + 1))
+        .map(|(index, chars)| {
+            recorded_cut(
+                *chars,
+                index + 1,
+                "the upper bound still needs its induction",
+            )
+        })
         .collect();
     let model = glm_5_3_flash().expect("the bundled catalog carries glm-5.3-flash");
     let (_stream, bodies) = run_on_glm(&model, script, None).await;
@@ -1036,17 +1042,71 @@ async fn from_the_second_cut_glm_5_3_flash_is_shown_where_its_reasoning_stopped(
     }
 }
 
+fn re_drive(request: &LlmContext) -> Option<String> {
+    let fence = "<yi_internal_context source=\"length_redrive\">\n";
+    request
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => text
+                .strip_prefix(fence)?
+                .strip_suffix("</yi_internal_context>")?
+                .strip_suffix('\n')
+                .map(str::to_owned),
+            _ => None,
+        })
+}
+
+/// Incident: a second cut's 8,000 quoted chars rode every later request after a reply answered it.
+#[tokio::test]
+async fn a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail() {
+    let script = vec![
+        recorded_cut(48_002, 1, "«l'induzione» still owes a step"),
+        recorded_cut(48_002, 2, "«l'induzione» still owes a step"),
+        faux_assistant_message(
+            vec![faux_tool_call("c-1", "echo", Map::new())],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ];
+    let model = glm_5_3_flash().expect("the bundled catalog carries glm-5.3-flash");
+    let (stream, _bodies) = run_on_glm(&model, script, None).await;
+    let requests = stream.requests();
+    assert_eq!(requests.len(), 4, "two cuts, a tool call and the answer");
+    let unread = re_drive(&requests[2].1).expect("the second cut is re-driven with a quote");
+    assert!(
+        unread.contains("<cut_reasoning>") && unread.contains("«l'induzione»"),
+        "an unread re-drive is sent whole: {unread}"
+    );
+    assert!(
+        re_drive(&requests[3].1).is_none(),
+        "a reply answered the quote, so the spent re-drive rides no request"
+    );
+    assert!(
+        requests[3]
+            .1
+            .messages
+            .iter()
+            .any(|message| matches!(message, AgentMessage::Assistant { .. })),
+        "the reply that read the quote is intact"
+    );
+}
+
 /// A prompt queued behind a spiral runs in the same loop (ACP `session/prompt` while busy):
 /// it goes out as the first prompt went out, and its first cut is re-driven as a first cut.
 #[tokio::test]
 async fn a_follow_up_after_three_cuts_sends_what_the_first_prompt_sent() {
     let answer = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
     let script = vec![
-        recorded_cut(48_002, 1),
-        recorded_cut(48_002, 2),
-        recorded_cut(48_001, 3),
+        recorded_cut(48_002, 1, "the upper bound still needs its induction"),
+        recorded_cut(48_002, 2, "the upper bound still needs its induction"),
+        recorded_cut(48_001, 3, "the upper bound still needs its induction"),
         answer("first"),
-        recorded_cut(48_019, 4),
+        recorded_cut(48_019, 4, "the upper bound still needs its induction"),
         answer("second"),
     ];
     let model = glm_5_3_flash().expect("the bundled catalog carries glm-5.3-flash");
@@ -1432,6 +1492,64 @@ async fn an_exhausted_quota_is_not_retried() {
         !collected.iter().any(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE)),
         "a refused quota is final"
     );
+}
+
+/// Incident: a past-cap `retry-after` 429 and a refusal that billed output both read as a dropped
+/// stream, so the loop sent the request again with a steer saying nothing reached the transcript.
+#[tokio::test]
+async fn a_provider_verdict_is_final_however_much_it_cost() {
+    for text in [
+        "HTTP 429 retry refused: the provider asked to wait 61s, past the 60s retry cap: {}",
+        "The model refused: I can't help with that.",
+    ] {
+        let mut verdict = faux_assistant_message(Vec::new(), StopReason::Error);
+        if let AgentMessage::Assistant {
+            error_message,
+            usage,
+            ..
+        } = &mut verdict
+        {
+            *error_message = Some(text.to_owned());
+            usage.output = 12;
+        }
+        let stream = Scripted::new(vec![
+            verdict,
+            faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
+        ]);
+        let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
+        let answers = collected
+            .iter()
+            .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+            .count();
+        assert_eq!(answers, 1, "one request for {text}: {collected:?}");
+    }
+}
+
+/// Incident: a 400 was classed transport http, so the loop sent it again with the 99-byte
+/// "the same turn runs again" steer; a 400 refuses the same bytes however many times it is sent.
+#[tokio::test]
+async fn a_400_body_ends_the_turn_with_no_retry_and_no_steer() {
+    let mut refused = faux_assistant_message(Vec::new(), StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut refused {
+        *error_message = Some(
+            "HTTP 400: {\"error\":{\"message\":\"Invalid schema for function 'done'\",\"type\":\"invalid_request_error\"}}"
+                .to_owned(),
+        );
+    }
+    let stream = Scripted::new(vec![
+        refused,
+        faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
+    ]);
+    let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
+    assert!(
+        !collected.iter().any(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE)),
+        "a 400 is final: {collected:?}"
+    );
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(answers, 1, "one request, not a second: {collected:?}");
 }
 
 /// Dies with a read timeout that delivered nothing ending the run: the driver saw a crash, not a resume.

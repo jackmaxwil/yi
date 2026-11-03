@@ -1,47 +1,106 @@
 #!/usr/bin/env python3
-"""Write-only `pub` fields and reader-less baselines, both at zero (D109). rustc's dead_code
+"""Write-only fields, dead shapes and reader-less baselines, all at zero (D109). rustc's dead_code
 sees nothing `pub`, so a field that crosses a crate boundary and is never read again warns
-nowhere; two context budgets were defaulted and enforced by no one, and a 0-byte baseline
-added at 0.97.0 went unread for 26 versions until this scan named it. crates/types is
-exempt (the wire reads it) and so is any struct deriving Serialize/Deserialize; a test
-counts as a reader."""
+nowhere. A read is `.name` in production code, or the name bound by a destructuring pattern; a
+struct literal that sets a field reads nothing, and a test is not a reader. Enum variant fields
+are scanned like struct fields. crates/types fields are exempt (the wire reads them) and so is
+anything deriving Serialize/Deserialize, but a `pub struct` or `pub enum` there whose name
+appears in no production code outside its own definition is dead."""
 import re, sys, pathlib
+from collections import Counter
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, BASE, fail, prod_lines
+from _common import ROOT, BASE, fail, item_end, normal_code, prod_lines, src_files
 
-STRUCT = re.compile(r"\bstruct\s+\w+")
-FIELD = re.compile(r"^\s*pub\s+(\w+)\s*:")
+ITEM = re.compile(r"((?:[ \t]*#\[[^\]]*\]\s*)*)[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?(struct|enum)[ \t]+\w+[^{;]*?\{")
+SHAPE = re.compile(r"\bpub\s+(?:struct|enum)\s+(\w+)")
+PUB_FIELD = re.compile(r"(?m)(?:^|,)[ \t]*pub[ \t]+(\w+)\s*:(?!:)")
+VARIANT_FIELD = re.compile(r"(?:^|[{,])\s*(\w+)\s*:(?!:)")
+VARIANT = re.compile(r"\b[A-Z]\w*\s*\{")
 SERDE = re.compile(r"\bSerialize\b|\bDeserialize\b")
 READ = re.compile(r"\.(\w+)\b(?!\s*\()(?!\s*=[^=])")
-BOUND = re.compile(r"[{,]\s*(\w+)\s*(?=[,}])")
+LITERAL = re.compile(r"\b(?:\w+::)*[A-Z]\w*\s*\{")
+NOT_LITERAL = re.compile(r"(?:->|\b(?:struct|enum|impl|for|trait|union|dyn|mod))\s*$")
+PATTERN_BEFORE = re.compile(r"\bmatches!\([^;,()]*(?:\([^()]*\)[^;,()]*)*,\s*(?:[\w:]+\()*$")
+# A guard stays on the pattern's line: past a newline, `if` opens the next statement.
+PATTERN_AFTER = re.compile(r"[)\]}\s,]*(?:=>|=(?!=)|\|(?!\|)|:(?!:)|in\b)|[)\]}, \t]*if\b")
+FOR_PATTERN = re.compile(r"\s*in\b")
+NEVER = re.compile(r"(?!)")
+REST_PATTERN = re.compile(r"\.\.\s*(?:,|$)")
+BOUND = re.compile(r"(?:^|[{,])\s*(?:ref\s+|mut\s+)*(\w+)\s*(?=,|$|:(?!:))")
 CORPUS = ("scripts", "evals", "skills")
 
 
-def declared(text):
-    """(name, line) per `pub name:` in a struct body, skipping serde-derived structs."""
-    out, depth, exempt, attrs = [], 0, False, ""
-    for i, line in enumerate(text.splitlines(), 1):
-        if depth:
-            m = FIELD.match(line)
-            if m and depth == 1 and not exempt:
-                out.append((m.group(1), i))
-            depth += line.count("{") - line.count("}")
-        elif STRUCT.search(line) and "{" in line:
-            depth = line.count("{") - line.count("}")
-            exempt, attrs = bool(SERDE.search(attrs)), ""
-        elif line.lstrip().startswith("#["):
-            attrs += line
+def groups(text):
+    """(open, close) offsets of each outermost brace pair in already-normalised code."""
+    at = text.find("{")
+    while at >= 0:
+        close = item_end(text, at)
+        yield at, close
+        at = text.find("{", close)
+
+
+def declared(text, enums=True):
+    """(name, line) per field of a struct (`pub name:`) or enum variant (`name:`) in normalised
+    production code, skipping serde-derived items."""
+    out = []
+    for m in ITEM.finditer(text):
+        if SERDE.search(m.group(1)) or (m.group(2) == "enum" and not enums):
+            continue
+        body = text[m.end():item_end(text, m.end() - 1)]
+        if m.group(2) == "struct":
+            flat = "".join(c if c != "{" else " " for c in body)
+            found = [(f.group(1), f.start(1)) for f in PUB_FIELD.finditer(flat)]
         else:
-            attrs = ""
+            found = [(f.group(1), o + 1 + f.start(1)) for o, c in groups(body) for f in VARIANT_FIELD.finditer(body[o + 1:c])]
+        out += [(name, text.count("\n", 0, m.end() + at) + 1) for name, at in found]
     return out
 
 
-def read_names(texts):
-    """Names read as `.name` (not a call, not an assignment) or bound in `{ name, }`."""
+def bound_names(text, off=""):
+    """Field names a destructuring pattern in the text binds. A brace group is a pattern, not a
+    literal, when it ends in `..`, sits inside `matches!`, or is followed by `=>`, `=`, `|`, `:`,
+    `if` or `in`."""
+    names = set()
+    rest = NEVER if off == "rest" else REST_PATTERN
+    before = NEVER if off == "before" else PATTERN_BEFORE
+    after = NEVER if off == "after" else PATTERN_AFTER
+    for m in LITERAL.finditer(text):
+        close = item_end(text, m.end() - 1)
+        content = text[m.end():close]
+        if NOT_LITERAL.search(text[max(0, m.start() - 12):m.start()]) and not FOR_PATTERN.match(text[close + 1:close + 8]):
+            continue
+        if (rest.search(content) or before.search(text[max(0, m.start() - 80):m.start()])
+                or after.match(text[close + 1:close + 40])):
+            names |= set(BOUND.findall(content))
+    return names
+
+
+def interpolated(raw):
+    """Names a thiserror `#[error("...{name}...")]` message interpolates: the derive reads those fields."""
+    return {n for attr in re.findall(r"#\[error\((.*?)\)\]", raw, re.S) for n in re.findall(r"\{(\w+)[^{}]*\}", attr)}
+
+
+def read_names(texts, off=""):
+    """Names read as `.name` (not a call, not an assignment) or bound by a destructuring pattern."""
     names = set()
     for text in texts:
-        names |= set(READ.findall(text)) | set(BOUND.findall(text))
+        names |= set(READ.findall(text)) | bound_names(text, off)
     return names
+
+
+def dead_shapes(code):
+    """yi-types `pub struct`/`pub enum` names that no production code names outside their own item.
+    `code` maps repo path to normalised production code."""
+    tokens = Counter(t for text in code.values() for t in re.findall(r"\w+", text))
+    out = []
+    for path, text in code.items():
+        if path.split("/")[1] != "types":
+            continue
+        for m in SHAPE.finditer(text):
+            own = Counter(re.findall(r"\w+", text[m.start():item_end(text, m.end())]))
+            if tokens[m.group(1)] == own[m.group(1)]:
+                out.append((path, m.group(1), text.count("\n", 0, m.start()) + 1))
+    return out
 
 
 def baseline_orphans(names, corpus):
@@ -57,6 +116,12 @@ SELF_SRC = """#[derive(Debug)]
 pub struct A {
     pub kept: u8,
     pub dropped: u8,
+    pub recorded_at: u64,
+}
+
+pub enum Edit {
+    Delete { line: u8, old_assertion: String },
+    TooLong { limit: u8 },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -64,23 +129,60 @@ pub struct B {
     pub wire: u8,
 }
 """
-SELF_READERS = ["fn f(a: &A) -> u8 { a.kept }"]
+SELF_READERS = [
+    "fn f(a: &A) -> u8 { a.kept }",
+    "fn g(recorded_at: u64) -> A { A { kept: 0, dropped: 1, recorded_at } }",
+    "fn h(e: Edit) -> u8 { match e { Edit::Delete { line, .. } => line } }",
+    "fn k() -> Edit { let line = 1; Edit::Delete { line, old_assertion: String::new() } }",
+    "fn m(A { dropped, .. }: A) -> u8 { dropped }",
+]
+SELF_FLAGGED = ["old_assertion", "recorded_at"]
+SELF_ERROR = '#[error("over {limit:?}")]'
+# One pattern form per row, each the only thing that binds its name.
+SELF_BOUND = {
+    "arm": "match s { S { arm } => arm }",
+    "eq": "let S { eq } = s;",
+    "alt": "match s { S { alt } | T => 1 }",
+    "typed": "fn f(S { typed }: S) {}",
+    "guard": "match s { S { guard } if guard => 1 }",
+    "walk": "for S { walk } in xs {}",
+    "flag": "matches!(s, S { flag })",
+    "wrapped": "matches!(f(s), Some(S { wrapped }))",
+    "rest": "takes(S { rest, .. });",
+}
+SELF_UNBOUND = ["fn g() -> S { let t = S { set }; t }", "S { cmp } == s;", "impl T for S { held, .. }\n",
+                "fn f() { if a { return S { early } }\n if b {} }", "let ok = matches!(x, Y) && foo(1, S { late });"]
+SELF_SHAPES = {
+    "crates/types/src/tape.rs": "pub struct Tape {\n    pub rows: u8,\n}\npub struct Used {\n    pub n: u8,\n}\n",
+    "crates/runtime/src/use.rs": "fn f(u: Used) -> u8 { u.n }",
+}
 SELF_BASELINES = ["read_me.json", "nobody.json"]
 SELF_CORPUS = [
     ("scripts/gate.py", 'BASE / "read_me.json"'),
     ("scripts/guardrails/baselines/nobody.json", "{}"),
 ]
+LOOSE_BOUND = re.compile(r"[{,]\s*(\w+)\s*(?=[,}])")
 
 
 def selfcheck(off=""):
     bad = []
-    fields = (
-        []
-        if off == "fields"
-        else [n for n, _ in declared(SELF_SRC) if n not in read_names(SELF_READERS)]
-    )
-    if fields != ["dropped"]:
-        bad.append(f"field scan said {fields}, not ['dropped']: it must flag the written-and-never-read field, spare the read one, and exempt the serde-derived one")
+    reads = read_names(SELF_READERS)
+    if off != "interpolated":
+        reads |= interpolated(SELF_ERROR)
+    if off == "literals":
+        reads = reads.union(*(set(LOOSE_BOUND.findall(t)) for t in SELF_READERS))
+    flagged = [] if off == "fields" else sorted(n for n, _ in declared(SELF_SRC, enums=off != "variants") if n not in reads)
+    if flagged != sorted(SELF_FLAGGED):
+        bad.append(f"field scan said {flagged}, not {SELF_FLAGGED}: it must flag a field only a struct literal or a variant literal sets, spare the one read as `.name` or bound by a destructuring pattern, and exempt the serde-derived one")
+    missed = sorted(name for name, text in SELF_BOUND.items() if name not in bound_names(text, off))
+    if missed:
+        bad.append(f"pattern scan missed {missed}: every destructuring form must count as a read")
+    wrong = sorted(set().union(*map(bound_names, SELF_UNBOUND)))
+    if wrong:
+        bad.append(f"pattern scan bound {wrong}: a literal that sets a field reads nothing")
+    dead = [] if off == "shapes" else [n for _, n, _ in dead_shapes(SELF_SHAPES)]
+    if dead != ["Tape"]:
+        bad.append(f"shape scan said {dead}, not ['Tape']: it must flag the yi-types shape named nowhere else and spare the one production code names")
     stale = [] if off == "baselines" else baseline_orphans(SELF_BASELINES, SELF_CORPUS)
     if stale != ["nobody.json"]:
         bad.append(f"baseline scan said {stale}, not ['nobody.json']: it must flag the baseline no file but itself names, and spare the one a script opens")
@@ -90,19 +192,20 @@ def selfcheck(off=""):
 if __name__ == "__main__":
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
-        for off in ("fields", "baselines"):
+        for off in ("fields", "literals", "variants", "shapes", "baselines", "after", "before", "rest", "interpolated"):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} scan disabled, so it refutes nothing")
         fail(errs, "orphans selfcheck")
         sys.exit(0)
 
-    src = sorted((ROOT / "crates").glob("*/src/**/*.rs"))
-    reads = read_names(f.read_text() for f in src + sorted((ROOT / "crates").glob("*/tests/**/*.rs")))
+    raw = {str(f.relative_to(ROOT)): "\n".join(prod_lines(f)) for f in src_files()}
+    code = {path: normal_code(text) for path, text in raw.items()}
+    reads = read_names(code.values()).union(*map(interpolated, raw.values()))
     fields = [
-        (f.relative_to(ROOT), name, line)
-        for f in src
-        if f.relative_to(ROOT).parts[1] != "types"
-        for name, line in declared("\n".join(prod_lines(f)))
+        (path, name, line)
+        for path, text in code.items()
+        if path.split("/")[1] != "types"
+        for name, line in declared(text)
         if name not in reads
     ]
     corpus = [(str(p.relative_to(ROOT)), p.read_text(errors="ignore")) for p in
@@ -111,5 +214,6 @@ if __name__ == "__main__":
     corpus.append(("justfile", (ROOT / "justfile").read_text()))
     names = sorted(p.name for p in BASE.iterdir() if p.is_file())
     errs = [f"{f}:{line}: pub {name} is written and never read" for f, name, line in fields]
+    errs += [f"{f}:{line}: pub {name} is named nowhere in production code outside its own definition" for f, name, line in dead_shapes(code)]
     errs += [f"baselines/{n}: no script, eval, skill or justfile line names it" for n in baseline_orphans(names, corpus)]
-    fail(errs, f"orphans (0 write-only fields, 0 reader-less of {len(names)} baselines)")
+    fail(errs, f"orphans (0 write-only fields, 0 dead shapes, 0 reader-less of {len(names)} baselines)")

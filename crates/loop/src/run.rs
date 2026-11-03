@@ -12,6 +12,7 @@ use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
 use crate::end::{end, side_work};
 use crate::interrupt::InterruptSignal;
 use crate::reasoning::ReasoningBudget;
+use crate::stream_retry::{STREAM_RETRY_AT, answered, nothing_delivered, stream_retry};
 use crate::tool::{AgentTool, ToolOutcome, error_tool_result};
 
 pub struct LoopContext {
@@ -477,54 +478,6 @@ async fn drain_to_done(
     }
 }
 
-pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
-const STREAM_RETRY_TEXT: &str = "The provider dropped the stream before any output reached the transcript; the same turn runs again.";
-const STREAM_RETRY_AT: u32 = 1;
-
-/// A stream that was generating, died on the wire or ended on an in-band error chunk, and
-/// showed nothing; a synthesized error with zero usage never went to a provider.
-fn nothing_delivered(message: &AgentMessage) -> bool {
-    let AgentMessage::Assistant {
-        content,
-        usage,
-        error_message,
-        raw_stop_reason,
-        ..
-    } = message
-    else {
-        return false;
-    };
-    let generating = usage.output > 0 || usage.reasoning.unwrap_or(0) > 0;
-    let wire = error_message.as_deref().is_some_and(|text| {
-        yi_types::telemetry::ErrorClass::from_provider_text(text).is_transport()
-    });
-    // Incident: Wafer's in-band 502 had no usage and no transport class; yi exited 0 (D175)
-    let in_band = raw_stop_reason.as_deref() == Some(yi_types::message::RAW_STOP_IN_BAND_ERROR);
-    (generating || wire || in_band)
-        && !(yi_types::message::has_text(content)
-            || content
-                .iter()
-                .any(|block| matches!(block, Content::ToolCall { .. })))
-}
-
-fn answered(message: &AgentMessage) -> bool {
-    let AgentMessage::Assistant { content, .. } = message else {
-        return false;
-    };
-    yi_types::message::has_text(content)
-}
-
-/// A dropped stream that showed nothing is the one error a rerun cannot duplicate.
-fn stream_retry(error: Option<&str>) -> AgentMessage {
-    AgentMessage::Custom {
-        custom_type: STREAM_RETRY_CUSTOM_TYPE.to_owned(),
-        content: yi_types::message::UserContent::Text(STREAM_RETRY_TEXT.to_owned()),
-        display: false,
-        details: Some(serde_json::json!({"error": error})),
-        timestamp: 0,
-    }
-}
-
 pub const REPEAT_BREAK_CUSTOM_TYPE: &str = "repeat_break";
 const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns. Nothing is changing. Write the final answer now; call no tools.";
 pub const REPEAT_STEER_AT: u32 = 3;
@@ -933,6 +886,7 @@ pub async fn run_loop<S: StreamFn>(
             }
             if reason == StopReason::Error
                 && stream_retries < STREAM_RETRY_AT
+                && !signal.is_fired()
                 && nothing_delivered(&message)
             {
                 stream_retries = stream_retries.saturating_add(1);

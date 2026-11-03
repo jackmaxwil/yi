@@ -205,6 +205,16 @@ fn money_prints_one_way_and_marks_a_floor() {
 }
 
 #[test]
+fn a_tree_snapshot_round_trips_byte_identical() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tree-snapshot-v1.json");
+    let stored = fs::read_to_string(path)?;
+    let data: yi_types::checkpoint::TreeSnapshot = serde_json::from_str(&stored)?;
+    assert_eq!(data.call.as_deref(), Some("call_1"));
+    assert_eq!(serde_json::to_string(&data)?, stored.trim_end());
+    Ok(())
+}
+
+#[test]
 fn an_undo_checkpoint_recorded_before_after_still_round_trips_byte_identical()
 -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/checkpoint-undo-v1.json");

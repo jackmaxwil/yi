@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use yi_acp::update::{IdMap, extension, replay_updates, to_updates, update_notification};
 use yi_acp::{VERSION_MISMATCH_ERROR, negotiate};
 use yi_types::acp::{
-    AcpNotification, AcpSessionUpdate, AcpState, AcpStopReason, AcpToolCallStatus, AcpUpdateParams,
+    AcpSessionUpdate, AcpState, AcpStopReason, AcpToolCallStatus, AcpUpdateParams,
 };
 use yi_types::encoding::base64;
 use yi_types::entry::Entry;
@@ -338,14 +338,14 @@ fn update_notifications_match_the_serde_wire_shape() -> TestResult {
         AcpSessionUpdate::StateUpdate(AcpState::Running),
     ];
     for update in updates {
-        let expected = serde_json::to_value(AcpNotification {
-            jsonrpc: "2.0".to_owned(),
-            method: "session/update".to_owned(),
-            params: serde_json::to_value(AcpUpdateParams {
+        let expected = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": serde_json::to_value(AcpUpdateParams {
                 session_id: "s1".to_owned(),
                 update: update.clone(),
             })?,
-        })?;
+        });
         assert_eq!(update_notification("s1", update), expected);
     }
     Ok(())

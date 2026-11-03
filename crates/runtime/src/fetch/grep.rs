@@ -279,7 +279,7 @@ impl Resolver {
         }
         let searched = format!("{} lines of {url}", text.lines().count());
         let named = ("address grep", "the address for its whole text");
-        Ok(hits.close(offset, &searched, named))
+        Ok(self.fenced(url, hits.close(offset, &searched, named)))
     }
 }
 
