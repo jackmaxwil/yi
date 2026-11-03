@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 use tokio::task::JoinSet;
-use yi_runtime::session_store::{SharedSession, lock_session};
+use yi_runtime::session_store::{
+    BranchBounds, EntryOrder, EntryQuery, SharedSession, lock_session,
+};
 use yi_runtime::{AgentSession, SubagentHost};
 use yi_types::acp::AcpSessionUpdate;
 use yi_types::entry::Entry;
@@ -76,9 +78,40 @@ pub(crate) struct Parent {
     pub(crate) titled: bool,
     pub(crate) launch_cwd: std::path::PathBuf,
     pub(crate) last_active: Arc<AtomicU64>,
+    pub(crate) last_committed_seq: Option<u64>,
 }
 
 impl Parent {
+    pub(crate) fn new(
+        forward: Forward,
+        session: Arc<AgentSession>,
+        host: Arc<SubagentHost>,
+        ids: IdMap,
+        store: &SharedSession,
+        launch_cwd: std::path::PathBuf,
+        last_active: Arc<AtomicU64>,
+    ) -> Self {
+        let store = lock_session(store);
+        let titled = store.name().is_some();
+        let last_committed_seq = store.find_on_branch("main", |entry| Some(entry.seq()));
+        Self {
+            forward,
+            session,
+            host,
+            ids,
+            children: JoinSet::new(),
+            seen: HashSet::new(),
+            last_goal: Value::Null,
+            last_workdir: Value::Null,
+            last_claims: Value::Null,
+            last_plan: Value::Null,
+            titled,
+            launch_cwd,
+            last_active,
+            last_committed_seq,
+        }
+    }
+
     fn adopt_children(&mut self) {
         for child in self.host.children_view() {
             if !self.seen.insert(child.update.id.0.clone()) {
@@ -99,15 +132,44 @@ impl Parent {
     /// later one by the time this lags through, so the entry is found by the message it holds.
     fn committed(&mut self, message: &AgentMessage) {
         let _span = yi_types::trace::span("acp.committed");
-        let entry = self.session.store().and_then(|store| {
-            lock_session(&store).find_on_branch("main", |entry| {
+        let last_committed_seq = self.last_committed_seq;
+        let committed = self.session.store().and_then(|store| {
+            let session = lock_session(&store);
+            let id = session.find_on_branch("main", |entry| {
                 matches!(entry, Entry::Message { message: saved, .. } if saved == message)
-                    .then(|| entry.clone())
-            })
+                    .then(|| entry.id().to_owned())
+            })?;
+            let mut suffix = session
+                .find_entries_on_branch(
+                    "main",
+                    &EntryQuery {
+                        order: EntryOrder::OldestFirst,
+                        after_seq: last_committed_seq,
+                        ..EntryQuery::default()
+                    },
+                    &BranchBounds {
+                        start: Some(id.clone()),
+                        ..BranchBounds::default()
+                    },
+                )
+                .ok()?;
+            if suffix.last().is_none_or(|entry| entry.id() != id.as_str()) {
+                return None;
+            }
+            let entry = suffix.pop()?;
+            Some((
+                entry.seq(),
+                yi_types::acp::AcpCommitted {
+                    entry,
+                    ancestors: suffix,
+                },
+            ))
         });
-        let committed = entry.map(|entry| yi_types::acp::AcpCommitted { entry });
-        if let Some(Value::Object(fields)) = committed.and_then(|c| serde_json::to_value(c).ok()) {
+        if let Some((seq, committed)) = committed
+            && let Some(Value::Object(fields)) = serde_json::to_value(committed).ok()
+        {
             self.forward.emit(extension("_yi/committed", fields));
+            self.last_committed_seq = Some(seq);
         }
     }
 
