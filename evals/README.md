@@ -28,12 +28,13 @@ stops_on_fail.py             stops a run took while its last ipython cell printe
 skill_labels.py              typed messages -> teacher labels -> a frozen sample: the skill classifier's training data (#779)
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 search_gate.py               paired history-search gate (#1184): a fact printed only in a tool result, graded on the actor
+prose.py                     answer prose measured against the identity prompt's style rules, and the rules themselves (#1862)
 drivers/                     harbor sweep drivers, spend and wall caps (drivers/README.md)
 improve/                     one round's proposer half: a development-only corpus, a history-free snapshot, S0 (round.py, brief.md)
 inner/                       the inner loop: seeded task generators (gen/) and their runner (runner.py), container-free
 trials/                      the trial store: one row per paid harbor trial, and the weekly budget it sums (trials/README.md)
 arc/yi_arc.py                ARC-AGI-3 bridge: one `yi ask --json --yolo` per action (arc/README.md)
-fixtures/                    recorded transcripts, v4 session files, runner tasks, live and surface scenarios
+fixtures/                    recorded transcripts, v4 session files, runner tasks, live and surface scenarios, and the prose answer pair (`prose/`, hand-labelled for `prose.py --selfcheck`)
 ```
 
 ## Gates

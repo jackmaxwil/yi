@@ -98,10 +98,16 @@ impl PlanEngine {
         // turn and then refuses as infrastructure, never as a verdict on the product.
         let _verification_slot = self.reserve_verification(label)?;
         let session = format!("verify-{}", self.store.nonce());
-        let lane = match pool.claim(
-            &session,
-            crate::lane::ClaimBase::Commit(commit.as_str().to_owned()),
-        ) {
+        let scrubbed =
+            |lane: crate::lane::Lane| crate::lane::warm::scrub(lane.path()).map(|()| lane);
+        let warm = pool.warm().and_then(|warm| {
+            warm.claim(
+                &session,
+                crate::lane::ClaimBase::Commit(commit.as_str().to_owned()),
+            )
+            .and_then(scrubbed)
+        });
+        let lane = match warm {
             Ok(lane) => lane,
             Err(error) => {
                 return Ok(self.verifier.abstained(
@@ -119,7 +125,7 @@ impl PlanEngine {
             artifacts: &artifacts,
         };
         let verdict = self.verifier.run(token, contract, &snapshot);
-        lane.discard()
+        lane.release_warm()
             .map_err(|error| verification(label, format!("verification lane: {error}")))?;
         Ok(verdict)
     }
