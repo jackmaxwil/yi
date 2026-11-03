@@ -287,6 +287,8 @@ adr number:
 commit subject *args:
     python3 scripts/forge_pr.py commit "$@"
 
+linux-clippy:
+    python3 scripts/forge_pr.py linux-clippy
 push:
     python3 scripts/forge_pr.py push
 

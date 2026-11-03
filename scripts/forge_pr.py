@@ -41,6 +41,7 @@ from check_pr_metadata import DRAFT  # noqa: E402
 BASELINES = ROOT / "scripts/guardrails/baselines"
 BINARY = {"binary_size_budget": "dist binary", "binary_size_budget_linux": "Linux dist binary"}
 SUBJECT_LIMIT = 72
+LINUX_TARGET = "x86_64-unknown-linux-gnu"
 POLL = 20
 WEB = "https://git.example.invalid"
 HOST = WEB.removeprefix("https://")
@@ -209,7 +210,7 @@ def cmd_ratchet(args):
     changed = dirty(baseline_paths())
     if not changed:
         print("ratchet: every baseline already matches")
-        return binary_ratchet(args.topic) if not args.no_binary else 0
+        return binary_ratchet(args.topic, forge_measured=getattr(args, "forge_measured", False)) if not args.no_binary else 0
     parts = []
     for path in changed:
         was, now = before.get(path, {}), read_json(path)
@@ -225,7 +226,7 @@ def cmd_ratchet(args):
     subject = ratchet_subject(parts, args.topic)
     git("commit", "-q", "-m", subject, "--", *changed, check=True)
     print(f"ratchet: {subject}")
-    return binary_ratchet(args.topic) if not args.no_binary else 0
+    return binary_ratchet(args.topic, forge_measured=getattr(args, "forge_measured", False)) if not args.no_binary else 0
 
 
 def cmd_commit(args):
@@ -269,11 +270,17 @@ def binary_part(stem, was, now):
     return f"{BINARY[stem]} {was} -> {now}"
 
 
+def binary_subject(stem, was, now, topic="", forge_measured=False):
+    name = "linux dist" if forge_measured and stem == "binary_size_budget_linux" else BINARY[stem]
+    part = f"{name} {was} -> {now}" + (", as the forge measured it" if forge_measured else "")
+    return ratchet_subject([part], topic)
+
+
 def write_ceiling(path, size):
     path.write_text(merge_baseline.layout({"max_bytes": size}))
 
 
-def binary_ratchet(topic):
+def binary_ratchet(topic, forge_measured=False):
     """Built here, after the code commit: check_binary_size.py only stats target/dist/yi,
     so without a build it measures the previous landing (said ok while the lane grew)."""
     build = subprocess.run(
@@ -300,16 +307,47 @@ def binary_ratchet(topic):
     stem, was, size = grown
     path = BASELINES / f"{stem}.json"
     write_ceiling(path, size)
-    subject = ratchet_subject([binary_part(stem, was, size)], topic)
+    subject = binary_subject(stem, was, size, topic, forge_measured)
     git("commit", "-q", "-m", subject, "--", str(path.relative_to(ROOT)), check=True)
     print(f"ratchet: {subject}")
     return 0
+
+
+def changed_crates(text):
+    paths = (line.split("/") for line in text.splitlines())
+    return sorted({f"yi-{parts[1]}" for parts in paths if len(parts) > 2 and parts[0] == "crates" and parts[1]})
+
+
+def linux_clippy_command(crates):
+    command = ["cargo", "clippy"]
+    for crate in crates:
+        command += ["-p", crate]
+    return command + ["--target", LINUX_TARGET, "--tests", "--", "-D", "warnings"]
+
+
+def linux_clippy():
+    targets = subprocess.run(("rustup", "target", "list", "--installed"), capture_output=True, text=True, check=False)
+    if targets.returncode:
+        print((targets.stdout + targets.stderr).strip())
+        return targets.returncode
+    if LINUX_TARGET not in targets.stdout.splitlines():
+        print(f"skip linux-clippy (target {LINUX_TARGET} not installed: rustup target add {LINUX_TARGET})")
+        return 0
+    base = git("merge-base", "origin/main", "HEAD", check=True)
+    crates = changed_crates(git("diff", "--name-only", base, "--", "crates", check=True))
+    if not crates:
+        print("skip linux-clippy (no crates changed relative to origin/main)")
+        return 0
+    print(f"linux-clippy: {', '.join(crates)}")
+    return subprocess.run(linux_clippy_command(crates), cwd=ROOT, check=False).returncode
 
 
 def cmd_push(args):
     name = branch()
     if git("status", "--porcelain"):
         print("push: the tree is dirty — just commit first")
+        return 1
+    if linux_clippy():
         return 1
     # The lane refuses a grown binary; measuring here is the last chance before it.
     if binary_ratchet(getattr(args, "topic", "") or ""):
@@ -737,6 +775,11 @@ def selfcheck():
     long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "dist binary 5696512 -> 5696544"], "the console pane and its avatars")
     assert len(long) <= SUBJECT_LIMIT and long.startswith("Ratchet: test LOC"), long
     assert ratchet_subject([], "x") == "Ratchet: baselines"
+    assert changed_crates("crates/tools/src/document.rs\ncrates/cli/build.rs\ncrates/tools/tests/read.rs\ndocs/FORGE.md\ncrates/README.md\n") == ["yi-cli", "yi-tools"]
+    assert linux_clippy_command(["yi-cli", "yi-tools"]) == [
+        "cargo", "clippy", "-p", "yi-cli", "-p", "yi-tools", "--target", LINUX_TARGET, "--tests", "--", "-D", "warnings",
+    ]
+    assert binary_subject("binary_size_budget_linux", 100, 200, forge_measured=True) == "Ratchet: linux dist 100 -> 200, as the forge measured it"
     counted = "<!-- prefilled -->\n\n## Summary\n\nprefill\n\n## Files edited\n\nprefill files\n"
     kept = dedupe_counted("## Summary\n\nmine\n", counted)
     assert "mine" not in kept and "prefill files" in kept and kept.count("## Summary") == 0, kept
@@ -989,6 +1032,7 @@ def build_parser():
     ratchet = verbs.add_parser("ratchet")
     ratchet.add_argument("topic", nargs="?", default="")
     ratchet.add_argument("--no-binary", action="store_true", help="skip the dist build")
+    ratchet.add_argument("--forge-measured", action="store_true", help="name the Linux dist measurement in the commit subject")
     ratchet.set_defaults(run=cmd_ratchet)
     commit = verbs.add_parser("commit")
     commit.add_argument("subject")
@@ -997,6 +1041,7 @@ def build_parser():
     commit.add_argument("--topic", default="")
     commit.set_defaults(run=cmd_commit)
     verbs.add_parser("push").set_defaults(run=cmd_push)
+    verbs.add_parser("linux-clippy").set_defaults(run=lambda args: linux_clippy())
     pr = verbs.add_parser("pr").add_subparsers(dest="pr_verb", required=True)
 
     def opener(name, run):

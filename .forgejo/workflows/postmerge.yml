@@ -150,14 +150,21 @@ jobs:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.RECORDER_TOKEN }}
-      - name: record the change files main landed
+      - name: record the change files and Linux dist size main landed
+        env:
+          GIT_AUTHOR_NAME: yi-ci
+          GIT_AUTHOR_EMAIL: ci@yi
+          GIT_COMMITTER_NAME: yi-ci
+          GIT_COMMITTER_EMAIL: ci@yi
         run: |
           set -euo pipefail
           python3 scripts/record_changes.py
-          if [ -z "$(git status --porcelain)" ]; then exit 0; fi
-          git add docs
-          # Not silenced: the mirror runs only for a push to main, and this is the push that leaves
-          # main final; the two lanes above skip a recorder commit by its author instead.
-          git -c user.name=yi-ci -c user.email=ci@yi \
-            commit -q -m "Record the change files main landed"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add docs
+            # Not silenced: the mirror runs only for a push to main, and this is the push that leaves
+            # main final; the two lanes above skip a recorder commit by its author instead.
+            git -c user.name=yi-ci -c user.email=ci@yi \
+              commit -q -m "Record the change files main landed"
+          fi
+          python3 scripts/forge_pr.py ratchet --forge-measured
           git push origin HEAD:main
