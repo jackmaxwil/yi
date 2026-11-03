@@ -1,4 +1,5 @@
 ---
+version: 0.894.0
 issue: Refs #1794
 ---
 An imported contributor's commits can name the identity that contributor chose. An

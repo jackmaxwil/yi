@@ -1,4 +1,6 @@
 ---
+version: 0.893.0
+decisions: D540
 issue: Refs #1719, Closes #1751
 raise: tests +34, crate cli +11
 growth: +11 the only Rust src growth is parsing, validating and applying --no-tools; Python cannot remove the provider tool table without that CLI support
