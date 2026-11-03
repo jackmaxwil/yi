@@ -10,7 +10,9 @@ pub mod browser;
 mod chrome;
 pub mod client;
 mod editor_view;
+pub mod files;
 mod header;
+mod hit;
 pub mod keys;
 pub mod kitty;
 pub mod layout;
@@ -62,6 +64,7 @@ pub struct ConsoleOptions {
     pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
     pub pace: u16,
+    pub follow: yi_types::config::FollowMode,
     pub browser: Option<PathBuf>,
     pub chrome_pin: Option<crate::browser::Pinned>,
     pub home: Option<String>,
@@ -570,7 +573,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
                         .iter()
                         .find(|(id, _)| focused.is_some_and(|pane| id == &pane))
                         .map(|(_, rect)| {
-                            let inner = rect.inner(render::pane_margin(true));
+                            let inner = rect.inner(crate::layout::pane_margin(true, false));
                             ratatui::layout::Rect {
                                 height: inner.height / 2,
                                 ..inner
@@ -748,19 +751,17 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                     WaitPoll::Done => {}
                 }
             }
-            (ConsoleStep::Tui(Step::WaitFrame(ms, present, text)), started) => {
-                let shown = terminal.backend().screen().contains(&text) == present;
-                match poll_condition(shown, started, ms, &format!("wait-frame {text:?}")) {
-                    WaitPoll::Done => {}
-                    WaitPoll::Retry => {
-                        current = Some((
-                            ConsoleStep::Tui(Step::WaitFrame(ms, present, text)),
-                            started,
-                        ))
-                    }
-                    WaitPoll::Failed(error) => {
-                        eprintln!("error: {error}");
-                        exit_code = 1;
+            (ConsoleStep::Tui(step @ (Step::WaitFrame(..) | Step::WaitRow(..))), started) => {
+                if let Some((ms, present, text, whole)) = yi_tui::drive::wait_parts(&step) {
+                    let shown =
+                        yi_tui::drive::frame_matches(terminal.backend(), text, whole) == present;
+                    match poll_condition(shown, started, ms, &format!("{step:?}")) {
+                        WaitPoll::Done => {}
+                        WaitPoll::Retry => current = Some((ConsoleStep::Tui(step), started)),
+                        WaitPoll::Failed(error) => {
+                            eprintln!("error: {error}");
+                            exit_code = 1;
+                        }
                     }
                 }
             }
@@ -802,6 +803,8 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
+    app.state.chat_follow = options.follow;
+    app.state.follow_fallback = options.follow;
     app.state.home.clone_from(&options.home);
     app.state.chrome =
         crate::browser::Chrome::new(options.browser.clone(), options.chrome_pin.clone());

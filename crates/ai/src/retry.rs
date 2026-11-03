@@ -50,31 +50,37 @@ pub fn is_retryable_status(status: u16) -> bool {
     status == 408 || status == 409 || status == 429 || status >= 500
 }
 
-pub fn retry_delay(
-    attempt: u32,
-    retry_after_ms: Option<f64>,
-    retry_after_secs: Option<f64>,
-    policy: &RetryPolicy,
-) -> Option<Duration> {
-    let capped = |milliseconds: f64| {
-        if milliseconds.is_finite() && milliseconds >= 0.0 {
-            let duration = Duration::from_millis(milliseconds as u64);
-            (duration <= policy.max_delay).then_some(duration)
-        } else {
-            None
-        }
-    };
-    if let Some(server) = retry_after_ms.and_then(capped) {
-        return Some(server);
+/// The wait the provider asked for: `retry-after-ms` first, then `retry-after` seconds.
+pub fn server_wait(retry_after_ms: Option<f64>, retry_after_secs: Option<f64>) -> Option<Duration> {
+    let milliseconds =
+        retry_after_ms.or_else(|| retry_after_secs.map(|seconds| seconds * 1000.0))?;
+    let whole = milliseconds.floor();
+    if !whole.is_finite() || whole < 0.0 || whole > u64::MAX as f64 {
+        return None;
     }
-    if let Some(server) = retry_after_secs
-        .map(|seconds| seconds * 1000.0)
-        .and_then(capped)
-    {
-        return Some(server);
-    }
+    Some(Duration::from_micros(
+        (whole * 1000.0).min(u64::MAX as f64) as u64
+    ))
+}
+
+/// 0.5s * 2^attempt, capped at 8s: the wait when the provider named none.
+pub fn retry_delay(attempt: u32) -> Duration {
     let exponential = 500.0 * f64::from(2u32.saturating_pow(attempt));
-    Some(Duration::from_millis(exponential.min(8000.0) as u64))
+    Duration::from_millis(exponential.min(8000.0) as u64)
+}
+
+/// Incident: a `retry-after: 61` was slept out and the same bytes sent again. Past the cap the wait
+/// is the provider's window closing, so it comes back as the error and the turn ends naming it.
+pub fn wait_for(
+    attempt: u32,
+    server: Option<Duration>,
+    policy: &RetryPolicy,
+) -> Result<Duration, Duration> {
+    match server {
+        Some(wait) if wait > policy.max_delay => Err(wait),
+        Some(wait) => Ok(wait),
+        None => Ok(retry_delay(attempt)),
+    }
 }
 
 #[cfg(test)]
@@ -83,23 +89,28 @@ mod tests {
 
     #[test]
     fn backoff_caps_at_eight_seconds() {
-        let policy = RetryPolicy::default();
-        assert_eq!(
-            retry_delay(0, None, None, &policy),
-            Some(Duration::from_millis(500))
-        );
-        assert_eq!(
-            retry_delay(10, None, None, &policy),
-            Some(Duration::from_secs(8))
-        );
+        assert_eq!(retry_delay(0), Duration::from_millis(500));
+        assert_eq!(retry_delay(10), Duration::from_secs(8));
     }
 
     #[test]
-    fn server_delay_beyond_cap_is_rejected() {
+    fn a_server_wait_at_the_cap_is_honored_and_one_past_it_is_refused() {
         let policy = RetryPolicy::default();
         assert_eq!(
-            retry_delay(0, Some(120_000.0), None, &policy),
-            Some(Duration::from_millis(500))
+            wait_for(0, server_wait(None, Some(60.0)), &policy),
+            Ok(Duration::from_secs(60))
+        );
+        assert_eq!(
+            wait_for(0, server_wait(None, Some(61.0)), &policy),
+            Err(Duration::from_secs(61))
+        );
+        assert_eq!(
+            wait_for(0, server_wait(Some(120_000.0), None), &policy),
+            Err(Duration::from_secs(120))
+        );
+        assert_eq!(
+            wait_for(1, server_wait(None, None), &policy),
+            Ok(Duration::from_secs(1))
         );
     }
 }

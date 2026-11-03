@@ -65,7 +65,7 @@ def main(argv):
     args = ap.parse_args(argv)
     svgs = args.from_dir or (args.out / "svg")
     svgs.mkdir(parents=True, exist_ok=True); args.out.mkdir(parents=True, exist_ok=True)
-    digests = {key: hashlib.md5(fetch(key, svgs).read_bytes()).hexdigest()[:8] for key in PROVIDERS + LABS}
+    digests = {key: hashlib.md5(fetch(key, svgs).read_bytes(), usedforsecurity=False).hexdigest()[:8] for key in PROVIDERS + LABS}
     repeated = {d for d in digests.values() if list(digests.values()).count(d) > 1}
     for key in PROVIDERS + LABS:
         svg, digest = svgs / f"{key}.svg", digests[key]

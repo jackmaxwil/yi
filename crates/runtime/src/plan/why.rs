@@ -42,7 +42,10 @@ fn run(
     verb: &'static str,
     args: &[&str],
 ) -> Result<yi_tools::CommandCapture, WhyError> {
-    let mut process = yi_tools::command("git");
+    let mut process = yi_tools::host_command("git", cwd).map_err(|error| WhyError::Git {
+        verb,
+        detail: error.to_string(),
+    })?;
     process.arg("-C").arg(cwd).args(args);
     let never: yi_tools::CancelFlag = Arc::new(|| false);
     let capture = yi_tools::run_captured(process, None, &never, CAP)

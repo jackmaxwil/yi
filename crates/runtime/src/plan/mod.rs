@@ -422,23 +422,6 @@ impl PlanService {
             }
         }
     }
-
-    pub fn register(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
-        let service = Arc::clone(self);
-        registry.register("plan.get", move |_payload| {
-            let service = Arc::clone(&service);
-            Box::pin(async move {
-                // The read touches the plans directory; keep it off the executor.
-                tokio::task::spawn_blocking(move || service.get())
-                    .await
-                    .map_err(|error| format!("plan.get task failed: {error}"))?
-                    .and_then(|value| match value {
-                        Value::Object(map) => Ok(map),
-                        other => Err(format!("plan payload was not an object: {other}")),
-                    })
-            })
-        });
-    }
 }
 
 /// Events are observed in a spawned task, mirroring [`crate::goal::attach_goal`].

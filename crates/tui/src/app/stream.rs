@@ -778,6 +778,7 @@ impl App {
         terminate: bool,
     ) {
         let is_error = yi_types::event::shown_failed(is_error, &details);
+        self.projection.settled_calls.insert(cell.call_id.clone());
         cell.status = if is_error {
             ToolStatus::Failed
         } else {

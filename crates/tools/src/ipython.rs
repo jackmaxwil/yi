@@ -85,6 +85,8 @@ pub trait CellCalls: Send + Sync {
 pub struct IpythonTool {
     pub bridge: Arc<dyn KernelBridge>,
     pub calls: Option<Arc<dyn CellCalls>>,
+    /// Invariant: true only when the kernel runs in the platform sandbox; else auto asks first.
+    pub contained: bool,
 }
 
 fn shell_cell(code: &str) -> Option<String> {
@@ -106,7 +108,7 @@ impl Tool for IpythonTool {
     }
 
     fn description(&self) -> &str {
-        "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `yi.tools.read(path=...)`, `yi.tools.edit(patch=...)` and the rest call your own tools from a cell, judged and recorded as your calls are; `%%bash` runs a shell in the kernel's env (on macOS loopback only, so `%pip install` fails); pandas (with openpyxl) reads spreadsheets, and `anydoc` and `pdf_inspector` (`extract_text`) read documents read cannot show. A cell's stdout, stderr or displayed value past 65,536 characters keeps its first and last halves, and the cut names [full output: path], a file with all of it (the first 256 MiB), which read opens; a cell is interrupted after 600 s, so split longer work across cells. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`."
+        "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `yi.tools.read(path=...)`, `yi.tools.edit(patch=...)` and the rest call your own tools from a cell, judged and recorded as your calls are; `%%bash` runs a shell in the kernel's env (`%pip install` lasts this session); pandas (with openpyxl) reads spreadsheets, and `anydoc` and `pdf_inspector` (`extract_text`) read documents read cannot show. A cell's stdout, stderr or displayed value past 65,536 characters keeps its first and last halves, and the cut names [full output: path], a file with all of it (the first 256 MiB), which read opens; a cell is interrupted after 600 s, so split longer work across cells. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`."
     }
 
     fn schema(&self) -> Value {
@@ -127,14 +129,18 @@ impl Tool for IpythonTool {
     }
 
     /// A shell cell reads through the same classifier as `bash`; Python is not
-    /// statically readable, and the sandbox is what closes that residual.
+    /// statically readable, so only the sandbox makes it reversible.
     fn irreversible(&self, input: &Map<String, Value>) -> bool {
         let Some(code) = input.get("code").and_then(Value::as_str) else {
             return true;
         };
         match shell_cell(code) {
-            Some(command) => yi_permission::verdict(&command) != yi_permission::Verdict::Allow,
-            None => false,
+            Some(command) => match yi_permission::verdict(&command) {
+                yi_permission::Verdict::Allow => false,
+                yi_permission::Verdict::Contain { .. } => !self.contained,
+                yi_permission::Verdict::Ask { .. } => true,
+            },
+            None => !self.contained,
         }
     }
 
@@ -205,7 +211,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome, dir: Option<&Path>) -
             && let Some(name) = missing_module(&error.evalue)
         {
             sections.push(format!(
-                "`{name}` is not installed in the kernel. On macOS the kernel has no network beyond loopback, so `%pip install {name}` fails there; ask the user to install it into the kernel's Python (`sys.executable`). `pip` in bash installs into a different Python."
+                "`{name}` is not installed in the kernel. `%pip install {name}` in a cell installs it for this session. `pip` in bash installs into a different Python."
             ));
         }
     }
