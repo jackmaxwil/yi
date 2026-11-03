@@ -262,6 +262,7 @@ impl SubagentHost {
     }
 
     pub(super) fn register_service(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
+        self.register_tree(registry);
         let host = Arc::clone(self);
         registry.register("rlm.service", move |payload| {
             let text = |key: &str| payload.str_of(key).map(str::to_owned);

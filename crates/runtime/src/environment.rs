@@ -81,8 +81,9 @@ pub fn branch_diff_capped(root: &Path, cap: usize) -> Option<yi_types::lane::Bra
         )
         .ok()
     };
-    let base = git(&["merge-base", "HEAD", "origin/main"])
-        .or_else(|| git(&["merge-base", "HEAD", "main"]))?
+    let trunk = crate::lane::hostgit::trunk(root);
+    let base = git(&["merge-base", "HEAD", &format!("origin/{trunk}")])
+        .or_else(|| git(&["merge-base", "HEAD", trunk.as_str()]))?
         .trim()
         .to_owned();
     let numstat = whole(&["diff", "--numstat", &base, "HEAD"])?;

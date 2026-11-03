@@ -676,6 +676,34 @@ async fn only_model_cells_grow_the_input_history() -> TestResult {
     Ok(())
 }
 
+/// Incident: a listing issued while another cell held the kernel answered "no names" inside its
+/// own budget, reddening the gate on a namespace query the change never touched.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn a_namespace_listing_answers_after_a_contended_kernel() -> TestResult {
+    let kernel = manager()?;
+    let cell = kernel
+        .execute("kept = 41", ExecuteOptions::default())
+        .await?;
+    assert_eq!(cell.status, ExecuteStatus::Ok);
+
+    let (slept, listed) = tokio::join!(
+        kernel.execute("import time; time.sleep(6)", ExecuteOptions::default()),
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            kernel.list_namespace_names().await
+        }
+    );
+    let names = listed.ok_or("list_namespace_names")?;
+    assert!(
+        names.contains(&"kept".to_owned()),
+        "a listing behind a busy cell must still report the namespace: {names:?}"
+    );
+    let _interrupted = slept;
+    kernel.dispose().await;
+    Ok(())
+}
+
 /// The v4 trial images ship python3 and no uv; the venv must build from python3 alone and the
 /// kernel it boots must import `rlm`, or delegation is unreachable for the whole hour.
 #[tokio::test]

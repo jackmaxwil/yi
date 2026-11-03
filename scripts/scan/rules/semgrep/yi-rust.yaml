@@ -1,0 +1,24 @@
+rules:
+  - id: yi-rust-env-command
+    languages: [rust]
+    severity: ERROR
+    message: An environment-selected process program crosses a trust boundary; use a fixed program or validate against an allowlist.
+    pattern-either:
+      - pattern: std::process::Command::new(<... std::env::var(...) ...>)
+      - pattern: Command::new(<... std::env::var(...) ...>)
+
+  - id: yi-rust-temp-dir
+    languages: [rust]
+    severity: ERROR
+    message: Shared temporary directories are unsafe for durable state; use a worktree-owned or uniquely created directory.
+    pattern-either:
+      - pattern: std::env::temp_dir()
+      - pattern: env::temp_dir()
+
+  - id: yi-rust-from-utf8-unchecked
+    languages: [rust]
+    severity: ERROR
+    message: Unchecked UTF-8 conversion violates the crate's no-unsafe and input-validation law; use the checked conversion.
+    pattern-either:
+      - pattern: std::str::from_utf8_unchecked(...)
+      - pattern: from_utf8_unchecked(...)

@@ -379,7 +379,7 @@ fn join_streams(stdout: &str, stderr: &str) -> String {
     }
 }
 
-fn program<'a>(words: impl IntoIterator<Item = &'a str>) -> Option<(usize, &'a str)> {
+pub(crate) fn program<'a>(words: impl IntoIterator<Item = &'a str>) -> Option<(usize, &'a str)> {
     words
         .into_iter()
         .enumerate()
