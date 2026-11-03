@@ -1,6 +1,7 @@
 ---
 issue: Refs #1992
-raise: crate runtime +118, tests +224, comments +12
+growth: +146 the guard's two spellings, `parse_iso_ms` deleted for its twin, the arming test
+raise: crate runtime +146, tests +270, comments +12
 decision: A reminder time naming no offset is wall time in the local zone, and an offset is honoured (amends D283's `at <ISO>`, read as UTC with offsets refused) | GLM 5.3 flash wrote `-08:00` on every timed reminder, and the refusal sent it to a naive time that fired at once or to a blocker nothing fires | read a naive `at` as UTC again in `parse_local_ms`
 ledger+: heartbeats: clock subscriptions | `clock://at` honours an offset and reads a time with none as local wall time, a `file://` wait with no filter holds until the file exists, and `block` refuses a time with no scheme or an address left outside `on`, so a reminder that armed nothing cannot read as set
 ---

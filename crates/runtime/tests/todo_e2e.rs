@@ -1685,6 +1685,11 @@ fn an_address_outside_on_is_refused_and_prose_is_not() -> TestResult {
                 "note": "Wakes when build.done exists; then tell the user."}),
             "block",
         ),
+        (
+            json!({"op": "block", "id": "t1",
+                "note": "wake me at `clock://at 2026-11-02T09:00:00` and tell the user"}),
+            "note",
+        ),
     ] {
         let (refused, text) = call(&tool, args);
         assert!(refused, "a wait with no `on` was taken: {text}");
@@ -1756,6 +1761,23 @@ fn a_block_on_a_time_with_no_scheme_is_refused() -> TestResult {
             json!({"op": "block", "id": "t1", "on": word, "note": "wait"}),
         );
         assert!(!refused, "{word}: {text}");
+    }
+
+    // A bare timestamp, `clock:at`, and the wall-clock words a model writes by habit.
+    for word in [
+        "2026-11-02T09:00:00-08:00",
+        "2026-11-02 09:00",
+        "clock:at 2026-11-02T09:00",
+        "9am",
+        "tomorrow 9am",
+        "in an hour",
+    ] {
+        let (refused, text) = call(
+            &tool,
+            json!({"op": "block", "id": "t1", "on": word, "note": "wait"}),
+        );
+        assert!(refused, "{word} armed nothing: {text}");
+        assert!(text.contains("clock://at"), "{text}");
     }
     Ok(())
 }

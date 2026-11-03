@@ -229,8 +229,36 @@ pub fn unkey_op(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
 }
 
 fn arms_a_wait(word: &str) -> bool {
+    let word = word.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | '.'
+        )
+    });
     word.starts_with(crate::schedule::clock::CLOCK_SCHEME)
         || crate::schedule::channel::check_address(word).is_ok()
+}
+
+/// Names a time, which arms nothing and reads as a reminder set: `block` refuses it.
+fn names_a_time(word: &str) -> bool {
+    let lower = word.to_lowercase();
+    let digits = lower.chars().any(|ch| ch.is_ascii_digit());
+    let hours = digits
+        && ["am", "pm", ":", "h", "min", "hour"]
+            .iter()
+            .any(|unit| lower.contains(unit));
+    word.starts_with("at ")
+        || word.starts_with("clock:")
+        || crate::schedule::parse_local_ms(word, &crate::schedule::Zone::local()).is_some()
+        || crate::schedule::parse_schedule(word, yi_session::now_ms()).is_ok()
+        || hours
+        || lower.starts_with("in a ")
+        || lower.starts_with("in an ")
+        || [
+            "tomorrow", "tonight", "today", "noon", "midnight", "o'clock",
+        ]
+        .iter()
+        .any(|day| lower.contains(day))
 }
 
 fn refuse_a_wait_outside_on(op: &str, args: &Map<String, Value>) -> Result<(), ArgError> {
@@ -355,15 +383,16 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                 }
                 // Incident: `at 2026-11-02T09:00:00-08:00` with no scheme was kept as a blocker
                 // nothing fires, and the agent told the user the reminder was set.
-                BlockedOn::Other(word)
-                    if word.starts_with("at ")
-                        || crate::schedule::parse_schedule(&word, yi_session::now_ms()).is_ok() =>
-                {
+                BlockedOn::Other(word) if names_a_time(&word) => {
+                    let suggested = word.strip_prefix("at ").map_or_else(
+                        || "clock://at <ISO time>".to_owned(),
+                        |rest| format!("clock://at {rest}"),
+                    );
                     return Err(ArgError::Malformed {
                         op: "block",
                         field: "on",
                         cause: format!(
-                            "`{word}` is a time, so nothing would fire it; write `clock://{word}`"
+                            "`{word}` is a time, so nothing would fire it; write `{suggested}`"
                         ),
                     });
                 }

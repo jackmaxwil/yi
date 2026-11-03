@@ -60,13 +60,22 @@ pub(super) fn firing(schedule: &CronSchedule, first: u64, now: u64) -> Firing {
 /// A wait's schedule: `at <ISO>` keeps its time even once past, so a restart after it fires at
 /// once; anything else is the heartbeat grammar, counted from now.
 pub fn wait_schedule(address: &str, now: u64) -> Result<(CronSchedule, u64), String> {
+    wait_schedule_in(address, now, &Zone::local())
+}
+
+/// [`wait_schedule`] read in `zone`: a time naming no offset is wall time there, as `time:` is.
+pub fn wait_schedule_in(
+    address: &str,
+    now: u64,
+    zone: &Zone,
+) -> Result<(CronSchedule, u64), String> {
     let text = address
         .strip_prefix(CLOCK_SCHEME)
         .ok_or_else(|| format!("{address:?} is not a clock:// address"))?
         .trim();
     if let Some(when) = text
         .strip_prefix("at ")
-        .and_then(|when| parse_local_ms(when, &Zone::local()))
+        .and_then(|when| parse_local_ms(when, zone))
     {
         let schedule = CronSchedule {
             kind: ScheduleKind::Once,

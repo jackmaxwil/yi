@@ -319,16 +319,8 @@ fn next_cron_run_after(expression: &str, after_ms: u64, zone: &Zone) -> Result<u
         "Cron schedule did not match within one year: {expression}"
     ))
 }
-
-/// Minimal UTC ISO-8601 parse: `YYYY-MM-DD[THH:MM[:SS]][Z]`. Offsets other
-/// than Z are rejected: an `at` is an absolute instant, and only cron fields are local.
-pub fn parse_iso_ms(text: &str) -> Option<u64> {
-    let (body, offset) = split_offset(text);
-    at_offset(wall_ms(body)?, offset.unwrap_or(0))
-}
-
-/// A timestamp naming no offset is wall time in `zone`, as a cron field is, since the `time:`
-/// line the model reads is local.
+/// An `at <ISO>` instant: a trailing `Z` or `+hh:mm` names it, and one naming none is wall time
+/// in `zone`, as a cron field is, since the `time:` line the model reads is local.
 pub fn parse_local_ms(text: &str, zone: &Zone) -> Option<u64> {
     let (body, offset) = split_offset(text);
     let wall = wall_ms(body)?;
