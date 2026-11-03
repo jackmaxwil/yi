@@ -29,6 +29,8 @@ from unittest import mock
 import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# Incident: CI reaches python through a /root symlink the dropped worker user cannot open; spawns and shebangs use the real path.
+PYTHON = os.path.realpath(sys.executable)
 sys.path.insert(0, str(ROOT / "scripts"))
 import bot_meter  # noqa: E402
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
@@ -288,7 +290,7 @@ def make_clone(repo, into, sha):
     sh(into, "git", "fetch", "-q", str(repo), "+refs/remotes/origin/*:refs/remotes/origin/*")
     sh(into, "git", "checkout", "-q", "--detach", sha)
     # Incident: the PR's own older driver kept stale hashes main had moved; this checkout's is main's.
-    sh(into, "git", "config", "merge.baseline.driver", f"{sys.executable} {ROOT / 'scripts/merge_baseline.py'} %O %A %B")
+    sh(into, "git", "config", "merge.baseline.driver", f"{PYTHON} {ROOT / 'scripts/merge_baseline.py'} %O %A %B")
 
 
 def resolve_prompt(pr, base_ref, conflicted):
@@ -1025,7 +1027,7 @@ def worker_python(work, executable=None, prefix=None):
 def in_worker(work, op, args):
     """`OPS[op]` in a new process that holds no token and, as root, runs as a user that owns only `work`.
     Output goes to files, not pipes: a daemon the PR left behind would hold a pipe open for ever."""
-    env, drop, python = {**scrubbed(), "TMPDIR": str(work / "tmp")}, {}, sys.executable
+    env, drop, python = {**scrubbed(), "TMPDIR": str(work / "tmp")}, {}, PYTHON
     if not os.geteuid():
         uid, moved = handed_over(work)
         python, carried = worker_python(work)
@@ -2232,7 +2234,7 @@ def worker_fix_selfcheck(tmp):
     git("fetch", "-q", "origin")
     # The bare remote is pushed by root and read by the worker only through the clone's own refs.
     yi = tmp / "bin/yi"
-    yi.write_text(f"""#!{sys.executable}
+    yi.write_text(f"""#!{PYTHON}
 import json, pathlib, sys
 args = sys.argv
 sys.stdin.read()

@@ -300,6 +300,110 @@ fn a_slot_whose_repository_was_recreated_is_a_free_slot() -> TestResult {
     Ok(())
 }
 
+/// Incident: deleting `~/.yi/lanes` left its worktrees registered, and the next claim was
+/// refused for the slot path the pool owns.
+#[test]
+fn a_claim_rebuilds_a_slot_git_still_registers_without_its_directory() -> TestResult {
+    let rig = Rig::new("lanes-gone")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-gone", ClaimBase::Main)?;
+    let slot = lane.slot();
+    drop(lane);
+    let path = pool.dir().join(slot.to_string());
+    git(
+        &rig.repo,
+        &[
+            "worktree",
+            "lock",
+            "--reason",
+            "session:s-gone",
+            &path.to_string_lossy(),
+        ],
+    )?;
+    std::fs::remove_dir_all(rig.home.join(".yi/lanes"))?;
+    let back = pool.claim("s-back", ClaimBase::Main)?;
+    assert_eq!(back.slot(), slot);
+    assert_eq!(
+        git(back.path(), &["symbolic-ref", "--short", "HEAD"])?,
+        "yi/s-back"
+    );
+    let registered = git(&rig.repo, &["worktree", "list", "--porcelain"])?;
+    let entries = registered
+        .lines()
+        .filter(|line| line.starts_with("worktree "))
+        .count();
+    assert_eq!(entries, 2, "the repository and one slot:\n{registered}");
+    Ok(())
+}
+
+/// Review: the registration of a dead slot took the branch a resume rebuilds, so the claim after a
+/// deleted lanes directory died one error later on `already checked out`.
+#[test]
+fn a_resume_past_a_deleted_lanes_directory_reclaims_a_branch_a_dead_slot_registers() -> TestResult {
+    let rig = Rig::new("lanes-gone-resume")?;
+    let pool = rig.pool(2)?;
+    let idle = pool.claim("s-idle", ClaimBase::Main)?;
+    let crashed = pool.claim("s-crash", ClaimBase::Main)?;
+    let slot = crashed.slot();
+    std::fs::write(crashed.path().join("kept.txt"), "kept\n")?;
+    git(crashed.path(), &["add", "kept.txt"])?;
+    git(crashed.path(), &["commit", "-qm", "kept"])?;
+    drop((idle, crashed));
+    orphan(&pool, slot, "s-crash")?;
+    assert_ne!(
+        slot.get(),
+        0,
+        "the crashed session sat off the slot a rebuild picks"
+    );
+    std::fs::remove_dir_all(rig.home.join(".yi/lanes"))?;
+    let back = pool.claim("s-crash", ClaimBase::Main)?;
+    assert_eq!(
+        back.slot().get(),
+        0,
+        "the rebuild picks the first missing slot"
+    );
+    assert_eq!(
+        git(back.path(), &["symbolic-ref", "--short", "HEAD"])?,
+        "yi/s-crash",
+        "the resumed session is on the branch its dead slot registered"
+    );
+    assert_eq!(git(back.path(), &["log", "-1", "--format=%s"])?, "kept");
+    let registered = git(&rig.repo, &["worktree", "list", "--porcelain"])?;
+    let entries = registered
+        .lines()
+        .filter(|line| line.starts_with("worktree "))
+        .count();
+    assert_eq!(
+        entries, 2,
+        "the repository and the rebuilt slot:\n{registered}"
+    );
+    Ok(())
+}
+
+/// Incident: git lists a worktree by realpath, so a symlinked home matched no registration and the
+/// sweep cleared nothing.
+#[test]
+fn a_claim_past_a_deleted_lanes_directory_matches_through_a_symlinked_home() -> TestResult {
+    let rig = Rig::new("lanes-gone-link")?;
+    let real = rig.root.join("real");
+    std::fs::create_dir_all(&real)?;
+    let link = rig.root.join("link");
+    std::os::unix::fs::symlink(&real, &link)?;
+    let pool = Pool::open(&link, &rig.repo, 1)?;
+    let lane = pool.claim("s-gone", ClaimBase::Main)?;
+    let slot = lane.slot();
+    drop(lane);
+    let path = pool.dir().join(slot.to_string());
+    git(
+        &rig.repo,
+        &["worktree", "lock", "--reason", "x", &path.to_string_lossy()],
+    )?;
+    std::fs::remove_dir_all(real.join(".yi/lanes"))?;
+    let back = pool.claim("s-back", ClaimBase::Main)?;
+    assert_eq!(back.slot(), slot);
+    Ok(())
+}
+
 /// A `pid-` session cannot be resumed and a drive that died at startup left three of them:
 /// the pool was full of slots holding nothing, and only a hand-run reap freed it.
 #[test]
