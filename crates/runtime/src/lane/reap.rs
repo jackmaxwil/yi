@@ -46,6 +46,7 @@ pub(super) enum Handback {
     Deleted,
     Kept(String),
 }
+
 fn integrated_within(
     repo: &Path,
     tip: &str,
@@ -90,7 +91,9 @@ fn integrated_within(
     // Invariant: a list past the cap skips this rung, not the ladder; the cap is loud only when
     // no later rung can answer either.
     let past_paths = touched.len() > INTEGRATED_PATHS_MAX;
-    if !past_paths && !touched.is_empty() {
+    // Invariant: a non-UTF-8 path decodes lossily; its pathspec matches nothing and reads equal.
+    let unread = touched.iter().any(|path| path.contains('\u{FFFD}'));
+    if !past_paths && !unread && !touched.is_empty() {
         let paths = touched
             .iter()
             .map(|path| format!(":(literal){path}"))
@@ -133,7 +136,9 @@ fn integrated_within(
         });
     }
     let cherry = git(repo, &["cherry", trunk, tip])?;
-    let all_in = cherry.lines().count() > 0 && cherry.lines().all(|row| row.starts_with("- "));
+    // Invariant: cherry skips merges, so one row per commit proves no merge content went unread.
+    let rows = cherry.lines().count();
+    let all_in = rows > 0 && rows == ahead && cherry.lines().all(|row| row.starts_with("- "));
     Ok(all_in.then_some(Rung::PatchId))
 }
 
@@ -296,21 +301,18 @@ impl std::fmt::Display for Uncommitted {
 impl Pool {
     /// Incident: three lanes left by dead `pid-` drives held nothing and still filled the pool.
     /// An orphan with a clean tree and a branch `main` already contains has nothing to lose.
-    pub(super) fn abandoned(&self, slot: SlotIndex) -> Result<Option<Handback>, LaneError> {
+    pub(super) fn abandoned(&self, slot: SlotIndex) -> Result<bool, LaneError> {
         let path = self.slot_path(slot);
         if self.dirty(slot) {
-            return Ok(None);
+            return Ok(false);
         }
         // Invariant: an unreadable HEAD is not a free slot; only a detached one is.
         let branch = match head(&path) {
-            Ok(Head::Detached(_)) => return Ok(Some(Handback::Deleted)),
+            Ok(Head::Detached(_)) => return Ok(true),
             Ok(Head::Branch(branch)) => branch,
-            Err(_) => return Ok(None),
+            Err(_) => return Ok(false),
         };
-        match self.land(branch.as_str())? {
-            Handback::Deleted => Ok(Some(Handback::Deleted)),
-            Handback::Kept(_) => Ok(None),
-        }
+        Ok(matches!(self.land(branch.as_str())?, Handback::Deleted))
     }
 
     /// Invariant: read-only, so the caller can ask before taking the lock a delete serializes on.
@@ -339,7 +341,7 @@ impl Pool {
                 git(&self.repo, &["branch", "-q", "-D", branch])?;
                 Ok(Handback::Deleted)
             }
-            (Some(_), kept) | (None, kept) => Ok(kept),
+            (_, kept) => Ok(kept),
         }
     }
 

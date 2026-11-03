@@ -4552,6 +4552,60 @@ fn a_non_ascii_path_is_not_read_as_landed_content() -> TestResult {
     Ok(())
 }
 
+/// Dies with a path that is not UTF-8 decoded lossily: its pathspec matched nothing and the
+/// branch read as landed content.
+#[cfg(unix)]
+#[test]
+fn a_path_that_is_not_utf8_is_not_read_as_landed_content() -> TestResult {
+    use std::os::unix::ffi::OsStrExt;
+    let rig = ladder("rung-bytes")?;
+    git(&rig.repo, &["switch", "-q", "-c", "bytes", "main"])?;
+    std::fs::write(rig.repo.join("seed.txt"), "only here\n")?;
+    git(&rig.repo, &["add", "seed.txt"])?;
+    let blob = git(&rig.repo, &["rev-parse", ":seed.txt"])?;
+    git(&rig.repo, &["rm", "-q", "--cached", "seed.txt"])?;
+    std::fs::remove_file(rig.repo.join("seed.txt"))?;
+    let mut info = format!("100644,{},notes-", blob.trim()).into_bytes();
+    info.extend_from_slice(b"\xe9.txt");
+    let status = yi_tools::command("git")
+        .current_dir(&rig.repo)
+        .args(["update-index", "--add", "--cacheinfo"])
+        .arg(std::ffi::OsStr::from_bytes(&info))
+        .status()?;
+    assert!(status.success());
+    git(&rig.repo, &["commit", "-qm", "latin-1"])?;
+    git(&rig.repo, &["switch", "-q", "main"])?;
+    moves_on(&rig)?;
+    assert_eq!(integrated(&rig.repo, "bytes", "main")?, None);
+    Ok(())
+}
+
+/// Dies with the patch-id rung trusting `git cherry`, which skips merges: the branch's only own
+/// content sat in its merge resolution.
+#[test]
+fn content_only_in_a_merge_commit_keeps_the_branch() -> TestResult {
+    let rig = ladder("rung-evil-merge")?;
+    std::fs::write(rig.repo.join("b.txt"), "b\n")?;
+    git(&rig.repo, &["add", "b.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "b"])?;
+    git(&rig.repo, &["switch", "-q", "work"])?;
+    git(
+        &rig.repo,
+        &["merge", "-q", "--no-ff", "--no-commit", "main"],
+    )?;
+    std::fs::write(rig.repo.join("b.txt"), "resolved here\n")?;
+    git(&rig.repo, &["add", "b.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "merge main"])?;
+    git(&rig.repo, &["switch", "-q", "main"])?;
+    git(
+        &rig.repo,
+        &["commit", "-q", "--allow-empty", "-m", "moved on"],
+    )?;
+    git(&rig.repo, &["cherry-pick", "work^1"])?;
+    assert_eq!(rung(&rig)?, None);
+    Ok(())
+}
+
 /// Dies with the last rung reading "any commit matches": one commit left unmerged is the only copy.
 #[test]
 fn one_unmerged_commit_among_squashed_ones_keeps_the_branch() -> TestResult {

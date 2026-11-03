@@ -669,16 +669,14 @@ impl Pool {
                 break;
             }
             match self.read_state(slot)?.session {
-                Some(_) => match self.abandoned(slot)? {
-                    Some(landed) => {
-                        let branch = self.branch_of(slot);
-                        self.detach(slot, branch.as_deref(), landed)?;
-                        self.clear_session(slot)?;
-                        free = Some((slot, guard, false));
-                        break;
-                    }
-                    None => orphans = orphans.saturating_add(1),
-                },
+                Some(_) if self.abandoned(slot)? => {
+                    let branch = self.branch_of(slot);
+                    self.detach(slot, branch.as_deref(), reap::Handback::Deleted)?;
+                    self.clear_session(slot)?;
+                    free = Some((slot, guard, false));
+                    break;
+                }
+                Some(_) => orphans = orphans.saturating_add(1),
                 // Invariant: a dirty tree with no session is an older binary's quit, never free.
                 None if self.dirty(slot) => orphans = orphans.saturating_add(1),
                 None => {
