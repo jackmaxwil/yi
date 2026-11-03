@@ -38,7 +38,6 @@ pub fn spawn_daemon_with(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env("HOME", home)
-        .env_remove("LAYA_API_KEY")
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(5);
     // Incident: the socket file exists between bind() and listen(), and a

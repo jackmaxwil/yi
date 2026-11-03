@@ -588,6 +588,57 @@ fn a_capture_leaves_out_a_shadow_that_lives_inside_the_project() -> TestResult {
     Ok(())
 }
 
+/// Dies with a probe home inside the work tree stored in the shadow on every turn: `yi --here`
+/// in a scratch dir whose HOME sat under it wrote the home's churn into `~/.yi/checkpoints`.
+#[test]
+fn a_capture_leaves_out_a_home_that_lives_inside_the_project() -> TestResult {
+    let project = temp_dir("checkpoint-home-inside-project")?;
+    let home = project.join("home");
+    fs::create_dir_all(home.join(".cache/uv"))?;
+    fs::write(project.join("notes.txt"), "alpha\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&home.join(".yi/checkpoints"), &project)?;
+    let first = checkpoints.capture()?;
+    fs::write(home.join(".cache/uv/wheel.bin"), "churn\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a change under the session home moved the tree"
+    );
+    assert_eq!(checkpoints.show(&first, "notes.txt")?, "alpha\n");
+    Ok(())
+}
+
+/// Dies with the exclusion narrowed back to the store: `yi` in `~` jumps to its shadow and back,
+/// and a venv rebuilt under `~/.cache` is stored again on every turn.
+#[test]
+fn a_capture_keeps_the_project_when_the_project_is_the_home() -> TestResult {
+    let home = temp_dir("checkpoint-project-is-home")?;
+    fs::write(home.join("notes.txt"), "alpha\n")?;
+    fs::create_dir_all(home.join(".yi/sessions"))?;
+    fs::create_dir_all(home.join(".cache/uv"))?;
+    let checkpoints = yi_tools::Checkpoints::open(&home.join(".yi/checkpoints"), &home)?;
+    let first = checkpoints.capture()?;
+    fs::write(home.join(".yi/sessions/churn.jsonl"), "{}\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a change under the state dir of a home that is the tree moved the tree"
+    );
+    fs::write(home.join(".cache/uv/wheel.bin"), "churn\n")?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "a venv rebuilt under the caches of a home that is the tree moved the tree"
+    );
+    fs::write(home.join("notes.txt"), "beta\n")?;
+    assert_ne!(
+        checkpoints.capture()?,
+        first,
+        "an edited file in a home that is the tree left the tree still"
+    );
+    Ok(())
+}
+
 #[test]
 fn checkpoint_restore_undoes_a_rename() -> TestResult {
     let project = temp_dir("checkpoint-rename-project")?;
@@ -1773,7 +1824,7 @@ fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
     for command in [
         "ls -la && git log --oneline -5 2>/dev/null",
         "cat Cargo.toml | grep name",
-        "RUST_LOG=debug rg needle src; wc -l src/lib.rs",
+        "rg needle src; wc -l src/lib.rs",
     ] {
         assert!(
             !tool.irreversible(&args(&[("command", json!(command))])),
@@ -1786,6 +1837,7 @@ fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
         "git status && git commit -m x",
         "echo hi > notes.txt",
         "cat $(rm -rf /tmp/x)",
+        "LD_PRELOAD=x.so rg needle src",
     ] {
         assert!(
             tool.irreversible(&args(&[("command", json!(command))])),
@@ -1989,6 +2041,7 @@ fn a_cell_that_fails_to_finish_keeps_the_calls_it_made() -> TestResult {
     let tool = yi_tools::IpythonTool {
         bridge: Arc::new(DeadKernel),
         calls: Some(Arc::clone(&calls) as Arc<dyn yi_tools::CellCalls>),
+        contained: true,
     };
     let output = tool.execute(
         args(&[("code", json!("1"))]),
@@ -3051,6 +3104,40 @@ fn every_cut_view_names_its_cap() -> TestResult {
     Ok(())
 }
 
+/// A refused file is named: grep over a guarded key store answered "No matches found", which
+/// reads as a search that found nothing rather than one the gate never ran.
+#[test]
+fn a_refused_file_is_named_rather_than_no_matches() -> TestResult {
+    let dir = temp_dir("grep-refused")?;
+    let home = temp_dir("grep-refused-home")?;
+    fs::create_dir_all(home.join(".yi/mcp"))?;
+    let store = home.join(".yi/mcp/sessions.json");
+    fs::write(&store, "{\"token\":\"sk-live\"}\n")?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &*home) };
+    fs::write(dir.join("notes.txt"), "alpha\n")?;
+    let link = dir.join("keys.json");
+    fs::hard_link(&store, &link)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let grep = GrepTool::default();
+
+    let named = grep.execute(
+        args(&[("pattern", json!("sk-live")), ("path", json!("keys.json"))]),
+        &context,
+    );
+    let text = output_text(&named);
+    assert!(
+        text.contains("[1 file(s) refused: a key store, a device or the workspace .git"),
+        "{text}"
+    );
+
+    let walked = grep.execute(args(&[("pattern", json!("sk-live"))]), &context);
+    let text = output_text(&walked);
+    assert!(text.contains("[1 file(s) refused"), "{text}");
+    assert!(!text.contains("sk-live"), "{text}");
+    Ok(())
+}
+
 /// A chain that stopped is named as such: the model read a stopped `&&` as a
 /// truncation and cited numbers from segments that never ran.
 #[test]
@@ -4069,7 +4156,6 @@ fn bash_inherits_no_provider_key() -> TestResult {
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
         "GEMINI_API_KEY",
-        "LAYA_API_KEY",
     ];
     for name in keys.iter().chain(&["YI_906_ORDINARY"]) {
         // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.

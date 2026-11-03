@@ -91,10 +91,10 @@ fn draw_frame<B>(
     if app.take_pending_clear() {
         clear_screen(terminal);
     }
-    let mut commits = std::mem::take(&mut app.pending_commit);
     // OSC 133 semantic prompt zones: Ghostty and iTerm2 use these to jump
     // between prompts, so a user turn is navigable in the terminal's own UI.
     let mark = std::mem::take(&mut app.pending_prompt_mark);
+    let mut commits: Vec<Line<'static>> = std::mem::take(&mut app.pending_commit);
     let mode_changed = app.take_pending_repaint();
     schedule_reflow(app);
     if mark {
@@ -143,12 +143,8 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
     let mut live_lines: Vec<Line<'static>> = Vec::new();
     // Invariant: a held run of reads ended before any live thought began, so it renders first.
     if !app.explored.is_empty() {
-        live_lines.extend(Cell::Explored(app.explored.clone()).lines(
-            content_width,
-            theme,
-            app.mode,
-            spinner,
-        ));
+        let live = crate::cell::explored_cell(app.explored.clone());
+        live_lines.extend(live.lines(content_width, theme, app.mode, spinner));
     }
     if app.live_thought.len() > app.live_thought_cut {
         // Reasoning-heavy models stream thought long before prose, so show its dim tail and
@@ -226,28 +222,7 @@ impl ChatLayout {
     }
 }
 
-/// Everything the chat shows for a frame of `total` rows, assembled from the app alone;
-/// the live tail is trimmed to what the rest leaves.
-pub fn layout_chat(
-    app: &mut App,
-    goal: Option<GoalView>,
-    memory: Option<String>,
-    total: u16,
-) -> ChatLayout {
-    let spinner = app.spinner_phase();
-    let theme = app.theme;
-    let width = app.width;
-
-    let mut live_lines = live_lines(app, spinner, &theme);
-    let hud_lines = if app.hud_hidden {
-        Vec::new()
-    } else {
-        crate::hud::render(&crate::hud::input(app, goal, memory), &theme)
-            .into_iter()
-            .map(|line| crate::wrap::fit(line, width))
-            .collect()
-    };
-
+fn status_input(app: &App) -> StatusInput {
     let selected = &app.selection.model;
     // OpenRouter is the one router yi reaches; its `vendor/` prefix names the maker, not the route.
     let routed = selected.provider == "openrouter";
@@ -263,7 +238,7 @@ pub fn layout_chat(
             .cache_read
             .as_f64()
             .is_some_and(|price| price > 0.0);
-    let status_input = StatusInput {
+    StatusInput {
         model,
         provider,
         thinking: (app.selection.effort != yi_types::model::Effort::Off)
@@ -293,7 +268,32 @@ pub fn layout_chat(
         context_used: app.context_used,
         context_window: app.options.context_window,
         focused_child: app.focused.clone(),
+    }
+}
+
+/// Everything the chat shows for a frame of `total` rows, assembled from the app alone;
+/// the live tail is trimmed to what the rest leaves.
+pub fn layout_chat(
+    app: &mut App,
+    goal: Option<GoalView>,
+    memory: Option<String>,
+    total: u16,
+) -> ChatLayout {
+    let spinner = app.spinner_phase();
+    let theme = app.theme;
+    let width = app.width;
+
+    let hud_lines = if app.hud_hidden {
+        Vec::new()
+    } else {
+        crate::hud::render(&crate::hud::input(app, goal, memory), &theme)
+            .into_iter()
+            .map(|line| crate::wrap::fit(line, width))
+            .collect()
     };
+
+    let mut live_lines = live_lines(app, spinner, &theme);
+    let status_input = status_input(app);
     let bottom_lines: Option<Vec<Line<'static>>> = if let Some(tree) = &app.tree {
         Some(tree.lines(width, &theme, tree_rows(app.rows)))
     } else if let Some(plan_tree) = &app.plan_tree {
@@ -476,9 +476,126 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
     }
 }
 
+fn follow_marker(app: &App, more: usize) -> Line<'static> {
+    Line::styled(format!("↓ {more} more rows · PgDn"), app.theme.dim_style())
+}
+
 /// Rows that land at once roll in one a frame, as the owner chose, faster only when far behind:
 /// past this many rows behind the step grows, so 200 rows land in under 70 frames, not 200.
 const ROLL_ROWS: usize = 24;
+struct Followed {
+    rows: Vec<Line<'static>>,
+    cells: Vec<(usize, Chip)>,
+    more: usize,
+}
+
+/// A row's run chip: its ordinal among its cell's chips, first column and width.
+pub(crate) type Chip = Option<(usize, usize, usize)>;
+
+/// Incident: a fence header carries no wrapping, so a long info string draws its chip past the
+/// pane's right edge, where the buffer clips it but the press rect still reached the neighbour.
+fn shown_chip(chip: Chip, width: usize) -> Chip {
+    let (ordinal, from, wide) = chip?;
+    if from >= width {
+        return None;
+    }
+    let wide = wide.min(width.saturating_sub(from));
+    (wide > 0).then_some((ordinal, from, wide))
+}
+
+fn chip_marks(rows: &[Line<'static>], owners: &[usize]) -> Vec<Chip> {
+    let (mut seen, mut cell) = (0usize, None);
+    rows.iter()
+        .zip(owners)
+        .map(|(line, owner)| {
+            if cell != Some(owner) {
+                (seen, cell) = (0, Some(owner));
+            }
+            let (from, to) = crate::markdown::run_chip(line)?;
+            seen = seen.saturating_add(1);
+            Some((seen.saturating_sub(1), from, to.saturating_sub(from)))
+        })
+        .collect()
+}
+
+/// Rows a follower lets through this frame: half the window for a page, never past the cap.
+fn follow_step(
+    mode: yi_types::config::FollowMode,
+    behind: usize,
+    height: usize,
+    cap: usize,
+) -> usize {
+    match mode {
+        yi_types::config::FollowMode::Slide => behind.div_ceil(ROLL_ROWS),
+        yi_types::config::FollowMode::Page => (height / 2).max(1).min(cap).min(behind),
+        yi_types::config::FollowMode::Still => behind,
+    }
+}
+
+fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: usize) -> Followed {
+    let history = yi_types::trace::span("tui.history_rows");
+    let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
+    let held = app.pane_hold.take().is_some();
+    let fresh = app.running && app.history.len() == 1 && !held;
+    let follow = match app.pane_follow {
+        Some((w, m, _, _)) if (w, m) != (width, mode) => None,
+        None if fresh => Some((width, mode, 0, 0)),
+        pin => pin,
+    };
+    let want = above.saturating_sub(live.len()).saturating_add(1);
+    let at_most = follow.map_or(usize::MAX, |(_, _, pinned, _)| pinned.saturating_sub(1));
+    let (_, mut column, owners) = app.history.tail(width, &theme, mode, want, at_most);
+    drop(history);
+    let marks: Vec<(usize, Chip)> = owners
+        .iter()
+        .copied()
+        .zip(chip_marks(&column, &owners))
+        .collect();
+    join_live(&mut column, false, live);
+    let follow_mode = app.follow();
+    let end = follow
+        .and_then(|(_, _, pinned, below)| {
+            let at = owners.iter().position(|&cell| cell == pinned)?;
+            let behind = column.len().saturating_sub(at).saturating_sub(below);
+            let base = at.saturating_add(below);
+            match follow_mode {
+                yi_types::config::FollowMode::Still if base < above => {
+                    Some(column.len().min(above))
+                }
+                yi_types::config::FollowMode::Still => Some(base),
+                paced => {
+                    Some(base.saturating_add(follow_step(paced, behind, height, above.max(1))))
+                }
+            }
+        })
+        .map_or(column.len(), |end| end.min(column.len()));
+    if end < column.len() && follow_mode != yi_types::config::FollowMode::Still {
+        app.scheduler.request();
+    }
+    let start = end.saturating_sub(above);
+    let pin = owners.get(start).or(owners.last()).copied();
+    app.pane_follow = pin.and_then(|cell| {
+        let at = owners.iter().position(|&owner| owner == cell)?;
+        Some((width, mode, cell, end.saturating_sub(at)))
+    });
+    let mut more = if follow_mode == yi_types::config::FollowMode::Still {
+        column.len().saturating_sub(end)
+    } else {
+        0
+    };
+    column.truncate(end);
+    let mut rows = column.split_off(start);
+    let mut cells = marks
+        .get(start..end.min(marks.len()))
+        .unwrap_or_default()
+        .to_vec();
+    if more > 0 {
+        more = more.saturating_add(usize::from(rows.len() > above.saturating_sub(1)));
+        rows.truncate(above.saturating_sub(1));
+        cells.truncate(above.saturating_sub(1));
+    }
+    Followed { rows, cells, more }
+}
 
 /// Transcript and live frame scroll as one column; `scroll` zero follows the turn, above holds.
 pub fn paint_pane(
@@ -511,52 +628,11 @@ pub fn paint_pane(
     let floor = layout.floor.min(area.height);
     let above = usize::from(area.height.saturating_sub(floor));
     let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
-    let (shown, owners, thumb) = if *scroll == 0 {
-        let history = yi_types::trace::span("tui.history_rows");
-        // A turn's first cell has nothing above it to pin to yet; it rolls in from its own top,
-        // unless the pane was just scrolled or resized away from it, which settles in place.
-        let held = app.pane_hold.take().is_some();
-        let fresh = app.running && app.history.len() == 1 && !held;
-        let follow = match app.pane_follow {
-            Some((w, m, _, _)) if (w, m) != (width, mode) => None,
-            None if fresh => Some((width, mode, 0, 0)),
-            pin => pin,
-        };
-        // One spare row: the seam may collapse a blank, and the trim below keeps `above`.
-        let want = above.saturating_sub(live.len()).saturating_add(1);
-        // The cell above the pin is read too: a cell's separator row exists only below another.
-        let at_most = follow.map_or(usize::MAX, |(_, _, pinned, _)| pinned.saturating_sub(1));
-        let (_, mut column, owners) = app.history.tail(width, &theme, mode, want, at_most);
-        drop(history);
-        join_live(&mut column, false, live);
-        let end = follow
-            .and_then(|(_, _, pinned, below)| {
-                let at = owners.iter().position(|&cell| cell == pinned)?;
-                let behind = column.len().saturating_sub(at).saturating_sub(below);
-                Some(
-                    at.saturating_add(below)
-                        .saturating_add(behind.div_ceil(ROLL_ROWS)),
-                )
-            })
-            .map_or(column.len(), |end| end.min(column.len()));
-        if end < column.len() {
-            app.scheduler.request();
-        }
-        let start = end.saturating_sub(above);
-        let pin = owners.get(start).or(owners.last()).copied();
-        app.pane_follow = pin.and_then(|cell| {
-            let at = owners.iter().position(|&owner| owner == cell)?;
-            Some((width, mode, cell, end.saturating_sub(at)))
-        });
-        column.truncate(end);
-        (
-            column.split_off(start),
-            owners
-                .get(start..end.min(owners.len()))
-                .unwrap_or_default()
-                .to_vec(),
-            None,
-        )
+    let mut follow_more = 0;
+    let result = if *scroll == 0 {
+        let followed = follow_column(app, live, above, usize::from(area.height));
+        follow_more = followed.more;
+        (followed.rows, followed.cells, None)
     } else {
         app.pane_follow = None;
         // Incident: counting committed rows drifted a held view; now rows below a pinned cell.
@@ -574,28 +650,41 @@ pub fn paint_pane(
         let at_most = hold.map_or(usize::MAX, |(_, _, pinned, _)| pinned);
         let (from, mut column, owners) = app.history.tail(width, &theme, mode, need, at_most);
         let history_rows = column.len();
+        let marks: Vec<(usize, Chip)> = owners
+            .iter()
+            .copied()
+            .zip(chip_marks(&column, &owners))
+            .collect();
         join_live(&mut column, false, live);
         *scroll = (*scroll).min(column.len().saturating_sub(above));
         app.pane_hold = Some((width, mode, from, column.len().saturating_sub(above)));
         let end = column.len().saturating_sub(*scroll);
         let start = end.saturating_sub(above);
         let shown = column.get(start..end).unwrap_or_default().to_vec();
-        let owners = owners
+        let cells = marks
             .get(start..end.min(history_rows))
             .unwrap_or_default()
             .to_vec();
-        let cells = app.history.len().saturating_sub(from).max(1);
-        let before = from.saturating_mul(history_rows) / cells;
+        let count = app.history.len().saturating_sub(from).max(1);
+        let before = from.saturating_mul(history_rows) / count;
         let total = before
             .saturating_add(column.len())
             .saturating_add(usize::from(floor));
         let thumb =
             (total > usize::from(area.height)).then_some((total, before.saturating_add(start)));
-        (shown, owners, thumb)
+        (shown, cells, thumb)
     };
-    let mut owned: Vec<Option<usize>> = owners.into_iter().map(Some).collect();
-    owned.resize(shown.len(), None);
-    app.pane_rows = (area.top(), owned);
+    let (shown, mut cells, thumb) = result;
+    for (_, chip) in cells.iter_mut() {
+        *chip = shown_chip(*chip, usize::from(area.width));
+    }
+    let mut rows: Vec<Option<(usize, Chip)>> = cells.into_iter().map(Some).collect();
+    rows.resize(shown.len(), None);
+    app.pane_rows = crate::app::PaneRows {
+        top: area.top(),
+        left: area.left(),
+        rows,
+    };
     let rows = u16::try_from(shown.len()).unwrap_or(0);
     if rows > 0 {
         let rect = Rect::new(area.left(), area.top(), area.width, rows);
@@ -608,6 +697,15 @@ pub fn paint_pane(
         floor,
     );
     let placed = paint_chat(app, &layout, buffer, chat_area);
+    if follow_more > 0
+        && let Some(y) = chat_area.top().checked_sub(1)
+    {
+        Widget::render(
+            Paragraph::new(follow_marker(app, follow_more)),
+            Rect::new(area.left(), y, area.width, 1),
+            buffer,
+        );
+    }
     app.orb_slot = top_orb.or(placed.orb);
     app.orb_placement = app.orb_slot.filter(|_| !app.title_cover);
     app.logo_rows = logo_rows(placed.bottom);
