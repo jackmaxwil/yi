@@ -77,8 +77,8 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                 content,
                 timestamp,
                 ..
-            } => match crate::wrapper::internal_source_of_custom(custom_type) {
-                Some(source) => Some(crate::wrapper::wrap_internal(
+            } => match crate::wrapper::lifetime_of(custom_type) {
+                crate::wrapper::Lifetime::Wrapped(source) => Some(crate::wrapper::wrap_internal(
                     source,
                     match content {
                         yi_types::message::UserContent::Text(text) => text,
@@ -86,7 +86,9 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                     },
                     *timestamp,
                 )),
-                None => Some(host_view(custom_type, content, *timestamp)),
+                crate::wrapper::Lifetime::OnceRead | crate::wrapper::Lifetime::Durable => {
+                    Some(host_view(custom_type, content, *timestamp))
+                }
             },
             AgentMessage::BranchSummary {
                 summary, timestamp, ..
