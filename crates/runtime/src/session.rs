@@ -966,8 +966,7 @@ impl AgentSession {
         }
         let messages = self.messages();
         let (model, effort) = hooks::settings_of(&self.shared);
-        let request =
-            crate::compaction::LoopRequest::new(self.system_prompt(), &self.tools(), effort);
+        let request = run::loop_request(self, effort);
         let store = self.store();
         let signal = yi_loop::interrupt::InterruptSignal::default();
         let replaced = compactor

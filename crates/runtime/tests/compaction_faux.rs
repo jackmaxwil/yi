@@ -733,7 +733,12 @@ async fn a_request_that_is_not_due_assembles_nothing() -> Result<(), Box<dyn Err
         Arc::new(ProviderStream::new(None)),
         Arc::new(move |effort| {
             requests.fetch_add(1, Ordering::SeqCst);
-            yi_runtime::compaction::LoopRequest::new("sys".to_owned(), &[], effort)
+            yi_runtime::compaction::LoopRequest::new(
+                "sys".to_owned(),
+                &[],
+                effort,
+                Arc::new(yi_context::convert_to_llm),
+            )
         }),
         Arc::new(move || {
             stores.fetch_add(1, Ordering::SeqCst);
@@ -1206,7 +1211,12 @@ async fn text_after_the_last_usage_counts_at_bytes_per_three() -> Result<(), Box
         .maybe_compact(
             &messages,
             &faux_model(2_000),
-            &yi_runtime::compaction::LoopRequest::new("sys".to_owned(), &[], Effort::Off),
+            &yi_runtime::compaction::LoopRequest::new(
+                "sys".to_owned(),
+                &[],
+                Effort::Off,
+                Arc::new(yi_context::convert_to_llm),
+            ),
             &provider,
             None,
             &yi_loop::interrupt::InterruptSignal::default(),
@@ -1245,7 +1255,12 @@ async fn compact_due_history(
         .maybe_compact(
             &due_history(),
             &faux_model(2_000),
-            &yi_runtime::compaction::LoopRequest::new("sys".to_owned(), &[], Effort::Off),
+            &yi_runtime::compaction::LoopRequest::new(
+                "sys".to_owned(),
+                &[],
+                Effort::Off,
+                Arc::new(yi_context::convert_to_llm),
+            ),
             provider.as_ref(),
             None,
             &yi_loop::interrupt::InterruptSignal::default(),
@@ -1424,7 +1439,12 @@ async fn a_cold_attempt_on_anthropic_sends_no_tool_block_without_tools()
         .maybe_compact(
             &messages,
             &model,
-            &yi_runtime::compaction::LoopRequest::new("sys".to_owned(), &tools, Effort::Off),
+            &yi_runtime::compaction::LoopRequest::new(
+                "sys".to_owned(),
+                &tools,
+                Effort::Off,
+                Arc::new(yi_context::convert_to_llm),
+            ),
             &provider,
             None,
             &yi_loop::interrupt::InterruptSignal::default(),
@@ -1788,7 +1808,12 @@ async fn rescue(
         .maybe_compact(
             messages,
             &faux_model(2_000),
-            &yi_runtime::compaction::LoopRequest::new(system.to_owned(), &[], Effort::Off),
+            &yi_runtime::compaction::LoopRequest::new(
+                system.to_owned(),
+                &[],
+                Effort::Off,
+                Arc::new(yi_context::convert_to_llm),
+            ),
             &provider,
             None,
             &yi_loop::interrupt::InterruptSignal::default(),
@@ -2178,7 +2203,12 @@ async fn an_in_loop_compaction_sends_the_effort_of_the_request_before_it()
         Arc::clone(&compactor),
         Arc::clone(&provider),
         Arc::new(move |effort| {
-            yi_runtime::compaction::LoopRequest::new(system.clone(), &table, effort)
+            yi_runtime::compaction::LoopRequest::new(
+                system.clone(),
+                &table,
+                effort,
+                Arc::new(yi_context::convert_to_llm),
+            )
         }),
         Arc::new(|| None),
         yi_runtime::compaction::CompactReports {
@@ -2340,18 +2370,10 @@ fn compaction_floors_a_host_notice_and_keeps_the_waking_letter() -> Result<(), B
 #[tokio::test(flavor = "multi_thread")]
 async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
 -> Result<(), Box<dyn Error>> {
-    let call = |n: usize| {
-        let call = serde_json::json!({"tool_calls": [{"index": 0, "id": format!("call_{n}"),
-            "type": "function", "function": {"name": "read", "arguments": format!("{{\"n\":{n}}}")}}]});
-        sse_reply(&call, "tool_calls")
-    };
-    let mut replies: Vec<String> = (0..8).map(call).collect();
+    let mut replies = read_calls(8);
     replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
     let (port, served) = openrouter_stand_in(replies)?;
-    let session = openrouter_session_with(port, 200_000, Settings::default())?;
-    let mut model = session.model();
-    (model.id, model.cost.input) = ("openai/gpt-5.5".to_owned(), serde_json::Number::from(1u64));
-    session.set_model(model);
+    let session = priced_session_with(port, Settings::default())?;
     session.set_tools(vec![Arc::new(LongResult("read"))]);
     let store = crate::support::memory_store("reclaim-bytes");
     session.attach_store(Arc::clone(&store))?;
@@ -2359,18 +2381,7 @@ async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
     session.wait_idle().await;
     let bodies = served.join().map_err(|_| "the stand-in panicked")?;
     let cut = |body: &String| -> Result<Vec<String>, serde_json::Error> {
-        let body: serde_json::Value = serde_json::from_str(body)?;
-        let messages = body["messages"].as_array().cloned().unwrap_or_default();
-        let parts = messages
-            .iter()
-            .flat_map(|message| match &message["content"] {
-                serde_json::Value::Array(parts) => parts.clone(),
-                text => vec![serde_json::json!({ "text": text })],
-            });
-        let lines = parts.filter_map(|part| part["text"].as_str().map(str::to_owned));
-        Ok(lines
-            .filter(|text| text.starts_with("[reclaimed: read"))
-            .collect())
+        Ok(cut_lines(&serde_json::from_str(body)?))
     };
     let shown: Vec<Vec<String>> = bodies.iter().map(cut).collect::<Result<_, _>>()?;
     let first = shown
@@ -2440,6 +2451,210 @@ async fn a_recorded_finding_is_listed_in_the_compaction_view() -> Result<(), Box
     assert!(
         summary.contains("[Findings, as the model recorded them]\nthe parser drops tab indents [Outstanding] before line 40\n"),
         "{summary}"
+    );
+    Ok(())
+}
+
+/// The cut tests' read tool: `LongResult`'s big result per call, and the Nth call schedules a
+/// compaction, so the compaction lands after the cuts its request must repeat.
+struct SchedulingRead {
+    result: LongResult,
+    compactor: Arc<yi_runtime::Compactor>,
+    calls: std::sync::atomic::AtomicUsize,
+    at: usize,
+}
+
+impl yi_loop::AgentTool for SchedulingRead {
+    fn definition(&self) -> yi_types::model::ToolDef {
+        self.result.definition()
+    }
+
+    fn execute<'a>(
+        &'a self,
+        id: &'a str,
+        args: serde_json::Map<String, serde_json::Value>,
+        signal: &'a yi_loop::interrupt::InterruptSignal,
+    ) -> yi_loop::tool::ToolFuture<'a> {
+        Box::pin(async move {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == self.at {
+                self.compactor.schedule();
+            }
+            self.result.execute(id, args, signal).await
+        })
+    }
+}
+
+/// A measured model whose input price lets a cut pay, so the run records one.
+fn priced_session(port: u16) -> Result<AgentSession, Box<dyn Error>> {
+    priced_session_with(
+        port,
+        Settings {
+            enabled: true,
+            reserve_tokens: Tokens(1_000),
+            keep_recent_tokens: Tokens(1_500),
+        },
+    )
+}
+
+fn priced_session_with(port: u16, settings: Settings) -> Result<AgentSession, Box<dyn Error>> {
+    let session = openrouter_session_with(port, 200_000, settings)?;
+    let mut model = session.model();
+    (model.id, model.cost.input) = ("openai/gpt-5.5".to_owned(), serde_json::Number::from(1u64));
+    session.set_model(model);
+    Ok(session)
+}
+
+fn read_calls(reads: usize) -> Vec<String> {
+    (0..reads)
+        .map(|n| {
+            let call = serde_json::json!({"tool_calls": [{"index": 0, "id": format!("call_{n}"),
+                "type": "function", "function": {"name": "read", "arguments": format!("{{\"n\":{n}}}")}}]});
+            sse_reply(&call, "tool_calls")
+        })
+        .collect()
+}
+
+/// The `[reclaimed: …]` lines a request body carries.
+fn cut_lines(body: &serde_json::Value) -> Vec<String> {
+    let messages = body["messages"].as_array().cloned().unwrap_or_default();
+    messages
+        .iter()
+        .flat_map(|message| match &message["content"] {
+            serde_json::Value::Array(parts) => parts.clone(),
+            text => vec![serde_json::json!({ "text": text })],
+        })
+        .filter_map(|part| part["text"].as_str().map(str::to_owned))
+        .filter(|text| text.starts_with("[reclaimed: read"))
+        .collect()
+}
+
+/// #1517: the compaction is the loop's request plus the directive, reclaimed results rendered as
+/// the loop rendered them, so its prefix is the loop's previous request and reads the cache.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_in_loop_compaction_repeats_the_loops_reclaimed_prefix() -> Result<(), Box<dyn Error>> {
+    let mut replies = read_calls(8);
+    replies.push(sse_reply(
+        &serde_json::json!({"content": "## Goal\nProbe"}),
+        "stop",
+    ));
+    replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
+    let (port, served) = openrouter_stand_in(replies)?;
+    let session = priced_session(port)?;
+    let compactor = session.compactor().ok_or("no compactor")?;
+    session.set_tools(vec![Arc::new(SchedulingRead {
+        result: LongResult("read"),
+        compactor,
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        at: 7,
+    })]);
+    let store = crate::support::memory_store("reclaim-compaction");
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("read the probe ten times")?;
+    session.wait_idle().await;
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let bodies: Vec<serde_json::Value> = bodies
+        .iter()
+        .map(|body| serde_json::from_str(body).map_err(|error| error.to_string()))
+        .collect::<Result<_, _>>()?;
+    let compaction = bodies
+        .iter()
+        .position(|body| body.to_string().contains("call no tool"))
+        .ok_or_else(|| {
+            format!(
+                "no compaction request among {} bodies: {:?}",
+                bodies.len(),
+                bodies
+                    .iter()
+                    .map(|b| cut_lines(b).len())
+                    .collect::<Vec<_>>()
+            )
+        })?;
+    let before = bodies
+        .get(compaction.wrapping_sub(1))
+        .ok_or("no request before")?;
+    let at = bodies.get(compaction).ok_or("no compaction request")?;
+    let cuts = cut_lines(before);
+    assert!(
+        !cuts.is_empty(),
+        "the loop request before the compaction carried no cut: {before}"
+    );
+    assert_eq!(
+        cut_lines(at),
+        cuts,
+        "the compaction dropped the loop's cut results: {at}"
+    );
+    assert_warm(&before.to_string(), &at.to_string())?;
+    Ok(())
+}
+
+/// #1517: a manual `/compact` on a session whose cuts are on record sends them, and its own
+/// request records no new cut.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_manual_compaction_sends_the_cuts_on_record() -> Result<(), Box<dyn Error>> {
+    let mut replies = read_calls(8);
+    replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
+    replies.push(sse_reply(
+        &serde_json::json!({"content": "## Goal\nProbe"}),
+        "stop",
+    ));
+    let (port, served) = openrouter_stand_in(replies)?;
+    let session = priced_session(port)?;
+    session.set_tools(vec![Arc::new(LongResult("read"))]);
+    let store = crate::support::memory_store("reclaim-manual");
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("read the probe eight times")?;
+    session.wait_idle().await;
+    let cuts = |store: &yi_session::SharedSession| -> usize {
+        yi_session::lock_session(store)
+            .find_entries(&yi_session::EntryQuery::default())
+            .unwrap_or_default()
+            .iter()
+            .filter(|entry| {
+                matches!(entry, Entry::Custom { custom_type, .. }
+                    if custom_type == <yi_types::reclaim::ReclaimRecord as yi_types::entry::CustomRecord>::TYPE)
+            })
+            .count()
+    };
+    let recorded = cuts(&store);
+    session.compact_now().await?;
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let request: serde_json::Value =
+        serde_json::from_str(bodies.last().ok_or("no compaction request")?)?;
+    assert!(
+        !cut_lines(&request).is_empty(),
+        "the manual compaction sent the cut results whole: {request}"
+    );
+    assert_eq!(
+        cuts(&store),
+        recorded,
+        "the compaction decided a reclaim cut of its own"
+    );
+    Ok(())
+}
+/// #1517: a session whose tool table lacks `read` sends the loop's whole results on `/compact`,
+/// whatever cuts its ledger holds, because a cut names `read` as its restore.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_manual_compaction_without_read_sends_results_whole() -> Result<(), Box<dyn Error>> {
+    let mut replies = read_calls(8);
+    replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
+    replies.push(sse_reply(
+        &serde_json::json!({"content": "## Goal\nProbe"}),
+        "stop",
+    ));
+    let (port, served) = openrouter_stand_in(replies)?;
+    let session = priced_session(port)?;
+    session.set_tools(vec![Arc::new(LongResult("read"))]);
+    session.attach_store(crate::support::memory_store("reclaim-noread"))?;
+    session.prompt("read the probe eight times")?;
+    session.wait_idle().await;
+    session.set_tools(vec![Arc::new(LongResult("other"))]);
+    session.compact_now().await?;
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let request: serde_json::Value =
+        serde_json::from_str(bodies.last().ok_or("no compaction request")?)?;
+    assert!(
+        cut_lines(&request).is_empty(),
+        "a session without `read` was sent cut placeholders: {request}"
     );
     Ok(())
 }
