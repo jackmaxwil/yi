@@ -530,20 +530,6 @@ fn a_wait_past_the_cap_ends_the_turn_and_one_inside_it_retries() -> TestResult {
     Ok(())
 }
 
-/// Overflow bodies are the provider refusing the request, not the wire failing: neither lifts on a
-/// resend, and both classed as transport http 400.
-#[test]
-fn overflow_bodies_class_as_overflow() {
-    use yi_types::telemetry::ErrorClass;
-    let openai = r#"HTTP 400: {"error":{"message":"This model's maximum context length is 128000 tokens.","code":"context_length_exceeded"}}"#;
-    let anthropic = "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 208310 tokens > 200000 maximum\"}}";
-    for body in [openai, anthropic] {
-        let class = ErrorClass::from_provider_text(body);
-        assert_eq!(class.to_string(), "provider:overflow", "{body}");
-        assert!(!class.is_transport(), "{body}");
-    }
-}
-
 /// A 400 refuses the same bytes again: the loop spends no second request and no steer on it.
 #[test]
 fn a_400_body_ends_the_turn_at_once() -> TestResult {

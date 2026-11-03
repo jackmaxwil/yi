@@ -1,6 +1,7 @@
 //! The one error a rerun cannot duplicate: a stream that died before it showed anything.
 
 use yi_types::message::{AgentMessage, Content};
+use yi_types::telemetry::ErrorClass;
 
 pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
 const STREAM_RETRY_TEXT: &str = "The provider dropped the stream before any output reached the transcript; the same turn runs again.";
@@ -19,10 +20,15 @@ pub fn nothing_delivered(message: &AgentMessage) -> bool {
     else {
         return false;
     };
-    let generating = usage.output > 0 || usage.reasoning.unwrap_or(0) > 0;
-    let wire = error_message.as_deref().is_some_and(|text| {
-        yi_types::telemetry::ErrorClass::from_provider_text(text).is_wire_refusal()
-    });
+    let class = error_message
+        .as_deref()
+        .map(yi_types::telemetry::ErrorClass::from_provider_text);
+    // Incident: a refusal billed output tokens and showed no text, so it was sent again with a
+    // steer saying the stream dropped; a provider's named verdict is final however much it cost.
+    let verdict = matches!(&class, Some(ErrorClass::ProviderQuota))
+        || matches!(&class, Some(ErrorClass::Provider(kind)) if kind != "error");
+    let generating = !verdict && (usage.output > 0 || usage.reasoning.unwrap_or(0) > 0);
+    let wire = class.as_ref().is_some_and(ErrorClass::is_wire_refusal);
     // Incident: Wafer's in-band 502 had no usage and no transport class; yi exited 0 (D175)
     let in_band = raw_stop_reason.as_deref() == Some(yi_types::message::RAW_STOP_IN_BAND_ERROR);
     (generating || wire || in_band)

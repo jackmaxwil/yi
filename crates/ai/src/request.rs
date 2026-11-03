@@ -3,7 +3,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::{AssistantMessageEvent, Wait};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::Model;
-use yi_types::telemetry::QUOTA_STAMP;
+use yi_types::telemetry::{QUOTA_STAMP, REFUSED_STAMP};
 
 use crate::retry::{RetryPolicy, is_retryable_status, quota_exhausted, server_wait, wait_for};
 use crate::sse::SseEvent;
@@ -336,6 +336,11 @@ pub fn send_with_retry(
                 let retryable = asked.unwrap_or_else(|| is_retryable_status(status))
                     && attempt < policy.max_attempts
                     && started.elapsed() < policy.max_total_wall;
+                if asked == Some(false) {
+                    return Err(format!(
+                        "HTTP {status} {REFUSED_STAMP} x-should-retry: false: {text}"
+                    ));
+                }
                 if !retryable {
                     return Err(format!("HTTP {status}: {text}"));
                 }
@@ -347,7 +352,7 @@ pub fn send_with_retry(
                     Ok(delay) => delay,
                     Err(wait) => {
                         return Err(format!(
-                            "HTTP {status}: the provider asked to wait {wait:?}, past the {:?} retry cap: {text}",
+                            "HTTP {status} {REFUSED_STAMP} the provider asked to wait {wait:?}, past the {:?} retry cap: {text}",
                             policy.max_delay
                         ));
                     }
@@ -490,8 +495,16 @@ pub fn pump_sse(
 /// Incident: `response.completed` ends the Responses stream before the body's terminator, so the
 /// dropped reader never reached the pool. Reading on for 2 s hands the connection back to ureq.
 fn drain_to_eof(reader: Box<dyn std::io::Read + Send + Sync + 'static>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     const DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
-    // Invariant: one read blocks on ureq's 60 s socket timeout, so only the wait for it is DRAINed.
+    const MAX_DRAINS: usize = 16;
+    static DRAINING: AtomicUsize = AtomicUsize::new(0);
+    // Incident: a read parks its thread on ureq's 60 s socket timeout past the 2 s wait, so a wide
+    // swarm leaked a thread and socket per turn; past MAX_DRAINS the connection is dropped unpooled.
+    if DRAINING.fetch_add(1, Ordering::Relaxed) >= MAX_DRAINS {
+        DRAINING.fetch_sub(1, Ordering::Relaxed);
+        return;
+    }
     let (done, drained) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("yi-stream-drain".to_owned())
@@ -506,10 +519,16 @@ fn drain_to_eof(reader: Box<dyn std::io::Read + Send + Sync + 'static>) {
                 }
             }
             drop(reader);
+            DRAINING.fetch_sub(1, Ordering::Relaxed);
             let _ = done.send(());
         });
-    if spawned.is_ok() {
-        let _ = drained.recv_timeout(DRAIN);
+    match spawned {
+        Ok(_) => {
+            let _ = drained.recv_timeout(DRAIN);
+        }
+        Err(_) => {
+            DRAINING.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 

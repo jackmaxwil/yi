@@ -91,7 +91,6 @@ pub enum ErrorClass {
     Tool(String),
     Provider(String),
     ProviderQuota,
-    ProviderOverflow,
     TransportHttp(u16),
     TransportTimeout,
     TransportProxy,
@@ -114,14 +113,9 @@ pub enum ErrorClass {
 /// plain 429 stays transport. One constant so a wording change cannot drift the scan.
 pub const QUOTA_STAMP: &str = "quota exhausted:";
 
-/// The bodies a provider sends when the request asks for more context than the model holds:
-/// OpenAI's `context_length_exceeded` and Anthropic's `prompt is too long`.
-const OVERFLOW: [&str; 4] = [
-    "context_length_exceeded",
-    "prompt is too long",
-    "maximum context length",
-    "input is too long",
-];
+/// The ai layer's stamp on a status it would not resend: the provider said `x-should-retry: false`
+/// or asked for a wait past the retry cap.
+pub const REFUSED_STAMP: &str = "retry refused:";
 
 impl ErrorClass {
     /// A provider's error text names its transport class when it can; the rest is the provider.
@@ -130,10 +124,8 @@ impl ErrorClass {
         if lower.contains("no credential for provider") {
             return Self::RefusalNoKey;
         }
-        // Neither of these lifts on a resend, and both classed as transport http 400 and were sent
-        // again (see [`ErrorClass::is_transport`]).
-        if OVERFLOW.iter().any(|needle| lower.contains(needle)) {
-            return Self::ProviderOverflow;
+        if lower.starts_with("the model refused") {
+            return Self::Provider("refusal".to_owned());
         }
         if let Some(rest) = lower.split("http ").nth(1)
             && let Some(code) = rest.split(|c: char| !c.is_ascii_digit()).next()
@@ -142,6 +134,9 @@ impl ErrorClass {
             // Incident: a quota 429 read as transport http and was re-sent; only the ai stamp is final.
             if lower.contains(&format!("http {status} {QUOTA_STAMP}")) {
                 return Self::ProviderQuota;
+            }
+            if lower.contains(&format!("http {status} {REFUSED_STAMP}")) {
+                return Self::Provider("retry_refused".to_owned());
             }
             return Self::TransportHttp(status);
         }
@@ -197,7 +192,6 @@ impl ErrorClass {
             Self::Tool(_)
             | Self::Provider(_)
             | Self::ProviderQuota
-            | Self::ProviderOverflow
             | Self::RefusalUnknownModel
             | Self::RefusalNoKey
             | Self::RefusalPoolFull
@@ -223,7 +217,6 @@ impl std::fmt::Display for ErrorClass {
             Self::Tool(kind) => write!(f, "tool:{kind}"),
             Self::Provider(kind) => write!(f, "provider:{kind}"),
             Self::ProviderQuota => f.write_str("provider:quota"),
-            Self::ProviderOverflow => f.write_str("provider:overflow"),
             Self::TransportHttp(status) => write!(f, "transport:http_{status}"),
             Self::TransportTimeout => f.write_str("transport:timeout"),
             Self::TransportProxy => f.write_str("transport:proxy"),

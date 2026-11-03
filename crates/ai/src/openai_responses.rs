@@ -898,6 +898,7 @@ impl EventMapper {
             ));
             return events;
         }
+        crate::leak::recover_in(&mut self.output);
         let mut events = content_end_events(&mut self.output, |content_index| {
             !self
                 .tools
