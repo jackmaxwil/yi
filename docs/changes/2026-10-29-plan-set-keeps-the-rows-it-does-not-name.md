@@ -1,4 +1,5 @@
 ---
+version: 0.912.0
 issue: Closes #1589
 raise: crate runtime +16, crate types +3, tests +127
 ---
