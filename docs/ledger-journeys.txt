@@ -43,6 +43,9 @@ bash reduce (launch set) | `tools::a_line_past_the_clip_is_clipped_and_the_row_n
 bash reduce (launch set) | `session_faux::a_job_that_exits_mid_turn_lands_its_view_as_a_poll_reads_it`
 bash reduce (launch set) | `kernel_cell::a_shell_cell_keeps_its_failing_test_and_summary_inline`
 bash reduce (launch set) | `kernel_data_surface::a_cut_cell_stream_names_a_file_with_every_character`
+read-only shell reads steer to `read` and `grep` | `tools::a_shell_read_names_the_dedicated_tool_first`
+read-only shell reads steer to `read` and `grep` | `tools::a_write_a_vcs_or_build_call_gets_no_dedicated_tool_row`
+bash reduce (launch set) | `journeys::an_exiting_ask_kills_its_background_bash_process_group` (T2)
 file checkpoints + /undo | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 file checkpoints + /undo | `tools::a_capture_leaves_out_a_home_that_lives_inside_the_project`
 kernel + ipython + rlm() subagents | `reader_retry::schema_failure_gets_one_retry_and_a_second_failure_is_refused`
