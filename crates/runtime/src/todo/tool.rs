@@ -239,26 +239,76 @@ fn arms_a_wait(word: &str) -> bool {
         || crate::schedule::channel::check_address(word).is_ok()
 }
 
-/// Names a time, which arms nothing and reads as a reminder set: `block` refuses it.
+/// Incident: `on: "9am"` was stored as the blocker `Other`, which arms no wait, and the agent told
+/// the user the reminder was set; so a blocker naming a time is refused with the address it needs.
 fn names_a_time(word: &str) -> bool {
     let lower = word.to_lowercase();
-    let digits = lower.chars().any(|ch| ch.is_ascii_digit());
-    let hours = digits
-        && ["am", "pm", ":", "h", "min", "hour"]
-            .iter()
-            .any(|unit| lower.contains(unit));
     word.starts_with("at ")
         || word.starts_with("clock:")
         || crate::schedule::parse_local_ms(word, &crate::schedule::Zone::local()).is_some()
         || crate::schedule::parse_schedule(word, yi_session::now_ms()).is_ok()
-        || hours
+        || a_clock_shape(&lower)
         || lower.starts_with("in a ")
         || lower.starts_with("in an ")
+        || a_day(&lower)
         || [
             "tomorrow", "tonight", "today", "noon", "midnight", "o'clock",
         ]
         .iter()
-        .any(|day| lower.contains(day))
+        .any(|part| lower.contains(part))
+}
+
+/// A digit run that is a clock (`9:30`, `9am`) or a duration (`30min`, `2 hours`), never a bare
+/// number: `on: "thread 42"` and `on: "patch-3"` are ordinary blockers and stay `Other`.
+fn a_clock_shape(lower: &str) -> bool {
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    words.iter().any(|word| a_clock_word(word))
+        || words
+            .windows(2)
+            .any(|pair| a_clock_word(&format!("{}{}", pair[0], pair[1])))
+}
+
+const UNITS: [&str; 10] = [
+    "m", "min", "mins", "minute", "minutes", "h", "hr", "hrs", "hour", "hours",
+];
+
+fn a_clock_word(word: &str) -> bool {
+    let word = word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != ':');
+    let rest = word.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    if rest.len() == word.len() {
+        return false;
+    }
+    let rest = rest.trim_end_matches('.');
+    if let Some(after) = rest.strip_prefix(':') {
+        return after.chars().take(2).count() == 2
+            && after.chars().take(2).all(|ch| ch.is_ascii_digit());
+    }
+    let rest = rest.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    ["am", "pm"].contains(&rest) || UNITS.contains(&rest)
+}
+
+/// Invariant: `BlockedOn::Other` arms nothing, so a blocker word naming a day is refused too.
+fn a_day(lower: &str) -> bool {
+    const DAYS: [&str; 7] = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ];
+    let words: Vec<&str> = lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.iter().any(|word| {
+        DAYS.contains(word)
+            || [
+                "eod", "weekend", "weekday", "evening", "tomorrow", "tonight",
+            ]
+            .contains(word)
+    }) || (words.contains(&"next") && words.contains(&"week"))
 }
 
 fn refuse_a_wait_outside_on(op: &str, args: &Map<String, Value>) -> Result<(), ArgError> {
@@ -274,17 +324,27 @@ fn refuse_a_wait_outside_on(op: &str, args: &Map<String, Value>) -> Result<(), A
     // Incident: a wait written in `note`, or as the value of `block`, left no `on`, so the row
     // waited on the user, nothing fired, and the agent told the user the reminder was set.
     if op == "block" && !args.contains_key("on") {
-        let stray = ["note", "block"].into_iter().find(|field| {
-            string(args, field).is_some_and(|text| text.split_whitespace().any(arms_a_wait))
-        });
-        if let Some(field) = stray {
+        for field in ["note", "block"] {
+            let Some(text) = string(args, field) else {
+                continue;
+            };
+            let cause = if text.split_whitespace().any(arms_a_wait) {
+                format!(
+                    "`{field}` names an address, but only `on` arms one, so nothing would fire; \
+                     pass on=<the address>, or on=user if it waits on the user"
+                )
+            } else if text.split_whitespace().any(names_a_time) || names_a_time(&text) {
+                format!(
+                    "`{field}` names a time, but only `on` arms one, so nothing would fire; \
+                     pass on=`clock://at <ISO time>`, or on=user if it waits on the user"
+                )
+            } else {
+                continue;
+            };
             return Err(ArgError::Malformed {
                 op: "block",
                 field,
-                cause: format!(
-                    "`{field}` names an address, but only `on` arms one, so nothing would fire; \
-                     pass on=<the address>, or on=user if it waits on the user"
-                ),
+                cause,
             });
         }
     }
@@ -384,8 +444,12 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                 // Incident: `at 2026-11-02T09:00:00-08:00` with no scheme was kept as a blocker
                 // nothing fires, and the agent told the user the reminder was set.
                 BlockedOn::Other(word) if names_a_time(&word) => {
-                    let suggested = word.strip_prefix("at ").map_or_else(
-                        || "clock://at <ISO time>".to_owned(),
+                    let instant = word.strip_prefix("at ").filter(|rest| {
+                        crate::schedule::parse_local_ms(rest, &crate::schedule::Zone::local())
+                            .is_some()
+                    });
+                    let suggested = instant.map_or_else(
+                        || "clock://at <ISO time>, e.g. clock://at 2026-11-02T09:00:00".to_owned(),
                         |rest| format!("clock://at {rest}"),
                     );
                     return Err(ArgError::Malformed {

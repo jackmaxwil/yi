@@ -8,6 +8,7 @@ mod checker;
 mod own;
 #[path = "../../types/tests/support/recorded.rs"]
 mod recorded;
+mod reminder_zone;
 #[path = "../../types/tests/support/repo.rs"]
 mod repo;
 #[path = "../../types/tests/support/scratch.rs"]

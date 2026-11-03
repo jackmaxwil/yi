@@ -1771,6 +1771,14 @@ fn a_block_on_a_time_with_no_scheme_is_refused() -> TestResult {
         "9am",
         "tomorrow 9am",
         "in an hour",
+        "in 3 hours",
+        "30min",
+        "9:30pm",
+        "friday",
+        "next friday",
+        "next week",
+        "this evening",
+        "eod",
     ] {
         let (refused, text) = call(
             &tool,
@@ -1779,6 +1787,72 @@ fn a_block_on_a_time_with_no_scheme_is_refused() -> TestResult {
         assert!(refused, "{word} armed nothing: {text}");
         assert!(text.contains("clock://at"), "{text}");
     }
+
+    // The remedy arms on the next call: `clock://at 9am` would be refused on the spot.
+    let (refused, text) = call(
+        &tool,
+        json!({"op": "block", "id": "t1", "on": "at 9am", "note": "wait"}),
+    );
+    assert!(refused, "`at 9am` armed nothing: {text}");
+    assert!(
+        !text.contains("clock://at 9am"),
+        "the remedy names an address that arms nothing: {text}"
+    );
+    assert!(text.contains("clock://at 2026-11-02T09:00:00"), "{text}");
+    let (refused, text) = call(
+        &tool,
+        json!({"op": "block", "id": "t1", "on": "at 2026-11-02T09:00:00-08:00",
+            "note": "wait"}),
+    );
+    assert!(refused, "`at <instant>` armed nothing: {text}");
+    assert!(
+        text.contains("clock://at 2026-11-02T09:00:00-08:00"),
+        "{text}"
+    );
+
+    // A digit and a letter are not a clock: these were ordinary blockers before the guard.
+    for word in ["patch-3", "thread 42", "sha-2f", "step:1"] {
+        let (refused, text) = call(
+            &tool,
+            json!({"op": "block", "id": "t1", "on": word, "note": "wait"}),
+        );
+        assert!(!refused, "{word} was refused as a time: {text}");
+    }
+    Ok(())
+}
+
+/// Dies with a time in `note` left unguarded: the row blocked on the user, nothing fired, and the
+/// agent told the user the reminder was set.
+#[test]
+fn a_time_in_the_note_with_no_on_is_refused() -> TestResult {
+    let (_root, session) = session("note-time")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    call(&tool, json!({"op": "set", "list": "- [ ] renew the cert"}));
+
+    for (args, field) in [
+        (
+            json!({"op": "block", "id": "t1", "note": "wake me tomorrow at 9am"}),
+            "note",
+        ),
+        (
+            json!({"op": "block", "id": "t1", "note": "remind me next friday"}),
+            "note",
+        ),
+        (
+            json!({"op": "block", "id": "t1", "block": "9:30pm", "note": "the cert"}),
+            "block",
+        ),
+    ] {
+        let (refused, text) = call(&tool, args);
+        assert!(refused, "a time with no `on` was taken: {text}");
+        assert!(text.contains(&format!("`{field}` names a time")), "{text}");
+    }
+    let first = store.list().items().next().map(|todo| todo.state.clone());
+    assert!(
+        !matches!(first, Some(TodoState::Blocked { .. })),
+        "{first:?}"
+    );
     Ok(())
 }
 
