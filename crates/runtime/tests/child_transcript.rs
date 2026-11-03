@@ -7,10 +7,9 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text};
-use yi_loop::ExecutionMode;
 use yi_runtime::{
-    AgentSession, HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SessionConfig,
-    SubagentHost, SubagentHostOptions,
+    HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SubagentHost,
+    SubagentHostOptions,
 };
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Effort, Model, ModelCost};
@@ -68,15 +67,7 @@ fn host(answer: Option<&'static str>) -> std::io::Result<(Scratch, Arc<SubagentH
                     StopReason::Stop,
                 )]);
             }
-            Ok(AgentSession::new(
-                SessionConfig {
-                    system_prompt: "child sys".to_owned(),
-                    model: build.model,
-                    thinking_level: build.thinking,
-                    tool_execution: ExecutionMode::Sequential,
-                },
-                provider,
-            ))
+            Ok(crate::support::child_session(build, provider))
         }),
         notice: Arc::new(|_, _| {}),
         events,

@@ -12,6 +12,9 @@ use yi_tools::{CancelFlag, KernelBridge, Sandbox};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+pub(crate) use crate::seatbelt_support::seatbelt;
+use crate::wiring::{root_session, walled_session};
+
 async fn cell(
     service: &Arc<KernelService>,
     code: String,
@@ -72,9 +75,7 @@ pub(crate) fn uncovered(sandbox: &Sandbox, home: &std::path::Path) -> Option<Pat
 
 #[tokio::test]
 async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home, session) = workspace("write")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
     let kernel = service(project.clone(), home.clone(), sandbox.clone(), None);
@@ -147,9 +148,7 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
 /// sandbox run code in another's kernel. Every profile hides them; each kernel reads its own.
 #[tokio::test]
 async fn a_kernel_reaches_loopback_and_no_other_kernels_key() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home, session) = workspace("keys")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
     let first = service(project.clone(), home.clone(), sandbox.clone(), None);
@@ -207,9 +206,7 @@ async fn a_kernel_reaches_loopback_and_no_other_kernels_key() -> TestResult {
 /// re-allowed the link's target.
 #[tokio::test]
 async fn a_link_planted_at_the_kernels_own_directory_grants_nothing() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home, session) = workspace("own-link")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
     let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
@@ -256,79 +253,12 @@ async fn a_link_planted_at_the_kernels_own_directory_grants_nothing() -> TestRes
     Ok(())
 }
 
-/// A root session wired the way `yi` wires one, with `sessions_dir` as its session corpus.
-fn root_session(
-    project: &std::path::Path,
-    home: &std::path::Path,
-    rlm_dir: &std::path::Path,
-    sessions_dir: Option<PathBuf>,
-    broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
-    mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
-) -> yi_runtime::AgentSession {
-    let wall = yi_runtime::Wall::default();
-    walled_session(project, home, rlm_dir, sessions_dir, broker, mcp_read, wall)
-}
-
-fn walled_session(
-    project: &std::path::Path,
-    home: &std::path::Path,
-    rlm_dir: &std::path::Path,
-    sessions_dir: Option<PathBuf>,
-    broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
-    mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
-    wall: yi_runtime::Wall,
-) -> yi_runtime::AgentSession {
-    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
-    let mut session = yi_runtime::AgentSession::new(
-        yi_runtime::SessionConfig {
-            system_prompt: String::new(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: yi_loop::ExecutionMode::Sequential,
-        },
-        Arc::clone(&provider),
-    );
-    yi_runtime::attach_runtime(
-        &mut session,
-        yi_runtime::RuntimeWiring {
-            provider,
-            system_prompt: String::new(),
-            tool_execution: yi_loop::ExecutionMode::Sequential,
-            cwd: project.to_path_buf(),
-            home: home.to_path_buf(),
-            lane_slots: 1,
-            broker,
-            tools: Arc::new(yi_tools::builtin_tools),
-            depth: 0,
-            max_depth: 1,
-            rlm_dir: rlm_dir.to_path_buf(),
-            family_dir: None,
-            summarizer: None,
-            advisor: None,
-            auto_review: None,
-            plan_stale_turns: None,
-            plans_dir: Some(rlm_dir.join("plans")),
-            parent_link: None,
-            wall,
-            auto_background: None,
-            deadline: None,
-            kernel_prewarm: false,
-            mcp_read,
-            sessions_dir,
-            kernels: yi_runtime::fetch::KernelServiceMap::new(),
-        },
-    );
-    session
-}
-
 /// #598, #889: a walled juror's kernel wrote the tree and read walled files, since the wall was
 /// a check at the tool seam and in no profile; and a cell inherited `*_API_KEY`. The stores
 /// themselves are proven in `tools/tests/sandbox.rs` with a scratch HOME, not the runner's.
 #[tokio::test]
 async fn a_walled_kernel_and_its_bash_keep_to_the_wall_and_inherit_no_key() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
     unsafe { std::env::set_var("YI_598_PROBE_API_KEY", "ENV-598") };
     let (root, project, home, _session) = workspace("walled")?;
@@ -371,9 +301,7 @@ async fn a_walled_kernel_and_its_bash_keep_to_the_wall_and_inherit_no_key() -> T
 /// a cell or its `bash()` could plant one for another session.
 #[tokio::test]
 async fn a_root_kernel_cannot_write_another_sessions_state() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, home, _session) = workspace("corpus")?;
     let bare = Sandbox::for_workspace(&project, &home, None);
     // Under a tmp root the corpus would be writable anyway and the test would prove nothing.
@@ -450,39 +378,12 @@ async fn a_global_harness_save_asks_the_permission_broker() -> TestResult {
     Ok(())
 }
 
-fn faux_model() -> yi_types::model::Model {
-    let zero = || serde_json::Number::from(0u64);
-    yi_types::model::Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: yi_types::model::ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
-
 /// Incident: `exec.spawn`, the host half of the kernel's `bash()`, ran with no sandbox, so a
 /// contained kernel wrote anywhere by shelling out; then under a profile without the kernel's
 /// loopback grant, so a local server or test suite in it could not bind 127.0.0.1.
 #[tokio::test]
 async fn the_kernels_bash_is_contained_like_the_kernel() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, home, _session) = workspace("bash")?;
     let session = root_session(&project, &home, &root.join("rlm"), None, None, None);
     let kernel = session
@@ -519,9 +420,7 @@ print(await bash(bound))"#;
 /// grant kept later, here replayed from the ledger on `--continue`, never reached the kernel's jobs.
 #[tokio::test]
 async fn a_kernel_bash_job_takes_a_grant_kept_after_wiring() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, home, _session) = workspace("grant")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
     let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
@@ -574,9 +473,7 @@ async fn a_kernel_bash_job_takes_a_grant_kept_after_wiring() -> TestResult {
 /// Review of #1147: the board's `spills/` stays the host's, so no cell writes or moves it.
 #[tokio::test]
 async fn a_contained_kernel_can_write_its_family_board_but_not_its_spills() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home, session) = workspace("family")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
     // Under a tmp root the board would be writable anyway and the test would prove nothing.
@@ -620,9 +517,7 @@ async fn a_contained_kernel_can_write_its_family_board_but_not_its_spills() -> T
 /// `~/.yi/sessions/family`, and a `bash()` job could not write the board either.
 #[tokio::test]
 async fn a_root_kernels_board_takes_puts_and_bash_jobs() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home, _session) = workspace("board")?;
     let bare = Sandbox::for_workspace(&project, &home, None);
     // Under a tmp root the corpus would be writable anyway and the test would prove nothing.
@@ -661,9 +556,7 @@ async fn a_root_kernels_board_takes_puts_and_bash_jobs() -> TestResult {
 /// `outside` stands in for the credential dir, which a test must never write.
 #[tokio::test]
 async fn a_link_planted_as_the_board_is_replaced_not_followed() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, home, _session) = workspace("board-link")?;
     let bare = Sandbox::for_workspace(&project, &home, None);
     let probe = uncovered(&bare, &home).ok_or("no directory outside the sandbox")?;
@@ -702,9 +595,7 @@ async fn a_link_planted_as_the_board_is_replaced_not_followed() -> TestResult {
 /// is host-only now (D296), and the token files under it are hidden from a cell.
 #[tokio::test]
 async fn a_root_kernel_cannot_plant_an_mcp_session_or_read_its_tokens() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, home, _session) = workspace("mcp")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&root.join("rlm")));
     // Under a tmp HOME the store sits in a granted root and the test would prove nothing.
@@ -814,9 +705,7 @@ async fn a_kernel_connect_runs_on_the_host_from_the_home_config() -> TestResult 
 /// spill, its transcript, state and the family board still read; an unwalled kernel reads all.
 #[tokio::test]
 async fn a_walled_kernel_reads_its_familys_spill_and_transcript_and_no_other() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, real, _session) = workspace("walled-roots")?;
     let bare = Sandbox::for_workspace(&project, &real, None);
     // Outside every granted root, so a write to the board or its own dir proves the spare.
@@ -1024,9 +913,7 @@ async fn walled_roots_probe(
 /// names the sandbox, and the kernel has no retry outside it, so the note promises none.
 #[tokio::test]
 async fn a_kernel_cell_the_sandbox_refused_names_the_sandbox() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, home, _session) = workspace("refused")?;
     let session = root_session(&project, &home, &root.join("rlm"), None, None, None);
     let kernel = session
@@ -1057,5 +944,130 @@ async fn a_kernel_cell_the_sandbox_refused_names_the_sandbox() -> TestResult {
     for (code, note, result) in &notes[2..] {
         assert!(!note.contains("sandbox"), "{code}: {note}\n{result:?}");
     }
+    Ok(())
+}
+
+/// One lease for the kernel's life, so a restart compares equal and its cells can name a refusal.
+#[tokio::test]
+async fn a_contained_kernel_leaves_through_its_proxy_and_hears_what_it_refused() -> TestResult {
+    seatbelt()?;
+    let (root, project, home, _session) = workspace("egress")?;
+    let broker = yi_runtime::permission::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        project.clone(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    );
+    let broker = Some(Arc::new(broker));
+    let session = root_session(&project, &home, &root.join("rlm"), None, broker, None);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let code = r#"import os, urllib.request
+print(os.environ["HTTPS_PROXY"].split("@")[1])
+try:
+    urllib.request.urlopen("https://example.invalid/", timeout=20)
+except Exception as error:
+    print(type(error).__name__)"#;
+    let ran = cell(&kernel, code.to_owned()).await;
+    let job = r#"print(await bash("curl -sS --max-time 20 https://bash.invalid/"))"#;
+    let job = cell(&kernel, job.to_owned()).await;
+    kernel.dispose().await;
+    let job = job?;
+    assert!(
+        job.result.stdout.contains("[egress: refused bash.invalid"),
+        "{:?}",
+        job.result
+    );
+    let ran = ran?;
+    assert!(ran.result.stdout.contains("127.0.0.1:"), "{:?}", ran.result);
+    assert!(
+        ran.notes
+            .iter()
+            .any(|note| note.contains("[egress: refused example.invalid")),
+        "{:?} {}",
+        ran.notes,
+        ran.result.stdout
+    );
+    Ok(())
+}
+
+/// The hint for a missing module names `%pip`, so a contained kernel has to be able to run it. The
+/// wheel is built here: an install that needs no network shows the target, the path and the import.
+#[tokio::test]
+async fn a_contained_kernels_pip_installs_for_the_session_and_imports() -> TestResult {
+    seatbelt()?;
+    let (root, project, home, _session) = workspace("pip")?;
+    let session = root_session(&project, &home, &root.join("rlm"), None, None, None);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let wheel = root.join("yi_wheel_probe-1.0-py3-none-any.whl");
+    let build = format!(
+        r#"import zipfile
+with zipfile.ZipFile(r"{wheel}", "w") as z:
+    z.writestr("yi_wheel_probe.py", "value = 41 + 1\n")
+    z.writestr("yi_wheel_probe-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: yi-wheel-probe\nVersion: 1.0\n")
+    z.writestr("yi_wheel_probe-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nGenerator: yi\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+    z.writestr("yi_wheel_probe-1.0.dist-info/RECORD", "")
+get_ipython().run_line_magic("pip", r"install --no-index --quiet {wheel}")
+import yi_wheel_probe
+print("imported", yi_wheel_probe.value)"#,
+        wheel = wheel.display()
+    );
+    let ran = cell(&kernel, build).await;
+    kernel.dispose().await;
+    let ran = ran?;
+    assert!(
+        ran.result.stdout.contains("imported 42"),
+        "{:?}",
+        ran.result
+    );
+    Ok(())
+}
+
+/// A cell's `!git push` is caught at the cell's end, since a kernel shells out with nothing to hook.
+#[tokio::test]
+async fn a_contained_kernels_push_is_forwarded_and_named() -> TestResult {
+    seatbelt()?;
+    let repo = crate::git_lane::Repo::new("kernel")?;
+    let home = PathBuf::from(std::env::var_os("HOME").ok_or("no HOME")?);
+    let broker = yi_runtime::permission::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        repo.project.clone(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    );
+    let rlm = repo.root.join("rlm");
+    let session = root_session(
+        &repo.project,
+        &home,
+        &rlm,
+        None,
+        Some(Arc::new(broker)),
+        None,
+    );
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let code = r#"import subprocess
+print(subprocess.run(["git", "push", "origin", "HEAD:refs/heads/yi/from-kernel"], capture_output=True, text=True).returncode)"#;
+    let ran = cell(&kernel, code.to_owned()).await;
+    kernel.dispose().await;
+    let ran = ran?;
+    assert!(
+        ran.notes
+            .iter()
+            .any(|note| note.contains("[pushed yi/from-kernel to origin")),
+        "{:?} {:?}",
+        ran.notes,
+        ran.result
+    );
+    assert_eq!(
+        repo.at_origin("refs/heads/yi/from-kernel"),
+        Some(repo.head()?)
+    );
     Ok(())
 }
