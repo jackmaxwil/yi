@@ -21,20 +21,19 @@ fn encoded(home: &Path, cwd: &Path) -> PathBuf {
     home.join(".claude/projects").join(key).join("memory")
 }
 
-/// `~/.claude/projects/<the working directory, every byte but an alphanumeric a dash>/memory`,
-/// keyed by the path as Claude Code was handed it or, when only that one exists, by its real path.
+/// `~/.claude/projects/<the repository root, every byte but an alphanumeric a dash>/memory`, as
+/// Claude Code keeps one per repository; else the working directory as handed, else its real path.
 pub fn project_dir(home: &Path, cwd: &Path) -> PathBuf {
-    let literal = encoded(home, cwd);
-    if literal.is_dir() {
-        return literal;
-    }
-    match cwd.canonicalize() {
-        Ok(real) => {
-            let resolved = encoded(home, &real);
-            if resolved.is_dir() { resolved } else { literal }
-        }
-        Err(_) => literal,
-    }
+    let keys = crate::lane::canonical_repo(cwd)
+        .into_iter()
+        .chain([cwd.to_path_buf()])
+        .chain(cwd.canonicalize().ok());
+    let dirs: Vec<PathBuf> = keys.map(|key| encoded(home, &key)).collect();
+    dirs.iter()
+        .find(|dir| dir.is_dir())
+        .or(dirs.first())
+        .cloned()
+        .unwrap_or_else(|| encoded(home, cwd))
 }
 
 /// `~/.claude/memory`, the notes Claude Code keeps for every project.
@@ -77,8 +76,7 @@ fn short(home: &Path, path: &Path) -> String {
     )
 }
 
-/// The Claude Code memory directories this session reads, and every note name any of them holds.
-/// One store is shared by every worktree of a repository, so a note from another is not stale here.
+/// The Claude Code memory directories this session reads, and every note name they hold.
 #[derive(Debug, Clone)]
 pub struct Sources {
     project: PathBuf,
@@ -90,16 +88,10 @@ impl Sources {
     pub fn discover(home: &Path, cwd: &Path) -> Self {
         let project = project_dir(home, cwd);
         let user = user_dir(home);
-        let mut dirs = vec![project.clone(), user.clone()];
-        if let Ok(entries) = std::fs::read_dir(home.join(".claude/projects")) {
-            for entry in entries.flatten() {
-                let dir = entry.path().join("memory");
-                if dir.is_dir() {
-                    dirs.push(dir);
-                }
-            }
-        }
-        let names = dirs.iter().flat_map(|dir| names_in(dir)).collect();
+        let names = names_in(&project)
+            .into_iter()
+            .chain(names_in(&user))
+            .collect();
         Self {
             project,
             user,
@@ -115,7 +107,7 @@ impl Sources {
         &self.user
     }
 
-    /// An imported note whose source note is gone from every Claude Code directory.
+    /// An imported note whose source note is gone from both Claude Code directories.
     pub fn stale(&self, note: &Note) -> bool {
         source_of(note) == Some(SOURCE) && !self.names.contains(note.name.as_str())
     }
@@ -127,7 +119,8 @@ pub struct Report {
     pub found: usize,
     pub imported: usize,
     pub updated: usize,
-    pub skipped: usize,
+    pub kept: usize,
+    pub refused: usize,
     pub unreadable: usize,
     pub stale: usize,
     pub notice: Option<String>,
@@ -143,6 +136,8 @@ impl Report {
         for (count, label) in [
             (self.imported, "imported"),
             (self.updated, "updated"),
+            (self.kept, "kept"),
+            (self.refused, "refused"),
             (self.unreadable, "unreadable"),
             (self.stale, "stale"),
         ] {
@@ -162,8 +157,10 @@ fn one(sources: &Sources, home: &Path, store: &Store, dir: &Path) -> Result<Repo
     let Imported {
         imported,
         updated,
-        skipped,
+        kept,
+        refused,
         unreadable,
+        ..
     } = store.import(dir, Some(SOURCE))?;
     let index = store.indexed()?;
     let (shown, dropped) = loaded(&index, &store.usage());
@@ -193,7 +190,8 @@ fn one(sources: &Sources, home: &Path, store: &Store, dir: &Path) -> Result<Repo
         found,
         imported,
         updated,
-        skipped,
+        kept,
+        refused,
         unreadable,
         stale,
         notice,
@@ -203,8 +201,7 @@ fn one(sources: &Sources, home: &Path, store: &Store, dir: &Path) -> Result<Repo
 
 /// Every Claude Code memory directory this session has, imported into the store that owns its
 /// scope: the working directory's into the repository store, the user-level one into global.
-pub fn run(home: &Path, cwd: &Path) -> Vec<Report> {
-    let sources = Sources::discover(home, cwd);
+pub fn run(home: &Path, cwd: &Path, sources: &Sources) -> Vec<Report> {
     let mut out = Vec::new();
     for (store, dir) in [
         (
@@ -216,7 +213,7 @@ pub fn run(home: &Path, cwd: &Path) -> Vec<Report> {
         if !dir.is_dir() || names_in(&dir).is_empty() {
             continue;
         }
-        out.push(match one(&sources, home, &store, &dir) {
+        out.push(match one(sources, home, &store, &dir) {
             Ok(report) => report,
             Err(error) => Report {
                 source: short(home, &dir),
@@ -228,9 +225,9 @@ pub fn run(home: &Path, cwd: &Path) -> Vec<Report> {
     out
 }
 
-pub fn run_if_enabled(home: &Path, cwd: &Path) -> Vec<Report> {
+pub fn run_if_enabled(home: &Path, cwd: &Path, sources: &Sources) -> Vec<Report> {
     if enabled(home) {
-        run(home, cwd)
+        run(home, cwd, sources)
     } else {
         Vec::new()
     }
@@ -283,7 +280,7 @@ pub fn tally(home: &Path, cwd: &Path) -> Tally {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::block_with;
+    use crate::memory::block as block_with;
     use crate::scratch::Scratch;
     use std::fs;
 
@@ -305,6 +302,10 @@ mod tests {
             .replace("{hook}", hook)
             .replace("{body}", body);
         fs::write(dir.join(format!("{name}.md")), text)
+    }
+
+    fn run(home: &Path, cwd: &Path) -> Vec<Report> {
+        super::run(home, cwd, &Sources::discover(home, cwd))
     }
 
     fn repo(home: &Path, cwd: &Path) -> Store {
@@ -373,8 +374,8 @@ mod tests {
 
         let again = run(&home, &cwd);
         assert_eq!(
-            (again[0].imported, again[0].updated, again[0].skipped),
-            (0, 0, 2)
+            (again[0].imported, again[0].updated, again[0].kept),
+            (0, 0, 0)
         );
         let summary = crate::memory::listed(&home, &cwd);
         assert_eq!((summary.repo, summary.stale), (2, 0));
@@ -389,7 +390,7 @@ mod tests {
         write_note(&dir, "alpha", "the revised hook", "a revised body").expect("note");
         let reports = run(&home, &cwd);
         assert_eq!(
-            (reports[0].imported, reports[0].updated, reports[0].skipped),
+            (reports[0].imported, reports[0].updated, reports[0].kept),
             (0, 1, 0)
         );
         let note = repo(&home, &cwd).resolve("alpha").expect("alpha");
@@ -405,6 +406,9 @@ mod tests {
         write_note(&dir, "beta", "the second hook", "beta body").expect("note");
         run(&home, &cwd);
         fs::remove_file(dir.join("alpha.md")).expect("remove");
+        let other = home.join(".claude/projects/-elsewhere/memory");
+        fs::create_dir_all(&other).expect("dir");
+        write_note(&other, "alpha", "another repository's hook", "body").expect("note");
         let reports = run(&home, &cwd);
         assert_eq!((reports[0].imported, reports[0].stale), (0, 1));
         let store = repo(&home, &cwd);
@@ -540,7 +544,7 @@ mod tests {
         .expect("config");
         write_note(&project_dir(&home, &cwd), "alpha", "a hook", "body").expect("note");
         assert!(!enabled(&home));
-        assert!(run_if_enabled(&home, &cwd).is_empty());
+        assert!(run_if_enabled(&home, &cwd, &Sources::discover(&home, &cwd)).is_empty());
         assert_eq!(repo(&home, &cwd).notes().len(), 0);
         assert_eq!(run(&home, &cwd)[0].imported, 1);
         assert!(enabled(
@@ -570,5 +574,69 @@ mod tests {
         let line = tally(&home, &cwd).line();
         assert!(line.contains("0 notes in"), "{line}");
         assert!(line.contains("1 imported · 1 stale"), "{line}");
+    }
+
+    #[test]
+    fn a_saved_update_or_a_yi_note_of_the_same_name_survives_the_next_import() {
+        let (_scratch, home, cwd) = site("kept").expect("scratch");
+        let dir = project_dir(&home, &cwd);
+        write_note(&dir, "alpha", "the claude hook", "claude body").expect("note");
+        write_note(&dir, "beta", "the claude hook", "claude body").expect("note");
+        let store = repo(&home, &cwd);
+        let yi = "---\nname: beta\ndescription: yi hook\ntype: project\n---\nyi beta body\n";
+        store
+            .save(super::super::doc::draft(yi, &[]).expect("draft").memory)
+            .expect("save");
+        assert_eq!(run(&home, &cwd)[0].kept, 1);
+        let mut saved = store.resolve("alpha").expect("alpha");
+        saved.body = "the saved body".to_owned();
+        let text = format!(
+            "---\nname: alpha\ndescription: saved hook\ntype: project\n---\n{}\n",
+            saved.body
+        );
+        let mut memory = super::super::doc::draft(&text, &[]).expect("draft").memory;
+        memory.carry(&saved);
+        store.save(memory).expect("save");
+        let report = &run(&home, &cwd)[0];
+        assert_eq!((report.updated, report.kept), (0, 2), "{report:?}");
+        assert!(report.line().contains("2 kept"), "{}", report.line());
+        let alpha = store.resolve("alpha").expect("alpha");
+        assert!(alpha.body.contains("the saved body"), "{:?}", alpha.body);
+        let beta = store.resolve("beta").expect("beta");
+        assert!(beta.body.contains("yi beta body"), "{:?}", beta.body);
+    }
+
+    #[test]
+    fn a_claude_note_holding_a_secret_is_refused_and_the_others_land() {
+        let (_scratch, home, cwd) = site("secret").expect("scratch");
+        let dir = project_dir(&home, &cwd);
+        write_note(&dir, "alpha", "a hook", "plain body").expect("note");
+        write_note(&dir, "key", "a hook", "token sk-abcdefghijklmnop1234").expect("note");
+        let report = &run(&home, &cwd)[0];
+        assert_eq!((report.imported, report.refused), (1, 1), "{report:?}");
+        assert!(report.line().contains("1 refused"), "{}", report.line());
+        assert!(!repo(&home, &cwd).dir().join("key.md").exists());
+    }
+
+    #[test]
+    fn a_worktree_imports_the_memory_of_its_repository() {
+        let (_scratch, home, cwd) = site("worktree").expect("scratch");
+        let git = |args: &[&str]| {
+            yi_tools::command("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+                .arg(&cwd)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "root"]);
+        let tree = home.join("tree");
+        git(&["worktree", "add", "-q", "--detach", &tree.to_string_lossy()]);
+        let dir = encoded(&home, &fs::canonicalize(&cwd).expect("real"));
+        fs::create_dir_all(&dir).expect("dir");
+        write_note(&dir, "alpha", "a hook", "body").expect("note");
+        assert_eq!(project_dir(&home, &tree), dir);
+        assert_eq!(run(&home, &tree)[0].imported, 1);
     }
 }

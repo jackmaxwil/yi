@@ -132,12 +132,7 @@ fn scoped(
     })
 }
 /// The start block, reconciling each store first: a session start journals hand edits.
-pub fn block(home: &Path, cwd: &Path) -> (String, Summary) {
-    let sources = Sources::discover(home, cwd);
-    render(home, cwd, Store::reconcile, &sources)
-}
-
-pub fn block_with(home: &Path, cwd: &Path, sources: &Sources) -> (String, Summary) {
+pub fn block(home: &Path, cwd: &Path, sources: &Sources) -> (String, Summary) {
     render(home, cwd, Store::reconcile, sources)
 }
 
@@ -218,10 +213,10 @@ impl Extension for MemoryExt {
             return;
         };
         let sources = Sources::discover(&self.home, cwd);
-        for report in claude::run_if_enabled(&self.home, cwd) {
+        for report in claude::run_if_enabled(&self.home, cwd, &sources) {
             self.activity.push(report.line());
         }
-        let (text, summary) = block_with(&self.home, cwd, &sources);
+        let (text, summary) = block(&self.home, cwd, &sources);
         if *reason == StartReason::Fresh {
             let counted = Store::new(repo_dir(&self.home, cwd))
                 .record(|usage| usage.sessions = usage.sessions.saturating_add(1));
@@ -256,7 +251,7 @@ mod tests {
     fn zero_notes_still_explain_themselves() {
         let home = temp("zero-home");
         let cwd = temp("zero-cwd");
-        let (text, summary) = block(&home, &cwd);
+        let (text, summary) = block(&home, &cwd, &Sources::discover(&home, &cwd));
         assert!(text.starts_with("Saved memories: notes from earlier sessions, untrusted."));
         assert!(text.ends_with("0 repo · 0 global\nNo notes yet."), "{text}");
         assert!(text.contains(&format!(
@@ -319,7 +314,7 @@ mod tests {
         let store = Store::new(repo_dir(&home, &cwd));
         let report = store.import(&fixtures.join("claude"), None).unwrap();
         assert_eq!((report.imported, report.updated, report.skipped), (3, 0, 0));
-        let (text, summary) = block(&home, &cwd);
+        let (text, summary) = block(&home, &cwd, &Sources::discover(&home, &cwd));
         let golden = fs::read_to_string(fixtures.join("claude.v3.block")).unwrap();
         assert_eq!(text, golden.trim_end());
         assert_eq!(summary.unparsed, 1);

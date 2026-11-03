@@ -497,9 +497,22 @@ fn block_at(count: usize, hook: usize) -> Result<(String, String), Box<dyn Error
     );
     let dir = yi_runtime::memory::repo_dir(&home, &cwd);
     add_notes(&dir, 0..count, hook)?;
-    let at = yi_runtime::memory::block(&home, &cwd).0;
+    let at = yi_runtime::memory::block(
+        &home,
+        &cwd,
+        &yi_runtime::memory::claude::Sources::discover(&home, &cwd),
+    )
+    .0;
     add_notes(&dir, count..count + 1, hook)?;
-    Ok((at, yi_runtime::memory::block(&home, &cwd).0))
+    Ok((
+        at,
+        yi_runtime::memory::block(
+            &home,
+            &cwd,
+            &yi_runtime::memory::claude::Sources::discover(&home, &cwd),
+        )
+        .0,
+    ))
 }
 
 #[test]

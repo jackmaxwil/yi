@@ -171,6 +171,8 @@ pub struct Imported {
     pub imported: usize,
     pub updated: usize,
     pub skipped: usize,
+    pub kept: usize,
+    pub refused: usize,
     pub unreadable: usize,
 }
 
@@ -540,11 +542,12 @@ impl Store {
         self.replace(USAGE, &render_usage(&usage))
     }
 
-    /// Copies a directory of notes in, tagging each with `source` when one is named; a note that
-    /// cannot be read is counted and the others still land.
+    /// Copies a directory of notes in, tagging each with `source` when one is named; a tagged
+    /// import never replaces a note changed since it wrote it, nor lands one save would refuse.
     pub fn import(&self, from: &Path, source: Option<&str>) -> Result<Imported, StoreError> {
         let origin = Self::new(from.to_path_buf());
         let mut report = Imported::default();
+        self.reconcile()?;
         {
             let _lock = self.lock()?;
             for note in origin.notes() {
@@ -554,6 +557,10 @@ impl Store {
                     continue;
                 };
                 let raw = String::from_utf8_lossy(&bytes);
+                if super::doc::refused(&raw) {
+                    report.refused = report.refused.saturating_add(1);
+                    continue;
+                }
                 let text = match source {
                     Some(tag) => tagged(&raw, tag),
                     None => raw.into_owned(),
@@ -561,6 +568,13 @@ impl Store {
                 match fs::read(self.dir.join(&file)) {
                     Ok(existing) if existing == text.as_bytes() => {
                         report.skipped = report.skipped.saturating_add(1);
+                        continue;
+                    }
+                    Ok(existing)
+                        if source.is_some()
+                            && !super::doc::untouched(&String::from_utf8_lossy(&existing)) =>
+                    {
+                        report.kept = report.kept.saturating_add(1);
                         continue;
                     }
                     Ok(_) => report.updated = report.updated.saturating_add(1),

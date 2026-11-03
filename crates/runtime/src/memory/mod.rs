@@ -17,7 +17,7 @@ use yi_types::plan::canonical::Digest;
 
 pub use doc::Note;
 use doc::Scope;
-pub use ext::{MemoryExt, block, block_with, listed};
+pub use ext::{MemoryExt, block, listed};
 pub use rank::tokens;
 pub use store::{Store, global_dir, repo_dir};
 

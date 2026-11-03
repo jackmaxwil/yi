@@ -194,7 +194,7 @@ pub fn run(args: &crate::Args) -> i32 {
         }
         ("import-claude", "") => {
             let mut code = 0;
-            let reports = claude::run(home, &cwd);
+            let reports = claude::run(home, &cwd, &claude::Sources::discover(home, &cwd));
             if reports.is_empty() {
                 println!("  claude · none for this directory");
             }
