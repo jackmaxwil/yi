@@ -610,7 +610,7 @@ def grab(path: Path, box: list[str]) -> None:
         raise RuntimeError("no terminal window on the virtual screen within 60 s:\n"
                            + (probe.stderr[-600:] if probe else ""))
     (path.parent / "box").write_text(box[0])
-    subprocess.run(base + ["-frames:v", "1", "-vf", f"crop={box[0]}", str(path)], check=True)
+    subprocess.run(base + ["-frames:v", "1", "-vf", f"crop={box[0]}", str(path)], check=True)  # nosemgrep: dangerous-subprocess-use-tainted-env-args Parsed crop stays one argv element; no shell.
 
 
 class ApcFilter:

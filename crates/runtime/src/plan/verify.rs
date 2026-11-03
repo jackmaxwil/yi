@@ -2,7 +2,6 @@
 //! item, aggregated by section 6.2; the done path (`done.rs`) owns the token and the journal.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -120,7 +119,7 @@ pub struct Verifier {
     timeout_ms: u64,
     /// The session's own clock (D177): a verification never outlives the run it belongs to.
     deadline: Option<Instant>,
-    hooks: Option<Arc<crate::claude_hooks::Hooks>>,
+    checker: crate::goal::Checker,
 }
 
 fn deadline_after(from: Instant, millis: u64) -> Instant {
@@ -169,7 +168,7 @@ impl Verifier {
         Self {
             timeout_ms,
             deadline: None,
-            hooks: None,
+            checker: crate::goal::Checker::default(),
         }
     }
 
@@ -180,8 +179,8 @@ impl Verifier {
         }
     }
 
-    pub fn with_claude_hooks(mut self, hooks: Option<Arc<crate::claude_hooks::Hooks>>) -> Self {
-        self.hooks = hooks;
+    pub fn with_checker(mut self, checker: crate::goal::Checker) -> Self {
+        self.checker = checker;
         self
     }
 
@@ -297,7 +296,7 @@ impl Verifier {
                         snapshot.root,
                         snapshot.artifacts,
                         deadline,
-                        self.hooks.as_deref(),
+                        &self.checker,
                     );
                     *evidence = said;
                     verdict
@@ -332,7 +331,7 @@ impl Verifier {
                         &cases,
                         snapshot.root,
                         item_deadline,
-                        self.hooks.as_deref(),
+                        &self.checker,
                     )
                 })
             }
@@ -402,12 +401,17 @@ pub(super) fn protecting(
     }
 }
 
+/// A refusal is not the product's answer, so a contained item abstains and asks the owner.
+pub(super) fn contained(why: &str) -> String {
+    format!("{why}; run it by hand, then accepted_by_user with its exit line as note")
+}
+
 fn run_cmd_said(
     manifest: &CheckerManifest,
     root: &Path,
     artifacts: &Artifacts,
     deadline: Instant,
-    hooks: Option<&crate::claude_hooks::Hooks>,
+    checker: &crate::goal::Checker,
 ) -> (ItemVerdict, Option<String>) {
     let workdir = manifest.workdir(root);
     let capture = run_check_in(
@@ -417,8 +421,15 @@ fn run_cmd_said(
         None,
         deadline,
         None,
-        hooks,
+        checker,
     );
+    let refused = capture
+        .as_ref()
+        .ok()
+        .and_then(|capture| checker.refusal(&workdir, &manifest.command, capture));
+    if let Some(why) = refused {
+        return (abstain(contained(&why)), None);
+    }
     let passed =
         |capture: &&yi_tools::CommandCapture| capture.exit_code == Some(0) && !capture.cancelled;
     let said = capture.as_ref().ok().filter(passed).map(|capture| {
@@ -452,10 +463,10 @@ fn verdict_of(
         Err(reason) => return abstain(reason),
     };
     if capture.cancelled {
-        return abstain(format!(
-            "checker timed out (deadline {} ms); run it by hand, then accepted_by_user with its exit line as note",
+        return abstain(contained(&format!(
+            "checker timed out (deadline {} ms)",
             manifest.timeout_ms
-        ));
+        )));
     }
     match capture.exit_code {
         Some(0) => ItemVerdict::Pass,
@@ -496,9 +507,11 @@ fn run_schema(
     }
 }
 
-/// Why one case did not pass: the runner's answer, or a host that could not run it at all.
+/// Why one case did not pass: the runner's answer, the sandbox's refusal, or a host that could not
+/// run it at all.
 enum CaseError {
     Case(&'static str),
+    Contained(String),
     /// The shell did not spawn: infrastructure, abstained and retried, never the product's.
     Host(String),
 }
@@ -508,19 +521,28 @@ fn run_examples(
     cases: &[Case],
     root: &Path,
     item_deadline: Instant,
-    hooks: Option<&crate::claude_hooks::Hooks>,
+    checker: &crate::goal::Checker,
 ) -> ItemVerdict {
     let mut failed: Vec<(usize, &'static str)> = Vec::new();
+    let mut refused: Option<String> = None;
     for (index, case) in cases.iter().enumerate() {
-        match run_case(manifest, case, root, item_deadline, hooks) {
+        match run_case(manifest, case, root, item_deadline, checker) {
             Ok(()) => {}
             Err(CaseError::Case(why)) => failed.push((index, why)),
             Err(CaseError::Host(reason)) => return abstain(reason),
+            Err(CaseError::Contained(why)) => {
+                refused = Some(format!("case {index} not run: {why}"));
+                break;
+            }
         }
     }
-    if failed.is_empty() {
-        return ItemVerdict::Pass;
-    }
+    // A refusal ends the run; it never unsays a case the product already failed.
+    let refused = match refused {
+        Some(why) if failed.is_empty() => return abstain(why),
+        Some(why) => format!("; {why}"),
+        None if failed.is_empty() => return ItemVerdict::Pass,
+        None => String::new(),
+    };
     let indexes: Vec<String> = failed.iter().map(|(index, _)| index.to_string()).collect();
     let reasons: Vec<String> = failed
         .iter()
@@ -528,7 +550,7 @@ fn run_examples(
         .collect();
     ItemVerdict::Fail {
         detail: format!(
-            "cases {} failed: {}",
+            "cases {} failed: {}{refused}",
             indexes.join(", "),
             reasons.join(", ")
         ),
@@ -540,7 +562,7 @@ fn run_case(
     case: &Case,
     root: &Path,
     item_deadline: Instant,
-    hooks: Option<&crate::claude_hooks::Hooks>,
+    checker: &crate::goal::Checker,
 ) -> Result<(), CaseError> {
     if Instant::now() >= item_deadline {
         return Err(CaseError::Case("timeout"));
@@ -554,11 +576,14 @@ fn run_case(
         Some(input),
         deadline,
         None,
-        hooks,
+        checker,
     )
     .map_err(CaseError::Host)?;
     if capture.cancelled {
         return Err(CaseError::Case("timeout"));
+    }
+    if let Some(why) = checker.refusal(&manifest.workdir(root), &manifest.command, &capture) {
+        return Err(CaseError::Contained(contained(&why)));
     }
     if capture.truncated {
         return Err(CaseError::Case("output_overflow"));

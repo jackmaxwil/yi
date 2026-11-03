@@ -227,6 +227,7 @@ pub fn session(
                 .with_transcripts(Arc::new(crate::fetch::ParentTranscript(
                     build.link.host.clone(),
                 )))
+                .with_member_trees(Arc::new(crate::fetch::ParentTrees(build.link.host.clone())))
                 .with_plans_dir(host.options.plans_dir.clone())
         }
         None => resolver,
@@ -297,7 +298,7 @@ pub(crate) fn partition(
             kept.push(numbered);
         }
         let text = crate::ext::sanitize(&kept.join("\n")).into_owned();
-        out.push_str(&crate::ext::fence(raw, "untrusted", &text));
+        out.push_str(&crate::ext::fence(raw, "untrusted", &text, None));
         out.push_str("\n\n");
         if kept.len() < lines.len() {
             let (next, last) = (

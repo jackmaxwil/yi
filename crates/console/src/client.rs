@@ -149,7 +149,11 @@ fn reader_loop(
         }
         let connected_at = Instant::now();
         let reason = read_frames(&stream, events, shutdown);
-        let _ = stream.shutdown(std::net::Shutdown::Both);
+        // Incident: closing both halves here dropped a request queued just before quit; on
+        // shutdown the writer closes the socket once its queue is flushed.
+        if !shutdown.load(Ordering::SeqCst) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
         if events.send(ClientEvent::Disconnected { reason }).is_err() {
             return;
         }

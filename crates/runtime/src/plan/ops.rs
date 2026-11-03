@@ -16,7 +16,6 @@ use yi_types::url::Url;
 
 pub use yi_types::plan::op::{Op, Reconciliation, Resolution, Resolve, SetRow, TodoSpec};
 
-use super::journal::{Journal, has_record};
 pub use super::output::OutputResolve;
 use super::output::check_output;
 use super::recovery::{self, Liveness};
@@ -28,6 +27,7 @@ use super::table::{
     op_name, ready_labels,
 };
 use super::verify::Verifier;
+use crate::journal::{Journal, has_record};
 use yi_types::plan::op::Reaped;
 
 pub(crate) use yi_types::plan::doc::OWNER_AGENT;
@@ -261,8 +261,8 @@ pub enum PlanOpError {
     Doc(#[from] DocError),
 }
 
-impl From<super::journal::JournalError> for PlanOpError {
-    fn from(error: super::journal::JournalError) -> Self {
+impl From<crate::journal::JournalError> for PlanOpError {
+    fn from(error: crate::journal::JournalError) -> Self {
         Self::Store(StoreError::Journal(error))
     }
 }
@@ -281,7 +281,7 @@ pub trait Delegate: Send + Sync {
     }
     /// A worktree child's candidate, committed on its branch with the child quiescent, read
     /// with nothing marked on the host; `None` when the host holds no lane for it.
-    fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::settle::Held>, String> {
+    fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::handback::Held>, String> {
         let _unused = agent;
         Ok(None)
     }

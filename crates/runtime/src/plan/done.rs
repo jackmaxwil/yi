@@ -15,7 +15,6 @@ use yi_types::plan::doc::{BlockedOn, Plan, PlanId, TodoLabel, TodoState, TouchCo
 use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, RequestId};
 
 use super::acceptance::{Contracted, verification};
-use super::journal::JournalError;
 use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError, Txn};
 use super::output::check_output;
 use super::state::{
@@ -25,6 +24,7 @@ use super::state::{
 use super::store::draft;
 use super::table::{OpKind, check_plan_state, locate_step};
 use super::verify::Snapshot;
+use crate::journal::JournalError;
 
 /// One verification running in this process, keyed by its token digest: a second `done` for
 /// the same token waits here instead of running the checks again.
@@ -492,7 +492,7 @@ impl PlanEngine {
     fn run_verifier(&self, prepared: &Prepared) -> Verdict {
         let artifacts = self.store.artifacts(&prepared.id);
         let workspace = Workspace(
-            std::env::temp_dir().join(format!("yi-verify-{}", self.store.request_nonce())),
+            std::env::temp_dir().join(format!("yi-verify-{}", self.store.request_nonce())), // nosemgrep: yi-rust-temp-dir request_nonce gives each verifier a unique workspace.
         );
         if let Err(reason) =
             self.snapshotter
