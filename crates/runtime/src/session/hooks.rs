@@ -446,6 +446,25 @@ impl AgentSession {
         })
     }
 
+    /// Before anything builds a [`crate::goal::Checker`]. Incident: the broker arrived last, so every
+    /// check held none and ran on the host, while a test that built one by hand stayed green.
+    pub(crate) fn hold_gate(
+        &self,
+        broker: Option<Arc<crate::permission::PermissionBroker>>,
+        wall: crate::wall::Wall,
+    ) {
+        if let Ok(mut slot) = self.permission.lock() {
+            *slot = broker;
+        }
+        self.set_wall(wall);
+    }
+
+    /// Hooks, sandbox and wall for a check this session runs.
+    pub(crate) fn checker(&self, cwd: &std::path::Path) -> crate::goal::Checker {
+        let broker = self.permission.lock().ok().and_then(|slot| slot.clone());
+        crate::goal::Checker::new(self.claude_hooks(cwd), broker, self.wall())
+    }
+
     pub(crate) fn claude_hooks(
         &self,
         cwd: &std::path::Path,
@@ -466,7 +485,7 @@ impl AgentSession {
         let shared = Arc::clone(&self.shared);
         let compactor = self.compactor.clone();
         let cwd = self.tool_cwd.lock().ok().and_then(|slot| slot.clone());
-        let hooks = self.claude_hooks(cwd.as_deref().unwrap_or_else(|| std::path::Path::new(".")));
+        let checker = self.checker(cwd.as_deref().unwrap_or_else(|| std::path::Path::new(".")));
         let (hook, quiet) = (self.heartbeat_hook(), self.deliver_hook());
         Arc::new(move |job, firing| {
             let is_streaming = shared
@@ -490,7 +509,7 @@ impl AgentSession {
                 .and_then(|slot| slot.as_ref().map(Arc::clone))
                 .ok_or("a tick creates a todo, and this session has no todo list")?;
             let fired =
-                crate::schedule::clock::fire_with_hooks(&todos, job, firing, hooks.as_ref())?;
+                crate::schedule::clock::fire_with_hooks(&todos, job, firing, Some(&checker))?;
             let outcome = crate::schedule::clock::outcome(&fired);
             if let Some(wake) =
                 crate::schedule::clock::wake_message(job, &fired, yi_session::now_ms())

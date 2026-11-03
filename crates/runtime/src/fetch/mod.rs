@@ -117,6 +117,23 @@ pub trait KernelVariables: Send + Sync {
 /// where a family member's files live, for `tree://<agent>/<path>` (D164).
 pub trait MemberTrees: Send + Sync {
     fn cwd_of(&self, agent: &str) -> Option<PathBuf>;
+    fn diff_rows(&self, agent: &str) -> Result<Vec<String>, String> {
+        Err(format!("no tree named \"{agent}\" here"))
+    }
+}
+
+/// A reader's or worker's way to its parent's family of trees: weak, as [`ParentTranscript`] is.
+pub struct ParentTrees(pub std::sync::Weak<crate::subagent::SubagentHost>);
+
+impl MemberTrees for ParentTrees {
+    fn cwd_of(&self, agent: &str) -> Option<PathBuf> {
+        MemberTrees::cwd_of(&*self.0.upgrade()?, agent)
+    }
+
+    fn diff_rows(&self, agent: &str) -> Result<Vec<String>, String> {
+        let host = self.0.upgrade().ok_or("the parent session has ended")?;
+        MemberTrees::diff_rows(&*host, agent)
+    }
 }
 
 /// Invariant: an entry is a weak handle on a session's own service, so the map a root shares
@@ -589,6 +606,9 @@ impl Resolver {
             }
             Scheme::Kernel => self.resolve_kernel(url, page),
             Scheme::History => self.resolve_history(url, page),
+            Scheme::External(scheme) if scheme == "tree" && url.path().ends_with('/') => {
+                self.resolve_tree_rows(url, page)
+            }
             _ if page.is_some() => Err(FetchError::BadAddress {
                 url: url.to_string(),
                 detail: "offset and limit page local://, history:// and kernel:// only".to_owned(),

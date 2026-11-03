@@ -12,18 +12,25 @@ on:
       - "crates/tools/tests/fixtures/ripwire/**"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   the-pinned-plugins-answer-as-yi-reads:
+    # Same hold as the gate: a contributor's plugin code waits for the owner's run-ci.
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'external') || contains(github.event.pull_request.labels.*.name, 'run-ci') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        with:
+          persist-credentials: false
       - run: rustup show
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: test
           save-if: false
-      - uses: actions/cache@v4
+      - uses: actions/cache@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           path: ~/.yi/plugins
           key: yi-plugins-${{ hashFiles('crates/tools/src/plugin.rs') }}

@@ -35,18 +35,15 @@ pub fn read_connection_info(path: &Path) -> Option<ConnectionInfo> {
 }
 
 pub struct Connection {
-    pub info: ConnectionInfo,
     pub path: PathBuf,
     pub temp_dir: PathBuf,
 }
 
-pub fn random_hex(bytes: usize) -> Result<String, String> {
+pub fn random_hex(source: &Path, bytes: usize) -> Result<String, String> {
     let mut buffer = vec![0_u8; bytes];
-    let mut source = std::fs::File::open("/dev/urandom")
-        .map_err(|error| format!("open /dev/urandom: {error}"))?;
-    source
-        .read_exact(&mut buffer)
-        .map_err(|error| format!("read /dev/urandom: {error}"))?;
+    std::fs::File::open(source)
+        .and_then(|mut random| random.read_exact(&mut buffer))
+        .map_err(|error| format!("{}: {error}", source.display()))?;
     let mut out = String::with_capacity(bytes.saturating_mul(2));
     for byte in &buffer {
         out.push_str(&format!("{byte:02x}"));
@@ -72,7 +69,7 @@ pub fn make_connection(home: &Path, dir: Option<&Path>) -> Result<Connection, St
         control_port: 0,
         hb_port: 0,
         signature_scheme: "hmac-sha256".to_owned(),
-        key: random_hex(16)?,
+        key: random_hex(Path::new("/dev/urandom"), 16)?,
         kernel_name: "python3".to_owned(),
     };
     let root = connection_root(home);
@@ -93,11 +90,7 @@ pub fn make_connection(home: &Path, dir: Option<&Path>) -> Result<Connection, St
     let path = temp_dir.join("connection.json");
     let text = serde_json::to_string_pretty(&info).map_err(|error| error.to_string())?;
     write_new_600(&path, text.as_bytes())?;
-    Ok(Connection {
-        info,
-        path,
-        temp_dir,
-    })
+    Ok(Connection { path, temp_dir })
 }
 
 /// Directories named `<pid>-…` whose yi died without disposing its kernel; a live pid's stay.
@@ -118,7 +111,10 @@ fn sweep_dead(root: &Path) {
 
 fn mkdtemp(root: &Path, prefix: &str) -> Result<PathBuf, String> {
     for _ in 0..16 {
-        let dir = root.join(format!("{prefix}{}", random_hex(6)?));
+        let dir = root.join(format!(
+            "{prefix}{}",
+            random_hex(Path::new("/dev/urandom"), 6)?
+        ));
         match std::fs::create_dir(&dir) {
             Ok(()) => {
                 set_mode(&dir, 0o700)?;
