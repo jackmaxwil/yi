@@ -588,8 +588,7 @@ fn kernel_in(
     family: Option<&Path>,
     on_boot: Option<Arc<yi_runtime::kernel::BootFn>>,
 ) -> Arc<yi_runtime::KernelService> {
-    let mut registry = yi_runtime::HostRegistry::default();
-    registry.register_mcp_stubs();
+    let registry = yi_runtime::HostRegistry::default();
     Arc::new(yi_runtime::KernelService::new(
         yi_runtime::KernelServiceOptions {
             cwd: cwd.to_path_buf(),

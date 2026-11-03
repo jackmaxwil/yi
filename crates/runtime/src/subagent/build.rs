@@ -33,6 +33,34 @@ impl Drop for Reservation<'_> {
 }
 
 impl SubagentHost {
+    /// A child's tree branches from the parent's own HEAD, so its merge lands back in the parent's
+    /// checkout rather than on `main`. No slot and no permit: family caps bound forks.
+    pub(super) fn fork_child_tree(
+        &self,
+        child_id: &str,
+        kwargs: &Map<String, Value>,
+        contained_in_image: bool,
+    ) -> Result<(crate::lane::fork::ChildTree, Vec<String>), String> {
+        let pool = crate::lane::Pool::open(
+            &self.options.home,
+            &self.options.cwd,
+            self.options.lane_slots,
+        )
+        .map_err(|error| error.to_string())?;
+        if let Some(name) = kwargs.get("tree").and_then(Value::as_str) {
+            return self.take_free_tree(name).map(|tree| (tree, Vec::new()));
+        }
+        let denied = yi_permission::credential_stores(&self.options.home);
+        let plan = crate::lane::fork::Carry {
+            extra: parse_carry(kwargs)?,
+            denied,
+            first_use: !contained_in_image,
+            ..crate::lane::fork::Carry::default()
+        };
+        crate::lane::fork::ChildTree::fork(&pool, &self.options.cwd, child_id, &plan)
+            .map_err(|error| error.to_string())
+    }
+
     /// Invariant: the roster lock is never held across a build, so `states` and `list` answer
     /// while a factory runs; the name and the slot are reserved under it instead.
     pub(super) fn reserve(
@@ -230,6 +258,8 @@ pub(super) fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> 
                     | "thinking"
                     | "fork"
                     | "isolation"
+                    | "carry"
+                    | "tree"
                     | "deny_write"
                     | "deny_read"
                     | "deny_url"
@@ -256,4 +286,94 @@ pub(super) fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> 
         "Unsupported rlm.run kwargs: {}",
         unsupported.join(", ")
     ))
+}
+
+/// How much parent history seeds a child's transcript. `LastN(n)` counts turn boundaries
+/// rather than messages, so a child never opens on half of an exchange (§11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fork {
+    None,
+    All,
+    LastN(u64),
+}
+
+/// Whether a child edits the parent's checkout or gets a git worktree of its own (§11); a
+/// container child gets the same worktree and runs its bash in a container over it (D286).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Isolation {
+    None,
+    Worktree,
+    Container(String),
+}
+
+pub(super) fn parse_isolation(kwargs: &Map<String, Value>) -> Result<Isolation, String> {
+    if kwargs.contains_key("tree") {
+        return Ok(Isolation::Worktree);
+    }
+    match kwargs.get("isolation") {
+        None | Some(Value::Null) => Ok(Isolation::None),
+        Some(Value::String(value)) => match value.trim() {
+            "none" => Ok(Isolation::None),
+            "worktree" => Ok(Isolation::Worktree),
+            other => match crate::node::image_of(other) {
+                Some(image) => Ok(Isolation::Container(image?.to_owned())),
+                None => Err(format!(
+                    "rlm.run isolation must be \"none\", \"worktree\" or \"container:<image>\", got {other}"
+                )),
+            },
+        },
+        Some(other) => Err(format!("rlm.run isolation must be a string, got {other}")),
+    }
+}
+
+const CARRY_MAX: usize = 256;
+
+/// `carry=[".env"]`: ignored files a fork brings along. A name a model gave never becomes a ref.
+fn parse_carry(kwargs: &Map<String, Value>) -> Result<Vec<String>, String> {
+    let entries = match kwargs.get("carry") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(entries)) => entries,
+        Some(other) => {
+            return Err(format!(
+                "rlm.run carry must be a list of paths, got {other}"
+            ));
+        }
+    };
+    if entries.len() > CARRY_MAX {
+        return Err(format!(
+            "rlm.run carry names {} paths; the cap is {CARRY_MAX}",
+            entries.len()
+        ));
+    }
+    (entries.iter())
+        .map(|entry| {
+            let path = entry.as_str();
+            path.map(str::to_owned)
+                .ok_or_else(|| format!("rlm.run carry entries must be strings, got {entry}"))
+        })
+        .collect()
+}
+
+pub(super) fn parse_fork(kwargs: &Map<String, Value>) -> Result<Fork, String> {
+    match kwargs.get("fork") {
+        None | Some(Value::Null) => Ok(Fork::None),
+        Some(Value::String(value)) => match value.trim() {
+            "none" => Ok(Fork::None),
+            "all" => Ok(Fork::All),
+            other => other
+                .parse::<u64>()
+                .ok()
+                .filter(|turns| *turns > 0)
+                .map(Fork::LastN)
+                .ok_or_else(|| {
+                    format!("rlm.run fork must be \"none\", \"all\", or a positive turn count, got {other}")
+                }),
+        },
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .filter(|turns| *turns > 0)
+            .map(Fork::LastN)
+            .ok_or_else(|| format!("rlm.run fork turn count must be positive, got {number}")),
+        Some(other) => Err(format!("rlm.run fork must be a string or number, got {other}")),
+    }
 }

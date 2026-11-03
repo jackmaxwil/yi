@@ -134,7 +134,7 @@ def main():
         parser.error("no command after --")
     args.runs.mkdir(parents=True, exist_ok=True)
     stopped = args.runs.parent / (args.runs.name + ".STOPPED")
-    child = subprocess.Popen(command, start_new_session=True)
+    child = subprocess.Popen(command, start_new_session=True)  # nosemgrep: dangerous-subprocess-use-tainted-env-args This wrapper intentionally executes parsed CLI argv without a shell.
     started, breached, unused_last = time.monotonic(), set(), {}
     while True:
         try:

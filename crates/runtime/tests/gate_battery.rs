@@ -12,7 +12,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 /// A working day of commands, with the verdict each one earns in auto. Rows are
 /// what a dry run of `yi gate` prints, so a change in policy shows up here as a
 /// diff a person can read rather than as a number.
-const BATTERY: [(&str, &str); 125] = [
+const BATTERY: [(&str, &str); 129] = [
     // Reads and searches.
     ("ls -la", "allow"),
     ("cat Cargo.toml", "allow"),
@@ -54,9 +54,9 @@ const BATTERY: [(&str, &str); 125] = [
     // git, everything that changes something.
     ("git add -A", "contain"),
     ("git commit -m wip", "contain"),
-    ("git push origin main", "ask"),
-    ("git fetch origin", "ask"),
-    ("git pull --rebase", "ask"),
+    ("git push origin main", "contain"),
+    ("git fetch origin", "contain"),
+    ("git pull --rebase", "contain"),
     ("git switch main", "contain"),
     ("git checkout -b feature", "contain"),
     ("git worktree add ../wt br", "contain"),
@@ -101,7 +101,7 @@ const BATTERY: [(&str, &str); 125] = [
     ("rm -rf target && cargo test", "ask"),
     ("cargo build && ./target/debug/yi --version", "contain"),
     ("git add -A && git commit -m wip", "contain"),
-    ("cargo check && git commit -am wip && git push", "ask"),
+    ("cargo check && git commit -am wip && git push", "contain"),
     ("rg TODO crates && rm -rf tmp", "ask"),
     (
         "cargo fmt && cargo clippy && git commit -am style",
@@ -111,7 +111,7 @@ const BATTERY: [(&str, &str); 125] = [
         "cargo build --release && cp target/release/yi /usr/local/bin/yi",
         "contain",
     ),
-    ("git checkout main && git pull && cargo test", "ask"),
+    ("git checkout main && git pull && cargo test", "contain"),
     // Runners and unknown verbs: the repository authors what they execute.
     ("just check", "contain"),
     ("make test", "contain"),
@@ -120,7 +120,7 @@ const BATTERY: [(&str, &str); 125] = [
     ("python3 script.py", "contain"),
     ("./scripts/build.sh", "contain"),
     ("docker build .", "contain"),
-    ("gh pr create --fill", "contain"),
+    ("gh pr create --fill", "ask"),
     ("kubectl get pods", "contain"),
     ("mkdir -p target/tmp", "contain"),
     ("touch NOTES.md", "contain"),
@@ -139,7 +139,11 @@ const BATTERY: [(&str, &str); 125] = [
     ("chmod -R 755 .", "ask"),
     ("chown -R me:staff .", "ask"),
     ("npm install -g typescript", "ask"),
-    ("pip install requests", "ask"),
+    ("pip install --user requests", "ask"),
+    ("pip install requests", "contain"),
+    ("npm install left-pad", "contain"),
+    ("cargo add serde", "contain"),
+    ("cargo fetch", "contain"),
     ("brew install jq", "ask"),
     ("ssh host ls", "ask"),
     ("scp report.txt host:/tmp", "ask"),

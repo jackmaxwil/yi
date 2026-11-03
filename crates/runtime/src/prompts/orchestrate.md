@@ -151,9 +151,9 @@ its partition, no kernel. Every pattern here but map-reduce spawns
   answers with pandas in your kernel.
 - Hypothesis tournament: N children with `check=`; `result()` is withheld
   while red; take the first green and `interrupt` the rest.
-- Best-of-N: N writers in worktrees on one todo at different `thinking`
-  levels or models; run the check in each through `tree://`; merge the
-  winner, discard the rest.
+- Best-of-N: `f = await rlm.tree().fork()` per writer, `rlm.run(brief,
+  tree=f)`, `await f.check(cmd)` each; `rlm.tree().merge(winner)`,
+  `discard` the rest.
 - Persistent specialist: one child kept all session as the test runner or
   the codebase guide; `await rlm.send(name, q, followup=True)` reuses
   its warmed context.
