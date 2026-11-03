@@ -29,6 +29,8 @@ from unittest import mock
 import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# Incident: CI reaches python through a /root symlink the dropped worker user cannot open; spawns and shebangs use the real path.
+PYTHON = os.path.realpath(sys.executable)
 sys.path.insert(0, str(ROOT / "scripts"))
 import bot_meter  # noqa: E402
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
@@ -288,7 +290,7 @@ def make_clone(repo, into, sha):
     sh(into, "git", "fetch", "-q", str(repo), "+refs/remotes/origin/*:refs/remotes/origin/*")
     sh(into, "git", "checkout", "-q", "--detach", sha)
     # Incident: the PR's own older driver kept stale hashes main had moved; this checkout's is main's.
-    sh(into, "git", "config", "merge.baseline.driver", f"{sys.executable} {ROOT / 'scripts/merge_baseline.py'} %O %A %B")
+    sh(into, "git", "config", "merge.baseline.driver", f"{PYTHON} {ROOT / 'scripts/merge_baseline.py'} %O %A %B")
 
 
 def resolve_prompt(pr, base_ref, conflicted):
@@ -1007,11 +1009,11 @@ def in_worker(work, op, args):
         json.dump({"op": op, "args": {"work": str(work), **args}}, asked)
         asked.seek(0)
         try:
-            subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()), "--worker"], cwd=work, env=env,
+            subprocess.run([PYTHON, str(pathlib.Path(__file__).resolve()), "--worker"], cwd=work, env=env,
                            stdin=asked, stdout=out, stderr=err, **drop)
         finally:
             if drop:
-                subprocess.run([sys.executable, "-c", "import os, signal; os.kill(-1, signal.SIGKILL)"], cwd="/", env=env, check=False, **drop)
+                subprocess.run([python, "-c", "import os, signal; os.kill(-1, signal.SIGKILL)"], cwd="/", env=env, check=False, **drop)
         out.seek(0)
         err.seek(0)
         said, died = out.read(), err.read()
@@ -2042,7 +2044,7 @@ def confined_selfcheck():
         git("init", "-q", "-b", "main"); git("add", "-A"); git("commit", "-qm", "seed")
         (tmp / "bin").mkdir(mode=0o755)
         attack = tmp / "bin/cargo"
-        attack.write_text(f"""#!{sys.executable}
+        attack.write_text(f"""#!{PYTHON}
 import json, os, pathlib, subprocess, sys
 def tried(fn):
     try:
@@ -2164,7 +2166,7 @@ def worker_fix_selfcheck(tmp):
     git("fetch", "-q", "origin")
     # The bare remote is pushed by root and read by the worker only through the clone's own refs.
     yi = tmp / "bin/yi"
-    yi.write_text(f"""#!{sys.executable}
+    yi.write_text(f"""#!{PYTHON}
 import json, pathlib, sys
 args = sys.argv
 sys.stdin.read()
