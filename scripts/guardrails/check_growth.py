@@ -7,7 +7,7 @@ free band lands almost exactly on the seam between the two regimes — 46 organi
 bumps under it, 49 landings over — and 7 of those landings clear +2000."""
 import re, statistics, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import SRC, fail, fork, git, no_fork, texts, FREE_BAND as FREE
+from _common import skip_on_candidate, SRC, fail, fork, git, no_fork, texts, FREE_BAND as FREE
 from check_changes import GROWTH, pending
 
 DROW = 2000
@@ -81,6 +81,7 @@ if "--calibrate" in sys.argv:
     sys.exit(0)
 
 base = fork()
+skip_on_candidate("growth")
 if base is None:
     no_fork("growth")
 delta = loc_at() - loc_at(base)

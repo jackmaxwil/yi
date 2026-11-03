@@ -522,16 +522,22 @@ impl SubagentHost {
 
 /// Invariant: expiry runs off the wall clock on its own task at every session depth, so a slow
 /// repossession never holds the next grace back; the pump ends once its host is gone.
-pub fn spawn_expiry(host: &Arc<SubagentHost>) -> Arc<Due> {
+pub fn spawn_expiry(host: &Arc<SubagentHost>) {
     let due = Arc::new(Due::default());
-    let (taken, host) = (Arc::clone(&due), Arc::downgrade(host));
+    let (taken, weak) = (Arc::clone(&due), Arc::downgrade(host));
     tokio::spawn(Arc::clone(&due).pump(Arc::new(Instant::now), move || {
         taken.take_due(Instant::now());
-        let Some(host) = host.upgrade() else {
+        let Some(host) = weak.upgrade() else {
             return false;
         };
         tokio::spawn(async move { host.expire().await });
         true
     }));
-    due
+    host.set_lease_clock(
+        None,
+        Some(Arc::new(move |grace| {
+            let now = Instant::now();
+            due.wake_at(now.checked_add(grace).unwrap_or(now));
+        })),
+    );
 }

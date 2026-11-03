@@ -1034,7 +1034,7 @@ impl Cell {
             Cell::Assistant { markdown } => {
                 let mut out = vec![Line::default()];
                 out.extend(gutter(
-                    markdown::render(markdown, width.saturating_sub(gutter_cols()), theme),
+                    markdown::render_answer(markdown, width.saturating_sub(gutter_cols()), theme),
                     true,
                     theme,
                 ));

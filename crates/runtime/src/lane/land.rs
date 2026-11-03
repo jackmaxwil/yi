@@ -283,7 +283,8 @@ fn poll_forge(forge: Forge, url: &str, lane: &Lane, pr: PrNumber) -> Result<Land
                 .unwrap_or_default()
         }
     };
-    let behind = git(lane.path(), &["rev-list", "--count", "HEAD..origin/main"])
+    let range = format!("HEAD..origin/{}", super::hostgit::trunk(lane.pool().repo()));
+    let behind = git(lane.path(), &["rev-list", "--count", &range])
         .ok()
         .and_then(|text| text.trim().parse::<u32>().ok())
         .unwrap_or(0);
@@ -470,13 +471,18 @@ impl LaneHandle {
     /// aborts, verifies the tree is clean again, and names the files; nothing is pushed.
     fn merge_main(&self) -> Result<(), LaneError> {
         self.with_lane(|lane| {
-            let _ = git(lane.pool().repo(), &["fetch", "-q", "origin", "main"]);
-            if let Err(refusal) = git(lane.path(), &["merge", "--no-edit", "origin/main"]) {
+            let trunk = super::hostgit::trunk(lane.pool().repo());
+            super::hostgit::own_head(lane.path(), lane.branch())?;
+            let _ = git(lane.pool().repo(), &["fetch", "-q", "origin", trunk.as_str()]);
+            let merge = ["merge", "--no-edit", &format!("origin/{trunk}")].map(str::to_owned);
+            let merge: Vec<&str> = merge.iter().map(String::as_str).collect();
+            let identity = super::hostgit::identity(lane.path());
+            if let Err(refusal) = git(lane.path(), &[&identity[..], &merge[..]].concat()) {
                 // Incident: git refusing for an overlapping dirty file starts no merge, so
                 // `merge --abort` answered "no merge to abort" and its error hid the real cause.
                 if git(lane.path(), &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_err() {
                     return Err(LaneError::Forge(format!(
-                        "git refused the merge of origin/main; nothing pushed and no merge was started:\n```\n{refusal}\n```\nresolve what it names in {}, then /land again",
+                        "git refused the merge of origin/{trunk}; nothing pushed and no merge was started:\n```\n{refusal}\n```\nresolve what it names in {}, then /land again",
                         lane.path().display()
                     )));
                 }

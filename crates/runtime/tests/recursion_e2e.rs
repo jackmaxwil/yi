@@ -155,6 +155,26 @@ fn assistant_count(messages: &[AgentMessage]) -> usize {
         .count()
 }
 
+fn harness_kernel(harness: &Harness) -> Arc<KernelService> {
+    let mut registry = HostRegistry::default();
+    harness.host.register(&mut registry);
+    Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        session_dir: Some(harness.root.to_path_buf()),
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        on_boot: None,
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling: None,
+    }))
+}
+
 fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let HarnessOptions {
         child_errors,
@@ -2345,8 +2365,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
                 child_reply("carried on without my state"),
             ]);
             let mut child = AgentSession::new(config, provider);
-            let mut registry = HostRegistry::default();
-            registry.register_mcp_stubs();
+            let registry = HostRegistry::default();
             let kernel = Arc::new(KernelService::new(KernelServiceOptions {
                 cwd: dir.clone(),
                 home: std::env::var_os("HOME")
@@ -2931,24 +2950,7 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
 #[tokio::test]
 async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
     let harness = harness(0, 1, "kernel child says hi")?;
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
-    harness.host.register(&mut registry);
-    let service = Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: std::env::temp_dir(),
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
-        session_dir: Some(harness.root.to_path_buf()),
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }));
+    let service = harness_kernel(&harness);
 
     harness.host.attach_kernel(&service);
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
@@ -3834,35 +3836,85 @@ async fn a_walled_check_is_refused_at_every_spawn() -> TestResult {
     Ok(())
 }
 
-/// A sandboxed auto session runs a command it would only contain inside the sandbox, and a check
-/// runs on the host, so the broker's leg of the gate refuses it at spawn and names the way out.
+/// Dies with a check the gate only contains being refused at spawn, since a check ran on the host:
+/// it now runs in the sandbox, so a project's own `just check` can be one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_sandboxed_session_refuses_a_check_it_would_only_contain() -> TestResult {
+async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResult {
     let root = gate_rule_root("yi-check-sandboxed", None)?;
     let sandbox = yi_tools::Sandbox {
         writable: vec![root.join("project")],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
     let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), Some(sandbox));
-    let marker = root.join("project/contained-marker");
-    let check = json!(format!("touch {}", marker.display()));
-    let spawned = host.spawn(
-        "land the fix".to_owned(),
-        protocol_kwargs("contained", &[("check", check)]),
-    );
-    let refusal = spawned
-        .err()
-        .ok_or("a check the sandbox only contains must not spawn")?;
-    assert!(
-        refusal.contains("refused before it runs on the host")
-            && refusal.contains("runs later outside the sandbox, which allows it only contained")
-            && refusal.contains("run it yourself with bash, or allow it by a permission rule"),
-        "the refusal names the containment and the way out: {refusal}"
-    );
-    assert!(!marker.exists(), "the refused check never ran");
+    let outside = root.join("outside-marker");
+    let address = root.join("project/escape-target");
+    std::fs::write(&address, outside.display().to_string())?;
+    // Read from a file, so the gate's reading of the words cannot refuse it before the sandbox.
+    let check = json!(format!("touch \"$(cat {})\"", address.display()));
+    let reply = host
+        .spawn(
+            "land the fix".to_owned(),
+            protocol_kwargs("contained", &[("check", check)]),
+        )
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
+    assert!(wait_for_status(&host, child_id, "completed").await);
+    let refused = host.result("contained", None).err().unwrap_or_default();
+    assert!(refused.contains("[contained: "), "{refused}");
+    assert!(!outside.exists(), "the child's check ran on the host");
+    Ok(())
+}
+
+/// Dies with the broker reaching the session after its checkers were built: a wired session's
+/// check then ran on the host, and its wall was empty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wired_sessions_check_runs_in_its_sandbox_under_its_wall() -> TestResult {
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
+    let root = gate_rule_root("yi-check-wired", None)?;
+    let walled = root.join("project/walled");
+    std::fs::create_dir_all(&walled)?;
+    let sandbox = yi_tools::Sandbox {
+        writable: vec![root.join("project")],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        sealed: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    };
+    let wall = yi_runtime::Wall {
+        deny_write: vec![walled.clone()],
+        ..yi_runtime::Wall::default()
+    };
+    let (_session, _provider, host) = wired_root(&root, wall, Some(sandbox));
+    let outside = root.join("outside-marker");
+    let inside = walled.join("marker");
+    for (name, target) in [("escape", &outside), ("walled", &inside)] {
+        // Read from a file, so the gate's reading of the words cannot refuse it before the sandbox.
+        let address = root.join(format!("project/{name}-target"));
+        std::fs::write(&address, target.display().to_string())?;
+        let check = json!(format!("touch \"$(cat {})\"", address.display()));
+        let reply = host
+            .spawn(
+                "land the fix".to_owned(),
+                protocol_kwargs(name, &[("check", check)]),
+            )
+            .map_err(|error| error.to_string())?;
+        let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+        assert!(wait_for_status(&host, child_id, "completed").await);
+        let refused = host.result(name, None).err().unwrap_or_default();
+        assert!(refused.contains("[contained: "), "{name}: {refused}");
+    }
+    assert!(!outside.exists(), "the check ran on the host");
+    assert!(!inside.exists(), "the check ignored the session's wall");
     Ok(())
 }
 
@@ -3923,6 +3975,7 @@ async fn a_merge_check_the_gate_refuses_never_runs() -> TestResult {
         writable: vec![project.clone()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
@@ -4929,24 +4982,7 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
         wake_parent: None,
     })?;
     let mut events = harness.events.subscribe();
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
-    harness.host.register(&mut registry);
-    let service = Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: std::env::temp_dir(),
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
-        session_dir: Some(harness.root.to_path_buf()),
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }));
+    let service = harness_kernel(&harness);
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
     let cell = tokio::task::spawn_blocking({
         let service = Arc::clone(&service);
@@ -5469,52 +5505,36 @@ async fn a_failure_from_a_child_reads_failed_in_wait() -> TestResult {
     Ok(())
 }
 
-/// #1571: a spawn refused after its directory was made (here for the one worker lane the pool
-/// splits out) left a `sub-*` behind, so the family named a child that never ran.
+/// #1571: a spawn refused after its directory was made (here a worktree child of a directory
+/// that is no git repository) left a `sub-*` behind, so the family named a child that never ran.
 #[tokio::test]
-async fn a_spawn_refused_by_the_lane_pool_leaves_no_directory() -> TestResult {
-    let repo = Scratch::new("yi-spawn-dir")?;
-    crate::repo::init_repo(&repo)?;
-    std::fs::create_dir_all(repo.join("home"))?;
+async fn a_refused_spawn_leaves_no_directory() -> TestResult {
+    let cwd = Scratch::new("yi-spawn-dir")?;
     let harness = harness_with(HarnessOptions {
         child_errors: false,
         depth: 0,
         max_depth: 1,
-        child_answer: "holding the lane",
+        child_answer: "never runs",
         tool_command: None,
-        cwd: Some(repo.to_path_buf()),
+        cwd: Some(cwd.to_path_buf()),
         wake_parent: None,
     })?;
-    harness.host.spawn(
-        "hold the lane".to_owned(),
-        protocol_kwargs("held", &[("isolation", json!("worktree"))]),
-    )?;
-    let dirs = || -> Result<Vec<String>, Box<dyn Error>> {
-        let mut names: Vec<String> = std::fs::read_dir(&harness.root)?
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("sub-"))
-            .collect();
-        names.sort();
-        Ok(names)
-    };
-    assert_eq!(
-        dirs()?.len(),
-        1,
-        "the admitted child has its directory: {:?}",
-        dirs()?
-    );
     let refused = harness.host.spawn(
-        "take a lane".to_owned(),
+        "take a tree".to_owned(),
         protocol_kwargs("refused", &[("isolation", json!("worktree"))]),
     );
-    let reason = refused.err().ok_or("the worker lane is already held")?;
-    assert!(reason.contains("worker capacity is full"), "{reason}");
-    assert_eq!(
-        dirs()?.len(),
-        1,
-        "the refused spawn left no sub-* behind: {:?}",
-        dirs()?
+    assert!(
+        refused.is_err(),
+        "a worktree child of no repository is refused"
+    );
+    let left: Vec<String> = std::fs::read_dir(&harness.root)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("sub-"))
+        .collect();
+    assert!(
+        left.is_empty(),
+        "the refused spawn left no sub-* behind: {left:?}"
     );
     Ok(())
 }

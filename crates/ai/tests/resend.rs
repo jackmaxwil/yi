@@ -99,6 +99,7 @@ fn a_refused_request_bills_a_known_zero() -> TestResult {
         &[],
         &probe(),
         None,
+        None,
         &|_| {},
     )
     .err()
@@ -128,7 +129,7 @@ fn a_refused_resend_keeps_the_first_attempt_unknown() -> TestResult {
     let body = probe();
     let failed = yi_ai::request::pump_sse_with_resend(
         None,
-        || yi_ai::request::send_with_retry(&url, &[], &body, None, &|_| {}),
+        || yi_ai::request::send_with_retry(&url, &[], &body, None, None, &|_| {}),
         |_| Ok(true),
     )
     .err()
