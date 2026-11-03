@@ -37,3 +37,7 @@ the print.
 The selfcheck's stand-in cargo runs under the interpreter the worker itself uses, so a root-only
 runner interpreter cannot make the fixture unexecutable to the user it drops to, and a worker that
 leaves no reach report now fails the selfcheck by name instead of a traceback naming the file.
+The lookup of that interpreter is guarded where the fixture is built, and a refusal is a hand-off
+rather than the PR's failure: before, a runner whose box cannot carry its interpreter died with a
+traceback out of the selfcheck, and the pass that reached it was written into the PR's ledger as a
+failed attempt with a retry spent.
