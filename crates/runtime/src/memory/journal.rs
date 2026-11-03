@@ -31,10 +31,10 @@ fn canonical(error: impl std::fmt::Debug) -> StoreError {
     }
 }
 
-fn journal(error: crate::plan::journal::JournalError) -> StoreError {
+fn journal(error: crate::journal::JournalError) -> StoreError {
     match error {
-        crate::plan::journal::JournalError::Io { source, .. }
-        | crate::plan::journal::JournalError::Sync { source, .. } => io(JOURNAL)(source),
+        crate::journal::JournalError::Io { source, .. }
+        | crate::journal::JournalError::Sync { source, .. } => io(JOURNAL)(source),
         other => canonical(other),
     }
 }
@@ -75,9 +75,9 @@ impl<'a> Journal<'a> {
         self.dir.join(OBJECTS).join(hash.hex())
     }
 
-    fn log(&self) -> crate::plan::journal::Journal {
-        let fs = std::sync::Arc::new(crate::plan::journal::RealFs);
-        crate::plan::journal::Journal::open(self.dir.join(JOURNAL), fs)
+    fn log(&self) -> crate::journal::Journal {
+        let fs = std::sync::Arc::new(crate::journal::RealFs);
+        crate::journal::Journal::open(self.dir.join(JOURNAL), fs)
     }
 
     /// A line that is not a record marks the journal broken and replay reads on past it; a torn
@@ -122,8 +122,13 @@ impl<'a> Journal<'a> {
         session: Option<&str>,
         extra: Map<String, Value>,
     ) -> Result<MemoryRecord, StoreError> {
-        let replay = self.replay()?;
-        let prev = replay.records.last().map(|record| record.digest);
+        // Invariant: only rebuild names a broken chain, so an append reads just the last record;
+        // a tail that is not one whole record takes the full replay, which sets a torn tail aside.
+        let last = self.log().tail().map_err(journal)?;
+        let prev = match last.and_then(|line| serde_json::from_slice::<MemoryRecord>(&line).ok()) {
+            Some(last) => Some(last.digest),
+            None => self.replay()?.records.last().map(|record| record.digest),
+        };
         let unsealed = MemoryRecord {
             op: op.to_owned(),
             name: name.to_owned(),

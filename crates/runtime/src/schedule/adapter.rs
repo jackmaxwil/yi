@@ -28,7 +28,7 @@ struct Supervisor {
     eager_until: Mutex<Instant>,
     stop: AtomicBool,
     dead: Mutex<Option<String>>,
-    hooks: Mutex<Option<Arc<crate::claude_hooks::Hooks>>>,
+    checker: Mutex<crate::goal::Checker>,
 }
 
 #[derive(Default)]
@@ -144,7 +144,7 @@ pub(crate) fn ensure_with_hooks(
     cwd: &Path,
     cadence_ms: u64,
     eager: bool,
-    hooks: Option<&Arc<crate::claude_hooks::Hooks>>,
+    checker: Option<&crate::goal::Checker>,
 ) -> Result<(), String> {
     let lease = Duration::from_millis(cadence_ms.saturating_mul(3)).max(Duration::from_secs(30));
     let now = Instant::now();
@@ -158,7 +158,7 @@ pub(crate) fn ensure_with_hooks(
         return Ok(());
     }
     if let Some(running) = registry.running.get(channel.path()) {
-        *held(&running.hooks) = hooks.cloned();
+        *held(&running.checker) = checker.cloned().unwrap_or_default();
         if let Some(why) = held(&running.dead).clone() {
             return Err(why);
         }
@@ -173,7 +173,7 @@ pub(crate) fn ensure_with_hooks(
         eager_until: Mutex::new(eager_until),
         stop: AtomicBool::new(false),
         dead: Mutex::new(None),
-        hooks: Mutex::new(hooks.cloned()),
+        checker: Mutex::new(checker.cloned().unwrap_or_default()),
     });
     registry
         .running
@@ -238,8 +238,8 @@ fn supervise(uri: &str, channel: &Channel, cwd: &Path, supervisor: &Arc<Supervis
                     channel,
                     supervisor,
                     || {
-                        let hooks = held(&supervisor.hooks).clone();
-                        exec(&command, cwd, hooks.as_deref())
+                        let checker = held(&supervisor.checker).clone();
+                        exec(&command, cwd, &checker)
                     },
                     |data| data.get("ok").cloned().unwrap_or_default(),
                 )
@@ -330,17 +330,16 @@ fn poll(
 
 /// Emits on a change of exit status, not per output line: a check is a level, red or green,
 /// and a line stream would re-send the same log on every run of an unchanged check.
-fn exec(command: &str, cwd: &Path, hooks: Option<&crate::claude_hooks::Hooks>) -> Value {
-    if let Err(refused) = crate::claude_hooks::guard_shell(hooks, command, cwd) {
+fn exec(command: &str, cwd: &Path, checker: &crate::goal::Checker) -> Value {
+    if let Err(refused) = checker.guard(command, cwd) {
         return json!({"ok": false, "output": refused});
     }
-    let mut shell = yi_tools::keyless_command("sh");
-    shell.arg("-c").arg(command).current_dir(cwd);
+    let shell = checker.shell("sh", command, cwd);
     let deadline = Instant::now()
         .checked_add(Duration::from_millis(EXEC_TIMEOUT_MS))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    match yi_tools::run_captured(shell, None, &cancelled, yi_tools::OUTPUT_CAP) {
+    match crate::goal::captured(shell, None, &cancelled) {
         Ok(capture) if capture.exit_code == Some(0) => json!({"ok": true, "exit": 0}),
         Ok(capture) => {
             let output = crate::goal::check_view(command, cwd, None, &capture);

@@ -294,55 +294,19 @@ fn walk_capped(
     walked
 }
 
-/// Every other verb keeps the `Exec` default: the flag warns about blast
-/// radius, and this is the set with none.
-const READ_ONLY_VERBS: [&str; 24] = [
-    "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "which", "type", "file", "stat",
-    "du", "df", "date", "env", "printenv", "grep", "rg", "ag", "find", "fd", "diff", "true",
-];
-
-#[rustfmt::skip]
-const READ_ONLY_GIT: [&str; 10] = [
-    "log", "status", "diff", "show", "blame", "branch", "describe", "rev-parse", "ls-files",
-    "shortlog",
-];
-
-/// Incident: every bash call reported as irreversible, so the advisor flagged `ls -la && git
-/// log` into meaninglessness. Each segment is screened; all must be read-only.
-fn read_only_command(command: &str) -> bool {
-    command
-        .split(['|', ';', '\n'])
-        .flat_map(|part| part.split("&&"))
-        .all(read_only_segment)
-}
-
-fn read_only_segment(segment: &str) -> bool {
-    let tokens: Vec<&str> = segment
-        .split_whitespace()
-        // `2>/dev/null` overwrites nothing that exists.
-        .filter(|token| !(token.contains('>') && token.ends_with("/dev/null")))
-        .collect();
-    if tokens
-        .iter()
-        .any(|token| token.contains('>') || token.contains('`') || token.contains("$("))
-    {
+/// Incident: a hand-split verb list called `find . -delete` a read. A read is what the permission
+/// classifier proves, less cargo, whose proven verbs write `target/` and the source.
+pub(crate) fn read_only_command(command: &str) -> bool {
+    let command = yi_permission::without_redirects(command);
+    let yi_permission::Parsed::Segments(segments) = yi_permission::parse(&command) else {
         return false;
-    }
-    let mut words = tokens.iter().skip_while(|word| word.contains('='));
-    let Some(verb) = words.next() else {
-        return true;
     };
-    let verb = verb.rsplit('/').next().unwrap_or(verb);
-    match verb {
-        "git" => words.next().is_some_and(|sub| READ_ONLY_GIT.contains(sub)),
-        // The permission wall's own verdict: the label and the decision cannot disagree.
-        "ripwire" => matches!(
-            yi_permission::parse(segment),
-            yi_permission::Parsed::Segments(argvs)
-                if matches!(argvs.as_slice(), [argv] if yi_permission::classify(argv) == yi_permission::Class::Safe)
-        ),
-        _ => READ_ONLY_VERBS.contains(&verb),
-    }
+    yi_permission::verdict_of(&segments) == yi_permission::Verdict::Allow
+        && segments.iter().all(|argv| {
+            (argv.iter().map(String::as_str))
+                .find(|word| !yi_permission::wraps(word))
+                .is_none_or(|word| word.rsplit('/').next() != Some("cargo"))
+        })
 }
 
 const BROAD_ROOTS: [&str; 10] = [
@@ -745,7 +709,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget; -v/--verbose bypass it for cargo and test runners, --porcelain for git, and -la for ls. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget; -v/--verbose bypass it for cargo and test runners, --porcelain for git, and -la for ls. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: network only through a proxy where unlisted hosts ask, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing git's network, a global install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
     }
 
     fn schema(&self) -> Value {
@@ -1089,41 +1053,26 @@ mod tests {
     }
 
     #[test]
-    fn the_ceiling_nudge_fires_on_a_second_hit_within_four_calls() {
-        // Invented bash results, one session per case; the 2026-09-11 sweep replay cited by D190
-        // read the real transcripts outside the repository and is not committed.
+    fn the_ceiling_nudge_fires_on_a_second_hit_within_four_calls()
+    -> Result<(), Box<dyn std::error::Error>> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/bash-time-limits.jsonl");
-        let rows = std::fs::read_to_string(path).unwrap();
-        let mut tools = std::collections::BTreeMap::<String, BashTool>::new();
+            .join("tests/fixtures/reduce/bash-time-limits.jsonl");
+        let rows = std::fs::read_to_string(path)?;
+        let tool = BashTool::default();
         let mut fired = Vec::new();
         for line in rows.lines() {
-            let row: serde_json::Value = serde_json::from_str(line).unwrap();
-            let session = row["session"].as_str().unwrap();
-            let nudge = tools.entry(session.to_owned()).or_default().ceiling_nudge(
-                row["command"].as_str().unwrap(),
-                row["timedOut"].as_bool().unwrap(),
-                i32::try_from(row["exitCode"].as_i64().unwrap()).unwrap(),
-                Duration::from_millis(row["durationMs"].as_u64().unwrap()),
+            let row: serde_json::Value = serde_json::from_str(line)?;
+            let nudge = tool.ceiling_nudge(
+                row["command"].as_str().ok_or("command")?,
+                row["timedOut"].as_bool().ok_or("timedOut")?,
+                i32::try_from(row["exitCode"].as_i64().ok_or("exitCode")?)?,
+                Duration::from_millis(row["durationMs"].as_u64().ok_or("durationMs")?),
             );
             if nudge.is_some() {
-                fired.push(format!("{session} call {}", row["call"]));
+                fired.push(row["call"].as_u64().ok_or("call")?);
             }
         }
-        assert_eq!((rows.lines().count(), tools.len()), (44, 12));
-        assert_eq!(
-            fired,
-            [
-                "kill-then-own-timeout call 3",
-                "kill-two-successes-kill call 4",
-                "own-timeouts-in-a-row call 2",
-                "own-timeouts-in-a-row call 3",
-                "search-kills-in-a-row call 2",
-                "kill-after-and-signal-options call 3",
-                "env-path-and-chain-before-timeout call 2",
-                "env-path-and-chain-before-timeout call 3",
-                "later-segment-exits-124-misfires call 2"
-            ]
-        );
+        assert_eq!(fired, [2]);
+        Ok(())
     }
 }

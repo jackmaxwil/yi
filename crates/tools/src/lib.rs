@@ -7,7 +7,7 @@ mod document;
 mod exec;
 mod grep;
 pub mod hashline;
-mod ignore;
+pub mod ignore;
 mod ipython;
 pub mod jobs;
 mod orient;
@@ -23,6 +23,7 @@ pub mod sandbox;
 #[cfg(test)]
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+mod spawn;
 mod spill;
 mod steer;
 mod syntax;
@@ -42,14 +43,16 @@ pub use ipython::{CellCalls, CellSpill, IpythonTool, KernelBridge, KernelCellOut
 pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, run_or_background};
 pub use orient::GetContextTool;
 pub use process::{
-    CommandCapture, OUTPUT_CAP, command, edit_file, git_root, keyless_command, run_captured,
-    spill_path,
+    CommandCapture, HostRefused, OUTPUT_CAP, command, edit_file, git_root, host_command,
+    keyless_command, run_captured, spill_path,
 };
+pub use redact::Redactor;
 pub use reduce::{Involuntary, Reduced, VIEW_CEILING, reduce, rerun, view};
 pub use sandbox::{
-    Sandbox, SandboxRefusal, denial_hint, exit_zero_note, kernel_cell_note, nested_sandbox_note,
-    sandbox_refusal,
+    Sandbox, SandboxRefusal, SealBroken, denial_hint, exit_zero_note, kernel_cell_note,
+    nested_sandbox_note, reseal, sandbox_refusal, set_wrapper, verify_seal, writes_sealed,
 };
+pub use spawn::{FirstUse, Spawn, SpawnFn, SpawnRefused, forget_first_use, register_first_use};
 /// The spill root's name under `~/.yi`, one dir per session inside it, before spills moved into
 /// the family board; walled sessions still may not read it (D340).
 pub const SPILLS: &str = "spills";
@@ -57,7 +60,7 @@ pub const SPILLS: &str = "spills";
 pub const FLAT_SPILLS: &str = "tool-output";
 pub use tool::{
     CancelFlag, DETAIL_CAP, FileChange, Fuse, Tool, ToolContext, ToolKind, ToolOutput, cut_row,
-    error_output, error_output_kind, glob_head, text_output,
+    error_output, error_output_kind, glob_head, require_str, text_output,
 };
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
