@@ -43,107 +43,85 @@ fn host_view(source: &str, content: &UserContent, timestamp: u64) -> AgentMessag
 /// are the requester's words; kinds with no LLM representation drop.
 pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     let _span = yi_types::trace::span("context.convert_to_llm").arg("messages", messages.len());
+    let spent = crate::wrapper::spent_in_request(messages);
     messages
         .iter()
         .enumerate()
-        .filter_map(|(index, message)| {
-            let read = crate::wrapper::reply_follows(messages, index);
-            match message {
-                AgentMessage::BashExecution {
+        .filter(|(index, message)| !spent(*index, message))
+        .filter_map(|(_, message)| match message {
+            AgentMessage::BashExecution {
+                command,
+                output,
+                exit_code,
+                cancelled,
+                truncated,
+                full_output_path,
+                timestamp,
+                exclude_from_context,
+            } => {
+                if exclude_from_context.unwrap_or(false) {
+                    return None;
+                }
+                let text = bash_execution_to_text(
                     command,
                     output,
-                    exit_code,
-                    cancelled,
-                    truncated,
-                    full_output_path,
-                    timestamp,
-                    exclude_from_context,
-                } => {
-                    if exclude_from_context.unwrap_or(false) {
-                        return None;
-                    }
-                    let text = bash_execution_to_text(
-                        command,
-                        output,
-                        *exit_code,
-                        *cancelled,
-                        *truncated,
-                        full_output_path.as_deref(),
-                    );
-                    Some(AgentMessage::user_input(
-                        UserContent::Text(text),
-                        *timestamp,
-                    ))
-                }
-                AgentMessage::Custom {
-                    custom_type,
-                    content,
-                    details,
-                    timestamp,
-                    ..
-                } => {
-                    if superseded(index, custom_type, details.as_ref(), messages)
-                        || (read && crate::wrapper::dropped_after_reply(custom_type))
-                    {
-                        return None;
-                    }
-                    match crate::wrapper::internal_source_of_custom(custom_type) {
-                        Some(source) => Some(crate::wrapper::wrap_internal(
-                            source,
-                            match content {
-                                UserContent::Text(text) => text,
-                                UserContent::Blocks(_) => "",
-                            },
-                            *timestamp,
-                        )),
-                        None => Some(host_view(custom_type, content, *timestamp)),
-                    }
-                }
-                AgentMessage::BranchSummary {
-                    summary, timestamp, ..
-                } => Some(crate::wrapper::wrap_internal(
-                    "summary",
-                    &format!("{BRANCH_SUMMARY_PREFIX}{summary}{BRANCH_SUMMARY_SUFFIX}"),
+                    *exit_code,
+                    *cancelled,
+                    *truncated,
+                    full_output_path.as_deref(),
+                );
+                Some(AgentMessage::user_input(
+                    UserContent::Text(text),
+                    *timestamp,
+                ))
+            }
+            AgentMessage::Custom {
+                custom_type,
+                content,
+                timestamp,
+                ..
+            } => match crate::wrapper::lifetime_of(custom_type) {
+                crate::wrapper::Lifetime::Wrapped(source) => Some(crate::wrapper::wrap_internal(
+                    source,
+                    match content {
+                        yi_types::message::UserContent::Text(text) => text,
+                        yi_types::message::UserContent::Blocks(_) => "",
+                    },
                     *timestamp,
                 )),
-                AgentMessage::CompactionSummary {
-                    summary, timestamp, ..
-                } => Some(crate::wrapper::wrap_internal(
-                    "summary",
-                    &format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}"),
-                    *timestamp,
-                )),
-                AgentMessage::User {
-                    content,
-                    timestamp,
-                    attribution,
-                } => Some(match attribution {
-                    yi_types::message::Attribution::Host(source) => {
-                        host_view(source.label(), content, *timestamp)
-                    }
-                    _ if attribution.reads_as_typed(*timestamp) => message.clone(),
-                    _ if crate::wrapper::internal_source(message).is_some() => message.clone(),
-                    _ => host_view("host", content, *timestamp),
-                }),
-                AgentMessage::Assistant { .. } | AgentMessage::ToolResult { .. } => {
-                    Some(message.clone())
+                crate::wrapper::Lifetime::OnceRead | crate::wrapper::Lifetime::Durable => {
+                    Some(host_view(custom_type, content, *timestamp))
                 }
+            },
+            AgentMessage::BranchSummary {
+                summary, timestamp, ..
+            } => Some(crate::wrapper::wrap_internal(
+                "summary",
+                &format!("{BRANCH_SUMMARY_PREFIX}{summary}{BRANCH_SUMMARY_SUFFIX}"),
+                *timestamp,
+            )),
+            AgentMessage::CompactionSummary {
+                summary, timestamp, ..
+            } => Some(crate::wrapper::wrap_internal(
+                "summary",
+                &format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}"),
+                *timestamp,
+            )),
+            AgentMessage::User {
+                content,
+                timestamp,
+                attribution,
+            } => Some(match attribution {
+                yi_types::message::Attribution::Host(source) => {
+                    host_view(source.label(), content, *timestamp)
+                }
+                _ if attribution.reads_as_typed(*timestamp) => message.clone(),
+                _ if crate::wrapper::internal_source(message).is_some() => message.clone(),
+                _ => host_view("host", content, *timestamp),
+            }),
+            AgentMessage::Assistant { .. } | AgentMessage::ToolResult { .. } => {
+                Some(message.clone())
             }
         })
         .collect()
-}
-
-fn superseded(
-    index: usize,
-    custom_type: &str,
-    details: Option<&serde_json::Value>,
-    messages: &[AgentMessage],
-) -> bool {
-    crate::wrapper::superseded_by_kind(custom_type, details)
-        && messages.get(index.saturating_add(1)..).is_some_and(|later| {
-            later.iter().any(|message| {
-                matches!(message, AgentMessage::Custom { custom_type: other, details: other_details, .. }
-                    if crate::wrapper::superseded_by_kind(other, other_details.as_ref()))
-            })
-        })
 }

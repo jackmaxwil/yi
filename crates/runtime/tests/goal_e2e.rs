@@ -1128,3 +1128,26 @@ fn an_objective_edit_notice_survives_the_continuation_that_follows_it() -> TestR
     );
     Ok(())
 }
+
+/// A session recorded before the notice marker holds continuations with no details at all.
+#[test]
+fn continuations_an_older_build_recorded_are_superseded_too() -> TestResult {
+    let reply = || faux_assistant_message(vec![faux_text("working")], StopReason::Stop);
+    let record = vec![
+        AgentMessage::user_input(UserContent::Text("start".to_owned()), 0),
+        reply(),
+        AgentMessage::host_note("goal_prompt", "Continue old".to_owned(), 1),
+        reply(),
+        AgentMessage::host_note("goal_prompt", "Continue newest".to_owned(), 2),
+    ];
+    let sent = yi_context::convert_to_llm(&record);
+    let goal: Vec<&AgentMessage> = sent
+        .iter()
+        .filter(|message| yi_context::internal_source(message) == Some("goal"))
+        .collect();
+    assert_eq!(
+        goal,
+        vec![&yi_context::wrap_internal("goal", "Continue newest", 2)]
+    );
+    Ok(())
+}
