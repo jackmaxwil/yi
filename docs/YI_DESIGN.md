@@ -1476,16 +1476,20 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines plus inline `#[cfg(test)]` lines in `src/` ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/`, tests, scripts, workflows and the justfile is declared, every declared name is read, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
+| `check_scan` | pinned zizmor over workflows, gitleaks over tree/PR diff/rewritten mirror history, and vendored-rule Semgrep over Python and production Rust; new rule ids and counts above baseline fail; local tool/cache misses announce a skip and CI refuses them | `scan.json` |
 | `check_request_budget` | system-prompt and tool-table bytes; tool-surface texts and hashes (D188) | `request_budget.json`, `tool_surface.json` |
 | `check_behavior` | faux-cassette behavior cases: a locked pass never fails (D76) | `behavior_baseline.json` |
 | `check_prompt_examples` | Python in prompts and skills awaits every `yi` coroutine call | — |
 | `check_growth` | net `src/` growth over the fork point past 150 lines needs `growth: +N <memo>` in the change file, past 2,000 a `decision:`; full run only | the fork point |
 | `check_changes` | a change is a file under `docs/changes/` in the header format; a branch never edits the `version:` line, a changelog row, a decision row, an ADR or a change file main holds | — |
 | `check_pr_metadata` | PR title as `check_commit_style`; a feature or over-band PR names an open, sized issue (D106); CI only | — |
+Zizmor and Semgrep run through pinned `uv` packages; gitleaks is a checksum-verified release binary.
+They are development tools, not Rust crate dependencies, so §18.3 gains no dependency rows.
 
 Also run: `codespell`, the `python/yi_runtime` unittests, `evals/selftest.py`, each script's
 `--selfcheck`, `cargo doc` (§19), `cargo machete` and `cargo deny` (§18.1); a missing tool fails
-its gate. Settled by: D68, D70, D76, D91, D106, D109, D172, D188.
+its gate except the announced local offline `check_scan` skip, which CI refuses.
+Settled by: D68, D70, D76, D91, D106, D109, D172, D188.
 
 
 ## 22. External GitHub intake

@@ -76,6 +76,13 @@ run "$PY" scripts/guardrails/check_public_surface.py
 run "$PY" scripts/guardrails/check_deps_budget.py
 run "$PY" scripts/guardrails/check_request_budget.py
 run "$PY" scripts/guardrails/check_behavior.py
+if [ "$FAST" -eq 1 ]; then
+  run echo "skip scan (--fast: pinned external scanners run in the full lane)"
+  run echo "skip scan selfcheck (--fast: pinned external scanners run in the full lane)"
+else
+  run "$PY" scripts/guardrails/check_scan.py
+  run "$PY" scripts/guardrails/check_scan.py --selfcheck
+fi
 run "$PY" scripts/guardrails/check_prompt_examples.py
 run env PYTHONPATH=python/yi_runtime/src "$PY" -m unittest discover -q -s python/yi_runtime/tests
 run "$PY" -m unittest discover -q -s adapters

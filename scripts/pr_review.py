@@ -477,7 +477,7 @@ def windows(diff):
     for lines in added_lines(diff).values():
         kept = [re.sub(r"\s+", " ", line.strip()) for line in lines if len(line.strip()) > 3]
         for i in range(len(kept) - DUP_WINDOW + 1):
-            hashes.add(hashlib.sha1("\n".join(kept[i:i + DUP_WINDOW]).encode()).hexdigest())
+            hashes.add(hashlib.sha256("\n".join(kept[i:i + DUP_WINDOW]).encode()).hexdigest())
     return hashes
 
 
@@ -682,7 +682,7 @@ def yi_bin():
         if not _REFRESHED and not os.environ.get("YI_BIN"):
             # Incident: the bundled catalog lags OpenRouter, so a fresh runner refused the reviewer's
             # model as unknown; a failed refresh falls back to the bundle, and a pinned YI_BIN is left alone.
-            _REFRESHED.append(subprocess.run([found, "catalog", "refresh", "openrouter"], capture_output=True, check=False))
+            _REFRESHED.append(subprocess.run([found, "catalog", "refresh", "openrouter"], capture_output=True, check=False))  # nosemgrep: dangerous-subprocess-use-tainted-env-args Direct argv exec of the selected Yi binary, no shell.
         return found
 
 
