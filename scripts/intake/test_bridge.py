@@ -404,7 +404,7 @@ def check_mapped_import() -> None:
     plain = unmapped_case()
     other, plain_sha = import_commit(plain)
     assert identity_of(other, plain_sha, "%an <%ae>") == "jackmaxwil <mazac@chapman.edu>"
-    assert identity_of(repo, sha, "%aI") == identity_of(other, plain_sha, "%aI") == "2026-10-28T00:00:00Z", "the mapping moved the author date"
+    assert identity_of(repo, sha, "%at") == identity_of(other, plain_sha, "%at") == "1793145600", "the mapping moved the author date"
     assert identity_of(repo, sha, "%T") == identity_of(other, plain_sha, "%T"), "the mapping moved the tree"
     assert identity_of(repo, sha, "%B") == identity_of(other, plain_sha, "%B"), "the mapping moved the message body"
     objects = "".join(bridge.git(["-C", str(repo), "cat-file", "-p", row]).stdout.decode() for row in bridge.git_text(["-C", str(repo), "rev-list", "--all"]).split())
