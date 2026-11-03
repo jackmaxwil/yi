@@ -45,6 +45,8 @@ pub(crate) struct Args {
     /// `yi ask --check CMD`: probe the command and exit, running neither it nor a turn.
     pub(crate) check: Option<String>,
     pub(crate) stats: stats::Query,
+    /// `--role` after `yi models recommend`.
+    pub(crate) role: Option<String>,
     pub(crate) prompt: String,
 }
 
@@ -96,6 +98,7 @@ pub(super) fn parse_from(
     let mut schema = None;
     let mut check = None;
     let mut stats_flags = stats::Flags::default();
+    let mut role = None;
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_iter(argv);
     while let Some(argument) = parser.next()? {
@@ -143,6 +146,7 @@ pub(super) fn parse_from(
             }
             Long("by") if command == "stats" => stats_flags.by = Some(parser.value()?.string()?),
             Long("top") if command == "stats" => stats_flags.top = Some(parser.value()?.string()?),
+            Long("role") if command == "models" => role = Some(parser.value()?.string()?),
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -197,6 +201,7 @@ pub(super) fn parse_from(
         schema,
         check,
         stats: stats_flags.typed()?,
+        role,
         prompt: prompt_parts.join(" "),
     };
     inert_flags(&args)?;
