@@ -12,7 +12,7 @@ use yi_types::encoding::base64;
 use crate::app::App;
 use crate::layout::PaneId;
 use crate::model::PaneContent;
-use crate::render::{ViewState, pane_margin};
+use crate::render::ViewState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
@@ -370,7 +370,7 @@ pub fn selected(
     let Some(state) = app.state.panes.get(&pane.id) else {
         return String::new();
     };
-    let inner = pane.rect.inner(pane_margin(view.framed));
+    let inner = pane.rect.inner(pane.margin);
     let chat = match &state.content {
         PaneContent::Session {
             chat: Some(chat), ..

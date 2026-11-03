@@ -129,6 +129,14 @@ pub struct ChildUpdate {
     /// Absent unless a live child waits on its parent or has stalled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flag: Option<ChildFlag>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 /// The family state a live child's status alone does not say. `note` is `rlm.status`'s own:
@@ -175,6 +183,10 @@ pub struct ChildSpawned {
     /// outside a cell, and from a host older than the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawned_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,4 +198,10 @@ pub struct ChildEnded {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<serde_json::Number>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_preview: Option<String>,
 }
