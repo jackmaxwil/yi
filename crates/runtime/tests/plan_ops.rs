@@ -81,9 +81,10 @@ type TestResult = Result<(), Box<dyn Error>>;
 #[derive(Default)]
 pub(crate) struct Stub {
     next: AtomicU32,
-    reaps: AtomicU32,
+    pub(crate) reaps: AtomicU32,
     fail_reap: AtomicBool,
     reap_last: Mutex<Option<Url>>,
+    pub(crate) finishing: AtomicBool,
 }
 
 impl Delegate for Stub {
@@ -101,6 +102,10 @@ impl Delegate for Stub {
             Ok(last) => Ok(last.clone()),
             Err(_) => Err("poisoned".to_owned()),
         }
+    }
+
+    fn finishes(&self) -> bool {
+        self.finishing.load(Ordering::SeqCst)
     }
 }
 
@@ -1488,6 +1493,7 @@ fn set_needs_a_goal_to_open_a_plan_then_replaces_the_whole_cut() -> TestResult {
     let refused = engine.apply(owner(Op::Set {
         goal: None,
         rows: vec![row("mapper", TodoStateName::Pending, &[])?],
+        keep_rest: false,
     }));
     assert!(
         matches!(refused, Err(PlanOpError::NoPlan)),
@@ -1500,6 +1506,7 @@ fn set_needs_a_goal_to_open_a_plan_then_replaces_the_whole_cut() -> TestResult {
             row("rebase", TodoStateName::Running, &["remap", "prompt"])?,
             row("bridge", TodoStateName::Pending, &[])?,
         ],
+        keep_rest: false,
     }))?;
     assert_eq!(first.plan.goal.as_str(), "checklist");
     let states: Vec<TodoStateName> = first
@@ -1538,6 +1545,7 @@ fn set_needs_a_goal_to_open_a_plan_then_replaces_the_whole_cut() -> TestResult {
             row("bridge", TodoStateName::Running, &[])?,
             row("grep", TodoStateName::Pending, &[])?,
         ],
+        keep_rest: false,
     }))?;
     assert_eq!(second.plan.id, first.plan.id, "set keeps the plan");
     assert!(
@@ -2403,6 +2411,7 @@ mod contracts {
                         state: TodoStateName::Pending,
                     },
                 ],
+                keep_rest: false,
             },
         ));
         let message = match refused {
@@ -2439,6 +2448,7 @@ mod contracts {
                     spec: spec("Package the tarball")?,
                     state: TodoStateName::Blocked,
                 }],
+                keep_rest: false,
             },
         ))?;
         let todo = todo_of(&rig.store, &plan, "Package the tarball")?;
@@ -2658,6 +2668,7 @@ mod contracts {
                     spec: shaped,
                     state: TodoStateName::Pending,
                 }],
+                keep_rest: false,
             },
         ));
         assert!(
@@ -2908,6 +2919,7 @@ mod contracts {
                         state: TodoStateName::Pending,
                     },
                 ],
+                keep_rest: false,
             },
         ))?;
         let drift = done(&rig.engine, &plan, "write it", None);
@@ -3758,6 +3770,7 @@ mod contracts {
                         state: TodoStateName::Pending,
                     },
                 ],
+                keep_rest: false,
             },
         ))?;
         start(&rig.engine, &plan, "sign off")?;
@@ -3846,6 +3859,7 @@ mod contracts {
                         state: TodoStateName::Done,
                     },
                 ],
+                keep_rest: false,
             },
         ));
         assert!(
@@ -4313,6 +4327,7 @@ mod contracts {
                     spec,
                     state: TodoStateName::Done,
                 }],
+                keep_rest: false,
             },
         ));
         assert!(

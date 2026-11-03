@@ -514,5 +514,8 @@ edited by hand.
 - [D541](adr/d541.md) - the shadow-to-blocking promotion criteria are read, not coded
 - [D542](adr/d542.md) - a walled session reads no session's transcript file but its own (amends...
 - [D543](adr/d543.md) - a read-only shell read answers with a `[…]` row naming the dedicated tool,...
+- [D544](adr/d544.md) - a server wait past the retry cap, or `x-should-retry
+- [D545](adr/d545.md) - amends D278's lowercase ASCII tokens
+- [D546](adr/d546.md) - the spec is the harness's object, not the model's
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

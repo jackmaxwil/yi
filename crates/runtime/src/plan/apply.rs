@@ -179,7 +179,6 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             "the `list` checklist was left out: the `todos` rows state the whole plan".to_owned(),
         );
     }
-    let mut open = None;
     for _ in 0..REPAIRS {
         set.insert(
             "todos".to_owned(),
@@ -187,28 +186,31 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
                 .map(|(row, _)| Value::Object(row.clone()))
                 .collect(),
         );
-        let issue = match tool.apply(&set) {
-            Ok(text) => {
-                let notes = text.lines().filter_map(|line| line.strip_prefix("note: "));
-                conditions.extend(notes.map(str::to_owned));
-                open = None;
-                break;
-            }
+        let issue = match dry(tool, &set) {
+            Ok(()) => break,
             Err(PlanToolError::Op(PlanOpError::LabelNotUnique { label })) => {
                 PlanIssue::DuplicateLabel { label }
             }
             Err(PlanToolError::Op(PlanOpError::Invalid { issue })) => issue,
-            Err(error) => return Err(error),
+            Err(_) => break,
         };
         let Some(note) = repair(&mut rows, &issue) else {
-            return Err(PlanOpError::Invalid { issue }.into());
+            break;
         };
         conditions.push(note);
-        open = Some(issue);
     }
-    if let Some(issue) = open {
-        return Err(PlanOpError::Invalid { issue }.into());
-    }
+    set.insert(
+        "todos".to_owned(),
+        rows.iter()
+            .map(|(row, _)| Value::Object(row.clone()))
+            .collect(),
+    );
+    let text = tool.apply(&set)?;
+    conditions.extend(
+        text.lines()
+            .filter_map(|line| line.strip_prefix("note: "))
+            .map(str::to_owned),
+    );
     for op in rows.iter().flat_map(|(_, moves)| moves) {
         let label = op.get("label").and_then(Value::as_str).unwrap_or_default();
         match tool.apply(op.as_object().unwrap_or(&Map::new())) {
@@ -227,6 +229,14 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
     }
     let text = tool.apply(&view)?;
     Ok(noted(text, conditions))
+}
+
+/// The set as the reducer would take it, journaled nowhere: a pass that cannot land costs no
+/// record, so the apply above writes the one refusal the call ends on.
+fn dry(tool: &PlanTool, set: &Map<String, Value>) -> Result<(), PlanToolError> {
+    let (request, _) = super::tool::declared(tool.actor(), set)?;
+    let (request, ..) = keep_omitted(tool.engine(), request, &mut Vec::new());
+    tool.engine().dry(request).map_err(Into::into)
 }
 
 /// The ops that move a row where `set` cannot: out of a failed or blocked state, into a state the
@@ -538,6 +548,12 @@ pub(super) fn noted(mut text: String, said: Vec<String>) -> String {
     text
 }
 
+impl PlanEngine {
+    pub(super) fn opens_plan(&self, plan: Option<&PlanId>) -> bool {
+        plan.is_none() && self.resolve(None).is_err()
+    }
+}
+
 /// A `set` as the tool reads one, on every surface: rows it does not name stay, struck rows drop
 /// once the rest lands, and what that did is a notice beside the engine's own.
 pub(super) fn apply_set(
@@ -546,7 +562,7 @@ pub(super) fn apply_set(
     blobs: &[Blob],
 ) -> Result<Outcome, PlanOpError> {
     let mut said = Vec::new();
-    let (request, struck) = keep_omitted(engine, request, &mut said);
+    let (request, struck, _kept) = keep_omitted(engine, request, &mut said);
     let outcome = engine.apply_with(request, blobs)?;
     let mut outcome = drop_struck(engine, outcome, struck, &mut said);
     outcome.notices.extend(said);
@@ -554,14 +570,14 @@ pub(super) fn apply_set(
 }
 
 /// Invariant: a `set` from a stale view never deletes a row it left out; the session todo list
-/// holds the same rule, so a fix to one walks the other. A row leaves by state `dropped`.
+/// holds the same rule, and the kept rows come back beside the request for a set that opens one.
 pub(super) fn keep_omitted(
     engine: &PlanEngine,
     mut request: OpRequest,
     said: &mut Vec<String>,
-) -> (OpRequest, Vec<OpRequest>) {
+) -> (OpRequest, Vec<OpRequest>, Vec<SetRow>) {
     if !matches!(request.op, Op::Set { .. }) {
-        return (request, Vec::new());
+        return (request, Vec::new(), Vec::new());
     }
     let view = view_request(&request.actor, request.plan.clone());
     let held = engine
@@ -572,8 +588,12 @@ pub(super) fn keep_omitted(
         expected_revision: None,
         ..request.clone()
     };
-    let Op::Set { rows, .. } = &mut request.op else {
-        return (request, Vec::new());
+    let opening = engine.opens_plan(request.plan.as_ref());
+    let Op::Set {
+        rows, keep_rest, ..
+    } = &mut request.op
+    else {
+        return (request, Vec::new(), Vec::new());
     };
     let struck: Vec<OpRequest> = (rows.iter())
         .filter(|row| row.state == TodoStateName::Abandoned)
@@ -603,9 +623,13 @@ pub(super) fn keep_omitted(
         .collect();
     if !kept.is_empty() {
         said.push(format!("{} rows not named stay as they are", kept.len()));
+        if opening {
+            rows.extend(kept.iter().cloned());
+        } else {
+            *keep_rest = true;
+        }
     }
-    rows.extend(kept);
-    (request, struck)
+    (request, struck, kept)
 }
 
 /// The struck rows of a checklist `set`, dropped once the rest of it landed.
