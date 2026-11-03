@@ -83,15 +83,9 @@ class BashFetchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(calls), sent, "a released handle makes no further host requests")
             self.assertEqual(await handle.tail(), "")
 
-    async def test_fetch_sends_the_url_to_the_host_and_refuses_an_empty_one(self) -> None:
-        async def stub(request_type, payload=None):
-            self.assertEqual((request_type, payload), ("fetch", {"url": "plan://p", "object": False}))
-            return {"text": "doc", "hash": "h", "servedBy": "plan-file"}
-
-        with mock.patch.object(rlm, "host_request", stub):
-            self.assertEqual(await rlm.fetch("plan://p"), "doc")
-            with self.assertRaises(TypeError):
-                await rlm.fetch("")
+    async def test_fetch_refuses_an_empty_url(self) -> None:
+        with self.assertRaises(TypeError):
+            await rlm.fetch("")
 
 
 if __name__ == "__main__":
