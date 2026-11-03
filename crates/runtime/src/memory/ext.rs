@@ -11,7 +11,7 @@ use crate::ext::{Effect, Event, EventMask, Extension, StartReason, Trust};
 
 const SOURCE: &str = "memory";
 
-/// The first prompt's block spends no more than the index it replaces, and these bound it.
+/// The first prompt's block spends the index it replaces, never under two body caps, and these bound it.
 const FOCUS_ROWS: usize = 8;
 const FOCUS_BODIES: usize = 3;
 const FOCUS_BYTES: usize = 6_000;
@@ -152,6 +152,28 @@ pub fn focused(home: &Path, cwd: &Path, prompt: &str) -> (String, Summary) {
     render_focus(home, cwd, prompt, Store::indexed)
 }
 
+fn load_cut(scoped: &Scoped) -> Option<String> {
+    if scoped.not_loaded == 0 {
+        return None;
+    }
+    let shown = scoped.rows.len();
+    let (cap, limit) = if shown >= LOAD_LINES {
+        ("LOAD_LINES", LOAD_LINES)
+    } else {
+        ("LOAD_BYTES", LOAD_BYTES)
+    };
+    let all = shown.saturating_add(scoped.not_loaded);
+    let next = "await memory.search(\"words\")";
+    Some(crate::listed::cut_row(
+        shown,
+        all,
+        "notes loaded",
+        cap,
+        limit,
+        next,
+    ))
+}
+
 fn render(home: &Path, cwd: &Path, index: Index) -> (String, Summary) {
     let root = crate::ext::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let repo = scoped(&Store::new(repo_dir(home, cwd)), &root, index);
@@ -168,18 +190,7 @@ fn render(home: &Path, cwd: &Path, index: Index) -> (String, Summary) {
                     body.push("global:".to_owned());
                 }
                 body.extend(scoped.rows.iter().map(|row| row.text.clone()));
-                if scoped.not_loaded > 0 {
-                    let shown = scoped.rows.len();
-                    let (cap, limit) = if shown >= LOAD_LINES {
-                        ("LOAD_LINES", LOAD_LINES)
-                    } else {
-                        ("LOAD_BYTES", LOAD_BYTES)
-                    };
-                    let all = shown.saturating_add(scoped.not_loaded);
-                    let next = "await memory.search(\"words\")";
-                    let row = crate::listed::cut_row(shown, all, "notes loaded", cap, limit, next);
-                    body.push(row);
-                }
+                body.extend(load_cut(scoped));
             }
             Err(error) => body.push(format!("{label} notes not loaded: {error}")),
         }
@@ -234,8 +245,8 @@ fn capped(body: &str, cap: usize) -> (String, bool) {
 }
 
 /// The order a prompt earns: scored notes first (type-weighted), then the rest by weight and
-/// name, and a note whose hook restates a kept one's dropped and counted.
-fn earned(candidates: &[(&Note, &str)], prompt: &str) -> (Vec<usize>, Vec<usize>, usize) {
+/// name, and a note whose hook restates a kept one's listed as a row but never given a body.
+fn earned(candidates: &[(&Note, &str)], prompt: &str) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
     let texts: Vec<String> = candidates
         .iter()
         .map(|(note, _)| format!("{} {} {}", note.name, note.hook, note.body))
@@ -265,24 +276,24 @@ fn earned(candidates: &[(&Note, &str)], prompt: &str) -> (Vec<usize>, Vec<usize>
         key(*b).cmp(&key(*a))
     });
     ranked.append(&mut rest);
-    let mut order: Vec<usize> = Vec::new();
-    let mut deduped = 0usize;
+    let mut kept: Vec<usize> = Vec::new();
+    let mut deduped: Vec<usize> = Vec::new();
     for at in &ranked {
         let Some((note, _)) = candidates.get(*at) else {
             continue;
         };
-        let twin = order.iter().any(|kept| {
+        let twin = kept.iter().any(|kept| {
             candidates
                 .get(*kept)
                 .is_some_and(|(other, _)| twins(&note.hook, &other.hook))
         });
         if twin {
-            deduped = deduped.saturating_add(1);
+            deduped.push(*at);
         } else {
-            order.push(*at);
+            kept.push(*at);
         }
     }
-    (order, scored_at, deduped)
+    (ranked, scored_at, deduped)
 }
 
 fn render_focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String, Summary) {
@@ -292,6 +303,8 @@ fn render_focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String,
     let mut summary = Summary::default();
     let mut candidates: Vec<(&Note, &str)> = Vec::new();
     let mut budget = 0usize;
+    let mut extras: Vec<String> = Vec::new();
+    let mut unloaded = 0usize;
     for (label, result) in [("repo", &repo), ("global", &global)] {
         match result {
             Ok(scoped) => {
@@ -302,6 +315,9 @@ fn render_focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String,
                 } else {
                     summary.repo = scoped.count;
                 }
+                summary.not_loaded = summary.not_loaded.saturating_add(scoped.not_loaded);
+                unloaded = unloaded.saturating_add(scoped.not_loaded);
+                extras.extend(load_cut(scoped));
                 for row in &scoped.rows {
                     budget = budget.saturating_add(row.text.len().saturating_add(1));
                     if let Some(note) = &row.note {
@@ -309,36 +325,41 @@ fn render_focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String,
                     }
                 }
             }
-            Err(_) => summary.not_loaded = summary.not_loaded.saturating_add(1),
+            Err(error) => {
+                summary.not_loaded = summary.not_loaded.saturating_add(1);
+                extras.push(format!("{label} notes not loaded: {error}"));
+            }
         }
     }
-    budget = budget.min(FOCUS_BYTES);
+    budget = budget.max(BODY_CAP.saturating_mul(2)).min(FOCUS_BYTES);
     let (order, scored_at, deduped) = earned(&candidates, prompt);
     let mut spent = 0usize;
-    let mut bodies: Vec<String> = Vec::new();
+    let mut bodies: Vec<(usize, String, Option<String>)> = Vec::new();
     let mut body_notes: Vec<usize> = Vec::new();
-    let mut cuts: Vec<String> = Vec::new();
     for at in &order {
         let Some((note, _)) = candidates.get(*at) else {
             continue;
         };
-        if bodies.len() >= FOCUS_BODIES || !scored_at.contains(at) {
+        if bodies.len() >= FOCUS_BODIES {
             break;
+        }
+        if !scored_at.contains(at) || deduped.contains(at) {
+            continue;
         }
         let (text, truncated) = capped(note.body.trim_end(), BODY_CAP);
         let block = format!("## {} — {}\n{text}\n", note.name, note.hook);
         if spent.saturating_add(block.len()) > budget {
             continue;
         }
-        if truncated {
-            cuts.push(format!(
+        let cut = truncated.then(|| {
+            format!(
                 "[… body cut at {BODY_CAP} B of {} · the rest: await memory.read(\"{}\")]",
-                note.body.len(),
+                note.body.trim_end().len(),
                 note.name
-            ));
-        }
+            )
+        });
         spent = spent.saturating_add(block.len());
-        bodies.push(block);
+        bodies.push((*at, block, cut));
         body_notes.push(*at);
     }
     let mut rows: Vec<&str> = Vec::new();
@@ -361,25 +382,27 @@ fn render_focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String,
         .len()
         .saturating_add(counts.len())
         .saturating_add(2)
-        .saturating_add(budget);
+        .saturating_add(budget)
+        .saturating_add(extras.iter().map(|row| row.len().saturating_add(1)).sum());
     let mut text = String::new();
     while rows.len() + bodies.len() > 0 || text.is_empty() {
         let shown = rows.len().saturating_add(bodies.len());
-        let total = candidates.len().saturating_add(deduped);
+        let total = candidates.len().saturating_add(unloaded);
         let mut body: Vec<String> = rows.iter().map(|text| (*text).to_owned()).collect();
-        body.extend(bodies.iter().cloned());
-        body.extend(cuts.iter().cloned());
+        for (_, block, cut) in &bodies {
+            body.push(block.clone());
+            body.extend(cut.clone());
+        }
+        body.extend(extras.iter().cloned());
         if shown < total {
             let (cap, limit) = if rows.len() >= FOCUS_ROWS {
                 ("FOCUS_ROWS", FOCUS_ROWS)
             } else {
                 ("the index budget", budget)
             };
-            let mut row = crate::listed::cut_row(shown, total, "notes", cap, limit, next);
-            if deduped > 0 {
-                row.push_str(&format!(" ({deduped} restating another)"));
-            }
-            body.push(row);
+            body.push(crate::listed::cut_row(
+                shown, total, "notes", cap, limit, next,
+            ));
         }
         if scored_at.is_empty() && !candidates.is_empty() {
             body.push(format!(
@@ -397,7 +420,11 @@ fn render_focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String,
         if !rows.is_empty() {
             rows.pop();
         } else if bodies.len() > 1 {
-            bodies.pop();
+            if let Some((at, _, _)) = bodies.pop()
+                && let Some((_, row)) = candidates.get(at)
+            {
+                rows.push(row);
+            }
             body_notes.pop();
         } else {
             break;
@@ -428,6 +455,7 @@ impl MemoryExt {
         let text = yi_context::fit(&text, budget, "await memory.search(\"words\")").text;
         out.push(Effect::AttachExternal {
             source: SOURCE.to_owned(),
+            kind: "memory",
             trust: Trust::Untrusted,
             text,
         });
@@ -448,7 +476,7 @@ impl Extension for MemoryExt {
             Event::PromptSubmitted { prompt, .. } => {
                 // The first prompt reaches this host before the first request, which is the one
                 // moment the block can still be rewritten; later prompts keep the frozen prefix.
-                if self.focused {
+                if self.focused || prompt.trim().is_empty() {
                     return;
                 }
                 self.focused = true;
@@ -460,6 +488,7 @@ impl Extension for MemoryExt {
             }
             Event::SessionStart { cwd, reason } => {
                 self.cwd = Some(cwd.clone());
+                self.focused = *reason == StartReason::Resume;
                 let (text, summary) = block(&self.home, cwd);
                 if *reason == StartReason::Fresh {
                     let counted = Store::new(repo_dir(&self.home, cwd))
@@ -534,6 +563,14 @@ mod tests {
     }
 
     fn notes(label: &str, rows: &[(&str, &str, &str)]) -> (Scratch, std::path::PathBuf) {
+        notes_with(label, rows, |name| format!("{name} body"))
+    }
+
+    fn notes_with(
+        label: &str,
+        rows: &[(&str, &str, &str)],
+        body: impl Fn(&str) -> String,
+    ) -> (Scratch, std::path::PathBuf) {
         let home = temp(&format!("{label}-home"));
         let cwd = temp(&format!("{label}-cwd"));
         let dir = home.join(".yi/memory");
@@ -541,7 +578,10 @@ mod tests {
         for (name, kind, hook) in rows {
             fs::write(
                 dir.join(format!("{name}.md")),
-                format!("---\nname: {name}\ndescription: {hook}\ntype: {kind}\n---\n{name} body\n"),
+                format!(
+                    "---\nname: {name}\ndescription: {hook}\ntype: {kind}\n---\n{}\n",
+                    body(name)
+                ),
             )
             .unwrap();
         }
@@ -585,14 +625,14 @@ mod tests {
     fn a_feedback_note_earns_its_body_before_a_reference_that_matches_as_well() {
         let rows = [
             (
-                "gate-rule",
-                "feedback",
-                "run the repository gate before a done claim",
+                "a-gate-list",
+                "reference",
+                "the repository gate before a done claim",
             ),
             (
-                "gate-list",
-                "reference",
-                "the repository gate commands live in the gate skill",
+                "b-gate-rule",
+                "feedback",
+                "the repository gate before a done claim",
             ),
             ("unrelated", "reference", "the orb draws a spinning rim"),
         ];
@@ -602,13 +642,13 @@ mod tests {
             &cwd,
             "is the repository gate green before a done claim",
         );
-        let feedback = text.find("## gate-rule").unwrap_or(usize::MAX);
-        let reference = text.find("## gate-list").unwrap_or(usize::MAX);
+        let feedback = text.find("## b-gate-rule").unwrap_or(usize::MAX);
+        let reference = text.find("## a-gate-list").unwrap_or(usize::MAX);
         assert!(feedback < reference, "feedback outranks reference: {text}");
     }
 
     #[test]
-    fn a_note_that_restates_another_hook_earns_no_second_body() {
+    fn a_note_that_restates_another_hook_keeps_its_row_but_earns_no_body() {
         let rows = [
             (
                 "gate-rule",
@@ -624,7 +664,8 @@ mod tests {
         let (home, cwd) = notes("focus-twin", &rows);
         let (text, _) = focused(&home, &cwd, "run the repository gate before a done claim");
         assert_eq!(text.matches("## ").count(), 1, "{text}");
-        assert!(text.contains("1 restating another"), "{text}");
+        assert!(text.contains("- [gate-rule-again]"), "{text}");
+        assert!(!text.contains("[… "), "nothing was cut: {text}");
     }
 
     #[test]
@@ -664,5 +705,88 @@ mod tests {
             start.len()
         );
         assert!(focused_text.contains("## note-7 —"), "{focused_text}");
+    }
+
+    const PAIR: [(&str, &str, &str); 2] = [
+        (
+            "lane-pool",
+            "project",
+            "orphaned worktrees hold the lane pool",
+        ),
+        ("streaming", "feedback", "commit streams by byte cursor"),
+    ];
+
+    #[test]
+    fn a_life_sized_body_lands_in_a_two_note_store() {
+        let (home, cwd) = notes_with("focus-life", &PAIR, |name| {
+            format!("{name} {}", "w".repeat(400))
+        });
+        let (text, _) = focused(&home, &cwd, "orphaned worktrees hold the lane pool");
+        assert!(
+            text.contains(&format!("lane-pool {}", "w".repeat(400))),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_body_cut_at_the_cap_names_the_cut_and_one_at_the_cap_does_not() {
+        let at = |pad: String| {
+            let (home, cwd) = notes_with("focus-cap", &PAIR, move |_| pad.clone());
+            focused(&home, &cwd, "orphaned worktrees lane pool").0
+        };
+        let exact = at("a".repeat(BODY_CAP));
+        assert!(!exact.contains("body cut"), "{exact}");
+        let over = at(format!("{}é", "a".repeat(BODY_CAP - 1)));
+        assert!(over.contains("[… body cut at 1200 B of 1201"), "{over}");
+        let plus = at("a".repeat(BODY_CAP + 1));
+        assert!(plus.contains("[… body cut at 1200 B of 1201"), "{plus}");
+    }
+
+    #[test]
+    fn notes_past_the_load_cap_are_named_in_the_focused_block() {
+        let rows: Vec<(String, String, String)> = (0..LOAD_LINES + 3)
+            .map(|at| {
+                (
+                    format!("n{at}"),
+                    "project".to_owned(),
+                    format!("rule about topic{at}"),
+                )
+            })
+            .collect();
+        let borrowed: Vec<(&str, &str, &str)> = rows
+            .iter()
+            .map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str()))
+            .collect();
+        let (home, cwd) = notes("focus-load", &borrowed);
+        let (text, _) = focused(&home, &cwd, "rule about topic1");
+        assert!(text.contains("LOAD_LINES"), "{text}");
+        assert!(text.contains(&format!("of {}", LOAD_LINES + 3)), "{text}");
+    }
+
+    #[test]
+    fn a_resumed_host_and_a_blank_first_prompt_keep_the_first_real_prompt_unspent() {
+        let (home, cwd) = notes("focus-latch", &PAIR);
+        let ask = |prompt: &str| Event::PromptSubmitted {
+            prompt: prompt.to_owned(),
+            repo_dirty: false,
+            named_paths: 0,
+        };
+        let start = |reason| Event::SessionStart {
+            cwd: cwd.clone(),
+            reason,
+        };
+        let mut fresh = MemoryExt::new(home.to_path_buf(), Arc::new(Activity::default()));
+        let mut out = Vec::new();
+        fresh.on(&start(StartReason::Fresh), &mut out);
+        out.clear();
+        fresh.on(&ask("  "), &mut out);
+        assert!(out.is_empty());
+        fresh.on(&ask("orphaned worktrees hold the lane pool"), &mut out);
+        assert_eq!(out.len(), 1);
+        let mut resumed = MemoryExt::new(home.to_path_buf(), Arc::new(Activity::default()));
+        resumed.on(&start(StartReason::Resume), &mut out);
+        out.clear();
+        resumed.on(&ask("continue"), &mut out);
+        assert!(out.is_empty(), "a resumed session keeps its block");
     }
 }

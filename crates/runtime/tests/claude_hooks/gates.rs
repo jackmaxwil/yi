@@ -117,11 +117,10 @@ async fn a_write_under_the_projects_claude_dir_is_asked_and_refused_headless() -
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn contained_bash_cannot_write_the_projects_claude_dir() -> TestResult {
-    if !yi_tools::Sandbox::available() {
-        return Ok(());
-    }
+    crate::kernel_sandbox::seatbelt()?;
     let case = Case::new("claude-dir-bash", json!({}), true)?;
     let gate = Gate {
         sandbox: true,
@@ -160,7 +159,9 @@ fn a_goal_check_passes_the_bash_hooks_before_it_runs() -> TestResult {
         Arc::new(|_, _: yi_types::schedule::DeliveryMode| {}),
         case.cwd.clone(),
     )
-    .with_claude_hooks(yi_runtime::claude_hooks::Hooks::load(&case.cwd));
+    .with_checker(yi_runtime::goal::Checker::from_hooks(
+        yi_runtime::claude_hooks::Hooks::load(&case.cwd),
+    ));
     let marker = case.cwd.join("checked");
     let check = format!("touch {}", marker.display());
     service.create("checked", None, Some(check), None)?;
@@ -170,11 +171,10 @@ fn a_goal_check_passes_the_bash_hooks_before_it_runs() -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_hook_allow_keeps_an_already_granted_write() -> TestResult {
-    if !yi_tools::Sandbox::available() {
-        return Ok(());
-    }
+    crate::kernel_sandbox::seatbelt()?;
     let allow = settings("PreToolUse", "Write", vec![decision("allow")]);
     let case = Case::new("allow-kept-write", allow, true)?;
     let granted = case.home.join("granted");
@@ -218,7 +218,7 @@ fn a_goal_check_keeps_the_configuration_frozen_at_attachment() -> TestResult {
         Arc::new(|_, _: yi_types::schedule::DeliveryMode| {}),
         case.cwd.clone(),
     )
-    .with_claude_hooks(hooks);
+    .with_checker(yi_runtime::goal::Checker::from_hooks(hooks));
     let marker = case.cwd.join("checked");
     service.create(
         "checked",

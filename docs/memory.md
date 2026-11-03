@@ -114,16 +114,21 @@ The pass is a composition of what the store already had:
 
 1. Every note is scored by `memory::rank`'s BM25 over its name, hook and body, weighted by type:
    `feedback` 1.5, `project` 1.4, `user` 1.25, `reference` 1.0, untyped 1.1.
-2. A note whose hook restates a higher-ranked note's hook (token Jaccard ≥ 0.7) is dropped and
-   counted in the cut row as `N restating another`, so near-identical saves earn one body.
+2. A note whose hook restates a higher-ranked note's hook (token Jaccard ≥ 0.7) keeps its index
+   row but earns no body, so near-identical saves earn one body.
 3. The bodies of at most 3 scored notes, each cut at 1,200 bytes, come first; the notes left
    over print as index lines in rank order, the unscored ones after them, at most 8.
-4. The block never costs more bytes than the index it replaces: the budget is the start block's
-   own row bytes (never past 6,000), and rows are dropped until the text fits it.
+4. The budget is the start block's row bytes, never under two body caps and never past 6,000, so
+   one real body fits a small store; rows, then bodies, are dropped until the text fits it.
 5. A cut names what it dropped and how to get it: `[… K of T notes (the index budget N, or FOCUS_ROWS 8); the rest: await
    memory.search("words")]`, a `[… body cut at 1200 B of N · the rest: await memory.read("name")]`
    row per truncated body, and `[no note shares a word with this request · …]` when nothing
-   matched.
+   matched. A store that failed to load and a store past its load cap are named as in the start
+   block, and the cut row counts the notes past the cap.
+
+A blank first prompt (a host or custom message carries no typed words) leaves the start block and
+spends nothing; a resumed session never re-ranks, so "continue" cannot replace the block the
+original task earned. A subagent's brief is its first prompt and ranks the block like any other.
 
 The eval that holds it is `evals/memory_inject.py` over `evals/fixtures/memory-inject`: eleven
 real first messages, hand-labelled against a sixteen-note fixture store, scored on both arms

@@ -29,12 +29,13 @@ memory_inject.py             which stored memories a first message earns: the fi
 skill_labels.py              typed messages -> teacher labels -> a frozen sample: the skill classifier's training data (#779)
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 search_gate.py               paired history-search gate (#1184): a fact printed only in a tool result, graded on the actor
+prose.py                     answer prose measured against the identity prompt's style rules, and the rules themselves (#1862)
 drivers/                     harbor sweep drivers, spend and wall caps (drivers/README.md)
 improve/                     one round's proposer half: a development-only corpus, a history-free snapshot, S0 (round.py, brief.md)
 inner/                       the inner loop: seeded task generators (gen/) and their runner (runner.py), container-free
 trials/                      the trial store: one row per paid harbor trial, and the weekly budget it sums (trials/README.md)
 arc/yi_arc.py                ARC-AGI-3 bridge: one `yi ask --json --yolo` per action (arc/README.md)
-fixtures/                    recorded transcripts, v4 session files, runner tasks, live and surface scenarios
+fixtures/                    recorded transcripts, v4 session files, runner tasks, live and surface scenarios, and the prose answer pair (`prose/`, hand-labelled for `prose.py --selfcheck`)
 ```
 
 ## Gates
@@ -630,6 +631,15 @@ python3 evals/kill.py report
   browser sidecar never turned healthy and legacy-utility-triage's oracle could not commit through the GUI.
   Its Kimi family reads unrun like EXP-B3c's, so until the sweep can carry a Kimi route its verdict is UNRESOLVED (no Kimi trial ran);
   a flash-only run decides nothing, so it is not run with `--without-kimi`.
+- **EXP-B1e** is `evals/kill/b1-exp-e.py`, ladder step 10: ten Auto-mode tasks that each ask a
+  worker for one call a broker refuses, run twice — the fragment-free head and the `EVAL_KILL_ARM_BINARY`
+  build cut before `ext::narrow` stopped attaching the permission mode. A spec may name its own
+  `binary`, so one test compares two builds. `evals/worker_mode.py` scores each run from the
+  worker's own session: a **retry** is the same refused command sent again after its denial, never
+  the different reversible form that follows one, and a **failed task** is a worker that wrote no
+  `report.md`. Its two recorded transcripts are `fixtures/worker_mode/`, written by the real binary
+  under faux against a lane where the worker's write outside the tree is refused;
+  `selftest.check_worker_mode` pins the counter, the scoring and the verdict.
 - Each test's rows are copied to `evals/trials/ns-<test>.jsonl` for its owning PR.
   `selftest.check_kill` pins all of this against a fake yi that replays recorded streams.
 

@@ -99,7 +99,7 @@ impl PermissionBroker {
         let by = Answerer::Other("claudeCodeHook".to_owned());
         self.settle(tool_call_id, ask, true, by);
         let containment = match command {
-            Some(_) if self.sandbox.is_some() => self.containment_with(None::<PathBuf>, false),
+            Some(_) if self.sandbox.is_some() => self.containment_with(None::<PathBuf>),
             _ => Containment::Uncontained,
         };
         CallOutcome {

@@ -42,11 +42,12 @@ impl Rendered {
         width: usize,
         theme: &Theme,
         mode: TranscriptMode,
+        open: bool,
     ) -> Vec<Line<'static>> {
         let Some(cell) = cells.get(index) else {
             return Vec::new();
         };
-        let (Cell::Assistant { markdown }, true) = (cell, index + 1 == cells.len()) else {
+        let (Cell::Assistant { markdown }, true) = (cell, open && index + 1 == cells.len()) else {
             return cell.lines(width, theme, mode, 0);
         };
         let _span = yi_types::trace::span("tui.cell_grow").arg("bytes", markdown.len());
@@ -163,7 +164,11 @@ impl History {
     }
 
     pub fn seal(&mut self) {
+        let unsealed = self.cells.len() > self.sealed;
         self.sealed = self.cells.len();
+        if unsealed && matches!(self.cells.back(), Some(Cell::Assistant { .. })) {
+            self.forget_last(None);
+        }
     }
 
     fn rendered<R>(
@@ -175,6 +180,9 @@ impl History {
         read: impl FnOnce(usize, &[Vec<Line<'static>>]) -> R,
     ) -> R {
         let mut rendered = self.rendered.lock().unwrap_or_else(PoisonError::into_inner);
+        // Incident: a sealed answer left in the growing render never drew its run chips, whose
+        // closed fences only the whole-cell render knows; a surface with chips renders it whole.
+        let open = !theme.run || self.cells.len() > self.sealed;
         let key = Some((width, mode, theme.tier, theme.dark));
         if rendered.key != key {
             *rendered = Rendered {
@@ -189,7 +197,7 @@ impl History {
         let (mut index, mut held) = (self.cells.len(), 0_usize);
         while index > done && held <= cap {
             index -= 1;
-            let rows = rendered.cell_rows((&self.cells, index), width, theme, mode);
+            let rows = rendered.cell_rows((&self.cells, index), width, theme, mode, open);
             held = held.saturating_add(kept_rows(&rows));
             fresh.push_front(rows);
         }
@@ -210,7 +218,7 @@ impl History {
         while (held <= cap || rendered.start > back_to) && rendered.start > 0 {
             rendered.start -= 1;
             let start = rendered.start;
-            let rows = rendered.cell_rows((&self.cells, start), width, theme, mode);
+            let rows = rendered.cell_rows((&self.cells, start), width, theme, mode, open);
             held = held.saturating_add(kept_rows(&rows));
             rendered.rows.push_front(rows);
         }
