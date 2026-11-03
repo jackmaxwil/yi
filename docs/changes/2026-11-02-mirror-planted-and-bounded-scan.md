@@ -33,3 +33,7 @@ fixer widen that file in place.
 `check_scan.py --selfcheck` also drives `semgrep()` itself now, over a faked report, so the
 announced skip row is judged where the model and the CI log read it rather than one call short of
 the print.
+
+The selfcheck's stand-in cargo runs under the interpreter the worker itself uses, so a root-only
+runner interpreter cannot make the fixture unexecutable to the user it drops to, and a worker that
+leaves no reach report now fails the selfcheck by name instead of a traceback naming the file.

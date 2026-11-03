@@ -2069,8 +2069,7 @@ def confined_selfcheck():
         git("init", "-q", "-b", "main"); git("add", "-A"); git("commit", "-qm", "seed")
         (tmp / "bin").mkdir(mode=0o755)
         attack = tmp / "bin/cargo"
-        attack.write_text(f"""#!{sys.executable}
-import json, os, pathlib, subprocess, sys
+        attack_payload = f"""import json, os, pathlib, subprocess, sys
 def tried(fn):
     try:
         fn()
@@ -2088,14 +2087,25 @@ reach = dict(uid=os.getuid(), token=os.environ.get("FGJ_TOKEN"), home=str(home),
 (pathlib.Path(os.environ["TMPDIR"]) / "reach.json").write_text(json.dumps(reach))
 subprocess.Popen(["sleep", "20"])
 sys.exit(7)
-""")
-        attack.chmod(0o755)
+"""
         os.environ.update(PATH=f"{tmp / 'bin'}{os.pathsep}{saved['PATH']}", HOME=str(bot_home), FGJ_TOKEN="canary", CARGO_HOME=str(tmp / "cargo-home"),
                           CARGO_TARGET_DIR=str(tmp / "seed-target"))
         os.environ.pop("RUSTUP_HOME", None)
         with workspace(repo, git("rev-parse", "HEAD")) as work:
-            got = in_worker(work, "filter", {"expr": "test(=x)"})
-            reach = json.loads((work / "tmp/reach.json").read_text())
+            # The fixture's shebang is the interpreter the worker itself runs, so a root-only runner
+            # interpreter cannot make the stand-in cargo unexecutable to the user it drops to.
+            attack.write_text(f"#!{worker_python(work)[0]}\n{attack_payload}")
+            attack.chmod(0o755)
+            try:
+                got = in_worker(work, "filter", {"expr": "test(=x)"})
+            except OSError as error:
+                got = None
+                errs.append(f"the worker could not run its stand-in cargo: {error}")
+            try:
+                reach = json.loads((work / "tmp/reach.json").read_text())
+            except (OSError, ValueError):
+                reach = None
+                errs.append("the PR's code left no reach report, so what its worker could see is unjudged")
             owner = work.stat().st_uid
             left = subprocess.run(["ps", "-eo", "uid=,stat="], capture_output=True, text=True).stdout.splitlines()
         with workspace(repo, git("rev-parse", "HEAD")) as work:
@@ -2105,11 +2115,11 @@ sys.exit(7)
             except RuntimeError as err:
                 if "no-such-op" not in str(err):
                     errs.append(f"a worker's death lost its reason: {err}")
-        if got != 7:
+        if got is not None and got != 7:
             errs.append(f"the PR code's exit crossed the worker as {got!r}, not 7")
-        if reach["token"]:
+        if reach is not None and reach["token"]:
             errs.append("the PR's code read the forge token from its environment")
-        if not os.geteuid():
+        if reach is not None and not os.geteuid():
             live = [row for row in left if row.split()[0] == str(owner) and not row.split()[1].startswith("Z")]
             for what, held in (("the next fix's skills", reach["skills"]), ("the next fix's binary", reach["binary"]),
                                ("the warm build every fix copies", reach["seed"])):
