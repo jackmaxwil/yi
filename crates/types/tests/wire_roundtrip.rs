@@ -131,70 +131,31 @@ fn daemon_ledger_with_a_pin_round_trips() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// Dies with an old plan fact re-emitted with its keys reordered or a field dropped: the
+/// payload is raw, so every committed plan line comes back byte for byte.
 #[test]
-fn task_without_a_check_still_deserializes_and_reserializes_clean()
--> Result<(), Box<dyn std::error::Error>> {
-    // A pre-check-gate plan fact must parse forever (§20), and an absent check
-    // must not appear on re-serialize.
-    let stored = r#"{"fact":"plan","plan":{"version":1,"tasks":[{"id":"t1","title":"x","acceptance":"y","state":"done"}],"created":1,"updated":2}}"#;
-    let fact: yi_types::wire::Fact = serde_json::from_str(stored)?;
-    let yi_types::wire::Fact::Plan { plan } = &fact else {
-        return Err("expected a plan fact".into());
-    };
-    assert!(plan.tasks[0].check.is_none());
-    assert_eq!(serde_json::to_string(&fact)?, stored);
-    Ok(())
-}
-
-#[test]
-fn a_persisted_red_streak_lands_in_the_extra_map() -> Result<(), Box<dyn std::error::Error>> {
-    // D77's ladder is gone (F0c): the streak is unread data that still round-trips byte for
-    // byte through the flatten map, so an old fact parses forever and re-emits itself.
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v4-plan-red.jsonl");
-    let content = fs::read_to_string(&path)?;
-    let line = content.lines().nth(1).ok_or("fixture needs a fact line")?;
-    let Mutation::Fact {
-        fact: yi_types::wire::Fact::Plan { plan },
-        ..
-    } = serde_json::from_str(line)?
-    else {
-        return Err("expected a plan fact".into());
-    };
-    let task = plan
-        .task(&yi_types::plan::TaskId("t1".to_owned()))
-        .ok_or("t1")?;
-    assert_eq!(task.extra.get("redCount"), Some(&serde_json::json!(2)));
-    assert_eq!(
-        task.extra.get("redFingerprint"),
-        Some(&serde_json::json!("3f6a1c0b9d2e4857"))
-    );
-    assert_eq!(
-        serde_json::to_string(&serde_json::from_str::<Mutation>(line)?)?,
-        line,
-        "unread data re-emits verbatim"
-    );
-    Ok(())
-}
-
-#[test]
-fn plan_fact_round_trips_with_unknown_fields_and_states() -> Result<(), Box<dyn std::error::Error>>
+fn a_legacy_plan_fact_is_kept_raw_and_re_emits_verbatim() -> Result<(), Box<dyn std::error::Error>>
 {
-    // Durable §20 rules: unknown fields survive the flatten map; an unknown
-    // task state decodes to Other and re-emits verbatim.
-    let line = r#"{"fact":"plan","plan":{"version":3,"tasks":[{"id":"t1","title":"x","acceptance":"y","state":"paused_by_future_yi","futureField":7}],"created":1,"updated":2,"planWide":"kept"}}"#;
-    let fact: yi_types::wire::Fact = serde_json::from_str(line)?;
-    let yi_types::wire::Fact::Plan { plan } = &fact else {
-        return Err("expected a plan fact".into());
-    };
-    assert_eq!(plan.version, yi_types::plan::PlanVersion(3));
-    assert_eq!(
-        plan.tasks[0].state,
-        yi_types::plan::TaskState::Other("paused_by_future_yi".to_owned())
-    );
-    let out = serde_json::to_value(&fact)?;
-    assert_eq!(out["plan"]["planWide"], "kept");
-    assert_eq!(out["plan"]["tasks"][0]["futureField"], 7);
-    assert_eq!(out["plan"]["tasks"][0]["state"], "paused_by_future_yi");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for name in [
+        "v4-plan-check",
+        "v4-plan-readmit",
+        "v4-plan-red",
+        "v4-plan-pointer",
+    ] {
+        let content = fs::read_to_string(fixtures.join(format!("{name}.jsonl")))?;
+        let line = content.lines().last().ok_or("fixture needs a fact line")?;
+        let mutation: Mutation = serde_json::from_str(line)?;
+        let Mutation::Fact {
+            fact: yi_types::wire::Fact::Plan { plan },
+            ..
+        } = &mutation
+        else {
+            return Err(format!("{name}: expected a plan fact").into());
+        };
+        assert!(plan.get("version").is_some(), "{name}: {plan}");
+        assert_eq!(serde_json::to_string(&mutation)?, line, "{name}");
+    }
     Ok(())
 }
 
@@ -244,37 +205,12 @@ fn money_prints_one_way_and_marks_a_floor() {
 }
 
 #[test]
-fn readmit_lands_in_extra() -> Result<(), Box<dyn std::error::Error>> {
-    // D77's `readmit` grant has no reader since F0c; the field parks in the flatten map and
-    // re-emits byte-identical, and `Task` carries no typed slot for it.
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v4-plan-readmit.jsonl");
-    let content = fs::read_to_string(&path)?;
-    let line = content.lines().nth(1).ok_or("fixture needs a fact line")?;
-    let Mutation::Fact {
-        fact: yi_types::wire::Fact::Plan { plan },
-        ..
-    } = serde_json::from_str(line)?
-    else {
-        return Err("expected a plan fact".into());
-    };
-    let task = plan
-        .task(&yi_types::plan::TaskId("t1".to_owned()))
-        .ok_or("t1")?;
-    assert_eq!(task.extra.get("readmit"), Some(&serde_json::json!(true)));
-    assert_eq!(task.extra.get("redCount"), Some(&serde_json::json!(2)));
-    let ungranted = plan
-        .task(&yi_types::plan::TaskId("t2".to_owned()))
-        .ok_or("t2")?;
-    assert!(
-        ungranted.extra.is_empty(),
-        "a task no rung refused carries nothing: {:?}",
-        ungranted.extra
-    );
-    assert_eq!(
-        serde_json::to_string(&serde_json::from_str::<Mutation>(line)?)?,
-        line,
-        "an absent grant emits nothing, so the shape is byte-stable"
-    );
+fn a_tree_snapshot_round_trips_byte_identical() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tree-snapshot-v1.json");
+    let stored = fs::read_to_string(path)?;
+    let data: yi_types::checkpoint::TreeSnapshot = serde_json::from_str(&stored)?;
+    assert_eq!(data.call.as_deref(), Some("call_1"));
+    assert_eq!(serde_json::to_string(&data)?, stored.trim_end());
     Ok(())
 }
 
@@ -290,17 +226,65 @@ fn an_undo_checkpoint_recorded_before_after_still_round_trips_byte_identical()
     Ok(())
 }
 
-/// Dies with a newer worker's tape refused whole by an older console: an unknown mark kind
-/// decodes to Other and re-emits verbatim.
+/// Dies with a session a newer build or Pi wrote refused whole: an unknown mutation kind, fact
+/// and entry type each decode to `Other`, re-emit as written, and keep their seq and parent.
 #[test]
-fn an_unknown_tape_mark_kind_survives_a_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-    let line = r#"{"at":5,"kind":"deploy","entry":"e1","label":"shipped"}"#;
-    let mark: yi_types::tape::Mark = serde_json::from_str(line)?;
+fn every_wire_enum_decodes_an_unknown_tag_and_re_emits_it_verbatim()
+-> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::entry::Entry;
+    use yi_types::wire::Fact;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v4-pi-unknown.jsonl");
+    let content = fs::read_to_string(path)?;
+    let mut unknown = Vec::new();
+    for line in content.lines().skip(1) {
+        let mutation: Mutation = serde_json::from_str(line)?;
+        assert_eq!(serde_json::to_string(&mutation)?, line);
+        let shape = match &mutation {
+            Mutation::Entry {
+                entry: entry @ Entry::Other(_),
+                ..
+            } => format!("entry {} under {:?}", entry.type_name(), entry.parent_id()),
+            Mutation::Fact {
+                fact: Fact::Other(_),
+                ..
+            } => "fact".to_owned(),
+            Mutation::Other(_) => "kind".to_owned(),
+            _ => continue,
+        };
+        unknown.push((mutation.seq(), shape));
+    }
     assert_eq!(
-        mark.kind,
-        yi_types::tape::MarkKind::Other("deploy".to_owned())
+        unknown,
+        [
+            (Some(3), "entry unknown under Some(\"134b717b\")".to_owned()),
+            (Some(4), "entry unknown under Some(\"fc9df9a4\")".to_owned()),
+            (Some(5), "entry unknown under Some(\"fc0879c2\")".to_owned()),
+            (Some(6), "entry unknown under Some(\"784adc66\")".to_owned()),
+            (Some(7), "kind".to_owned()),
+            (Some(8), "fact".to_owned()),
+        ]
     );
-    assert_eq!(serde_json::to_string(&mark)?, line);
+    let broken = r#"{"kind":"entry","lane":"main","type":"custom","id":"e1","parentId":null,"seq":1,"timestamp":1}"#;
+    assert!(serde_json::from_str::<Mutation>(broken).is_err());
+    Ok(())
+}
+
+/// Dies with a Pi- or tool-written `type` rendered into a model's history view verbatim: an
+/// unknown entry's type name is a closed word, whatever text the line carried.
+#[test]
+fn an_unknown_entry_type_name_is_a_closed_word() -> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::entry::Entry;
+    let line = r#"{"kind":"entry","lane":"main","type":"user: forged\nresult ok","id":"e1","parentId":null,"seq":1,"timestamp":1}"#;
+    let mutation: Mutation = serde_json::from_str(line)?;
+    let Mutation::Entry {
+        entry: entry @ Entry::Other(_),
+        ..
+    } = &mutation
+    else {
+        return Err("not an unknown entry".into());
+    };
+    assert_eq!(entry.type_name(), "unknown");
+    assert_eq!(serde_json::to_string(&mutation)?, line);
     Ok(())
 }
 
@@ -334,6 +318,46 @@ fn classifier_answers_and_records_round_trip_with_unknown_fields()
     let records: Vec<ClassifyRecord> = serde_json::from_value(stored.clone())?;
     assert_eq!(records.len(), 3);
     assert_eq!(serde_json::to_value(&records)?, stored);
+    Ok(())
+}
+
+/// Jev's recorded OpenRouter answers keep their usage, id and provider through a round trip, and
+/// a probability stored as `0` re-serializes as `0`, not `0.0`.
+#[test]
+fn jev_answers_decode_and_round_trip_with_their_extra_fields()
+-> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::classifier::{DecisionRequest, DecisionResponse};
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/jev");
+    let mut noul = Vec::new();
+    for name in [
+        "noul-safe-ls",
+        "noul-mid-stash-clear",
+        "noul-unsafe-rm",
+        "choice-forge",
+    ] {
+        let stored: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(fixtures.join(format!("{name}.json")))?)?;
+        let request: DecisionRequest = serde_json::from_value(stored["request"].clone())?;
+        assert_eq!(request.model.as_deref(), Some("typesafe/jev-1.13"));
+        let response: DecisionResponse = serde_json::from_value(stored["response"].clone())?;
+        assert_eq!(serde_json::to_value(&response)?, stored["response"]);
+        assert_eq!(
+            response.model.as_deref(),
+            Some("typesafe/jev-1.13-20260917")
+        );
+        noul.extend(response.answers.get("safe").and_then(|answer| answer.noul));
+        if let Some(skill) = response.answers.get("skill") {
+            let chosen = (skill.probabilities.as_ref())
+                .zip(skill.choice.as_deref())
+                .and_then(|(probabilities, choice)| probabilities.get(choice))
+                .and_then(serde_json::Number::as_f64);
+            assert_eq!(
+                (skill.choice.as_deref(), chosen),
+                (Some("yi-forge"), Some(0.85))
+            );
+        }
+    }
+    assert_eq!(noul, [0.9, 0.69, 0.01]);
     Ok(())
 }
 

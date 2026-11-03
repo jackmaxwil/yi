@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
-use crate::process::{OUTPUT_CAP, command, run_captured};
+use crate::process::{OUTPUT_CAP, host_command, run_captured};
 use crate::tool::{Tool, ToolContext, ToolKind, ToolOutput, text_output};
 
 const LAYER_CAP: usize = 4_000;
@@ -478,7 +478,7 @@ struct Heat {
 }
 
 fn change_heat(context: &ToolContext) -> Result<Heat, String> {
-    let mut spawn = command("git");
+    let mut spawn = host_command("git", &context.cwd).map_err(|error| error.to_string())?;
     spawn
         .arg("-C")
         .arg(&context.cwd)

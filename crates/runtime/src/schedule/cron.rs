@@ -122,7 +122,7 @@ pub fn parse_schedule_in(
         .get(..3)
         .is_some_and(|head| head.eq_ignore_ascii_case("at "))
     {
-        let when = parse_iso_ms(text.get(3..).unwrap_or_default().trim())
+        let when = parse_local_ms(text.get(3..).unwrap_or_default().trim(), zone)
             .ok_or_else(|| "Invalid one-shot schedule. Use: at <ISO date>".to_owned())?;
         if when <= now_ms {
             return Err("One-shot schedule must be in the future".to_owned());
@@ -319,11 +319,57 @@ fn next_cron_run_after(expression: &str, after_ms: u64, zone: &Zone) -> Result<u
         "Cron schedule did not match within one year: {expression}"
     ))
 }
+/// An `at <ISO>` instant: a trailing `Z` or `+hh:mm` names it, and one naming none is wall time
+/// in `zone`, as a cron field is, since the `time:` line the model reads is local.
+pub fn parse_local_ms(text: &str, zone: &Zone) -> Option<u64> {
+    let (body, offset) = split_offset(text);
+    let wall = wall_ms(body)?;
+    if let Some(offset) = offset {
+        return at_offset(wall, offset);
+    }
+    let offset_at = |utc: u64| {
+        let shifted = i64::try_from(zone.wall_ms(utc)).ok()?;
+        Some(shifted.checked_sub(i64::try_from(utc).ok()?)? / 1_000)
+    };
+    at_offset(wall, offset_at(at_offset(wall, offset_at(wall)?)?)?)
+}
 
-/// Minimal UTC ISO-8601 parse: `YYYY-MM-DD[THH:MM[:SS]][Z]`. Offsets other
-/// than Z are rejected: an `at` is an absolute instant, and only cron fields are local.
-pub fn parse_iso_ms(text: &str) -> Option<u64> {
-    let text = text.trim().trim_end_matches('Z');
+fn at_offset(wall: u64, offset_seconds: i64) -> Option<u64> {
+    wall.checked_add_signed(offset_seconds.checked_mul(-1_000)?)
+}
+
+/// The text before a timestamp's trailing `Z` or `+hh:mm`, `-hhmm`, `+hh`, and that offset in
+/// seconds east of UTC. A malformed offset stays in the text, which then fails to parse.
+fn split_offset(text: &str) -> (&str, Option<i64>) {
+    let text = text.trim();
+    if let Some(body) = text.strip_suffix('Z') {
+        return (body, Some(0));
+    }
+    let Some((_, time)) = text.split_once('T') else {
+        return (text, None);
+    };
+    for (mark, sign) in [('+', 1), ('-', -1)] {
+        let Some((_, offset)) = time.split_once(mark) else {
+            continue;
+        };
+        let digits: String = offset.chars().filter(|ch| *ch != ':').collect();
+        let hours = digits.get(..2).and_then(|hours| hours.parse::<i64>().ok());
+        let minutes = match digits.get(2..) {
+            Some("") => Some(0),
+            Some(minutes) if minutes.len() == 2 => minutes.parse::<i64>().ok(),
+            _ => None,
+        };
+        let body = text
+            .strip_suffix(offset)
+            .and_then(|head| head.strip_suffix(mark));
+        if let (Some(hours @ 0..=23), Some(minutes @ 0..=59), Some(body)) = (hours, minutes, body) {
+            return (body, Some(sign * (hours * 3_600 + minutes * 60)));
+        }
+    }
+    (text, None)
+}
+
+fn wall_ms(text: &str) -> Option<u64> {
     let (date, time) = match text.split_once('T') {
         Some((date, time)) => (date, Some(time)),
         None => (text, None),
