@@ -1,5 +1,5 @@
-//! The only two wipes of a slot's tree, a reap and a discard, the count of what each drops, and
-//! `yi gc`, which removes linked worktrees `main` already holds.
+//! The only two wipes of a slot's tree, a reap and a discard, the count of what each drops,
+//! `yi gc`, and registrations of lanes trees a deleted lanes directory took.
 
 use std::path::{Path, PathBuf};
 
@@ -258,6 +258,35 @@ impl Pool {
             kept,
         })
     }
+
+    /// Incident: a deleted lanes directory left its slots registered, and `worktree add` refused
+    /// a branch no live tree holds.
+    pub(super) fn rebuild(&self, add: &[&str]) -> Result<(), LaneError> {
+        let listing = git(&self.repo, &["worktree", "list", "--porcelain"])?;
+        let lanes = resolved(&self.dir);
+        for tree in parse(&listing) {
+            if tree.path.starts_with(&lanes) && !tree.path.exists() {
+                let text = tree.path.to_string_lossy();
+                git(&self.repo, &["worktree", "remove", "-f", "-f", &text])?;
+            }
+        }
+        git(&self.repo, add).map(|_| ())
+    }
+}
+
+/// Incident: git lists a worktree by realpath, so a symlinked home (macOS `/var`) matched nothing.
+/// The directory itself is gone, so the nearest ancestor that exists is resolved and the tail rejoined.
+fn resolved(path: &Path) -> PathBuf {
+    let mut tail = Vec::new();
+    let mut head = path;
+    while let Some(parent) = head.parent() {
+        if let Ok(real) = head.canonicalize() {
+            return tail.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        tail.extend(head.file_name());
+        head = parent;
+    }
+    path.to_path_buf()
 }
 
 /// A gitlink's working tree, never a path out of it: the index sits in a lane's contained-writable
