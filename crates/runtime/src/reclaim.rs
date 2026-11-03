@@ -12,6 +12,8 @@ use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 pub(crate) const KEEP_TURNS: u64 = 5;
 /// Below this many tokens a cut's rewrite and its notice cost more than the reads it saves.
 const MIN_DROPPED: u64 = 20_000;
+/// A lapsed cache owes the rewrite anyway, so only the notice has to be earned.
+const MIN_LAPSED: u64 = 2_000;
 /// A cut rewrites the cached prefix after it, which costs as many tokens as this many cache reads.
 const REWRITE_READS: u64 = 10;
 const MIN_RESULT_CHARS: usize = 1_200;
@@ -167,6 +169,21 @@ impl Overlay {
             cut.add(&record);
         }
         apply(messages, &cut)
+    }
+}
+
+/// Renders every recorded cut and decides nothing: a request sent beside the loop repeats the
+/// bytes the loop last sent instead of spending a cut of its own (D338).
+pub(crate) fn convert(cut: Option<Arc<Mutex<Cut>>>) -> crate::compaction::Convert {
+    match cut {
+        Some(cut) => Arc::new(move |messages: &[AgentMessage]| {
+            let converted = yi_context::convert_to_llm(messages);
+            apply(
+                converted,
+                &cut.lock().unwrap_or_else(PoisonError::into_inner),
+            )
+        }),
+        None => Arc::new(yi_context::convert_to_llm),
     }
 }
 
@@ -368,7 +385,7 @@ pub(crate) fn decide(
             .filter_map(|index| sizes.get(*index))
             .map(|size| size.saturating_sub(PLACEHOLDER_TOKENS))
             .fold(0, u64::saturating_add);
-        if dropped < MIN_DROPPED {
+        if dropped < MIN_LAPSED {
             return None;
         }
         let rewritten = sizes
@@ -441,7 +458,13 @@ fn reason(
     if lapsed {
         return Some("expired");
     }
-    let pays = !caches || dropped.saturating_mul(turns) > rewritten.saturating_mul(REWRITE_READS);
+    // An hour-cache write costs twice a five-minute one.
+    let hour = replies
+        .first()
+        .is_some_and(|(usage, _, _)| usage.cache_write1h.unwrap_or(0) > 0);
+    let reads = REWRITE_READS * if hour { 2 } else { 1 };
+    let pays = dropped >= MIN_DROPPED
+        && (!caches || dropped.saturating_mul(turns) > rewritten.saturating_mul(reads));
     pays.then_some("breakeven")
 }
 
@@ -724,15 +747,10 @@ mod tests {
     }
 
     #[test]
-    fn a_lapsed_cache_cuts_at_once_once_twenty_thousand_tokens_drop() -> Fallible {
-        let few = 60_000 * 9 + 6 * 60_000;
-        assert_eq!(
-            decide(&bash_session(10), &Cut::default(), &opus()?, few),
-            None
-        );
-        let late = 60_000 * 13 + 6 * 60_000;
-        let record = decide(&bash_session(14), &Cut::default(), &opus()?, late).ok_or("no cut")?;
-        assert_eq!((record.reason.as_str(), record.items.len()), ("expired", 9));
+    fn a_lapsed_cache_cuts_at_once() -> Fallible {
+        let late = 60_000 * 9 + 6 * 60_000;
+        let record = decide(&bash_session(10), &Cut::default(), &opus()?, late).ok_or("no cut")?;
+        assert_eq!((record.reason.as_str(), record.items.len()), ("expired", 5));
         Ok(())
     }
 
@@ -912,6 +930,43 @@ mod tests {
             leaks.get(1).is_some_and(|new| new.starts_with("new new")),
             "{leaks:?}"
         );
+        Ok(())
+    }
+
+    fn with_usage(turns: usize, set: impl Fn(&mut yi_types::message::Usage)) -> Vec<AgentMessage> {
+        let mut messages = bash_session(turns);
+        for message in &mut messages {
+            if let AgentMessage::Assistant { usage, .. } = message {
+                set(usage);
+            }
+        }
+        messages
+    }
+
+    /// Seen red under `let caches = priced;`: a $0 route that has read its cache waits for the
+    /// token rule, while the same session with no cache reads cuts as soon as it clears the floor.
+    #[test]
+    fn a_zero_priced_route_waits_only_while_its_cache_is_read() -> Fallible {
+        let mut model = opus()?;
+        model.cost.input = serde_json::Number::from(0u64);
+        model.cost.cache_read = serde_json::Number::from(0u64);
+        model.cost.cache_write = serde_json::Number::from(0u64);
+        let now = 60_000 * 13 + 1_000;
+        let read = with_usage(14, |usage| usage.cache_read = 500);
+        assert_eq!(decide(&read, &Cut::default(), &model, now), None);
+        let cold = with_usage(14, |_| {});
+        assert!(decide(&cold, &Cut::default(), &model, now).is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn an_hour_cache_waits_twice_as_long_for_its_rewrite() -> Fallible {
+        let model = opus()?;
+        let now = 60_000 * 21 + 1_000;
+        let five = with_usage(22, |_| {});
+        assert!(decide(&five, &Cut::default(), &model, now).is_some());
+        let hour = with_usage(22, |usage| usage.cache_write1h = Some(1_000));
+        assert_eq!(decide(&hour, &Cut::default(), &model, now), None);
         Ok(())
     }
 

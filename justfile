@@ -27,20 +27,37 @@ clippy-no-tui:
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Incident: one suite run left 23 checkpoint repos in the real ~/.yi, 11,633 of them by
-    # 2026-10-07. The suite's HOME is the worktree's target/yi-home, deleted with the worktree.
-    [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just test
+    scripts/suite_home.sh test
     if command -v cargo-nextest >/dev/null; then
       # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
       profile=local
       [ -z "${CI:-}" ] || profile=default
-      cargo nextest run --workspace --profile "$profile"
+      cargo nextest run --workspace --profile "$profile" -- --skip linked_tables
     else
-      cargo test --workspace -- --test-threads=1
+      cargo test --workspace -- --test-threads=1 --skip linked_tables
     fi
     # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
     cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
+py := `scripts/py.sh`
+
+# A local inner loop, never a gate: the generated quick profiles omit tests measured at 5 s or more.
+test-quick:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scripts/suite_home.sh test-quick
+    {{py}} scripts/slow_tests.py --check
+    profile=quick
+    [ -z "${CI:-}" ] || profile=quick-ci
+    cargo nextest run --workspace --profile "$profile"
+
+# Record fresh JUnit timings, then regenerate the checked-in quick filter; this runs every test once.
+slow-tests:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scripts/suite_home.sh slow-tests
+    cargo nextest run --workspace --profile timing
+    {{py}} scripts/slow_tests.py target/nextest/timing/timing.xml
 
 # Frees what an edit loop leaves behind in target/: artifacts of superseded units and
 # incremental caches beyond the newest each live unit needs. Builds the gate resolutions first, so run it idle.
@@ -72,8 +89,8 @@ guardrails-fast:
 
 # Serial on purpose: beside the dist build, nextest's first exec of 134 fresh test binaries
 # queued behind Gatekeeper's per-binary scan, and the gate took 116-302s where serial took 135-151s.
-# `--quiet` prints one line when green and only the failing lane's own output otherwise, with the
-# same exit code, so an agent reads `$?` and the failure rather than every launched gate.
+# `--quiet` prints the guardrails lane's own quiet output when green (its skip rows, then its summary line),
+# and only the failing lane's own output otherwise, with the same exit code, so an agent reads `$?`.
 check *flags:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -86,6 +103,7 @@ check *flags:
       out=$(just $lane 2>&1)
       rc=$?
       if [ "$rc" != 0 ]; then printf '%s\n' "$out"; exit "$rc"; fi
+      case $lane in guardrails*) printf '%s\n' "$out" ;; esac
     done
     echo "check: lint, guardrails and test green"
 
@@ -160,6 +178,7 @@ journeys:
     # The true-terminal journey has no cargo home: no test can hand the binary
     # a pty that answers its cursor-position query, so the harness runs here.
     cargo build -p yi-cli
+    python3 scripts/intake/journey.py
     home="$PWD/target/journeys"
     rm -rf "$home"
     mkdir -p "$home"
@@ -242,6 +261,9 @@ postmerge-evals:
 # Prefill the PR narrative's counted sections from the diff against main.
 pr-body:
     python3 scripts/pr_body.py
+
+intake *args:
+    python3 scripts/intake/bridge.py {{args}}
 
 # Finishing a branch, as verbs that check first (the yi-forge skill is the procedure):
 # ratchet the baselines alone, commit with a judged subject, push through the lane,
@@ -346,9 +368,11 @@ package-musl version target='x86_64-unknown-linux-musl':
     echo "package-musl: smoke.sh NOT run on this host (cross binary can't execute on darwin);"
     echo "package-musl: the container's 'yi --version' preflight (evals/README) is the real smoke."
 
-# Catalog skills (§7.8) install into the global root; the fragments an
-# extension attaches are compiled in.
-install-skills:
-    mkdir -p ~/.yi/skills/yi
-    rsync -a --delete skills/yi/ ~/.yi/skills/yi/
-    @for stale in caveman ponytail superpowers diagram-design; do [ -d ~/.yi/skills/$stale ] && echo "stale bundle, remove by hand: ~/.yi/skills/$stale" || true; done
+# Catalog skills (§7.8) install into the global root (`dest`), which the gate points at a temp dir.
+# The fragments an extension attaches are compiled in.
+install-skills dest="$HOME/.yi/skills":
+    mkdir -p "{{dest}}"
+    cp -R .ruler/skills/. "{{dest}}/"
+    rm -rf "{{dest}}/yi"
+    cp -R skills/yi "{{dest}}/yi"
+    @for stale in caveman/caveman ponytail/ponytail superpowers diagram-design; do [ -d "{{dest}}/$stale" ] && echo "stale bundle, remove by hand: {{dest}}/$stale" || true; done
