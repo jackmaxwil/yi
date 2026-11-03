@@ -7,7 +7,7 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 
 use super::{InterceptStopFn, Shared};
 
-const FINISH: &str = "Finish with `answer` once the work is fixed: only `summary` keeps the reply above and adds the status line under it; `text` replaces it.";
+const FINISH: &str = "Finish with `answer`: only `summary` keeps the reply above as the answer once the work is fixed; `text` replaces it.";
 
 /// A refused answer: its text, the file `edit` patches it in, and whether it is a plain-text
 /// reply already on screen.

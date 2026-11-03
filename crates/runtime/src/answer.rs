@@ -93,17 +93,21 @@ impl Tool for AnswerTool {
             (None, None) if !line.is_empty() => (String::new(), false),
             (None, None) => return error_output("No draft is held: pass the answer as `text`."),
         };
-        let reply = crate::session::headed(line, &draft);
+        // Invariant: a reply on screen stands as written; a line under it is all a parent would
+        // read, and a line over it prints the reply twice.
+        let reply = match stands {
+            true => draft.clone(),
+            false => crate::session::headed(line, &draft),
+        };
         let Some(refusal) = self.handle.judge(&reply) else {
-            if stands && reply == draft {
+            if stands {
                 self.handle.stand();
                 let mut output =
                     text_output("The reply above stands as the answer; the turn ends.");
                 output.result.terminate = Some(true);
                 return output;
             }
-            self.handle
-                .accept(if stands { line.to_owned() } else { reply });
+            self.handle.accept(reply);
             return text_output("Answer delivered; the turn ends.");
         };
         let held = self.hold_file(&draft, context);

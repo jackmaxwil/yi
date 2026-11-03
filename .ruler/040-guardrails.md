@@ -1,7 +1,8 @@
 # Guardrails
 
 Run `just check` (fmt-check + clippy -D warnings + scripts/guardrails/check_guardrails.sh)
-before claiming any task done; quote failures verbatim, do not paraphrase them.
+before claiming any task done; quote failures verbatim in the PR or commit, never softened in a
+reply.
 
 - The size ceilings — net src growth, per-crate src lines, test LOC, comment volume and
   over-cap count — are measured at the fork point (`git merge-base origin/main HEAD`), not stored:

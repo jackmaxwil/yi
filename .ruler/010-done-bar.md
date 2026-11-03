@@ -15,7 +15,8 @@ necessary, not sufficient.
    `./target/debug/yi ask --model faux/faux-1 "<prompt>"` (add `--json` for
    the event stream). Size or startup claims use the dist profile
    (`cargo build --profile dist -p yi-cli`), never debug.
-4. Report failures verbatim; never paraphrase an error you have not fixed.
+4. Name each failure exactly; never soften an error you have not fixed. Its exact text goes in
+   the PR, commit or issue, and in a reply when the user asks for it.
 
 Misdiagnosis defaults: a gate that turns red after your change was broken by
 your change — fix the code, never the baseline. That holds for the wall-clock

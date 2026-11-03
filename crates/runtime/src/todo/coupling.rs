@@ -55,7 +55,6 @@ pub struct Cycle {
     pub prompt_claims_impossible: bool,
     pub impossible: bool,
     pub artifact: bool,
-    pub done_refused: bool,
 }
 
 impl Cycle {
@@ -778,16 +777,14 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             let list = todos.list();
             let posture = stop_posture(&list, children_running());
             let blocked = matches!(posture, StopPosture::Ask | StopPosture::Cadence);
-            if blocked && says_done(&text) && !std::mem::replace(&mut cycle.done_refused, true) {
-                record_intercept(
-                    &store,
-                    0,
-                    "done_blocked",
-                    &list.fingerprint(),
-                    cycle.intercepts,
-                );
-                let note = DONE_BLOCKED_TEXT.to_owned();
-                return Some(custom(INTERCEPT_CUSTOM_TYPE, note, false));
+            if blocked && says_done(&text) {
+                let fingerprint = list.fingerprint();
+                if let Some(rung) = cycle.intercept(&fingerprint) {
+                    record_intercept(&store, rung, "done_blocked", &fingerprint, cycle.intercepts);
+                    let note = DONE_BLOCKED_TEXT.to_owned();
+                    return Some(custom(INTERCEPT_CUSTOM_TYPE, note, false));
+                }
+                record_intercept(&store, cycle.rung, LET_GO, &fingerprint, cycle.intercepts);
             }
             if posture != StopPosture::Continue {
                 drop(cycle);

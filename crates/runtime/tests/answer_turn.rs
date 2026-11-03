@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::ProviderStream;
-use yi_runtime::todo::coupling::{DONE_BLOCKED_TEXT, INTERCEPT_CUSTOM_TYPE};
+use yi_runtime::todo::coupling::{DONE_BLOCKED_TEXT, INTERCEPT_CUSTOM_TYPE, gate::LADDER_TOP};
 use yi_types::message::{AgentMessage, Content, StopReason};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -197,8 +197,8 @@ async fn a_host_note_queued_on_the_answer_turn_is_dropped() -> TestResult {
     Ok(())
 }
 
-/// Dies with a sent-back reply printed twice, or a turn that runs on after it: a reply on
-/// screen that passes once the work is done stands, with only its status line added under it.
+/// Dies with a sent-back reply printed twice, cut to a status line for its parent, or a turn
+/// that runs on after it: a reply on screen that passes once the work is done stands as written.
 #[tokio::test]
 async fn a_sent_back_reply_that_passes_stands_without_a_second_copy() -> TestResult {
     let script = vec![
@@ -219,13 +219,12 @@ async fn a_sent_back_reply_that_passes_stands_without_a_second_copy() -> TestRes
         says("A second answer nobody asked for."),
     ];
     let messages = run(&Scratch::new("yi-answer-stands")?, script).await?;
-    let status = "Wrote the note".to_owned();
-    assert_eq!(answers(&messages), vec!["Done.".to_owned(), status]);
+    assert_eq!(answers(&messages), vec!["Done.".to_owned()]);
     Ok(())
 }
 
-/// Dies with the last word refusing the answer: under the turn cap the `answer` call is still
-/// the answer, so the run neither ends empty nor asks again.
+/// Dies with the last word refusing the answer or dropping its status line: under the turn cap
+/// the `answer` call is still the answer, so the run neither ends empty nor asks again.
 #[tokio::test]
 async fn an_answer_on_the_last_word_is_still_the_answer() -> TestResult {
     let script = vec![
@@ -234,18 +233,33 @@ async fn an_answer_on_the_last_word_is_still_the_answer() -> TestResult {
             "todo",
             json!({"op": "init", "items": ["write the note"]}),
         )]),
-        calls(vec![call(
-            "c2",
-            "answer",
-            json!({"summary": "Out of turns", "text": "Out of turns; the note is unwritten."}),
-        )]),
+        answered("Problem: Out of turns.", "The note is unwritten."),
         says("A second answer nobody asked for."),
     ];
     let messages = run_capped(&Scratch::new("yi-answer-capped")?, script, Some(2), None).await?;
-    assert_eq!(
-        answers(&messages),
-        vec!["Out of turns; the note is unwritten.".to_owned()]
-    );
+    let reply = "Problem: Out of turns.\n\nThe note is unwritten.".to_owned();
+    assert_eq!(answers(&messages), vec![reply]);
+    Ok(())
+}
+
+/// Dies with a draft held over to the last word losing its status line: the summary that
+/// resubmits it under the turn cap heads the draft the earlier refusal kept.
+#[tokio::test]
+async fn a_draft_resubmitted_on_the_last_word_keeps_its_status_line() -> TestResult {
+    let script = vec![
+        calls(vec![call(
+            "c1",
+            "todo",
+            json!({"op": "init", "items": ["write the note"]}),
+        )]),
+        answered("Problem: The note is open.", "The note is unwritten."),
+        summary_only("Problem: Out of turns."),
+        says("A second answer nobody asked for."),
+    ];
+    let root = Scratch::new("yi-answer-capped-held")?;
+    let messages = run_capped(&root, script, Some(3), None).await?;
+    let reply = "Problem: Out of turns.\n\nThe note is unwritten.".to_owned();
+    assert_eq!(answers(&messages), vec![reply]);
     Ok(())
 }
 
@@ -315,8 +329,14 @@ async fn a_bracket_in_the_summary_never_becomes_the_parsed_answer() -> TestResul
     Ok(())
 }
 
-/// Dies with Done passing over an item that waits on the user: that reply is sent back once,
-/// and the status that names the wait heads what the user reads.
+fn refused_done(message: &AgentMessage) -> bool {
+    matches!(message, AgentMessage::ToolResult { tool_name, is_error: true, content, .. }
+        if tool_name == "answer"
+            && yi_types::message::join_text(content, "").contains(DONE_BLOCKED_TEXT))
+}
+
+/// Dies with Done passing over an item that waits on the user: that reply is sent back, and
+/// the status that names the wait heads what the user reads.
 #[tokio::test]
 async fn done_is_refused_while_an_item_is_blocked() -> TestResult {
     let mut script = blocked_note();
@@ -326,11 +346,7 @@ async fn done_is_refused_while_an_item_is_blocked() -> TestResult {
         says("A second answer nobody asked for."),
     ]);
     let messages = run(&Scratch::new("yi-answer-done-blocked")?, script).await?;
-    let refused = (messages.iter()).any(|message| {
-        matches!(message, AgentMessage::ToolResult { tool_name, is_error: true, content, .. }
-            if tool_name == "answer"
-                && yi_types::message::join_text(content, "").contains(DONE_BLOCKED_TEXT))
-    });
+    let refused = messages.iter().any(refused_done);
     assert!(refused, "the Done reply was not sent back");
     assert_eq!(
         answers(&messages),
@@ -356,31 +372,39 @@ fn summary_only(summary: &str) -> AgentMessage {
     calls(vec![call("c4", "answer", json!({"summary": summary}))])
 }
 
-/// Dies with a refused plain Done left as the last word: the status the model sends back
-/// reaches the user under the reply already on screen.
+/// Dies with a refused plain Done kept as the answer: a summary alone cannot keep a reply on
+/// screen that claims Done over an item waiting on the user, so the fix comes as new text.
 #[tokio::test]
-async fn a_plain_done_over_a_blocked_item_ends_on_its_status() -> TestResult {
+async fn a_plain_done_over_a_blocked_item_cannot_stand_on_a_summary() -> TestResult {
+    let ready = "Ready: Pick the note's title.";
     let mut script = blocked_note();
     script.extend([
         says("Done."),
-        summary_only("Ready: Pick the note's title."),
+        summary_only(ready),
+        answered(ready, "The note waits for its title."),
         says("A second answer nobody asked for."),
     ]);
     let messages = run(&Scratch::new("yi-answer-plain-done")?, script).await?;
     assert_eq!(notes(&messages, INTERCEPT_CUSTOM_TYPE), 1);
-    let ready = "Ready: Pick the note's title.".to_owned();
-    assert_eq!(answers(&messages), vec!["Done.".to_owned(), ready]);
+    let reply = format!("{ready}\n\nThe note waits for its title.");
+    assert_eq!(answers(&messages), vec!["Done.".to_owned(), reply]);
     Ok(())
 }
 
-/// Dies with Done held past its one send-back: a model that answers Done again is let
-/// through, never refused until the turn cap.
+/// Dies with a repeated Done let through on its second try, or held for good: the claim is
+/// sent back while the list stands still, and let go once the send-back ladder tops out.
 #[tokio::test]
-async fn a_second_done_over_a_blocked_item_is_let_through() -> TestResult {
+async fn a_repeated_done_over_a_blocked_item_is_let_go_at_the_ladder_top() -> TestResult {
     let done = || answered("Done: Wrote the note.", "The note waits for its title.");
     let mut script = blocked_note();
-    script.extend([done(), done(), says("A second answer nobody asked for.")]);
-    let messages = run(&Scratch::new("yi-answer-done-twice")?, script).await?;
+    script.extend((0..=LADDER_TOP).map(|_| done()));
+    script.push(says("A second answer nobody asked for."));
+    let messages = run(&Scratch::new("yi-answer-done-ladder")?, script).await?;
+    let refusals = messages
+        .iter()
+        .filter(|message| refused_done(message))
+        .count();
+    assert_eq!(refusals, usize::from(LADDER_TOP));
     let reply = "Done: Wrote the note.\n\nThe note waits for its title.".to_owned();
     assert_eq!(answers(&messages), vec![reply]);
     Ok(())
@@ -471,7 +495,7 @@ async fn a_turn_ending_answer_persists_its_terminate_flag() -> TestResult {
                 "todo",
                 json!({"op": "done", "label": "write the note", "evidence": "`true` exit 0"}),
             ),
-            call("c3", "answer", json!({"summary": "Done."})),
+            call("c3", "answer", json!({"summary": "Wrote the note"})),
         ]),
         says("A second answer nobody asked for."),
     ]);
