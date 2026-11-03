@@ -999,19 +999,21 @@ def handed_over(work):
 def in_worker(work, op, args):
     """`OPS[op]` in a new process that holds no token and, as root, runs as a user that owns only `work`.
     Output goes to files, not pipes: a daemon the PR left behind would hold a pipe open for ever."""
-    env, drop = {**scrubbed(), "TMPDIR": str(work / "tmp")}, {}
+    env, drop, python = {**scrubbed(), "TMPDIR": str(work / "tmp")}, {}, sys.executable
     if not os.geteuid():
+        # Incident: CI's PATH reached python through a /root symlink, which the dropped user cannot open.
+        python = os.path.realpath(sys.executable)
         uid, moved = handed_over(work)
         env, drop = {**env, **moved}, {"user": uid, "group": uid, "extra_groups": []}
     with tempfile.TemporaryFile("w+") as asked, tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
         json.dump({"op": op, "args": {"work": str(work), **args}}, asked)
         asked.seek(0)
         try:
-            subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()), "--worker"], cwd=work, env=env,
+            subprocess.run([python, str(pathlib.Path(__file__).resolve()), "--worker"], cwd=work, env=env,
                            stdin=asked, stdout=out, stderr=err, **drop)
         finally:
             if drop:
-                subprocess.run([sys.executable, "-c", "import os, signal; os.kill(-1, signal.SIGKILL)"], cwd="/", env=env, check=False, **drop)
+                subprocess.run([python, "-c", "import os, signal; os.kill(-1, signal.SIGKILL)"], cwd="/", env=env, check=False, **drop)
         out.seek(0)
         err.seek(0)
         said, died = out.read(), err.read()
