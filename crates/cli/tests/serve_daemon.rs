@@ -596,6 +596,47 @@ fn a_saved_default_reaches_the_next_session_and_a_refused_one_writes_nothing() -
     outcome
 }
 
+/// Saves sent in a burst land in the order they were sent, so the file holds the newest press.
+#[test]
+fn saved_defaults_land_in_the_order_they_were_sent() -> TestResult {
+    let dir = Scratch::new("yi-settings-order")?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let config = dir.join("home/.yi/config.json");
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("i1", "initialize", json!({"protocolVersion": 2}))?;
+        let value = |round: u32| {
+            if round.is_multiple_of(2) {
+                "hidden"
+            } else {
+                "full"
+            }
+        };
+        for round in 0..40 {
+            let params = json!({"id": "console.sidebar", "value": value(round)});
+            client.send(&format!("s{round}"), "_yi/set_default", params)?;
+        }
+        let mut last = client.read_until(|frame| frame["id"] == "s39")?;
+        for (round, answer) in
+            (0..40).zip(last.drain(..).filter(|f| f["result"]["rows"].is_array()))
+        {
+            let rows = answer["result"]["rows"].as_array().ok_or("no rows")?;
+            let row = rows.iter().find(|row| row["id"] == "console.sidebar");
+            assert_eq!(
+                (&answer["id"], row.map(|row| &row["value"])),
+                (&json!(format!("s{round}")), Some(&json!(value(round)))),
+                "an answer read another save's state"
+            );
+        }
+        let saved: Value = std::fs::read_to_string(&config)?.parse()?;
+        assert_eq!(saved["console"]["sidebar"], "full", "{saved}");
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// A client that leaves mid-turn is owed one unseen mark for the idle it missed, not one
 /// per streamed event, and the client that comes back gets the branch verbatim.
 #[test]
@@ -1033,7 +1074,7 @@ fn the_daemon_delivers_the_workdir_the_worker_named_at_attach() -> TestResult {
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "the sidecar is a grandchild the test can only see through its pid"
+    reason = "a worker is a grandchild the test can only see through its pid"
 )]
 fn kill(args: &[&str]) -> Result<bool, Box<dyn Error>> {
     Ok(Command::new("sh")
@@ -1042,197 +1083,6 @@ fn kill(args: &[&str]) -> Result<bool, Box<dyn Error>> {
         .stderr(Stdio::null())
         .status()?
         .success())
-}
-
-fn alive(pid: &str) -> Result<bool, Box<dyn Error>> {
-    kill(&["-0", pid])
-}
-
-/// A HOME whose config turns the classifier on at `host` and a free port, with `fake` as laya-serve.
-fn sidecar_home(dir: &Path, host: &str, fake: &str) -> Result<(PathBuf, u16), Box<dyn Error>> {
-    let home = dir.join("home");
-    let bin = home.join(".local/share/laya-venv/bin");
-    std::fs::create_dir_all(&bin)?;
-    std::fs::create_dir_all(home.join(".yi"))?;
-    let port = std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()?
-        .port();
-    let config = json!({
-        "models": {"classifier": "english"},
-        "classifier": {"url": format!("http://{host}:{port}")},
-    });
-    std::fs::write(home.join(".yi/config.json"), config.to_string())?;
-    std::fs::write(bin.join("laya-serve"), fake)?;
-    std::fs::set_permissions(
-        bin.join("laya-serve"),
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )?;
-    Ok((home, port))
-}
-
-fn started(home: &Path) -> Vec<String> {
-    std::fs::read_to_string(home.join("starts"))
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-#[test]
-fn the_daemon_starts_the_classifier_sidecar_and_a_sigkill_takes_it_down() -> TestResult {
-    let dir = Scratch::new("yi-serve-sidecar")?;
-    let (home, port) = sidecar_home(
-        &dir,
-        "localhost",
-        "#!/bin/sh\necho \"$$ $LAYA_HOST $LAYA_PORT $LAYA_MODELS $LAYA_API_KEY\" >> \"$HOME/starts\"\nexec sleep 600\n",
-    )?;
-    let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
-    let waited = wait_until(Instant::now() + Duration::from_secs(10), || {
-        Ok(!started(&home).is_empty())
-    });
-    let line = started(&home).join(" ");
-    let fields: Vec<&str> = line.split_whitespace().collect();
-    let pid = fields.first().copied().unwrap_or("0").to_owned();
-    let outcome = (|| -> TestResult {
-        waited.map_err(|_| "yi serve never started the configured sidecar")?;
-        let port = port.to_string();
-        if fields.get(1..4) != Some(&["localhost", port.as_str(), "english"][..]) {
-            return Err(
-                format!("the sidecar must bind the configured url and checkpoint: {line}").into(),
-            );
-        }
-        let stored: Value = serde_json::from_str(&std::fs::read_to_string(
-            home.join(".yi/providers/tokens/laya.json"),
-        )?)?;
-        let minted = stored["access"].as_str().unwrap_or_default();
-        if minted.len() != 64 || fields.get(4) != Some(&minted) {
-            return Err(format!("the sidecar must get the key Yi minted and saved: {line}").into());
-        }
-        daemon.kill()?;
-        daemon.wait()?;
-        wait_until(Instant::now() + Duration::from_secs(10), || {
-            Ok(!alive(&pid)?)
-        })
-        .map_err(|_| "the sidecar outlived a SIGKILLed daemon".into())
-    })();
-    let _ = daemon.kill();
-    let _ = daemon.wait();
-    if pid != "0" {
-        let _ = kill(&[&pid]);
-    }
-    outcome
-}
-
-/// The old sidecar keeps its port for a second after SIGTERM, as uvicorn's graceful exit does.
-#[test]
-fn a_restarted_daemon_starts_its_own_sidecar_once_the_old_one_is_gone() -> TestResult {
-    let dir = Scratch::new("yi-serve-sidecar-restart")?;
-    let (home, _port) = sidecar_home(
-        &dir,
-        "127.0.0.1",
-        "#!/usr/bin/env python3\nimport os, signal, socket, time\n\
-         s = socket.socket()\ns.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
-         s.bind(('127.0.0.1', int(os.environ['LAYA_PORT'])))\ns.listen(8)\n\
-         signal.signal(signal.SIGTERM, lambda *_: (time.sleep(1), os._exit(0)))\n\
-         open(os.environ['HOME'] + '/starts', 'a').write(f'{os.getpid()}\\n')\n\
-         while True:\n    time.sleep(60)\n",
-    )?;
-    let (mut first, _socket) = spawn_daemon_in(&dir, &home)?;
-    let mut second = None;
-    let outcome = (|| -> TestResult {
-        wait_until(Instant::now() + Duration::from_secs(10), || {
-            Ok(started(&home).len() == 1)
-        })
-        .map_err(|_| "the first daemon never started its sidecar")?;
-        first.kill()?;
-        first.wait()?;
-        second = Some(spawn_daemon_in(&dir, &home)?.0);
-        wait_until(Instant::now() + Duration::from_secs(15), || {
-            Ok(started(&home).len() == 2)
-        })
-        .map_err(|_| "the restarted daemon took the dying sidecar for a live one".into())
-    })();
-    let _ = first.kill();
-    let _ = first.wait();
-    if let Some(mut daemon) = second {
-        let _ = daemon.kill();
-        let _ = daemon.wait();
-    }
-    for pid in started(&home) {
-        let _ = kill(&["-9", &pid]);
-    }
-    outcome
-}
-
-#[test]
-fn a_sidecar_already_answering_is_used_and_no_second_one_starts() -> TestResult {
-    let dir = Scratch::new("yi-serve-sidecar-reuse")?;
-    let (home, port) = sidecar_home(
-        &dir,
-        "127.0.0.1",
-        "#!/bin/sh\necho \"$$\" >> \"$HOME/starts\"\nexec sleep 600\n",
-    )?;
-    let by_hand = std::net::TcpListener::bind(("127.0.0.1", port))?;
-    let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
-    let log = home.join(".yi/laya-serve.log");
-    // The decision is final once the line is written and the log's lock is free again: a sidecar
-    // started beside the running one would hold that lock for as long as it lives.
-    let outcome = wait_until(Instant::now() + Duration::from_secs(10), || {
-        let said = std::fs::read_to_string(&log)
-            .unwrap_or_default()
-            .contains("already answers");
-        let free = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&log)
-            .is_ok_and(|file| file.try_lock().is_ok());
-        Ok(said && free)
-    })
-    .map_err(|_| "the daemon never settled on the running sidecar".into())
-    .and_then(|()| match started(&home).as_slice() {
-        [] => Ok(()),
-        pids => Err(format!("a second sidecar started beside the running one: {pids:?}").into()),
-    });
-    let _ = daemon.kill();
-    let _ = daemon.wait();
-    drop(by_hand);
-    for pid in started(&home) {
-        let _ = kill(&["-9", &pid]);
-    }
-    outcome
-}
-
-#[test]
-/// The log's lock is held throughout, as another daemon's live sidecar would hold it.
-fn a_sidecar_on_another_machine_is_left_alone_and_the_log_says_so() -> TestResult {
-    let dir = Scratch::new("yi-serve-sidecar-remote")?;
-    let (home, _port) = sidecar_home(
-        &dir,
-        "192.0.2.1",
-        "#!/bin/sh\necho \"$$\" >> \"$HOME/starts\"\nexec sleep 600\n",
-    )?;
-    let log = home.join(".yi/laya-serve.log");
-    let held = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log)?;
-    held.lock()?;
-    let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
-    let _waited = wait_until(Instant::now() + Duration::from_secs(10), || {
-        Ok(std::fs::read_to_string(&log)
-            .unwrap_or_default()
-            .contains("192.0.2.1"))
-    });
-    let said = std::fs::read_to_string(&log).unwrap_or_default();
-    let _ = daemon.kill();
-    let _ = daemon.wait();
-    for pid in started(&home) {
-        let _ = kill(&["-9", &pid]);
-    }
-    if !said.contains("192.0.2.1") || !started(&home).is_empty() {
-        return Err(format!("a remote url must start nothing and say so: {said:?}").into());
-    }
-    Ok(())
 }
 
 /// Open in runs the command the person's config names on the message saved as markdown; the

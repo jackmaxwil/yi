@@ -281,7 +281,7 @@ pub trait Delegate: Send + Sync {
     }
     /// A worktree child's candidate, committed on its branch with the child quiescent, read
     /// with nothing marked on the host; `None` when the host holds no lane for it.
-    fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::settle::Held>, String> {
+    fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::handback::Held>, String> {
         let _unused = agent;
         Ok(None)
     }

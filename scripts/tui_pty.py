@@ -367,7 +367,7 @@ def main() -> int:
     if pid == 0:
         os.environ["TERM"] = options.term
         os.environ["HOME"] = home
-        os.execvp(options.binary, [options.binary, *yi_args])
+        os.execvp(options.binary, [options.binary, *yi_args])  # nosemgrep: dangerous-os-exec-tainted-env-args PTY harness intentionally execs selected argv without a shell.
 
     fcntl.ioctl(fd, termios.TIOCSWINSZ,
                 struct.pack("HHHH", options.rows, options.cols, 0, 0))
