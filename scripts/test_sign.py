@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """scripts/sign.sh signs with the release key by default, names the fix when it cannot, and allowed_signers is well formed."""
+import base64
+import hashlib
 import os
 import pathlib
+import pwd
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +14,11 @@ SIGN = ROOT / "scripts/sign.sh"
 PASSPHRASE = "correct horse"
 # The public fingerprint of the owner's release key (~/.ssh/yi-release): the one signer yi update trusts.
 OWNER_RELEASE_KEY = "SHA256:lNXKild9bEMo3z1To8V08WGUGJvag3cLRasaxyGVawo"
+try:
+    pwd.getpwuid(os.getuid())
+    HAS_USER = True
+except KeyError:
+    HAS_USER = False
 
 
 def run(*args, env=None, check=True, stdin_text=None):
@@ -26,6 +34,7 @@ def fixture(directory, key, passphrase):
     (directory / "a.tar.gz").write_text("release bytes")
 
 
+@unittest.skipUnless(HAS_USER, "ssh-keygen requires a passwd entry for the current uid")
 class SignWithAKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -50,10 +59,11 @@ class TrustList(unittest.TestCase):
     def test_allowed_signers_is_the_owners_release_key_alone(self):
         lines = [line for line in (ROOT / "allowed_signers").read_text().splitlines() if line.strip() and not line.startswith("#")]
         self.assertEqual(len(lines), 1, "the owner is the only signer")
-        keyed = run("ssh-keygen", "-l", "-f", "-", check=False, stdin_text=lines[0].split(None, 1)[1])
-        self.assertEqual(keyed.returncode, 0, keyed.stderr)
-        self.assertIn(OWNER_RELEASE_KEY, keyed.stdout, "changing the trusted key is a deliberate edit of this line")
+        key = base64.b64decode(lines[0].split(None, 2)[2])
+        fingerprint = base64.b64encode(hashlib.sha256(key).digest()).rstrip(b"=").decode()
+        self.assertEqual(f"SHA256:{fingerprint}", OWNER_RELEASE_KEY, "changing the trusted key is a deliberate edit of this line")
 
+    @unittest.skipUnless(HAS_USER, "ssh-keygen requires a passwd entry for the current uid")
     def test_the_default_key_is_the_release_key(self):
         with tempfile.TemporaryDirectory() as home:
             home = pathlib.Path(home)
