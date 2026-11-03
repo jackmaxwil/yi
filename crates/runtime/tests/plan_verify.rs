@@ -54,6 +54,8 @@ use yi_runtime::plan::store::PlanStore;
 use yi_runtime::plan::verify::{CheckerManifest, Snapshot, Verifier, freeze, session_has};
 use yi_types::plan::PlanVersion;
 use yi_types::plan::canonical::{ArtifactRef, Digest};
+#[cfg(target_os = "macos")]
+use yi_types::plan::contract::Verdict;
 use yi_types::plan::contract::{Contract, ItemVerdict, Outcome, VerificationToken};
 use yi_types::plan::doc::{AttemptId, GoalText, PlanId, TodoLabel, TodoState};
 
@@ -231,7 +233,68 @@ fn a_plan_check_passes_the_frozen_bash_hooks_before_it_runs() -> TestResult {
         &manifest(&format!("touch {}", marker.display()), 5_000, &[]),
     )?;
     let contract = cmd_contract(check, 5_000)?;
-    let verdict = Verifier::new(5_000).with_claude_hooks(hooks).run(
+    let verdict = Verifier::new(5_000)
+        .with_checker(yi_runtime::goal::Checker::from_hooks(hooks))
+        .run(
+            &token(&contract)?,
+            &contract,
+            &Snapshot {
+                id: "tree:test",
+                root: &temp,
+                output: None,
+                artifacts: &artifacts,
+            },
+        );
+    assert!(
+        verdict.lines().contains("plan hook denied"),
+        "{}",
+        verdict.lines()
+    );
+    assert!(!marker.exists(), "a refused plan check ran");
+    Ok(())
+}
+
+// A checker whose sandbox refuses every write outside `temp`, and the store its artifacts go in.
+#[cfg(target_os = "macos")]
+fn sandboxed_checker(
+    temp: &std::path::Path,
+    home: &std::path::Path,
+) -> (Artifacts, yi_runtime::goal::Checker) {
+    let sandbox = yi_tools::Sandbox::for_workspace(temp, home, None);
+    let (events, _) = tokio::sync::broadcast::channel(8);
+    let refuse: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let broker = Arc::new(
+        yi_runtime::PermissionBroker::new(
+            yi_runtime::PermissionMode::Auto,
+            temp.to_path_buf(),
+            Vec::new(),
+            Some(refuse),
+            events,
+        )
+        .with_sandbox(Some(sandbox)),
+    );
+    let checker =
+        yi_runtime::goal::Checker::new(None, Some(broker), yi_runtime::wall::Wall::default());
+    (Artifacts::under(temp), checker)
+}
+
+/// Dies with a sandboxed `cmd` item failing: a command the profile refused to let run read as the
+/// product's failure and charged a refusal, though nothing about the tree had been decided.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cmd_item_the_sandbox_blocked_abstains_instead_of_failing() -> TestResult {
+    let temp = Scratch::new("yi-verify-refused")?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let (artifacts, checker) = sandboxed_checker(&temp, &home);
+    let denied = home.join(format!("yi-verify-refused-{}", std::process::id()));
+    let check = put(
+        &artifacts,
+        &manifest(&format!("touch '{}'", denied.display()), 5_000, &[]),
+    )?;
+    let contract = cmd_contract(check, 5_000)?;
+    let verdict = Verifier::new(5_000).with_checker(checker).run(
         &token(&contract)?,
         &contract,
         &Snapshot {
@@ -241,12 +304,128 @@ fn a_plan_check_passes_the_frozen_bash_hooks_before_it_runs() -> TestResult {
             artifacts: &artifacts,
         },
     );
+    let ran = denied.exists();
+    let _ = std::fs::remove_file(&denied);
+    assert!(!ran, "the sandbox let the check write into HOME");
     assert!(
-        verdict.lines().contains("plan hook denied"),
+        verdict
+            .lines()
+            .contains("accepted_by_user with its exit line"),
         "{}",
         verdict.lines()
     );
-    assert!(!marker.exists(), "a refused plan check ran");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn refused_examples(
+    name: &str,
+    cases: Value,
+    runner: &str,
+) -> Result<(bool, Verdict), Box<dyn Error>> {
+    let temp = Scratch::new(name)?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let (artifacts, checker) = sandboxed_checker(&temp, &home);
+    let denied = home.join(format!("{name}-{}", std::process::id()));
+    let runner = put(
+        &artifacts,
+        &manifest(
+            &runner.replace("DENIED", &denied.display().to_string()),
+            5_000,
+            &[],
+        ),
+    )?;
+    let cases = artifacts.put(&serde_json::to_vec(&cases)?, "application/json", "test")?;
+    let contract: Contract = serde_json::from_value(json!({
+        "class": "writer",
+        "items": [{"id": "cases", "critical": true, "weight": 100,
+                   "decider": {"example": {"cases": cases, "runner": runner,
+                                           "timeout_ms": 5_000}}}],
+        "threshold": 1000, "min_coverage": 1000
+    }))?;
+    let verdict = Verifier::new(5_000).with_checker(checker).run(
+        &token(&contract)?,
+        &contract,
+        &Snapshot {
+            id: "tree:test",
+            root: &temp,
+            output: None,
+            artifacts: &artifacts,
+        },
+    );
+    let wrote = denied.exists();
+    let _ = std::fs::remove_file(&denied);
+    Ok((wrote, verdict))
+}
+
+// Dies with the `example` decider failing on a sandbox refusal: a runner the profile stopped was
+// charged to the product, though nothing about the tree had been decided.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_examples_runner_the_sandbox_blocked_abstains_instead_of_failing() -> TestResult {
+    let (wrote, verdict) = refused_examples(
+        "yi-verify-example-refused",
+        json!([{"input": 1, "expected": 1}]),
+        "touch DENIED",
+    )?;
+    assert!(!wrote, "the sandbox let the runner write into HOME");
+    assert_eq!(verdict.outcome, Outcome::Abstain, "{}", verdict.lines());
+    assert!(
+        verdict
+            .lines()
+            .contains("accepted_by_user with its exit line"),
+        "{}",
+        verdict.lines()
+    );
+    Ok(())
+}
+
+// Dies with the overflow gate outranking the refusal: a runner the profile stopped and whose output
+// passed the cap read as the product's `output_overflow`, with the reason it was stopped lost.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_overflowed_runner_the_sandbox_blocked_abstains_instead_of_failing() -> TestResult {
+    let (wrote, verdict) = refused_examples(
+        "yi-verify-overflow-refused",
+        json!([{"input": 1, "expected": 1}]),
+        "touch DENIED; head -c 60000 /dev/zero | tr '\\0' x; exit 1",
+    )?;
+    assert!(!wrote, "the sandbox let the runner write into HOME");
+    assert_eq!(verdict.outcome, Outcome::Abstain, "{}", verdict.lines());
+    assert!(
+        verdict
+            .lines()
+            .contains("accepted_by_user with its exit line"),
+        "{}",
+        verdict.lines()
+    );
+    Ok(())
+}
+
+// Dies with a refusal swallowing what came before it: case 0 the product failed vanished from the
+// verdict once case 1 was refused, so a failing plan asked an owner to accept it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_refused_case_keeps_the_cases_the_product_already_failed() -> TestResult {
+    let (wrote, verdict) = refused_examples(
+        "yi-verify-refused-after-failure",
+        json!([{"input": 1, "expected": 1}, {"input": 2, "expected": 2}]),
+        "input=$(cat); case \"$input\" in *2*) D=\"$HOME/yi-refused-$$\"; touch \"$D\";; esac; exit 1",
+    )?;
+    assert!(!wrote, "the sandbox let the runner write into HOME");
+    assert_eq!(verdict.outcome, Outcome::Fail, "{}", verdict.lines());
+    assert!(
+        verdict.lines().contains("0 nonzero_exit"),
+        "{}",
+        verdict.lines()
+    );
+    assert!(
+        verdict.lines().contains("case 1 not run"),
+        "{}",
+        verdict.lines()
+    );
     Ok(())
 }
 
@@ -471,6 +650,7 @@ fn checker_cannot_gain_permission_through_contract() -> TestResult {
                 spec: spec.clone(),
                 state: yi_types::plan::doc::TodoStateName::Pending,
             }],
+            keep_rest: false,
         },
         request_id: None,
         expected_revision: None,

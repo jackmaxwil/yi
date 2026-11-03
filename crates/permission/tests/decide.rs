@@ -569,15 +569,39 @@ fn a_read_of_a_system_path_is_allowed_but_a_key_is_not() -> TestResult {
             "{path}: {decision:?}"
         );
     }
-    // A write, and a read-kind call that reports itself irreversible (grep's replace+apply),
-    // still meet the whole denylist.
-    let targets = [PathBuf::from("/etc/nginx/nginx.conf")];
-    let mut rewrite = read_call(&targets);
+    Ok(())
+}
+
+/// Incident: under `--yolo` `write` and `edit` refused /etc/nginx/nginx.conf while `tee` wrote
+/// it, because the destroy list judged every write. A write meets the write list: the
+/// workspace .git and a key stay denied, and destroying a system path still is.
+#[test]
+fn yolo_writes_a_system_config_but_not_a_key_or_the_git_dir() -> TestResult {
+    let session = SessionRules::new();
+    let yolo =
+        |call: &ToolCall<'_>| decide(call, PermissionMode::Yolo, &[], &session, &[], &context());
+    let config = [PathBuf::from("/etc/nginx/nginx.conf")];
+    let mut rewrite = read_call(&config);
     rewrite.irreversible = true;
-    for call in [rewrite, write_call(&targets, false)] {
-        let decision = decide(&call, PermissionMode::Yolo, &[], &session, &[], &context());
-        assert!(matches!(decision, Decision::Deny { .. }), "{decision:?}");
+    for call in [rewrite, write_call(&config, false)] {
+        let decision = yolo(&call);
+        assert!(matches!(decision, Decision::Allow { .. }), "{decision:?}");
     }
+    for path in [
+        "/home/user/.ssh/authorized_keys",
+        "/home/user/project/.git/config",
+        "/etc",
+        "/home/user",
+    ] {
+        let targets = [PathBuf::from(path)];
+        let decision = yolo(&write_call(&targets, false));
+        assert!(
+            matches!(decision, Decision::Deny { .. }),
+            "{path}: {decision:?}"
+        );
+    }
+    let decision = yolo(&bash_call("rm -rf /etc", "c"));
+    assert!(matches!(decision, Decision::Deny { .. }), "{decision:?}");
     Ok(())
 }
 
@@ -1095,5 +1119,105 @@ fn a_wrapped_destructive_command_is_denied_in_every_mode() -> TestResult {
         ),
         Decision::Deny { .. }
     ));
+    Ok(())
+}
+
+#[test]
+fn a_browser_is_refused_for_agent_desktop_in_yolo_and_over_an_allow_rule() -> TestResult {
+    let call = bash_call("agent-desktop snapshot --app Safari", "c1");
+    let allow = [ConfigRule::new(
+        "bash",
+        "agent-desktop *",
+        ConfigRuleAction::Allow,
+    )?];
+    let decision = decide(
+        &call,
+        PermissionMode::Yolo,
+        &allow,
+        &SessionRules::new(),
+        &[],
+        &context(),
+    );
+    let Decision::Deny { reason } = decision else {
+        return Err(format!("not denied: {decision:?}").into());
+    };
+    assert!(reason.contains("agent-browser"), "{reason}");
+    Ok(())
+}
+
+#[test]
+fn a_real_login_or_window_is_refused_for_agent_browser_in_yolo_and_over_an_allow_rule() -> TestResult
+{
+    let allow = [ConfigRule::new(
+        "bash",
+        "agent-browser *",
+        ConfigRuleAction::Allow,
+    )?];
+    for command in [
+        "agent-browser connect 9222",
+        "agent-browser --headed open x",
+    ] {
+        let call = bash_call(command, "c1");
+        let decision = decide(
+            &call,
+            PermissionMode::Yolo,
+            &allow,
+            &SessionRules::new(),
+            &[],
+            &context(),
+        );
+        assert!(matches!(decision, Decision::Deny { .. }), "{decision:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_users_own_mouse_is_refused_in_yolo_and_over_an_allow_rule() -> TestResult {
+    let allow = [ConfigRule::new(
+        "bash",
+        "agent-desktop *",
+        ConfigRuleAction::Allow,
+    )?];
+    for command in [
+        "agent-desktop --headed click @s1:e1",
+        "agent-desktop mouse-click --xy 1,2",
+    ] {
+        let decision = decide(
+            &bash_call(command, "c1"),
+            PermissionMode::Yolo,
+            &allow,
+            &SessionRules::new(),
+            &[],
+            &context(),
+        );
+        let Decision::Deny { reason } = decision else {
+            return Err(format!("{command} was not denied: {decision:?}").into());
+        };
+        assert!(reason.contains("own mouse"), "{reason}");
+    }
+    Ok(())
+}
+
+#[test]
+fn only_the_person_answers_a_desktop_ask_never_the_review_model() -> TestResult {
+    let call = bash_call("agent-desktop snapshot --app TextEdit", "c1");
+    let decision = decide(
+        &call,
+        PermissionMode::Auto,
+        &[],
+        &SessionRules::new(),
+        &[],
+        &context(),
+    );
+    assert!(
+        matches!(
+            decision,
+            Decision::Ask {
+                reviewable: false,
+                ..
+            }
+        ),
+        "{decision:?}"
+    );
     Ok(())
 }

@@ -1,0 +1,9 @@
+#! solo --size 140x36 --faux scripts/proof/tui_see/child-rows.jsonl
+wait-frame 5000 faux-1
+tick 1
+type show the child rows
+key enter
+wait-frame 30000 Inspect replay ordering
+wait-idle 30000
+snap done
+quit

@@ -8,20 +8,25 @@ on:
     - cron: "17 5 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   # The adapter matrix and the variance run: the flash suite exercises one adapter, so the
   # other two run weekly at tight caps, and three flash runs give the baseline its spread.
   # Every leg skips with its reason when its secret is absent.
   live-weekly:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the telemetry ledger pushes with its scoped token.
         with:
           fetch-depth: 0
       - run: rustup show
       # `test` is the key postmerge saves on main; a key of its own stays cold (see pr.yml).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: test
           cache-on-failure: true

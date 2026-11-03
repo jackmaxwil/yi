@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::Component::ParentDir;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -32,17 +33,23 @@ pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
         .find(|dir| dir.join(".git").exists())
         .map(std::path::Path::to_path_buf)
 }
-
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[expect(
         clippy::disallowed_methods,
         reason = "process spawns live in yi-tools; every spawn routes through run_captured via this constructor"
     )]
     let mut process = Command::new(program);
-    if let Some(path) = crate::plugin::home().and_then(|home| crate::plugin::search_path(&home)) {
-        process.env("PATH", path);
+    if let Some(home) = crate::plugin::home() {
+        plugin_env(&mut process, &home);
     }
     process
+}
+
+fn plugin_env(process: &mut Command, home: &std::path::Path) {
+    if let Some(path) = crate::plugin::search_path(home) {
+        process.env("PATH", path);
+    }
+    process.envs(crate::plugin::browser_env(home));
 }
 
 /// [`command`] for a command the model wrote, whose output it reads: yi's provider keys never
@@ -53,6 +60,104 @@ pub fn keyless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
         process.env_remove(variable);
     }
     process
+}
+
+/// Why a host program does not run.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum HostRefused {
+    #[error("no `{program}` on PATH outside the trees a contained process can write")]
+    Missing { program: String },
+    #[error(transparent)]
+    Sealed(#[from] crate::sandbox::SealBroken),
+}
+
+/// A program Yi itself runs on the host, by absolute path. Incident: bare names resolved through
+/// PATH, so a tree's `bin` on it (direnv, an activated venv) ran a contained write on the host.
+pub fn host_command(program: &str, cwd: &Path) -> Result<Command, HostRefused> {
+    let resolved = host_program(program, cwd).ok_or_else(|| HostRefused::Missing {
+        program: program.to_owned(),
+    })?;
+    let mut process = keyless_command(resolved);
+    if program == "git" {
+        crate::sandbox::verify_seal()?;
+        host_git_config(&mut process);
+    }
+    Ok(process)
+}
+
+/// The first executable `program` on PATH outside a tree a contained process writes. Temp roots
+/// stay searched: nothing puts one on PATH in the field, and every git shim in the suite lives there.
+fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
+    let home = crate::plugin::home();
+    let search = (home.as_deref())
+        .and_then(crate::plugin::search_path)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_else(|| "/usr/bin:/bin".into());
+    let cwds = [Some(cwd.to_path_buf()), std::env::current_dir().ok()];
+    let trees: Vec<PathBuf> = (cwds.into_iter().flatten())
+        .map(|dir| git_root(&dir).unwrap_or(dir))
+        .chain(
+            home.iter()
+                .flat_map(|home| [home.join(".yi/lanes"), home.join(".yi/forks")]),
+        )
+        .filter_map(|tree| tree.canonicalize().ok())
+        .filter(|tree| tree.parent().is_some())
+        .collect();
+    // A path someone configured (`lanes.land`) is no PATH lookup, and is held to the same rule: a
+    // relative one resolves in the lane, and the canonical target is judged, never the spelling.
+    let outside = |real: &Path| {
+        crate::exec::is_executable_file(real) && !trees.iter().any(|tree| real.starts_with(tree))
+    };
+    if program.contains('/') {
+        let real = cwd.join(program).canonicalize().ok()?;
+        return outside(&real).then_some(real);
+    }
+    std::env::split_paths(&search)
+        .filter(|dir| dir.is_absolute())
+        .filter_map(|dir| dir.join(program).canonicalize().ok())
+        .find(|real| outside(real))
+}
+
+/// Config the host's git never takes from a repository: each of these runs code, and a contained
+/// process can reach a tree's hooks path and its config. Env, so a git's own argv reads the same.
+const HOST_GIT_CONFIG: [(&str, &str); 5] = [
+    ("core.fsmonitor", "false"),
+    // A planted gitlink's `.git` would send `status` into a git with that repository's config.
+    ("diff.ignoreSubmodules", "dirty"),
+    ("core.hooksPath", "/dev/null"),
+    ("commit.gpgsign", "false"),
+    ("tag.gpgsign", "false"),
+];
+
+/// A caller's repository context never redirects the host's git; identity and transport stay.
+fn host_git_config(process: &mut Command) {
+    const CONTEXT: [&str; 10] = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_PREFIX",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+    ];
+    for (variable, _) in std::env::vars_os() {
+        let name = variable.to_string_lossy();
+        if CONTEXT.contains(&name.as_ref())
+            || name.starts_with("GIT_CONFIG_KEY_")
+            || name.starts_with("GIT_CONFIG_VALUE_")
+        {
+            process.env_remove(&variable);
+        }
+    }
+    process.env("GIT_CONFIG_COUNT", HOST_GIT_CONFIG.len().to_string());
+    for (index, (key, value)) in HOST_GIT_CONFIG.iter().enumerate() {
+        process.env(format!("GIT_CONFIG_KEY_{index}"), key);
+        process.env(format!("GIT_CONFIG_VALUE_{index}"), value);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +173,8 @@ pub struct CommandCapture {
     pub spill: Option<String>,
     /// Bytes kept over bytes received, summed over both streams, when a stream was cut.
     pub cut: Option<(usize, usize)>,
+    /// What the host says about this run past its output, printed whole: an egress refusal.
+    pub rows: Vec<String>,
 }
 
 impl CommandCapture {
@@ -98,7 +205,9 @@ impl CommandCapture {
     pub(crate) fn shown(&self, reduced: &crate::Reduced) -> Vec<String> {
         let body = (!reduced.text.is_empty()).then(|| reduced.text.clone());
         let row = self.cut_row().filter(|_| reduced.recovery.is_none());
-        body.into_iter().chain(row).collect()
+        (body.into_iter().chain(row))
+            .chain(self.rows.iter().cloned())
+            .collect()
     }
 }
 
@@ -436,6 +545,7 @@ pub(crate) fn run_child_captured_live(
         kill_error,
         spill: spill.and_then(|mut spill| spill.keep()),
         cut,
+        rows: Vec::new(),
     })
 }
 
@@ -459,6 +569,26 @@ mod tests {
     use std::time::Instant;
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
+
+    /// A spawn missing these runs the daemon with no box: its Chrome could read every file.
+    #[test]
+    fn a_spawn_gives_the_browser_daemon_its_boxed_config() -> Fallible {
+        let home = std::env::temp_dir().join(format!("yi-plugin-env-{}", std::process::id()));
+        let plugin = crate::plugin::Plugin::named(crate::plugin::BROWSER).ok_or("no row")?;
+        std::fs::create_dir_all(plugin.dir(&home))?;
+        for file in [crate::plugin::BROWSER, "config.json", "chrome-box"] {
+            std::fs::write(plugin.dir(&home).join(file), "#!/bin/sh\n")?;
+        }
+        let mut process = command("/usr/bin/true");
+        plugin_env(&mut process, &home);
+        let config = (process.get_envs())
+            .find(|(name, _)| *name == "AGENT_BROWSER_CONFIG")
+            .and_then(|(_, value)| value);
+        let wanted = plugin.dir(&home).join("config.json");
+        assert_eq!(config, Some(wanted.as_os_str()));
+        std::fs::remove_dir_all(&home)?;
+        Ok(())
+    }
 
     #[test]
     fn an_uncut_stream_is_decoded_whole() {
@@ -597,6 +727,48 @@ mod tests {
             elapsed < Duration::from_secs(6),
             "the re-grouped grandchild outlived the kill and held stdout for {elapsed:?}"
         );
+        Ok(())
+    }
+
+    /// Invariant: the root comes back in the spelling the caller typed, so a walker comparing it
+    /// against that path's own ancestors still finds it.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_cwd_keeps_the_root_in_the_spelling_the_caller_typed() -> Fallible {
+        let dir = crate::scratch::Scratch::new("yi-git-root")?;
+        std::fs::create_dir_all(dir.join("real").join("src"))?;
+        std::fs::create_dir_all(dir.join("real").join(".git"))?;
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link"))?;
+        let link = dir.join("link");
+        let root = super::git_root(&link.join("src"));
+        assert_eq!(root.as_deref(), Some(link.as_path()));
+        let above: Vec<&std::path::Path> = link.ancestors().collect();
+        assert_eq!(
+            above.iter().position(|dir| root.as_deref() == Some(*dir)),
+            Some(0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_parent_step_never_borrows_a_neighbours_repository() -> Fallible {
+        let base = std::env::temp_dir()
+            .canonicalize()?
+            .join(format!("yi-git-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (repo, other) = (base.join("repo"), base.join("other"));
+        std::fs::create_dir_all(repo.join("nested"))?;
+        std::fs::create_dir_all(&other)?;
+        std::fs::write(repo.join(".git"), "gitdir: elsewhere")?;
+        assert_eq!(
+            git_root(&other.join("..").join("repo").join("nested")).as_deref(),
+            Some(repo.as_path())
+        );
+        assert_eq!(
+            git_root(&repo.join("nested").join("..").join("..").join("other")),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&base);
         Ok(())
     }
 }

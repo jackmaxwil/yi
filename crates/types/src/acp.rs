@@ -38,14 +38,6 @@ pub struct AcpErrorShape {
     pub message: String,
 }
 
-/// JSON-RPC 2.0 notification (agent → client), e.g. `session/update`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcpNotification {
-    pub jsonrpc: String,
-    pub method: String,
-    pub params: Value,
-}
-
 /// Params of the `session/update` notification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
