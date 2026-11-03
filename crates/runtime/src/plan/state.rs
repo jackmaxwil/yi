@@ -63,6 +63,8 @@ impl Claim {
     }
 }
 
+/// One verification effect (plan section 6.3, step 2): requested under a token, settled by the
+/// `done`, `done_refused` or `verification_stale` record that names its effect id.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Verification {
     pub plan: PlanId,
@@ -536,30 +538,21 @@ pub fn leaving_running(
         | Op::Block { label, .. }
         | Op::Accept { label, .. } => named(label),
         Op::Set {
-            rows,
-            keep_rest: false,
-            ..
-        } => plan
-            .todos
-            .iter()
-            .filter(|todo| live(todo) && !rows.iter().any(|row| row.spec.label == todo.label))
+            rows, keep_rest, ..
+        } => (plan.todos.iter())
+            .filter(|todo| !keep_rest && live(todo))
+            .filter(|todo| !rows.iter().any(|row| row.spec.label == todo.label))
             .map(|todo| (id.clone(), todo.clone()))
             .collect(),
-        Op::Set {
-            keep_rest: true, ..
-        } => Vec::new(),
         Op::Supersede { .. } => {
-            let mut out: Vec<(PlanId, Todo)> = plan
-                .todos
-                .iter()
+            let mut out: Vec<(PlanId, Todo)> = (plan.todos.iter())
                 .filter(|todo| live(todo))
                 .map(|todo| (id.clone(), todo.clone()))
                 .collect();
             for sub in state.kin(id) {
                 if let Some(plan) = state.plans.get(&sub) {
                     out.extend(
-                        plan.todos
-                            .iter()
+                        (plan.todos.iter())
                             .filter(|todo| live(todo))
                             .map(|todo| (sub.clone(), todo.clone())),
                     );
@@ -791,6 +784,8 @@ fn take_spawned(state: &mut RootState, id: &PlanId, label: &TodoLabel) -> Option
     }
 }
 
+/// A contracted todo completes beside a verdict; one whose only requirement is a stated
+/// acceptance completes beside a decidable item or a user, never on the owner's word.
 pub fn needs_resolution(todo: &Todo) -> bool {
     todo.contract.is_some()
         || todo
@@ -799,6 +794,7 @@ pub fn needs_resolution(todo: &Todo) -> bool {
             .is_some_and(|delegation| matches!(delegation.accept, Check::Stated(_)))
 }
 
+/// The one validator every completion path passes (plan section 3.6), by label.
 fn completion(
     plan: &Plan,
     label: &TodoLabel,
@@ -811,6 +807,8 @@ fn completion(
     completion_of(todo, resolution)
 }
 
+/// The validator itself: a worktree todo completes only by acceptance or the user's word, a
+/// todo that needs a resolution only beside one, any other on the caller's word (D194).
 fn completion_of(
     todo: &Todo,
     resolution: Option<contract::Resolution>,
@@ -939,6 +937,7 @@ fn apply_retry(
     let todo = plan.todos.get_mut(index).ok_or_else(missing)?;
     todo.retries = bumped;
     todo.attempt = attempt;
+    // A retry is a new attempt with a new freeze; the next start records it again.
     todo.contract_hash = None;
     todo.extra.remove(SUBMITTED_KEY);
     if let Some(replacement) = delegation {
@@ -1036,6 +1035,8 @@ fn apply_supersede(
     Ok(())
 }
 
+/// Invariant: a named label keeps its delegation and sub-plan, a new one starts plain; with
+/// `keep_rest` an unnamed row stays, after the named ones, edges intact, and without it leaves.
 fn apply_set(plan: &mut Plan, rows: &[SetRow], keep_rest: bool) -> Result<(), PlanOpError> {
     let mut todos: Vec<Todo> = Vec::with_capacity(rows.len());
     for row in rows {

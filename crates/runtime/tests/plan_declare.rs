@@ -1056,7 +1056,7 @@ fn a_program_gets_the_plan_it_changed_and_the_model_none() -> TestResult {
 }
 
 /// Dies with a set record that pads every row it did not name: a two-row set on a thirty-todo
-/// plan wrote a 12.9 KB record, and every replay re-read rows nobody changed.
+/// plan wrote a 1,769-byte record, and every replay re-read rows nobody changed.
 #[test]
 fn a_set_record_names_only_the_rows_it_changes() -> TestResult {
     let rig = rig("set-record")?;
@@ -1085,5 +1085,34 @@ fn a_set_record_names_only_the_rows_it_changes() -> TestResult {
     assert_eq!(after.todos.len(), 30, "the unnamed rows stay");
     assert_eq!(state_of(&rig, "step 00")?, "Done");
     assert_eq!(state_of(&rig, "step 02")?, "Pending");
+    Ok(())
+}
+
+/// Dies with a set that opens a plan after a finished one and journals `keep_rest`: the new plan
+/// has nothing to keep, so the rows the finished plan held must ride in the record itself.
+#[test]
+fn a_set_that_opens_a_plan_carries_the_rows_in_its_record() -> TestResult {
+    let rig = rig("set-opens")?;
+    let first = opened(&rig, json!([{"label": "first"}]))?;
+    let (refused, text) = call(&rig, json!({"op": "done", "label": "first"}));
+    assert!(!refused, "{text}");
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "next round", "todos": [{"label": "second"}]}),
+    );
+    assert!(!refused, "{text}");
+    let id = (rig.store.roots()?.into_iter())
+        .find(|id| *id != first.id)
+        .ok_or("no new plan")?;
+    let records = rig.store.journal(&id).read()?.records;
+    let set = (records.iter())
+        .find(|record| record.record.op == "set")
+        .ok_or("no set record")?;
+    assert_eq!(set.args["rows"].as_array().map(Vec::len), Some(2));
+    assert!(set.args.get("keep_rest").is_none(), "{}", set.args);
+    let labels: Vec<String> = (rig.store.read(&id)?.todos.iter())
+        .map(|todo| todo.label.to_string())
+        .collect();
+    assert_eq!(labels, ["second", "first"]);
     Ok(())
 }
