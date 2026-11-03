@@ -12,8 +12,6 @@ use crate::view::{CompiledView, compile_view, view_extra, view_from_extra};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preparation {
-    pub messages_to_summarize: Vec<AgentMessage>,
-    pub turn_prefix_messages: Vec<AgentMessage>,
     pub retained_tail: Vec<AgentMessage>,
     pub is_split_turn: bool,
     pub tokens_before: Tokens,
@@ -94,8 +92,6 @@ pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Prepa
         previous_view.as_ref(),
     );
     Some(Preparation {
-        messages_to_summarize,
-        turn_prefix_messages,
         retained_tail,
         is_split_turn: cut.is_split_turn,
         tokens_before,
@@ -134,8 +130,8 @@ pub fn compose_summary(
     )
 }
 
-/// Invariant: a summary of a summary keeps every Values row of the one it replaces. The model
-/// is asked to, but a dropped value is gone once the messages that showed it have scrolled out.
+/// Invariant: a reply with no `## Values` section at all lost the section, so the previous rows
+/// come back as one. A reply that has the section is trusted, edits and removals included.
 pub const VALUES_CARRIED_CAP: usize = 40;
 
 fn value_rows(summary: &str) -> Vec<&str> {
@@ -143,7 +139,7 @@ fn value_rows(summary: &str) -> Vec<&str> {
     let mut inside = false;
     for line in summary.lines() {
         if line.starts_with("## ") {
-            inside = line.starts_with("## Values");
+            inside = line.trim_end() == "## Values";
         } else if line.starts_with('<') || line.starts_with('[') {
             inside = false;
         } else if inside && line.starts_with("- ") && line.trim() != "- (none)" {
@@ -154,25 +150,22 @@ fn value_rows(summary: &str) -> Vec<&str> {
 }
 
 pub fn keep_values(previous: Option<&str>, summary: &str) -> String {
-    let kept = value_rows(summary);
-    let missing: Vec<&str> = previous
-        .map(value_rows)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|row| !kept.contains(row))
-        .collect();
-    if missing.is_empty() {
+    if summary.lines().any(|line| line.trim_end() == "## Values") {
         return summary.to_owned();
     }
-    let mut block = String::from("## Values carried from the previous summary");
-    for row in missing.iter().take(VALUES_CARRIED_CAP) {
+    let rows = previous.map(value_rows).unwrap_or_default();
+    if rows.is_empty() {
+        return summary.to_owned();
+    }
+    let mut block = String::from("## Values");
+    for row in rows.iter().take(VALUES_CARRIED_CAP) {
         block.push('\n');
         block.push_str(row);
     }
-    if missing.len() > VALUES_CARRIED_CAP {
+    if rows.len() > VALUES_CARRIED_CAP {
         block.push_str(&format!(
-            "\n[… {VALUES_CARRIED_CAP} of {} earlier value rows carried (VALUES_CARRIED_CAP); the rest: grep(pattern=\"<value>\", path=\"history://self\")]",
-            missing.len()
+            "\n[… {VALUES_CARRIED_CAP} of {} earlier value rows carried (VALUES_CARRIED_CAP); the rest: grep(pattern=\"## Values\", path=\"history://self\")]",
+            rows.len()
         ));
     }
     match summary.find("\n## Dropped") {

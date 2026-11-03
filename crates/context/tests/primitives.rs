@@ -457,6 +457,80 @@ fn a_floor_cut_inside_a_multibyte_char_moves_to_the_char_boundary() -> TestResul
     Ok(())
 }
 
+const CHILD_SESSION: &str = include_str!("../../runtime/tests/fixtures/rollup/child_bedrock.jsonl");
+
+/// Dies past D337: the brief is a child's only user message, so a compaction that drops it
+/// leaves the child without the task it runs on.
+#[test]
+fn a_childs_brief_survives_the_floor_as_its_only_user_message() -> TestResult {
+    let brief = CHILD_SESSION
+        .lines()
+        .find_map(|line| serde_json::from_str::<Entry>(line).ok())
+        .and_then(|entry| match entry {
+            Entry::Message { message, .. } => Some(message),
+            _ => None,
+        })
+        .ok_or("the child fixture's brief")?;
+    assert!(matches!(
+        &brief,
+        AgentMessage::User {
+            attribution: yi_types::message::Attribution::Task,
+            ..
+        }
+    ));
+    assert_eq!(
+        retain_floor(std::slice::from_ref(&brief), Tokens(64_000)),
+        [brief]
+    );
+    Ok(())
+}
+
+/// Dies when a host notice written for one turn outlives the summary, or the letter that wakes
+/// an idle session dies with it.
+#[test]
+fn a_host_notice_leaves_the_floor_and_a_waking_letter_stays() -> TestResult {
+    use yi_types::message::HostSource;
+    let notice = AgentMessage::host_text(HostSource::Notice, "the turn ends at 15:00", 1);
+    let mail = AgentMessage::host_text(HostSource::Mail, "the parent asks for the count", 1);
+    let typed = user("count the rows");
+    let survivors = retain_floor(&[notice, mail.clone(), typed.clone()], Tokens(64_000));
+    assert_eq!(survivors, vec![mail, typed]);
+    Ok(())
+}
+/// Dies when a kind nobody registered is dropped at compaction, or a raise-once notice dies
+/// before the reply that reads it.
+#[test]
+fn each_host_notice_row_dies_once_read_and_an_unregistered_kind_survives() -> TestResult {
+    let reply = assistant("read", usage(0, 0, 0), StopReason::Stop);
+    for kind in [
+        "stream_retry",
+        "cache_alert",
+        "plan_relevance",
+        "todo_prelude",
+    ] {
+        let note = AgentMessage::host_note(kind, "text".to_owned(), 1);
+        let kept = drop_internal(&[note.clone(), reply.clone()]);
+        assert_eq!(
+            kept,
+            vec![reply.clone()],
+            "{kind} survives the compaction that read it"
+        );
+        let unread = drop_internal(std::slice::from_ref(&note));
+        let kept_unread = usize::from(matches!(
+            kind,
+            "cache_alert" | "plan_relevance" | "todo_prelude"
+        ));
+        assert_eq!(unread.len(), kept_unread, "{kind} before any reply");
+    }
+    let unknown = AgentMessage::host_note("a_kind_nobody_registered", "text".to_owned(), 1);
+    assert_eq!(
+        drop_internal(&[unknown.clone(), reply.clone()]),
+        vec![unknown, reply],
+        "an unregistered kind is durable"
+    );
+    Ok(())
+}
+
 #[test]
 fn prepare_returns_none_when_there_is_nothing_to_summarize() -> TestResult {
     let branch = vec![message_entry("m1", 1, user("hi"))];
@@ -497,9 +571,6 @@ fn prepare_splits_history_and_unions_the_floor_into_the_retained_tail() -> TestR
         ..Settings::default()
     };
     let prepared = prepare_compaction(&branch, &settings).ok_or("expected preparation")?;
-    assert!(
-        !prepared.messages_to_summarize.is_empty() || !prepared.turn_prefix_messages.is_empty()
-    );
     assert!(
         prepared.retained_tail.iter().any(|message| matches!(
             message,
@@ -1069,24 +1140,34 @@ fn a_prompt_stored_before_attribution_still_reads_as_typed() -> TestResult {
 const FIRST_SUMMARY: &str = "## Goal\n- user://1\n\n## Critical Context\n- the parser lives in the crate\n\n## Values\n- build id 7f3a9c21 from `cargo build` in /tmp/yi-target/run-4\n- port 48213 (config.toml:12)\n- (none)\n\n## Dropped\n- the full cargo log: history://self";
 
 #[test]
-fn a_summary_of_a_summary_keeps_the_values_the_model_dropped() {
-    let second = "## Goal\n- user://1\n\n## Values\n- port 48213 (config.toml:12)\n- ticket 99120\n\n## Dropped\n- nothing";
+fn a_summary_that_lost_its_values_section_gets_the_previous_rows_back() {
+    let second = "## Goal\n- user://1\n\n## Dropped\n- nothing";
     let kept = keep_values(Some(FIRST_SUMMARY), second);
     assert!(
         kept.contains("- build id 7f3a9c21 from `cargo build` in /tmp/yi-target/run-4"),
         "{kept}"
     );
-    assert!(kept.contains("- ticket 99120"), "{kept}");
-    assert_eq!(kept.matches("port 48213").count(), 1, "{kept}");
-    let carried = kept.find("7f3a9c21");
-    let dropped = kept.find("## Dropped");
-    assert!(carried < dropped, "carried rows sit before Dropped: {kept}");
+    assert_eq!(kept.matches("## Values").count(), 1, "{kept}");
+    assert!(kept.find("## Values") < kept.find("## Dropped"), "{kept}");
 }
 
 #[test]
-fn a_summary_that_kept_every_value_is_left_alone() {
-    let same = FIRST_SUMMARY.replace("the parser", "the new parser");
-    assert_eq!(keep_values(Some(FIRST_SUMMARY), &same), same);
+fn an_edited_values_section_is_trusted_not_topped_up() {
+    let second = "## Goal\n- user://1\n\n## Values\n- port 48214 (config.toml:12)\n\n## Dropped\n- the old port";
+    assert_eq!(keep_values(Some(FIRST_SUMMARY), second), second);
+}
+
+#[test]
+fn both_summary_prompts_ask_for_values_and_what_was_dropped() {
+    for previous in [None, Some("## Goal\n- x")] {
+        let prompt = yi_context::prompts::build_summarization_prompt(None, previous);
+        assert!(prompt.contains("## Values\n"), "{prompt}");
+        assert!(prompt.contains("## Dropped\n"), "{prompt}");
+    }
+}
+
+#[test]
+fn a_summary_with_nothing_to_carry_is_left_alone() {
     assert_eq!(keep_values(None, FIRST_SUMMARY), FIRST_SUMMARY);
     let none = "## Goal\n- user://1\n\n## Values\n- (none)";
     assert_eq!(
@@ -1113,4 +1194,33 @@ fn carried_values_past_the_cap_say_how_many_were_left_out() {
         kept.contains("- value 039") && !kept.contains("- value 040"),
         "{kept}"
     );
+}
+
+#[test]
+fn retention_floor_keeps_typed_words_and_drops_injected_user_role_text() -> TestResult {
+    use yi_types::message::{ATTRIBUTED_SINCE_MS, Attribution, HostSource};
+    let at = ATTRIBUTED_SINCE_MS + 1;
+    let summarized = [
+        user("typed ask"),
+        AgentMessage::host_text(HostSource::Notice, "job 7 finished", 0),
+        wrap_internal("reminder", "keep going", at),
+        AgentMessage::task("child request", at),
+        AgentMessage::CompactionSummary {
+            summary: "earlier work".to_owned(),
+            tokens_before: 10,
+            timestamp: at,
+        },
+        AgentMessage::User {
+            content: UserContent::Text("pre-attribution ask".to_owned()),
+            timestamp: ATTRIBUTED_SINCE_MS - 1,
+            attribution: Attribution::Unproven,
+        },
+    ];
+    let survivors = retain_floor(&summarized, Tokens(64_000));
+    let kept = survivors
+        .iter()
+        .map(floor_text)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(kept, ["typed ask", "child request", "pre-attribution ask"]);
+    Ok(())
 }

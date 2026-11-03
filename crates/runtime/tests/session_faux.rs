@@ -449,7 +449,7 @@ pub(crate) fn attach_like_yi_ask(
     session: &mut AgentSession,
     root: &std::path::Path,
     deadline: Option<Duration>,
-) {
+) -> Arc<yi_runtime::SubagentHost> {
     let provider = Arc::clone(session.provider_arc());
     yi_runtime::attach_runtime(
         session,
@@ -480,7 +480,7 @@ pub(crate) fn attach_like_yi_ask(
             sessions_dir: None,
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
-    );
+    )
 }
 
 fn scratch(name: &str) -> Result<Scratch, Box<dyn Error>> {
@@ -774,7 +774,7 @@ async fn a_settled_ask_is_journaled_in_the_session() -> Result<(), Box<dyn Error
 }
 
 /// The owner: approval "should be on by default". A session attached with a classifier, armed by
-/// default or by the `approve` key that armed it before, mints the key under the session's HOME.
+/// default or by the `approve` key that armed it before, reads the OpenRouter key under HOME.
 /// Headless, with nobody wired to answer, an auto-mode ask the classifier is sure of still fails
 /// closed. Dies with an unattended classifier allow.
 #[tokio::test]
@@ -845,6 +845,8 @@ async fn after_delay_warns_where_prompts_never_close() -> Result<(), Box<dyn Err
     Ok(())
 }
 
+type Brokered = (Arc<yi_runtime::PermissionBroker>, Vec<String>, AgentSession);
+
 /// The session shape every approval surface builds before `classifier::attach` runs: an
 /// auto-mode broker behind the runtime wiring, then a classifier config parsed from `raw`.
 fn brokered_with_classifier(
@@ -854,6 +856,17 @@ fn brokered_with_classifier(
     extra: &str,
     port: u16,
 ) -> Result<(Arc<yi_runtime::PermissionBroker>, Vec<String>), Box<dyn Error>> {
+    let (broker, warnings, _session) = brokered_session(name, asker, close_on_settle, extra, port)?;
+    Ok((broker, warnings))
+}
+
+fn brokered_session(
+    name: &str,
+    asker: Option<yi_runtime::Asker>,
+    close_on_settle: bool,
+    extra: &str,
+    port: u16,
+) -> Result<Brokered, Box<dyn Error>> {
     let root = scratch(name)?;
     let home = root.join("home");
     std::fs::create_dir_all(&home)?;
@@ -899,12 +912,24 @@ fn brokered_with_classifier(
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
+    openrouter_key(&home)?;
     let raw = format!(
-        r#"{{"models": {{"classifier": "english"}}, "classifier": {{"url": "http://127.0.0.1:{port}"{extra}}}}}"#
+        r#"{{"models": {{"classifier": "typesafe/jev-1.13"}}, "classifier": {{"url": "http://127.0.0.1:{port}"{extra}}}}}"#
     );
     let (config, _) = yi_types::config::parse(&raw)?;
     let warnings = yi_runtime::classifier::attach(&session, &root, &home, &config);
-    Ok((broker, warnings))
+    Ok((broker, warnings, session))
+}
+
+/// The OpenRouter key `yi login openrouter` stores under `home`, which the classifier needs.
+fn openrouter_key(home: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    let tokens = home.join(".yi/providers/tokens");
+    std::fs::create_dir_all(&tokens)?;
+    std::fs::write(
+        tokens.join("openrouter.json"),
+        r#"{"version":1,"kind":"key","access":"sk-or-test","expires_ms":0}"#,
+    )?;
+    Ok(())
 }
 
 /// What the model was sent, in order: user text, reminder text, or `assistant`.
@@ -1886,8 +1911,9 @@ async fn an_unset_classifier_threshold_points_at_0_9_through_attach() -> Result<
     let mut repo = JsonlRepo::new(root.join("sessions"), "/tmp/yi-unset-threshold");
     session.attach_store(Arc::clone(&repo.create(CreateOptions::default())?))?;
     session.set_rules_engine(Arc::new(RuleEngine::new(Vec::new())));
+    openrouter_key(&home)?;
     let raw = format!(
-        r#"{{"models":{{"classifier":"english"}},"classifier":{{"url":"http://127.0.0.1:{port}"}}}}"#
+        r#"{{"models":{{"classifier":"typesafe/jev-1.13"}},"classifier":{{"url":"http://127.0.0.1:{port}"}}}}"#
     );
     let (config, _) = yi_types::config::parse(&raw)?;
     let warnings = yi_runtime::classifier::attach(&session, &root, &home, &config);
@@ -1930,6 +1956,105 @@ async fn an_unset_classifier_threshold_points_at_0_9_through_attach() -> Result<
     Ok(())
 }
 
+/// The question a judgement sends is the one `attach` builds from the live session: the project
+/// it read from the broker and the task and answered calls of the session's own transcript.
+#[tokio::test]
+async fn attach_sends_the_sessions_project_task_and_answered_calls() -> Result<(), Box<dyn Error>> {
+    const SAFE: &str =
+        r#"{"model":"typesafe/jev-1.13-20260917","answers":{"safe":{"type":"noul","noul":0.95}}}"#;
+    let (port, served) = crate::classifier_e2e::sidecar(vec![SAFE, SAFE, SAFE])?;
+    let asker: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let (broker, warnings, session) =
+        brokered_session("yi-attach-question", Some(asker), false, "", port)?;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    session.seed_messages(crate::classifier_e2e::transcript(
+        "tidy the widget code",
+        &["echo one", "echo two"],
+    )?);
+    let mut args = serde_json::Map::new();
+    args.insert("command".to_owned(), serde_json::json!("cargo publish"));
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c9", &args, None);
+    assert!(outcome.allowed, "{}", outcome.reason);
+    let mut wrote = crate::classifier_e2e::transcript("tidy the widget code", &[])?;
+    wrote.push(serde_json::from_value(serde_json::json!({
+        "role": "assistant", "content": [{"type": "toolCall", "id": "w1", "name": "write",
+        "arguments": {"path": "src/widget.rs", "content": "fn secret_body() {}"}}],
+        "api": "openai-completions", "provider": "faux", "model": "faux-1",
+        "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 2,
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+        "stopReason": "toolUse", "timestamp": 10
+    }))?);
+    wrote.push(serde_json::from_value(serde_json::json!({
+        "role": "toolResult", "toolCallId": "w1", "toolName": "write",
+        "content": [{"type": "text", "text": "wrote"}], "isError": false, "timestamp": 11
+    }))?);
+    session.seed_messages(wrote);
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c10", &args, None);
+    assert!(outcome.allowed, "{}", outcome.reason);
+    let mut long = crate::classifier_e2e::transcript("tidy the widget code", &[])?;
+    for index in 0..300 {
+        long.push(serde_json::from_value(serde_json::json!({
+            "role": "toolResult", "toolCallId": format!("o{index}"), "toolName": "bash",
+            "content": [{"type": "text", "text": "exit 0"}], "isError": false, "timestamp": 12
+        }))?);
+    }
+    session.seed_messages(long);
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c11", &args, None);
+    assert!(outcome.allowed, "{}", outcome.reason);
+    let seen = served.join().map_err(|_| "the endpoint thread panicked")?;
+    let past_tail: serde_json::Value =
+        serde_json::from_str(seen.get(2).ok_or("the third judgement sent nothing")?)?;
+    assert_eq!(
+        past_tail["state"]["user task"], "tidy the widget code",
+        "a task older than the tail still reaches the question"
+    );
+    let sent: serde_json::Value = serde_json::from_str(seen.first().ok_or("nothing sent")?)?;
+    let after_write: serde_json::Value =
+        serde_json::from_str(seen.get(1).ok_or("the second judgement sent nothing")?)?;
+    assert_eq!(
+        after_write["state"]["recent commands"],
+        serde_json::json!(["write src/widget.rs"]),
+        "a write call is named by its path, never its body"
+    );
+    assert!(
+        !after_write.to_string().contains("secret_body"),
+        "{after_write}"
+    );
+    let state = &sent["state"];
+    assert_eq!(state["user task"], "tidy the widget code");
+    assert_eq!(
+        state["recent commands"],
+        serde_json::json!(["echo one", "echo two"])
+    );
+    let project = &state["project"];
+    assert_eq!(project["protected branches"], serde_json::json!(["main"]));
+    assert_eq!(
+        project["writable"].as_array().map(Vec::len),
+        Some(1),
+        "attach read the writable roots off the broker: {project:?}"
+    );
+    assert_eq!(project["root"], project["writable"][0]);
+    assert_eq!(
+        state
+            .as_object()
+            .map(|map| map.keys().cloned().collect::<Vec<_>>()),
+        Some(
+            [
+                "tool",
+                "command",
+                "cwd",
+                "why Yi asks",
+                "user task",
+                "recent commands",
+                "project"
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        ),
+        "the measured V2 question's keys, in its order"
+    );
+    Ok(())
+}
 fn journal_text(root: &std::path::Path) -> Result<String, Box<dyn Error>> {
     fn visit(
         dir: &std::path::Path,

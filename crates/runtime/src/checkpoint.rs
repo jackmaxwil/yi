@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use yi_tools::{Change, ChangeKind, Checkpoints, TreeId};
-use yi_types::checkpoint::{CHECKPOINT_ENTRY_TYPE, CheckpointAt, CheckpointData};
+use yi_types::checkpoint::{CHECKPOINT_ENTRY_TYPE, CheckpointAt, CheckpointData, TreeSnapshot};
 use yi_types::entry::Entry;
 
 use crate::session::AgentSession;
@@ -32,6 +34,16 @@ pub fn wire_turn_checkpoints(session: &AgentSession, home: &Path, cwd: &Path) {
         cwd: cwd.to_path_buf(),
         opened: std::sync::OnceLock::new(),
     });
+    calls()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            cwd.to_path_buf(),
+            CallCaptures {
+                shadow: Arc::clone(&shadow),
+                flight: Flight::Idle,
+            },
+        );
     session.set_turn_start_hook(capture_hook(
         session,
         Arc::clone(&shadow),
@@ -59,6 +71,111 @@ fn capture_hook(
         let _capture_failure_never_fails_a_turn =
             append_checkpoint(&store, &tree, at.clone(), None);
     })
+}
+
+/// A tool never waits on these: one capture runs at a time, and calls during it coalesce into one
+/// more. `Off` is where a slow tree stops, since background git must not load a large checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flight {
+    Idle,
+    Running,
+    RunningWithPending,
+    Off { last: Duration },
+}
+
+struct CallCaptures {
+    shadow: Arc<Shadow>,
+    flight: Flight,
+}
+
+const SNAPSHOT_BUDGET: Duration = Duration::from_millis(500);
+const SNAPSHOT_KILL: Duration = Duration::from_secs(5);
+
+fn calls() -> &'static Mutex<HashMap<PathBuf, CallCaptures>> {
+    static CALLS: OnceLock<Mutex<HashMap<PathBuf, CallCaptures>>> = OnceLock::new();
+    CALLS.get_or_init(Mutex::default)
+}
+
+/// Past its budget a capture turns the tree's per-call snapshots off; at it, they stay on.
+#[must_use]
+pub fn over_budget(elapsed: Duration, budget: Duration) -> bool {
+    elapsed > budget
+}
+
+/// After a mutating call. A refused thread leaves the capture to the turn's own.
+pub(crate) fn note_mutating_call(cwd: &Path, call: &str, store: yi_session::SharedSession) {
+    let mut trees = calls().lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(tree) = trees.get_mut(cwd) else {
+        return;
+    };
+    match tree.flight {
+        Flight::Off { .. } => return,
+        Flight::Running | Flight::RunningWithPending => {
+            tree.flight = Flight::RunningWithPending;
+            return;
+        }
+        Flight::Idle => tree.flight = Flight::Running,
+    }
+    let (shadow, cwd_owned, call) = (Arc::clone(&tree.shadow), cwd.to_path_buf(), call.to_owned());
+    let spawned = std::thread::Builder::new()
+        .name("yi-call-capture".to_owned())
+        .spawn(move || capture_calls(&shadow, &cwd_owned, call, &store));
+    if spawned.is_err() {
+        tree.flight = Flight::Idle;
+    }
+}
+
+/// A coalesced capture answers several calls, so it names none.
+fn capture_calls(shadow: &Shadow, cwd: &Path, first: String, store: &yi_session::SharedSession) {
+    let mut call = Some(first);
+    loop {
+        let begun = Instant::now();
+        let captured = shadow
+            .get()
+            .map(|checkpoints| checkpoints.capture_within(SNAPSHOT_KILL));
+        let elapsed = begun.elapsed();
+        if let Some(Ok(tree)) = &captured {
+            let data = TreeSnapshot {
+                tree: tree.as_str().to_owned(),
+                call: call.take(),
+            };
+            let _a_failed_append_never_fails_a_turn =
+                yi_session::lock_session(store).append_custom_record(&data);
+        }
+        let killed = matches!(
+            captured,
+            Some(Err(yi_tools::CheckpointError::Deadline { .. }))
+        );
+        let mut trees = calls().lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(tree) = trees.get_mut(cwd) else {
+            return;
+        };
+        if killed || over_budget(elapsed, SNAPSHOT_BUDGET) {
+            tree.flight = Flight::Off { last: elapsed };
+            return;
+        }
+        match tree.flight {
+            Flight::RunningWithPending => tree.flight = Flight::Running,
+            Flight::Idle | Flight::Running | Flight::Off { .. } => {
+                tree.flight = Flight::Idle;
+                return;
+            }
+        }
+    }
+}
+
+/// The notice `t.log()` shows at the cut: the capture that turned snapshots off, and its budget.
+#[must_use]
+pub fn snapshots_off_row(cwd: &Path) -> Option<String> {
+    let trees = calls().lock().unwrap_or_else(PoisonError::into_inner);
+    match trees.get(cwd)?.flight {
+        Flight::Off { last } => Some(format!(
+            "[… per-call snapshots off: last capture {:.1} s (snapshot.budget_ms {}); t.head() still works]",
+            last.as_secs_f64(),
+            SNAPSHOT_BUDGET.as_millis()
+        )),
+        Flight::Idle | Flight::Running | Flight::RunningWithPending => None,
+    }
 }
 
 fn append_checkpoint(
@@ -165,16 +282,27 @@ fn restore_tree(
     since: Option<String>,
     rewind: impl FnOnce() -> Result<(), String>,
 ) -> UndoOutcome {
-    let checkpoints = match Checkpoints::open(&checkpoint_root(home), project) {
+    let tree = TreeId::new(data.tree.clone());
+    let checkpoints = match Checkpoints::open_holding(&checkpoint_root(home), project, &tree) {
         Ok(checkpoints) => checkpoints,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
+    let since = since.map(TreeId::new);
+    // A session across the one-store upgrade: its old start in the old store, its newest end in the
+    // new. "What the agent moved" has no answer across two stores, so nothing moves.
+    if since
+        .as_ref()
+        .is_some_and(|since| !checkpoints.holds(since))
+    {
+        return UndoOutcome::Failed(
+            "this turn's end is not in the checkpoint store (a session from before the upgrade, or git could not read it), so nothing moved".to_owned(),
+        );
+    }
     let replaced = match checkpoints.capture() {
         Ok(tree) => tree,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
-    let since = since.map(TreeId::new);
-    let restored = match checkpoints.restore(&TreeId::new(data.tree.clone()), since.as_ref()) {
+    let restored = match checkpoints.restore(&tree, since.as_ref()) {
         Ok(changes) => changes,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };

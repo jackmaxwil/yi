@@ -243,7 +243,7 @@ pub const CHORDS: [Chord; 26] = [
         None,
     ),
     chord(
-        "sidebar: rail or full",
+        "sidebar: rail, full or hidden",
         "⌥b",
         "⌘B",
         "",
@@ -345,6 +345,20 @@ pub fn hint_sep(prefix_armed: bool) -> &'static str {
     if prefix_armed { " " } else { "   " }
 }
 
+/// The chord and the word one action's hint reads, so the hint row and the header cannot drift.
+pub(crate) fn hint_parts(action: Action, cmd: bool) -> (&'static str, &'static str) {
+    let what = HINTS
+        .iter()
+        .find(|(hinted, ..)| *hinted == action)
+        .map_or("", |(_, what, _)| *what);
+    (chord_for(action, cmd), what)
+}
+
+pub(crate) fn hint_label(action: Action, cmd: bool) -> String {
+    let (chord, what) = hint_parts(action, cmd);
+    format!("{chord} {what}")
+}
+
 /// The keys [`hint`] keeps, each with the action a press on it runs; the prefix row has none.
 pub fn hint_items(prefix_armed: bool, cmd: bool, width: usize) -> Vec<(String, Option<Action>)> {
     let items: Vec<(String, Option<Action>, u8)> = if prefix_armed {
@@ -355,13 +369,7 @@ pub fn hint_items(prefix_armed: bool, cmd: bool, width: usize) -> Vec<(String, O
     } else {
         HINTS
             .iter()
-            .map(|(action, what, rank)| {
-                (
-                    format!("{} {what}", chord_for(*action, cmd)),
-                    Some(*action),
-                    *rank,
-                )
-            })
+            .map(|(action, .., rank)| (hint_label(*action, cmd), Some(*action), *rank))
             .collect()
     };
     let mut floor = 0;
