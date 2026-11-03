@@ -2471,12 +2471,16 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
     );
     assert!(!edit.is_error, "{}", output_text(&edit));
     assert_eq!(fs::read_to_string(dir.join("a.txt"))?, "one\nTWO\nthree\n");
+    assert!(
+        !text.contains("answers this:"),
+        "a tagged view names no second anchor source: {text}"
+    );
 
     let piped = bash.execute(args(&[("command", json!("cat a.txt | head -1"))]), &context);
+    let piped_text = output_text(&piped);
     assert!(
-        !output_text(&piped).starts_with('['),
-        "{}",
-        output_text(&piped)
+        piped_text.starts_with("[read answers this:") && !piped_text.contains("[a.txt#"),
+        "a compound view carries no tag: {piped_text}"
     );
     assert_eq!(piped.result.details["bridge"], json!("compound"));
     Ok(())
@@ -2633,6 +2637,89 @@ fn a_read_only_command_is_a_read_kind_call() {
             "{command}"
         );
     }
+}
+/// A read-only shell call answers with the dedicated tool as its first row, above the output.
+#[test]
+fn a_shell_read_names_the_dedicated_tool_first() -> TestResult {
+    let dir = temp_dir("bash-steer")?;
+    fs::write(dir.join("notes.txt"), "needle\nsecond\nthird\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let bash = BashTool::default();
+    let table = [
+        ("cat notes.txt", "read"),
+        ("head -2 notes.txt", "read"),
+        ("sed -n '1,2p' notes.txt", "read"),
+        ("grep -rn needle .", "grep"),
+        ("grep -rn needle . | wc -l", "grep"),
+        ("cat notes.txt && head -1 notes.txt", "read"),
+        (
+            r#"grep -rn "needle\|expect(" . --include=*.txt | grep -v test | wc -l"#,
+            "grep",
+        ),
+        ("grep -E 'needle|x' notes.txt", "grep"),
+        ("head -2 notes.txt | grep needle", "grep"),
+        ("cat notes.txt | grep needle", "grep"),
+        ("NO_COLOR=1 grep -rn needle .", "grep"),
+        ("RUST_LOG=debug cat notes.txt", "read"),
+        ("sed -n '1,2p' notes.txt\ngrep -n needle notes.txt", "grep"),
+        ("cat notes.txt\n", "read"),
+    ];
+    for (command, tool) in table {
+        let text = output_text(&bash.execute(args(&[("command", json!(command))]), &context));
+        let rows: Vec<&str> = text.lines().collect();
+        let hint = rows
+            .iter()
+            .position(|row| row.starts_with(&format!("[{tool} answers this:")));
+        let above = rows.iter().position(|row| *row == "second");
+        assert!(
+            hint.is_some_and(|at| at <= 1),
+            "{command} put no {tool} row first: {text}"
+        );
+        assert!(
+            above.is_none_or(|at| hint.is_some_and(|hint| hint < at)),
+            "{command} printed the file above its {tool} row: {text}"
+        );
+    }
+    Ok(())
+}
+
+/// A write, a vcs or build pipeline, and a filter outside the read set keep their bare output.
+#[test]
+fn a_write_a_vcs_or_build_call_gets_no_dedicated_tool_row() -> TestResult {
+    let dir = temp_dir("bash-steer-silent")?;
+    fs::write(dir.join("notes.txt"), "needle\nsecond\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let bash = BashTool::default();
+    let table = [
+        "cat notes.txt > copy.txt",
+        "git log -1",
+        "cargo --version | tail -1",
+        "head -c 6 notes.txt | tr a-z A-Z",
+        "cat notes.txt & true",
+        "sed -n -i.bak '1p' notes.txt",
+        "sed -n '1,2w out.txt' notes.txt",
+        "find . -name '*.o' -delete",
+        "find . -name '*.o' -exec true {} +",
+        "fd -x true",
+        "rg --pre true needle",
+        "tree -o out.html .",
+        "sed -ni '1p' notes.txt",
+        "less -o log.txt notes.txt",
+        "less notes.txt",
+        "find . -name '*.txt'",
+        "fd txt",
+        "tree .",
+        "cat notes.txt\nrm -f copy.txt",
+        "NO_COLOR=1 rm -f copy.txt",
+    ];
+    for command in table {
+        let text = output_text(&bash.execute(args(&[("command", json!(command))]), &context));
+        assert!(
+            !text.contains("answers this:"),
+            "{command} was steered: {text}"
+        );
+    }
+    Ok(())
 }
 
 #[test]

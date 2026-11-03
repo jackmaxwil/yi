@@ -19,9 +19,8 @@ use crate::support;
 type TestResult = Result<(), Box<dyn Error>>;
 type Changed = (String, u64, u64);
 
-fn service() -> Arc<KernelService> {
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
+pub(crate) fn service() -> Arc<KernelService> {
+    let registry = HostRegistry::default();
     Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),
         home: std::env::var_os("HOME")
