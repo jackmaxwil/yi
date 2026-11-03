@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
+use yi_runtime::mailbox::CUT_ROW;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_types::message::{AgentMessage, StopReason};
 
@@ -171,10 +172,27 @@ async fn a_request_left_open_is_chased_once_then_taken_from_the_final_text() -> 
     Ok(())
 }
 
-/// Dies with a final text over the body cap refused and dropped: the requester waited out its
-/// timeout. Its head travels with a row naming kept/total, BODY_CAP and the transcript entry.
+/// Dies with a chase reply read as the product: a child whose brief and request turns said
+/// nothing was reaped as having produced an answer, from the text the chase forced out of it.
 #[tokio::test]
-async fn a_final_text_over_the_body_cap_points_at_the_childs_transcript() -> TestResult {
+async fn a_reap_does_not_count_a_chase_reply_as_the_childs_product() -> TestResult {
+    let parent = Arc::new(session((0..6).map(|_| said("noted")).collect()));
+    let lines: &'static [&'static str] = &["", "", "Still nothing to add.", "Nothing more."];
+    let (_root, host, _store) = family(&parent, Child::Says(lines))?;
+    spawn(&host, "tally")?;
+    assert!(reaches(&host, "finished").await, "the brief's turn ends");
+    let reply = host.request("parent", "tally", "5", 20_000).await?;
+    assert_eq!(reply["envelope"]["answeredBy"], "final_text", "{reply:?}");
+    assert!(reaches(&host, "finished").await, "the chase turn ends");
+    let harvest = host.reap("tally")?;
+    assert!(!harvest.produced, "only the chase turn said anything");
+    Ok(())
+}
+
+/// Dies with a final text over the body cap refused and dropped: the requester waited out its
+/// timeout. The whole text is kept on the blackboard and its head travels with the ref.
+#[tokio::test]
+async fn a_final_text_over_the_body_cap_is_kept_whole_and_sent_by_ref() -> TestResult {
     let parent = Arc::new(session((0..6).map(|_| said("noted")).collect()));
     let long: &'static str = Box::leak("tally ".repeat(4_000).into_boxed_str());
     let lines: &'static [&'static str] =
@@ -193,33 +211,22 @@ async fn a_final_text_over_the_body_cap_points_at_the_childs_transcript() -> Tes
     );
     let envelope = &reply["envelope"];
     let id = envelope["inReplyTo"].as_str().ok_or("no id")?;
-    let _ = id;
-    let address = envelope["ref"].as_str().ok_or("no ref")?;
-    assert!(address.starts_with("history://tally/"), "{envelope:?}");
+    assert_eq!(
+        envelope["ref"],
+        format!("family://reply-{id}"),
+        "{envelope:?}"
+    );
     let body = envelope["body"].as_str().unwrap_or_default();
     assert!(
         body.starts_with("tally tally")
-            && body.contains("of 24000 bytes kept: BODY_CAP is 16384")
-            && body.contains(&format!("read {address}]")),
+            && body.contains(&format!(
+                "{CUT_ROW}4096 of 24000 bytes · cap HEAD_BYTES = 4096 · "
+            )),
         "{body}"
     );
-    assert!(
-        !root.join("family").exists(),
-        "nothing is written to the board"
-    );
-    let entry = address.rsplit('/').next().ok_or("no entry id")?;
-    let store = host.transcript("tally").ok_or("no transcript")?;
-    let whole = yi_session::lock_session(&store)
-        .find_entries(&yi_session::EntryQuery::default())?
-        .into_iter()
-        .find_map(|kept| match kept {
-            yi_types::entry::Entry::Message { id, message, .. } if id == entry => {
-                Some(message.plain_text())
-            }
-            _ => None,
-        })
-        .ok_or("the address names no entry")?;
-    assert_eq!(whole, long, "the named entry holds the whole reply");
+    let kept = std::fs::read_to_string(root.join(format!("family/reply-{id}.json")))?;
+    let kept: Value = serde_json::from_str(&kept)?;
+    assert_eq!(kept["text"], long);
     Ok(())
 }
 

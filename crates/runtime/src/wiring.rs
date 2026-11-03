@@ -138,6 +138,12 @@ pub(crate) fn read_board(path: &Path) -> std::io::Result<String> {
     Ok(text)
 }
 
+/// A fresh file created exclusively, then renamed over `path`: rename replaces a link.
+pub(crate) fn write_board(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    refuse_linked_board(path)?;
+    yi_session::replace_file(path, bytes)
+}
+
 impl RuntimeWiring {
     /// The shared board: the root session's `family/<id>` once its store is known (D242), else
     /// the root `rlm_dir`'s `family/`, the first non-`sub-*` ancestor of a child's (D164).

@@ -24,7 +24,7 @@ use crate::subagent::{ChildBuild, ChildStatus, SubagentHostOptions};
 
 pub(in crate::plan) type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-pub(crate) use yi_ai::faux::faux_model;
+use yi_ai::faux::faux_model;
 
 pub(in crate::plan) fn reply(text: &str) -> AgentMessage {
     yi_ai::faux::faux_assistant_message(vec![yi_ai::faux::faux_text(text)], StopReason::Stop)

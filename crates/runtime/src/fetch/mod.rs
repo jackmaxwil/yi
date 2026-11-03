@@ -1005,6 +1005,12 @@ mod tests {
         for link in ["reply-1.json", "k.json", "main.v.dill"] {
             std::os::unix::fs::symlink(&secret, family.join(link))?;
         }
+        crate::wiring::write_board(&family.join("reply-1.json"), b"spilled")?;
+        assert_eq!(std::fs::read_to_string(&secret)?, "PRIVATE KEY\n");
+        assert_eq!(
+            std::fs::read_to_string(family.join("reply-1.json"))?,
+            "spilled"
+        );
         let resolver = Resolver::new(elsewhere.to_path_buf(), Wall::default())
             .with_family_dir(family.to_path_buf())
             .with_kernel_variables(Arc::new(DumpsNothing));
@@ -1025,6 +1031,7 @@ mod tests {
         let board = parent.join("family");
         std::os::unix::fs::symlink(&elsewhere, &board)?;
         std::fs::write(elsewhere.join("config.json"), "{}")?;
+        assert!(crate::wiring::write_board(&board.join("reply-2.json"), b"spilled").is_err());
         let linked = Resolver::new(elsewhere.to_path_buf(), Wall::default())
             .with_family_dir(board.clone())
             .fetch(&"family://config".parse()?)

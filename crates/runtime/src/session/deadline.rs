@@ -156,7 +156,7 @@ mod tests {
         }
         let config = super::super::SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: crate::plan::rig::faux_model(),
+            model: yi_ai::faux::faux_model(),
             thinking_level: None,
             tool_execution: yi_loop::ExecutionMode::Sequential,
         };

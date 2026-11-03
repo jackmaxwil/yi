@@ -1070,12 +1070,7 @@ mod tests {
             cwd,
             home: std::env::temp_dir(),
             lane_slots: 1,
-            defaults: Arc::new(|| {
-                (
-                    crate::plan::rig::faux_model(),
-                    yi_types::model::Effort::Medium,
-                )
-            }),
+            defaults: Arc::new(|| (yi_ai::faux::faux_model(), yi_types::model::Effort::Medium)),
             factory: Arc::new(|_build| Err("no child in this test".to_owned())),
             notice: Arc::new(|_text: &str, _| {}),
             events,

@@ -771,9 +771,9 @@ pub(super) fn loop_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::rig::faux_model;
     use crate::provider::ProviderStream;
     use crate::session::{AgentSession, SessionConfig, user_input};
+    use yi_ai::faux::faux_model;
     use yi_ai::faux::{faux_assistant_message, faux_text};
     use yi_types::message::{StopReason, UserContent};
 

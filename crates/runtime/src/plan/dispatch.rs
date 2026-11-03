@@ -245,6 +245,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::plan::rig::*;
     use serde_json::Value;
+    use yi_ai::faux::faux_model;
     use yi_types::backoff::backoff;
     use yi_types::message::{StopReason, UserContent};
     use yi_types::plan::doc::{Check, GoalText};
