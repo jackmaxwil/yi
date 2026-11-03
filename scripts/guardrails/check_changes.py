@@ -220,8 +220,6 @@ def ledger_lines(was, now):
     return out
 
 
-
-
 def view_edits(was, now):
     """What a PR changed in the recorder's views. `was` and `now` map path -> text (None: absent)."""
     errs = []
