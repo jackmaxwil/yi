@@ -17,7 +17,7 @@ FAILED=0
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 N=0
-run() { N=$((N + 1)); { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1 & }
+run() { N=$((N + 1)); printf '%s\n' "$*" > "$OUT/$N.cmd"; { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1 & }
 drain() {
   wait
   for i in $(seq 1 "$N"); do
@@ -25,6 +25,7 @@ drain() {
       if [ "$QUIET" = 1 ]; then grep '^skip ' "$OUT/$i.out"; else cat "$OUT/$i.out"; fi
     else
       cat "$OUT/$i.out"
+      grep -q '^FAIL' "$OUT/$i.out" || printf 'FAIL %s (exit %s, printed no FAIL line)\n' "$(cat "$OUT/$i.cmd")" "$(cat "$OUT/$i.rc")"
       FAILED=$((FAILED + 1))
     fi
   done
@@ -44,8 +45,11 @@ if [ "${1:-}" = --selfcheck ]; then
   N=3 QUIET=1
   printf 'skip deny (advisory database unreachable)\nnoise\n' > "$OUT/1.out"; echo 0 > "$OUT/1.rc"
   printf 'only noise\n' > "$OUT/2.out"; echo 0 > "$OUT/2.rc"
-  printf 'FAIL x\nwhy\n' > "$OUT/3.out"; echo 1 > "$OUT/3.rc"
+  printf 'FAIL x\nwhy\n' > "$OUT/3.out"; echo 1 > "$OUT/3.rc"; echo 'check_x.py' > "$OUT/3.cmd"
   [ "$(drain)" = "$(printf 'skip deny (advisory database unreachable)\nFAIL x\nwhy')" ] || { echo "FAIL quiet drain keeps skip rows and failures only"; exit 1; }
+  N=4
+  : > "$OUT/4.out"; echo 137 > "$OUT/4.rc"; echo 'check_y.py --selfcheck' > "$OUT/4.cmd"
+  [ "$(drain)" = "$(printf 'skip deny (advisory database unreachable)\nFAIL x\nwhy\nFAIL check_y.py --selfcheck (exit 137, printed no FAIL line)')" ] || { echo "FAIL a gate killed before it printed is named"; exit 1; }
   echo "ok guardrails quiet selfcheck"; exit 0
 fi
 
