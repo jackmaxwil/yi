@@ -884,6 +884,12 @@ pub fn thresholds(block: &ClassifierConfig) -> Thresholds {
     }
 }
 
+/// The branch a person keeps safe is this repository's trunk, not a name guessed for it.
+#[must_use]
+pub fn protected_branches(cwd: &Path) -> Vec<String> {
+    vec![crate::lane::hostgit::trunk(cwd).to_string()]
+}
+
 pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConfig) -> Vec<String> {
     let mut warnings = Vec::new();
     let Endpoint { model, url } = match arm(config) {
@@ -939,7 +945,7 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         let project = Project {
             root: cwd.display().to_string(),
             writable,
-            protected_branches: vec!["main".to_owned()],
+            protected_branches: protected_branches(cwd),
         };
         let approver = Approver::new(
             sidecar.clone(),
@@ -979,6 +985,39 @@ pub(crate) fn journal(session: &AgentSession) -> Record {
 
 #[cfg(test)]
 mod tests {
+    /// Dies with the protected branch hardcoded to `main`: a `master` trunk would go unguarded.
+    #[test]
+    fn the_protected_branch_is_the_repositorys_trunk() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("yi-trunk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo)?;
+        let git = |args: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+            let done = yi_tools::keyless_command("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()?;
+            assert!(done.status.success(), "git {args:?}: {done:?}");
+            Ok(())
+        };
+        git(&["init", "-q", "-b", "master"])?;
+        std::fs::write(repo.join("README.md"), "base\n")?;
+        git(&["add", "README.md"])?;
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "base",
+        ])?;
+        assert_eq!(super::protected_branches(&repo), ["master"]);
+        git(&["branch", "-m", "main"])?;
+        assert_eq!(super::protected_branches(&repo), ["main"]);
+        Ok(())
+    }
+
     #[test]
     fn a_retired_laya_checkpoint_stays_off_and_a_named_model_keeps_a_url_it_may_reach()
     -> serde_json::Result<()> {

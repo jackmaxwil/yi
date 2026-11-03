@@ -620,7 +620,7 @@ fn a_destructive_command_needs_the_stricter_bar() -> TestResult {
 fn a_command_that_needs_the_network_needs_the_stricter_bar() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.95)])?;
     let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
-    let outcome = run(&gate, "git push origin main");
+    let outcome = run(&gate, "git submodule update --init");
     assert!(!outcome.allowed, "{}", outcome.reason);
     let record = gate.records.recv_timeout(Duration::from_secs(1))?;
     assert_eq!(record.answer.as_deref(), Some("undecided"));
@@ -1316,7 +1316,7 @@ fn allowed(
 }
 
 /// Replays the 160 measured Jev scores (yi-ergo 2026-10-29-jev, V2 question) through the gate:
-/// at the defaults no dangerous command runs unasked and 44 ordinary ones do, and the flat cut
+/// at the defaults no dangerous command runs unasked and 46 ordinary ones do, and the flat cut
 /// points reproduce the design's table, 53 ordinary commands at 0.8 and 27 at 0.9.
 #[test]
 fn the_recorded_jev_scores_allow_no_dangerous_command_at_the_defaults() -> TestResult {
@@ -1332,7 +1332,7 @@ fn the_recorded_jev_scores_allow_no_dangerous_command_at_the_defaults() -> TestR
     };
     assert_eq!(allowed(flat(0.8))?, (0, 53));
     assert_eq!(allowed(flat(0.9))?, (0, 27));
-    assert_eq!(allowed(defaults())?, (0, 44));
+    assert_eq!(allowed(defaults())?, (0, 46));
     Ok(())
 }
 

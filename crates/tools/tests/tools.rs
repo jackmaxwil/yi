@@ -3117,6 +3117,40 @@ fn every_cut_view_names_its_cap() -> TestResult {
     Ok(())
 }
 
+/// A refused file is named: grep over a guarded key store answered "No matches found", which
+/// reads as a search that found nothing rather than one the gate never ran.
+#[test]
+fn a_refused_file_is_named_rather_than_no_matches() -> TestResult {
+    let dir = temp_dir("grep-refused")?;
+    let home = temp_dir("grep-refused-home")?;
+    fs::create_dir_all(home.join(".yi/mcp"))?;
+    let store = home.join(".yi/mcp/sessions.json");
+    fs::write(&store, "{\"token\":\"sk-live\"}\n")?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &*home) };
+    fs::write(dir.join("notes.txt"), "alpha\n")?;
+    let link = dir.join("keys.json");
+    fs::hard_link(&store, &link)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let grep = GrepTool::default();
+
+    let named = grep.execute(
+        args(&[("pattern", json!("sk-live")), ("path", json!("keys.json"))]),
+        &context,
+    );
+    let text = output_text(&named);
+    assert!(
+        text.contains("[1 file(s) refused: a key store, a device or the workspace .git"),
+        "{text}"
+    );
+
+    let walked = grep.execute(args(&[("pattern", json!("sk-live"))]), &context);
+    let text = output_text(&walked);
+    assert!(text.contains("[1 file(s) refused"), "{text}");
+    assert!(!text.contains("sk-live"), "{text}");
+    Ok(())
+}
+
 /// A chain that stopped is named as such: the model read a stopped `&&` as a
 /// truncation and cited numbers from segments that never ran.
 #[test]

@@ -20,11 +20,20 @@ pub(crate) fn early() {
     std::process::exit(run(&home, &words));
 }
 
+/// Invariant: no `--all` installs a program that drives the user's own Mac, on any machine a CI
+/// container included; `yi plugin add agent-desktop` is the one route to a host plugin.
+fn add_all() -> Vec<&'static Plugin> {
+    PLUGINS
+        .iter()
+        .filter(|plugin| plugin.shape != Shape::Host)
+        .collect()
+}
+
 fn run(home: &Path, words: &[&str]) -> i32 {
     let picked = match words {
         ["list"] | [] => return list(home),
         ["list", "--json"] => return list_json(home),
-        ["add", "--all"] => PLUGINS.iter().collect(),
+        ["add", "--all"] => add_all(),
         ["sync"] => PLUGINS
             .iter()
             .filter(|plugin| plugin::chosen(plugin, home))
@@ -99,6 +108,7 @@ fn list_json(home: &Path) -> i32 {
                 "shape": match plugin.shape {
                     Shape::Program => "program",
                     Shape::Tree => "tree",
+                    Shape::Host => "host",
                 },
             })
         })
@@ -124,4 +134,20 @@ fn list(home: &Path) -> i32 {
         println!("  {}", plugin.summary);
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adding_every_plugin_leaves_a_host_plugin_to_the_user() {
+        let desktop = Plugin::named("agent-desktop");
+        let shapes: Vec<Shape> = add_all().iter().map(|plugin| plugin.shape).collect();
+        assert!(
+            !shapes.contains(&Shape::Host),
+            "add --all picked a host plugin: {shapes:?}"
+        );
+        assert_eq!(desktop.map(|plugin| plugin.shape), Some(Shape::Host));
+    }
 }

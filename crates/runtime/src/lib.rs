@@ -12,6 +12,7 @@ pub mod checkpoint;
 pub mod classifier;
 pub mod claude_hooks;
 pub mod compaction;
+pub mod egress;
 pub mod environment;
 pub mod ext;
 pub mod family;
@@ -67,8 +68,8 @@ pub mod web_search;
 pub mod wiring;
 
 pub use checkpoint::{
-    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes, undo_to,
-    wire_turn_checkpoints,
+    RecordedCheckpoint, UndoOutcome, describe_undo, over_budget, recorded, snapshots_off_row, undo,
+    undo_notes, undo_to, wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
 
@@ -99,6 +100,7 @@ pub use tools::ToolAdapter;
 pub use wall::Wall;
 pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
+pub use yi_ai::recommend;
 pub use yi_ai::request::ProxyConfig;
 pub use yi_ai::roots;
 pub use yi_ai::search;
@@ -117,8 +119,11 @@ pub fn workspace_sandbox(
     home: &std::path::Path,
     session_dir: Option<&std::path::Path>,
 ) -> Option<yi_tools::Sandbox> {
-    yi_tools::Sandbox::available().then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir))
+    yi_tools::Sandbox::available()
+        .then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir).with_caches(home))
 }
+
+pub use yi_tools::set_wrapper as set_sandbox_wrapper;
 
 pub fn identity_fragment() -> &'static str {
     include_str!("prompts/identity.md")

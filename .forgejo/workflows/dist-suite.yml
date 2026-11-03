@@ -9,15 +9,20 @@ on:
     - cron: "23 4 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   dist-suite:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        with:
+          persist-credentials: false
       - run: rustup show
       # Its own key: the dist profile shares no artifact with the `test` lane.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: dist-suite
           cache-on-failure: true
