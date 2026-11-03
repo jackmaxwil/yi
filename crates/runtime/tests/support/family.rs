@@ -38,6 +38,29 @@ pub fn priced_reply(text: &str, dollars: f64) -> AgentMessage {
     message
 }
 
+pub fn hung_up(text: &str) -> AgentMessage {
+    let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut message {
+        *error_message = Some("the provider hung up".to_owned());
+    }
+    message
+}
+
+pub fn child_session(
+    build: yi_runtime::ChildBuild<'_>,
+    provider: Arc<ProviderStream>,
+) -> AgentSession {
+    AgentSession::new(
+        SessionConfig {
+            system_prompt: "child sys".to_owned(),
+            model: build.model,
+            thinking_level: build.thinking,
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+        },
+        provider,
+    )
+}
+
 pub struct Built {
     pub wall: Wall,
     pub deadline: Option<std::time::Duration>,
@@ -150,16 +173,11 @@ pub fn family_with_slots(
             }
             script.push(priced_reply("ok", 0.25));
             provider.queue_faux(script);
-            let config = SessionConfig {
-                system_prompt: "child sys".to_owned(),
-                model: build.model,
-                thinking_level: build.thinking,
-                tool_execution: yi_loop::ExecutionMode::Sequential,
-            };
-            let mut child = AgentSession::new(config, provider);
+            let wall = build.wall.clone();
+            let cwd = build.cwd.map_or_else(std::env::temp_dir, PathBuf::from);
+            let mut child = child_session(build, provider);
             if hold.is_some() {
-                let cwd = build.cwd.map_or_else(std::env::temp_dir, PathBuf::from);
-                child.set_wall(build.wall.clone());
+                child.set_wall(wall);
                 child.use_tools(yi_tools::builtin_tools(), cwd, None);
             }
             Ok(child)

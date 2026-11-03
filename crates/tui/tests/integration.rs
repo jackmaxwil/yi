@@ -8,12 +8,15 @@ mod fixture_model;
 mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+#[path = "support/tool_cell.rs"]
+mod tool_cell_support;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
 
 mod agents;
 mod asks;
 mod cards;
+mod child_rows;
 mod composer_box;
 mod diffview;
 mod highlight;
@@ -29,6 +32,7 @@ mod pycell;
 mod question_card;
 mod resume;
 mod reveal;
+mod run_chip;
 mod settled;
 mod streaming;
 mod title;

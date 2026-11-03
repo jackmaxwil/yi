@@ -54,7 +54,7 @@ fn a_gateway_silent_past_the_models_deadline_names_the_field_and_runs_once() -> 
     let (port, served, server) = silent_at_first(Duration::from_secs(30), 3)?;
     let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
     let body = probe();
-    let retry = Retry::new(deadline(1).read_timeout(), &|_| {});
+    let retry = Retry::new(deadline(1).read_timeout(), None, &|_| {});
     let failed = send_with_retry(&url, &[], &body, None, &retry)
         .err()
         .ok_or("a gateway silent past the deadline answered")?;
@@ -81,7 +81,7 @@ fn a_gateway_silent_within_the_models_deadline_answers() -> TestResult {
         &[],
         &body,
         None,
-        &Retry::new(deadline(5).read_timeout(), &|_| {}),
+        &Retry::new(deadline(5).read_timeout(), None, &|_| {}),
     )?;
     assert_eq!(response.status(), 200);
     server.join().map_err(|_| "server thread panicked")?;
@@ -95,7 +95,7 @@ fn a_stream_that_stalls_after_its_headers_is_not_resent() -> TestResult {
     let (port, served, server) = trickle(Duration::from_secs(30), 1, 2)?;
     let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
     let body = probe();
-    let retry = Retry::new(deadline(1).read_timeout(), &|_| {});
+    let retry = Retry::new(deadline(1).read_timeout(), None, &|_| {});
     let failed = pump_sse_with_resend(
         None,
         &retry,
@@ -129,7 +129,7 @@ fn the_deadline_bounds_the_gap_between_chunks_not_the_whole_body() -> TestResult
     let (port, _, server) = trickle(Duration::from_millis(300), 6, 1)?;
     let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
     let body = probe();
-    let retry = Retry::new(deadline(1).read_timeout(), &|_| {});
+    let retry = Retry::new(deadline(1).read_timeout(), None, &|_| {});
     let mut events = 0usize;
     let pumped = pump_sse_with_resend(
         None,

@@ -8,10 +8,9 @@ use std::sync::Arc;
 use crate::faux_model::faux_model;
 use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text};
-use yi_loop::ExecutionMode;
 use yi_runtime::{
-    AgentSession, HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SessionConfig,
-    SubagentHost, SubagentHostOptions,
+    HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SubagentHost,
+    SubagentHostOptions,
 };
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::Effort;
@@ -44,15 +43,7 @@ fn host(answer: Option<&'static str>) -> std::io::Result<(Scratch, Arc<SubagentH
                     StopReason::Stop,
                 )]);
             }
-            Ok(AgentSession::new(
-                SessionConfig {
-                    system_prompt: "child sys".to_owned(),
-                    model: build.model,
-                    thinking_level: build.thinking,
-                    tool_execution: ExecutionMode::Sequential,
-                },
-                provider,
-            ))
+            Ok(crate::support::child_session(build, provider))
         }),
         notice: Arc::new(|_, _| {}),
         events,
@@ -190,7 +181,6 @@ async fn an_errored_child_leaves_a_transcript_naming_the_error() -> TestResult {
 async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -> TestResult {
     let (root, host) = host(Some(r#"{"answer": 42}"#))?;
     let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
     host.register(&mut registry);
     let service = KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),

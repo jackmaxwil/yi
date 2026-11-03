@@ -96,8 +96,7 @@ async fn cell(
 }
 
 fn service(session_dir: &std::path::Path, notices: &Arc<Mutex<Vec<String>>>) -> Arc<KernelService> {
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
+    let registry = HostRegistry::default();
     let notices = Arc::clone(notices);
     Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),

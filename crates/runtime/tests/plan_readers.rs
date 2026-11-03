@@ -335,14 +335,6 @@ fn paragraph() -> String {
     text
 }
 
-fn hung_up(text: &str) -> AgentMessage {
-    let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Error);
-    if let AgentMessage::Assistant { error_message, .. } = &mut message {
-        *error_message = Some("the provider hung up".to_owned());
-    }
-    message
-}
-
 /// A root wired as `yi` wires one, its kernel on the real HOME's venv.
 fn wired(root: &Scratch) -> Result<(AgentSession, Arc<ProviderStream>), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None));
@@ -463,7 +455,7 @@ async fn a_failed_plan_childs_ending_is_one_short_line_naming_its_transcript() -
         &provider,
         op,
         "write the patch",
-        hung_up(&paragraph()),
+        crate::support::hung_up(&paragraph()),
     )
     .await?;
     let address = format!(
@@ -513,7 +505,7 @@ async fn every_address_a_finish_line_prints_opens_in_read_grep_and_fetch() -> Te
         &provider,
         append,
         "write the patch",
-        hung_up(&paragraph()),
+        crate::support::hung_up(&paragraph()),
     )
     .await?;
     let append =

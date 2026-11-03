@@ -509,17 +509,14 @@ fn a_cursor_tool_call_never_reaches_the_anthropic_history() {
     if let AgentMessage::Assistant { api, .. } = &mut cursor {
         *api = "cursor-agent".to_owned();
     }
-    let history = yi_ai::transform::transform_messages(
-        &[
-            cursor,
-            assistant(vec![call("own-1", Some("cursor"))], StopReason::ToolUse),
-        ],
-        &model(),
-        None,
-    );
+    let messages = [
+        cursor,
+        assistant(vec![call("own-1", Some("cursor"))], StopReason::ToolUse),
+    ];
+    let history = yi_ai::transform::transform_messages(&messages, &model(), None);
     let ids: Vec<&str> = history
         .iter()
-        .flat_map(|message| match message {
+        .flat_map(|message| match message.as_ref() {
             AgentMessage::Assistant { content, .. } => content.iter().collect::<Vec<_>>(),
             _ => Vec::new(),
         })

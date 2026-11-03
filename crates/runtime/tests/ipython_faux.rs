@@ -40,10 +40,20 @@ fn service(registry: HostRegistry) -> Arc<KernelService> {
     }))
 }
 
-fn registry() -> HostRegistry {
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
-    registry
+fn bare_service(cell_ceiling: Option<std::time::Duration>) -> Arc<KernelService> {
+    Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: home(),
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(HostRegistry::default()),
+        on_restore: None,
+        on_boot: None,
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling,
+    }))
 }
 
 fn home() -> PathBuf {
@@ -74,8 +84,7 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
     ]);
     let mut session = session(provider);
-    let registry = registry();
-    let service = service(registry);
+    let service = bare_service(None);
     let mut tools = yi_tools::builtin_tools();
     tools.push(ipython_tool(Arc::clone(&service), None));
     session.use_tools(tools, std::env::temp_dir(), None);
@@ -127,7 +136,7 @@ async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(),
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
     ]);
     let mut session = session(provider);
-    let mut registry = registry();
+    let mut registry = HostRegistry::default();
     let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = Arc::clone(&spawns);
     registry.register("rlm.run", move |_payload| {
@@ -192,20 +201,7 @@ async fn a_cell_that_never_returns_is_aborted_at_the_ceiling() -> Result<(), Box
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
     ]);
     let mut session = session(provider);
-    let registry = registry();
-    let service = Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: std::env::temp_dir(),
-        home: home(),
-        session_dir: None,
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: Some(std::time::Duration::from_secs(1)),
-    }));
+    let service = bare_service(Some(std::time::Duration::from_secs(1)));
     // The boot (and a cold venv build) stays off the clock under test.
     service.prewarm().await;
     let mut tools = yi_tools::builtin_tools();
@@ -246,8 +242,7 @@ async fn a_cell_that_never_returns_is_aborted_at_the_ceiling() -> Result<(), Box
 async fn a_kernel_boot_reports_its_steps_then_closes() -> Result<(), Box<dyn Error>> {
     let steps: Arc<std::sync::Mutex<Vec<Option<String>>>> = Arc::default();
     let seen = Arc::clone(&steps);
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
+    let registry = HostRegistry::default();
     let service = KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),
         home: home(),

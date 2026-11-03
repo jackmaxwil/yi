@@ -921,11 +921,10 @@ async fn json_deny_from_an_exec_form_plugin_hook_blocks_write() -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_hook_allow_runs_contained_and_the_sandbox_still_refuses_an_escape() -> TestResult {
-    if !yi_tools::Sandbox::available() {
-        return Ok(());
-    }
+    crate::kernel_sandbox::seatbelt()?;
     let allow = settings("PreToolUse", "Bash", vec![decision("allow")]);
     let case = Case::new("allow-sandbox", allow, true)?;
     let escape = case.home.join("escape.txt");

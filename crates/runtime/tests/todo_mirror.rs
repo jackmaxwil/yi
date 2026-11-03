@@ -337,6 +337,7 @@ fn a_mirrored_list_with_a_running_child_does_not_nag() -> TestResult {
         &session,
         Arc::clone(&todos),
         Options {
+            deadline: None,
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,

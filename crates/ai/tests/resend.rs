@@ -100,7 +100,7 @@ fn a_refused_request_bills_a_known_zero() -> TestResult {
         &[],
         &probe(),
         None,
-        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), &|_| {}),
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &|_| {}),
     )
     .err()
     .ok_or("a 402 was reported as success")?;
@@ -127,7 +127,7 @@ fn a_refused_resend_keeps_the_first_attempt_unknown() -> TestResult {
     let (port, _, server) = serve(vec![died, REFUSED_402])?;
     let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
     let body = probe();
-    let retry = yi_ai::request::Retry::new(std::time::Duration::from_secs(60), &|_| {});
+    let retry = yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &|_| {});
     let failed = yi_ai::request::pump_sse_with_resend(
         None,
         &retry,

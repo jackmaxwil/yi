@@ -125,11 +125,9 @@ fn serve_read(
                 next.saturating_add(1),
                 unit(&fetched.url)
             )),
-            None => text_output(capped(
+            None => text_output(resolver.fenced(
                 &fetched.url,
-                &fetched.served_by,
-                fetched.text,
-                input,
+                capped(&fetched.url, &fetched.served_by, fetched.text, input),
             )),
         },
         Err(message) => error_output(message),
