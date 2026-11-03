@@ -410,8 +410,9 @@ def tick(mode):
     elif action == "land":
         land(obs, mode)
     elif action == "finish":
-        # Invariant: shadow writes neither main nor the forge's issues; a later `on` tick records what landed.
-        finish(obs) if mode == "on" else delete_ref()
+        # Invariant: shadow writes neither main nor issues, and the ref is how the next `on` tick knows to finish.
+        if mode == "on":
+            finish(obs)
     elif action == "paused":
         print(f"queue: paused on {obs['candidate'][:10]}, whose lanes read {obs['lanes']}; deleting {CANDIDATE} resumes")
     return 0
@@ -633,6 +634,8 @@ def shadow_cases():
             tick("shadow")
             if stubs["finish"].called:
                 bad.append("a shadow tick over a landed candidate ran finish, which writes main")
+            if stubs["delete_ref"].call_count != 1:
+                bad.append("a shadow tick over a landed candidate deleted the ref an `on` tick finishes from")
             tick("on")
             if not stubs["finish"].called:
                 bad.append("an `on` tick over a landed candidate did not finish")
