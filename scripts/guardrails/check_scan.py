@@ -28,6 +28,8 @@ TOOL_ROW = ""
 GITLEAKS = (ROOT / "scripts/scan/gitleaks.version").read_text().strip()
 ZIZMOR = "zizmor==1.31.1"
 SEMGREP = "semgrep==1.182.1"
+# Finite, so a file no rule finishes ends the scan instead of the runner's job timeout ending it.
+SEMGREP_TIMEOUT = 300
 INSTALL_SECS = 300
 INSTALL = ROOT / "scripts/scan/install_gitleaks.sh"
 _INSTALLED = {}
@@ -150,20 +152,36 @@ def zizmor(paths):
         findings.append(("zizmor", row["ident"], path, line))
     return findings
 
-def semgrep(paths, fixtures=False):
-    require_uv(SEMGREP, "semgrep", SEMGREP.split("==", 1)[1])
-    args = ["scan", "--config", str(RULES / "semgrep"), "--json", "--metrics=off", "--disable-version-check", "--timeout", "0"]
+def semgrep_args(paths, fixtures=False):
+    args = ["scan", "--config", str(RULES / "semgrep"), "--json", "--metrics=off", "--disable-version-check",
+            "--timeout", str(SEMGREP_TIMEOUT)]
     if not fixtures:
         args += ["--exclude", "scripts/scan/fixtures", "--exclude", "crates/**/tests"]
-    proc = run(uv_argv(SEMGREP, "semgrep", [*args, *map(str, paths)]))
+    return [*args, *map(str, paths)]
+
+
+def semgrep_errors(errors):
+    """A Timeout is one rule that ran out of its per-file budget, and it names the file it gave up on.
+    Incident: `--timeout 0` left a slow file with no limit, so the guardrails lane hung with nothing naming it."""
+    announced = [f"skip semgrep {row.get('path', '?')} ({row.get('rule_id', '?')} ran over {SEMGREP_TIMEOUT}s)"
+                 for row in errors if row.get("type") == "Timeout"]
+    return announced, [row for row in errors if row.get("type") != "Timeout"]
+
+
+def semgrep(paths, fixtures=False):
+    require_uv(SEMGREP, "semgrep", SEMGREP.split("==", 1)[1])
+    proc = run(uv_argv(SEMGREP, "semgrep", semgrep_args(paths, fixtures)))
     if proc.returncode:
         raise RuntimeError((proc.stdout + proc.stderr).strip())
     try:
         report = json.loads(proc.stdout)
     except json.JSONDecodeError as error:
         raise RuntimeError(f"semgrep emitted invalid JSON: {error}") from error
-    if report["errors"]:
-        raise RuntimeError(json.dumps(report["errors"]))
+    announced, fatal = semgrep_errors(report["errors"])
+    if fatal:
+        raise RuntimeError(json.dumps(fatal))
+    for row in announced:
+        print(row)
     findings = []
     for row in report["results"]:
         path, line = row["path"], row["start"]["line"]
@@ -376,6 +394,17 @@ def selfcheck(off="", fixtures=None):
             errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
+    argv = semgrep_args(["scripts"])
+    bound = argv[argv.index("--timeout") + 1] if off != "semgrep-timeout" else "0"
+    if not bound.isdigit() or not int(bound):
+        errors.append(f"semgrep's per-file timeout is {bound!r}, which bounds no file")
+    slow = [{"type": "Timeout", "level": "warn", "path": "scripts/slow.py", "rule_id": "a.rule"}]
+    announced, fatal = semgrep_errors(slow if off != "semgrep-timeout" else [])
+    if fatal or not any("scripts/slow.py" in row for row in announced):
+        errors.append("a semgrep per-file timeout was not announced, naming its file")
+    broken = [{"type": "Syntax error", "level": "error", "path": "scripts/slow.py"}] if off != "semgrep-timeout" else []
+    if not semgrep_errors(broken)[1]:
+        errors.append("a semgrep error that is not a timeout stopped failing the scan")
     for strict in (True, False):
         printed, aborted = io.StringIO(), False
         try:
@@ -547,7 +576,7 @@ def main(argv):
         errors = selfcheck(fixtures=fixtures)
         checks = {rule for tool, (cases, _) in FAMILIES.items() if tool in fixtures
                   for rules in cases.values() for rule in rules}
-        checks |= {"baseline", "ignores", "update", "credentials", "provision"}
+        checks |= {"baseline", "ignores", "update", "credentials", "provision", "semgrep-timeout"}
         if "gitleaks" in fixtures:
             checks |= {"history", "diff"}
         for off in sorted(checks):
