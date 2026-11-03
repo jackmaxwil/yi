@@ -37,7 +37,7 @@ struct Site {
     cwd: PathBuf,
     sessions: PathBuf,
     fix: bool,
-    lane_slots: u8,
+    lane_slots: Option<u8>,
     socket: PathBuf,
 }
 
@@ -253,7 +253,10 @@ fn ledger_roots_exist(site: &Site) -> Finding {
 
 fn lanes_consistent(site: &Site) -> Finding {
     use yi_runtime::lane::{LaneError, Pool, SlotView, TreeState, land::lane_line};
-    let pool = match Pool::open(&site.home, &site.cwd, site.lane_slots) {
+    let Some(slots) = site.lane_slots else {
+        return ok("see config");
+    };
+    let pool = match Pool::open(&site.home, &site.cwd, slots) {
         Ok(pool) => pool,
         Err(LaneError::NotARepo(_)) => return ok("not a repository"),
         Err(error) => return fail(error.to_string()),
@@ -417,14 +420,12 @@ pub(crate) fn early() {
 
 pub(crate) fn run(args: &Args) -> i32 {
     let home = crate::home().to_path_buf();
-    let config = read_config(&home)
-        .map(|(config, _)| config)
-        .unwrap_or_default();
+    let config = read_config(&home).ok().map(|(config, _)| config);
     let site = Site {
         cwd: effective_cwd(args),
         sessions: crate::default_session_dir(args),
         fix: args.fix,
-        lane_slots: crate::lanes::lane_slots_from(&config),
+        lane_slots: config.as_ref().map(crate::lanes::lane_slots_from),
         socket: crate::shells::daemon_socket(args),
         home,
     };

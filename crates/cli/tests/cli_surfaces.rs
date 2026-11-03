@@ -2455,6 +2455,33 @@ fn doctor_judges_only_the_configured_lane_slots() -> TestResult {
     Ok(())
 }
 
+/// An unreadable config leaves the slot bound unknown, so the lanes row defers to the config row
+/// rather than judging the pool against the default bound.
+#[test]
+fn doctor_judges_no_lanes_when_the_config_is_unreadable() -> TestResult {
+    let workspace = Workspace::new("doctor-lanes-bad-config")?;
+    write_config(&workspace, r#"{"lanes":{"slots":1},"nope":1}"#)?;
+    crate::repo::init_repo(&workspace.project())?;
+    let seen = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&seen))?;
+    let row = |name: &str| {
+        rows.as_array()
+            .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+            .map(|row| (row["status"].clone(), row["detail"].clone()))
+    };
+    assert_eq!(
+        row("config").map(|(status, _)| status),
+        Some(Value::from("fail")),
+        "{rows}"
+    );
+    assert_eq!(
+        row("lanes"),
+        Some((Value::from("ok"), Value::from("see config"))),
+        "{rows}"
+    );
+    Ok(())
+}
+
 /// Every skipped executable is named with its probe's outcome; healthy tools still load.
 #[test]
 fn doctor_names_each_skipped_exec_tool_and_its_reason() -> TestResult {

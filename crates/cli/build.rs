@@ -24,9 +24,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if macos && std::env::var("PROFILE").is_ok_and(|profile| profile == "release") {
         println!("cargo::rustc-link-arg-bins=-Wl,-no_function_starts");
     }
-    let linux = std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "linux");
-    if linux {
-        println!("cargo::rustc-link-arg=-Wl,--icf=all");
-    }
     Ok(())
 }

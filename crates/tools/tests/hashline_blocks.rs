@@ -57,12 +57,22 @@ fn a_multiline_python_signature_resolves_through_the_function_body() -> TestResu
 #[test]
 fn rust_lifetimes_do_not_hide_braces_and_character_literals_stay_unchanged() -> TestResult {
     let dir = temp_dir("hashline-rust-lifetimes")?;
-    fs::write(dir.join("leak.rs"), include_str!("../../ai/src/leak.rs"))?;
+    let source = include_str!("../../ai/src/leak.rs");
+    fs::write(dir.join("leak.rs"), source)?;
+    let lines: Vec<&str> = source.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("fn between<'a>"))
+        .ok_or("no fn between")?;
+    let close = start
+        + lines
+            .iter()
+            .skip(start)
+            .position(|line| *line == "}")
+            .ok_or("no close")?;
     let output = find(&dir, "leak.rs", "fn between<'a>");
-    assert!(
-        output.contains("[find: block at lines 93-101 of"),
-        "{output}"
-    );
+    let span = format!("[find: block at lines {}-{} of", start + 1, close + 1);
+    assert!(output.contains(&span), "{output}");
 
     fs::write(
         dir.join("getter.rs"),
