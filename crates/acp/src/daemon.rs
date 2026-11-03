@@ -216,6 +216,7 @@ struct Supervisor {
     parked: HashMap<String, Vec<Value>>,
     next_request: u64,
     input: mpsc::UnboundedSender<Input>,
+    settings_tail: Option<tokio::task::JoinHandle<()>>,
 }
 
 fn error_frame(id: Value, code: i64, message: &str) -> String {
@@ -729,20 +730,29 @@ impl Supervisor {
             .map(str::to_owned);
         let value = frame.pointer("/params/value").cloned();
         let input = self.input.clone();
-        tokio::task::spawn_blocking(move || {
-            let answer = match (save, setting, value) {
-                (false, _, _) => yi_runtime::settings::current(&home),
-                (true, Some(setting), Some(value)) => {
-                    yi_runtime::settings::save(&home, &setting, value)
-                }
-                (true, _, _) => Err("a save names an id and a value; null unsets".to_owned()),
-            };
-            let line = match answer {
-                Ok(rows) => result_frame(id, json!({"rows": rows})),
-                Err(why) => error_frame(id, -32602, &why),
-            };
-            let _ = input.send(Input::Answer(client, line));
+        // Incident: saves ran side by side, so a press could overwrite the newer one it raced.
+        let before = self.settings_tail.take();
+        let task = tokio::spawn(async move {
+            if let Some(before) = before {
+                let _ = before.await;
+            }
+            let _ = tokio::task::spawn_blocking(move || {
+                let answer = match (save, setting, value) {
+                    (false, _, _) => yi_runtime::settings::current(&home),
+                    (true, Some(setting), Some(value)) => {
+                        yi_runtime::settings::save(&home, &setting, value)
+                    }
+                    (true, _, _) => Err("a save names an id and a value; null unsets".to_owned()),
+                };
+                let line = match answer {
+                    Ok(rows) => result_frame(id, json!({"rows": rows})),
+                    Err(why) => error_frame(id, -32602, &why),
+                };
+                let _ = input.send(Input::Answer(client, line));
+            })
+            .await;
         });
+        self.settings_tail = Some(task);
     }
 
     /// A message opened in an app the person listed: the daemon runs it, since the console never
@@ -889,6 +899,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
             requests: HashMap::new(),
             worker_requests: HashMap::new(),
             parked: HashMap::new(),
+            settings_tail: None,
             next_request: 0,
             input: input_tx.clone(),
         };
@@ -1010,6 +1021,7 @@ mod tests {
             requests: HashMap::new(),
             worker_requests: HashMap::new(),
             parked: HashMap::new(),
+            settings_tail: None,
             next_request: 0,
             input,
         };

@@ -29,15 +29,3 @@ pub struct Advice {
     pub target: Option<String>,
     pub text: String,
 }
-
-/// Outcome record for one delivered advice (design §16): feeds
-/// `/advisor stats` and, later, cadence tuning.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AdvisoryOutcome {
-    pub advice_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_touched_within: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hold_result: Option<String>,
-}
