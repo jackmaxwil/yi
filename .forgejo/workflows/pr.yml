@@ -15,11 +15,14 @@ name: pr
 
 on:
   pull_request:
+  # The merge queue's candidate (scripts/pr_queue.py): the three lanes run on it, and no token does.
+  push:
+    branches: [queue/candidate]
 
 # A newer push to the same PR supersedes the old run; the old one would only
 # hold runners the queue needs (59 of 451 runs kept going after a newer push).
 concurrency:
-  group: pr-${{ github.event.pull_request.number }}
+  group: pr-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 # Each job is capped at 5 CPUs but sees the runner VM's 16; without these,
@@ -28,6 +31,8 @@ concurrency:
 env:
   CARGO_BUILD_JOBS: "5"
   NEXTEST_TEST_THREADS: "5"
+  # A kernel with no Landlock fails the suite rather than skipping what proves the sandbox.
+  YI_SANDBOX_REQUIRED: "1"
   # Incident: upload-artifact runs on Node, which ignores the system store, and failed every
   # chunk with "unable to get local issuer certificate" against the forge's internal CA.
   NODE_EXTRA_CA_CERTS: /etc/ssl/certs/buildhost-root-ca.pem
@@ -100,7 +105,7 @@ jobs:
   title:
     # Same hold as `gate`, and the same runner question: this job holds the repo token, so an
     # external head's scripts are replaced by main's before any of them runs.
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'external') || contains(github.event.pull_request.labels.*.name, 'run-ci') }}
+    if: ${{ github.event_name == 'pull_request' && (!contains(github.event.pull_request.labels.*.name, 'external') || contains(github.event.pull_request.labels.*.name, 'run-ci')) }}
     runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'external') && 'external' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
@@ -153,7 +158,7 @@ jobs:
     # Advisory and paid, and 19% of yi's PR runner time: it runs when the PR
     # carries the `live` label at push time (label, then push or re-run).
     # Never on an external PR: the design's table lists live as a job contributor code gets.
-    if: contains(github.event.pull_request.labels.*.name, 'live') && !contains(github.event.pull_request.labels.*.name, 'external')
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'live') && !contains(github.event.pull_request.labels.*.name, 'external')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

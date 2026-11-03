@@ -1,6 +1,6 @@
 ---
 issue: Refs #1719, Closes #1751
-raise: tests +35, crate cli +11
+raise: tests +34, crate cli +11
 growth: +11 the only Rust src growth is parsing, validating and applying --no-tools; Python cannot remove the provider tool table without that CLI support
 decision: Build stateless, signed, owner-gated GitHub intake into the existing review loop | owner: "Allow Github PRs from named specific contributors with strict rules and high safety --> check for security --> normal Yi reviewbot loop. Primary user will be myself and Max when we are working on different machines" | reversible via removing scripts/intake together with its selfcheck line in scripts/guardrails/check_guardrails.sh, the intake recipe and the journeys line in justfile, the ledger-journeys row, ARCHITECTURE and YI_DESIGN section 22 and the CONTRIBUTING intake text; the --no-tools flag reverts alone
 ---

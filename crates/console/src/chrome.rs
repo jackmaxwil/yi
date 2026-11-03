@@ -9,11 +9,43 @@ use yi_tui::colors::{ColorTier, Theme};
 
 use crate::app::App;
 use crate::keys;
-use crate::model::SidebarMode;
+use crate::model::{Link, SidebarMode};
 use crate::render::{GEAR, Hits, PaneView};
 
 const GEAR_COLS: u16 = 4;
 const GEAR_ROWS: u16 = 3;
+
+pub(crate) fn banner_spans(app: &App, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    match &app.state.link {
+        Link::Connecting => spans.push(Span::styled(" connecting… ", theme.dim_style())),
+        Link::Connected => {}
+        Link::Disconnected { reason } => {
+            let short: String = reason.chars().take(28).collect();
+            spans.push(Span::styled(
+                format!(" ✕ disconnected: {short} "),
+                Style::default().fg(theme.error),
+            ));
+        }
+    }
+    if let Some(note) = &app.state.banner {
+        spans.push(Span::styled(
+            format!(" {note}"),
+            Style::default().fg(theme.warning),
+        ));
+    }
+    if app.state.dropped_frames > 0 {
+        spans.push(Span::styled(
+            format!("  dropped:{}", app.state.dropped_frames),
+            theme.dim_style(),
+        ));
+    }
+    if !spans.is_empty() && app.state.sidebar == SidebarMode::Hidden {
+        let back = keys::hint_label(keys::Action::ToggleSidebar, app.cmd_hints);
+        spans.push(Span::styled(format!("  {back}"), theme.dim_style()));
+    }
+    spans
+}
 
 /// Each hint is a keycap on a dock: the bodies are cell backgrounds so the chord stays real text,
 /// and only the rounded ends, cells with no text in them, are images.

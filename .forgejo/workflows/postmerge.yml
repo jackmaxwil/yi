@@ -15,6 +15,9 @@ jobs:
   # One arm left, so the matrix (and its fail-fast: false) went with the macOS
   # row it existed for.
   postmerge:
+    # The recorder's commit is a push to main like any other, so the mirror runs for it; this lane
+    # spends real money per merge on its live suite, and a docs commit has nothing to run.
+    if: github.event.head_commit.author.name != 'yi-ci'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -100,6 +103,7 @@ jobs:
   # Invariant: `test` is in the matrix so each main commit carries the PR gate's own test lane
   # as a status; green pull requests that fail together turn that commit red within one run.
   warm:
+    if: github.event.head_commit.author.name != 'yi-ci'
     strategy:
       fail-fast: false
       matrix:
@@ -127,7 +131,8 @@ jobs:
   # Off until the repository variable RECORD_CHANGES is `on`: the push to main needs a token that
   # branch protection lets through, and the first run, a backfill, is the owner's call.
   record:
-    if: vars.RECORD_CHANGES == 'on'
+    # The queue records its own landing, in the tick that pushed it.
+    if: vars.RECORD_CHANGES == 'on' && github.event.head_commit.author.name != 'yi-queue'
     concurrency:
       group: record-changes
       cancel-in-progress: false
@@ -145,6 +150,8 @@ jobs:
           python3 scripts/record_changes.py
           if [ -z "$(git status --porcelain)" ]; then exit 0; fi
           git add docs
+          # Not silenced: the mirror runs only for a push to main, and this is the push that leaves
+          # main final; the two lanes above skip a recorder commit by its author instead.
           git -c user.name=yi-ci -c user.email=ci@yi \
-            commit -q -m "Record the change files main landed" -m "[skip ci]"
+            commit -q -m "Record the change files main landed"
           git push origin HEAD:main

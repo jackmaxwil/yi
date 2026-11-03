@@ -1,5 +1,7 @@
 ---
 issue: Refs #1719
+ledger=: GitHub-to-forge intake | 22 | gated manual | H | H | stages 0–4: real fixtures, signed ordered checks, read-only dry-run, deterministic draft import and a no-tools lens; an imported PR carries `external` and waits for the owner's `run-ci`, which asks for the disposable `external` runner (unregistered, so an admitted job queues and never runs); landing comments `landed as <sha>` and closes the GitHub PR; the poll workflow is inert (cron commented)
+ledger~: verb table, `yi --help` and completions | 33 | 34
 ---
 GitHub intake stages 3 and 4 hold contributor code behind the owner's `run-ci`
 label and finish the loop on the GitHub side. An imported PR already carried
