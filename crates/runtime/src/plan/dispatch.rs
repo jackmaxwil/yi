@@ -169,7 +169,7 @@ impl Delegate for SessionDelegate {
         self.host.finished.lock().is_ok_and(|slot| slot.is_some())
     }
 
-    fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::settle::Held>, String> {
+    fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::handback::Held>, String> {
         if !self.host.holds(agent.as_str()) {
             return Ok(None);
         }

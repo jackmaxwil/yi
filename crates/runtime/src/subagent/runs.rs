@@ -176,6 +176,11 @@ async fn complete(
 }
 
 impl SubagentHost {
+    /// A harness's check environment, installed once: a session's hooks and wall, or a test's.
+    pub fn set_checker(&self, checker: crate::goal::Checker) {
+        let _first_wins = self.checker.set(checker);
+    }
+
     pub(super) async fn run_child(
         self: Arc<Self>,
         child_id: String,
@@ -241,17 +246,21 @@ impl SubagentHost {
             if record.step(Step::Exit(exit, error.clone())) {
                 let service = matches!(record.standing, Standing::Service(_));
                 let (replied, cause) = (record.replied, Cause::ended(exit));
-                let trail = (record.token_count(), record.trail.clone());
-                let ending = (record.exit.unwrap_or(exit), record.error.clone());
+                let trail = record.trail.clone();
+                record.finish();
+                let last = record.exit.unwrap_or(exit);
+                let journal = !(service && last == ChildExit::Completed);
+                record.rows.end_journaled = journal;
+                let ending = record.ended(child_id, last);
                 let epoch = children.touch(child_id, cause);
-                ended = Some((replied, service, billed, epoch, trail, ending));
+                ended = Some((replied, service, billed, epoch, trail, last, ending));
             }
         }
-        let Some((replied, service, billed, epoch, (tokens, trail), (last, why))) = ended else {
+        let Some((replied, service, billed, epoch, trail, last, ending)) = ended else {
             return;
         };
         if !(service && last == ChildExit::Completed) {
-            self.trail_ended(trail.as_ref(), session_name, child_id, (last, why, tokens));
+            self.trail_ended(trail.as_ref(), ending);
         }
         if exit == ChildExit::Completed {
             for message in messages.get(billed..).unwrap_or_default() {

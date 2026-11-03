@@ -5,18 +5,19 @@ mod args;
 mod ask;
 mod catalog;
 mod commands;
+mod contain;
 mod debug;
 mod doctor;
 mod fetch;
 mod lanes;
 mod memory;
+mod models;
 mod plan;
 mod plugin;
 mod roles;
 mod rpc;
 mod sessions;
 mod setup;
-mod sidecar;
 mod stats;
 mod todo;
 mod trace_sink;
@@ -242,7 +243,17 @@ fn build_session(
         )
         .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None))
         .with_session_store(&default_session_dir(args))
-        .with_unattended(unattended),
+        .with_unattended(unattended)
+        .with_egress(
+            (settings.sandbox.clone())
+                .and_then(|sandbox| sandbox.egress)
+                .unwrap_or_default(),
+        )
+        .with_host_recipes(
+            (settings.sandbox.clone())
+                .and_then(|sandbox| sandbox.host_recipes)
+                .unwrap_or_default(),
+        ),
     );
     let configured = (settings.permissions.as_ref()).and_then(|p| p.allow_write.as_deref());
     for dir in args
@@ -280,6 +291,12 @@ fn build_session(
     let selector = roles::selector_model()
         .map(|model| yi_runtime::select::Selector::new(std::sync::Arc::clone(&provider), model));
     session.set_selector(selector);
+    let search = roles::web_search_provider(proxy.clone()).map_err(|reason| Refused {
+        code: 2,
+        reason,
+        class: yi_types::telemetry::ErrorClass::RefusalConfig,
+    })?;
+    provider.set_web_search(search);
     let wiring = yi_types::trace::span("build_session.attach_runtime");
     let host = yi_runtime::attach_runtime(
         &mut session,
@@ -426,6 +443,16 @@ fn run_gc(args: &Args) -> i32 {
     }
     for report in yi_runtime::retention::sweep(home(), !args.fix) {
         println!("{report}");
+    }
+    let cwd = effective_cwd(args);
+    if let Ok(pool) = yi_runtime::lane::Pool::open(home(), &cwd, lanes::lane_slots()) {
+        match pool.gc(&cwd, !args.fix) {
+            Ok(lines) => lines.iter().for_each(|line| println!("{line}")),
+            Err(error) => {
+                eprintln!("error: worktrees: {error}");
+                return 1;
+            }
+        }
     }
     0
 }
@@ -779,15 +806,7 @@ fn mcp_fast_path() {
 }
 
 fn main() {
-    if std::env::args_os().nth(1).is_some_and(|arg| arg == "__fds") {
-        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
-        eprintln!("error: __fds: {}", yi_browser::exec_on_pipe_fds(&args));
-        std::process::exit(1);
-    }
-    #[cfg(feature = "tui")]
-    if std::env::args_os().nth(1).is_some_and(|arg| arg == "__pty") {
-        std::process::exit(yi_console::pty::shim(std::env::args_os().skip(2)));
-    }
+    contain::early();
     doctor::early();
     update::early();
     plugin::early();
@@ -855,6 +874,15 @@ fn run_version(_: &Args) -> i32 {
 }
 
 fn run_ask(args: &Args) -> i32 {
+    if let Some(check) = args.check.as_deref() {
+        return match yi_runtime::goal::probe(check, &effective_cwd(args)) {
+            None => 0,
+            Some(refusal) => {
+                eprintln!("{refusal}");
+                2
+            }
+        };
+    }
     if args.prompt.is_empty() {
         eprintln!("usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt | ->");
         return 2;

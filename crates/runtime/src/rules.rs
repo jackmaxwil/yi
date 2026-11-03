@@ -428,7 +428,7 @@ fn name_char(next: char) -> bool {
     next.is_ascii_alphanumeric() || next == '-' || next == '_'
 }
 
-fn typed_text(message: &AgentMessage) -> Option<String> {
+pub(crate) fn typed_text(message: &AgentMessage) -> Option<String> {
     let AgentMessage::User {
         content,
         attribution: Attribution::User,

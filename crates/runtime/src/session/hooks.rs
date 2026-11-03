@@ -1,7 +1,7 @@
 //! The session's handle vocabulary: every closure the runtime hands a subsystem so it can
 //! steer, notice or read this session without holding it. The run loop stays out.
 
-use std::sync::{Arc, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
@@ -15,6 +15,58 @@ use super::{
 };
 
 pub(super) type LedgerFold = dyn FnMut(&str, &[Entry], &SessionStats) + Send;
+
+/// Invariant: `at` is the last typed user text and `seen` the prefix already searched.
+#[derive(Default)]
+struct Task {
+    at: Option<(usize, AgentMessage)>,
+    seen: usize,
+}
+
+impl Task {
+    fn latest(&mut self, messages: &[AgentMessage]) -> Option<(usize, AgentMessage)> {
+        let moved = self
+            .at
+            .as_ref()
+            .is_some_and(|(index, message)| messages.get(*index) != Some(message));
+        if moved || messages.len() < self.seen {
+            *self = Task::default();
+        }
+        let found = (self.seen..messages.len()).rev().find(|index| {
+            note_examined();
+            messages.get(*index).is_some_and(is_typed)
+        });
+        if let Some(index) = found {
+            self.at = messages.get(index).cloned().map(|message| (index, message));
+        }
+        self.seen = messages.len();
+        self.at.clone()
+    }
+}
+
+fn is_typed(message: &AgentMessage) -> bool {
+    crate::rules::typed_text(message).is_some()
+}
+
+#[cfg(test)]
+thread_local! {
+    static EXAMINED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn note_examined() {
+    #[cfg(test)]
+    EXAMINED.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+fn examinations() -> usize {
+    EXAMINED.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn forget_examinations() {
+    EXAMINED.with(|count| count.set(0));
+}
 
 pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
     let model = shared
@@ -203,6 +255,25 @@ impl AgentSession {
         })
     }
 
+    pub fn install_extensions(&self, host: crate::ext::Host) {
+        if let Ok(mut slot) = self.shared.ext.lock() {
+            *slot = Some(Arc::new(Mutex::new(host)));
+        }
+        let deliver = self.deliver_hook();
+        if let Some(host) = self.extensions()
+            && let Ok(mut host) = host.lock()
+        {
+            host.set_screen(self.screeners());
+            host.set_deliver(Arc::new(move |message| {
+                deliver(message, false);
+            }));
+        }
+    }
+
+    /// The screen this session's outside text is judged by: its own, never another session's.
+    pub fn screeners(&self) -> crate::classifier::Screeners {
+        self.shared.screen.clone()
+    }
     /// Delivers each text `observe` returns as a shown notice of `custom_type`, never a wake:
     /// a notice must not buy another turn.
     pub fn show_notices(
@@ -289,6 +360,29 @@ impl AgentSession {
         })
     }
 
+    /// Invariant: a judgement reads the tail plus the last typed user text, found once and then
+    /// tracked by index, so its cost is the bound and not the session.
+    pub fn history_tail(&self, tail: usize) -> Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        let task = Mutex::new(Task::default());
+        Arc::new(move || {
+            let Ok(messages) = shared.messages.lock() else {
+                return Vec::new();
+            };
+            let start = messages.len().saturating_sub(tail);
+            let (_, window) = messages.split_at(start);
+            let Ok(mut task) = task.lock() else {
+                return window.to_vec();
+            };
+            match task.latest(&messages).filter(|(index, _)| *index < start) {
+                Some((_, message)) => std::iter::once(message)
+                    .chain(window.iter().cloned())
+                    .collect(),
+                None => window.to_vec(),
+            }
+        })
+    }
+
     /// Summed under the lock, not over a history clone; `None` when poisoned, never a fake `0.0`.
     /// The flag is true when a reply came back without usage, so the sum is a lower bound.
     pub fn cost_handle(&self) -> Arc<dyn Fn() -> Option<(f64, bool)> + Send + Sync> {
@@ -297,6 +391,9 @@ impl AgentSession {
             let messages = shared.messages.lock().ok()?;
             let usages = messages.iter().filter_map(|message| match message {
                 AgentMessage::Assistant { usage, .. } => Some(usage),
+                AgentMessage::ToolResult {
+                    usage: Some(usage), ..
+                } => Some(usage),
                 _ => None,
             });
             Some(usages.fold((0.0, false), |(cost, lower_bound), usage| {
@@ -349,6 +446,25 @@ impl AgentSession {
         })
     }
 
+    /// Before anything builds a [`crate::goal::Checker`]. Incident: the broker arrived last, so every
+    /// check held none and ran on the host, while a test that built one by hand stayed green.
+    pub(crate) fn hold_gate(
+        &self,
+        broker: Option<Arc<crate::permission::PermissionBroker>>,
+        wall: crate::wall::Wall,
+    ) {
+        if let Ok(mut slot) = self.permission.lock() {
+            *slot = broker;
+        }
+        self.set_wall(wall);
+    }
+
+    /// Hooks, sandbox and wall for a check this session runs.
+    pub(crate) fn checker(&self, cwd: &std::path::Path) -> crate::goal::Checker {
+        let broker = self.permission.lock().ok().and_then(|slot| slot.clone());
+        crate::goal::Checker::new(self.claude_hooks(cwd), broker, self.wall())
+    }
+
     pub(crate) fn claude_hooks(
         &self,
         cwd: &std::path::Path,
@@ -369,7 +485,7 @@ impl AgentSession {
         let shared = Arc::clone(&self.shared);
         let compactor = self.compactor.clone();
         let cwd = self.tool_cwd.lock().ok().and_then(|slot| slot.clone());
-        let hooks = self.claude_hooks(cwd.as_deref().unwrap_or_else(|| std::path::Path::new(".")));
+        let checker = self.checker(cwd.as_deref().unwrap_or_else(|| std::path::Path::new(".")));
         let (hook, quiet) = (self.heartbeat_hook(), self.deliver_hook());
         Arc::new(move |job, firing| {
             let is_streaming = shared
@@ -393,7 +509,7 @@ impl AgentSession {
                 .and_then(|slot| slot.as_ref().map(Arc::clone))
                 .ok_or("a tick creates a todo, and this session has no todo list")?;
             let fired =
-                crate::schedule::clock::fire_with_hooks(&todos, job, firing, hooks.as_ref())?;
+                crate::schedule::clock::fire_with_hooks(&todos, job, firing, Some(&checker))?;
             let outcome = crate::schedule::clock::outcome(&fired);
             if let Some(wake) =
                 crate::schedule::clock::wake_message(job, &fired, yi_session::now_ms())
@@ -708,6 +824,105 @@ mod tests {
                 if cause == "settled" && usage.output == 3089)
         });
         assert!(settled, "the root's settled usage was dropped");
+        Ok(())
+    }
+
+    fn result(index: usize) -> Result<yi_types::message::AgentMessage, serde_json::Error> {
+        serde_json::from_value(serde_json::json!({
+            "role": "toolResult", "toolCallId": format!("c{index}"), "toolName": "bash",
+            "content": [{"type": "text", "text": "ok"}], "isError": false, "timestamp": 1
+        }))
+    }
+    fn transcript(
+        typed: Option<(usize, &str)>,
+    ) -> Result<Vec<yi_types::message::AgentMessage>, serde_json::Error> {
+        (0..300)
+            .map(|index| match typed {
+                Some((at, text)) if at == index => Ok(crate::session::user_input(text)),
+                _ => result(index),
+            })
+            .collect()
+    }
+    #[test]
+    fn a_judgement_reads_the_task_past_its_tail() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
+        let session = super::AgentSession::new(settle_test_config(), provider);
+        let history = session.history_tail(256);
+        let mut messages = transcript(Some((0, "tidy the vault")))?;
+        session.seed_messages(messages.clone());
+        let seen = history();
+        assert_eq!(seen.len(), 257, "the tail alone carries no typed text");
+        assert_eq!(
+            crate::rules::typed_text(&seen[0]).as_deref(),
+            Some("tidy the vault"),
+            "the task before the tail was dropped"
+        );
+        messages.push(crate::session::user_input("ship it"));
+        session.seed_messages(messages);
+        let seen = history();
+        assert_eq!(seen.len(), 256);
+        assert_eq!(
+            crate::rules::typed_text(&seen[255]).as_deref(),
+            Some("ship it"),
+            "a typed message appended after the first read did not replace the task"
+        );
+        let mut rewritten = transcript(Some((2, "start over")))?;
+        rewritten.push(result(300)?);
+        session.seed_messages(rewritten);
+        let seen = history();
+        assert_eq!(
+            seen.len(),
+            257,
+            "a rewritten transcript kept the stale task"
+        );
+        assert_eq!(
+            crate::rules::typed_text(&seen[0]).as_deref(),
+            Some("start over"),
+            "the task was not re-read after the history was rewritten under it"
+        );
+        Ok(())
+    }
+
+    /// Invariant: the second judgement searches the appended messages only, not the session.
+    #[test]
+    fn a_second_judgement_rescans_no_message_it_already_searched()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let session = super::AgentSession::new(
+            settle_test_config(),
+            Arc::new(crate::provider::ProviderStream::new(None)),
+        );
+        let history = session.history_tail(256);
+        let mut messages = transcript(Some((0, "tidy the vault")))?;
+        session.seed_messages(messages.clone());
+        assert_eq!(
+            history().len(),
+            257,
+            "the first judgement missed the only typed message"
+        );
+        super::forget_examinations();
+        assert_eq!(
+            history().len(),
+            257,
+            "the task was lost between two judgements over one transcript"
+        );
+        assert_eq!(
+            super::examinations(),
+            0,
+            "a judgement read messages the last one had already searched"
+        );
+        messages.push(crate::session::user_input("ship it"));
+        session.seed_messages(messages);
+        let seen = history();
+        assert_eq!(seen.len(), 256);
+        assert_eq!(
+            crate::rules::typed_text(&seen[255]).as_deref(),
+            Some("ship it")
+        );
+        assert_eq!(
+            super::examinations(),
+            1,
+            "the appended message was not the only one read"
+        );
         Ok(())
     }
 }

@@ -38,3 +38,6 @@ path = "src/main.rs"
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { workspace = true }
