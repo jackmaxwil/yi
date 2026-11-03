@@ -9,11 +9,10 @@ use yi_tui::colors::Theme;
 
 use crate::app::App;
 use crate::keys;
-use crate::model::SidebarMode;
 
 /// Invariant: hit widths come from the label builder the bar draws with.
 pub(crate) fn tab_hits(app: &App, bar: Rect) -> Vec<(Rect, usize)> {
-    let mut x = bar.x.saturating_add(hidden_shift(app));
+    let mut x = bar.x;
     let mut hits = Vec::new();
     for (index, tab) in app.state.tabs.iter().enumerate() {
         let width = label_width(&tab_label(index, tab.zoomed));
@@ -21,24 +20,6 @@ pub(crate) fn tab_hits(app: &App, bar: Rect) -> Vec<(Rect, usize)> {
         x = x.saturating_add(width);
     }
     hits
-}
-
-/// The way back from a hidden sidebar: its chord and word, the label the hint row builds too.
-fn hidden_hint(app: &App) -> Option<(&'static str, &'static str)> {
-    (app.state.sidebar == SidebarMode::Hidden)
-        .then(|| keys::hint_parts(keys::Action::ToggleSidebar, app.cmd_hints))
-}
-
-/// The cells the hint and its one-cell gap take, measured without building the label.
-fn hidden_shift(app: &App) -> u16 {
-    hidden_hint(app).map_or(0, shift_of)
-}
-
-fn shift_of((chord, word): (&str, &str)) -> u16 {
-    label_width(chord)
-        .saturating_add(1)
-        .saturating_add(label_width(word))
-        .saturating_add(1)
 }
 
 fn tab_label(index: usize, zoomed: bool) -> String {
@@ -67,8 +48,7 @@ fn label_width(label: &str) -> u16 {
 
 /// The buttons flush right with a one-cell gap, worded when they fit beside the tabs and
 /// glyph-only when they do not.
-pub(crate) fn header_buttons(app: &App, header: Rect, taken: u16) -> Vec<(Rect, keys::Action)> {
-    let taken = taken.max(hidden_shift(app));
+pub(crate) fn header_buttons(header: Rect, taken: u16) -> Vec<(Rect, keys::Action)> {
     let room = header.width.saturating_sub(taken);
     let need = |worded: bool| -> u16 {
         HEADER_BUTTONS
@@ -97,24 +77,6 @@ pub(crate) fn header_buttons(app: &App, header: Rect, taken: u16) -> Vec<(Rect, 
 }
 
 pub(crate) fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let hint = hidden_hint(app);
-    let shift = hint.map_or(0, shift_of);
-    if let Some((chord, word)) = hint {
-        let at = Rect {
-            width: shift.min(area.width),
-            ..area
-        };
-        let style = theme.muted_style().add_modifier(Modifier::BOLD);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(chord, style),
-                Span::raw(" "),
-                Span::styled(word, style),
-                Span::raw(" "),
-            ])),
-            at,
-        );
-    }
     let buttons = app.hits.iter().flat_map(|hits| &hits.header_buttons);
     for (rect, action) in buttons {
         let Some((glyph, word, _)) = HEADER_BUTTONS.iter().find(|(.., a)| a == action) else {
@@ -130,16 +92,11 @@ pub(crate) fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect, theme:
         );
     }
     if app.state.tabs.len() > 1 {
-        render_tabs(app, frame, area, theme, shift);
+        render_tabs(app, frame, area, theme);
     }
 }
 
-fn render_tabs(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme, shift: u16) {
-    let area = Rect {
-        x: area.x.saturating_add(shift),
-        width: area.width.saturating_sub(shift),
-        ..area
-    };
+fn render_tabs(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let mut spans = Vec::new();
     for (index, tab) in app.state.tabs.iter().enumerate() {
         let label = tab_label(index, tab.zoomed);

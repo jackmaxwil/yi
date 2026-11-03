@@ -117,6 +117,23 @@ pub trait KernelVariables: Send + Sync {
 /// where a family member's files live, for `tree://<agent>/<path>` (D164).
 pub trait MemberTrees: Send + Sync {
     fn cwd_of(&self, agent: &str) -> Option<PathBuf>;
+    fn diff_rows(&self, agent: &str) -> Result<Vec<String>, String> {
+        Err(format!("no tree named \"{agent}\" here"))
+    }
+}
+
+/// A reader's or worker's way to its parent's family of trees: weak, as [`ParentTranscript`] is.
+pub struct ParentTrees(pub std::sync::Weak<crate::subagent::SubagentHost>);
+
+impl MemberTrees for ParentTrees {
+    fn cwd_of(&self, agent: &str) -> Option<PathBuf> {
+        MemberTrees::cwd_of(&*self.0.upgrade()?, agent)
+    }
+
+    fn diff_rows(&self, agent: &str) -> Result<Vec<String>, String> {
+        let host = self.0.upgrade().ok_or("the parent session has ended")?;
+        MemberTrees::diff_rows(&*host, agent)
+    }
 }
 
 /// Invariant: an entry is a weak handle on a session's own service, so the map a root shares
@@ -389,6 +406,7 @@ pub struct Resolver {
     family_dir: Option<PathBuf>,
     member_trees: Option<Arc<dyn MemberTrees>>,
     home: Option<PathBuf>,
+    screen: crate::classifier::Screeners,
     log: Arc<FetchLog>,
 }
 
@@ -409,6 +427,7 @@ impl Resolver {
             family_dir: None,
             member_trees: None,
             home: None,
+            screen: crate::classifier::Screeners::default(),
             log: Arc::new(FetchLog::new()),
         }
     }
@@ -477,8 +496,13 @@ impl Resolver {
         self
     }
 
-    pub fn with_mcp_read(mut self, read: Arc<dyn McpResourceRead>) -> Self {
-        self.mcp_read = Some(read);
+    pub fn with_mcp_read(mut self, read: Option<Arc<dyn McpResourceRead>>) -> Self {
+        self.mcp_read = read;
+        self
+    }
+
+    pub fn with_screen(mut self, screen: crate::classifier::Screeners) -> Self {
+        self.screen = screen;
         self
     }
 
@@ -582,6 +606,9 @@ impl Resolver {
             }
             Scheme::Kernel => self.resolve_kernel(url, page),
             Scheme::History => self.resolve_history(url, page),
+            Scheme::External(scheme) if scheme == "tree" && url.path().ends_with('/') => {
+                self.resolve_tree_rows(url, page)
+            }
             _ if page.is_some() => Err(FetchError::BadAddress {
                 url: url.to_string(),
                 detail: "offset and limit page local://, history:// and kernel:// only".to_owned(),
@@ -697,6 +724,15 @@ impl Resolver {
 
     pub(super) fn checkpoint_show(&self) -> Option<&Arc<dyn CheckpointShow>> {
         self.checkpoint_show.as_ref()
+    }
+
+    /// Invariant: what a model reads from an MCP server arrives in a data fence naming the
+    /// address, as every other outside source does; a program's `fetch` value stays bare.
+    pub(super) fn fenced(&self, url: &Url, text: String) -> String {
+        match url.scheme() {
+            Scheme::Mcp => fence_screened(&self.screen, "mcp", &url.to_string(), &text),
+            _ => text,
+        }
     }
 
     pub(super) fn mcp_read(&self) -> Option<&Arc<dyn McpResourceRead>> {

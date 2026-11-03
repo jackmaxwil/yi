@@ -26,7 +26,8 @@ pub fn configure(config: NodeConfig) {
 }
 
 fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let mut command = yi_tools::command(program);
+    let here = std::path::PathBuf::from(".");
+    let mut command = yi_tools::host_command(program, &here).map_err(|error| error.to_string())?;
     command.args(args);
     let deadline = Instant::now().checked_add(timeout);
     let cancelled: yi_tools::CancelFlag =

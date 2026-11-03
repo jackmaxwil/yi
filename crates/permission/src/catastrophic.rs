@@ -152,6 +152,24 @@ pub fn git_dirs(cwd: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// Origin's `HEAD` when set, else `master` when only that exists, else `main`: from the ref files,
+/// since a claim and every turn ask. ponytail: a reftable repository reads as `main`.
+pub fn trunk_of(common: &Path) -> String {
+    let origin_head = read_pointer(&common.join("refs/remotes/origin/HEAD"));
+    if let Some(name) = origin_head
+        .as_deref()
+        .and_then(|text| text.strip_prefix("ref: refs/remotes/origin/"))
+    {
+        return name.to_owned();
+    }
+    let packed = fs::read_to_string(common.join("packed-refs")).unwrap_or_default();
+    let exists =
+        |name: &str| common.join(name).is_file() || packed.lines().any(|line| line.ends_with(name));
+    let main = exists("refs/heads/main") || exists("refs/remotes/origin/main");
+    let master = exists("refs/heads/master") || exists("refs/remotes/origin/master");
+    if master && !main { "master" } else { "main" }.to_owned()
+}
+
 /// Checked, never believed: without this `gitdir: /` reads as a writable root (D205).
 fn git_dir_at(path: &Path) -> Option<PathBuf> {
     let path = lexical_normalize(path);
@@ -352,7 +370,10 @@ pub struct ReadGate {
     /// Paths no wall covers, with all under them: a session's family spills and own transcript
     /// under the roots its wall holds (#971).
     spared: Vec<PathBuf>,
+    hold: Option<OpenHold>,
 }
+
+pub type OpenHold = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 impl ReadGate {
     pub fn new(context: &CatastrophicContext) -> Self {
@@ -374,6 +395,19 @@ impl ReadGate {
             tree_ids,
             ids,
             spared: Vec::new(),
+            hold: None,
+        }
+    }
+
+    /// A test seam: `hold` runs inside each [`Self::open`] and [`Self::open_write`] as `held`
+    /// does in [`Self::open_after`], so a test forces a swap inside a tool. Production sets none.
+    pub fn hold_opens(&mut self, hold: Option<OpenHold>) {
+        self.hold = hold;
+    }
+
+    fn held(&self) {
+        if let Some(hold) = &self.hold {
+            hold();
         }
     }
 
@@ -401,7 +435,7 @@ impl ReadGate {
     /// Opens the resolved `path`, judged with `walls`, with no link left to follow: the file judged
     /// is the file opened, so a link swapped in after an earlier check reaches nothing (#890).
     pub fn open(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
-        self.open_after(path, walls, &mut || ())
+        self.open_after(path, walls, &mut || self.held())
     }
 
     /// A test seam: [`Self::open`] with `held` run between the judgement and the act, the one
@@ -419,7 +453,7 @@ impl ReadGate {
     /// [`Self::open`] to write, under the destroy gate too: untruncated, or created only where
     /// nothing stands, not even a dangling link; the caller truncates through the handle.
     pub fn open_write(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
-        self.open_write_after(path, walls, &mut || ())
+        self.open_write_after(path, walls, &mut || self.held())
     }
 
     /// A test seam: [`Self::open_write`] with `held` run before each judged open, as in

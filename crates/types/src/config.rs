@@ -62,6 +62,7 @@ pub struct UserConfig {
     pub skills: Option<SkillsConfig>,
     pub classifier: Option<ClassifierConfig>,
     pub permissions: Option<PermissionsConfig>,
+    pub sandbox: Option<SandboxConfig>,
     pub mail: Option<MailConfig>,
     /// `open`: the apps a console message's Open in submenu lists, each a name and a command
     /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
@@ -111,6 +112,24 @@ pub struct PermissionsConfig {
     pub allow: Option<Vec<String>>,
 }
 
+/// `egress`: hosts a contained command reaches unasked, beside the seed list. Read from the home
+/// config alone, so a tree cannot name its own exfiltration host.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SandboxConfig {
+    pub egress: Option<Vec<crate::egress::Domain>>,
+    pub host_recipes: Option<Vec<HostRecipe>>,
+}
+
+/// `call`: words a command starts with, run outside the sandbox unasked while every `pin` (a path
+/// in the tree) matches the trunk on origin. Read from the home config alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostRecipe {
+    pub call: String,
+    pub pin: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModeName {
@@ -119,8 +138,8 @@ pub enum ModeName {
     Yolo,
 }
 
-/// `classifier`: the sidecar's URL, one decision's deadline, and the confidence it points at
-/// (0.9 when unset). The bearer is `LAYA_API_KEY`.
+/// `classifier`: the endpoint's URL, one decision's deadline, and the confidence it points at
+/// (0.9 when unset). The bearer is the OpenRouter key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClassifierConfig {
