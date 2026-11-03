@@ -1,0 +1,27 @@
+From 16991ef417f2f1f5ab7ae4029ab3a4c373360907 Mon Sep 17 00:00:00 2001
+From: Pranav Chavan <pranavchavan2024.it@mmcoe.edu.in>
+Date: Wed, 28 Oct 2026 10:04:43 +0530
+Subject: [PATCH] Enhance README with project details and objectives
+
+Added project description and objectives to README
+---
+ README | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/README b/README
+index 980a0d5f1..a5d0b7d52 100644
+--- a/README
++++ b/README
+@@ -1 +1,12 @@
+ Hello World!
++## About This Project
++
++This project demonstrates the use of GitHub
++for version control and collaboration.
++
++### Objectives
++- Track project changes
++- Report issues
++- Collaborate with developers
++- Review code changes
++```

@@ -3,9 +3,11 @@ use std::error::Error;
 
 use crate::scratch::Scratch;
 
+use yi_runtime::schedule::clock::wait_schedule_in;
 use yi_runtime::schedule::{
     JobSpec, ONE_MINUTE_MS, RunOutcome, SessionActivity, Zone, claim_due_in_state, new_job,
-    parse_iso_ms, parse_schedule, parse_schedule_in, record_dispatch_result_in_state, should_defer,
+    parse_local_ms, parse_schedule, parse_schedule_in, record_dispatch_result_in_state,
+    should_defer,
 };
 use yi_types::schedule::{CronSchedule, DeliveryMode, Job, JobStatus, ScheduleKind, ScheduleState};
 
@@ -205,16 +207,84 @@ fn claim_leaves_a_busy_session_due() {
     );
 }
 
+/// Dies with a `-08:00` refused or read as UTC: GLM wrote one on every timed reminder, and the
+/// refusal sent it to a blocker nothing fires, or to a naive time that fired at once.
 #[test]
-fn iso_parse_accepts_utc_rejects_offsets() {
-    assert_eq!(parse_iso_ms("1970-01-02"), Some(86_400_000));
-    assert_eq!(parse_iso_ms("2026-08-24T00:00:00Z"), Some(MONDAY_MIDNIGHT));
+fn an_offset_names_the_instant_and_a_bad_offset_is_refused() {
+    let utc = utc_ms("2026-11-02T17:00:00Z");
+    assert!(utc.is_some());
+    for text in [
+        "2026-11-02T09:00:00-08:00",
+        "2026-11-02T09:00-08:00",
+        "2026-11-02T09:00:00-0800",
+        "2026-11-02T09:00:00-08",
+        "2026-11-02T22:30:00+05:30",
+    ] {
+        assert_eq!(utc_ms(text), utc, "{text}");
+    }
+    for text in [
+        "2026-11-02T09:00:00-24:00",
+        "2026-11-02T09:00:00-08:60",
+        "2026-11-02T09:00:00-8",
+        "2026-11-02T09:00:00−08:00",
+        "2026-11-02T09:00:00+д",
+    ] {
+        assert_eq!(utc_ms(text), None, "{text}");
+    }
+}
+
+/// Dies with a naive time read as UTC: at 19:48 in Los Angeles, "20:18" was already past and the
+/// reminder fired at once. Each side of the 2026-11-01 change has its own offset.
+#[test]
+fn a_time_naming_no_offset_is_wall_time_in_the_local_zone() -> Result<(), String> {
+    let zone = los_angeles()?;
+    let cases = [
+        ("2026-11-02T09:00:00", "2026-11-02T17:00:00Z"),
+        ("2026-10-31T09:00:00", "2026-10-31T16:00:00Z"),
+        ("2026-11-02", "2026-11-02T08:00:00Z"),
+    ];
+    for (local, utc) in cases {
+        assert_eq!(parse_local_ms(local, &zone), Some(instant(utc)?), "{local}");
+    }
     assert_eq!(
-        parse_iso_ms("2026-08-24T01:30Z"),
+        parse_local_ms("2026-11-02T09:00:00Z", &zone),
+        Some(instant("2026-11-02T09:00:00Z")?),
+        "a named offset is not local"
+    );
+    let now = instant("2026-11-02T03:48:00Z")?;
+    let (_, next) = parse_schedule_in("at 2026-11-01T20:18:00", now, &zone)?;
+    assert_eq!(next, instant("2026-11-02T04:18:00Z")?);
+    Ok(())
+}
+
+/// Dies with `wait_schedule` back on the UTC parser: a reminder the model wrote as a bare time
+/// would arm eight hours off in Los Angeles, and every other clock wait in the suite spells `Z`.
+#[test]
+fn a_reminder_on_a_naive_time_arms_at_its_local_instant() -> Result<(), String> {
+    let zone = los_angeles()?;
+    let now = instant("2026-11-02T03:48:00Z")?;
+    let (schedule, next) = wait_schedule_in("clock://at 2026-11-02T09:00:00", now, &zone)?;
+    assert_eq!(schedule.kind, ScheduleKind::Once);
+    assert_eq!(next, instant("2026-11-02T17:00:00Z")?);
+    let (_, named) = wait_schedule_in("clock://at 2026-11-02T09:00:00Z", now, &zone)?;
+    assert_eq!(
+        named,
+        instant("2026-11-02T09:00:00Z")?,
+        "an offset is not local"
+    );
+    Ok(())
+}
+
+#[test]
+fn iso_parse_accepts_utc_rejects_nonsense() {
+    assert_eq!(utc_ms("1970-01-02"), Some(86_400_000));
+    assert_eq!(utc_ms("2026-08-24T00:00:00Z"), Some(MONDAY_MIDNIGHT));
+    assert_eq!(
+        utc_ms("2026-08-24T01:30Z"),
         Some(MONDAY_MIDNIGHT + 90 * ONE_MINUTE_MS)
     );
-    assert_eq!(parse_iso_ms("not a date"), None);
-    assert_eq!(parse_iso_ms("2026-13-01"), None);
+    assert_eq!(utc_ms("not a date"), None);
+    assert_eq!(utc_ms("2026-13-01"), None);
 }
 
 /// A wait on a recurring address (`clock://every 1h`) means the next tick, not every tick.
@@ -277,7 +347,12 @@ fn a_deferred_tick_stays_owed_and_retries_before_its_next_tick() {
 }
 
 fn instant(iso: &str) -> Result<u64, String> {
-    parse_iso_ms(iso).ok_or_else(|| format!("bad instant {iso}"))
+    utc_ms(iso).ok_or_else(|| format!("bad instant {iso}"))
+}
+
+/// The parser with the default zone, which is UTC: a test naming an instant means UTC.
+fn utc_ms(text: &str) -> Option<u64> {
+    parse_local_ms(text, &Zone::default())
 }
 
 /// tzdata 2026c's compiled Los Angeles zone, so no case reads the runner's own zone.
