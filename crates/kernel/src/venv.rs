@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::bootstrap::{
-    BootstrapOptions, DEFAULT_RLM_EXTRA_UV_ARGS, PYTHON_SKILLS, RUNTIME_READY_CHECK,
-    default_runtime_source_dir, default_skills_source_dir, env_path,
+    BOOTSTRAP_SCHEMA, BootstrapOptions, DEFAULT_RLM_EXTRA_UV_ARGS, IPYKERNEL_REQUIREMENT,
+    PYTHON_SKILLS, STATE_SNAPSHOT_REQUIREMENT, default_runtime_source_dir,
+    default_skills_source_dir, env_path,
 };
 use crate::lock::{BOOTSTRAP_LOCK_NAME, try_bootstrap_lock};
 
@@ -35,11 +36,10 @@ fn dependency_lists(runtime_dir: &Path, skills_dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Incident: one `~/.yi/kernel-venv` served every commit, so two sessions whose ready checks
-/// differed rebuilt it back and forth. What the dependency venv installs names it now.
-pub(crate) fn venv_name(check: &str, extras: &[&str], dependencies: &[String]) -> String {
-    let mut hash = Sha256::new();
-    hash.update(check.as_bytes());
+/// Incident: one `~/.yi/kernel-venv` served every commit, and a changed pin rebuilt it in place
+/// under the sessions importing from it. What the dependency venv installs names it now.
+pub(crate) fn venv_name(pins: &str, extras: &[&str], dependencies: &[String]) -> String {
+    let mut hash = Sha256::new_with_prefix(pins.as_bytes());
     for extra in extras {
         hash.update(b"\0");
         hash.update(extra.as_bytes());
@@ -59,7 +59,7 @@ pub(crate) fn venv_name(check: &str, extras: &[&str], dependencies: &[String]) -
 
 fn default_name(runtime_dir: &Path, skills_dir: &Path) -> String {
     venv_name(
-        RUNTIME_READY_CHECK,
+        &format!("{BOOTSTRAP_SCHEMA}\0{IPYKERNEL_REQUIREMENT}\0{STATE_SNAPSHOT_REQUIREMENT}"),
         &DEFAULT_RLM_EXTRA_UV_ARGS,
         &dependency_lists(runtime_dir, skills_dir),
     )
@@ -218,12 +218,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_dependency_venv_is_named_by_check_extras_and_dependency_list() {
+    fn the_dependency_venv_is_named_by_pins_extras_and_dependency_list() {
         let lists = |deps: &str| vec![format!(" = [{deps}")];
         assert_ne!(
-            venv_name("check-a", &[], &[]),
-            venv_name("check-b", &[], &[]),
-            "two commits whose ready check differs must not share one venv"
+            venv_name("2\0ipykernel>=7,<8\0dill", &[], &[]),
+            venv_name("3\0ipykernel>=7,<8\0dill", &[], &[]),
+            "a bumped schema or pin must build a new venv, never rebuild the live one in place"
         );
         assert_ne!(
             venv_name("check", &["pandas"], &[]),

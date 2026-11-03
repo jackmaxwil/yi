@@ -11,8 +11,8 @@ use crate::venv::{overlay_dir, resolve_writable_venv_dir, restart_sweep_clock, s
 pub const BOOTSTRAP_SCHEMA: u64 = 2;
 const PYTHON_VERSION: &str = "3.11";
 /// Incident: host replies ride ipykernel internals (`kernel.control_handlers`), unpinned.
-const IPYKERNEL_REQUIREMENT: &str = "ipykernel>=7,<8";
-const STATE_SNAPSHOT_REQUIREMENT: &str = "dill";
+pub(crate) const IPYKERNEL_REQUIREMENT: &str = "ipykernel>=7,<8";
+pub(crate) const STATE_SNAPSHOT_REQUIREMENT: &str = "dill";
 pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 14] = [
     "requests",
     "httpx",
