@@ -138,20 +138,6 @@ impl HostRegistry {
             })
         });
     }
-
-    /// `mcp.config` returns `{}` (Python raises its own KeyError), `mcp.refresh` throws, and
-    /// `mcp.begin_login` is never registered: a 401 must not open a browser.
-    pub fn register_mcp_stubs(&mut self) {
-        self.register("mcp.config", |_payload| Box::pin(async { Ok(Map::new()) }));
-        self.register("mcp.refresh", |_payload| {
-            Box::pin(async {
-                Err(
-                    "mcp.refresh is unavailable: run `yi mcp login <server>` on the host"
-                        .to_owned(),
-                )
-            })
-        });
-    }
 }
 
 fn job_id_of(payload: &Map<String, Value>, request: &str) -> Result<yi_tools::JobId, String> {
@@ -1209,8 +1195,7 @@ mod tests {
     }
 
     fn service() -> KernelService {
-        let mut registry = HostRegistry::default();
-        registry.register_mcp_stubs();
+        let registry = HostRegistry::default();
         KernelService::new(KernelServiceOptions {
             cwd: std::env::temp_dir(),
             home: std::env::var_os("HOME")

@@ -269,9 +269,12 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
-  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s.
+  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s. A
+  server wait past 60 s or `x-should-retry: false` ends the turn stamped `retry refused:`, which
+  the loop reads as final; `x-should-retry: true` retries any status.
 - `leak::recover_in` in both mappers' `finish` turns each well-formed text `<tool_call>` block
-  into a `ToolCall` (id `leak-N`) and `Stop` into `ToolUse`.
+  outside a fence or inline span into a `ToolCall` (id `leak-{clock}-{message}-{n}`) and `Stop`
+  into `ToolUse`.
 - Stable cached prefix: `read`'s description fixed per session, content-hashed fence ids, a
   minute-cached `time:`; adapters set `cache_control`, `prompt_cache_key`, cache retention.
 - yi-oauth: PKCE S256 from `/dev/urandom`, a `127.0.0.1` loopback, `login`/`logout`; tokens in
@@ -693,11 +696,11 @@ A persistent IPython process per session that reaches the host only through host
 
 | owner | verbs |
 |---|---|
-| `kernel.rs` | `exec.spawn/tail/poll/kill/release` (the `bash()` handle), `mcp.config` (`{}`), `mcp.refresh` (error) |
+| `kernel.rs` | `exec.spawn/tail/poll/kill/release` (the `bash()` handle) |
 | `wiring.rs`, `memory/mod.rs`, `history.rs` | `fetch`, `history.grep`, `history.search`, `compact.run` (schedules only), `compact.status`; `memory.save/read/search/forget` |
 | `subagent.rs` | `rlm.run` (returns at admission), `rlm.result/wait/status/list_subagents/delete_subagent/merge_worktree/discard_worktree/find_models`, `model.info`, parent-side `agent_message.send/request/list_agents` |
 | `mailbox.rs`, `lease.rs`, `subagent/service.rs` | child-side `agent_message.send/request/list_agents`, `rlm.receive`; `rlm.interrupt`, `rlm.revoke`; `rlm.service` |
-| `schedule/mod.rs`, `goal/mod.rs`, `plan/mod.rs`, `plan/request.rs` | `rlm_heartbeat.list/create/update/delete`; `goal.get/create/update`; `plan.get`, `plan.op` |
+| `schedule/mod.rs`, `goal/mod.rs`, `plan/mod.rs`, `plan/request.rs` | `rlm_heartbeat.list/create/update/delete`; `goal.get/create/update`; `plan.op` |
 | `kernel_tools.rs` | `tool.list` (the session's table, `ipython` and a root's `ask_user` named as excluded), `tool.call {name, args, cell}` |
 
 - `tool.call` runs the session's own adapter, found at call time, so rules, wall and broker judge
@@ -958,7 +961,7 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 - Shapes: `.yi/plans/<root>/ops.jsonl` (gitignored) of `JournalRecord`
   ([`ledger.rs`](../crates/types/src/plan/ledger.rs)), `.yi/plans/<id>/{plan.json, artifacts/}`,
   `.yi/plans/.lock` (an OS file lock naming its holder's pid), `.yi/schemas/plan.schema.json`. Surfaces: the `plan` tool, host requests
-  `plan.get` and `plan.op`, RPC `plan`, `yi plan`. The session holds `Fact::Plan` as a pointer.
+  `plan.op`, RPC `plan`, `yi plan`. The session holds `Fact::Plan` as a pointer.
 - Settled by: D192, D193, D223, D313.
 
 ### 13.1 Contracts
