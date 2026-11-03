@@ -1194,6 +1194,9 @@ async fn a_user_rule_stops_a_heartbeat_source_it_names() -> TestResult {
 
 /// #1001: with no Seatbelt (Linux) a walled session's kernel and its `bash()` jobs would run with
 /// no profile, so a cell would meet no wall at all; it never boots, and the cell says why.
+///
+/// Yolo: an uncontained Python cell is the permission layer's question in auto, and asking there
+/// stops the call before the wall can answer, hiding what this test defends.
 #[tokio::test]
 async fn a_walled_kernel_with_no_sandbox_never_boots() -> TestResult {
     if yi_tools::Sandbox::available() {
@@ -1205,8 +1208,8 @@ async fn a_walled_kernel_with_no_sandbox_never_boots() -> TestResult {
     unsafe { std::env::set_var("HOME", &home) };
     let project = root.join("project");
     std::fs::create_dir_all(&project)?;
-    let auto = yi_permission::PermissionMode::Auto;
-    let (session, provider) = wired_child(&root, &project, juror_wall(&project), auto, None);
+    let yolo = yi_permission::PermissionMode::Yolo;
+    let (session, provider) = wired_child(&root, &project, juror_wall(&project), yolo, None);
     let cell = vec![("ipython", args(&[("code", "print('cell ' + 'ran')")]))];
     let seen = run_turns(&session, &provider, cell).await?;
     let (text, is_error) = seen.first().ok_or("no cell")?;

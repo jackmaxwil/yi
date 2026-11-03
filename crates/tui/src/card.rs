@@ -148,8 +148,8 @@ pub fn card(
             rows.push(Line::from(spans));
         }
     }
-    let ground = theme.user_style();
     for row in body {
+        let ground = theme.user_style();
         let used = line_width(&row) + INSET.len();
         let mut spans = vec![Span::styled(INSET, ground)];
         spans.extend(

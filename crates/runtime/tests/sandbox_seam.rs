@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 
-use crate::kernel_sandbox::uncovered;
+use crate::kernel_sandbox::{seatbelt, uncovered};
 use crate::scratch;
 use scratch::Scratch;
 
@@ -76,7 +76,7 @@ pub(crate) fn results(session: &AgentSession) -> Vec<String> {
 }
 
 /// One turn of queued bash calls under `sandbox`, with no asker: a question reads as a denial.
-async fn run_contained(
+pub(crate) async fn run_contained(
     project: &Path,
     sandbox: Sandbox,
     commands: &[&str],
@@ -85,7 +85,7 @@ async fn run_contained(
 }
 
 /// `commands` run from `holder` under a broker built for `project`, every question approved once.
-async fn run_approved(
+pub(crate) async fn run_approved(
     project: &Path,
     holder: &Path,
     sandbox: Sandbox,
@@ -208,6 +208,7 @@ fn confined_to(project: &Path) -> Sandbox {
         writable: vec![project.to_path_buf()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     }
@@ -242,9 +243,7 @@ fn dogfood(tmp: &Path, refused: &Path) -> String {
 /// because containment already refused it once.
 #[tokio::test]
 async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let root = Scratch::new("yi-seam")?;
     let project = root.join("project");
     let home = root.join("home");
@@ -282,9 +281,7 @@ async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
 /// refusal never matched and the second attempt was contained again instead of asking.
 #[tokio::test]
 async fn a_refused_program_asks_even_when_the_retry_text_differs() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let root = Scratch::new("yi-seam-scope")?;
     let project = root.join("project");
     let home = root.join("home");
@@ -310,9 +307,7 @@ async fn a_refused_program_asks_even_when_the_retry_text_differs() -> TestResult
 /// refused the redirect into the home directory.
 #[tokio::test]
 async fn the_hint_names_the_refused_path_not_the_first_program() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, sandbox, probe) = workspace("yi-seam-path")?;
     let tmp = root.join("yidog");
     std::fs::create_dir_all(&tmp)?;
@@ -332,9 +327,7 @@ async fn the_hint_names_the_refused_path_not_the_first_program() -> TestResult {
 /// again; the memory follows the refused path instead.
 #[tokio::test]
 async fn a_retry_of_the_refused_write_asks_and_an_unrelated_echo_does_not() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, sandbox, probe) = workspace("yi-seam-retry")?;
     let tmp = root.join("yidog");
     std::fs::create_dir_all(&tmp)?;
@@ -363,9 +356,7 @@ async fn a_retry_of_the_refused_write_asks_and_an_unrelated_echo_does_not() -> T
 /// `tail` exits 0, so the refusal of `touch` before it hid behind the pipe's exit code.
 #[tokio::test]
 async fn a_refusal_under_a_zero_exit_pipe_is_detected() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-seam-pipe")?;
     let refused = probe.join(format!("yidog_touch-{}", std::process::id()));
     let command = format!("touch {} | tail -1", refused.display());
@@ -383,9 +374,7 @@ async fn a_refusal_under_a_zero_exit_pipe_is_detected() -> TestResult {
 /// ran contained again while the hint promised a question.
 #[tokio::test]
 async fn a_retry_spelled_through_home_or_python_asks() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (root, project, sandbox, probe) = workspace("yi-seam-spell")?;
     let home = std::env::var_os("HOME").map(PathBuf::from);
     // Under a tmp HOME the probe is `/Users/Shared`, which no home spelling reaches.
@@ -420,9 +409,7 @@ async fn a_retry_spelled_through_home_or_python_asks() -> TestResult {
 /// reading the reduced text found nothing and the retry ran contained again.
 #[tokio::test]
 async fn a_refusal_deep_in_long_output_is_remembered() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-seam-long")?;
     let refused = probe.join(format!("yidog_long-{}.log", std::process::id()));
     let noise = |from: u32, to: u32| {
@@ -475,9 +462,7 @@ impl Drop for Probe {
 /// second path in the same call, one nobody was asked about, was written too.
 #[tokio::test]
 async fn an_approved_retry_stays_contained_and_widens_by_the_refused_dir() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-seam-widen")?;
     let (a, b) = (Probe::new(&probe, "a")?, Probe::new(&probe, "b")?);
     let (first, second) = (a.0.join("a"), b.0.join("b"));
@@ -507,9 +492,7 @@ async fn an_approved_retry_stays_contained_and_widens_by_the_refused_dir() -> Te
 /// The demo of #600: an approved `rm` removes what it names in the tree and nothing outside.
 #[tokio::test]
 async fn an_approved_destructive_command_runs_contained() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-seam-rm")?;
     let outside = Probe::new(&probe, "rm")?;
     let (victim, escape) = (project.join("victim"), outside.0.join("escape"));
@@ -530,9 +513,7 @@ async fn an_approved_destructive_command_runs_contained() -> TestResult {
 /// was a pre-check on paths the command spelled, and no profile carried it.
 #[tokio::test]
 async fn a_walled_juror_cannot_write_the_tree_from_an_approved_bash() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, _probe) = workspace("yi-seam-wall")?;
     let victim = project.join("victim");
     std::fs::write(&victim, "v")?;
@@ -560,9 +541,7 @@ async fn a_walled_juror_cannot_write_the_tree_from_an_approved_bash() -> TestRes
 /// so the child's contained bash could not write its own lane.
 #[tokio::test]
 async fn a_worktree_childs_contained_bash_writes_its_own_lane() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-seam-lane")?;
     let lane = Probe::new(&probe, "lane")?;
     let made = lane.0.join("made");
@@ -610,9 +589,7 @@ fn allow_rule(pattern: &str) -> Result<BrokerSetup, Box<dyn Error>> {
 /// Contained, its loopback listener still works and its write outside the tree does not.
 #[tokio::test]
 async fn an_allowed_cargo_test_binds_loopback_and_stays_contained() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-seam-cargo")?;
     let outside = Probe::new(&probe, "cargo")?;
     let escape = outside.0.join("escape");
@@ -636,9 +613,7 @@ async fn an_allowed_cargo_test_binds_loopback_and_stays_contained() -> TestResul
 /// only the spelling was judged.
 #[tokio::test]
 async fn an_allowed_command_cannot_write_outside_the_tree() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-seam-sort")?;
     let outside = Probe::new(&probe, "sort")?;
     let escape = outside.0.join("escape");
@@ -657,9 +632,7 @@ async fn an_allowed_command_cannot_write_outside_the_tree() -> TestResult {
 /// refused contained call does, rather than failing the same way again.
 #[tokio::test]
 async fn a_refused_allowed_call_asks_the_next_time() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-seam-ruled")?;
     let outside = Probe::new(&probe, "ruled")?;
     let escape = outside.0.join("escape");
@@ -689,9 +662,7 @@ async fn a_refused_allowed_call_asks_the_next_time() -> TestResult {
 /// `--yolo` granted everything: evals and harbor run there, and nothing contains them.
 #[tokio::test]
 async fn yolo_still_runs_uncontained() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, probe) = workspace("yi-seam-yolo")?;
     let outside = Probe::new(&probe, "yolo")?;
     let escape = outside.0.join("escape");
@@ -709,9 +680,7 @@ async fn yolo_still_runs_uncontained() -> TestResult {
 /// in the tree read it through an allowed `cat`.
 #[tokio::test]
 async fn an_allowed_read_cannot_open_a_walled_file_by_another_spelling() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, _probe) = workspace("yi-seam-walled")?;
     let secret = project.join("secret.txt");
     std::fs::write(&secret, "walled-canary")?;
@@ -738,9 +707,7 @@ async fn an_allowed_read_cannot_open_a_walled_file_by_another_spelling() -> Test
 /// `cat key`, found no store in it, and allowed it.
 #[tokio::test]
 async fn an_allowed_read_cannot_open_a_credential_store_through_a_link() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let root = Scratch::new("yi-seam-cred")?;
     let (project, home) = (root.join("project"), root.join("home"));
     std::fs::create_dir_all(&project)?;
@@ -762,9 +729,7 @@ async fn an_allowed_read_cannot_open_a_credential_store_through_a_link() -> Test
 /// that must leave the sandbox still runs, and its result says it ran outside.
 #[tokio::test]
 async fn an_allowed_network_command_says_it_ran_outside() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, _probe) = workspace("yi-seam-host")?;
     let results = run_held(
         &project,
@@ -802,9 +767,7 @@ pub(crate) fn always_once() -> (Asker, Arc<std::sync::atomic::AtomicUsize>) {
 /// `python3 -c` nobody was asked about ran outside too.
 #[tokio::test]
 async fn always_on_a_pathless_refusal_passes_that_exact_command() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, _probe) = workspace("yi-seam-pass")?;
     std::fs::write(
         project.join("nest.py"),
@@ -847,9 +810,7 @@ async fn always_on_a_pathless_refusal_passes_that_exact_command() -> TestResult 
 /// (review of #933, mutant M10).
 #[tokio::test]
 async fn a_pathless_refusal_of_a_configured_allow_asks_the_next_time() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, sandbox, _probe) = workspace("yi-seam-pathless")?;
     let nested = "sandbox-exec -p '(version 1)(allow default)' true && echo nested-ok";
     let results = run_held(
@@ -924,9 +885,7 @@ async fn run_walled_juror(
 /// board another family makes while a command runs is walled from it too.
 #[tokio::test]
 async fn a_walled_command_reads_its_familys_spill_and_no_dir_made_while_it_runs() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let root = Scratch::new("yi-seam-spill-race")?;
     let own_spill = family_spills(&root.join("home"), "juror").join("own.txt");
     std::fs::create_dir_all(own_spill.parent().ok_or("no parent")?)?;
@@ -965,9 +924,7 @@ async fn a_walled_command_reads_its_familys_spill_and_no_dir_made_while_it_runs(
 /// and failed to compile near 1000; walling the root costs the same at any count.
 #[tokio::test]
 async fn a_thousand_spill_dirs_leave_a_contained_command_fast() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let root = Scratch::new("yi-seam-spill-scale")?;
     for index in 0..1000 {
         std::fs::create_dir_all(root.join(format!("home/.yi/spills/s{index}")))?;
@@ -1111,9 +1068,7 @@ fn refused_outright(retry: &str) -> bool {
 
 #[tokio::test]
 async fn a_walled_retry_an_asker_approves_never_runs_outside_the_sandbox() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let allow: Asker = Arc::new(|_| AskOutcome::AllowOnce);
     let retry = walled_retry(Some(allow), None).await?;
     assert!(refused_outright(&retry), "an asker ran it outside: {retry}");
@@ -1122,9 +1077,7 @@ async fn a_walled_retry_an_asker_approves_never_runs_outside_the_sandbox() -> Te
 
 #[tokio::test]
 async fn a_walled_retry_the_auto_reviewer_approves_never_runs_outside_the_sandbox() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![faux_assistant_message(
         vec![yi_ai::faux::faux_text("allow")],
@@ -1147,9 +1100,7 @@ async fn a_walled_retry_the_auto_reviewer_approves_never_runs_outside_the_sandbo
 /// wall itself named a folder above them, so a spelling the wall's text check misses read them.
 #[tokio::test]
 async fn a_glob_under_a_walled_ancestor_reaches_no_spared_spill() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, _, probe) = workspace("yi-seam-walled-ancestor")?;
     let home = probe.join(format!("yi-walled-ancestor-{}", std::process::id()));
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
@@ -1218,9 +1169,7 @@ async fn own_reads_under(
 /// meets Seatbelt alone, so the text check never refuses it first.
 #[tokio::test]
 async fn a_walled_call_never_leaves_the_sandbox_even_allowed() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
+    seatbelt()?;
     let (_root, project, _, probe) = workspace("yi-seam-walled-leaving")?;
     let home = probe.join(format!("yi-walled-leaving-{}", std::process::id()));
     let other = home.join(".yi/spills/author/0123.txt");
@@ -1266,6 +1215,38 @@ async fn a_walled_call_never_leaves_the_sandbox_even_allowed() -> TestResult {
         (true, false),
         "Seatbelt, not the text check: {}",
         ran[3]
+    );
+    Ok(())
+}
+
+/// Dies with the hook unset: a contained `curl` would have no network and nothing naming why.
+#[tokio::test]
+async fn a_contained_bash_leaves_through_its_proxy_and_hears_what_it_refused() -> TestResult {
+    seatbelt()?;
+    let (_root, project, sandbox, _) = workspace("egress")?;
+    let results = run_contained(
+        &project,
+        sandbox,
+        &[
+            "curl -sS --max-time 20 https://example.invalid/; echo \"curl=$?\"",
+            "curl -sS --max-time 5 --noproxy '*' http://1.1.1.1/; echo \"raw=$?\"",
+        ],
+    )
+    .await?;
+    let through = results.first().ok_or("no result")?;
+    assert!(
+        through.contains("[egress: refused example.invalid"),
+        "{through}"
+    );
+    assert!(through.contains("403"), "{through}");
+    assert!(
+        !through.contains("yi:"),
+        "the token reached the model: {through}"
+    );
+    let raw = results.get(1).ok_or("no raw result")?;
+    assert!(
+        !raw.contains("raw=0"),
+        "a raw connect left the sandbox: {raw}"
     );
     Ok(())
 }

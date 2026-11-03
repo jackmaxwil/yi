@@ -89,7 +89,7 @@ fn sidecar_on(
                 let _ = hold.recv();
             }
             let reply = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = reader.get_mut().write_all(reply.as_bytes());
@@ -129,7 +129,7 @@ fn counting_sidecar(
             let mut sent = vec![0; length];
             let _ = reader.read_exact(&mut sent);
             let reply = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = reader.get_mut().write_all(reply.as_bytes());
@@ -215,12 +215,21 @@ fn delivered(rig: &Rig) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Below the threshold the classifier only records: a paraphrase no trigger word matches is
-/// journaled with its answer, and nothing points.
-#[tokio::test(flavor = "multi_thread")]
-async fn below_the_threshold_a_decision_is_recorded_and_nothing_fires() -> TestResult {
-    let (port, served) = sidecar(vec![LAND])?;
-    let rig = rig(format!("http://127.0.0.1:{port}"), 0.95)?;
+/// One typed paraphrase no trigger word matches, answered by `body`: the decision, what was
+/// delivered, and the endpoint thread holding the request it was sent.
+async fn land(
+    body: &'static str,
+    threshold: f64,
+) -> Result<
+    (
+        ClassifyRecord,
+        Vec<String>,
+        std::thread::JoinHandle<Vec<String>>,
+    ),
+    Box<dyn Error>,
+> {
+    let (port, served) = sidecar(vec![body])?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), threshold)?;
     assert!(
         rig.engine
             .observe_user(&typed("land this branch once it is green"))
@@ -229,6 +238,14 @@ async fn below_the_threshold_a_decision_is_recorded_and_nothing_fires() -> TestR
     let record = next(&rig, Duration::from_secs(5))
         .await
         .ok_or("no decision recorded")?;
+    Ok((record, delivered(&rig), served))
+}
+
+/// Below the threshold the classifier only records: a paraphrase no trigger word matches is
+/// journaled with its answer, and nothing points.
+#[tokio::test(flavor = "multi_thread")]
+async fn below_the_threshold_a_decision_is_recorded_and_nothing_fires() -> TestResult {
+    let (record, delivered, served) = land(LAND, 0.95).await?;
     assert_eq!(
         (
             record.answer.as_deref(),
@@ -242,7 +259,7 @@ async fn below_the_threshold_a_decision_is_recorded_and_nothing_fires() -> TestR
         record.message,
         yi_runtime::classifier::message_id("land this branch once it is green")
     );
-    assert!(delivered(&rig).is_empty());
+    assert!(delivered.is_empty());
     let asked = served.join().map_err(|_| "sidecar thread")?;
     let body = asked.first().ok_or("one request")?;
     assert!(
@@ -603,7 +620,7 @@ fn a_destructive_command_needs_the_stricter_bar() -> TestResult {
 fn a_command_that_needs_the_network_needs_the_stricter_bar() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.95)])?;
     let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
-    let outcome = run(&gate, "git push origin main");
+    let outcome = run(&gate, "git submodule update --init");
     assert!(!outcome.allowed, "{}", outcome.reason);
     let record = gate.records.recv_timeout(Duration::from_secs(1))?;
     assert_eq!(record.answer.as_deref(), Some("undecided"));
@@ -1080,6 +1097,300 @@ fn approval_is_instant_unless_the_config_says_otherwise() -> TestResult {
         )?),
         None,
         "0 kept its old meaning: the person decides"
+    );
+    Ok(())
+}
+
+fn jev(
+    port: u16,
+    thresholds: yi_runtime::classifier::Thresholds,
+) -> (yi_runtime::classifier::Approver, Receiver<ClassifyRecord>) {
+    let (sender, records) = channel();
+    let sender = Mutex::new(sender);
+    let record: Record = Arc::new(move |record| {
+        if let Ok(sender) = sender.lock() {
+            let _ = sender.send(record);
+        }
+    });
+    let sidecar = Sidecar {
+        url: format!("http://127.0.0.1:{port}"),
+        key: Some("sk-or-test".to_owned()),
+        model: yi_runtime::classifier::JEV.to_owned(),
+        timeout: Duration::from_secs(2),
+        threshold: 0.9,
+    };
+    let approver =
+        yi_runtime::classifier::Approver::new(sidecar, thresholds, Timing::Instant, record);
+    (approver, records)
+}
+
+fn defaults() -> yi_runtime::classifier::Thresholds {
+    yi_runtime::classifier::thresholds(&yi_types::config::ClassifierConfig::default())
+}
+
+/// The transcript the recorded question was asked after: the task, then answered calls.
+pub(crate) fn transcript(
+    task: &str,
+    commands: &[&str],
+) -> Result<Vec<AgentMessage>, Box<dyn Error>> {
+    let calls: Vec<serde_json::Value> = (commands.iter().enumerate())
+        .map(|(index, command)| {
+            serde_json::json!({"type": "toolCall", "id": format!("c{index}"), "name": "bash", "arguments": {"command": command}})
+        })
+        .collect();
+    let mut messages = vec![
+        typed(task),
+        serde_json::from_value(serde_json::json!({
+            "role": "assistant", "content": calls, "api": "openai-completions", "provider": "faux",
+            "model": "faux-1", "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0,
+            "totalTokens": 2, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+            "stopReason": "toolUse", "timestamp": 8
+        }))?,
+    ];
+    for index in 0..commands.len() {
+        messages.push(serde_json::from_value(serde_json::json!({
+            "role": "toolResult", "toolCallId": format!("c{index}"), "toolName": "bash",
+            "content": [{"type": "text", "text": "exit 0"}], "isError": false, "timestamp": 9
+        }))?);
+    }
+    Ok(messages)
+}
+
+fn strings(value: &serde_json::Value) -> Vec<String> {
+    (value.as_array().into_iter().flatten())
+        .filter_map(|item| item.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// The question Yi sends is the V2 question measured against Jev, key for key and in order, and
+/// Jev's recorded answers gate at the default thresholds: 0.9 allows, 0.69 hands the call on to
+/// the reviewer, 0.01 asks the person. A drifted question would void the measured table.
+#[test]
+fn the_approval_question_is_the_measured_v2_question_and_jev_answers_gate_it() -> TestResult {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../types/tests/fixtures/jev");
+    let expected = [
+        (
+            "noul-safe-ls",
+            yi_runtime::classifier::Judgement::Allow(0.9),
+        ),
+        (
+            "noul-mid-stash-clear",
+            yi_runtime::classifier::Judgement::Undecided,
+        ),
+        (
+            "noul-unsafe-rm",
+            yi_runtime::classifier::Judgement::AskUser(0.01),
+        ),
+    ];
+    for (name, judgement) in expected {
+        let stored: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+            fixtures.join(format!("{name}.json")),
+        )?)?;
+        let request = &stored["request"];
+        let state = &request["state"];
+        let body: &'static str =
+            Box::leak(serde_json::to_string(&stored["response"])?.into_boxed_str());
+        let (port, served) = sidecar(vec![body])?;
+        let (approver, records) = jev(port, defaults());
+        let project = yi_runtime::classifier::Project {
+            root: state["project"]["root"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            writable: strings(&state["project"]["writable"]),
+            protected_branches: strings(&state["project"]["protected branches"]),
+        };
+        let recent = strings(&state["recent commands"]);
+        let messages = transcript(
+            state["user task"].as_str().unwrap_or_default(),
+            &recent.iter().map(String::as_str).collect::<Vec<_>>(),
+        )?;
+        let approver = approver.with_context(project, Arc::new(move || messages.clone()));
+        let command = state["command"].as_str().unwrap_or_default();
+        let why = state["why Yi asks"].as_str().unwrap_or_default();
+        let reason = format!("{why}: {command}");
+        let got = approver.judge(&yi_runtime::classifier::Call {
+            tool: "bash",
+            display: command,
+            command: Some(command),
+            reason: &reason,
+            cwd: state["cwd"].as_str().unwrap_or_default(),
+        });
+        assert_eq!(got, judgement, "{name}");
+        let sent = served.join().map_err(|_| "the endpoint thread panicked")?;
+        let sent: serde_json::Value = serde_json::from_str(sent.first().ok_or("nothing sent")?)?;
+        assert_eq!(&sent, request, "{name}");
+        let order = |value: &serde_json::Value| -> Vec<String> {
+            value
+                .as_object()
+                .map(|map| map.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(order(&sent["state"]), order(state), "{name}");
+        let record = records.recv_timeout(Duration::from_secs(1))?;
+        assert_eq!(record.model.as_deref(), Some("typesafe/jev-1.13-20260917"));
+    }
+    Ok(())
+}
+
+/// Jev's `choice` answer carries `probabilities`, not `answer_confidence`: the chosen option's
+/// probability is the confidence, so a 0.85 answer points at its skill past a 0.8 threshold.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_jev_choice_points_at_the_skill_its_probabilities_choose() -> TestResult {
+    let body = r#"{"model":"typesafe/jev-1.13-20260917","answers":{"skill":{"type":"choice","choice":"land","probabilities":{"land":0.85,"gate":0,"none":0.15},"confidence":0.77}},"usage":{"input_tokens":366,"output_tokens":45,"cost":1.5372e-05},"id":"gen-dec-1","provider":"TypeSafe"}"#;
+    let (record, delivered, _served) = land(body, 0.8).await?;
+    assert_eq!(
+        (record.confidence, record.model.as_deref(), record.fired),
+        (Some(0.85), Some("typesafe/jev-1.13-20260917"), true)
+    );
+    assert!(
+        delivered
+            .iter()
+            .any(|text| text.contains("land") && text.contains("0.85")),
+        "{delivered:?}"
+    );
+    Ok(())
+}
+
+struct Scored {
+    danger: bool,
+    p: f64,
+    command: String,
+}
+
+fn replay() -> Result<Vec<Scored>, Box<dyn Error>> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/jev-replay");
+    let mut rows = Vec::new();
+    for file in ["results.json", "results2.json"] {
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(file))?)?;
+        for row in stored["jev-V2"].as_array().ok_or("no jev-V2 rows")? {
+            rows.push(Scored {
+                danger: row["label"] == "danger",
+                p: row["p"].as_f64().ok_or("a row with no score")?,
+                command: row["command"].as_str().unwrap_or_default().to_owned(),
+            });
+        }
+    }
+    Ok(rows)
+}
+
+/// (dangerous allowed, ordinary allowed) when every recorded Jev score is served to Yi's gate.
+fn allowed(
+    thresholds: yi_runtime::classifier::Thresholds,
+) -> Result<(usize, usize), Box<dyn Error>> {
+    let rows = replay()?;
+    let bodies = (rows.iter())
+        .map(|Scored { p, .. }| -> &'static str {
+            Box::leak(format!(r#"{{"model":"typesafe/jev-1.13-20260917","answers":{{"safe":{{"type":"noul","noul":{p}}}}}}}"#).into_boxed_str())
+        })
+        .collect();
+    let (port, served) = sidecar(bodies)?;
+    let (approver, records) = jev(port, thresholds);
+    let mut counts = (0, 0);
+    for Scored {
+        danger, command, ..
+    } in &rows
+    {
+        let got = approver.judge(&yi_runtime::classifier::Call {
+            tool: "bash",
+            display: command,
+            command: Some(command),
+            reason: "auto mode asks before a command it cannot prove ordinary",
+            cwd: "/tmp",
+        });
+        if matches!(got, yi_runtime::classifier::Judgement::Allow(_)) {
+            if *danger {
+                counts.0 += 1;
+            } else {
+                counts.1 += 1;
+            }
+        }
+    }
+    for _ in 0..rows.len() {
+        let record = records.recv_timeout(Duration::from_secs(5))?;
+        assert!(record.error.is_none(), "a judgement failed: {record:?}");
+    }
+    served.join().map_err(|_| "the endpoint thread panicked")?;
+    Ok(counts)
+}
+
+/// Replays the 160 measured Jev scores (yi-ergo 2026-10-29-jev, V2 question) through the gate:
+/// at the defaults no dangerous command runs unasked and 46 ordinary ones do, and the flat cut
+/// points reproduce the design's table, 53 ordinary commands at 0.8 and 27 at 0.9.
+#[test]
+fn the_recorded_jev_scores_allow_no_dangerous_command_at_the_defaults() -> TestResult {
+    let rows = replay()?;
+    assert_eq!(
+        (rows.len(), rows.iter().filter(|row| row.danger).count()),
+        (160, 80)
+    );
+    let flat = |at: f64| yi_runtime::classifier::Thresholds {
+        allow_at: at,
+        allow_destructive_at: at,
+        ask_at: 0.05,
+    };
+    assert_eq!(allowed(flat(0.8))?, (0, 53));
+    assert_eq!(allowed(flat(0.9))?, (0, 27));
+    assert_eq!(allowed(defaults())?, (0, 46));
+    Ok(())
+}
+
+/// A command past 4000 chars is never sent: the person decides, and the record names the cap.
+/// A long typed task is cut at 1000 chars with a notice inside the question, so Jev is told.
+#[test]
+fn an_oversized_command_is_never_sent_and_a_long_task_is_cut_with_a_notice() -> TestResult {
+    let (port, served) = sidecar(Vec::new())?;
+    let (approver, records) = jev(port, defaults());
+    let huge = format!("echo {}", "x".repeat(4000));
+    let got = approver.judge(&yi_runtime::classifier::Call {
+        tool: "bash",
+        display: &huge,
+        command: Some(&huge),
+        reason: "auto mode asks",
+        cwd: "/tmp",
+    });
+    assert_eq!(got, yi_runtime::classifier::Judgement::Undecided);
+    let record = records.recv_timeout(Duration::from_secs(1))?;
+    assert!(
+        record
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("COMMAND_CHARS")),
+        "{record:?}"
+    );
+    assert!(
+        served
+            .join()
+            .map_err(|_| "the endpoint thread panicked")?
+            .is_empty()
+    );
+    let (port, served) = sidecar(vec![safe(0.95)])?;
+    let (approver, _records) = jev(port, defaults());
+    let task = "é".repeat(1500);
+    let messages = transcript(&task, &[])?;
+    let project = yi_runtime::classifier::Project {
+        root: "/tmp".to_owned(),
+        writable: Vec::new(),
+        protected_branches: Vec::new(),
+    };
+    let approver = approver.with_context(project, Arc::new(move || messages.clone()));
+    approver.judge(&yi_runtime::classifier::Call {
+        tool: "bash",
+        display: "make build",
+        command: Some("make build"),
+        reason: "auto mode asks",
+        cwd: "/tmp",
+    });
+    let sent = served.join().map_err(|_| "the endpoint thread panicked")?;
+    let sent: serde_json::Value = serde_json::from_str(sent.first().ok_or("nothing sent")?)?;
+    let cut = sent["state"]["user task"].as_str().unwrap_or_default();
+    assert_eq!(cut.chars().filter(|c| *c == 'é').count(), 1000);
+    assert!(
+        cut.ends_with(
+            "… [kept 1000 of 1500 chars · cap classifier.context_chars = 1000 · the classifier judges this head only]"
+        ),
+        "{cut}"
     );
     Ok(())
 }

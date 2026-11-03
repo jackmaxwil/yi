@@ -23,20 +23,25 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 
 ### 1.2 Not in scope
 A top-level feature enters only when one leaves, and this list changes in the same commit.
+`isolation=` as the kernel's noun for a child's files left when `Tree` entered: it stays an alias plan
+documents carry, cut at `HEAD` and merged by commit (§14) ·
 A resident MCP client or MCP as a registered tool · ACP v1 · automatic skill creation,
 refinement or self-extension · embeddings and semantic search · resident LSP or DAP servers · a
 JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WASM · document
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
-§17.1) · a GUI · browser automation as an agent tool, computer use, email, or any capability that
-is not a coding agent (the console's browser pane shows the user a page and gives the model nothing) ·
+§17.1) · a GUI · a model tool for the console's browser pane, which shows the user a page and gives
+the model nothing (driving the desktop is the `agent-desktop` plugin's, and a web page the
+`agent-browser` plugin's, §17.1) · email, or any capability that is not a coding agent other
+than those plugins ·
 server-side terminal-frame streaming or blit
 encoding in the console (a terminal pane's PTY is the console's own, §17.4) · the console's
 Tape pane, a session's ledger over wall time (left when the terminal pane entered) · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
 channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
 cloud, and a kernel or agent loop inside a container (a container child's kernel stays on the
-host, D286).
+host, D286) · a local model server Yi starts or installs (the Laya classifier sidecar left when
+the classifier moved to Jev through OpenRouter).
 
 ## 2. Crates and dependency direction
 A folder `crates/x/` is the crate `yi-x` (`scripts/guardrails/check_manifests.py`). The internal
@@ -261,12 +266,15 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   Web search is a separate non-streaming completion: `models.webSearch`, else the built-in
   `openrouter/deepseek/deepseek-v4-flash`, calls OpenRouter's server-side search with Exa by
   default. This default does not select a primary model.
-- Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
+- Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
-  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s.
+  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s. A
+  server wait past 60 s or `x-should-retry: false` ends the turn stamped `retry refused:`, which
+  the loop reads as final; `x-should-retry: true` retries any status.
 - `leak::recover_in` in both mappers' `finish` turns each well-formed text `<tool_call>` block
-  into a `ToolCall` (id `leak-N`) and `Stop` into `ToolUse`.
+  outside a fence or inline span into a `ToolCall` (id `leak-{clock}-{message}-{n}`) and `Stop`
+  into `ToolUse`.
 - Stable cached prefix: `read`'s description fixed per session, content-hashed fence ids, a
   minute-cached `time:`; adapters set `cache_control`, `prompt_cache_key`, cache retention.
 - yi-oauth: PKCE S256 from `/dev/urandom`, a `127.0.0.1` loopback, `login`/`logout`; tokens in
@@ -277,6 +285,13 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   arrive, a native shell frame runs bash, and the stream closes when the session aborts. The model
   list is that account's `AvailableModels`, cached under `~/.yi/catalog`; a typed id still runs
   when the file is absent. A profile file at the same id still wins.
+- Recommender: `yi models refresh` fetches OpenRouter's Artificial Analysis benchmarks, the
+  previous day's rankings and the tool-calling ids into `~/.yi/catalog/benchmarks.json`, only when
+  asked and at most once per 10 minutes; `yi models recommend` scores that snapshot offline per role
+  ([`ROLES`](../crates/ai/src/recommend.rs): exponent, intelligence floor, context floor, token mix)
+  as `intelligence^exponent / blended $ x popularity` (popularity at most 1.03), prints high (most
+  intelligent), medium (best score) and low (cheapest above the floors) with their arithmetic, the
+  CC BY 4.0 citation, the snapshot's age and what was left out, and applies nothing.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
 - State: `models { primary, summarizer, advisor, autoReview, classifier, webSearch }` and
@@ -302,8 +317,9 @@ extension `Host` whose synchronous extensions turn session events into effects.
   §17.1), `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
-  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML
-  comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
+  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for whole-line
+  HTML comments and the leading, trailing or doubled blank line a removed comment leaves behind
+  rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
   granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
 - The table persists as `custom{ext_state2}` when an extension changes it: the build's own slots
@@ -328,8 +344,8 @@ extension `Host` whose synchronous extensions turn session events into effects.
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
   `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers
   only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
-  With `models.classifier` set, a local sidecar is also asked which triggered skill the message
-  calls for (`classify` entry); it points only at or above `classifier.threshold`.
+  With `models.classifier` set and an OpenRouter key, Jev is also asked which triggered skill the
+  message calls for (`classify` entry); it points only at or above `classifier.threshold`.
 - Next-step lines: `affordance::render` over the compiled-in `graph.json` walks 2 hops from the
   last call over edges whose condition is `always` or a host-asserted fact from the closed
   `PREDICATES`, by weight, ≤ 2 `next:` lines (3 for `todo`). `Graph::check` bounds edges (400),
@@ -602,8 +618,13 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   directory asks (in home, any mention); with no path, `refused_scopes` remembers the program and
   verb and a later use asks. "Always allow" keeps a `Grant` (directory, tree root, program+verb),
   in memory, ≤ 1024 rules.
-- Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, git dirs minus
-  `hooks config commondir gitdir`, session dir, tmp; reads deny the credential stores the read gate
+- Sandbox: Seatbelt `/usr/bin/sandbox-exec` on macOS; on Linux `yi __contain` applies Landlock, where
+  reads are a named list, a denial is its siblings, the git files below are compared and put back
+  before each host git rather than denied, and the network is open (#602). Writable cwd, a main checkout's git dir or
+  a linked worktree's admin dir, `objects`, own branch and stash, minus
+  `hooks config config.worktree info commondir gitdir objects/info/alternates` in each git dir and
+  submodule, `<git>/worktrees` and `<git>/modules` closed whole (a lane keeps its own admin dir and
+  the module dirs it already has), a `.git` that is no directory; session dir, tmp; reads deny the credential stores the read gate
   refuses (`~/.ssh ~/.gnupg ~/.aws ~/.kube ~/.docker ~/.yi/mcp/tokens ~/.yi/providers/tokens
   ~/.yi/oauth ~/.config/{gh,fgj,gcloud} ~/.netrc ~/.git-credentials ~/.npmrc ~/.pypirc
   ~/.cargo/credentials[.toml] ~/.password-store`, `credential_stores`, D323, D324) and the wall's `deny_read`, each
@@ -611,13 +632,27 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   unrenamable; the kernel and its `bash()` take the wall too; a contained process starts through
   `env -u` for every inherited variable a name heuristic marks as a secret (D324); in auto mode the
   bash read belt judges a store argument by identity, a directory above one and a glob that reaches
-  one; loopback the only network, and no unix socket (#599). Without it, `Contain`
+  one; no unix socket (#599), and the only network is loopback, where a per-spawn CONNECT proxy
+  decides by host name: the seed, `sandbox.egress`, a kept grant, then a person (#601). Package caches
+  are writable, never `.cargo/bin` or a config. A lane's git reaches origin through a host-run mirror and an
+  outbox the host forwards; trunk, `main`, `master` and a tag ask a person (#1933). Without it, `Contain`
   becomes a reviewable `Ask`.
-- With a classifier and its `laya` key (minted by `yi serve`), `classifier.approval` says when the
-  sidecar's `noul` answers a reviewable auto-mode ask: `instant` (default) first — P(safe) ≥ 0.9
-  (0.98 if destructive) allows, ≤ 0.05 asks the user, else the reviewer; `after-delay` once the
+- With a classifier and an OpenRouter key, `classifier.approval` says when Jev's `noul` answers a
+  reviewable auto-mode ask: `instant` (default) first, P(safe) ≥ 0.8 (0.9 if destructive) allows,
+  ≤ 0.05 asks the user, else the reviewer; `after-delay` once the
   person has not answered for `askTimeoutSecs` (30; 0 never hands it over), a confident allow only, and only
   where a prompt closes when its call settles elsewhere (the solo TUI); `wait-for-user` never.
+  The question carries the call, the latest typed user message, the last two answered calls, the
+  project root, its writable roots, protected branches and the checkpoint note, each value capped
+  at 1000 chars (a judged command at 4000, past which the person decides) with a `[cut: …]` notice.
+  Measured on 160 commands (80 dangerous, 80 ordinary; yi-ergo 2026-10-29-jev, V2 question):
+
+  | allow at | dangerous allowed | ordinary allowed |
+  |---|---|---|
+  | 0.5 | 1 | 70 |
+  | 0.8 | 0 | 53 |
+  | 0.9 | 0 | 27 |
+  | 0.8, 0.9 destructive (default) | 0 | 44 |
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
 - Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
@@ -1073,7 +1108,7 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   (`~/.yi/adapters/`, then `PATH`) over JSON lines (`adapters/README.md`), one per channel per
   process, restarted within `rlm.service`'s intensity and past it stopped with its subscriptions
   paused and told; `/heartbeat halt` stops them all. An `exec://` command a tool call or the
-  kernel arms is judged as the bash call it amounts to, never contained; a source only waits
+  kernel arms is judged as the bash call it amounts to, and runs contained outside yolo; a source only waits
   read backs off to `plan.probe_max_s` while its level holds. A wake shows at most 32 KiB.
 - Surfaces: RPC `heartbeat`, ACP `_yi/heartbeat` and slash `/heartbeat` (default `every 5m`, one
   per session, reaching the solo TUI, the console and ACP `_yi/slash`); kernel
@@ -1115,8 +1150,8 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog; `stats --by plan` counts every applied plan-engine op by kind and actor class from the sessions' `plan_op` entries and the plans directory's `ops.jsonl` journals, with totals for delegations, acceptances, `done_refused` and retries |
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
-| `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
-| `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target, and the member's own): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. A row is a `Program` (a tar.gz member published as its name) or a `Tree` (a zip unpacked whole by the in-tree reader, its member the executable inside, its digest checked before the one rename): `chrome`, Chrome for Testing's headless shell, is the one tree. Yi uses only the pinned version, else a program on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed programs first on PATH, and a tree is neither on PATH nor carded: the console starts it, never the model |
+| `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `models [recommend [--role R]\|refresh]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); model suggestions per role (§5); session invariants checked, safe ones repaired |
+| `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target, and the member's own): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. A row is a `Program` (a tar.gz member, or with an empty member the download itself, published as its name) or a `Tree` (a zip unpacked whole by the in-tree reader, its member the executable inside, its digest checked before the one rename): `chrome`, Chrome for Testing's headless shell, is the one tree, and the `agent-browser` plugin's daemon is the other thing that starts it. Yi uses only the pinned version, else a program on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed programs first on PATH, and a tree is neither on PATH nor carded: the console starts it, never the model. A `Host` is a program the model runs that drives this machine: `add --all` and the eval containers skip it, so `agent-desktop` arrives only by name. The sandbox refuses it, and `yi_permission`'s desktop table lets only its plain name out: one yes per app per session, read from `--app` or from the app a ref's snapshot record names; a terminal, an editor, settings or a password app, and any verb or flag the table does not name, ask every time and keep nothing; a browser is refused in every mode; what it prints returns in a `yi-external` fence `agent-browser` is the second `Host`: its daemon cannot run in the sandbox, which bans unix sockets, and a Chrome outside it would read every file while any contained program drives it over its loopback debug port, so `add` also installs `chrome` and writes a script that runs it inside a sandbox with its own sandbox off (the two cannot nest), reading what a contained command reads, writing only temp. Unlike the others it has no route through a program on PATH: the gate refuses the plain name in every mode until the pinned program, its config and that script all stand, so a copy on PATH or an interrupted `add` starts no Chrome outside the box. The default session's Chrome has loopback alone and needs no question; `--session web` adds the internet by address, and one yes covers it for the session. `yi_permission`'s browser table lets only the plain name out, asks every time for what the daemon itself would do, and refuses real logins and a visible window in every mode. |
 | `update` | the installed binary, and the release's skills written over `~/.yi/skills`, each top-level directory the release ships (`yi/`) replaced whole so a skill it dropped goes (other skills kept), from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
@@ -1131,8 +1166,9 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   session starts, since the console's settings page saves it while workers run; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
   `models{primary,summarizer,advisor,autoReview,classifier,selector,webSearch}`, `webSearch{engine}`,
-  `bash{autoBackgroundMs}`, `plans{dir}`,
-  `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
+  `bash{autoBackgroundMs}`, `plans{dir}`, `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`,
+  `kernel{prewarm}`, `console{autoSide}`,
+  `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace,follow}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
   `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode,allowWrite,allow}`,
   `mail{hopLimit}`, `open[{name,command}]`.
@@ -1194,6 +1230,13 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   regions of two rows or more, a full-screen scroll and a repaint where none fits. Streaming text
   commits by byte cursor over stable slices; a thought commits before its prose; a reveal cursor
   paces the painted tail.
+- `tui.follow` selects terminal-text following: `slide` keeps the existing one-row-per-frame
+  movement and proportional catch-up; `page` jumps half the pane height (at least one row) when
+  the live tail would cross the bottom; `still` never follows autonomously and shows
+  `↓ N more rows · PgDn` above the composer. PageDown moves explicitly, and submitting a prompt
+  returns to bottom. A held view keeps its anchor in every mode. Explicit config wins over the
+  macOS Reduce Motion probe, which is read once at startup and selects `still`; unset otherwise
+  defaults to `page`. The reveal and `tui.pace` are unchanged.
 - Resize and mode change rebuild scrollback from the transcript; text wraps at width less 2; a
   frame draws only on change.
 - A child commits one `Rule` at admission and one `Rule` per run's end: role and task first, then
@@ -1203,7 +1246,9 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   settlement, and a late end appends at finish. Entry-zero replay rebuilds the same rows without
   creating live cards; eviction, resize and every transcript mode preserve them.
 - A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, 3 result
-  rows then `… N more lines` when collapsed.
+  rows then `… N more lines` when collapsed. Running tool cards reserve that bounded preview
+  region and its elision row, so a collapsed result fills in place; child cards use a bounded
+  four-row answer window, and verbose rows still use the existing row pacing.
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block
   `Todos done/total`; `ctrl+t` hides it), composer or bottom view, status row (model, effort,
   lane row, landing, cost, `used / window`, session name).
@@ -1260,7 +1305,8 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   landing, and `l` runs `/land` under the session's title. ↑/↓ selects a file and `w` asks the
   worker (`_yi/why`) for each hunk's `yi why` chain: blame, commit, todo, goal. A resumed
   session's replay fills Review's edits and reads, and the notebook's cells, as live frames do; a
-  replay from entry 0 counts the turns itself and restarts the notebook.
+  replay from entry 0 counts the turns itself and restarts the notebook. Ordinary cell updates
+  preserve a reader's scroll position; only opening or a full replay resets it to bottom.
 - ⌘Y (⌥y) opens a terminal pane beside the focused one, running `$SHELL` in the focused
   session's working directory (its lane worktree once `_yi/workdir` names one), else the
   console's root. The PTY is the console's own: no daemon state, nothing on the socket. The
@@ -1340,7 +1386,8 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
 | `syntect` | `parsing`, `regex-fancy`, `dump-load` | tui | syntax highlighting on the pure-Rust regex engine, over bat's grammars cut at build time; `vendor/syntect` patches its manifest to four Unicode tables | `onig` (C engine, banned) |
 | `unicode-width` | — | tui | terminal cell width | — |
-| `rustix` | `fs`, `std`, `stdio`; `pty`, `termios`, `process` in console; `process` in browser (`geteuid`, `test_kill_process`) | permission, browser, console | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); the terminal pane's PTY pair, its window size, `setsid` and `TIOCSCTTY` in the `yi __pty` shim, and the SIGHUP to a closed pane's process group (#1378); `dup2` in `yi __fds`, which puts Chrome's CDP pipe on fds 3 and 4 without a `pre_exec` (#1379); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide); `portable-pty` (wraps libc in unsafe and spawns through `pre_exec`) |
+| `rustix` | `fs`, `std`, `stdio`; `pty`, `termios`, `process` in console; `process` in browser (`geteuid`, `test_kill_process`) | permission, browser, console, runtime | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); the terminal pane's PTY pair, its window size, `setsid` and `TIOCSCTTY` in the `yi __pty` shim, and the SIGHUP to a closed pane's process group (#1378); `dup2` in `yi __fds`, which puts Chrome's CDP pipe on fds 3 and 4 without a `pre_exec` (#1379); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide); `portable-pty` (wraps libc in unsafe and spawns through `pre_exec`) |
+| `landlock` | — | cli, Linux only | a contained command restricts itself through the kernel's ruleset calls and execs, with no `unsafe` in Yi: `rustix` has no Landlock calls, and doing them by hand needs `syscall` | hand-written syscalls under `#![forbid(unsafe_code)]`: refused; bubblewrap: a setuid or user-namespace helper CI containers lack |
 | `vt100` | — | console (tui: dev) | the terminal pane's screen: a parsed cell grid with attributes, scrollback, DECCKM and bracketed-paste state (#1378) | `alacritty_terminal` (an event loop and a larger tree); a hand-rolled VT parser |
 
 Dev: `vt100`, `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
@@ -1424,7 +1471,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 |---|---|---|
 | `check_manifests` | folder `x` is crate `yi-x`; workspace version, edition, license, rust-version, lints; deps `{ workspace = true }`; feature allowlist; string_slice roots (§19); `serde`/`serde_derive` only in `yi-types` (§20) | `string_slice_pending.json` |
 | `check_boundaries` | each crate's `yi-*` deps are in its allowlist, and a `yi-*` dev-dependency past it is in the `[dev]` table; unknown crate, stale entry or stale `[dev]` edge fails | `boundaries.toml` |
-| `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field, no baseline without a reader (D109) | — |
+| `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field or enum variant field (a literal sets, only a read or a pattern binding reads, a test is no reader), no yi-types shape production code never names, no baseline without a reader (D109) | — |
 | `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline modification never shares a commit with code (a deletion rides with the gate that stopped reading it; merge commits exempt) | — |
 | `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, the fork point, `schemas.lock` |
 | `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json` (`binary_size_budget_linux.json` on Linux), `startup_ms_budget.json` |
@@ -1433,14 +1480,92 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines plus inline `#[cfg(test)]` lines in `src/` ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/`, tests, scripts, workflows and the justfile is declared, every declared name is read, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
+| `check_scan` | pinned zizmor over workflows, gitleaks over tree/PR diff/rewritten mirror history, and vendored-rule Semgrep over Python and production Rust; new rule ids and counts above baseline fail; local tool/cache misses announce a skip and CI refuses them | `scan.json` |
 | `check_request_budget` | system-prompt and tool-table bytes; tool-surface texts and hashes (D188) | `request_budget.json`, `tool_surface.json` |
 | `check_behavior` | faux-cassette behavior cases: a locked pass never fails (D76) | `behavior_baseline.json` |
 | `check_prompt_examples` | Python in prompts and skills awaits every `yi` coroutine call | — |
 | `check_growth` | net `src/` growth over the fork point past 150 lines needs `growth: +N <memo>` in the change file, past 2,000 a `decision:`; full run only | the fork point |
 | `check_changes` | a change is a file under `docs/changes/` in the header format; a branch never edits the `version:` line, a changelog row, a decision row, an ADR or a change file main holds | — |
 | `check_pr_metadata` | PR title as `check_commit_style`; a feature or over-band PR names an open, sized issue (D106); CI only | — |
+Zizmor and Semgrep run through pinned `uv` packages; gitleaks is a checksum-verified release binary.
+They are development tools, not Rust crate dependencies, so §18.3 gains no dependency rows.
 
 Also run: `codespell`, the `python/yi_runtime` unittests, `evals/selftest.py`, each script's
 `--selfcheck`, `cargo doc` (§19), `cargo machete` and `cargo deny` (§18.1); a missing tool fails
-its gate. Settled by: D68, D70, D76, D91, D106, D109, D172, D188.
+its gate except the announced local offline `check_scan` skip, which CI refuses.
+Settled by: D68, D70, D76, D91, D106, D109, D172, D188.
 
+
+## 22. External GitHub intake
+
+Stages 0 through 2 admit only explicitly configured GitHub logins into a manual,
+stateless intake path. The canonical forge and its review loop remain private.
+No schedule, webhook, database, persistent commit map, direct GitHub merge or
+arbitrary-contributor mode exists. Server-side branch and draft writes stay
+disabled until stage 3 installs the `run-ci` hold; stage 2 proves those writes
+only through injected transports, so no contributor code runs before an owner
+action.
+
+`scripts/intake/allowed.json` maps each login to its immutable GitHub user id
+when known, exact author and committer emails, SSH public-key fingerprints,
+per-login commit/file/line/byte caps and dependency permission. The starting
+caps are 20 commits, 40 files, 4,000 added-plus-deleted lines and 150,000 raw
+patch bytes. `allowed_signers` holds only the corresponding principals and
+public keys. Startup recomputes every fingerprint from the public key and
+refuses drift. A missing key fails closed. Adding or rotating a contributor is
+an owner-authored forge change; intake itself denies this registry. Max's login
+is unknown and is not guessed.
+
+One run rewrites canonical main once through `scripts/mirror/rewrite.sh`, the
+same helper used by `scripts/mirror/sync.sh`. The helper retains filter-repo's
+ephemeral `filter-repo/commit-map`; absence is `intake: mapping: filter-repo
+emitted no commit-map`. A mirror merge-base must map to exactly one Forgejo
+commit. The importer fetches and pins the full head, requires linear history,
+verifies every commit locally against that login's signer file and recomputes
+the diff with `git diff --no-renames --binary --full-index`. GitHub's
+`verification` badge is diagnostic, never proof.
+
+Twenty-four ordered checks return `ALLOW` or one typed `intake: …` refusal.
+They cover allowlist and base shape, signatures, identities, pinned head, all
+four caps at the cap and the cap plus one, unique mapping and linear history,
+the composed review/mirror/intake wall (compared case-insensitively, since the owner builds on a case-insensitive disk; both sides of a rename; any `.cargo` directory), symlinks, submodules, executable-bit
+transitions, binary data, LFS, hostile filenames, secrets,
+mirror replacement literals, network literals (URLs, IPs, `localhost`, hostnames on common TLDs, and a hostname on any TLD that follows `@`, is an scp or rsync `host:` destination, is the first argument of a network command, or carries a port; a file extension such as `go` or `toml` is a file in `name.ext:42`, and `rs`, `md`, `py` or `sh` count only on a well-known port), `unsafe` blocks, items and attributes, build-time execution (a `build.rs`, a manifest's `build` key or `[build-dependencies]` section, a `proc-macro` crate, and `vendor/`, denied whole because the workspace patches a dependency from it),
+dependency edits, both sides of a delete, and strict application. `build.rs` is always denied. Secret
+scanning uses the unmodified `scripts/mirror/deny.txt` patterns with no fixture
+ignore. Filenames reject traversal, absolute paths, controls, backslashes,
+case-fold collisions and non-ASCII/confusables. Application runs `git apply
+--check --whitespace=error`, then `git apply --index` with the same whitespace
+rule; no three-way merge or rename guessing is permitted. A bare hostname on a rarer TLD, even quoted, with no port, `@` or command beside it, and a host on `rs`, `md`, `py` or `sh` on a port outside the well-known list, are not seen by the network check (`row.id`, `"response.failed"` and `main.rs:4444` read the same); the lens and the review read them.
+
+The final lens alone is non-deterministic. It receives only the bounded diff
+inside an escaped `yi-external trust="untrusted"` fence through `yi ask
+--no-tools`. The flag installs an empty session tool table, and the provider
+request therefore carries no tool table. Lens output is
+`{"refusals":[{"path","line","reason"}]}`. The host accepts only added diff
+lines, fails closed on invalid output or transport failure, and lets the lens
+add but never remove a refusal.
+
+Dry-run prints one `ALLOW` or exact `REFUSE` per open PR, following the PR list to its last page, and wraps the transport
+so every write raises. A passing injected import creates one squash commit and
+deterministic branch `gh/<login>/<number>-<sha8>`, re-reads the head and current
+main before push, and emits a deterministic draft with `external` and
+`autofix:hold`, never `run-ci`, `live` or `autofix`. Its body fences GitHub prose
+as untrusted data. The audit comment records full head/base/import ids, branch,
+rule hashes, every decision, actor and any override. A refusal names every line it refused and an
+override carries all of them, so an owner cannot waive a hit that was never shown. Overrides authenticate the
+owner, re-pin the full head, accept only one of `commits`, `files`, `lines`,
+`bytes`, `network-literal`, `unsafe` or `lens`, rerun every other check and are
+recorded with reason and original refusal.
+
+`scripts/intake/bridge.py --selfcheck` runs in guardrails over real GitHub REST,
+real SSH-signed object and real mirror-history fixtures. Each hostile case
+changes one part and is seen red by disabling its check. The T2
+`scripts/intake/journey.py` uses real git and fake HTTP for dry-run refusal,
+strict import, deterministic draft/audit, the `run-ci` hold and landing
+feedback. Stage 3 makes `pr.yml`, `title` and `plugins-live` wait for the owner's
+`run-ci` on an `external` PR, which asks for a disposable `external` runner;
+until ops registers that label the job queues and contributor code never runs.
+Stage 4 comments `landed as <mirror-sha> on Forgejo`, closes the GitHub PR and
+ships the poll workflow inert (its cron line commented). Token provisioning and
+all live permission experiments remain outside these stages.
