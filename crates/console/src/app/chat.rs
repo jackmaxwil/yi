@@ -76,8 +76,11 @@ impl App {
             pace: self.state.chat_pace,
             follow: self.state.chat_follow,
         };
-        let mut app =
-            yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
+        let theme = yi_tui::colors::Theme {
+            run: true,
+            ..self.theme
+        };
+        let mut app = yi_tui::app::App::new(options, theme, yi_tui::keymap::default_keymap(), 80);
         let _ = app.take_title();
         app.set_clock(self.clock);
         app.set_status_name_shown(false);

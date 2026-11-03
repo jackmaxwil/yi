@@ -683,7 +683,8 @@ fn command_for(
     pages: &[u64],
 ) -> std::process::Command {
     let python = converter.python.to_string_lossy().into_owned();
-    let mut command = if Sandbox::available() {
+    // Linux keeps `unshare`: Landlock leaves the network open and a parser needs none.
+    let mut command = if cfg!(target_os = "macos") && Sandbox::available() {
         let mut sandbox = Sandbox::for_workspace(dir, &documents.home, None);
         sandbox.writable = vec![dir.to_path_buf()];
         sandbox.deny_write = Vec::new();

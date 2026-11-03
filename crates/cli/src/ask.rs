@@ -55,6 +55,9 @@ pub(super) fn run(args: &Args) -> i32 {
             }
         }
     };
+    if args.no_tools {
+        session.set_tools(Vec::new());
+    }
     let attaching = yi_types::trace::span("ask.attach_store");
     let attached = attach_store(args, &session, &target);
     drop(attaching);
