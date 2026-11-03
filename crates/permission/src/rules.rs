@@ -214,6 +214,15 @@ pub fn write_grant(dir: &std::path::Path) -> Grant {
     }
 }
 
+/// "Always" on a contained command's network: its later runs reach `domain` unasked.
+pub fn egress_grant(domain: &yi_types::egress::Domain) -> Grant {
+    Grant {
+        kind: RuleKind::Command,
+        canonical: identity(&["egress", domain.as_str()]),
+        label: format!("contained network to {domain}"),
+    }
+}
+
 /// The directory a [`write_grant`] names. Only a command rule is one: an exact `write` call's
 /// identity starts the same way and carries the call's arguments.
 pub fn write_grant_dir(rule: &SessionPermissionRule) -> Option<std::path::PathBuf> {
@@ -296,6 +305,11 @@ pub fn grants(call: &crate::ToolCall<'_>, context: &crate::CatastrophicContext) 
             canonical: scope_identity(&scope, cwd),
             label: format!("`{scope}` in this tree"),
         }];
+    }
+    // Invariant: a desktop command with no app to scope to gets no standing yes, not even exact:
+    // `press cmd+q` means something else in whichever app is in front next time.
+    if call.command.is_some_and(crate::desktop::drives) {
+        return Vec::new();
     }
     vec![exact_call(call)]
 }

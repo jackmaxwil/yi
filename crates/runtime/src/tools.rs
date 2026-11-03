@@ -79,6 +79,18 @@ fn result_text(result: &yi_types::event::ToolResult) -> String {
     yi_types::message::join_text(&result.content, "\n")
 }
 
+/// The source a bash call's text came from when it is not Yi's own: a command that runs the desktop
+/// or browser program, or the shell tool's own mark on a background job that one started.
+fn external_source<'a>(command: &str, details: &'a Value) -> Option<std::borrow::Cow<'a, str>> {
+    if let Some(source) = yi_permission::source(command) {
+        return Some(std::borrow::Cow::Borrowed(source));
+    }
+    details
+        .get("externalSource")
+        .and_then(Value::as_str)
+        .map(std::borrow::Cow::Borrowed)
+}
+
 /// The predicates that hold after this call; the needles are the states the old
 /// producers branched on, and one ipython needle wins, in the order they were tried.
 fn facts_of(tool: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
@@ -105,7 +117,10 @@ fn facts_of(tool: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
     if let Some(needle) = needle.filter(|_| tool == "ipython") {
         holds.push(needle.to_owned());
     }
-    if tool == "ipython" && text.chars().count() > LARGE_PRINT_CHARS {
+    let shell = output.result.details["code"]
+        .as_str()
+        .is_some_and(|code| yi_tools::shell_cell(code).is_some());
+    if tool == "ipython" && !output.is_error && !shell && text.chars().count() > LARGE_PRINT_CHARS {
         holds.push(yi_types::graph::LARGE_PRINT.to_owned());
     }
     holds
@@ -257,16 +272,7 @@ pub fn refuse_armed(
         &bash(command),
         Some(command),
     );
-    match outcome.containment {
-        _ if !outcome.allowed => Some(format!("Permission denied: {}", outcome.reason)),
-        Containment::Contained {
-            gate_allowed: false,
-            ..
-        } => Some(format!(
-            "`{command}` runs later outside the sandbox, which allows it only contained: run it yourself with bash, or allow it by a permission rule"
-        )),
-        Containment::Contained { .. } | Containment::Uncontained => None,
-    }
+    (!outcome.allowed).then(|| format!("Permission denied: {}", outcome.reason))
 }
 
 type Gates<'a> = (
@@ -511,6 +517,7 @@ impl ToolAdapter {
             .cloned()
             .collect();
         let mut context = ToolContext {
+            spawn: None,
             cwd: self.cwd.clone(),
             cancelled: Arc::clone(&self.cancelled),
             recovery_dir: spills,
@@ -524,6 +531,7 @@ impl ToolAdapter {
             job_owner: self.job_owner,
             program,
             fuse: yi_tools::Fuse::PROGRAM,
+            hold_opens: None,
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
@@ -713,6 +721,8 @@ impl ToolAdapter {
                                         sandbox
                                     },
                                 );
+                            context.spawn =
+                                Some(reporter.spawn_hook(wall.clone(), context.cwd.clone()));
                             contained = context.sandbox.as_ref().map(|_| reporter);
                         } else if wall.container.is_none() {
                             outside = reporter.outside_notice(tool.name(), &args, &outcome);
@@ -749,11 +759,15 @@ impl ToolAdapter {
                 ));
             }
             let (cwd, hook_args) = (context.cwd.clone(), args.clone());
+            let mutating = !matches!(kind, yi_tools::ToolKind::Read | yi_tools::ToolKind::Ledger);
             let output = tokio::task::spawn_blocking(move || {
                 let _span = yi_types::trace::span("tool.execute").arg("tool", tool.name());
                 tool.execute(args, &context)
             })
             .await;
+            if mutating && let Some(store) = ledger.as_ref() {
+                crate::checkpoint::note_mutating_call(&cwd, tool_call_id, store.clone());
+            }
             match output {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
@@ -773,6 +787,15 @@ impl ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
+                    if let (Some(store), Some(usage)) = (&ledger, &output.result.usage) {
+                        crate::spend::append_main_usage(
+                            store,
+                            format!("{}{name}", crate::spend::TOOL_USAGE_PREFIX),
+                            usage.clone(),
+                            Some(output.result.details.clone()),
+                        )
+                        .ok();
+                    }
                     let failed =
                         yi_types::event::shown_failed(output.is_error, &output.result.details);
                     if let Some(hooks) = hooks.as_ref().filter(|_| failed || !cancel()) {
@@ -795,6 +818,15 @@ impl ToolAdapter {
                             &mut output.result,
                         )
                         .await;
+                    }
+                    if name == "bash"
+                        && let Some(source) = external_source(&command, &output.result.details)
+                    {
+                        for block in &mut output.result.content {
+                            if let yi_types::message::Content::Text { text, .. } = block {
+                                *text = crate::fetch::fence_untrusted(&source, text, None);
+                            }
+                        }
                     }
                     let holds = facts_of(&name, &output);
                     let facts = crate::affordance::Facts {
@@ -866,27 +898,27 @@ impl ToolAdapter {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    fn lines_after(tool: &str, chars: usize) -> Vec<String> {
-        let output = yi_tools::text_output("é".repeat(chars));
-        let holds = super::facts_of(tool, &output);
-        let facts = crate::affordance::Facts {
-            holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
-            name: "",
-            cap: crate::affordance::TOOL_LINES,
-        };
-        crate::affordance::render(crate::affordance::shipped(), tool, &facts)
+    fn large_print(tool: &str, chars: usize, code: &str, is_error: bool) -> bool {
+        let mut output = yi_tools::text_output("é".repeat(chars));
+        output.result.details = serde_json::json!({ "code": code });
+        output.is_error = is_error;
+        super::facts_of(tool, &output).contains(&yi_types::graph::LARGE_PRINT.to_owned())
     }
 
     #[test]
-    fn a_large_cell_result_names_the_file_write_one_liner() -> Result<(), String> {
+    fn only_a_large_successful_python_result_is_a_large_print() {
         let limit = super::LARGE_PRINT_CHARS;
-        let lines = lines_after("ipython", limit + 1);
-        let line = lines.first().ok_or("no line past the limit")?;
-        assert!(line.contains("open(path,'w').write(var)"), "{line}");
-        assert_eq!(lines.len(), 1);
-        assert!(lines_after("ipython", limit).is_empty());
-        assert!(lines_after("bash", limit + 1).is_empty());
-        Ok(())
+        assert!(large_print("ipython", limit + 1, "print(x)", false));
+        assert!(!large_print("ipython", limit, "print(x)", false));
+        assert!(!large_print("bash", limit + 1, "print(x)", false));
+        assert!(!large_print("ipython", limit + 1, "f()", true));
+        assert!(!large_print(
+            "ipython",
+            limit + 1,
+            "%%bash\ncargo test",
+            false
+        ));
+        assert!(!large_print("ipython", limit + 1, "!cargo test", false));
     }
 
     #[test]
@@ -903,5 +935,29 @@ mod tests {
             "cd -P /home/u/.yi/other && cat ../sessions/x.jsonl"
         ));
         assert!(!refused("cd -- /home/u/.yi/other && cat notes.txt"));
+    }
+
+    /// Incident: a polled background job printed the app's words with no command for the fence to
+    /// read, so the shell tool marks the job and the fence follows the mark.
+    #[test]
+    fn a_polled_job_the_shell_tool_marked_is_fenced_as_its_source() {
+        let marked =
+            serde_json::json!({ "job": 3, "exitCode": 0, "externalSource": "agent-desktop" });
+        assert_eq!(
+            super::external_source("", &marked).as_deref(),
+            Some("agent-desktop")
+        );
+        assert_eq!(
+            super::external_source("agent-desktop status", &serde_json::json!({})).as_deref(),
+            Some("agent-desktop")
+        );
+        assert!(
+            super::external_source(
+                "ls ~/.yi/plugins/agent-desktop",
+                &serde_json::json!({ "job": 3 })
+            )
+            .is_none(),
+            "a command that merely names the program prints Yi's own listing"
+        );
     }
 }

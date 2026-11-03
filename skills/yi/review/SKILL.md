@@ -21,7 +21,8 @@ cannot.
 Spawn a subagent whose prompt contains **only the standard, never your
 implementation story**:
 
-- the plan's tasks with their acceptance criteria, verbatim (`plan.get`);
+- the plan's tasks with their acceptance criteria, verbatim (`plan.view` with
+  `full: true`; the default view shows only ready, running and blocked rows);
 - each todo's `contract` and the goal's `check`; a contract item, rendered
   from the plan tool's schema:
 
@@ -72,8 +73,9 @@ hides it from the implementer as well.
 One line per acceptance item: `task-id · verdict · decisive evidence
 (command + exit, or file:line)`. Then a coverage line: what was not
 checked and why. Contradicted and unverifiable items reopen tasks
-(`plan.edit reopen`, `plan.update ... blocked`) — they never narrow the
-claim.
+(`plan.set` with the row state `pending` or `running`), and a reopened task
+that cannot proceed is blocked next (`plan.set` with state `blocked`; a done
+row has no block move of its own) — they never narrow the claim.
 
 ## The todo audit
 
