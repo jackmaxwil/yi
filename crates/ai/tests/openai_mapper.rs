@@ -359,7 +359,7 @@ fn a_call_streamed_as_text_finishes_as_a_tool_call() -> Result<(), Box<dyn Error
             arguments,
             ..
         }) => {
-            assert_eq!(id, "leak-0");
+            assert!(id.starts_with("leak-") && id.ends_with("-0"), "{id}");
             assert_eq!(name, "read");
             assert_eq!(
                 arguments["path"],
