@@ -105,9 +105,9 @@ fn walk(
             walk(&path, &relative, exclude, out)?;
         } else if path.is_file() {
             if out.len() >= TREE_HASH_FILE_CAP {
-                return Err(format!(
-                    "workspace exceeds {TREE_HASH_FILE_CAP} files, past what verification hashes; run the check by hand, then accepted_by_user with its exit line as note"
-                ));
+                return Err(super::verify::contained(&format!(
+                    "workspace exceeds {TREE_HASH_FILE_CAP} files, past what verification hashes"
+                )));
             }
             out.push((relative, path));
         }

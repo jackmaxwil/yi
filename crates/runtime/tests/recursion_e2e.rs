@@ -3946,35 +3946,85 @@ async fn a_walled_check_is_refused_at_every_spawn() -> TestResult {
     Ok(())
 }
 
-/// A sandboxed auto session runs a command it would only contain inside the sandbox, and a check
-/// runs on the host, so the broker's leg of the gate refuses it at spawn and names the way out.
+/// Dies with a check the gate only contains being refused at spawn, since a check ran on the host:
+/// it now runs in the sandbox, so a project's own `just check` can be one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_sandboxed_session_refuses_a_check_it_would_only_contain() -> TestResult {
+async fn a_sandboxed_session_admits_a_check_it_would_only_contain() -> TestResult {
     let root = gate_rule_root("yi-check-sandboxed", None)?;
     let sandbox = yi_tools::Sandbox {
         writable: vec![root.join("project")],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };
     let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), Some(sandbox));
-    let marker = root.join("project/contained-marker");
-    let check = json!(format!("touch {}", marker.display()));
-    let spawned = host.spawn(
-        "land the fix".to_owned(),
-        protocol_kwargs("contained", &[("check", check)]),
-    );
-    let refusal = spawned
-        .err()
-        .ok_or("a check the sandbox only contains must not spawn")?;
-    assert!(
-        refusal.contains("refused before it runs on the host")
-            && refusal.contains("runs later outside the sandbox, which allows it only contained")
-            && refusal.contains("run it yourself with bash, or allow it by a permission rule"),
-        "the refusal names the containment and the way out: {refusal}"
-    );
-    assert!(!marker.exists(), "the refused check never ran");
+    let outside = root.join("outside-marker");
+    let address = root.join("project/escape-target");
+    std::fs::write(&address, outside.display().to_string())?;
+    // Read from a file, so the gate's reading of the words cannot refuse it before the sandbox.
+    let check = json!(format!("touch \"$(cat {})\"", address.display()));
+    let reply = host
+        .spawn(
+            "land the fix".to_owned(),
+            protocol_kwargs("contained", &[("check", check)]),
+        )
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
+    assert!(wait_for_status(&host, child_id, "completed").await);
+    let refused = host.result("contained", None).err().unwrap_or_default();
+    assert!(refused.contains("[contained: "), "{refused}");
+    assert!(!outside.exists(), "the child's check ran on the host");
+    Ok(())
+}
+
+/// Dies with the broker reaching the session after its checkers were built: a wired session's
+/// check then ran on the host, and its wall was empty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wired_sessions_check_runs_in_its_sandbox_under_its_wall() -> TestResult {
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
+    let root = gate_rule_root("yi-check-wired", None)?;
+    let walled = root.join("project/walled");
+    std::fs::create_dir_all(&walled)?;
+    let sandbox = yi_tools::Sandbox {
+        writable: vec![root.join("project")],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        sealed: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    };
+    let wall = yi_runtime::Wall {
+        deny_write: vec![walled.clone()],
+        ..yi_runtime::Wall::default()
+    };
+    let (_session, _provider, host) = wired_root(&root, wall, Some(sandbox));
+    let outside = root.join("outside-marker");
+    let inside = walled.join("marker");
+    for (name, target) in [("escape", &outside), ("walled", &inside)] {
+        // Read from a file, so the gate's reading of the words cannot refuse it before the sandbox.
+        let address = root.join(format!("project/{name}-target"));
+        std::fs::write(&address, target.display().to_string())?;
+        let check = json!(format!("touch \"$(cat {})\"", address.display()));
+        let reply = host
+            .spawn(
+                "land the fix".to_owned(),
+                protocol_kwargs(name, &[("check", check)]),
+            )
+            .map_err(|error| error.to_string())?;
+        let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+        assert!(wait_for_status(&host, child_id, "completed").await);
+        let refused = host.result(name, None).err().unwrap_or_default();
+        assert!(refused.contains("[contained: "), "{name}: {refused}");
+    }
+    assert!(!outside.exists(), "the check ran on the host");
+    assert!(!inside.exists(), "the check ignored the session's wall");
     Ok(())
 }
 
@@ -4035,6 +4085,7 @@ async fn a_merge_check_the_gate_refuses_never_runs() -> TestResult {
         writable: vec![project.clone()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        sealed: Vec::new(),
         host_owned: Vec::new(),
         spared: Vec::new(),
     };

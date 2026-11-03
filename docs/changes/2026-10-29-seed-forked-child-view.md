@@ -1,6 +1,7 @@
 ---
 issue: Closes #1767
 raise: crate runtime +23, tests +130, comments +3
+ledger~: kernel + ipython + rlm() subagents | written to its transcript | a `fork=all` child from the parent's view with its cut results as the placeholders its own requests carry, both inside 80% of the child's route window behind a `[… fork kept K of N` row when that ceiling cut, written to the child's transcript
 ---
 A forked child was seeded from the parent's stored history, so it re-read every tool result its
 parent's own requests had already replaced with a `[reclaimed: …]` placeholder: the bytes, not

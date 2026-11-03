@@ -43,6 +43,8 @@ pub struct ToolContext {
     pub auto_background: Option<std::time::Duration>,
     /// Set when the permission layer contained this call rather than asking.
     pub sandbox: Option<crate::sandbox::Sandbox>,
+    /// Asked once per contained spawn, so its network has a holder.
+    pub spawn: Option<crate::SpawnFn>,
     /// Invariant: paths the reviewer wall hides from this agent. A tool reading a tree rather
     /// than a named path shows the wall no target, so it consults this set itself.
     pub deny_read: Vec<PathBuf>,
@@ -57,6 +59,7 @@ pub struct ToolContext {
     /// and collects past the caps of the model's view, since the program reads the value.
     pub program: bool,
     pub fuse: Fuse,
+    pub hold_opens: Option<yi_permission::OpenHold>,
 }
 
 impl ToolContext {
@@ -65,7 +68,9 @@ impl ToolContext {
     pub(crate) fn read_gate(&self) -> yi_permission::ReadGate {
         let context = yi_permission::CatastrophicContext::detect(&self.cwd);
         let own = self.recovery_dir.iter().chain(&self.transcript).cloned();
-        yi_permission::ReadGate::new(&context).except(own.collect())
+        let mut gate = yi_permission::ReadGate::new(&context).except(own.collect());
+        gate.hold_opens(self.hold_opens.clone());
+        gate
     }
 
     /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`.
@@ -86,6 +91,7 @@ impl ToolContext {
             transcript: None,
             auto_background: None,
             sandbox: None,
+            spawn: None,
             deny_read: Vec::new(),
             deny_write: Vec::new(),
             container: None,
@@ -93,6 +99,7 @@ impl ToolContext {
             job_owner: None,
             program: false,
             fuse: Fuse::PROGRAM,
+            hold_opens: None,
         }
     }
 }

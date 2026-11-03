@@ -3,8 +3,8 @@ mod scratch;
 #[path = "support/upstream.rs"]
 mod upstream;
 use scratch::Scratch;
-
 use std::error::Error;
+use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 use yi_ai::anthropic::{AnthropicOptions, Thinking, build_params};
@@ -137,6 +137,21 @@ fn session_tools() -> Result<(Scratch, SessionTools), Box<dyn Error>> {
     std::fs::create_dir_all(&cwd)?;
     std::fs::create_dir_all(&home)?;
     let provider = Arc::new(ProviderStream::new(None));
+    let search = yi_ai::catalog::Catalog::bundled()
+        .get("openrouter", "deepseek/deepseek-v4-flash")
+        .cloned()
+        .and_then(|model| {
+            yi_ai::search::OpenRouterSearch::new(
+                model,
+                Some(yi_ai::auth::Secret::new("x".to_owned())),
+                yi_ai::search::SearchEngine::default(),
+                None,
+                None,
+            )
+            .ok()
+        })
+        .map(|provider| Arc::new(provider) as Arc<dyn yi_ai::search::SearchProvider>);
+    provider.set_web_search(search);
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
@@ -432,7 +447,12 @@ fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResul
         Slot::new(Rank::Mode, "permission"),
         mode_fragment(PermissionMode::Auto).to_owned(),
     );
-    state.attach_external("AGENTS.md", Trust::Untrusted, "run the repo's own gate");
+    state.attach_external(
+        "AGENTS.md",
+        Trust::Untrusted,
+        "run the repo's own gate",
+        None,
+    );
 
     let blocks = |state: &PromptState| -> Vec<String> {
         state
@@ -449,7 +469,12 @@ fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResul
         "assembling the same state twice must produce the same bytes"
     );
 
-    state.attach_external("AGENTS.md", Trust::Untrusted, "the repository changed");
+    state.attach_external(
+        "AGENTS.md",
+        Trust::Untrusted,
+        "the repository changed",
+        None,
+    );
     let after_yard = blocks(&state);
     assert_eq!(before[0], after_yard[0], "block 0 survives a yard change");
     assert_eq!(before[1], after_yard[1], "block 1 survives a yard change");
@@ -759,6 +784,32 @@ const ROLES: [(&str, &str, Option<&str>); 5] = [
 fn checkout() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
+/// Incident: a temp dir under a checkout made every bare row price that checkout's AGENTS.md,
+/// 44342 bytes against a 50477 budget; a base inside a repository is refused, never fallen back on.
+fn repo_free(base: PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+    let Some(root) = yi_tools::git_root(&base) else {
+        return Ok(base);
+    };
+    Err(format!(
+        "{} sits inside the repository at {}, which would price its AGENTS.md",
+        base.display(),
+        root.display()
+    )
+    .into())
+}
+
+#[test]
+fn a_base_inside_a_repository_is_refused() -> TestResult {
+    let dir = Scratch::new("yi-repo-free")?;
+    std::fs::create_dir_all(dir.join(".git"))?;
+    let Err(error) = repo_free(dir.to_path_buf()) else {
+        return Err("a repo-bound base was accepted".into());
+    };
+    if !error.to_string().contains(&dir.display().to_string()) {
+        return Err(format!("the refusal does not name {}: {error}", dir.display()).into());
+    }
+    Ok(())
+}
 
 /// Each role's first request body, from a root wired as yi wires one and children spawned
 /// through its host, so a child's prefix is the one its production factory builds.
@@ -766,7 +817,8 @@ async fn role_bodies(
     workspace: Workspace,
     max_depth: u8,
 ) -> Result<Vec<(&'static str, Value)>, Box<dyn Error>> {
-    let scratch = Scratch::new("yi-role-prefix")?;
+    let base = repo_free(std::env::temp_dir()).or_else(|_| repo_free(PathBuf::from("/tmp")))?;
+    let scratch = Scratch::new_at(&base, "yi-role-prefix")?;
     let ws = scratch.join("ws");
     std::fs::create_dir_all(&ws)?;
     let mode = match workspace {
@@ -786,8 +838,7 @@ async fn role_bodies(
         ..model()
     };
     let home = scratch.join("home");
-    // Invariant: a plugin found on the runner's PATH attaches its card, which would move a
-    // gated row by machine; the pinned ripwire sits in HOME as `yi plugin add` leaves it.
+    // Invariant: a PATH plugin moves a row by machine; the pinned ripwire sits in HOME.
     let ripwire = yi_tools::plugin::Plugin::named("ripwire").and_then(|it| it.program(&home));
     let ripwire = ripwire.ok_or("no pinned ripwire")?;
     std::fs::create_dir_all(ripwire.parent().ok_or("ripwire has no dir")?)?;
@@ -803,7 +854,9 @@ async fn role_bodies(
         tools,
         max_depth,
     )?;
-    if !matches!(workspace, Workspace::Bare) {
+    if matches!(workspace, Workspace::Bare) {
+        upstream::git(&ws, &["init", "-q", "-b", "main"])?;
+    } else {
         std::fs::copy(checkout().join("AGENTS.md"), ws.join("AGENTS.md"))?;
         std::fs::write(ws.join("Cargo.toml"), "[workspace]\n")?;
         upstream::git(&ws, &["init", "-q", "-b", "main"])?;
