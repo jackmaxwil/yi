@@ -589,6 +589,7 @@ fn run(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
     use std::path::{Path, PathBuf};
 
     /// Review of #925 (F2): the converter parses untrusted files, so its profile keeps no network,
