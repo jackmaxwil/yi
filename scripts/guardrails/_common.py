@@ -150,6 +150,12 @@ def base_commit():
                 return ref, found.stdout.strip()
     return None, None
 
+def skip_on_candidate(name):
+    """A queue candidate carries other PRs' growth, each already judged at its own fork."""
+    if os.environ.get("GITHUB_REF") == "refs/heads/queue/candidate":
+        print(f"skip {name}: judged at each PR's own fork")
+        sys.exit(0)
+
 def fork():
     return base_commit()[1]
 
@@ -177,7 +183,7 @@ def scratch_repo(prefix, seed):
     """A git repo holding these guardrails and `seed` ({path: text or bytes}) on main, checked out on
     `topic`; yields (dir, run), run being a command in it with CARGO_TARGET_DIR unset; removed after."""
     tmp = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
-    env = {k: v for k, v in os.environ.items() if k != "CARGO_TARGET_DIR"}
+    env = {k: v for k, v in os.environ.items() if k not in ("CARGO_TARGET_DIR", "GITHUB_REF")}
     run = lambda *a: subprocess.run(a, cwd=tmp, capture_output=True, text=True, env=env)
     try:
         shutil.copytree(pathlib.Path(__file__).parent, tmp / "scripts/guardrails", ignore=shutil.ignore_patterns("baselines", "__pycache__"))

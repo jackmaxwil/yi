@@ -10,7 +10,7 @@ mod zone;
 use std::collections::HashSet;
 
 pub use clock::Firing;
-pub use cron::{next_run_at_for_schedule, parse_iso_ms, parse_schedule, parse_schedule_in};
+pub use cron::{next_run_at_for_schedule, parse_local_ms, parse_schedule, parse_schedule_in};
 pub use lanes::Scheduler;
 pub(crate) use shared::jobs_path;
 pub use shared::{release_unloaded, schedules_root};

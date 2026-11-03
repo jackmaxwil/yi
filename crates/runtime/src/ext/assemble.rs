@@ -275,19 +275,14 @@ impl PromptState {
 /// External text cannot close its fence, forge a trust label or split a cached block. Incident:
 /// escaping before stripping let `<<\0<` re-form the sentinel; strip first, escape last.
 pub(crate) fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
-    let clean = |text: &str| {
-        escape_sentinel(
-            &text
-                .chars()
-                .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
-                .collect::<String>(),
-        )
+    // Incident: a bidi override reads a hostile filename backwards in a row or an ask.
+    let hidden = |ch: char| {
+        (ch.is_control() && ch != '\n' && ch != '\t')
+            || matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
     };
-    if text.contains(FENCE_SENTINEL)
-        || text
-            .chars()
-            .any(|ch| ch.is_control() && ch != '\n' && ch != '\t')
-    {
+    let clean =
+        |text: &str| escape_sentinel(&text.chars().filter(|ch| !hidden(*ch)).collect::<String>());
+    if text.contains(FENCE_SENTINEL) || text.chars().any(hidden) {
         std::borrow::Cow::Owned(clean(text))
     } else {
         std::borrow::Cow::Borrowed(text)
@@ -317,4 +312,16 @@ pub(crate) fn escape_sentinel(text: &str) -> String {
         out = out.replace(FENCE_SENTINEL, FENCE_ESCAPE);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    /// A row or an ask must read in the order its bytes run.
+    #[test]
+    fn a_bidi_control_never_survives() {
+        assert_eq!(
+            super::sanitize("a\u{202E}b\u{2066}c\u{0007}d\ne"),
+            "abcd\ne"
+        );
+    }
 }
