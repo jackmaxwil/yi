@@ -8,10 +8,6 @@ const PROVIDERS: [(&str, &str); 3] = [
     ("openai", "openai/gpt-5.5"),
     ("openrouter", "openrouter/anthropic/claude-sonnet-5"),
 ];
-pub(crate) const LAYA_VENV: &str = ".local/share/laya-venv";
-const LAYA: &str = "laya[serve]==0.3.21";
-const CLASSIFIER_URL: &str = "http://127.0.0.1:8000";
-const CHECKPOINT: &str = "english";
 
 type Edit = (Vec<&'static str>, Value);
 
@@ -69,19 +65,8 @@ fn offers(first_arg: Option<&str>, has_config: bool, terminal: bool) -> bool {
 }
 
 fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), String> {
-    let path = yi_runtime::settings::config_path(home);
-    match std::fs::read_to_string(&path) {
-        Ok(raw) => {
-            yi_types::config::parse(&raw).map_err(|error| {
-                format!(
-                    "{}: {error}; fix it, then run `yi setup` again",
-                    path.display()
-                )
-            })?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("{}: {error}", path.display())),
-    }
+    let (stored, _) = crate::user_config::read_config(home)
+        .map_err(|error| format!("{error}; fix it, then run `yi setup` again"))?;
     yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
     let mut edits: Vec<Edit> = Vec::new();
     let provider = ask(
@@ -90,7 +75,7 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
         "Provider for the main model (anthropic, openai, openrouter; blank skips): ",
     )?;
     if !provider.is_empty() {
-        model_step(home, &provider, input, out, &mut edits)?;
+        model_step(&provider, &stored, input, out, &mut edits)?;
     }
     let mode = ask(
         input,
@@ -110,10 +95,10 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
     let classifier = ask(
         input,
         out,
-        "Set up the optional skill classifier? It suggests skills from what you mean, not only trigger words, with a local 808 MB model (about 100 ms a message on CPU). [y/N]: ",
+        "Turn on the optional classifier? It suggests skills from what you mean and approves ordinary commands in auto mode; typed messages and commands go to TypeSafe's Jev through OpenRouter, about $0.00002 a call. [y/N]: ",
     )?;
     if yes(&classifier) {
-        classifier_step(home, input, out, &mut edits)?;
+        classifier_step(out, &stored, &mut edits)?;
     }
     if edits.is_empty() {
         return say(out, "Nothing to save.");
@@ -123,8 +108,8 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
 }
 
 fn model_step(
-    home: &Path,
     provider: &str,
+    stored: &yi_types::config::UserConfig,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     edits: &mut Vec<Edit>,
@@ -151,10 +136,10 @@ fn model_step(
             &format!("unknown model {model}; the model is left as it is"),
         );
     }
-    let primary = std::fs::read_to_string(yi_runtime::settings::config_path(home))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .is_some_and(|config| config.pointer("/models/primary").is_some());
+    let primary = stored
+        .models
+        .as_ref()
+        .is_some_and(|models| models.primary.is_some());
     let key = if primary {
         vec!["models", "primary"]
     } else {
@@ -164,93 +149,33 @@ fn model_step(
     Ok(())
 }
 
+const LAYA_URL: &str = "http://127.0.0.1:8000";
+
 fn classifier_step(
-    home: &Path,
-    input: &mut dyn BufRead,
     out: &mut dyn Write,
+    stored: &yi_types::config::UserConfig,
     edits: &mut Vec<Edit>,
 ) -> Result<(), String> {
-    let venv = home.join(LAYA_VENV);
-    let install = ask(
-        input,
-        out,
-        &format!(
-            "Install laya-serve into {} now? It downloads about 1-2 GB. [y/N]: ",
-            venv.display()
-        ),
-    )?;
-    if yes(&install)
-        && let Err(error) = install_laya(&venv)
-    {
-        say(out, &format!("laya-serve did not install: {error}"))?;
-    }
-    say(
-        out,
-        &format!(
-            "`yi serve` starts it once this is saved; to probe it now, start it in another terminal:\n  LAYA_HOST=127.0.0.1 LAYA_PORT=8000 {}",
-            venv.join("bin/laya-serve").display()
-        ),
-    )?;
-    let answer = ask(
-        input,
-        out,
-        &format!("Its URL once running [{CLASSIFIER_URL}]: "),
-    )?;
-    let url = if answer.is_empty() {
-        CLASSIFIER_URL.to_owned()
-    } else {
-        answer
-    };
-    if let Err(error) = yi_runtime::classifier::probe(&url, CHECKPOINT) {
+    if yi_runtime::auth::api_key("openrouter").is_none() {
         return say(
             out,
             &format!(
-                "no classifier answered at {url} ({error}); nothing saved for it, so run `yi setup` again once it runs"
+                "{}; the classifier is not saved",
+                yi_runtime::auth::missing_message("openrouter")
             ),
         );
     }
-    edits.push((vec!["models", "classifier"], json!(CHECKPOINT)));
-    edits.push((vec!["classifier", "url"], json!(url)));
-    Ok(())
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "setup installs laya-serve only after the user says yes"
-)]
-fn install_laya(venv: &Path) -> Result<(), String> {
-    let python = venv.join("bin/python");
-    let uv = std::process::Command::new("uv")
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success());
-    let steps: [Vec<std::ffi::OsString>; 2] = if uv {
-        [
-            vec!["uv".into(), "venv".into(), venv.into()],
-            vec![
-                "uv".into(),
-                "pip".into(),
-                "install".into(),
-                "--python".into(),
-                python.into(),
-                LAYA.into(),
-            ],
-        ]
-    } else {
-        [
-            vec!["python3".into(), "-m".into(), "venv".into(), venv.into()],
-            vec![venv.join("bin/pip").into(), "install".into(), LAYA.into()],
-        ]
-    };
-    for step in steps {
-        let (program, args) = step.split_first().ok_or("an empty install step")?;
-        let status = std::process::Command::new(program)
-            .args(args)
-            .status()
-            .map_err(|error| format!("{}: {error}", program.to_string_lossy()))?;
-        if !status.success() {
-            return Err(format!("{} exited {status}", program.to_string_lossy()));
-        }
+    edits.push((
+        vec!["models", "classifier"],
+        json!(yi_runtime::classifier::JEV),
+    ));
+    let laya = stored
+        .classifier
+        .as_ref()
+        .and_then(|classifier| classifier.url.as_deref())
+        .is_some_and(|url| url.trim_end_matches('/') == LAYA_URL);
+    if laya {
+        edits.push((vec!["classifier", "url"], Value::Null));
     }
     Ok(())
 }

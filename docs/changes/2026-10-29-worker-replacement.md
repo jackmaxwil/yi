@@ -1,7 +1,8 @@
 ---
 issue: Closes #1707
-raise: crate acp +575
-raise: crate cli +111
+ledger+: daemon (ACP-router supervisor + worker/root) | a root's worker is swapped for a freshly built binary through `yi worker replace --binary` (`_yi/prepare_replace`, then `_yi/restore` and `_yi/worker_replaced` for the clients), which refuses by name rather than migrating a live turn, job, child, ask or unsavable kernel, and keeps every attached client through the swap (`serve_daemon::replacing_a_worker_keeps_the_session_and_the_daemon_serving_it`, T2)
+raise: crate acp +576
+raise: crate cli +117
 raise: crate console +15
 raise: crate kernel +5
 raise: crate runtime +12

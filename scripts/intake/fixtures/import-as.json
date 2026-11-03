@@ -1,0 +1,20 @@
+{
+  "login": "pranavjcs",
+  "contributor": {
+    "user_id": 188620411,
+    "emails": ["pranavchavan2024.it@mmcoe.edu.in"],
+    "fingerprints": ["SHA256:EqY9zglJtekWC9HagB36RsYFwXdC5yOQGihNER7fNr0"],
+    "caps": {
+      "commits": 20,
+      "files": 40,
+      "lines": 4000,
+      "bytes": 150000
+    },
+    "dependencies": false,
+    "import_as": {
+      "name": "Maximillian Ludwick",
+      "email": "30126044+Madmaxme@users.noreply.github.com",
+      "consent": "Max, iMessage, 2026-10-29"
+    }
+  }
+}

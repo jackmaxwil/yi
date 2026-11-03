@@ -74,9 +74,13 @@ impl App {
             keys: Vec::new(),
             initial_prompt: None,
             pace: self.state.chat_pace,
+            follow: self.state.chat_follow,
         };
-        let mut app =
-            yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
+        let theme = yi_tui::colors::Theme {
+            run: true,
+            ..self.theme
+        };
+        let mut app = yi_tui::app::App::new(options, theme, yi_tui::keymap::default_keymap(), 80);
         let _ = app.take_title();
         app.set_clock(self.clock);
         app.set_status_name_shown(false);
@@ -130,6 +134,13 @@ impl App {
                 on_chat && key.modifiers.contains(KeyModifiers::ALT) && self.chat_takes_ctrl_c()
             }
             _ => false,
+        }
+    }
+
+    pub(super) fn scroll_focused(&mut self, delta: isize) {
+        if let Some(pane) = self.state.focused_pane_mut() {
+            pane.scroll_by(delta);
+            self.dirty = true;
         }
     }
 
@@ -940,6 +951,10 @@ mod tests {
             error: None,
             exit: None,
             flag: None,
+            session: None,
+            role: None,
+            task: None,
+            elapsed_ms: None,
         }
     }
 

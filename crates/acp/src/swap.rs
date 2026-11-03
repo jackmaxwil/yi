@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use tokio::io::AsyncWriteExt;
 
 use crate::AcpState;
 use crate::daemon::{ClientId, Input, Supervisor, error_frame, result_frame};
@@ -67,6 +68,15 @@ fn executable(path: &str) -> Result<PathBuf, String> {
 }
 
 impl Supervisor {
+    pub(crate) async fn write_worker(&mut self, root: &str, line: String) -> bool {
+        let Some(worker) = self.workers.get_mut(root) else {
+            return false;
+        };
+        let mut payload = line.into_bytes();
+        payload.push(b'\n');
+        worker.stdin.write_all(&payload).await.is_ok()
+    }
+
     /// Whether `generation` is still the worker this root serves: a superseded worker's close
     /// must not tear down the build that replaced it.
     pub(crate) fn serves(&self, root: &str, generation: u64) -> bool {
