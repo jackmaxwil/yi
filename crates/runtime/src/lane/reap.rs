@@ -18,7 +18,7 @@ pub struct Uncommitted {
 
 impl Uncommitted {
     pub(crate) fn read(tree: &Path, home: Option<&Path>) -> Result<Self, LaneError> {
-        let status = git_capture(tree, &STATUS, None, yi_tools::OUTPUT_CAP)?;
+        let status = git_capture(tree, &STATUS, &[], None, yi_tools::OUTPUT_CAP)?;
         Ok(Self::counted(&status).with_submodules(tree, home, None))
     }
 
@@ -351,6 +351,7 @@ impl Pool {
         let listing = git_capture(
             &self.repo,
             &["worktree", "list", "--porcelain"],
+            &[],
             None,
             super::PLUMBING_CAP,
         )?;

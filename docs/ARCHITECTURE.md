@@ -163,6 +163,19 @@ hardlinked `.rlib` shares an inode with the parent's, so a contained child can w
 which the parent's next uncontained build uses. A process that left its job survives a discard, and
 the row says so.
 
+## Trust boundaries of warm directories
+
+A kernel check runs in one of `node.slots` directories: one trust domain per family. The scrub removes what an honest check leaves, not what a hostile one plants.
+Tests: `warm_checks.rs`.
+
+| boundary | instance | control | test |
+|---|---|---|---|
+| borrower → next | I: ignored output read by the next | `clean -ffdx` but `target` | `an_ignored_report_from_one_borrower_is_gone_for_the_next` |
+| | T: a stale binary passes with no build | `target/<profile>` keeps cargo's bookkeeping | `a_stale_binary_is_gone_and_cargos_bookkeeping_stays` |
+| | **T: a `.rlib` planted for the next borrower** | **residual** | |
+| check → pool | D: a dirty slot reads orphaned | scrub at release | `a_check_that_writes_and_edits_still_frees_its_directory` |
+| waiting → model | R: a cut check read as red; D: tickets | `Abstain` is no verdict; `check.tickets` 256 | `past_its_budget_a_check_is_no_verdict_on_the_work` |
+
 ## Trust boundaries of Linux containment
 
 A contained command starts as `yi __contain`, which applies a Landlock ruleset and execs. Rules only

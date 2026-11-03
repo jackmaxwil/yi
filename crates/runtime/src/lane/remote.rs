@@ -327,7 +327,7 @@ impl GitLane {
         let deadline = Instant::now().checked_add(self.forward_timeout);
         let refspec = format!("{}:{target}", sha.as_str());
         let args = ["push", "-q", "origin", refspec.as_str()];
-        match git_capture(repo, &args, deadline, CAPTURE_CAP) {
+        match git_capture(repo, &args, &[], deadline, CAPTURE_CAP) {
             Ok(_) => {
                 if let Wanted::Branch(branch) = wanted {
                     let upstream = format!("origin/{branch}");

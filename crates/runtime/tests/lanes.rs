@@ -3291,10 +3291,10 @@ async fn a_checked_hand_back_merges_only_a_lane_whose_check_passes() -> TestResu
     Ok(())
 }
 
-/// Dies with the check's error dropping the tree: the work leaves the record with its lane
-/// unclaimed, so the retry answers "has no worktree" and the child's work is never merged.
+/// Dies with a refused check merging, or the work lost: the check runs on the settled commit, so a
+/// refusal leaves the work on the branch the error names and this checkout as it was.
 #[tokio::test]
-async fn a_check_the_hooks_refuse_keeps_the_work_on_the_record() -> TestResult {
+async fn a_check_the_hooks_refuse_leaves_the_work_on_its_branch() -> TestResult {
     let rig = Rig::new("check-refused")?;
     let deny = rig.root.join("deny.sh");
     std::fs::write(
@@ -3328,11 +3328,18 @@ async fn a_check_the_hooks_refuse_keeps_the_work_on_the_record() -> TestResult {
         !rig.repo.join("draft.txt").exists(),
         "a refused check merged"
     );
-    let landed = family.host.merge_worktree("writer", None)?;
-    assert_eq!(landed["merged"], true, "{landed:?}");
-    assert_eq!(git(&rig.repo, &["show", "HEAD:draft.txt"])?, "x");
+    let branch = refused
+        .split("kept on branch ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .ok_or("the error names no branch")?;
+    assert_eq!(
+        git(&rig.repo, &["show", &format!("{branch}:draft.txt")])?,
+        "x"
+    );
     Ok(())
 }
+
 /// Dies with `check` read as an optional string: a list is no check, and the work lands unrun.
 #[tokio::test]
 async fn a_check_that_is_not_a_string_is_refused_and_merges_nothing() -> TestResult {
@@ -3430,26 +3437,21 @@ async fn a_carry_list_on_the_spawn_copies_an_ignored_file_and_a_non_list_refuses
     Ok(())
 }
 
-/// Dies with the quiescence read before the check: a job that ends while the check runs still
-/// reads as running, and the settle refuses the lane as busy.
+/// A check now runs on the settled commit, so a job still running refuses the hand-back at once as
+/// it does with no check: its writes would otherwise land after the commit that was checked.
 #[tokio::test]
-async fn a_job_that_ends_during_the_check_does_not_hold_the_lane() -> TestResult {
+async fn a_job_still_running_refuses_a_checked_hand_back_as_it_does_any_other() -> TestResult {
     let rig = Rig::new("check-job")?;
     let family = writer(&rig, "echo x > draft.txt").await?;
     assert!(family.reaches("writer", "finished").await);
-    let listed = git(&rig.repo, &["worktree", "list", "--porcelain"])?;
-    let lane = listed
-        .split("\n\n")
-        .find(|entry| entry.contains("branch refs/heads/yi/sub-"))
-        .and_then(|entry| entry.lines().next()?.strip_prefix("worktree "))
-        .ok_or("no lane worktree")?;
-    let lane = rig
-        .home
-        .join(Path::new(lane).strip_prefix(rig.home.canonicalize()?)?);
+    let lane = family.host.cwd_of("writer").ok_or("no worktree")?;
     let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
-    let _job = yi_tools::jobs::spawn_job("sleep 1", &lane, &never, None, None)?;
-    let reply = checked_merge(&family, "sleep 3")?.await?;
-    assert_eq!(reply["merged"], true, "{reply:?}");
+    let job = yi_tools::jobs::spawn_job("sleep 30", &lane, &never, None, None)?;
+    let refused = checked_merge(&family, "true")?.await;
+    let refused = refused.err().ok_or("a busy tree was merged")?;
+    assert!(refused.contains("not quiescent"), "{refused}");
+    assert!(lane.join("draft.txt").exists(), "the work stands");
+    yi_tools::jobs::registry().kill(job)?;
     Ok(())
 }
 
