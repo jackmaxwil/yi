@@ -1,4 +1,5 @@
 ---
+version: 0.896.0
 issue: Closes #1720, Refs #1722
 raise: crate tui +1, comments +2
 ---
