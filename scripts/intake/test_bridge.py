@@ -352,7 +352,7 @@ def check_signed_object() -> None:
         registry = "intake-fixture@example.invalid " + public + "\n"
         signers = repo / "allowed_signers"
         signers.write_text("\n".join(bridge.signer_lines(contributor, registry)) + "\n")
-        fingerprint = subprocess.check_output(["ssh-keygen", "-lf", FIXTURES / "signed-commit-key.pub"], text=True).split()[1]
+        fingerprint = bridge.ssh_fingerprint(public)
         contributor["fingerprints"] = [fingerprint]
         allowed = repo / "allowed.json"
         allowed.write_text(json.dumps({"contributors": {"fixture": contributor}}))

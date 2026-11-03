@@ -730,9 +730,6 @@ def forge_cases():
 
 
 def selfcheck():
-    for name in tuple(os.environ):
-        if name.startswith("GIT_"):
-            os.environ.pop(name)
     bad = rule_cases() + git_cases() + build_cases() + record_cases() + shadow_cases() + forge_cases()
     bad += [f"rule `{name}` disabled and every case still passes, so it refutes nothing"
             for name, _, _ in RULES if not rule_cases(name)]

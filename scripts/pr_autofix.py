@@ -945,8 +945,7 @@ def findings_in(clone, pr, rnd, answer, tried=0, floor=0):
     return summary, model, touched, declined_highs
 
 
-# Numeric on purpose: no passwd entry, and each fix its own, so one PR's leftovers bind no later one.
-# A random base, so a pass that was killed and left a process cannot share a uid with the next pass.
+# A fresh random uid per fix keeps one pass's leftovers and killed processes away from the next.
 UIDS = itertools.count(61000 + int.from_bytes(os.urandom(2), "big") % 4000)
 
 
@@ -988,6 +987,9 @@ def handed_over(work):
              (scrubbed()["CARGO_TARGET_DIR"], work / "target"),
              (real / ".yi", home / ".yi"), (real / ".cache/uv", home / ".cache/uv"))
     home.mkdir()
+    # OpenSSH calls getpwuid even for explicit key paths; the disposable runner gets a nologin entry.
+    with open("/etc/passwd", "a", encoding="utf-8") as passwd:
+        passwd.write(f"yi-autofix-{uid}:x:{uid}:{uid}::{home}:/bin/false\n")
     for source, into in seeds:
         into.parent.mkdir(parents=True, exist_ok=True)
         if pathlib.Path(source).is_dir():
@@ -2045,15 +2047,15 @@ def confined_selfcheck():
         (tmp / "bin").mkdir(mode=0o755)
         attack = tmp / "bin/cargo"
         attack.write_text(f"""#!{PYTHON}
-import json, os, pathlib, subprocess, sys
+import json, os, pathlib, pwd, subprocess, sys
 def tried(fn):
     try:
         fn()
         return True
-    except OSError:
+    except (OSError, KeyError):
         return False
 home = pathlib.Path(os.environ["HOME"])
-reach = dict(uid=os.getuid(), token=os.environ.get("FGJ_TOKEN"), home=str(home),
+reach = dict(uid=os.getuid(), user=tried(lambda: pwd.getpwuid(os.getuid())), token=os.environ.get("FGJ_TOKEN"), home=str(home),
              skills=tried(lambda: pathlib.Path({str(trusted)!r}).open("a").close()),
              binary=tried(lambda: pathlib.Path({str(fixer)!r}).open("a").close()),
              seed=tried(lambda: pathlib.Path({str(tmp / 'seed-target/warm')!r}).open("a").close()),
@@ -2090,6 +2092,8 @@ sys.exit(7)
                                ("the warm build every fix copies", reach["seed"])):
                 if held:
                     errs.append(f"the PR's code could write {what}")
+            if not reach["user"]:
+                errs.append("the worker uid had no passwd entry for OpenSSH")
             if not reach["uid"] or reach["uid"] != owner:
                 errs.append(f"the PR's code ran as uid {reach['uid']}, not the one uid that owns its work ({owner})")
             if reach["rustup"] != str(bot_home / ".rustup"):
