@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use yi_acp::update::{IdMap, extension, replay_updates, to_updates, update_notification};
 use yi_acp::{VERSION_MISMATCH_ERROR, negotiate};
 use yi_types::acp::{
-    AcpNotification, AcpSessionUpdate, AcpState, AcpStopReason, AcpToolCallStatus, AcpUpdateParams,
+    AcpSessionUpdate, AcpState, AcpStopReason, AcpToolCallStatus, AcpUpdateParams,
 };
 use yi_types::encoding::base64;
 use yi_types::entry::Entry;
@@ -227,6 +227,23 @@ fn tool_execution_maps_to_tool_call_updates_and_bash_to_terminals() -> TestResul
     Ok(())
 }
 
+#[test]
+fn web_search_is_an_acp_search_call() -> TestResult {
+    let mut ids = IdMap::new(1000);
+    let updates = to_updates(
+        &AgentEvent::ToolExecutionStart {
+            tool_call_id: "search-1".to_owned(),
+            tool_name: "web_search".to_owned(),
+            args: json!({"query": "latest Rust"}),
+        },
+        &mut ids,
+    );
+    let started = serde_json::to_value(&updates[0])?;
+    assert_eq!(started["kind"], "search");
+    assert_eq!(started["rawInput"]["query"], "latest Rust");
+    Ok(())
+}
+
 /// Dies with a failing command drawn as completed to an ACP client: the flag no longer marks a
 /// non-zero exit or a rule's verdict, so the status reads them from `details`.
 #[test]
@@ -292,21 +309,7 @@ fn child_updates_become_a_subagent_update_notification() -> TestResult {
     let mut ids = IdMap::new(1000);
     let updates = to_updates(
         &AgentEvent::ChildUpdate {
-            update: yi_types::subagent::ChildUpdate {
-                id: yi_types::subagent::ChildId("sub-abc".to_owned()),
-                name: "sweeper".to_owned(),
-                status: yi_types::subagent::ChildStatus::Running,
-                activity: yi_types::subagent::ChildActivity::Executing,
-                tool_use_count: 3,
-                token_count: 1200,
-                context_tokens: None,
-                context_window: None,
-                cost: None,
-                answer_preview: None,
-                error: None,
-                exit: None,
-                flag: None,
-            },
+            update: child_update(),
         },
         &mut ids,
     );
@@ -334,14 +337,14 @@ fn update_notifications_match_the_serde_wire_shape() -> TestResult {
         AcpSessionUpdate::StateUpdate(AcpState::Running),
     ];
     for update in updates {
-        let expected = serde_json::to_value(AcpNotification {
-            jsonrpc: "2.0".to_owned(),
-            method: "session/update".to_owned(),
-            params: serde_json::to_value(AcpUpdateParams {
+        let expected = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": serde_json::to_value(AcpUpdateParams {
                 session_id: "s1".to_owned(),
                 update: update.clone(),
             })?,
-        })?;
+        });
         assert_eq!(update_notification("s1", update), expected);
     }
     Ok(())
@@ -648,6 +651,10 @@ fn child_update() -> yi_types::subagent::ChildUpdate {
         error: None,
         exit: None,
         flag: None,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
 

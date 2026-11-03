@@ -12,8 +12,8 @@ use yi_loop::ExecutionMode;
 use yi_runtime::schedule::clock::{self, Fired};
 use yi_runtime::schedule::{
     DeliverFn, Firing, HeartbeatCommand, HeartbeatService, INTERRUPTED_ERROR, JobSpec, JobStore,
-    RunOutcome, Scheduler, claim_due_in_state, new_job, parse_heartbeat_command, parse_iso_ms,
-    parse_schedule,
+    RunOutcome, Scheduler, Zone, claim_due_in_state, new_job, parse_heartbeat_command,
+    parse_local_ms, parse_schedule,
 };
 use yi_runtime::todo::{Op, Target, TodoStore};
 use yi_runtime::{AgentSession, HostRegistry, ProviderStream, SessionConfig};
@@ -747,7 +747,7 @@ fn created(fired: &Fired) -> usize {
 fn overlap_skip_creates_nothing_while_the_last_ticks_todo_is_open() -> TestResult {
     let todos = detached_todos();
     let job = heartbeat_job("hb-o", 10_000, 0);
-    let nine = parse_iso_ms("2026-09-28T09:00:00Z").ok_or("iso")?;
+    let nine = parse_local_ms("2026-09-28T09:00:00Z", &Zone::default()).ok_or("iso")?;
     assert_eq!(created(&clock::fire(&todos, &job, &Firing::at(nine))?), 1);
 
     let second = clock::fire(&todos, &job, &Firing::at(nine + 10_000))?;
@@ -789,7 +789,7 @@ fn overlap_skip_creates_nothing_while_the_last_ticks_todo_is_open() -> TestResul
 
 #[test]
 fn three_missed_ticks_make_one_todo_that_names_them() -> TestResult {
-    let seven = parse_iso_ms("2026-09-28T07:00:00Z").ok_or("iso")?;
+    let seven = parse_local_ms("2026-09-28T07:00:00Z", &Zone::default()).ok_or("iso")?;
     let hour = 3_600_000;
     let mut state = ScheduleState::default();
     let mut job = heartbeat_job("hb-m", hour, seven);
@@ -1031,6 +1031,10 @@ fn child_named(id: &str, tokens: u64) -> yi_types::event::AgentEvent {
             error: None,
             exit: None,
             flag: None,
+            session: None,
+            role: None,
+            task: None,
+            elapsed_ms: None,
         },
     }
 }

@@ -17,12 +17,15 @@ concurrency:
 env:
   CARGO_BUILD_JOBS: "5"
 
+permissions:
+  contents: read
+
 jobs:
   autofix:
     runs-on: ubuntu-latest
     # The one place the autofix job's limit is set; pr_autofix.py budgets its pass from it, and the
-    # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 45m) bounds it.
-    timeout-minutes: 45
+    # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 120m) bounds it.
+    timeout-minutes: 90
     steps:
       - name: install fgj
         run: |
@@ -42,22 +45,24 @@ jobs:
             || echo 0)
           echo "newer=$newer" >> "$GITHUB_OUTPUT"
           [ "$newer" = 0 ] || echo "autofix: skipped, $newer newer pass(es) queued"
-      # Main's tree: the merged PR's code runs only inside a token-free clone.
+      # Main's tree: the PR's code and the model run only in a worker under a throwaway uid.
       - if: steps.queue.outputs.newer == '0'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the fixer fetches PR heads with the checkout's scoped token.
         with:
           ref: main
           fetch-depth: 0
+      # A job's HOME starts with no skills, and this copy is main's, not the PR's tree.
+      # The worker gets a copy; this one stays root's (pr_autofix.in_worker).
+      - if: steps.queue.outputs.newer == '0'
+        run: just install-skills
       - if: steps.queue.outputs.newer == '0'
         run: rustup show
       - if: steps.queue.outputs.newer == '0'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: test
           cache-on-failure: true
           save-if: false
-      - if: steps.queue.outputs.newer == '0'
-        run: cargo build -p yi-cli
       # The low tier goes to wafer/mxfp4 first, as in review.yml; no fallback ban, because the higher
       # tiers' models may not be on wafer/mxfp4 and a strict pin would refuse them.
       - if: steps.queue.outputs.newer == '0'
@@ -77,11 +82,12 @@ jobs:
           fi
           login=$(fgj api --hostname git.example.invalid user | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login", ""))')
           [ "$login" = yi-bot ] || { echo "autofix: fgj is signed in as '$login', not yi-bot"; exit 1; }
-          # Incident: the bundled catalog lags OpenRouter, so a fresh runner refused the Opus 5.5
-          # tier as an unknown model; the fetched catalog names every model the key can reach.
-          ./target/debug/yi catalog refresh openrouter
+          # The first model call of a pass with a PR to fix builds yi and refreshes the catalog
+          # (pr_review.yi_bin); a pass with nothing to fix pays for neither.
           # Incident: /tmp is the job's 2 GB tmpfs, and the fixer's clones and the lanes it runs there
           # filled it: #1111's fix died "Out of diskspace", and a 64 MB spill test failed in the clone.
-          export TMPDIR="$GITHUB_WORKSPACE/../autofix-tmp"
+          # Incident: a `..` here walked lexically through the checkout, so a head without the dotted-path
+          # fix found its `.git` and priced its AGENTS.md into every bare role prefix, 45 KB (#1805).
+          export TMPDIR="$(dirname "$GITHUB_WORKSPACE")/autofix-tmp"
           mkdir -p "$TMPDIR"
           just pr autofix

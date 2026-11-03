@@ -193,7 +193,7 @@ pub enum Decoded {
     Name(String),
     Plan(Option<yi_tui::hud::PlanProgress>),
     Config(Config),
-    Child(ChildUpdate),
+    Child(Box<ChildUpdate>),
     Workdir {
         cwd: String,
         lane: Option<String>,
@@ -347,7 +347,7 @@ pub fn decode(extension: AcpExtensionUpdate) -> Result<Decoded, Malformed> {
         )),
         "_yi/subagent_update" => {
             serde_json::from_value::<ChildUpdate>(Value::Object(fields.into_iter().collect()))
-                .map(Decoded::Child)
+                .map(|child| Decoded::Child(Box::new(child)))
                 .map_err(|_| Malformed)
         }
         _ => Ok(Decoded::Other),

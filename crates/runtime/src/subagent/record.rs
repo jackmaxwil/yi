@@ -1,10 +1,15 @@
 use yi_types::event::AgentEvent;
 use yi_types::message::AgentMessage;
-use yi_types::subagent::ChildExit;
+use yi_types::subagent::{ChildEnded, ChildExit};
 
 use super::{ChildActivity, ChildId, ChildRecord, ChildUpdate};
 use crate::family::Phase;
 use crate::session::AgentSession;
+
+pub const PARENT_NAME: &str = "parent";
+pub(crate) const INTERRUPTED: &str = "interrupted";
+pub const PARENT_CLOSED: &str = "parent closed";
+pub(crate) const AMBIGUOUS: &str = "names more than one child, so give its full name:";
 
 /// A child's session as a reader holds it: its events, transcript, model and status. It has
 /// no abort, prompt or send, so stopping a child is the host's `interrupt` and nothing else.
@@ -69,7 +74,7 @@ fn red_check() -> ChildExit {
 
 const PREVIEW_CHARS: usize = 240;
 
-pub(super) fn preview(text: &str, name: &str) -> String {
+pub(crate) fn preview(text: &str, name: &str) -> String {
     let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let next = format!("read history://{name}");
     crate::mailbox::clamp(&compact, PREVIEW_CHARS, "PREVIEW_CHARS", &next)
@@ -81,6 +86,28 @@ pub(crate) struct Billing {
     pub(crate) tokens: u64,
     pub(crate) context: Option<u64>,
     pub(crate) crossed: bool,
+}
+
+pub(crate) struct ChildRows {
+    session_id: Option<String>,
+    role: String,
+    task: String,
+    admitted: std::time::Instant,
+    elapsed_ms: Option<u64>,
+    pub(crate) end_journaled: bool,
+}
+
+impl ChildRows {
+    pub(super) fn new(session_id: Option<String>, role: &str, task: String) -> Self {
+        Self {
+            session_id,
+            role: role.to_owned(),
+            task,
+            admitted: std::time::Instant::now(),
+            elapsed_ms: None,
+            end_journaled: false,
+        }
+    }
 }
 
 impl ChildRecord {
@@ -107,6 +134,30 @@ impl ChildRecord {
         Some(self.session.model().context_window).filter(|window| *window > 0)
     }
 
+    pub(crate) fn finish(&mut self) {
+        if self.rows.elapsed_ms.is_none() {
+            self.rows.elapsed_ms =
+                Some(u64::try_from(self.rows.admitted.elapsed().as_millis()).unwrap_or(u64::MAX));
+        }
+    }
+
+    fn cost(&self) -> Option<serde_json::Number> {
+        serde_json::Number::from_f64(self.cost).filter(|_| self.cost > 0.0)
+    }
+
+    pub(crate) fn ended(&self, child_id: &str, exit: ChildExit) -> ChildEnded {
+        ChildEnded {
+            name: self.session_name.clone(),
+            id: ChildId(child_id.to_owned()),
+            exit,
+            error: self.error.clone(),
+            tokens: self.token_count(),
+            elapsed_ms: self.rows.elapsed_ms,
+            cost: self.cost(),
+            answer_preview: self.answer_preview.clone(),
+        }
+    }
+
     /// The turns this incarnation is billed and counted for: a respawned service keeps its
     /// predecessor's transcript, which was already charged to the lease that ended with it.
     pub(crate) fn billable<'a>(&self, messages: &'a [AgentMessage]) -> &'a [AgentMessage] {
@@ -122,11 +173,15 @@ impl ChildRecord {
             token_count: self.spent.tokens,
             context_tokens: self.spent.context,
             context_window: self.window(),
-            cost: serde_json::Number::from_f64(self.cost).filter(|_| self.cost > 0.0),
+            cost: self.cost(),
             answer_preview: self.answer_preview.clone(),
             error: self.error.clone(),
             exit: self.exit,
             flag: None,
+            session: self.rows.session_id.clone(),
+            role: Some(self.rows.role.clone()),
+            task: Some(self.rows.task.clone()),
+            elapsed_ms: self.rows.elapsed_ms,
         }
     }
 
@@ -155,7 +210,10 @@ impl ChildRecord {
             }
             Step::Respawn => {
                 self.phase = Phase::Queued;
-                (self.exit, self.error, self.replied) = (None, None, false);
+                self.rows.end_journaled = false;
+                self.rows.admitted = std::time::Instant::now();
+                (self.exit, self.error, self.replied, self.rows.elapsed_ms) =
+                    (None, None, false, None);
                 // The lease was returned on the last incarnation's count and drawn again.
                 (self.tool_use_count, self.cost) = (0, 0.0);
                 self.spent = Billing::default();
@@ -163,7 +221,10 @@ impl ChildRecord {
                 true
             }
             Step::Resumed if self.exit.is_some() => {
-                (self.exit, self.error, self.replied) = (None, None, false);
+                self.rows.end_journaled = false;
+                self.rows.admitted = std::time::Instant::now();
+                (self.exit, self.error, self.replied, self.rows.elapsed_ms) =
+                    (None, None, false, None);
                 self.phase = Phase::Live;
                 true
             }
@@ -201,7 +262,16 @@ impl ChildRecord {
                 self.phase = Phase::Live;
                 self.exit = Some(exit);
                 self.activity = ChildActivity::Waiting;
-                self.error = error;
+                let lease_ending = matches!(
+                    exit,
+                    ChildExit::Repossessed | ChildExit::Interrupted | ChildExit::Reaped
+                );
+                self.error = if lease_ending && self.error.as_deref() == Some(super::PARENT_CLOSED)
+                {
+                    self.error.clone()
+                } else {
+                    error
+                };
                 true
             }
             Step::Event(event) => self.fold(event),

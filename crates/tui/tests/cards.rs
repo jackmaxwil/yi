@@ -24,15 +24,8 @@ fn theme() -> Theme {
 fn app() -> App {
     App::new(
         TuiOptions {
-            model: common::test_model("faux-1"),
             session_name: "cards".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
+            ..common::options()
         },
         theme(),
         default_keymap(),
@@ -40,7 +33,7 @@ fn app() -> App {
     )
 }
 
-fn ran(app: &mut App, id: &str, text: &str) {
+fn ran(app: &mut App, id: &str, text: &str, is_error: bool) {
     app.reduce_agent(AgentEvent::ToolExecutionStart {
         tool_call_id: id.to_owned(),
         tool_name: "bash".to_owned(),
@@ -59,14 +52,14 @@ fn ran(app: &mut App, id: &str, text: &str) {
             added_tool_names: None,
             terminate: None,
         },
-        is_error: false,
+        is_error,
     });
 }
 
 /// The verbose body of one bash call, rendered at 80 columns.
 fn verbose_rows(text: &str) -> Vec<String> {
     let mut app = app();
-    ran(&mut app, "c1", text);
+    ran(&mut app, "c1", text, false);
     app.cycle_mode();
     assert_eq!(app.mode(), TranscriptMode::Verbose);
     flat(&app.reflowed(80))
@@ -212,18 +205,58 @@ fn a_json_blob_is_pretty_printed_before_capping() -> TestResult {
 }
 
 #[test]
-fn an_over_wide_line_folds_to_two_rows_and_a_size() -> TestResult {
-    let rows = verbose_rows(&"x".repeat(600));
-    let wide = rows.iter().filter(|r| r.contains("xxxx")).count();
+fn an_over_wide_line_folds_to_two_rows_and_names_what_it_hid() -> TestResult {
+    let mut app = app();
+    ran(&mut app, "c1", &"x".repeat(600), false);
+    let rows = flat(&app.reflowed(80));
     assert_eq!(
-        wide, 4,
-        "two rows each for the digest and the body row: {rows:?}"
+        rows.iter().filter(|r| r.contains("xxxx")).count(),
+        2,
+        "the digest repeats the body row, so one line folds: {rows:?}"
     );
     assert_eq!(
-        rows.iter().filter(|r| r.contains("… 1 KB")).count(),
-        2,
+        rows.iter()
+            .filter(|r| r.contains("… 2 of 9 rows, 1 KB"))
+            .count(),
+        1,
         "{rows:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn a_verbose_card_shows_a_long_line_whole() -> TestResult {
+    let rows = verbose_rows(&format!("{} tail", "x".repeat(600)));
+    assert!(
+        rows.iter().any(|r| r.trim_end().ends_with("tail")),
+        "{rows:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failed_calls_reason_is_not_folded_to_two_rows() -> TestResult {
+    let mut app = app();
+    ran(&mut app, "c1", &format!("{} tail", "e".repeat(600)), true);
+    let rows = flat(&app.reflowed(80));
+    assert!(
+        rows.iter().any(|r| r.trim_end().ends_with("tail")),
+        "{rows:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failed_calls_collapsed_rows_still_fold_to_two() -> TestResult {
+    let mut app = app();
+    ran(&mut app, "c1", &format!("boom\n{}", "e".repeat(600)), true);
+    let rows = flat(&app.reflowed(80));
+    assert_eq!(
+        rows.iter().filter(|r| r.contains("eee")).count(),
+        2,
+        "only the reason is revealed; a collapsed row folds as main folds it: {rows:?}"
+    );
+    assert!(rows.iter().any(|r| r.contains("… 2 of")), "{rows:?}");
     Ok(())
 }
 
@@ -232,7 +265,7 @@ fn an_oversized_blob_skips_pretty_printing() -> TestResult {
     let blob = format!("{{\"a\":\"{}\"}}", "y".repeat(300 * 1024));
     let rows = verbose_rows(&blob);
     assert!(!rows.iter().any(|r| r.contains("\"a\": ")), "{rows:?}");
-    assert!(rows.iter().any(|r| r.contains("… 301 KB")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.contains(" rows, 301 KB")), "{rows:?}");
     Ok(())
 }
 
@@ -394,6 +427,10 @@ fn child_update(status: ChildStatus, answer_preview: Option<String>) -> ChildUpd
         error: None,
         exit: None,
         flag: None,
+        session: None,
+        role: None,
+        task: None,
+        elapsed_ms: None,
     }
 }
 
@@ -404,7 +441,16 @@ fn child_update(status: ChildStatus, answer_preview: Option<String>) -> ChildUpd
 #[test]
 fn a_feedless_childs_long_answer_keeps_its_tail_when_the_preview_arrives() -> TestResult {
     let mut app = app();
-    app.adopt(&child_update(ChildStatus::Running, None), None, None);
+    app.reduce_agent(AgentEvent::ToolExecutionStart {
+        tool_call_id: "cell-1".to_owned(),
+        tool_name: "ipython".to_owned(),
+        args: serde_json::json!({"code": "h = await rlm.run()"}),
+    });
+    app.adopt(
+        &child_update(ChildStatus::Running, None),
+        None,
+        Some("cell-1"),
+    );
     let text: String = (0..3_000)
         .map(|n| format!("line {n} of a long report\n"))
         .collect();
@@ -426,7 +472,7 @@ fn a_feedless_childs_long_answer_keeps_its_tail_when_the_preview_arrives() -> Te
     }
     let preview = format!("{}…", text.chars().take(240).collect::<String>());
     app.reduce_child_update(&child_update(ChildStatus::Completed, Some(preview)));
-    let rows = flat(&app.take_commits());
+    let rows = common::live_rows(&mut app)?;
     let row = rows
         .iter()
         .find(|row| row.contains("[…] kept the last"))
@@ -452,7 +498,7 @@ fn a_running_card_draws_no_dropped_head_row() {
 fn a_turn_ends_with_a_dim_footer() -> TestResult {
     let mut app = app();
     app.reduce_agent(AgentEvent::AgentStart);
-    ran(&mut app, "c1", "ok");
+    ran(&mut app, "c1", "ok", false);
     let zero = serde_json::Number::from(0);
     app.reduce_agent(AgentEvent::MessageEnd {
         message: AgentMessage::Assistant {
@@ -559,7 +605,7 @@ fn a_turn_footer_times_the_model_and_its_only_percentage_is_the_cache_rate() -> 
             std::thread::sleep(std::time::Duration::from_millis(5));
             app.reduce_agent(AgentEvent::MessageEnd { message: reply()? });
             if tools && call == 0 {
-                ran(&mut app, "c1", "ok");
+                ran(&mut app, "c1", "ok", false);
             }
         }
         app.reduce_agent(AgentEvent::AgentEnd {
@@ -694,7 +740,12 @@ fn a_turn_receipt_names_its_kinds_of_work_and_the_model_time() -> TestResult {
     app.reduce_agent(AgentEvent::MessageStart { message: reply() });
     std::thread::sleep(std::time::Duration::from_millis(20));
     app.reduce_agent(AgentEvent::MessageEnd { message: reply() });
-    for (id, name) in [("c1", "read"), ("c2", "todo"), ("c3", "edit")] {
+    for (id, name) in [
+        ("c1", "read"),
+        ("c2", "todo"),
+        ("c3", "edit"),
+        ("c5", "web_search"),
+    ] {
         app.reduce_agent(AgentEvent::ToolExecutionStart {
             tool_call_id: id.to_owned(),
             tool_name: name.to_owned(),
@@ -713,7 +764,7 @@ fn a_turn_receipt_names_its_kinds_of_work_and_the_model_time() -> TestResult {
             is_error: false,
         });
     }
-    ran(&mut app, "c4", "ok");
+    ran(&mut app, "c4", "ok", false);
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
     });
@@ -723,7 +774,7 @@ fn a_turn_receipt_names_its_kinds_of_work_and_the_model_time() -> TestResult {
         .find(|r| r.starts_with("  ↳ "))
         .ok_or_else(|| format!("no footer: {rows:?}"))?;
     assert!(
-        footer.starts_with("  ↳ read 1 · edited 1 · ran 1 · "),
+        footer.starts_with("  ↳ read 1 · edited 1 · searched 1 · ran 1 · "),
         "{footer}"
     );
     assert!(footer.contains(" (model "), "{footer}");
@@ -787,7 +838,7 @@ fn a_receipt_counts_only_the_todos_its_turn_closed_and_no_list_calls() -> TestRe
     let mut app = app();
     app.reduce_agent(AgentEvent::AgentStart);
     app.sync_port(Some(&ClaimsPort(vec![claim("write the report")])));
-    ran(&mut app, "c1", "ok");
+    ran(&mut app, "c1", "ok", false);
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
     });
@@ -814,7 +865,7 @@ fn a_receipt_counts_only_the_todos_its_turn_closed_and_no_list_calls() -> TestRe
     };
     app.reduce_agent(AgentEvent::AgentStart);
     listed(&mut app, "c2");
-    ran(&mut app, "c3", "ok");
+    ran(&mut app, "c3", "ok", false);
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
     });

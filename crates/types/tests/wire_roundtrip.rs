@@ -205,6 +205,16 @@ fn money_prints_one_way_and_marks_a_floor() {
 }
 
 #[test]
+fn a_tree_snapshot_round_trips_byte_identical() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tree-snapshot-v1.json");
+    let stored = fs::read_to_string(path)?;
+    let data: yi_types::checkpoint::TreeSnapshot = serde_json::from_str(&stored)?;
+    assert_eq!(data.call.as_deref(), Some("call_1"));
+    assert_eq!(serde_json::to_string(&data)?, stored.trim_end());
+    Ok(())
+}
+
+#[test]
 fn an_undo_checkpoint_recorded_before_after_still_round_trips_byte_identical()
 -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/checkpoint-undo-v1.json");
@@ -308,6 +318,46 @@ fn classifier_answers_and_records_round_trip_with_unknown_fields()
     let records: Vec<ClassifyRecord> = serde_json::from_value(stored.clone())?;
     assert_eq!(records.len(), 3);
     assert_eq!(serde_json::to_value(&records)?, stored);
+    Ok(())
+}
+
+/// Jev's recorded OpenRouter answers keep their usage, id and provider through a round trip, and
+/// a probability stored as `0` re-serializes as `0`, not `0.0`.
+#[test]
+fn jev_answers_decode_and_round_trip_with_their_extra_fields()
+-> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::classifier::{DecisionRequest, DecisionResponse};
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/jev");
+    let mut noul = Vec::new();
+    for name in [
+        "noul-safe-ls",
+        "noul-mid-stash-clear",
+        "noul-unsafe-rm",
+        "choice-forge",
+    ] {
+        let stored: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(fixtures.join(format!("{name}.json")))?)?;
+        let request: DecisionRequest = serde_json::from_value(stored["request"].clone())?;
+        assert_eq!(request.model.as_deref(), Some("typesafe/jev-1.13"));
+        let response: DecisionResponse = serde_json::from_value(stored["response"].clone())?;
+        assert_eq!(serde_json::to_value(&response)?, stored["response"]);
+        assert_eq!(
+            response.model.as_deref(),
+            Some("typesafe/jev-1.13-20260917")
+        );
+        noul.extend(response.answers.get("safe").and_then(|answer| answer.noul));
+        if let Some(skill) = response.answers.get("skill") {
+            let chosen = (skill.probabilities.as_ref())
+                .zip(skill.choice.as_deref())
+                .and_then(|(probabilities, choice)| probabilities.get(choice))
+                .and_then(serde_json::Number::as_f64);
+            assert_eq!(
+                (skill.choice.as_deref(), chosen),
+                (Some("yi-forge"), Some(0.85))
+            );
+        }
+    }
+    assert_eq!(noul, [0.9, 0.69, 0.01]);
     Ok(())
 }
 

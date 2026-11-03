@@ -2,15 +2,13 @@ use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Number, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
 use yi_runtime::{
-    AgentSession, HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SessionConfig,
-    SubagentHost, SubagentHostOptions,
+    AgentSession, KernelService, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions,
 };
 use yi_tools::{CancelFlag, KernelBridge};
 use yi_types::message::StopReason;
@@ -44,26 +42,6 @@ fn faux_model() -> Model {
         thinking_level_map: None,
         headers: None,
     }
-}
-
-fn kernel_service() -> Arc<KernelService> {
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
-    Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: std::env::temp_dir(),
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
-        session_dir: None,
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }))
 }
 
 fn process_alive(pid: u32) -> bool {
@@ -120,7 +98,7 @@ async fn a_reaped_childs_booted_kernel_process_is_gone() -> TestResult {
                 },
                 provider,
             );
-            let service = kernel_service();
+            let service = crate::kernel_lane::service();
             child.set_kernel_service(Arc::clone(&service));
             if let Ok(mut slot) = factory_slot.lock() {
                 *slot = Some(service);
