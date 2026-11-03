@@ -23,7 +23,6 @@ import re
 import shutil
 import subprocess
 import sys
-import sysconfig
 import tempfile
 import time
 from unittest import mock
@@ -1007,14 +1006,19 @@ def worker_python(work, executable=None, prefix=None):
     try:
         inside = executable.relative_to(prefix)
     except ValueError:
-        return str(executable), {}
+        raise RuntimeError(f"the fixer's worker cannot start: {executable} is unreadable to its user and "
+                           f"is outside the interpreter prefix {prefix} that can be carried into the box") from None
     copy = work.parent / "python"
     if not copy.exists():
         shutil.copytree(prefix, copy, symlinks=True)
-        for path in (copy, *copy.rglob("*")):
-            mode = path.lstat().st_mode
-            with contextlib.suppress(OSError):
-                path.chmod(mode | (0o555 if path.is_dir() or mode & 0o100 else 0o444))
+        # Incident: chmod followed a copied symlink out of the box and widened the runner's root-only target.
+        for base, dirs, files in os.walk(copy):
+            for path in (pathlib.Path(base), *(pathlib.Path(base) / name for name in (*dirs, *files))):
+                if path.is_symlink():
+                    continue
+                mode = path.lstat().st_mode
+                with contextlib.suppress(OSError):
+                    path.chmod(mode | (0o555 if path.is_dir() or mode & 0o100 else 0o444))
     return str(copy / inside), {"PYTHONHOME": str(copy)}
 
 
@@ -2170,13 +2174,24 @@ sys.exit(7)
             (prefix / "bin/python3").write_text("")
             prefix.chmod(0o700)
             (prefix / "bin/python3").chmod(0o700)
+            outside = box / "root-only.txt"
+            outside.write_text("root\n")
+            outside.chmod(0o600)
+            (prefix / "bin/python3.12").symlink_to(outside)
             carried, moved = worker_python(box / "work", prefix / "bin/python3", prefix)
             if carried != str(box / "python/bin/python3") or moved != {"PYTHONHOME": str(box / "python")}:
                 errs.append(f"a root-only interpreter was not carried into the box: {carried} {moved}")
             if (box / "python/bin/python3").stat().st_mode & 0o005 != 0o005:
                 errs.append("the box's copy of the runner's interpreter is unreadable or unexecutable to its user")
-            if worker_python(box / "work", prefix / "bin/python3") != (os.path.realpath(prefix / "bin/python3"), {}):
-                errs.append("an interpreter outside the fixer's own prefix was not run where it is")
+            if outside.stat().st_mode & 0o777 != 0o600:
+                errs.append("carrying an interpreter prefix widened a root-only file the copy's symlink points at")
+            try:
+                worker_python(box / "work", prefix / "bin/python3")
+            except RuntimeError as error:
+                if "cannot start" not in str(error):
+                    errs.append(f"an unreachable interpreter outside the prefix was refused for the wrong reason: {error}")
+            else:
+                errs.append("an interpreter its user cannot exec and the box cannot carry was handed out as runnable")
             if worker_python(box / "work", "/bin/sh", box) != (os.path.realpath("/bin/sh"), {}):
                 errs.append("a reachable interpreter was copied instead of run where it is")
         finally:

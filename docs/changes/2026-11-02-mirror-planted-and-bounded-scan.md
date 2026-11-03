@@ -22,3 +22,14 @@ Permission denied: '/root/.local/bin/python3.12'` before the worker started. The
 a readable copy of the interpreter and runs the worker from it, and the selfcheck proves both
 halves of that choice: a reachable interpreter runs where it is, and a root-only one is carried
 in and left readable to the user it drops to.
+
+Two edges of that carry are now held. An interpreter unreadable to the dropped-to user, and
+outside the prefix the box can copy, is refused with a message naming it instead of being handed
+to the worker, because a path that user cannot exec only moves the `PermissionError` one call
+deeper. And widening the copied prefix's modes skips every symlink the copy carries, so no target
+outside the box is chmod'd: before, a link in the runner's prefix to a root-only file made the
+fixer widen that file in place.
+
+`check_scan.py --selfcheck` also drives `semgrep()` itself now, over a faked report, so the
+announced skip row is judged where the model and the CI log read it rather than one call short of
+the print.

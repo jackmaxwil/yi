@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import BASE, ROOT, fail, test_mask
@@ -405,6 +406,24 @@ def selfcheck(off="", fixtures=None):
     broken = [{"type": "Syntax error", "level": "error", "path": "scripts/slow.py"}] if off != "semgrep-timeout" else []
     if not semgrep_errors(broken)[1]:
         errors.append("a semgrep error that is not a timeout stopped failing the scan")
+
+    def driven_semgrep(errors):
+        report = mock.Mock(returncode=0, stdout=json.dumps({"errors": errors, "results": []}), stderr="")
+        shown = io.StringIO()
+        with mock.patch.object(sys.modules[__name__], "require_uv", lambda *args: None), \
+                mock.patch.object(sys.modules[__name__], "uv_argv", lambda package, name, args: [name, *args]), \
+                mock.patch.object(sys.modules[__name__], "run", lambda argv, cwd=ROOT: report), \
+                contextlib.redirect_stdout(shown):
+            try:
+                semgrep(["scripts"])
+            except RuntimeError:
+                return shown.getvalue(), True
+        return shown.getvalue(), False
+
+    if "skip semgrep scripts/slow.py" not in driven_semgrep(slow if off != "semgrep-timeout" else [])[0]:
+        errors.append("a semgrep per-file timeout reached the scan without its announced skip row")
+    if off != "semgrep-timeout" and not driven_semgrep(broken)[1]:
+        errors.append("a semgrep error that is not a timeout no longer failed the scan itself")
     for strict in (True, False):
         printed, aborted = io.StringIO(), False
         try:
