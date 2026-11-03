@@ -70,13 +70,17 @@ fn block(bytes: &[u8], start: usize, width: usize) -> Option<(Zone, usize)> {
 }
 
 impl Zone {
-    /// `$TZ` as a zone name or path, else `/etc/localtime`; UTC when neither loads, which
+    /// `$TZ` as a zone name or a path, else `/etc/localtime`; UTC when neither loads, which
     /// `/heartbeat status` shows by naming the zone.
     pub fn local() -> Self {
         let path = match std::env::var("TZ") {
             Ok(tz) if !tz.is_empty() => {
                 let name = tz.strip_prefix(':').unwrap_or(&tz);
-                PathBuf::from("/usr/share/zoneinfo").join(name)
+                if name.starts_with('/') {
+                    PathBuf::from(name)
+                } else {
+                    PathBuf::from("/usr/share/zoneinfo").join(name)
+                }
             }
             _ => PathBuf::from("/etc/localtime"),
         };
