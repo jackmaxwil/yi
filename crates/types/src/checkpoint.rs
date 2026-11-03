@@ -29,3 +29,19 @@ pub const CHECKPOINT_ENTRY_TYPE: &str = "checkpoint";
 impl crate::entry::CustomRecord for CheckpointData {
     const TYPE: &'static str = CHECKPOINT_ENTRY_TYPE;
 }
+
+/// The `custom{tree_snapshot}` entry payload: a tree captured after a mutating tool call. Restore
+/// scope stays the turn's pair of checkpoints, so `/undo` never reads one of these.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeSnapshot {
+    pub tree: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<String>,
+}
+
+pub const TREE_SNAPSHOT_ENTRY_TYPE: &str = "tree_snapshot";
+
+impl crate::entry::CustomRecord for TreeSnapshot {
+    const TYPE: &'static str = TREE_SNAPSHOT_ENTRY_TYPE;
+}

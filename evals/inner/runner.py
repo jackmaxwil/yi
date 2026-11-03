@@ -58,7 +58,7 @@ def one(task_id, binary, levers, keep, roles=False):
         timed_out, code = False, None
         with events.open("w") as sink:
             try:
-                code = subprocess.run(command + [task["prompt"] + (ROLES if roles else "")], stdout=sink, stderr=subprocess.DEVNULL,
+                code = subprocess.run(command + [task["prompt"] + (ROLES if roles else "")], stdout=sink, stderr=subprocess.DEVNULL,  # nosemgrep: dangerous-subprocess-use-tainted-env-args Prompt stays one argv element; no shell.
                                       stdin=subprocess.DEVNULL, env=env, timeout=task["timeoutSec"] + 60).returncode
             except subprocess.TimeoutExpired:
                 timed_out = True
