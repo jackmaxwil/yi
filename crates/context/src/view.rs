@@ -287,7 +287,7 @@ fn tool_call_brief(name: &str, arguments: &serde_json::Map<String, serde_json::V
     }
 }
 
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

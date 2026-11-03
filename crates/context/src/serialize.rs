@@ -1,3 +1,4 @@
+use crate::view::one_line;
 use yi_types::message::{AgentMessage, Attribution, Content, UserContent};
 
 // Tool results are truncated in serialized summaries; full content is not
@@ -166,13 +167,20 @@ pub fn user_key(window: &[AgentMessage], inputs: &[UserContent]) -> String {
 
 const UNVERIFIED: &str = " [unverified: not in user://";
 
-fn squash(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+fn quote_end(after: &str) -> Option<usize> {
+    let mut escaped = false;
+    after.char_indices().find_map(|(at, c)| {
+        let end = c == '"' && !escaped;
+        escaped = c == '\\' && !escaped;
+        end.then_some(at)
+    })
 }
 
-fn mark_line(line: &str, inputs: &[UserContent]) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut rest = line;
+/// Incident: a tool result could plant a quote the summary then cited as `user://N`; a quote
+/// the addressed typed message lacks, as typed or as its key row escapes it, gets marked.
+pub fn mark_unmatched_quotes(summary: &str, inputs: &[UserContent]) -> String {
+    let mut out = String::with_capacity(summary.len());
+    let mut rest = summary;
     let mut address: Option<usize> = None;
     loop {
         let at = rest.find("user://");
@@ -189,20 +197,28 @@ fn mark_line(line: &str, inputs: &[UserContent]) -> String {
             (_, Some(open)) => {
                 let (before, after) = rest.split_at(open.saturating_add(1));
                 out.push_str(before);
-                let Some((body, tail)) = after.split_once('"') else {
+                if before.contains('\n') {
+                    address = None;
+                }
+                let Some(end) = quote_end(after) else {
                     out.push_str(after);
                     return out;
                 };
+                let (body, tail) = after.split_at(end);
                 out.push_str(body);
+                rest = tail.get(1..).unwrap_or_default();
                 out.push('"');
-                rest = tail;
                 if let Some(n) = address
                     && !rest.starts_with(UNVERIFIED)
                 {
                     let found = n
                         .checked_sub(1)
                         .and_then(|index| inputs.get(index))
-                        .is_some_and(|input| squash(&user_text(input)).contains(&squash(body)));
+                        .map(user_text)
+                        .is_some_and(|text| {
+                            one_line(&text).contains(&one_line(body))
+                                || format!("{text:?}").contains(body)
+                        });
                     if !found {
                         out.push_str(&format!("{UNVERIFIED}{n}]"));
                     }
@@ -214,14 +230,4 @@ fn mark_line(line: &str, inputs: &[UserContent]) -> String {
             }
         }
     }
-}
-
-/// Incident: a tool result could plant a quote the summary then cited as `user://N`; a quote
-/// the addressed typed message lacks (whitespace aside) is marked in the view, never the ledger.
-pub fn mark_unmatched_quotes(summary: &str, inputs: &[UserContent]) -> String {
-    summary
-        .split('\n')
-        .map(|line| mark_line(line, inputs))
-        .collect::<Vec<_>>()
-        .join("\n")
 }

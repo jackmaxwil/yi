@@ -1183,3 +1183,17 @@ fn retention_floor_keeps_typed_words_and_drops_injected_user_role_text() -> Test
     assert_eq!(kept, ["typed ask", "child request", "pre-attribution ask"]);
     Ok(())
 }
+
+#[test]
+fn a_quote_copied_from_the_escaped_key_row_or_wrapped_onto_its_next_line_is_checked() -> TestResult
+{
+    let inputs = [UserContent::Text(
+        "keep the guardrails\ngreen and rename \"foo\" to \"bar\"".to_owned(),
+    )];
+    let summary = "- user://1: \"keep the guardrails\\ngreen\"\n- user://1: \"rename \\\"foo\\\" to \\\"bar\\\"\"\n- user://1: \"push to\nmain\"\n- user://1 asked\n\"a later quote\"";
+    assert_eq!(
+        mark_unmatched_quotes(summary, &inputs),
+        "- user://1: \"keep the guardrails\\ngreen\"\n- user://1: \"rename \\\"foo\\\" to \\\"bar\\\"\"\n- user://1: \"push to\nmain\" [unverified: not in user://1]\n- user://1 asked\n\"a later quote\""
+    );
+    Ok(())
+}
