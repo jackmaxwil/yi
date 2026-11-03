@@ -370,6 +370,19 @@ fn git_network_verbs_ask_for_egress() -> TestResult {
     Ok(())
 }
 
+/// Dies if a contained `git clone` or `git ls-remote` goes back to asking for egress: both run
+/// inside the sandbox through the proxy now, and the ask is the friction this rule removed.
+#[test]
+fn a_contained_clone_and_an_ls_remote_are_not_egress() -> TestResult {
+    for command in [
+        "git clone https://example.invalid/owner/repo.git",
+        "git ls-remote origin",
+    ] {
+        assert_ne!(classify(&argv(command)[0]), Class::Egress, "{command:?}");
+    }
+    Ok(())
+}
+
 #[test]
 fn git_global_options_do_not_become_the_subcommand() -> TestResult {
     let cases = [

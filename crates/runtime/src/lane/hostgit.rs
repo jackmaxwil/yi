@@ -44,7 +44,10 @@ pub(crate) fn capture_named(
     sandbox: Option<&yi_tools::Sandbox>,
 ) -> Result<yi_tools::CommandCapture, String> {
     let capture =
-        run(cwd, program, args, deadline, cap).map_err(|error| format!("{label}: {error}"))?;
+        run(cwd, program, args, &[], deadline, cap).map_err(|error| format!("{label}: {error}"))?;
+    if program == "git" && yi_tools::writes_sealed(args) {
+        yi_tools::reseal();
+    }
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }
@@ -62,12 +65,16 @@ fn run(
     cwd: &Path,
     program: &str,
     args: &[&str],
+    envs: &[(&str, &str)],
     deadline: std::time::Duration,
     cap: usize,
 ) -> Result<yi_tools::CommandCapture, String> {
     let _span = yi_types::trace::span("lane.capture").arg("program", program);
     let mut command = yi_tools::host_command(program, cwd).map_err(|error| error.to_string())?;
-    command.current_dir(cwd).args(args);
+    command
+        .current_dir(cwd)
+        .args(args)
+        .envs(envs.iter().copied());
     let deadline = std::time::Instant::now()
         .checked_add(deadline)
         .unwrap_or_else(std::time::Instant::now);
@@ -81,7 +88,7 @@ pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
 
 /// Incident: a long `status -z` lost its middle, a dirty file with it, and a restore overwrote
 /// that file. A caller that parses plumbing reads all of it or gets this error.
-fn whole(
+pub(super) fn whole(
     capture: yi_tools::CommandCapture,
     args: &[&str],
     cap: usize,
@@ -100,6 +107,7 @@ fn whole(
 pub(crate) fn git_capture(
     cwd: &Path,
     args: &[&str],
+    envs: &[(&str, &str)],
     deadline: Option<Instant>,
     cap: usize,
 ) -> Result<yi_tools::CommandCapture, LaneError> {
@@ -113,6 +121,7 @@ pub(crate) fn git_capture(
         cwd,
         "git",
         args,
+        envs,
         until.saturating_duration_since(Instant::now()),
         cap,
     )
@@ -121,6 +130,9 @@ pub(crate) fn git_capture(
         exit_code: None,
         output,
     })?;
+    if yi_tools::writes_sealed(args) {
+        yi_tools::reseal();
+    }
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }
@@ -147,7 +159,7 @@ pub(super) fn git_capped(
     deadline: Option<Instant>,
     cap: usize,
 ) -> Result<String, LaneError> {
-    whole(git_capture(cwd, args, deadline, cap)?, args, cap)
+    whole(git_capture(cwd, args, &[], deadline, cap)?, args, cap)
 }
 
 pub(super) fn past(deadline: Option<Instant>) -> Result<(), LaneError> {

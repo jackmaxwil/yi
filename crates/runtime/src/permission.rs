@@ -19,10 +19,10 @@ use yi_types::permission::{
 
 mod egress;
 mod forge;
-mod hooked;
-pub(crate) use hooked::claude_dir;
 mod inflight;
 use inflight::InFlight;
+mod hooked;
+pub(crate) use hooked::claude_dir;
 mod kept;
 pub(crate) use kept::protected;
 mod late;

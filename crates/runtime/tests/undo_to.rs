@@ -374,8 +374,8 @@ fn tool_results(store: &SharedSession) -> Result<Vec<String>, Box<dyn Error>> {
     Ok(texts)
 }
 
-/// Dies with an undo that says the session has no checkpoint when it has one: the turn end sits in
-/// the store the session upgrade left behind, where what the turn moved cannot be told apart.
+/// Dies with an undo across stores reported as "no turn yet": its turn end sits in an older
+/// checkpoint store or is unreadable, so the refusal must say nothing moved or was restored.
 #[tokio::test]
 async fn an_undo_whose_turn_end_is_in_another_store_says_so() -> Result<(), Box<dyn Error>> {
     let run = run(&["a"]).await?;
@@ -391,7 +391,9 @@ async fn an_undo_whose_turn_end_is_in_another_store_says_so() -> Result<(), Box<
         return Err("an undo across stores reported nothing to restore".into());
     };
     assert!(
-        why.contains("older checkpoint store") && why.contains("nothing was restored"),
+        why.contains("older checkpoint store")
+            && why.contains("nothing was restored")
+            && why.contains("so nothing moved"),
         "{why}"
     );
     assert!(run.project.join("a").exists(), "the tree stands");

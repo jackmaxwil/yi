@@ -1146,6 +1146,32 @@ fn a_browser_is_refused_for_agent_desktop_in_yolo_and_over_an_allow_rule() -> Te
 }
 
 #[test]
+fn a_real_login_or_window_is_refused_for_agent_browser_in_yolo_and_over_an_allow_rule() -> TestResult
+{
+    let allow = [ConfigRule::new(
+        "bash",
+        "agent-browser *",
+        ConfigRuleAction::Allow,
+    )?];
+    for command in [
+        "agent-browser connect 9222",
+        "agent-browser --headed open x",
+    ] {
+        let call = bash_call(command, "c1");
+        let decision = decide(
+            &call,
+            PermissionMode::Yolo,
+            &allow,
+            &SessionRules::new(),
+            &[],
+            &context(),
+        );
+        assert!(matches!(decision, Decision::Deny { .. }), "{decision:?}");
+    }
+    Ok(())
+}
+
+#[test]
 fn the_users_own_mouse_is_refused_in_yolo_and_over_an_allow_rule() -> TestResult {
     let allow = [ConfigRule::new(
         "bash",

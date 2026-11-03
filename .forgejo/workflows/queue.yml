@@ -12,6 +12,9 @@ concurrency:
   group: queue
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   queue:
     if: vars.MERGE_QUEUE == 'on' || vars.MERGE_QUEUE == 'shadow'
@@ -35,7 +38,7 @@ jobs:
           ref=$(fgj api --hostname git.example.invalid "repos/${{ github.repository }}/branches/queue%2Fcandidate" >/dev/null 2>&1 && echo 1 || echo 0)
           [ "$labelled$ref" = "00" ] && echo "run=no" >> "$GITHUB_OUTPUT" || echo "run=yes" >> "$GITHUB_OUTPUT"
       - if: steps.work.outputs.run == 'yes'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the tick pushes candidates and main with the checkout's token.
         with:
           ref: main
           fetch-depth: 0

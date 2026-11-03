@@ -317,9 +317,7 @@ fn restore_tree(
         .is_some_and(|since| !checkpoints.holds(since))
     {
         return UndoOutcome::Failed(
-            "the turn end sits in an older checkpoint store, so what the turn moved cannot be \
-             told from what you changed since; nothing was restored"
-                .to_owned(),
+            "this turn's end is not in the checkpoint store (a session from before the upgrade has it in an older checkpoint store, or git could not read it); nothing was restored, so nothing moved".to_owned(),
         );
     }
     let replaced = match checkpoints.capture() {

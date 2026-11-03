@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::jobs::MAX_TIMEOUT_SECS;
+use crate::steer::shell_read_hint;
 use crate::tool::{
     DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path,
     text_output,
@@ -295,7 +296,7 @@ fn walk_capped(
 
 /// Incident: a hand-split verb list called `find . -delete` a read. A read is what the permission
 /// classifier proves, less cargo, whose proven verbs write `target/` and the source.
-fn read_only_command(command: &str) -> bool {
+pub(crate) fn read_only_command(command: &str) -> bool {
     let command = yi_permission::without_redirects(command);
     let yi_permission::Parsed::Segments(segments) = yi_permission::parse(&command) else {
         return false;
@@ -405,18 +406,22 @@ pub(crate) fn command_category(command: &str) -> &'static str {
 }
 
 fn segment_category(segment: &str) -> Option<&'static str> {
-    let mut words = segment
+    let words: Vec<&str> = segment
         .split_whitespace()
-        .skip_while(|word| word.contains('='));
-    let verb = words.next()?;
-    let verb = verb.rsplit('/').next().unwrap_or(verb);
-    Some(match verb {
+        .skip_while(|word| word.contains('='))
+        .collect();
+    let (verb, rest) = words.split_first()?;
+    Some(verb_category(verb, rest))
+}
+
+pub(crate) fn verb_category(verb: &str, rest: &[&str]) -> &'static str {
+    match verb.rsplit('/').next().unwrap_or(verb) {
         "grep" | "rg" | "ag" => "search",
         "cat" | "head" | "tail" | "less" | "more" | "wc" | "file" | "stat" => "read",
         "ls" | "find" | "fd" | "tree" => "list_files",
         "git" | "jj" => "vcs",
-        "cargo" | "just" => match words.next() {
-            Some("test" | "nextest") => "test",
+        "cargo" | "just" => match rest.first() {
+            Some(&("test" | "nextest")) => "test",
             _ => "build",
         },
         "make" | "npm" | "pnpm" | "yarn" | "go" | "rustc" | "cc" | "gcc" | "tsc" => "build",
@@ -424,14 +429,14 @@ fn segment_category(segment: &str) -> Option<&'static str> {
         "mkdir" | "touch" | "rm" | "mv" | "cp" | "chmod" | "ln" | "tee" => "write",
         // `sed -n 'Np'` is the read tool's clip escape hatch; only `-i` writes.
         "sed" => {
-            if words.any(|word| word.starts_with("-i")) {
+            if rest.iter().any(|word| word.starts_with("-i")) {
                 "write"
             } else {
                 "read"
             }
         }
         _ => "unknown",
-    })
+    }
 }
 
 #[derive(Default)]
@@ -839,6 +844,9 @@ impl Tool for BashTool {
                 "[{hits} of the last 4 bash calls hit their time limit; change the method, not the limit: bound the work (a smaller input, a sample, an early exit), vectorize it, or run it in the background (nohup CMD > out.log 2>&1 &) and read the log in a later call]"
             ));
         }
+        if let Some(hint) = shell_read_hint(command) {
+            sections.insert(0, hint);
+        }
         if let Some(hint) = document_hint(command) {
             sections.push(hint);
         }
@@ -864,6 +872,9 @@ impl Tool for BashTool {
             context,
             &mut text,
         );
+        if bridge == "tag" {
+            text = crate::steer::without_read_row(&text);
+        }
         let details = json!({
             "exitCode": exit_code,
             "truncated": capture.truncated,

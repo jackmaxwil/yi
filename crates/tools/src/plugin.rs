@@ -9,6 +9,7 @@ pub struct Asset {
     /// Invariant: digest of the member itself, so a file already at the pinned path is
     /// re-verified before yi adopts it as the pin.
     pub member_sha256: &'static str,
+    /// Empty when the download is the program itself, with no archive around it.
     pub member: &'static str,
 }
 
@@ -46,8 +47,8 @@ pub struct Plugin {
 }
 
 /// Bump a version with every digest beside it, from the release's own `.sha256` files, and
-/// record its skills' `sha256sum` as tests/fixtures/ripwire/skills-<version>.sha256.
-pub const PLUGINS: [Plugin; 3] = [
+/// record its skills' `sha256sum` as `tests/fixtures/ripwire/skills-<version>.sha256`.
+pub const PLUGINS: [Plugin; 4] = [
     Plugin {
         name: "ripwire",
         version: "0.6.5",
@@ -155,7 +156,84 @@ pub const PLUGINS: [Plugin; 3] = [
             member: "agent-desktop",
         }],
     },
+    Plugin {
+        name: BROWSER,
+        version: yi_permission::BROWSER_VERSION,
+        summary: "drives a headless Chrome held in a sandbox: this Mac's apps unasked, the \
+                  internet after one yes per session",
+        shape: Shape::Host,
+        card: include_str!("prompts/agent_browser.md"),
+        skills: &[],
+        assets: &[Asset {
+            os: "macos",
+            arch: "aarch64",
+            url: "https://github.com/vercel-labs/agent-browser/releases/download/v0.41.0/agent-browser-darwin-arm64",
+            sha256: "a402fef2489c221b17522aa21f103ca5dc47f00ff5879d4a72c39881544730ab",
+            member_sha256: "a402fef2489c221b17522aa21f103ca5dc47f00ff5879d4a72c39881544730ab",
+            member: "",
+        }],
+    },
 ];
+
+pub const BROWSER: &str = "agent-browser";
+
+/// Incident: the daemon idles an hour by default, and while a web session's Chrome lives any
+/// contained program can reach it on loopback, so it goes as soon as the model stops using it.
+const BROWSER_IDLE_MS: &str = "300000";
+
+/// The file a host daemon runs as Chrome, under the plugin's directory since a contained command
+/// could rewrite one in tmp, and tmp is where the daemon would run it from.
+fn browser_config(home: &Path) -> Option<PathBuf> {
+    let plugin = Plugin::named(BROWSER)?;
+    plugin.installed(home)?;
+    Some(plugin.dir(home).join("config.json"))
+}
+
+/// What the boxed daemon starts with. Invariant: its config names the file, so a repo's
+/// `agent-browser.json` is never read, and a socket of its own is no daemon the user started.
+pub fn browser_env(home: &Path) -> Vec<(&'static str, OsString)> {
+    let Some(config) = browser_config(home).filter(|_| yi_permission::browser_boxed(home)) else {
+        return Vec::new();
+    };
+    let sockets = config.with_file_name("s");
+    vec![
+        ("AGENT_BROWSER_CONFIG", config.into_os_string()),
+        ("AGENT_BROWSER_SOCKET_DIR", sockets.into_os_string()),
+        ("AGENT_BROWSER_IDLE_TIMEOUT_MS", BROWSER_IDLE_MS.into()),
+    ]
+}
+
+/// Writes the config and the script the daemon runs as Chrome: the same box either way, with the
+/// internet only for the `web` session. Rewritten by every add, since `sync` brings a new store list.
+pub fn write_browser_box(home: &Path, chrome: &Path) -> Result<(), String> {
+    let config = browser_config(home).ok_or("agent-browser is not installed")?;
+    let script = config.with_file_name("chrome-box");
+    let sandbox = crate::sandbox::Sandbox::for_browser(home);
+    let line = |web: bool| -> String {
+        let (seatbelt, args) = sandbox.wrap_browser(web, home, &chrome.to_string_lossy());
+        let args = args.iter().map(|arg| crate::process::quoted(arg));
+        let words: Vec<String> = std::iter::once(seatbelt).chain(args).collect();
+        format!("exec {} \"$@\"", words.join(" "))
+    };
+    let text = format!(
+        "#!/bin/sh\ncase \"$AGENT_BROWSER_SESSION\" in\n{web}) {open} ;;\n*) {closed} ;;\nesac\n",
+        web = yi_permission::BROWSER_WEB,
+        open = line(true),
+        closed = line(false),
+    );
+    let path = script.to_string_lossy();
+    let json = serde_json::json!({ "executablePath": path }).to_string();
+    let replace = |to: &Path, bytes: &str, mode: u32| -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let staged = to.with_extension("staged");
+        std::fs::write(&staged, bytes)?;
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(mode))?;
+        std::fs::rename(&staged, to)
+    };
+    replace(&script, &text, 0o755)
+        .and_then(|()| replace(&config, &json, 0o644))
+        .map_err(|error| format!("{}: {error}", script.display()))
+}
 
 impl Plugin {
     pub fn named(name: &str) -> Option<&'static Self> {

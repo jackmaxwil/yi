@@ -22,6 +22,8 @@ K = 1
 # Invariant: the slowest green gate lane is about an hour on a loaded runner, and a run that has not
 # reported by then is lost, because a candidate whose pr.yml runs no lanes has no statuses at all.
 STALE_MINUTES = 80
+# Invariant: past the lanes' 80 minutes, and longer than the 100-minute `database is locked` fault of 2026-11-02.
+CLOSE_PATIENCE = 240
 INFRA_RETRIES = 2
 IDENTITY = ("-c", "user.name=yi-queue", "-c", "user.email=queue@yi")
 LANES = pr_review.GATE_LANES
@@ -129,8 +131,16 @@ def api(method, path, payload=None):
     return forge_pr.fgj_api(method, f"repos/{forge_pr.repo()}/{path}", payload)
 
 
+def listing(batch, what):
+    """Incident: `database is locked` came back as an object whose keys the tick iterated, and 21 ticks
+    died on an AttributeError that never said what the forge answered. The next tick starts over."""
+    if isinstance(batch, list):
+        return batch
+    raise SystemExit(f"queue: the forge did not list {what}: {batch.get('message') if isinstance(batch, dict) else batch}")
+
+
 def label_ids():
-    return {label["name"]: label["id"] for label in api("GET", "labels?limit=100") or []}
+    return {label["name"]: label["id"] for label in listing(api("GET", "labels?limit=100") or [], "the labels")}
 
 
 def set_label(number, name, present):
@@ -163,12 +173,12 @@ def enqueue_time(events):
 
 
 def enqueued_at(number):
-    transport = lambda method, url, _: forge_pr.fgj_api(method, url)
+    transport = lambda method, url, _: listing(forge_pr.fgj_api(method, url) or [], f"#{number}'s timeline")
     return enqueue_time(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/timeline?x=1"))
 
 
 def queued_pulls():
-    return [pr for pr in forge_pr.open_pulls() if LABEL in {label["name"] for label in pr.get("labels") or []}]
+    return [pr for pr in listing(forge_pr.open_pulls(), "the open pull requests") if LABEL in {label["name"] for label in pr.get("labels") or []}]
 
 
 def eligible_problem(pr, jobs):
@@ -264,7 +274,9 @@ def record_main(root=ROOT):
     """Record what main has landed; False only when main moved under the push."""
     git("fetch", "-q", "origin", "main", cwd=root)
     git("checkout", "-q", "--detach", "origin/main", cwd=root)
-    subprocess.run((sys.executable, str(root / "scripts/record_changes.py")), cwd=root, check=True)
+    if subprocess.run((sys.executable, str(root / "scripts/record_changes.py")), cwd=root, check=False).returncode:
+        print("queue: the recorder refused, so main stays unrecorded; its lines above say why")
+        return True
     if not git("status", "--porcelain", "docs", cwd=root).stdout.strip():
         return True
     git("add", "docs", cwd=root)
@@ -349,7 +361,13 @@ def finish(obs):
         pr = forge_pr.pull(number)
         # The forge marks the PR but fires no closing keyword on a push (the 2026-11-01 probe).
         for issue in closing(pr.get("body")):
-            api("PATCH", f"issues/{issue}", {"state": "closed"})
+            answer = api("PATCH", f"issues/{issue}", {"state": "closed"})
+            refused = "the forge answered 404" if answer is None else answer.get("message") if isinstance(answer, dict) else None
+            if refused and obs.get("age_minutes", 0) < CLOSE_PATIENCE:
+                raise SystemExit(f"queue: the forge refused to close #{issue}, and the next tick tries again: {refused}")
+            if refused:
+                print(f"queue: gave up closing #{issue}: {refused}")
+                comment(number, f"Landed, but the forge refused to close #{issue}: {refused}. It needs closing by hand.")
         set_label(number, LABEL, False)
     if not record_main():
         print("queue: the recorder's push was refused; the next push to main records")
@@ -377,7 +395,10 @@ def land(obs, mode):
 
 
 def tick(mode):
-    obs = observe(mode)
+    try:
+        obs = observe(mode)
+    except pr_review.Unanswered as err:
+        raise SystemExit(f"queue: {err}") from err
     action, why = step(obs)
     print(f"queue: {action} ({why}){' ' + obs['stale_member'] if obs['stale_member'] else ''}")
     if action == "drop":
@@ -391,8 +412,9 @@ def tick(mode):
     elif action == "land":
         land(obs, mode)
     elif action == "finish":
-        # Invariant: shadow writes neither main nor the forge's issues; a later `on` tick records what landed.
-        finish(obs) if mode == "on" else delete_ref()
+        # Invariant: shadow writes neither main nor issues, and the ref is how the next `on` tick knows to finish.
+        if mode == "on":
+            finish(obs)
     elif action == "paused":
         print(f"queue: paused on {obs['candidate'][:10]}, whose lanes read {obs['lanes']}; deleting {CANDIDATE} resumes")
     return 0
@@ -581,6 +603,14 @@ def record_cases():
             bad.append(f"a refusal with main unmoved answered {kept}: {out.getvalue()!r}")
         hook.unlink()
 
+        script.write_text("import sys\nprint('record: refused, nothing written')\nsys.exit(1)\n")
+        was, out = tip(), io.StringIO()
+        with contextlib.redirect_stdout(out):
+            kept = record_main(root)
+        if not kept or tip() != was or "recorder refused" not in out.getvalue():
+            bad.append(f"a recorder's refusal stopped the tick: {kept}, {out.getvalue()!r}")
+        script.write_text(recorder)
+
         # The race itself: another pusher wins between the recorder's commit and its push.
         sh(other, "pull", "-q", "origin", "main")
         (other / "moved.txt").write_text("moved\n")
@@ -614,14 +644,93 @@ def shadow_cases():
             tick("shadow")
             if stubs["finish"].called:
                 bad.append("a shadow tick over a landed candidate ran finish, which writes main")
+            if stubs["delete_ref"].call_count != 1:
+                bad.append("a shadow tick over a landed candidate deleted the ref an `on` tick finishes from")
             tick("on")
             if not stubs["finish"].called:
                 bad.append("an `on` tick over a landed candidate did not finish")
     return bad
 
 
+def forge_cases():
+    """A forge that answers with an error object, as `database is locked` did for 100 minutes on 2026-11-02."""
+    bad = []
+    locked = {"message": "database is locked", "url": "https://git.example.invalid/api/swagger"}
+    calls = {"queued_pulls": queued_pulls, "enqueued_at": lambda: enqueued_at(1), "label_ids": label_ids,
+             "tick": lambda: tick("on")}
+    with mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(sys.modules[__name__], "git", mock.Mock()):
+        # A body that is JSON but not an object still has to reach the log.
+        with mock.patch.object(forge_pr, "fgj_api", lambda *a: "bad gateway"):
+            try:
+                queued_pulls()
+                bad.append("a string answer read as a listing")
+            except SystemExit as stop:
+                if "bad gateway" not in str(stop):
+                    bad.append(f"a string answer stopped without its words: {stop}")
+            except Exception as err:
+                bad.append(f"a string answer died: {err!r}")
+        for name, call in calls.items():
+            with mock.patch.object(forge_pr, "fgj_api", lambda *a: locked):
+                try:
+                    call()
+                    bad.append(f"{name} took an error object for an answer")
+                except SystemExit as stop:
+                    if "database is locked" not in str(stop):
+                        bad.append(f"{name} stopped without the forge's words: {stop}")
+                except Exception as err:
+                    bad.append(f"{name} died on an error object: {err!r}")
+        # A round reader's miss is the review job's Unanswered, which a tick turns into the same stop.
+        queued = {"number": 1, "labels": [{"name": LABEL}]}
+        answers = lambda method, path, payload=None: locked if path.endswith("/comments") else [queued] if "page=1" in path else []
+        with mock.patch.object(forge_pr, "fgj_api", answers):
+            try:
+                tick("on")
+                bad.append("a tick took an error object for the comments")
+            except SystemExit as stop:
+                if "database is locked" not in str(stop):
+                    bad.append(f"a tick stopped on the comments without the forge's words: {stop}")
+            except Exception as err:
+                bad.append(f"a tick died on the comments: {err!r}")
+            try:
+                pr_review.comments("o/r", 1)
+                bad.append("comments took an error object for an answer")
+            except pr_review.Unanswered as err:
+                if "database is locked" not in str(err):
+                    bad.append(f"comments' miss lost the forge's words: {err}")
+            except BaseException as err:
+                bad.append(f"comments stopped outside the handlers that retry a miss: {err!r}")
+        # A refused close holds the ref inside the patience, so the `landed` rule retries it, and never wedges past it.
+        forge = lambda method, path, payload=None: locked if method == "PATCH" else {"body": "Closes #5"}
+        for age, keeps in ((CLOSE_PATIENCE - 1, True), (CLOSE_PATIENCE, False)):
+            obs = {"members": [(1, "a" * 40)], "age_minutes": age}
+            with mock.patch.object(forge_pr, "fgj_api", forge), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
+                    mock.patch.multiple(sys.modules[__name__], delete_ref=mock.DEFAULT, record_main=mock.DEFAULT, set_label=mock.DEFAULT, comment=mock.DEFAULT) as stubs:
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        finish(obs)
+                    stopped = False
+                except SystemExit:
+                    stopped = True
+                if stopped != keeps or stubs["delete_ref"].called == keeps:
+                    bad.append(f"a refused close at {age} minutes stopped={stopped}, deleted the ref={stubs['delete_ref'].called}")
+                if not keeps and "#5" not in str(stubs["comment"].call_args):
+                    bad.append("a close given up on did not say so on the PR")
+        # A 404 may be a gone issue or a write the token may not make, so only the closed issue itself is an answer.
+        for answer, closed in (({"number": 5, "state": "closed"}, True), (None, False)):
+            with mock.patch.object(forge_pr, "fgj_api", lambda *a: answer), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
+                    mock.patch.multiple(sys.modules[__name__], delete_ref=mock.DEFAULT, record_main=mock.DEFAULT, set_label=mock.DEFAULT, comment=mock.DEFAULT) as stubs:
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        finish({"members": [(1, "a" * 40)], "age_minutes": 1})
+                except SystemExit:
+                    pass
+                if stubs["comment"].called or stubs["delete_ref"].called != closed:
+                    bad.append(f"a close answered {answer} deleted the ref={stubs['delete_ref'].called}")
+    return bad
+
+
 def selfcheck():
-    bad = rule_cases() + git_cases() + build_cases() + record_cases() + shadow_cases()
+    bad = rule_cases() + git_cases() + build_cases() + record_cases() + shadow_cases() + forge_cases()
     bad += [f"rule `{name}` disabled and every case still passes, so it refutes nothing"
             for name, _, _ in RULES if not rule_cases(name)]
     for gate in ("growth", "crate_size", "comments", "test_size"):

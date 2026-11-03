@@ -58,13 +58,29 @@ impl HostRegistry {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
                     })?;
                 let cancelled: CancelFlag = Arc::new(|| false);
-                let id = yi_tools::jobs::spawn_job(
-                    command,
-                    &cwd,
-                    &cancelled,
-                    sandbox.as_ref(),
-                    spawn.as_ref(),
-                )?;
+                // A fork's first command carries its units and syncs its toolchain, which blocks.
+                let command = command.to_owned();
+                let tree = payload.str_of("tree").map(str::to_owned);
+                let id = tokio::task::spawn_blocking(move || {
+                    let Some(name) = tree else {
+                        let (sandbox, spawn) = (sandbox.as_ref(), spawn.as_ref());
+                        return yi_tools::jobs::spawn_job(
+                            &command, &cwd, &cancelled, sandbox, spawn,
+                        );
+                    };
+                    let at =
+                        crate::subagent::tree::free_tree_path(&cwd, &name).ok_or_else(|| {
+                            format!("no free tree named \"{name}\": a child runs its own bash")
+                        })?;
+                    // No proxy or lane of its own: a fork's `bash` reaches loopback and no further.
+                    let sandbox = sandbox.map(|mut sandbox| {
+                        sandbox.writable.push(at.clone());
+                        sandbox
+                    });
+                    yi_tools::jobs::spawn_job(&command, &at, &cancelled, sandbox.as_ref(), None)
+                })
+                .await
+                .map_err(|error| error.to_string())??;
                 lock(&spawned).push(id);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));
@@ -119,20 +135,6 @@ impl HostRegistry {
                     .map_err(|error| error.to_string())?;
                 lock(&released).retain(|held| *held != id);
                 Ok(job_report_reply(&report))
-            })
-        });
-    }
-
-    /// `mcp.config` returns `{}` (Python raises its own KeyError), `mcp.refresh` throws, and
-    /// `mcp.begin_login` is never registered: a 401 must not open a browser.
-    pub fn register_mcp_stubs(&mut self) {
-        self.register("mcp.config", |_payload| Box::pin(async { Ok(Map::new()) }));
-        self.register("mcp.refresh", |_payload| {
-            Box::pin(async {
-                Err(
-                    "mcp.refresh is unavailable: run `yi mcp login <server>` on the host"
-                        .to_owned(),
-                )
             })
         });
     }
@@ -429,6 +431,9 @@ impl KernelService {
         env.push(("RLM_GLOBAL_HARNESS_HOST".to_owned(), "1".to_owned()));
         if let Some(path) = yi_tools::plugin::search_path(&self.options.home) {
             env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
+        }
+        for (key, value) in yi_tools::plugin::browser_env(&self.options.home) {
+            env.push((key.to_owned(), value.to_string_lossy().into_owned()));
         }
         env
     }
@@ -785,7 +790,7 @@ impl KernelService {
                             .unwrap_or_default(),
                     );
                     if let (Some((broker, _)), Some(lane)) = (&self.holder, self.git_lane()) {
-                        notes.extend(lane.sweep(broker));
+                        notes.extend(lane.sweep_off_executor(Arc::clone(broker)).await);
                     }
                     return Ok(KernelCellOutcome {
                         result,
@@ -964,6 +969,19 @@ mod tests {
         let path = path_of(&home).ok_or("no PATH for the kernel")?;
         let first = std::env::split_paths(&path).next();
         assert_eq!(first, Some(ripwire.dir(&home)));
+        // A cell's `agent-browser` missing this starts a Chrome with no box.
+        let browser = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+        std::fs::create_dir_all(browser.dir(&home))?;
+        for file in [browser.name, "config.json", "chrome-box"] {
+            std::fs::write(browser.dir(&home).join(file), "#!/bin/sh\n")?;
+        }
+        let env = KernelService::new(options(&home)).kernel_env(None);
+        let config = (env.into_iter())
+            .find_map(|(key, value)| (key == "AGENT_BROWSER_CONFIG").then_some(value));
+        assert_eq!(
+            config.as_deref().map(std::path::Path::new),
+            Some(browser.dir(&home).join("config.json").as_path())
+        );
         Ok(())
     }
 
@@ -1256,8 +1274,7 @@ mod tests {
     }
 
     fn service() -> KernelService {
-        let mut registry = HostRegistry::default();
-        registry.register_mcp_stubs();
+        let registry = HostRegistry::default();
         KernelService::new(KernelServiceOptions {
             cwd: std::env::temp_dir(),
             home: std::env::var_os("HOME")

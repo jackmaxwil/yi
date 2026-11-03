@@ -738,22 +738,12 @@ impl SubagentHost {
                     result.discoveries.len()
                 ));
             }
-            let cwd = self
-                .cwd_of(&name)
-                .unwrap_or_else(|| self.options.cwd.clone());
             if let Some(refused) = self.check_gate.get().and_then(|gates| gates.1(&check)) {
                 return Err(format!(
                     "child \"{target}\" result held back; its check is refused: {refused}"
                 ));
             }
-            let checker = self.checker();
-            crate::goal::run_check(
-                &check,
-                &cwd,
-                crate::goal::DEFAULT_CHECK_TIMEOUT_MS,
-                &checker,
-            )
-            .map_err(|evidence| {
+            self.child_check(&name, &check).map_err(|evidence| {
                 format!("child \"{target}\" result held back; its check is red: {evidence}")
             })?;
             self.route_discoveries(&name, &result.discoveries)
@@ -911,7 +901,6 @@ impl SubagentHost {
             self.restore(&key, record, &reason);
             return Err(reason);
         }
-        drop(record.lane_permit.take());
         if journal {
             record.finish();
             let last = record.exit.unwrap_or(exit);

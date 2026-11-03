@@ -1,7 +1,12 @@
+mod browser;
 mod caches;
+mod contain;
 mod git;
+mod seal;
+pub use contain::set_wrapper;
 pub use git::Sealed;
 use git::{HOST_RUN_BY_GIT, lane_writes, sealed};
+pub use seal::{SealBroken, reseal, verify as verify_seal, writes_sealed};
 
 use std::path::{Path, PathBuf};
 
@@ -92,6 +97,9 @@ impl Sandbox {
     /// Incident: macOS refuses a sandbox inside a sandbox, and 67 runtime tests died on
     /// `sandbox_apply: Operation not permitted` under the workspace one; a probe tells.
     pub fn available() -> bool {
+        if cfg!(target_os = "linux") {
+            return contain::available();
+        }
         static APPLIES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         cfg!(target_os = "macos")
             && Path::new(SEATBELT).is_file()
@@ -272,26 +280,34 @@ impl Sandbox {
     /// The kernel's prefix: its profile plus read and write of `connection_dir`, which every
     /// other profile hides under the connection root (#599).
     pub fn kernel_prefix(&self, connection_dir: &Path, assign: &[String]) -> (String, Vec<String>) {
+        if let Some(wrapper) = contain::wrapper() {
+            let args = self.contain_args(Some(connection_dir), assign);
+            return (wrapper.to_string_lossy().into_owned(), args);
+        }
         (
             SEATBELT.to_owned(),
             self.seatbelt_args(Some(connection_dir), true, assign),
         )
     }
 
-    /// `-p <policy> -DKEY=value ... -- env -u …`: the rules and their bindings come from one
-    /// reading of the filesystem, so a link swapped between the two cannot unbind a rule.
     fn seatbelt_args(&self, own: Option<&Path>, network: bool, assign: &[String]) -> Vec<String> {
+        let mut wrapped = self.bound_policy(own, network, "");
+        wrapped.extend(scrubbed_env());
+        wrapped.extend_from_slice(assign);
+        wrapped
+    }
+
+    /// `-p <policy> -DKEY=value ... --`: the rules and their bindings come from one reading of the
+    /// filesystem, so a link swapped between the two cannot unbind a rule.
+    fn bound_policy(&self, own: Option<&Path>, network: bool, extra: &str) -> Vec<String> {
         let parents = self.denied_parents();
-        let mut wrapped = vec![
-            "-p".to_owned(),
-            self.policy_for(parents.len(), own.is_some(), network),
-        ];
+        let mut policy = self.policy_for(parents.len(), own.is_some(), network);
+        policy.push_str(extra);
+        let mut wrapped = vec!["-p".to_owned(), policy];
         for (key, value) in self.params_for(&parents, own) {
             wrapped.push(format!("-D{key}={}", value.to_string_lossy()));
         }
         wrapped.push("--".to_owned());
-        wrapped.extend(scrubbed_env());
-        wrapped.extend_from_slice(assign);
         wrapped
     }
 
@@ -467,10 +483,18 @@ impl Sandbox {
         args: &[&str],
     ) -> (String, Vec<String>) {
         let _span = yi_types::trace::span("sandbox.wrap");
-        let mut wrapped = self.seatbelt_args(None, network, assign);
+        let wrapper = contain::wrapper();
+        let mut wrapped = match wrapper {
+            Some(_) => self.contain_args(None, assign),
+            None => self.seatbelt_args(None, network, assign),
+        };
         wrapped.push(program.to_owned());
         wrapped.extend(args.iter().map(|arg| (*arg).to_owned()));
-        (SEATBELT.to_owned(), wrapped)
+        let launcher = wrapper.map_or_else(
+            || SEATBELT.to_owned(),
+            |path| path.to_string_lossy().into_owned(),
+        );
+        (launcher, wrapped)
     }
 }
 
@@ -681,8 +705,13 @@ fn errno_path(line: &str) -> Option<&str> {
         return None;
     }
     let line = line.trim_end();
-    let line = line.strip_suffix(" (os error 1)").unwrap_or(line);
-    let raw = match line.strip_suffix(": Operation not permitted") {
+    let line = (line
+        .strip_suffix(" (os error 1)")
+        .or_else(|| line.strip_suffix(" (os error 13)")))
+    .unwrap_or(line);
+    // Landlock refuses with EACCES where Seatbelt gives EPERM.
+    let tail = line.strip_suffix(": Operation not permitted");
+    let raw = match tail.or_else(|| line.strip_suffix(": Permission denied")) {
         // `touch: /x`, or a quoted path: git's `'/x/.git'`, uv's `` `/x` ``.
         Some(head) => head
             .rsplit_once(": ")
@@ -693,10 +722,14 @@ fn errno_path(line: &str) -> Option<&str> {
                 let quote = word.chars().next().filter(|c| matches!(c, '\'' | '`'))?;
                 (word.len() > 2 && word.ends_with(quote)).then_some(word)
             })?,
-        None => match line.split_once("[Errno 1] Operation not permitted: ") {
+        None => match (line.split_once("[Errno 1] Operation not permitted: "))
+            .or_else(|| line.split_once("[Errno 13] Permission denied: "))
+        {
             Some((_, path)) => path,
             // `Error: EPERM: operation not permitted, open '/x'`
-            None => (line.split_once("EPERM: operation not permitted, ")?.1)
+            None => ((line.split_once("EPERM: operation not permitted, "))
+                .or_else(|| line.split_once("EACCES: permission denied, "))?
+                .1)
                 .rsplit(char::is_whitespace)
                 .next()?,
         },
@@ -738,12 +771,17 @@ const NETWORK_DENIALS: [&str; 3] = [
     "sendto: operation not permitted",
 ];
 
-/// Incident: a bare `' not allowed` is a Python `ValueError`'s wording, so an escalation read from
-/// text the command printed is the command asking to leave the sandbox; only git's fatal line counts.
+/// Incident: bare `transport '` or `' not allowed` needles read a tool's own message as git's
+/// refusal; only one whole fatal line counts.
 fn git_transport_denial(lower: &str) -> Option<usize> {
-    lower
-        .find("fatal: transport '")
-        .filter(|_| lower.contains("not allowed"))
+    lower.lines().find_map(|line| {
+        let line = line.trim();
+        if line.starts_with("fatal: transport '") && line.ends_with("' not allowed") {
+            line.find("fatal: transport '")
+        } else {
+            None
+        }
+    })
 }
 
 /// A denied write target counts at any exit; else a non-zero exit naming a denial, a network
