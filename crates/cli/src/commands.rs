@@ -1,7 +1,7 @@
 use crate::{
-    Args, catalog, debug, doctor, fetch, lanes, memory, run_acp, run_ask, run_console_command,
-    run_gate, run_gc, run_plan, run_rpc, run_serve_command, run_sessions, run_stats, run_trust,
-    run_tui, run_undo, run_version, run_why, todo,
+    Args, catalog, debug, doctor, fetch, lanes, memory, models, run_acp, run_ask,
+    run_console_command, run_gate, run_gc, run_plan, run_rpc, run_serve_command, run_sessions,
+    run_stats, run_trust, run_tui, run_undo, run_version, run_why, todo,
 };
 
 pub(crate) enum Route {
@@ -42,6 +42,7 @@ const VERBS: &[Verb] = &[
     Verb { name: "gate", route: Run(run_gate), words: Any, summary: "say whether a command would run, and why" },
     Verb { name: "fetch", route: Run(fetch::run), words: Any, summary: "resolve one URL through the wall" },
     Verb { name: "catalog", route: Run(catalog::run), words: Any, summary: "show or refresh the model catalog" },
+    Verb { name: "models", route: Run(models::run), words: Only(&["recommend", "refresh"]), summary: "suggest models per role from OpenRouter benchmarks" },
     Verb { name: "doctor", route: Run(doctor::run), words: Only(&[]), summary: "check session invariants, --fix repairs" },
     Verb { name: "gc", route: Run(run_gc), words: Only(&[]), summary: "preview the retention sweep, --fix runs it" },
     Verb { name: "debug", route: Run(debug::run), words: Any, summary: "info, paths, config, profile, trace, select" },
@@ -72,6 +73,7 @@ const FLAGS: &[Flag] = &[
     Flag { name: "thinking", value: Some("level"), summary: "off, minimal, low, medium, high, xhigh, max" },
     Flag { name: "json", value: None, summary: "print JSON lines (the event stream, for ask)" },
     Flag { name: "no-deltas", value: None, summary: "with ask --json: drop the per-token message_update lines" },
+    Flag { name: "no-tools", value: None, summary: "with ask: offer the model no tools" },
     Flag { name: "yolo", value: None, summary: "run without permission prompts" },
     Flag { name: "auto", value: None, summary: "let the policy judge each call (the default)" },
     Flag { name: "confirm", value: None, summary: "ask before every write or command" },
@@ -96,9 +98,11 @@ const FLAGS: &[Flag] = &[
     Flag { name: "continue", value: None, summary: "resume the newest session for this directory" },
     Flag { name: "session", value: Some("id"), summary: "resume this session" },
     Flag { name: "schema", value: Some("schema"), summary: "answer JSON valid against this schema" },
+    Flag { name: "check", value: Some("command"), summary: "ask: probe the command and exit, running nothing" },
     Flag { name: "since", value: Some("span"), summary: "after stats: fold the sessions of this window" },
     Flag { name: "by", value: Some("axis"), summary: "after stats: group by model, upstream, day, prices or plan" },
     Flag { name: "top", value: Some("n"), summary: "after stats: list the n costliest sessions" },
+    Flag { name: "role", value: Some("role"), summary: "after models recommend: only this role" },
 ];
 
 pub(crate) fn find(name: &str) -> Option<&'static Verb> {
@@ -227,11 +231,13 @@ mod tests {
                 "size" => "80x24",
                 "deadline" | "top" => "5",
                 "since" => "7d",
+                "role" => "advisor",
                 "by" => "model",
                 _ => "x",
             };
             let flag = format!("--{name}");
-            let argv = ["yi", "stats", flag.as_str()];
+            let verb = if *name == "role" { "models" } else { "stats" };
+            let argv = ["yi", verb, flag.as_str()];
             let parsed = crate::args::parse_from(argv.into_iter().chain(value.map(|_| sample)));
             if let Err(error) = parsed {
                 assert!(

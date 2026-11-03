@@ -492,7 +492,7 @@ impl PlanEngine {
     fn run_verifier(&self, prepared: &Prepared) -> Verdict {
         let artifacts = self.store.artifacts(&prepared.id);
         let workspace = Workspace(
-            std::env::temp_dir().join(format!("yi-verify-{}", self.store.request_nonce())),
+            std::env::temp_dir().join(format!("yi-verify-{}", self.store.request_nonce())), // nosemgrep: yi-rust-temp-dir request_nonce gives each verifier a unique workspace.
         );
         if let Err(reason) =
             self.snapshotter

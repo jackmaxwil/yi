@@ -4,7 +4,8 @@ use crate::common::flat_trimmed as text;
 use serde_json::json;
 use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme};
-use yi_tui::pycell::{head, preview, split_traceback};
+use yi_tui::highlight::{self, Token};
+use yi_tui::pycell::{TraceRow, chip, head, preview, row_spans, split_traceback, traceback_rows};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -266,5 +267,42 @@ fn a_loud_failed_cell_is_bounded_and_its_lines_counted() -> TestResult {
     );
     let verbose = text(&Cell::Tool(cell).lines(120, &theme(), TranscriptMode::Verbose, 0));
     assert!(verbose.len() > 50, "verbose stays whole: {}", verbose.len());
+    Ok(())
+}
+
+/// Dies with a traceback classified as one flat error row: a frame's header is scaffolding, and
+/// the row it ran keeps the colour of the code it is.
+#[test]
+fn a_tracebacks_frames_dim_and_the_rows_they_ran_keep_their_colour() -> TestResult {
+    let theme = theme();
+    let rows = traceback_rows(
+        "Traceback (most recent call last):\n  File \"/work/plot.py\", line 12, in train\n    for row in bad_rows(model):\nValueError: shape mismatch",
+    );
+    let (kind, line) = rows
+        .iter()
+        .find(|(_, line)| line.contains("File \"/work/plot.py\""))
+        .ok_or("no frame header row")?;
+    assert_eq!(*kind, TraceRow::Frame, "a frame header is scaffolding");
+    let header = row_spans(*kind, line, None, &theme);
+    assert!(
+        header
+            .iter()
+            .all(|span| span.style.fg == theme.dim_style().fg),
+        "a frame header is scaffolding: {header:?}"
+    );
+    let (kind, line) = rows
+        .iter()
+        .find(|(_, line)| line.contains("for row in bad_rows(model)"))
+        .ok_or("no source row")?;
+    assert_eq!(*kind, TraceRow::Source, "the row a frame ran is code");
+    let mut lang = highlight::lang_for(chip("train(model)"));
+    let source = row_spans(*kind, line, lang.as_mut(), &theme);
+    let keyword = theme.syntax_style(Token::Keyword).fg;
+    assert!(
+        source
+            .iter()
+            .any(|span| span.style.fg == keyword && span.content.as_ref() == "for"),
+        "the row a frame ran is lexed as code: {source:?}"
+    );
     Ok(())
 }

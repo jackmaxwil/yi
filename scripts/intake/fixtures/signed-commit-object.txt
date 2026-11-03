@@ -1,0 +1,11 @@
+tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+author Intake Fixture <intake-fixture@example.invalid> 1793166897 -0700
+committer Intake Fixture <intake-fixture@example.invalid> 1793166897 -0700
+gpgsig -----BEGIN SSH SIGNATURE-----
+ U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgSJoolK9JIANw3W2ppXnVJ3Q2R4
+ cdilq4gDm01jVSxPMAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
+ AAAAQKm+5kMeNVGOuYd3QYDn2CHjwrBpANIQhr908pfxebWi7AxNvYaSb7MtZVVfjrivO2
+ 7dX+dQUEUNjg2iWUnnNQk=
+ -----END SSH SIGNATURE-----
+
+Record a real SSH-signed empty commit

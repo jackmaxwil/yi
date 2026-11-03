@@ -396,13 +396,22 @@ fn counted_repo(name: &str, pause_ms: u64) -> Result<(Scratch, Scratch), Box<dyn
         shim.join("status.log").display(),
         real.display()
     );
-    std::fs::write(bin.join("git"), script)?;
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755))?;
-    let joined = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path)))?;
-    // nextest runs each test in its own process, so the shim reaches no other test.
-    unsafe { std::env::set_var("PATH", joined) };
+    git_first_on_path(&bin, &script)?;
     Ok((dir, shim))
+}
+
+/// `script` as `<bin>/git`, with `bin` first on PATH. nextest runs each test in its own process, so
+/// it reaches no other test.
+fn git_first_on_path(bin: &std::path::Path, script: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::create_dir_all(bin)?;
+    std::fs::write(bin.join("git"), script)?;
+    std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755))?;
+    let path = std::env::var_os("PATH").ok_or("no PATH")?;
+    let first = std::iter::once(bin.to_path_buf());
+    let joined = std::env::join_paths(first.chain(std::env::split_paths(&path)))?;
+    unsafe { std::env::set_var("PATH", joined) };
+    Ok(())
 }
 
 fn status_runs(shim: &Scratch) -> usize {
@@ -585,5 +594,97 @@ fn a_busy_event_stream_does_not_invalidate_an_unchanged_tree() -> TestResult {
     }
     assert_eq!(summary.read(), Some(("main".to_owned(), 0, 0)));
     assert_eq!(status_runs(&shim), 1, "unchanged tree stays cached");
+    Ok(())
+}
+
+/// Incident: the host resolved `git` through PATH, so a tree's `bin` on it, as direnv or an
+/// activated venv leaves it, ran a contained process's `bin/git` on the next environment block.
+#[test]
+fn a_git_inside_the_tree_on_path_never_runs_on_the_host() -> TestResult {
+    let (dir, _shim) = counted_repo("yi-env-tree-on-path", 0)?;
+    let marker = dir.join("ran-on-host");
+    git_first_on_path(
+        &dir.join("bin"),
+        &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )?;
+    let summary = yi_runtime::environment::git_summary(&dir);
+    assert!(!marker.exists(), "a contained write ran on the host");
+    assert!(summary.is_some(), "the real git still answers");
+    Ok(())
+}
+
+/// Dies with the host's `status` recursing: a gitlink in the index and a `.git` pointer in the
+/// tree, both contained-writable, sent it into a child git reading that repository's config, which
+/// `core.fsmonitor=false` does not cover: a clean filter there runs too.
+#[test]
+fn a_planted_submodule_never_runs_on_the_host() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (dir, _shim) = counted_repo("yi-env-planted-module", 0)?;
+    let marker = dir.join("ran-on-host");
+    let script = dir.join("monitor.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    use crate::worktree::git;
+    let evil = dir.join("evil");
+    std::fs::create_dir_all(&evil)?;
+    git(&evil, &["init", "-q", "-b", "main"])?;
+    let head = git(&dir, &["rev-parse", "HEAD"])?;
+    let sub = dir.join("sub");
+    std::fs::create_dir_all(&sub)?;
+    std::fs::write(sub.join("f"), "x\n")?;
+    let (gitdir, tree) = (evil.join(".git"), sub.clone());
+    let (gitdir, tree) = (gitdir.to_string_lossy(), tree.to_string_lossy());
+    git(
+        &dir,
+        &["--git-dir", &gitdir, "--work-tree", &tree, "add", "f"],
+    )?;
+    git(
+        &evil,
+        &["config", "filter.x.clean", &script.to_string_lossy()],
+    )?;
+    std::fs::write(evil.join(".git/info/attributes"), "* filter=x\n")?;
+    // The same size and a new time, so the child must read the file through the filter.
+    std::fs::write(sub.join("f"), "y\n")?;
+    std::fs::write(sub.join(".git"), format!("gitdir: {gitdir}\n"))?;
+    let entry = format!("160000,{head},sub");
+    git(&dir, &["update-index", "--add", "--cacheinfo", &entry])?;
+    let summary = yi_runtime::environment::git_summary(&dir);
+    assert!(
+        !marker.exists(),
+        "a planted submodule's config ran on the host"
+    );
+    assert!(summary.is_some(), "the real git still answers");
+    Ok(())
+}
+
+/// Dies with a path that holds a separator skipping the tree rule: a relative `lanes.land` ran the
+/// copy a contained child had rewritten, on the host, at the next `/land`.
+#[test]
+fn a_configured_program_in_the_tree_is_refused_and_one_outside_runs() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (tree, outside) = (
+        Scratch::new("yi-env-land-tree")?,
+        Scratch::new("yi-env-land")?,
+    );
+    crate::repo::init_repo(&tree)?;
+    for dir in [&*tree, &*outside] {
+        std::fs::write(dir.join("land.sh"), "#!/bin/sh\n")?;
+        std::fs::set_permissions(dir.join("land.sh"), std::fs::Permissions::from_mode(0o755))?;
+    }
+    assert!(yi_tools::host_command("./land.sh", &tree).is_err());
+    assert!(yi_tools::host_command(&tree.join("land.sh").to_string_lossy(), &tree).is_err());
+    assert!(yi_tools::host_command(&outside.join("land.sh").to_string_lossy(), &tree).is_ok());
+    // A link in the tree to a program outside it: what runs is the target judged, so repointing
+    // the link after the check changes nothing.
+    std::fs::remove_file(tree.join("land.sh"))?;
+    std::os::unix::fs::symlink(outside.join("land.sh"), tree.join("land.sh"))?;
+    let command = yi_tools::host_command("./land.sh", &tree)?;
+    assert_eq!(
+        std::path::Path::new(command.get_program()),
+        outside.join("land.sh").canonicalize()?
+    );
     Ok(())
 }

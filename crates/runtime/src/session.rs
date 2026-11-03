@@ -70,6 +70,8 @@ struct Shared {
     status: Mutex<Status>,
     last_usage: Mutex<Option<Usage>>,
     store: Mutex<Option<yi_session::SharedSession>>,
+    /// The session's own screen of outside text; a second session never inherits it.
+    screen: crate::classifier::Screeners,
     store_error: Mutex<Option<String>>,
     events: broadcast::Sender<AgentEvent>,
     tree_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -214,6 +216,7 @@ impl AgentSession {
                 status: Mutex::new(Status::Idle),
                 last_usage: Mutex::new(None),
                 store: Mutex::new(None),
+                screen: crate::classifier::Screeners::default(),
                 store_error: Mutex::new(None),
                 events,
                 tree_generation: Arc::default(),
@@ -279,20 +282,6 @@ impl AgentSession {
             .lock()
             .ok()
             .and_then(|slot| slot.as_ref().map(Arc::clone))
-    }
-
-    pub fn install_extensions(&self, host: crate::ext::Host) {
-        if let Ok(mut slot) = self.shared.ext.lock() {
-            *slot = Some(Arc::new(Mutex::new(host)));
-        }
-        let deliver = self.deliver_hook();
-        if let Some(host) = self.extensions()
-            && let Ok(mut host) = host.lock()
-        {
-            host.set_deliver(Arc::new(move |message| {
-                deliver(message, false);
-            }));
-        }
     }
 
     /// The attached store's id, read when asked: the store may attach after wiring.
@@ -568,10 +557,9 @@ impl AgentSession {
         settings: yi_context::Settings,
         summarizer: Option<Model>,
     ) {
-        let mut compactor = crate::compaction::Compactor::default();
-        compactor.settings = settings;
-        compactor.summarizer = summarizer;
-        self.compactor = Some(Arc::new(compactor));
+        self.compactor = Some(Arc::new(crate::compaction::Compactor::new(
+            settings, summarizer,
+        )));
     }
 
     pub fn compactor(&self) -> Option<Arc<crate::compaction::Compactor>> {
@@ -978,8 +966,7 @@ impl AgentSession {
         }
         let messages = self.messages();
         let (model, effort) = hooks::settings_of(&self.shared);
-        let request =
-            crate::compaction::LoopRequest::new(self.system_prompt(), &self.tools(), effort);
+        let request = run::loop_request(self, effort);
         let store = self.store();
         let signal = yi_loop::interrupt::InterruptSignal::default();
         let replaced = compactor
@@ -993,7 +980,7 @@ impl AgentSession {
             )
             .await;
         match replaced {
-            Ok(Some(replaced)) => {
+            Ok(crate::compaction::Compacted::Applied(replaced)) => {
                 if let Ok(mut slot) = self.shared.messages.lock() {
                     *slot = replaced.messages;
                 }
@@ -1010,7 +997,7 @@ impl AgentSession {
                     .elision
                     .map_or(CompactOutcome::Summarized, CompactOutcome::Elided))
             }
-            Ok(None) => Ok(CompactOutcome::NotApplied),
+            Ok(compacted) => Ok(compacted.outcome()),
             Err(error) => {
                 run::failed_compaction(&self.parts(), &error);
                 Err(error)
