@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.890.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.891.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -333,6 +333,7 @@ A PR never edits a row here: it writes `ledger+`, `ledger~`, `ledger=` or `ledge
 | Linux containment: Landlock and the git-file seal | 8 | core | H | M | a contained command on Linux starts as `yi __contain`: writes reach its roots, reads a named list, and the host compares what its next git reads and puts back what changed. No network wall. A kernel that refuses the ruleset makes `Contain` an ask. |
 | a child's fork: a linked worktree per child, cut at HEAD, third-party cargo units carried | 14 | core | H | H | a worktree child takes a tree under `~/.yi/forks` rather than a slot: a directory clone on APFS, a plain checkout elsewhere. Its first writing command carries the cargo units whose dep-info names nothing in the tree, syncs the toolchain and runs a committed `.yi/setup`. `.worktreeinclude` and `carry=` copy ignored files. A discard stops its jobs. |
 | `Tree`: fork, check, merge and rewind files from the kernel | 14 | core | H | M | `rlm.tree()` names a set of files, committed or not. `t.fork()` copies them cheaply and `rlm.run(brief, tree=f)` gives a child that tree; `t.check(cmd)` runs in a warm directory, `t.merge(...)` folds others in with no commit, `t.diff()` carries `would_conflict`, and `tree://<name>/` lists changes with no kernel. |
+| model recommender | 5 | core | M | L | `yi models recommend [--role R]` prints, per role in one weight table (primary, advisor, summarizer, autoReview, selector, worker), high, medium and low picks from a cached OpenRouter Artificial Analysis snapshot joined to the OpenRouter catalog, each with `intelligence^exponent / blended $ x popularity` and its numbers; the blend is the last 7 days of root-session tokens (input, cache-read, cache-write, output), else a 97.8% cache-hit default, or a role's own fresh-read mix; popularity from the daily top 50 is at most a 1.03 multiplier; the output carries the CC BY 4.0 citation, `as_of`, the snapshot's age and a row counting models dropped for no index, no credential or no tool calling; `yi models refresh` is the only fetch, spaced 10 minutes, and a 429 names the limit and keeps the old snapshot; suggestions only, config is never written (#1756) |
 
 ## Decision log
 

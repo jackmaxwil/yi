@@ -1,4 +1,5 @@
 ---
+version: 0.891.0
 issue: Closes #1756
 growth: +614 the recommender (`recommend.rs`: the role table, the mix arithmetic, popularity, the join over the snapshot, the refresh with its 429 message), the `models` verb, and seven tests over a hand-priced field, the recorded OpenRouter models list and a loopback server; weighed: no new yi-types shape (the snapshot is a cached provider payload read as `Value`, as `refresh.rs` reads its catalog), no separate role-weight file (one table in the module), and the CLI reuses `rollup::scan` for the ledger mix rather than a second session walk
 raise: crate ai +455, crate cli +151, crate runtime +1, tests +337, comments +13
