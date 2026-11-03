@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.881.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.885.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -163,6 +163,19 @@ hardlinked `.rlib` shares an inode with the parent's, so a contained child can w
 which the parent's next uncontained build uses. A process that left its job survives a discard, and
 the row says so.
 
+## Trust boundaries of warm directories
+
+A kernel check runs in one of `node.slots` directories: one trust domain per family. The scrub removes what an honest check leaves, not what a hostile one plants.
+Tests: `warm_checks.rs`.
+
+| boundary | instance | control | test |
+|---|---|---|---|
+| borrower → next | I: ignored output read by the next | `clean -ffdx` but `target` | `an_ignored_report_from_one_borrower_is_gone_for_the_next` |
+| | T: a stale binary passes with no build | `target/<profile>` keeps cargo's bookkeeping | `a_stale_binary_is_gone_and_cargos_bookkeeping_stays` |
+| | **T: a `.rlib` planted for the next borrower** | **residual** | |
+| check → pool | D: a dirty slot reads orphaned | scrub at release | `a_check_that_writes_and_edits_still_frees_its_directory` |
+| waiting → model | R: a cut check read as red; D: tickets | `Abstain` is no verdict; `check.tickets` 256 | `past_its_budget_a_check_is_no_verdict_on_the_work` |
+
 ## Trust boundaries of Linux containment
 
 A contained command starts as `yi __contain`, which applies a Landlock ruleset and execs. Rules only
@@ -187,26 +200,6 @@ contained process in a main checkout can change a sealed file between a host wri
 reseal, a window of one command, and it is blessed. A person's own `git config` in that checkout is
 put back too, until the host's next writer. A lane on a branch outside `yi/` cannot move it, nor
 stash, since neither leaf has a parent the rules may name.
-## Trust boundaries of warm directories
-
-A kernel check runs in one of `node.slots` directories per repository, whose cargo output outlives a
-check, so one family's borrowers share it in turn. A warm directory is one trust domain per family.
-The scrub removes what an honest check leaves. It does not defend against a hostile borrower. Tests
-are in `crates/runtime/tests/warm_checks.rs`.
-
-| boundary | what crosses | assume | instance | control | test |
-|---|---|---|---|---|---|
-| borrower → next borrower | files under the directory | honest, and sometimes wrong | I: ignored output read by the next check | `clean -ffdx` but `target`, before each check and at release; `.venv` and `node_modules` go, since only cargo re-verifies what it keeps | `an_ignored_report_from_one_borrower_is_gone_for_the_next` |
-| | | | T: a stale binary passes a test with no build | under `target/<profile>` only `deps`, `build`, `.fingerprint`, `incremental` stay | `a_stale_binary_is_gone_and_cargos_bookkeeping_stays`, `a_warm_verdict_agrees_with_a_clean_worktree_across_a_rotation` |
-| | | | **T: a tampered `.rlib` planted for the next borrower** | **residual, below** | |
-| check → the pool | a slot left dirty | a check writes what it likes | D: a dirty slot reads as an orphan and the pool never frees | reset and scrub at release | `a_check_that_writes_and_edits_still_frees_its_directory` |
-| waiting → the model | a verdict | a bound may cut it | R: a cut check read as red | `Abstain` is no verdict; `waited_s` is reported | `past_its_budget_a_check_is_no_verdict_on_the_work`, `past_its_queue_a_check_names_the_pool_that_held_it` |
-| | | | D: many unread checks | `check.tickets` 256, a tree's go with it | `the_ticket_table_holds_at_its_limit_and_refuses_one_past` |
-
-Spoofing: the host rewrites the output's path and keys a run by tree id, so a check cannot speak for
-another tree. Elevation: a check runs contained outside yolo, through the same checker a lane's did.
-Residual, stated: a warm green is not proof against a hostile sibling, which can plant a `deps/*.rlib`
-the next borrower links; the forge gate remains the landing proof. The poison stays contained.
 
 ## Trust boundaries of the plan journal (D193)
 
@@ -346,6 +339,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D535 | Kernel hand-back merges by merge-tree --attr-source, and git merge in a lane below 2.43 | a slot per merge, and a checkout to write | revert the one call. Amends D475's order |
 | D534 | A worktree child is a linked worktree under ~/.yi/forks, cut at HEAD, carrying only cargo units whose dep-info names nothing in its tree; no slot or worker permit | 64 GB and 524 s at 128 children | restore claim_child_lane. Amends D119, D286 |
 | D533 | Linux contains with Landlock through a re-exec of yi, and the host compares and restores the git files it cannot deny | Linux ran every contained command unsandboxed | make Sandbox::available false on Linux. Amends D205, D348, D350 |
 | D532 | one shadow store per repository with an index per tree | 22 MB and 2 s per lane and fork | key the store by path again; amends D401 |

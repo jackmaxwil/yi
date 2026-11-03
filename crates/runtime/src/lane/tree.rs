@@ -10,7 +10,7 @@ use super::{LaneError, Sha};
 
 /// `+added -deleted path`, as `git diff --numstat` counts them, from `against` to the tree's files.
 pub fn diff_rows(tree: &Path, against: &Sha) -> Result<Vec<String>, LaneError> {
-    let now = snapshot(tree)?;
+    let now = snapshot(tree, None)?;
     let numstat = git(tree, &["diff", "--numstat", against.as_str(), now.as_str()])?;
     Ok((numstat.lines())
         .filter_map(|row| {
@@ -27,7 +27,7 @@ pub fn diff_rows(tree: &Path, against: &Sha) -> Result<Vec<String>, LaneError> {
 
 /// One file's patch from `against`, whole; the caller cuts it.
 pub fn patch(tree: &Path, against: &Sha, path: &str) -> Result<String, LaneError> {
-    let now = snapshot(tree)?;
+    let now = snapshot(tree, None)?;
     git(tree, &["diff", against.as_str(), now.as_str(), "--", path])
 }
 
@@ -35,7 +35,7 @@ pub fn patch(tree: &Path, against: &Sha, path: &str) -> Result<String, LaneError
 /// so an unknown cannot read as no conflict.
 #[must_use]
 pub fn would_conflict(tree: &Path, parent: &Path, base: &Sha) -> Option<Vec<String>> {
-    let now = snapshot(tree).ok()?;
+    let now = snapshot(tree, None).ok()?;
     let head = git(parent, &["rev-parse", "HEAD"]).ok()?;
     let merge_base = format!("--merge-base={}", base.as_str());
     let args = [
@@ -72,7 +72,7 @@ pub fn rewind(tree: &Path, to: &Sha, paths: &[String]) -> Result<(), LaneError> 
             "{escapes} is not a path inside the tree"
         )));
     }
-    let now = snapshot(tree)?;
+    let now = snapshot(tree, None)?;
     let added = git(
         tree,
         &[
@@ -139,7 +139,7 @@ pub fn fold(ours: &Path, other: &Path, other_base: &Sha) -> Result<Fold, LaneErr
             version.trim()
         )));
     }
-    let (mine, theirs) = (snapshot(ours)?, snapshot(other)?);
+    let (mine, theirs) = (snapshot(ours, None)?, snapshot(other, None)?);
     let source = format!("--attr-source={}", mine.as_str());
     let merge_base = format!("--merge-base={}", other_base.as_str());
     let args = [

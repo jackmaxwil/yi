@@ -88,21 +88,23 @@ impl SubagentHost {
         let cwd = self
             .cwd_of(name)
             .unwrap_or_else(|| self.options.cwd.clone());
+        let checker = self.checker();
         if !cwd.starts_with(super::fork::forks_dir(&self.options.home)) {
-            return crate::goal::run_check(check, &cwd, timeout, &self.checker());
+            return crate::goal::run_check(check, &cwd, timeout, &checker);
         }
         let pool = super::Pool::open(&self.options.home, &cwd, self.options.lane_slots)
             .map_err(|error| error.to_string())?;
-        let warm = pool.warm().map_err(|error| error.to_string())?;
-        let commit = super::warm::snapshot(&cwd).map_err(|error| error.to_string())?;
-        let queue_until = self
-            .deadline()
-            .or_else(|| Instant::now().checked_add(super::warm::CHECK_QUEUE))
-            .unwrap_or_else(Instant::now);
-        let budget = Duration::from_millis(timeout);
-        let checker = self.checker();
-        let run =
-            super::warm::check_commit(&warm, &commit, &cwd, check, queue_until, budget, &checker);
+        let commit =
+            super::warm::snapshot(&cwd, self.deadline()).map_err(|error| error.to_string())?;
+        let run = warm_run(
+            &pool,
+            &commit,
+            &cwd,
+            check,
+            self.deadline(),
+            Duration::from_millis(timeout),
+            &checker,
+        )?;
         match run.verdict {
             super::warm::Verdict::Green => Ok(()),
             super::warm::Verdict::Red { exit } => {
@@ -179,7 +181,6 @@ impl SubagentHost {
         }
         let (lane, name) = self.take_settled_worktree(target)?;
         let pool = lane.pool().clone();
-        let tree_key = lane.path().to_string_lossy().into_owned();
         let deadline = self.deadline();
         let quiescence = quiescence_of_jobs(lane.path());
         let settled = match lane.settle(&quiescence, deadline) {
@@ -189,7 +190,6 @@ impl SubagentHost {
                 return Err(error.to_string());
             }
         };
-        super::warm::forget_tickets(&tree_key);
         let branch = settled.candidate.branch.clone();
         self.land_settled(settled, check, &name, &pool, deadline)
             .map_err(|error| match pool.branch_exists(&branch) {
@@ -250,8 +250,9 @@ impl SubagentHost {
             reply.insert("next".to_owned(), json!(next));
             return Ok(reply);
         }
-        let mut moved: Option<(Sha, Sha)> = None;
-        for _attempt in 0..2 {
+        let mut attempt = 0u8;
+        let (expected, found) = loop {
+            attempt = attempt.saturating_add(1);
             let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
             let generation = generation_of(&parent, deadline).map_err(|error| error.to_string())?;
             let session = format!("stage-{name}");
@@ -320,15 +321,13 @@ impl SubagentHost {
                     );
                     return Ok(reply);
                 }
-                Publish::Moved { expected, found } => moved = Some((expected, found)),
+                Publish::Moved { expected, found } => {
+                    if attempt > 1 {
+                        break (expected, found);
+                    }
+                }
             }
-        }
-        let (expected, found) = moved.unwrap_or_else(|| {
-            (
-                settled.candidate.commit.clone(),
-                settled.candidate.commit.clone(),
-            )
-        });
+        };
         Err(format!(
             "the parent moved from {} to {} while the merge was prepared, twice; the candidate {} is retained on branch {}: merge that branch by hand, the child's lane is released",
             expected.short(),
@@ -426,13 +425,7 @@ fn red_check(
     budget: Duration,
     checker: &crate::goal::Checker,
 ) -> Result<Option<(yi_tools::CommandCapture, String)>, String> {
-    let warm = pool.warm().map_err(|error| error.to_string())?;
-    let queue_until = deadline
-        .or_else(|| Instant::now().checked_add(super::warm::CHECK_QUEUE))
-        .unwrap_or_else(Instant::now);
-    let left = deadline.map(|at| at.saturating_duration_since(Instant::now()));
-    let budget = left.map_or(budget, |left| left.min(budget));
-    let run = super::warm::check_commit(&warm, commit, parent, check, queue_until, budget, checker);
+    let run = warm_run(pool, commit, parent, check, deadline, budget, checker)?;
     let cap = deadline.map_or_else(
         || format!("the {} ms check timeout", budget.as_millis()),
         |_| "the session deadline".to_owned(),
@@ -441,8 +434,36 @@ fn red_check(
         (super::warm::Verdict::Green, _) => None,
         (_, Some(capture)) => Some((capture, cap)),
         (super::warm::Verdict::Red { .. }, None) => Some((never_ran(), cap)),
-        (super::warm::Verdict::Abstain { why }, None) => Some((never_ran(), why)),
+        (super::warm::Verdict::Abstain { why }, None) => return Err(why),
     })
+}
+
+/// A check in a warm directory: the queue the session deadline or [`super::warm::CHECK_QUEUE`]
+/// allows, and the budget that deadline leaves. One shape, so the two callers cannot drift.
+fn warm_run(
+    pool: &super::Pool,
+    commit: &Sha,
+    parent: &Path,
+    check: &str,
+    deadline: Option<Instant>,
+    budget: Duration,
+    checker: &crate::goal::Checker,
+) -> Result<super::warm::WarmRun, String> {
+    let warm = pool.warm().map_err(|error| error.to_string())?;
+    let queue_until = deadline
+        .or_else(|| Instant::now().checked_add(super::warm::CHECK_QUEUE))
+        .unwrap_or_else(Instant::now);
+    let left = deadline.map(|at| at.saturating_duration_since(Instant::now()));
+    let checked = left.map_or(budget, |left| left.min(budget));
+    Ok(super::warm::check_commit(
+        &warm,
+        commit,
+        parent,
+        check,
+        queue_until,
+        checked,
+        checker,
+    ))
 }
 
 /// No process behind it: a verdict's reply reads this as a check that was cut, with its reason.

@@ -1,7 +1,7 @@
 ---
 issue: Closes #1941
-growth: +698 is eight verbs over names and the plumbing under them. Weighed for deletion: t.log and t.rewind, kept because a seen-red run needs both; `publish`, cut, since git commit and the outbox already land; a call log per tree, cut until a recipe asks
-raise: tests +409, comments +34, over-cap +2, crate runtime +787
+growth: +921 is eight verbs over names and the plumbing under them. Weighed for deletion: t.log and t.rewind, kept because a seen-red run needs both; `publish`, cut, since git commit and the outbox already land; a call log per tree, cut until a recipe asks
+raise: tests +474, comments +40, over-cap +2, crate runtime +897
 decision: Tree is the kernel's filesystem noun over named uncommitted files, and isolation stays for plan documents | one text at any depth, and a child that sees a person's uncommitted edits | remove register_tree and rlm.Tree. Amends YI_DESIGN sections 3, 11 and 14
 ledger=: `Tree`: fork, check, merge and rewind files from the kernel | 14 | core | H | M | `rlm.tree()` names a set of files, committed or not. `t.fork()` copies them cheaply and `rlm.run(brief, tree=f)` gives a child that tree; `t.check(cmd)` runs in a warm directory, `t.merge(...)` folds others in with no commit, `t.diff()` carries `would_conflict`, and `tree://<name>/` lists changes with no kernel.
 ---

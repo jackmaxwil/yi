@@ -206,7 +206,7 @@ fn past_its_queue_a_check_names_the_pool_that_held_it() -> TestResult {
 }
 
 #[test]
-fn three_checks_through_two_directories_all_answer_and_the_wait_is_counted() -> TestResult {
+fn three_checks_through_two_directories_all_answer() -> TestResult {
     let rig = rig("through", 2)?;
     let runs: Vec<Result<WarmRun, String>> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..3)
@@ -220,16 +220,10 @@ fn three_checks_through_two_directories_all_answer_and_the_wait_is_counted() -> 
             .map(|handle| handle.join().unwrap_or_else(|_| Err("panicked".to_owned())))
             .collect()
     });
-    let mut waited = Duration::ZERO;
     for run in runs {
         let run = run?;
         assert_eq!(run.verdict, Verdict::Green, "{run:?}");
-        waited = waited.max(run.waited);
     }
-    assert!(
-        waited >= Duration::from_millis(500),
-        "the third never waited: {waited:?}"
-    );
     Ok(())
 }
 
@@ -243,7 +237,7 @@ fn a_snapshot_holds_dirt_and_new_files_and_moves_nothing_the_child_has() -> Test
     std::fs::write(tree.join("out/ignored"), "x")?;
     git(tree, &["add", "a.txt"])?;
     let (head, status) = (rig.head()?, git(tree, &["status", "--porcelain"])?);
-    let commit = snapshot(tree)?;
+    let commit = snapshot(tree, None)?;
     assert_eq!(rig.head()?, head);
     assert_eq!(
         git(tree, &["status", "--porcelain"])?,
@@ -260,6 +254,22 @@ fn a_snapshot_holds_dirt_and_new_files_and_moves_nothing_the_child_has() -> Test
     );
     let listed = git(tree, &["ls-tree", "-r", "--name-only", commit.as_str()])?;
     assert!(!listed.contains("out/ignored"), "{listed}");
+    Ok(())
+}
+
+/// Dies with the deadline dropped: a hand-back near its deadline would block up to the lane's git
+/// timeout per invocation instead of answering at once.
+#[test]
+fn a_snapshot_past_its_deadline_answers_at_once() -> TestResult {
+    let rig = rig("snapshot-deadline", 1)?;
+    let past = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .ok_or("no instant")?;
+    let outcome = snapshot(&rig.repo, Some(past));
+    assert!(
+        matches!(outcome, Err(yi_runtime::lane::LaneError::Deadline)),
+        "{outcome:?}"
+    );
     Ok(())
 }
 

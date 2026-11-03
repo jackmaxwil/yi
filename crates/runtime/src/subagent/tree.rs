@@ -169,7 +169,7 @@ impl SubagentHost {
 
     fn tree_head(&self, payload: &Map<String, Value>) -> Result<Map<String, Value>, String> {
         let path = self.tree_path(text(payload, "tree")?)?;
-        let tree = warm::snapshot(&path).map_err(|error| error.to_string())?;
+        let tree = warm::snapshot(&path, None).map_err(|error| error.to_string())?;
         let mut reply = Map::new();
         reply.insert("tree".to_owned(), json!(tree.as_str()));
         Ok(reply)
@@ -289,7 +289,7 @@ impl SubagentHost {
         let pool = Pool::open(&self.options.home, &path, self.options.lane_slots)
             .map_err(|error| error.to_string())?;
         let warm_pool = pool.warm().map_err(|error| error.to_string())?;
-        let commit = warm::snapshot(&path).map_err(|error| error.to_string())?;
+        let commit = warm::snapshot(&path, None).map_err(|error| error.to_string())?;
         let checker = self.checker();
         let until = self
             .deadline()

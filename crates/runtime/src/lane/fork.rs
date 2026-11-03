@@ -239,7 +239,7 @@ impl ChildTree {
         if !cloned {
             tree.plain_checkout()?;
             if plan.dirt {
-                let files = super::warm::snapshot(parent)?;
+                let files = super::warm::snapshot(parent, None)?;
                 super::tree::rewind(tree.path(), &files, &[])?;
             }
         }
