@@ -1,7 +1,7 @@
 use crate::{
-    Args, catalog, debug, doctor, fetch, lanes, memory, run_acp, run_ask, run_console_command,
-    run_gate, run_gc, run_plan, run_rpc, run_serve_command, run_sessions, run_stats, run_trust,
-    run_tui, run_undo, run_version, run_why, todo,
+    Args, catalog, debug, doctor, fetch, lanes, memory, models, run_acp, run_ask,
+    run_console_command, run_gate, run_gc, run_plan, run_rpc, run_serve_command, run_sessions,
+    run_stats, run_trust, run_tui, run_undo, run_version, run_why, todo,
 };
 
 pub(crate) enum Route {
@@ -42,6 +42,7 @@ const VERBS: &[Verb] = &[
     Verb { name: "gate", route: Run(run_gate), words: Any, summary: "say whether a command would run, and why" },
     Verb { name: "fetch", route: Run(fetch::run), words: Any, summary: "resolve one URL through the wall" },
     Verb { name: "catalog", route: Run(catalog::run), words: Any, summary: "show or refresh the model catalog" },
+    Verb { name: "models", route: Run(models::run), words: Only(&["recommend", "refresh"]), summary: "suggest models per role from OpenRouter benchmarks" },
     Verb { name: "doctor", route: Run(doctor::run), words: Only(&[]), summary: "check session invariants, --fix repairs" },
     Verb { name: "gc", route: Run(run_gc), words: Only(&[]), summary: "preview the retention sweep, --fix runs it" },
     Verb { name: "debug", route: Run(debug::run), words: Any, summary: "info, paths, config, profile, trace, select" },
@@ -100,6 +101,7 @@ const FLAGS: &[Flag] = &[
     Flag { name: "since", value: Some("span"), summary: "after stats: fold the sessions of this window" },
     Flag { name: "by", value: Some("axis"), summary: "after stats: group by model, upstream, day, prices or plan" },
     Flag { name: "top", value: Some("n"), summary: "after stats: list the n costliest sessions" },
+    Flag { name: "role", value: Some("role"), summary: "after models recommend: only this role" },
 ];
 
 pub(crate) fn find(name: &str) -> Option<&'static Verb> {
@@ -228,11 +230,13 @@ mod tests {
                 "size" => "80x24",
                 "deadline" | "top" => "5",
                 "since" => "7d",
+                "role" => "advisor",
                 "by" => "model",
                 _ => "x",
             };
             let flag = format!("--{name}");
-            let argv = ["yi", "stats", flag.as_str()];
+            let verb = if *name == "role" { "models" } else { "stats" };
+            let argv = ["yi", verb, flag.as_str()];
             let parsed = crate::args::parse_from(argv.into_iter().chain(value.map(|_| sample)));
             if let Err(error) = parsed {
                 assert!(

@@ -100,6 +100,7 @@ pub use tools::ToolAdapter;
 pub use wall::Wall;
 pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
+pub use yi_ai::recommend;
 pub use yi_ai::request::ProxyConfig;
 pub use yi_ai::roots;
 pub use yi_ai::search;
