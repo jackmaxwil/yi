@@ -104,7 +104,7 @@ impl Drop for Aside {
 
 /// Invariant: a copy an interrupted refute left goes back over the path it came from before the
 /// directory is reused; deleting it there deletes the only copy of the user's product.
-fn recover(artifacts: &[Artifact], dir: &Path) -> Result<(), SpecError> {
+pub fn recover(artifacts: &[Artifact], dir: &Path) -> Result<(), SpecError> {
     if !dir.exists() {
         return Ok(());
     }
@@ -184,6 +184,14 @@ pub fn refute(store: &SpecStore, frozen: &Frozen) -> Result<RefuteRecord, SpecEr
         extra: serde_json::Map::new(),
     };
     for mutant in [Mutant::Baseline, Mutant::Empty] {
+        if let Some(artifact) = frozen
+            .draft
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.escapes(store.cwd()))
+        {
+            return Err(SpecError::Outside(artifact.path().to_path_buf()));
+        }
         let aside = Aside::take(&frozen.draft.artifacts, &aside_dir)?;
         let installed =
             frozen

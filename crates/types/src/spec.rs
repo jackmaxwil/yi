@@ -163,12 +163,38 @@ impl Artifact {
     pub fn path(&self) -> &Path {
         &self.0
     }
+
+    /// Invariant: re-checked before every refute, since a link planted after the freeze would
+    /// send the harness's unsandboxed moves through it.
+    #[must_use]
+    pub fn escapes(&self, cwd: &Path) -> bool {
+        resolves_outside(&self.0, &normalize(cwd))
+    }
 }
 
-/// A path inside the workspace whose link chain leaves it: the refute would move another tree.
+/// Invariant: true when the link chain leaves `cwd`; an absent leaf cannot canonicalize, so
+/// the deepest existing ancestor is resolved, and a dangling link counts as outside.
 fn resolves_outside(path: &Path, cwd: &Path) -> bool {
-    let Ok(real) = std::fs::canonicalize(path) else {
-        return false;
+    let mut base = path;
+    let mut rest = Vec::new();
+    let real = loop {
+        if let Ok(real) = std::fs::canonicalize(base) {
+            break rest
+                .iter()
+                .rev()
+                .fold(real, |acc: PathBuf, part| acc.join(part));
+        }
+        if base
+            .symlink_metadata()
+            .is_ok_and(|meta| meta.file_type().is_symlink())
+        {
+            return true;
+        }
+        let (Some(parent), Some(name)) = (base.parent(), base.file_name()) else {
+            return true;
+        };
+        rest.push(name);
+        base = parent;
     };
     let root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     !real.starts_with(&root)
@@ -465,6 +491,8 @@ pub enum SpecError {
     ChildCannotFreeze,
     NotFinite(f64),
     Poisoned,
+    /// An artifact whose links now lead out of the workspace: the refute refuses to move it.
+    Outside(PathBuf),
     Io {
         path: PathBuf,
         source: std::io::Error,
@@ -496,6 +524,11 @@ impl std::fmt::Display for SpecError {
             }
             Self::NotFinite(value) => write!(formatter, "{value} is not finite"),
             Self::Poisoned => formatter.write_str("the spec store is poisoned"),
+            Self::Outside(path) => write!(
+                formatter,
+                "{} now resolves outside the workspace; the refute will not move it",
+                path.display()
+            ),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
         }
     }
@@ -513,7 +546,8 @@ impl std::error::Error for SpecError {
             | Self::UnknownId(_)
             | Self::ChildCannotFreeze
             | Self::NotFinite(_)
-            | Self::Poisoned => None,
+            | Self::Poisoned
+            | Self::Outside(_) => None,
         }
     }
 }

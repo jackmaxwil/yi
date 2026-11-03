@@ -571,11 +571,15 @@ fn an_artifact_the_refute_would_move_outside_the_workspace_is_refused() -> TestR
     let outside = rig.root.join("secret.txt");
     std::fs::write(&outside, "mine")?;
     std::os::unix::fs::symlink(&outside, rig.cwd.join("planted"))?;
+    std::os::unix::fs::symlink(&home, rig.cwd.join("linked"))?;
+    std::os::unix::fs::symlink(rig.root.join("gone"), rig.cwd.join("dangling"))?;
     let absolute = outside.to_str().unwrap_or_default().to_owned();
     for (raw, why) in [
         ("../secret.txt", ArtifactRefused::Outside),
         (absolute.as_str(), ArtifactRefused::Outside),
         ("planted", ArtifactRefused::Outside),
+        ("linked/id_rsa", ArtifactRefused::Outside),
+        ("dangling", ArtifactRefused::Outside),
     ] {
         let refused = Artifact::declare(raw, &rig.cwd, Some(&home));
         assert_eq!(refused.err(), Some(why), "{raw}");
@@ -707,5 +711,71 @@ fn a_check_never_sees_a_provider_key() -> TestResult {
         "{}",
         frozen.baseline.tail
     );
+    Ok(())
+}
+
+#[test]
+fn a_link_planted_after_the_freeze_stops_the_refute_before_it_moves_anything() -> TestResult {
+    let rig = rig("late-link")?;
+    write_content_check(&rig.cwd)?;
+    let store = store_for(&rig);
+    let frozen = store
+        .freeze(
+            hello_reqs(),
+            &["out.txt".to_owned(), "lib/key".to_owned()],
+            "sh check.sh",
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    std::fs::write(rig.cwd.join("out.txt"), "hello\n")?;
+    let ssh = rig.root.join("ssh");
+    std::fs::create_dir_all(&ssh)?;
+    std::fs::write(ssh.join("key"), "secret")?;
+    std::os::unix::fs::symlink(&ssh, rig.cwd.join("lib"))?;
+    let refused = store.ensure_refute(&frozen);
+    assert!(
+        matches!(refused, Err(yi_types::spec::SpecError::Outside(_))),
+        "{refused:?}"
+    );
+    assert_eq!(std::fs::read_to_string(ssh.join("key"))?, "secret");
+    Ok(())
+}
+
+#[test]
+fn a_resumed_session_puts_a_crashed_refutes_aside_copy_back_at_once() -> TestResult {
+    let rig = rig("resume-aside")?;
+    write_content_check(&rig.cwd)?;
+    let store = store_for(&rig);
+    store
+        .freeze(hello_reqs(), &["out.txt".to_owned()], "sh check.sh")
+        .map_err(|error| format!("{error:?}"))?;
+    let aside = store.dir().join("aside");
+    std::fs::create_dir_all(&aside)?;
+    std::fs::write(aside.join("0"), "the user's product")?;
+    std::fs::write(rig.cwd.join("out.txt"), "")?;
+    drop(store);
+    let _resumed = store_for(&rig);
+    assert_eq!(
+        std::fs::read_to_string(rig.cwd.join("out.txt"))?,
+        "the user's product"
+    );
+    assert!(!aside.exists(), "the aside dir is cleared");
+    Ok(())
+}
+
+#[test]
+fn a_check_past_the_capture_cap_says_its_output_was_cut() -> TestResult {
+    let rig = rig("capture-cap")?;
+    let check = yi_types::spec::CheckCommand::try_from(
+        "head -c 300000 /dev/zero | tr '\\0' x; echo; echo 'ok 1 - R1 fine'".to_owned(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let run = yi_runtime::spec::run::run_check(
+        &check,
+        &rig.cwd,
+        std::time::Duration::from_secs(60),
+        RunKind::Run,
+        None,
+    );
+    assert!(run.tail.contains("CAPTURE_CAP 262144"), "{}", run.tail);
     Ok(())
 }

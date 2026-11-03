@@ -29,7 +29,20 @@ fn tail(capture: &yi_tools::CommandCapture) -> String {
         .rev()
         .nth(TAIL_CHARS.saturating_sub(1))
         .map_or(0, |(index, _)| index);
-    combined.get(start..).unwrap_or(&combined).to_owned()
+    let mut out = String::new();
+    if let Some((kept, total)) = capture.cut {
+        out.push_str(&format!(
+            "[… kept {kept} of {total} output bytes, CAPTURE_CAP {CAPTURE_CAP}: TAP lines in the cut middle were not read; print only TAP lines to stdout]\n"
+        ));
+    }
+    if start > 0 {
+        out.push_str(&format!(
+            "[… last {TAIL_CHARS} of {} chars shown, TAIL_CHARS; run the check with bash for the rest]\n",
+            combined.chars().count()
+        ));
+    }
+    out.push_str(combined.get(start..).unwrap_or(&combined));
+    out
 }
 
 /// The baseline's duration times the factor, within the bounds.

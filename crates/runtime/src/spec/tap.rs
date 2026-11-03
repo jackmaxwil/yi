@@ -43,18 +43,30 @@ fn test_line(line: &str) -> Option<(bool, Vec<ReqId>, String)> {
         _ => rest,
     };
     let rest = rest.strip_prefix("- ").unwrap_or(rest).trim();
-    // A directive (`# SKIP`, `# TODO`) means the assertion did not run: not green.
-    let (description, directive) = match rest.split_once('#') {
-        Some((description, directive)) => (description.trim(), Some(directive.trim())),
+    // Only `# SKIP` and `# TODO` are directives, meaning the assertion did not run: not green.
+    let at = rest
+        .match_indices('#')
+        .map(|(at, _)| at)
+        .find(|&at| rest.get(at.saturating_add(1)..).is_some_and(is_directive));
+    let (description, directive) = match at {
+        Some(at) => (
+            rest.get(..at).unwrap_or(rest).trim(),
+            rest.get(at.saturating_add(1)..).map(str::trim),
+        ),
         None => (rest, None),
     };
-    let ok = ok && directive.is_none_or(|d| d.is_empty());
+    let ok = ok && directive.is_none();
     let (ids, description) = split_ids(description);
     let text = match directive {
-        Some(directive) if !directive.is_empty() => format!("{description} ({directive})"),
-        _ => description.to_owned(),
+        Some(directive) => format!("{description} ({directive})"),
+        None => description.to_owned(),
     };
     Some((ok, ids, text))
+}
+
+fn is_directive(text: &str) -> bool {
+    let word: String = text.trim_start().chars().take(4).collect();
+    word.eq_ignore_ascii_case("skip") || word.eq_ignore_ascii_case("todo")
 }
 
 /// The first token binds ids when it is `R7` or `R7,R8`; the description is then the rest.
@@ -157,6 +169,13 @@ mod tests {
             Some("skipped (SKIP no data)")
         );
         assert_eq!(parsed.metrics.get("cost").map(|m| m.get()), Some(12.5));
+    }
+
+    #[test]
+    fn a_hash_in_a_description_is_not_a_directive() {
+        let parsed = parse("ok 3 - R3 row #2 has legs\nok 4 - R4 row #2 # todo later\n");
+        assert_eq!(parsed.status.get(&ReqId::numbered(3)), Some(&Status::Green));
+        assert_eq!(parsed.status.get(&ReqId::numbered(4)), Some(&Status::Red));
     }
 
     #[test]

@@ -136,6 +136,10 @@ impl SpecStore {
         let record = latest_record(&session);
         let last = latest_run(&session);
         let refute = latest_refute(&session);
+        if let Some(frozen) = record.as_ref().and_then(|record| record.spec.frozen()) {
+            let _a_failed_recover_is_retried_by_the_next_take =
+                refute::recover(&frozen.draft.artifacts, &self.dir().join("aside"));
+        }
         if let Ok(mut state) = self.state.lock() {
             state.spec = record.map(|record| record.spec);
             state.last = last;
@@ -396,7 +400,7 @@ impl SpecStore {
             .map_err(|_| SpecError::Poisoned)?
             .refute
             .clone()
-            .filter(|record| record.key == key);
+            .filter(|record| record.key == key && key.check_hash.is_some());
         if let Some(record) = cached {
             return Ok(record);
         }
@@ -676,13 +680,24 @@ pub fn tree_size(path: &Path) -> u64 {
     total
 }
 
-/// Copy a file or a tree; symlinks are copied as the files they point to.
+/// Copy a file or a tree; a symlink is copied as a link, so the copy is the tree
+/// [`tree_size`] measured and a link loop or a link to `$HOME` is not followed.
 pub fn copy_tree(from: &Path, to: &Path) -> Result<(), SpecError> {
     let io = |path: &Path, source: std::io::Error| SpecError::Io {
         path: path.to_path_buf(),
         source,
     };
-    if from.is_dir() {
+    let kind = std::fs::symlink_metadata(from)
+        .map_err(|e| io(from, e))?
+        .file_type();
+    if kind.is_symlink() {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
+        }
+        let target = std::fs::read_link(from).map_err(|e| io(from, e))?;
+        return std::os::unix::fs::symlink(target, to).map_err(|e| io(to, e));
+    }
+    if kind.is_dir() {
         std::fs::create_dir_all(to).map_err(|e| io(to, e))?;
         let entries = std::fs::read_dir(from).map_err(|e| io(from, e))?;
         for entry in entries {
