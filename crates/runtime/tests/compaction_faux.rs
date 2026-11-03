@@ -10,7 +10,7 @@ use yi_loop::ExecutionMode;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, StopReason, UserContent};
+use yi_types::message::{AgentMessage, HostSource, StopReason, UserContent};
 use yi_types::model::{Effort, Model, ModelCost};
 
 pub(crate) fn faux_model(context_window: u64) -> Model {
@@ -2269,6 +2269,68 @@ fn compaction_drops_the_host_nudges_it_retained() -> Result<(), Box<dyn Error>> 
     let unread = note(yi_loop::REPEAT_BREAK_CUSTOM_TYPE);
     let tail = [reply.clone(), unread.clone()];
     assert_eq!(yi_context::drop_internal(&tail), tail);
+    Ok(())
+}
+
+/// The floor keeps the requester's words and the letter that wakes a session, never a host
+/// notice written for a turn the summary already carries.
+#[test]
+fn compaction_floors_a_host_notice_and_keeps_the_waking_letter() -> Result<(), Box<dyn Error>> {
+    let entry = |seq: u64, message: AgentMessage| Entry::Message {
+        id: format!("m{seq}"),
+        message,
+        terminate: None,
+        parent_id: None,
+        seq,
+        timestamp: seq,
+    };
+    let branch = vec![
+        entry(
+            1,
+            AgentMessage::user_input(UserContent::Text("first requirement".to_owned()), 1),
+        ),
+        entry(
+            2,
+            AgentMessage::host_text(HostSource::Notice, "the turn ends at 15:00", 1),
+        ),
+        entry(
+            3,
+            AgentMessage::host_text(HostSource::Mail, "the parent asks for the count", 1),
+        ),
+        entry(
+            4,
+            faux_assistant_message(vec![faux_text(&"answer ".repeat(4_000))], StopReason::Stop),
+        ),
+        entry(
+            5,
+            AgentMessage::user_input(UserContent::Text("recent ask".to_owned()), 5),
+        ),
+        entry(
+            6,
+            faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+        ),
+    ];
+    let settings = Settings {
+        keep_recent_tokens: Tokens(100),
+        ..Settings::default()
+    };
+    let prepared = yi_context::prepare_compaction(&branch, &settings).ok_or("expected a floor")?;
+    let tail: Vec<String> = prepared
+        .retained_tail
+        .iter()
+        .map(AgentMessage::plain_text)
+        .collect();
+    assert!(
+        tail.iter()
+            .any(|text| text == "the parent asks for the count"),
+        "the waking letter must survive the summary: {tail:?}"
+    );
+    assert!(
+        !tail
+            .iter()
+            .any(|text| text.contains("the turn ends at 15:00")),
+        "a host notice must not outlive its turn: {tail:?}"
+    );
     Ok(())
 }
 
