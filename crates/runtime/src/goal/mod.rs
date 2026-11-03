@@ -471,6 +471,17 @@ pub fn objective_updated_text(goal: &Goal) -> String {
     fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
 }
 
+/// The objective-edit and budget notices ride the continuation kind but are never superseded.
+fn goal_notice_message(text: String) -> AgentMessage {
+    AgentMessage::Custom {
+        custom_type: "goal_prompt".to_owned(),
+        content: UserContent::Text(text),
+        display: true,
+        details: Some(json!({ yi_context::wrapper::NOTICE_DETAIL: true })),
+        timestamp: yi_session::now_ms(),
+    }
+}
+
 fn goal_prompt_message(text: String) -> AgentMessage {
     AgentMessage::host_note("goal_prompt", text, yi_session::now_ms())
 }
@@ -722,7 +733,7 @@ impl GoalService {
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
         (self.deliver)(
-            goal_prompt_message(objective_updated_text(&goal)),
+            goal_notice_message(objective_updated_text(&goal)),
             DeliveryMode::Steer,
         );
         if let Ok(mut deferred) = self.deferred.lock() {
@@ -810,7 +821,7 @@ impl GoalService {
         // happens exactly once per goal.
         if crossed {
             (self.deliver)(
-                goal_prompt_message(budget_limit_text(&goal)),
+                goal_notice_message(budget_limit_text(&goal)),
                 DeliveryMode::Steer,
             );
         }

@@ -13,12 +13,15 @@ const KEY_CLOSE: &str = "</arg_key>";
 const VALUE_OPEN: &str = "<arg_value>";
 const VALUE_CLOSE: &str = "</arg_value>";
 
+static MESSAGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Every well-formed block in the text becomes a `ToolCall` after it, every call's arguments
 /// pass [`unleak`], and a `Stop` becomes `ToolUse`. False when no block moved.
 pub fn recover_in(output: &mut AgentMessage) -> bool {
     let AgentMessage::Assistant {
         content,
         stop_reason,
+        timestamp,
         ..
     } = output
     else {
@@ -44,9 +47,13 @@ pub fn recover_in(output: &mut AgentMessage) -> bool {
     if calls.is_empty() {
         return false;
     }
+    // Incident: every message's first leaked call was `leak-0`, so a cut keyed by that id answered
+    // the wrong turn's call — the same again on a resumed session, so the message's own clock leads.
+    let message = MESSAGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stamp = *timestamp;
     for (n, (name, arguments)) in calls.into_iter().enumerate() {
         content.push(Content::ToolCall {
-            id: format!("leak-{n}"),
+            id: format!("leak-{stamp}-{message}-{n}"),
             name,
             arguments,
             thought_signature: None,
@@ -62,32 +69,96 @@ pub fn recover_in(output: &mut AgentMessage) -> bool {
 /// A call as the text spelled it: the tool's name and its arguments.
 pub type SpelledCall = (String, Map<String, Value>);
 
-/// The text with its well-formed blocks cut out, and the calls they spelled; a block that
-/// does not parse stays in the text. None when the text spelled no call.
+/// The text with its well-formed blocks cut out, and the calls they spelled; a block that does not
+/// parse, or one the model only quoted as code, stays in the text.
 pub fn recover(text: &str) -> Option<(String, Vec<SpelledCall>)> {
-    let mut rest = text;
+    let quoted = quoted(text);
+    let inside = |at: usize| quoted.iter().any(|(from, to)| at >= *from && at < *to);
     let mut kept = String::new();
     let mut calls = Vec::new();
-    while let Some(start) = rest.find(OPEN) {
-        let Some(end) = rest.get(start..).and_then(|tail| tail.find(CLOSE)) else {
+    let mut base = 0;
+    while let Some(found) = text.get(base..).and_then(|tail| tail.find(OPEN)) {
+        let start = base.saturating_add(found);
+        let Some(end) = text.get(start..).and_then(|tail| tail.find(CLOSE)) else {
             break;
         };
         let after = start.saturating_add(end).saturating_add(CLOSE.len());
-        let inner = rest.get(start.saturating_add(OPEN.len())..start.saturating_add(end));
-        match inner.and_then(parse_block) {
+        let inner = text.get(start.saturating_add(OPEN.len())..start.saturating_add(end));
+        match inner.filter(|_| !inside(start)).and_then(parse_block) {
             Some(call) => {
-                kept.push_str(rest.get(..start).unwrap_or_default());
+                kept.push_str(text.get(base..start).unwrap_or_default());
                 calls.push(call);
             }
-            None => kept.push_str(rest.get(..after).unwrap_or_default()),
+            None => kept.push_str(text.get(base..after).unwrap_or_default()),
         }
-        rest = rest.get(after..).unwrap_or_default();
+        base = after;
     }
     if calls.is_empty() {
         return None;
     }
-    kept.push_str(rest);
+    kept.push_str(text.get(base..).unwrap_or_default());
     Some((kept.trim().to_owned(), calls))
+}
+
+/// The byte ranges a reader sees as code: a fenced block, or an inline span closed by a run of the
+/// same backticks. Incident: a message quoting this module's own example ran the call it quoted.
+fn quoted(text: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut fence: Option<(usize, char, usize)> = None;
+    let mut inline: Option<(usize, usize)> = None;
+    let mut at: usize = 0;
+    for line in text.split_inclusive('\n') {
+        let start = at;
+        at = at.saturating_add(line.len());
+        let body = line.trim_start_matches([' ', '\t']);
+        let indent = line.len() - body.len();
+        let Some(head) = body.chars().next() else {
+            inline = None;
+            continue;
+        };
+        let run = body
+            .chars()
+            .take_while(|character| *character == head)
+            .count();
+        let fenced = run >= 3 && (head == '`' || head == '~');
+        if let Some((width, character, from)) = fence {
+            if fenced
+                && character == head
+                && run >= width
+                && body.trim_end().chars().all(|c| c == character)
+            {
+                ranges.push((from, at));
+                fence = None;
+            }
+            continue;
+        }
+        if fenced {
+            fence = Some((run, head, start.saturating_add(indent)));
+            continue;
+        }
+        let mut search = 0;
+        while let Some(found) = body.get(search..).and_then(|tail| tail.find('`')) {
+            let column = search.saturating_add(found);
+            let width = body
+                .get(column..)
+                .map_or(0, |tail| tail.chars().take_while(|c| *c == '`').count());
+            let from = start.saturating_add(indent).saturating_add(column);
+            match inline {
+                Some((opened_at, opened)) if opened == width => {
+                    ranges.push((opened_at, from.saturating_add(width)));
+                    inline = None;
+                }
+                Some(_) => {}
+                None => inline = Some((from, width)),
+            }
+            search = column.saturating_add(width.max(1));
+        }
+        inline = None;
+    }
+    if let Some((_, _, from)) = fence {
+        ranges.push((from, at));
+    }
+    ranges
 }
 
 fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<(&'a str, &'a str)> {

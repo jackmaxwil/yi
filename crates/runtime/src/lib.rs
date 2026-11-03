@@ -57,6 +57,7 @@ pub mod session;
 pub mod settings;
 pub mod skills;
 pub mod slash;
+pub mod spec;
 pub mod spend;
 pub mod subagent;
 pub mod telemetry;
@@ -106,6 +107,11 @@ pub use yi_ai::roots;
 pub use yi_ai::search;
 pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
 pub use yi_kernel::tarball;
+
+/// Stops shell jobs whose reaper would otherwise end with this process.
+pub fn kill_running_jobs() {
+    yi_tools::jobs::registry().kill_running();
+}
 
 /// None where the platform has no sandbox: a contained decision then degrades
 /// to a question rather than to an unenforced allowance.

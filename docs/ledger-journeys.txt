@@ -2,6 +2,7 @@ pure loop + event enum | `loop_events::tool_turn_executes_and_continues`
 pure loop + event enum | `loop_events::a_bare_length_stop_is_re_driven_twice_then_ends_on_the_third`
 pure loop + event enum | `interrupt::an_abort_during_the_cut_drain_returns_at_once`
 pure loop + event enum | `pump_stop::an_abort_stops_the_provider_pump_at_the_next_event`
+pure loop + event enum | `loop_events::a_400_body_ends_the_turn_with_no_retry_and_no_steer`
 pure loop + event enum | `openrouter::an_aborted_turn_is_settled_from_the_record`
 entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
@@ -43,6 +44,9 @@ bash reduce (launch set) | `tools::a_line_past_the_clip_is_clipped_and_the_row_n
 bash reduce (launch set) | `session_faux::a_job_that_exits_mid_turn_lands_its_view_as_a_poll_reads_it`
 bash reduce (launch set) | `kernel_cell::a_shell_cell_keeps_its_failing_test_and_summary_inline`
 bash reduce (launch set) | `kernel_data_surface::a_cut_cell_stream_names_a_file_with_every_character`
+read-only shell reads steer to `read` and `grep` | `tools::a_shell_read_names_the_dedicated_tool_first`
+read-only shell reads steer to `read` and `grep` | `tools::a_write_a_vcs_or_build_call_gets_no_dedicated_tool_row`
+bash reduce (launch set) | `journeys::an_exiting_ask_kills_its_background_bash_process_group` (T2)
 file checkpoints + /undo | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 file checkpoints + /undo | `tools::a_capture_leaves_out_a_home_that_lives_inside_the_project`
 kernel + ipython + rlm() subagents | `reader_retry::schema_failure_gets_one_retry_and_a_second_failure_is_refused`
@@ -580,6 +584,12 @@ TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
 kernel + ipython + rlm() subagents | `requests_e2e::a_final_text_over_the_body_cap_points_at_the_childs_transcript`
 kernel + ipython + rlm() subagents | `recursion_e2e::a_high_discovery_with_no_goal_is_delivered_as_a_note`
+spec (harness-run requirements check) | `todo_coupling::a_red_spec_refuses_the_stop_and_names_the_requirement`
+host-written memory (one file per fact, hook index) | `history::tests::history_search_finds_a_message_by_its_accented_word`
+host-written memory (one file per fact, hook index) | `history::tests::eight_threads_on_one_cold_corpus_build_one_index_and_agree`
+pure loop + event enum | `loop_events::a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail`
+goals + autonomous | `goal_e2e::three_idle_continuations_reach_the_next_request_as_one_newest_copy`
+extension system + yard + native voice/method | `ext_e2e::one_instruction_file_attaches_for_two_ruler_renders`
 GitHub-to-forge intake | `scripts/intake/journey.py` (T2)
 model recommender | `cli_surfaces::models_recommend_prints_three_tagged_picks_from_the_offline_snapshot` (T0)
 model recommender | `recommend::popularity_cannot_flip_a_clearly_better_ratio` (T0)

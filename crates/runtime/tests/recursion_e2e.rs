@@ -155,6 +155,26 @@ fn assistant_count(messages: &[AgentMessage]) -> usize {
         .count()
 }
 
+fn harness_kernel(harness: &Harness) -> Arc<KernelService> {
+    let mut registry = HostRegistry::default();
+    harness.host.register(&mut registry);
+    Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        session_dir: Some(harness.root.to_path_buf()),
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        on_boot: None,
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling: None,
+    }))
+}
+
 fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let HarnessOptions {
         child_errors,
@@ -2345,8 +2365,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
                 child_reply("carried on without my state"),
             ]);
             let mut child = AgentSession::new(config, provider);
-            let mut registry = HostRegistry::default();
-            registry.register_mcp_stubs();
+            let registry = HostRegistry::default();
             let kernel = Arc::new(KernelService::new(KernelServiceOptions {
                 cwd: dir.clone(),
                 home: std::env::var_os("HOME")
@@ -2931,24 +2950,7 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
 #[tokio::test]
 async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
     let harness = harness(0, 1, "kernel child says hi")?;
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
-    harness.host.register(&mut registry);
-    let service = Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: std::env::temp_dir(),
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
-        session_dir: Some(harness.root.to_path_buf()),
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }));
+    let service = harness_kernel(&harness);
 
     harness.host.attach_kernel(&service);
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
@@ -4963,24 +4965,7 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
         wake_parent: None,
     })?;
     let mut events = harness.events.subscribe();
-    let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
-    harness.host.register(&mut registry);
-    let service = Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: std::env::temp_dir(),
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
-        session_dir: Some(harness.root.to_path_buf()),
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }));
+    let service = harness_kernel(&harness);
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
     let cell = tokio::task::spawn_blocking({
         let service = Arc::clone(&service);

@@ -134,6 +134,7 @@ fn a_provider_request_reaches_the_configured_proxy() -> Res {
         &[],
         &transport_probe(),
         Some(&config),
+        None,
         &|_| {},
     );
 
@@ -193,7 +194,7 @@ fn back_to_back_requests_share_one_connection() -> Res {
         }
     });
     for _ in 0..3 {
-        let response = send_with_retry(&url, &[], &transport_probe(), None, &|_| {})?;
+        let response = send_with_retry(&url, &[], &transport_probe(), None, None, &|_| {})?;
         assert_eq!(response.into_string()?, "ok");
     }
     assert_eq!(
@@ -240,6 +241,7 @@ fn a_retried_request_says_which_attempt_and_how_long_it_waits() -> Res {
         &format!("http://127.0.0.1:{port}/v1/messages"),
         &[],
         &transport_probe(),
+        None,
         None,
         &|wait| seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(()),
     );
@@ -298,6 +300,7 @@ fn a_dropped_connection_retry_names_the_reason_not_the_url() -> Res {
         ),
         &[],
         &transport_probe(),
+        None,
         None,
         &|wait| seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(()),
     );
