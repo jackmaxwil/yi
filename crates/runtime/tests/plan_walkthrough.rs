@@ -1287,7 +1287,6 @@ async fn a_program_and_its_json_fixture_reach_the_same_plan_json() -> Fallible<(
         let engine = build_engine(doc, &cell_store, &Arc::new(Stub::default()))?;
         let mut registry = HostRegistry::default();
         yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, None, &mut registry);
-        registry.register_mcp_stubs();
         let service = Arc::new(yi_runtime::KernelService::new(
             yi_runtime::KernelServiceOptions {
                 cwd: std::env::temp_dir(),
