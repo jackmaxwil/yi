@@ -13,27 +13,38 @@ Header keys, each optional:
   growth: +212 <memo>           net src growth past the free band, and what was weighed for deletion
   raise: tests +140, comments +12, over-cap +1, crate runtime +60
   decision: <decision> | <why> | <reversible via>      repeatable; numbered by the recorder
+  ledger+: <feature> | <clause>                         append `; <clause>` to the row's note
+  ledger~: <feature> | <old> | <new>                    replace text occurring once in the row
+  ledger=: <feature> | <§> | <status> | <V> | <C> | <note>      a new row, after the last
+  ledger-: <feature>                                    delete the row
+Cells split on an unescaped ` | `; a literal pipe is `\\|`, as the table writes it. Incident: 43 of
+100 conflicted main merges touched a ledger row, a 2-4 KB line every feature appends to.
 scripts/record_changes.py adds `version:` and `decisions:` when it records the file, and its own
 diff, exactly what it writes from the fork's tree, is the one view edit a branch may carry."""
-import functools, pathlib, re, sys
+import functools, os, pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, fail, fork, git, no_fork, scratch_repo
+from _common import ROOT, fail, fork, git, no_fork, row_key, scratch_repo, table_rows
 
 DIR = "docs/changes"
 NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md$")
-KEYS = {"issue", "growth", "raise", "decision", "version", "decisions"}
+LEDGER, LEDGER_OPS = "Feature ledger", {"ledger+": 2, "ledger~": 3, "ledger=": 6, "ledger-": 1}
+# Invariant: a row edit committed before this date came from a PR whose review rounds moving it would void.
+LEDGER_FROM = "2026-11-02"
+CELL = re.compile(r"(?<!\\) \| ")
+KEYS = {"issue", "growth", "raise", "decision", "version", "decisions", *LEDGER_OPS}
 GROWTH = re.compile(r"^\+(\d+)\s+\S")
 RAISE = re.compile(r"^(tests|comments|over-cap|crate [a-z][a-z0-9-]*) \+(\d+)$")
 VERSION = re.compile(r"^version:\s*(\S+)", re.M)
 DECISIONS = "| id | decision | why | reversible via |"
 # The selfcheck switches each check off in turn and must then fail for it (040).
-CHECKS = ("header", "key", "decision", "raise", "growth", "twice", "prose", "name", "stamp", "exact", "rows", "version", "decisions")
+CHECKS = ("header", "key", "decision", "raise", "growth", "twice", "prose", "name", "stamp", "exact", "rows", "version", "decisions",
+          "ledger-edit", "ledger-apply", "ledger-ops")
 OFF = set()
 
 
 def parse(text):
     """(fields, errors). Fields: the header's values, `raise` summed per key, `body` the prose."""
-    fields, errs = {"decision": [], "raise": {}}, []
+    fields, errs = {"decision": [], "raise": {}, "ledger": []}, []
     head, sep, body = text[4:].partition("\n---\n")
     if text[:4] != "---\n" or not sep:
         if "header" not in OFF:
@@ -48,6 +59,12 @@ def parse(text):
             if "decision" not in OFF and (value.count("|") != 2 or not all(cell.strip() for cell in value.split("|"))):
                 errs.append("a decision is three cells: <decision> | <why> | <reversible via>")
             fields["decision"].append(value)
+        elif key in LEDGER_OPS:
+            cells = [cell.strip() for cell in CELL.split(value)]
+            if len(cells) == LEDGER_OPS[key] and all(cells):
+                fields["ledger"].append((key, cells))
+            elif "ledger-ops" not in OFF:
+                errs.append(f"{key} takes {LEDGER_OPS[key]} cell(s) split by ` | `, and {line!r} has {len(cells)}")
         elif key == "raise":
             for part in filter(None, (p.strip() for p in value.split(","))):
                 found = RAISE.match(part)
@@ -123,7 +140,99 @@ def changelog_rows(text):
     return [line for line in text.splitlines() if re.match(r"^\| \d+\.\d+\.\d+ \|", line)]
 
 
-def view_edits(was, now):
+def apply_ledger(arch, lines):
+    """(arch, errors) after each (op, cells) in turn; a line that does not apply changes nothing."""
+    errs = []
+    for op, cells in lines:
+        rows = {row_key(row): row for row in table_rows(arch, LEDGER)}
+        row = rows.get(cells[0])
+        if op == "ledger=":
+            if row is None:
+                last = list(rows.values())[-1]
+                arch = arch.replace(last, f"{last}\n| {' | '.join(cells)} |", 1)
+            else:
+                errs.append(f"{op}: `{cells[0]}` already has a row")
+        elif row is None:
+            errs.append(f"{op}: no feature-ledger row named `{cells[0]}`")
+        elif op == "ledger-":
+            arch = arch.replace(row + "\n", "", 1)
+        elif op == "ledger+":
+            arch = arch.replace(row, f"{row[:-2]}; {cells[1]} |", 1)
+        elif row.count(cells[1]) == 1:
+            arch = arch.replace(row, row.replace(cells[1], cells[2]), 1)
+        elif (parts := CELL.split(row[2:-2])).count(cells[1]) == 1:
+            parts[parts.index(cells[1])] = cells[2]
+            arch = arch.replace(row, f"| {' | '.join(parts)} |", 1)
+        else:
+            errs.append(f"{op}: `{cells[1]}` occurs {row.count(cells[1])} times in `{cells[0]}`, not once")
+    return arch, [] if "ledger-apply" in OFF else errs
+
+
+def unapplied_ledger(arch):
+    """(arch, errors) with every unstamped file's lines applied in the recorder's order, the one view
+    every reader judges: stamped and applied happen in one recorder commit."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import record_changes
+    written = [(name, text) for name, text in files() if parse(text)[0]["ledger"]]
+    if not written:
+        return arch, []
+    errs = []
+    for name, text, _ in record_changes.pending(ROOT, "HEAD", written):
+        arch, found = apply_ledger(arch, parse(text)[0]["ledger"])
+        errs += [f"{DIR}/{name}: {e}" for e in found]
+    return arch, errs
+
+
+def cell_edit(key, row, old, new):
+    """`old` to `new` as a `~`, cut small so a second PR on the cell still applies, or as its whole
+    cell when a status also occurs in the note."""
+    p = len(os.path.commonprefix([old, new]))
+    s = len(os.path.commonprefix([old[p:][::-1], new[p:][::-1]]))
+    cut = lambda text: text[p:len(text) - s]
+    while s and (cut(old)[-1:].isspace() or cut(new)[-1:].isspace()):
+        s -= 1
+    while p and (row.count(cut(old)) != 1 or not cut(new) or cut(old)[:1].isspace() or cut(new)[:1].isspace()):
+        p -= 1
+    return f"ledger~: {key} | {cut(old)} | {cut(new)}" if row.count(cut(old)) == 1 and cut(new) else f"ledger~: {key} | {old} | {new}"
+
+
+def row_edit(key, old, row):
+    """The lines that turn `old` into `row`, proven by applying them; a delete and a new row, which
+    moves the row to the table's end, only when they do not reach it."""
+    if row.startswith(f"{old[:-2]}; "):
+        return f"ledger+: {key} | {row[len(old):-2]}"
+    was, now = CELL.split(old[2:-2]), CELL.split(row[2:-2])
+    lines = "\n".join(cell_edit(key, old, a, b) for a, b in zip(was, now) if a != b)
+    read, errs = parse(f"---\n{lines}\n---\nx\n")
+    done, found = apply_ledger(f"## {LEDGER}\n\n| f |\n|---|\n{old}\n", read["ledger"])
+    if len(was) == len(now) and not errs and not found and table_rows(done, LEDGER) == [row]:
+        return lines
+    return f"ledger-: {key}\nledger=: {row[2:-2]}"
+
+
+def ledger_lines(was, now):
+    """The change-file lines that turn `was`'s table into `now`'s."""
+    old, new = ({row_key(row): row for row in table_rows(text, LEDGER)} for text in (was, now))
+    out = [f"ledger-: {key}" for key in old if key not in new]
+    for key, row in new.items():
+        if key not in old:
+            out.append(f"ledger=: {row[2:-2]}")
+        elif old[key] != row:
+            out.append(row_edit(key, old[key], row))
+    return out
+
+
+def old_row_edits(base):
+    """Whether every row edit on this branch predates LEDGER_FROM. Commit by commit, so a new PR
+    batched with an old one on a candidate does not inherit its exemption."""
+    rows = lambda rev: table_rows(at(rev, "docs/ARCHITECTURE.md") or "", LEDGER)
+    if rows("HEAD") != table_rows((ROOT / "docs/ARCHITECTURE.md").read_text(), LEDGER):
+        return False
+    log = git("log", "--no-merges", "--format=%H %cs", f"{base}..HEAD", "--", "docs/ARCHITECTURE.md").stdout
+    return not any(date >= LEDGER_FROM and rows(sha) != rows(f"{sha}^") for sha, date in map(str.split, log.splitlines()))
+
+
+def view_edits(was, now, old_rows=False):
     """What a PR changed in the recorder's views. `was` and `now` map path -> text (None: absent)."""
     errs = []
     if "rows" not in OFF and changelog_rows(was["docs/CHANGELOG.md"] or "") != changelog_rows(now["docs/CHANGELOG.md"] or ""):
@@ -133,6 +242,9 @@ def view_edits(was, now):
         errs.append("docs/ARCHITECTURE.md: the `version:` line changed; the recorder numbers versions")
     if "decisions" not in OFF and table(arch_was, DECISIONS) != table(arch_now, DECISIONS):
         errs.append("docs/ARCHITECTURE.md: a decision row changed; write `decision:` in a change file")
+    if "ledger-edit" not in OFF and not old_rows and table_rows(arch_was, LEDGER) != table_rows(arch_now, LEDGER):
+        lines = "\n".join(f"  {line}" for line in ledger_lines(arch_was, arch_now))
+        errs.append(f"docs/ARCHITECTURE.md: a feature-ledger row changed; restore the table from the fork and add to a change file:\n{lines}")
     return errs
 
 
@@ -172,13 +284,15 @@ def file_errors(names_texts, recorded=()):
     return errs
 
 
+LEDGER_FIXTURE = (f"## {LEDGER}\n\n| feature | § | status | V | C | note |\n|---|---|---|---|---|---|\n"
+                  "| one | 1 | core | H | M | first core |\n\n| two – § | 2 | core | H | L | has \\| pipe |\n\n## Next\n")
 GOOD = "---\nissue: Closes #974\ngrowth: +212 weighed X\nraise: tests +140, crate runtime +60\ndecision: a | b | c\n---\nProse.\n"
 
 
 def cases():
     """Each case a refusal the gate owes; returns the ones that did not hold."""
     log = "# Changelog\n\nprose\n\n| ver | date | change |\n|---|---|---|\n| 0.2.0 | d | two |\n"
-    arch = f"version: 0.2.0  # x\n\n## Decisions\n\n{DECISIONS}\n|---|---|---|---|\n| D2 | a | b | c |\n\n## Next\n"
+    arch = f"version: 0.2.0  # x\n\n## Decisions\n\n{DECISIONS}\n|---|---|---|---|\n| D2 | a | b | c |\n\n{LEDGER_FIXTURE}"
     was = {"docs/CHANGELOG.md": log, "docs/ARCHITECTURE.md": arch}
     edit = lambda path, a, b: view_edits(was, dict(was, **{path: was[path].replace(a, b)}))
     refused = {
@@ -196,6 +310,16 @@ def cases():
         "an added changelog row": edit("docs/CHANGELOG.md", "| 0.2.0 |", "| 0.3.0 | d | three |\n| 0.2.0 |"),
         "a bumped version": edit("docs/ARCHITECTURE.md", "0.2.0", "0.3.0"),
         "an added decision": edit("docs/ARCHITECTURE.md", "| D2 | a", "| D3 | z | y | x |\n| D2 | a"),
+        "an edited ledger row": edit("docs/ARCHITECTURE.md", "first", "changed"),
+        "a line short a cell": parse("---\nledger~: one | old\n---\nx\n")[1],
+        "a line one cell over": parse("---\nledger+: one | a | b\n---\nx\n")[1],
+        "a new row one cell short": parse("---\nledger=: new | 1 | core | H | M\n---\nx\n")[1],
+        "a new row one cell over": parse("---\nledger=: new | 1 | core | H | M | n | o\n---\nx\n")[1],
+        "old text the row does not hold": apply_ledger(LEDGER_FIXTURE, [("ledger~", ["one", "absent", "x"])])[1],
+        "old text the row holds twice": apply_ledger(LEDGER_FIXTURE, [("ledger~", ["one", "co", "x"])])[1],
+        "a new row on an existing key": apply_ledger(LEDGER_FIXTURE, [("ledger=", ["one", "1", "core", "H", "M", "n"])])[1],
+        "a clause on a missing key": apply_ledger(LEDGER_FIXTURE, [("ledger+", ["ghost", "x"])])[1],
+        "a delete of a missing key": apply_ledger(LEDGER_FIXTURE, [("ledger-", ["ghost"])])[1],
     }
     passed = {
         "a good file": file_errors([("2026-10-01-change-files.md", GOOD)]),
@@ -205,6 +329,7 @@ def cases():
         "changelog prose": edit("docs/CHANGELOG.md", "prose", "new prose"),
         "the version line's comment": edit("docs/ARCHITECTURE.md", "# x", "# y"),
         "a row in another table": view_edits(was, dict(was, **{"docs/ARCHITECTURE.md": arch + "| feature | row |\n"})),
+        "an old PR's ledger edit": view_edits(was, dict(was, **{"docs/ARCHITECTURE.md": arch.replace("first", "changed")}), True),
     }
     bad = [f"not refused: {name}" for name, errs in refused.items() if not errs]
     bad += [f"refused: {name}: {errs}" for name, errs in passed.items() if errs]
@@ -214,6 +339,58 @@ def cases():
     if parse("---\nraise: tests +1\nraise: tests +2\n---\nx\n")[0]["raise"] != {"tests": 3}:
         bad.append("two raise lines did not sum")
     return bad
+
+
+def ledger_cases():
+    """Each op on the rows it is for, below a blank line in the table and through an escaped pipe, and
+    the two real edits of the 3 KB context row that #1890 and #1870 made, as lines."""
+    bad = []
+    lines = parse("---\nledger~: two – § | has \\| pipe | no pipe\nledger+: two – § | c \\| d\nledger=: new | 3 | gated | M | L | n\n---\nx\n")
+    if lines[1] or len(lines[0]["ledger"]) != 3:
+        bad.append(f"a line with an escaped pipe read as {lines}")
+    now, errs = apply_ledger(LEDGER_FIXTURE, lines[0]["ledger"])
+    want = ["| one | 1 | core | H | M | first core |", "| two – § | 2 | core | H | L | no pipe; c \\| d |", "| new | 3 | gated | M | L | n |"]
+    if errs or table_rows(now, LEDGER) != want:
+        bad.append(f"three ops on the fixture read {table_rows(now, LEDGER)}: {errs}")
+    if table_rows(apply_ledger(LEDGER_FIXTURE, [("ledger-", ["one"])])[0], LEDGER) != table_rows(LEDGER_FIXTURE, LEDGER)[1:]:
+        bad.append("a deleted row is still in the table")
+    for name, after in {"a clause": LEDGER_FIXTURE.replace("first core", "first core; more"),
+                        "a mid-row insert": LEDGER_FIXTURE.replace("first core", "first, then core"),
+                        "a status": LEDGER_FIXTURE.replace("1 | core | H", "1 | gated | H"),
+                        "a deletion": LEDGER_FIXTURE.replace("first core", "first"),
+                        "a cut across cells": LEDGER_FIXTURE.replace("H | M | first", "L | L | second"),
+                        "a new row": LEDGER_FIXTURE.replace("\n\n## Next", "\n| new | 3 | core | H | M | n |\n\n## Next"),
+                        "a deleted row": LEDGER_FIXTURE.replace("| one | 1 | core | H | M | first core |\n", "")}.items():
+        text = "\n".join(ledger_lines(LEDGER_FIXTURE, after))
+        read, errs = parse(f"---\n{text}\n---\nx\n")
+        if errs or table_rows(apply_ledger(LEDGER_FIXTURE, read["ledger"])[0], LEDGER) != table_rows(after, LEDGER):
+            bad.append(f"the lines for {name} do not reproduce it in place: {text!r} {errs}")
+    swapped = LEDGER_FIXTURE.replace("H | M", "M | L")
+    read, errs = parse("---\n" + "\n".join(ledger_lines(LEDGER_FIXTURE, swapped)) + "\n---\nx\n")
+    now, found = apply_ledger(LEDGER_FIXTURE, read["ledger"])
+    if errs or found or sorted(table_rows(now, LEDGER)) != sorted(table_rows(swapped, LEDGER)):
+        bad.append(f"lines on two cells that interact read {read['ledger']}: {errs} {found}")
+    twin = LEDGER_FIXTURE.replace("H | M", "H | H")
+    text = "\n".join(ledger_lines(twin, twin.replace("H | H", "L | H")))
+    if not text.startswith("ledger-: one\nledger=: one"):
+        bad.append(f"a cell spelled twice in its row read {text!r}, which applies to the wrong cell")
+    arch = "docs/ARCHITECTURE.md"
+    history = [(at(f"{m}^", arch), at(tip, arch)) for m, tip in (("aa93a221b^{commit}^0", "398b811c7"), ("c42e30f01^{commit}^0", "3e410a078"))]
+    if any(None in pair for pair in history):
+        return bad + ["the #1890 and #1870 commits are missing; fetch main's full history"]
+    return bad + real_row_cases(history)
+
+
+def real_row_cases(history):
+    arch = history[0][0]
+    for was, now in history:
+        read, errs = parse("---\n" + "\n".join(ledger_lines(was, now)) + "\n---\nx\n")
+        arch, found = apply_ledger(arch, read["ledger"])
+        if errs or found:
+            return [f"a real row edit does not apply as lines: {errs} {found}"]
+    row = {row_key(r): r for r in table_rows(arch, LEDGER)}["context P1–P19; prefix-aligned P7"]
+    held = all(text in row for text in ("a session runs one compaction at a time", "the retention floor keeps only the words the user typed"))
+    return [] if held else [f"the real row lost a PR's clause: {row[-300:]}"]
 
 
 def fork_cases():
@@ -259,7 +436,7 @@ def scan_cases():
 
 
 def selfcheck():
-    errs = cases() + scan_cases()
+    errs = cases() + scan_cases() + ledger_cases()
     for check in CHECKS:
         OFF.clear()
         OFF.add(check)
@@ -278,8 +455,10 @@ def main():
         no_fork("changes")
     views = ("docs/CHANGELOG.md", "docs/ARCHITECTURE.md")
     errs = file_errors(files(), held(base))
-    edits = view_edits({p: at(base, p) for p in views}, {p: (ROOT / p).read_text() for p in views}) + tree_edits(base)
+    now = {p: (ROOT / p).read_text() for p in views}
+    edits = view_edits({p: at(base, p) for p in views}, now, old_row_edits(base)) + tree_edits(base)
     errs += edits if edits and not recorded(base) else []
+    errs += unapplied_ledger(now["docs/ARCHITECTURE.md"])[1]
     fail(errs, f"changes ({len(pending(base))} pending in this branch, fork {base[:8]})")
 
 

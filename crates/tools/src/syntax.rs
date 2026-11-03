@@ -101,7 +101,7 @@ pub fn verdict(path: &Path) -> Option<String> {
     let mut check = command(resolved);
     check.args(flags).arg(path).env(
         "PYTHONPYCACHEPREFIX",
-        std::env::temp_dir().join("yi-pycache"),
+        std::env::temp_dir().join("yi-pycache"), // nosemgrep: yi-rust-temp-dir Disposable pycache shares no durable state.
     );
     let capture = run_captured(check, None, &before_deadline(), OUTPUT_CAP).ok()?;
     if capture.cancelled {
