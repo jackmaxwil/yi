@@ -22,8 +22,8 @@ pub(crate) const LEASE_ENTRY: &str = "lease";
 pub const CLEANUP_GRACE_MS: u64 = 30_000;
 /// How long a stopped run may take to go idle before its repossession is left pending.
 const JOIN_MS: u64 = 10_000;
-/// How long an exiting shell waits for its revoked children's repossession and blocking work.
-pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+/// Invariant: an exiting shell outwaits a full join plus its settle, or the repossession drops.
+pub const SHUTDOWN_GRACE: Duration = Duration::from_millis(JOIN_MS + 5_000);
 
 pub(crate) async fn off_executor<T: Send + 'static>(
     method: &str,
