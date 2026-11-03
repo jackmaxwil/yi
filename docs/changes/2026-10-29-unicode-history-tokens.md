@@ -1,4 +1,6 @@
 ---
+version: 0.918.0
+decisions: D545
 issue: Closes #1547
 raise: crate runtime +161, tests +101, comments +4
 growth: +161 the per-file-set index cache, the combining-mark join and the typed aliases; weighed for deletion: one global index slot (59 lines lighter, but two repos then rebuild BM25 on every search and block each other, which the issue asked to end) and dropping the mark blocks (about 12 lighter, but Hindi and decomposed text keep splitting mid-word).
