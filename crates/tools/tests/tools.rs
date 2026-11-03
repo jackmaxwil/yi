@@ -1340,9 +1340,8 @@ fn a_job_wait_returns_as_the_job_settles() -> TestResult {
     context.auto_background = Some(std::time::Duration::from_millis(80));
     let mut waited = std::time::Duration::ZERO;
     let mut backgrounded = 0;
-    // Incident: under a full-suite load the 80 ms timer lost the race with `sleep 0.1` often
-    // enough that six attempts did not make five; an inline finish is allowed and retried, and
-    // the budget below still measures only the waits that ran.
+    // Incident: under full-suite load the 80 ms timer lost to `sleep 0.1`, so an inline finish
+    // is retried; the budget below still measures only the waits that ran.
     for _ in 0..20 {
         let started = tool.execute(args(&[("command", json!("sleep 0.1"))]), &context);
         let Some(job) = started.result.details.get("job").and_then(Value::as_u64) else {

@@ -250,7 +250,7 @@ fn a_hidden_sidebar_is_still_hidden_in_the_console_opened_next() -> TestResult {
             &dir,
             &socket,
             &root,
-            "wait-frame 8000 !connecting…\nkey alt-b\nkey alt-b\nquit\n",
+            "wait-frame 8000 !connecting…\nkey alt-b\nkey alt-b\nwait-frame 8000 ⌥b sidebar\nquit\n",
             &[],
         )?;
         let config = home.join(".yi/config.json");
@@ -275,13 +275,13 @@ fn a_hidden_sidebar_is_still_hidden_in_the_console_opened_next() -> TestResult {
             &dir,
             &socket,
             &root,
-            "wait 1\nquit\n",
+            "wait-frame 8000 ⌥b sidebar\nquit\n",
             &["--frames", &frames.display().to_string()],
         )?;
         let drawn = frames_text(&frames)?;
         assert!(
-            !drawn.contains("⌥b  sidebar"),
-            "the next console restored the hidden sidebar:\n{drawn}"
+            drawn.contains("⌥b sidebar"),
+            "the next console started without the way back:\n{drawn}"
         );
         Ok(())
     })();

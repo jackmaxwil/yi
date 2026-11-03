@@ -108,6 +108,8 @@ struct Job {
     capture: Option<CommandCapture>,
     live: Arc<LiveOutput>,
     kill: Arc<AtomicBool>,
+    /// Invariant: set only on a running job whose owner is gone; [`Jobs::finish`] drops it.
+    retired: bool,
 }
 
 #[derive(Debug, Default)]
@@ -208,6 +210,7 @@ impl Jobs {
                 capture: None,
                 live,
                 kill,
+                retired: false,
             },
         );
         let owner = match jobs.get(&id).map(|job| &job.reaper) {
@@ -220,8 +223,12 @@ impl Jobs {
 
     fn finish(&self, id: JobId, capture: CommandCapture) {
         let mut jobs = self.lock();
-        if let Some(job) = jobs.get_mut(&id.0) {
+        let retired = jobs.get_mut(&id.0).map(|job| {
             job.capture = Some(capture);
+            job.retired
+        });
+        if retired == Some(true) {
+            jobs.remove(&id.0);
         }
         self.settles.fetch_add(1, Ordering::SeqCst);
         drop(jobs);
@@ -277,7 +284,8 @@ impl Jobs {
     }
 
     pub fn report(&self, id: JobId) -> Option<JobReport> {
-        self.lock().get(&id.0).map(|job| render(id.0, job))
+        let jobs = self.lock();
+        (jobs.get(&id.0).filter(|job| !job.retired)).map(|job| render(id.0, job))
     }
 
     /// Whether a poll returned this job's finished output, so its queued announcement is a repeat.
@@ -351,7 +359,8 @@ impl Jobs {
                 return true;
             }
             job.kill.store(true, Ordering::SeqCst);
-            false
+            job.retired = state(job) == JobState::Running;
+            job.retired
         });
     }
 
@@ -986,8 +995,49 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the exit sweep scoped to poller jobs: a kernel bridge `exec.spawn` shell
-    /// outlived `yi`, and once the process is gone nothing can release or kill it.
+    /// Incident: `yi acp` retired every session before the exit sweep ran, so a retired
+    /// owner's running job was already gone from the map and the sweep returned at once.
+    #[test]
+    fn a_retired_owners_running_job_is_still_waited_on_at_exit() -> Fallible {
+        let jobs = Jobs::default();
+        let owner = JobOwner::mint();
+        let kill = Arc::new(AtomicBool::new(false));
+        let reaper = Reaper::Poller {
+            reported: false,
+            owner: Some(owner),
+        };
+        let at = (Path::new("/yi-jobs-test/retired"), None);
+        let id = jobs.insert("sleep 300", at, reaper, Arc::default(), Arc::clone(&kill));
+        jobs.retire(owner);
+        assert!(
+            kill.load(Ordering::SeqCst),
+            "retire left the job unsignalled"
+        );
+        let settled = AtomicBool::new(false);
+        let mut waited = false;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                settled.store(true, Ordering::SeqCst);
+                let cancelled = CommandCapture {
+                    cancelled: true,
+                    ..exited()
+                };
+                jobs.finish(id, cancelled);
+            });
+            jobs.kill_running();
+            waited = settled.load(Ordering::SeqCst);
+        });
+        assert!(waited, "the sweep returned before the job settled");
+        assert!(
+            jobs.report_for(id, Some(owner)).is_none(),
+            "a settled retired job lingered"
+        );
+        Ok(())
+    }
+
+    /// Incident: a kernel bridge `exec.spawn` shell outlived `yi`; once the process is gone
+    /// nothing can release or kill it, so the exit sweep must reach handle jobs too.
     #[test]
     fn the_exit_sweep_stops_a_handle_job() -> Fallible {
         let jobs = Jobs::default();
