@@ -2,8 +2,8 @@ use serde_json::{Value, json};
 use yi_types::config::{
     BashConfig, BrowserConfig, CatalogConfig, ClassifierConfig, CompactionConfig, ConsoleConfig,
     EditConfig, KernelConfig, MailConfig, McpConfig, MemoryConfig, ModelRoles, NodeConfig,
-    PermissionsConfig, PlanConfig, PlansConfig, RlmConfig, SkillsConfig, SpendConfig,
-    TelemetryConfig, TuiConfig, UserConfig,
+    PermissionsConfig, PlanConfig, PlansConfig, RlmConfig, SandboxConfig, SkillsConfig,
+    SpendConfig, TelemetryConfig, TuiConfig, UserConfig, WebSearchConfig,
 };
 use yi_types::lane::LanesConfig;
 use yi_types::settings::{SettingKind, SettingRow, refusal, rows};
@@ -54,10 +54,12 @@ fn leaves() -> Vec<String> {
         skills,
         classifier,
         permissions,
+        sandbox,
         mail,
         memory,
         open,
         browser,
+        web_search,
     });
     let nested = [
         (
@@ -68,9 +70,11 @@ fn leaves() -> Vec<String> {
                 advisor,
                 auto_review,
                 classifier,
-                selector
+                selector,
+                web_search
             }),
         ),
+        ("web_search", fields!(WebSearchConfig { engine })),
         ("bash", fields!(BashConfig { auto_background_ms })),
         (
             "plan",
@@ -93,11 +97,12 @@ fn leaves() -> Vec<String> {
             fields!(ConsoleConfig {
                 auto_side,
                 title_intro,
-                title_weights
+                title_weights,
+                sidebar
             }),
         ),
         ("browser", fields!(BrowserConfig { path })),
-        ("tui", fields!(TuiConfig { pace })),
+        ("tui", fields!(TuiConfig { pace, follow })),
         (
             "lanes",
             fields!(LanesConfig {
@@ -138,6 +143,8 @@ fn leaves() -> Vec<String> {
                 allow_destructive_at,
                 ask_at,
                 ask_timeout_secs,
+                screen_at,
+                screen_max_chars,
             }),
         ),
         (
@@ -146,6 +153,13 @@ fn leaves() -> Vec<String> {
                 mode,
                 allow_write,
                 allow
+            }),
+        ),
+        (
+            "sandbox",
+            fields!(SandboxConfig {
+                egress,
+                host_recipes
             }),
         ),
         ("mail", fields!(MailConfig { hop_limit })),
@@ -157,7 +171,7 @@ fn leaves() -> Vec<String> {
             |field| match nested.iter().find(|(section, _)| *section == field) {
                 Some((section, inner)) => inner
                     .iter()
-                    .map(|leaf| format!("{section}.{}", camel(leaf)))
+                    .map(|leaf| format!("{}.{}", camel(section), camel(leaf)))
                     .collect(),
                 None => vec![camel(field)],
             },
@@ -175,6 +189,9 @@ fn sample(row: &SettingRow) -> Value {
         SettingKind::List => json!(["one"]),
         SettingKind::Json if row.id == "open" => {
             json!([{"name": "zed", "command": ["zed", "{path}"]}])
+        }
+        SettingKind::Json if row.id == "sandbox.hostRecipes" => {
+            json!([{"call": "just pr", "pin": ["justfile"]}])
         }
         SettingKind::Json => json!({}),
     }
@@ -200,6 +217,22 @@ fn every_config_leaf_has_exactly_one_row() {
     ids.sort();
     want.sort();
     assert_eq!(ids, want);
+}
+
+#[test]
+fn follow_is_a_live_choice_with_page_as_the_unset_default() {
+    let row = rows()
+        .into_iter()
+        .find(|row| row.id == "tui.follow")
+        .expect("a tui.follow settings row");
+    assert_eq!(row.applies, yi_types::settings::Applies::Live);
+    assert_eq!(row.default, json!("page"));
+    assert_eq!(
+        row.kind,
+        SettingKind::Choice {
+            options: ["slide", "page", "still"].map(str::to_owned).to_vec()
+        }
+    );
 }
 
 /// A row is only as good as the config it writes: every row's own sample, saved at its path,
@@ -251,5 +284,41 @@ fn a_value_past_a_bound_or_of_the_wrong_type_is_refused_with_the_rule() -> Resul
         Some("permissions.mode takes one of auto, ask, yolo")
     );
     assert_eq!(refusal(mode, &Value::Null), None, "unset is always allowed");
+    Ok(())
+}
+
+/// #1713: the third state ⌥b lands on is one the row takes and the strict parse loads.
+#[test]
+fn the_sidebar_row_takes_the_hidden_state_it_saves() -> Result<(), Box<dyn std::error::Error>> {
+    let row = rows()
+        .into_iter()
+        .find(|row| row.id == "console.sidebar")
+        .ok_or("no console.sidebar row")?;
+    assert_eq!(refusal(&row, &json!("hidden")), None);
+    assert_eq!(
+        refusal(&row, &json!("wide")).as_deref(),
+        Some("console.sidebar takes one of rail, full, hidden")
+    );
+    let (config, _) =
+        yi_types::config::parse(&json!({"console": {"sidebar": "hidden"}}).to_string())?;
+    assert_eq!(
+        config.console.and_then(|console| console.sidebar),
+        Some(yi_types::config::SidebarState::Hidden)
+    );
+    Ok(())
+}
+
+#[test]
+fn web_search_role_and_engine_load_from_config() -> Result<(), Box<dyn std::error::Error>> {
+    let (config, _) = yi_types::config::parse(
+        r#"{"models":{"webSearch":"openrouter/deepseek/deepseek-v4-flash"},"webSearch":{"engine":"exa"}}"#,
+    )?;
+    let roles = config.models.ok_or("missing model roles")?;
+    assert_eq!(
+        roles.web_search.as_deref(),
+        Some("openrouter/deepseek/deepseek-v4-flash")
+    );
+    let search = config.web_search.ok_or("missing web search config")?;
+    assert_eq!(search.engine.as_deref(), Some("exa"));
     Ok(())
 }

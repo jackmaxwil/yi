@@ -1,0 +1,9 @@
+rules:
+  - id: yi-subprocess-shell-or-fstring
+    languages: [python]
+    severity: ERROR
+    message: Yi forbids shell commands built from f-strings and shell=True in repository scripts; use an argv list with shell=False.
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.$FUNC(..., shell=True, ...)
+          - pattern: subprocess.$FUNC(f"...", ...)

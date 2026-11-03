@@ -52,6 +52,7 @@ import test_stops_on_fail  # noqa: E402
 import test_improve  # noqa: E402
 import test_skill_labels  # noqa: E402
 import test_checker_screen  # noqa: E402
+import test_worker_mode  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -1261,11 +1262,19 @@ def check_stops_on_fail():
     result = unittest.TextTestRunner(stream=report).run(suite)
     assert result.testsRun >= 3 and result.wasSuccessful(), report.getvalue()
 
+def check_worker_mode():
+    """EXP-B1e's denial counter on two recorded worker transcripts, its run scoring and its
+    pre-registered verdict."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_worker_mode)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 11 and result.wasSuccessful(), report.getvalue()
 
 CHECKS = (
     check_kill,
     check_stops_on_fail,
     check_kc_ab,
+    check_worker_mode,
     check_arm_suffix,
     check_surface,
     check_surface_compare,

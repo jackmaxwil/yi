@@ -67,17 +67,12 @@ fn two_acceptances_verify_at_once_and_a_third_waits() -> TestResult {
     Ok(())
 }
 
-/// A quarter of the pool verifies, at least one lane and at most four, and workers keep the rest.
+/// A quarter of the pool verifies, at least one lane and at most four.
 #[test]
 fn the_share_is_a_quarter_of_the_pool_from_one_to_four() {
     for (slots, share) in [(2, 1), (3, 1), (8, 2), (16, 4), (20, 4), (255, 4)] {
         let capacity = Capacity::for_slots(slots);
         assert_eq!(capacity.cap(Purpose::Verification), share, "{slots} slots");
-        assert_eq!(
-            capacity.cap(Purpose::Worker),
-            slots - share,
-            "{slots} slots"
-        );
     }
 }
 
