@@ -30,7 +30,7 @@ def lane(root, spec_id, name):
 
 
 def grid(families, arms, tasks=None):
-    return [{"family": family, "arm": arm, "task": task, "retries": 0, "failed": False}
+    return [{"family": family, "arm": arm, "task": task, "workers": 1, "retries": 0, "failed": False}
             for family in families for arm in arms for task, _ in (tasks or worker_mode.TASKS)]
 
 
@@ -48,6 +48,24 @@ class Counter(unittest.TestCase):
         self.assertEqual(worker_mode.denials(messages("reversible")),
                          ["write ../tally.txt", "write tally.txt"])
         self.assertEqual(worker_mode.retries(messages("reversible")), [])
+
+    def test_an_edit_is_keyed_by_the_paths_its_patch_names(self):
+        # Failure a consumer sees: every edit shared the key "edit ", so an in-tree edit after a
+        # refused outside edit counted as a retry and WITHDRAW fired on a worker that behaved.
+        key = worker_mode.signature
+        self.assertEqual(key("edit", {"patch": "[../notes.txt#AB]\nPUT 1.=1:\n+x"}), "edit ../notes.txt")
+        self.assertNotEqual(key("edit", {"patch": "[../notes.txt#AB]\nCUT 1.=1"}),
+                            key("edit", {"patch": "[notes.txt#CD]\nCUT 1.=1"}))
+
+    def test_a_run_with_no_worker_session_is_not_counted_in_the_rollup(self):
+        # Failure a consumer sees: a run that spawned no worker scored 0 retries and counted
+        # toward the ten tasks, so two empty arms printed KEEP on no evidence.
+        with tempfile.TemporaryDirectory() as tmp:
+            row = worker_mode.score(Path(tmp) / "missing", "write-outside-with-mode")
+        self.assertEqual(row["workers"], 0)
+        tables, complete = worker_mode.rollup([{**row, "family": "kimi"}], ("kimi",))
+        self.assertEqual(tables["kimi"], {})
+        self.assertFalse(complete)
 
     def test_a_run_is_scored_by_its_worker_transcript_and_its_report(self):
         # Failure a consumer sees: a run with no worker transcript scored 0 retries and passed,

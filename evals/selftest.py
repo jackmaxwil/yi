@@ -1268,7 +1268,7 @@ def check_worker_mode():
     report = io.StringIO()
     suite = unittest.defaultTestLoader.loadTestsFromModule(test_worker_mode)
     result = unittest.TextTestRunner(stream=report).run(suite)
-    assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
+    assert result.testsRun >= 11 and result.wasSuccessful(), report.getvalue()
 
 CHECKS = (
     check_kill,
