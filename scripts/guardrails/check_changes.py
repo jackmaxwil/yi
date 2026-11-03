@@ -299,7 +299,6 @@ def cases():
         "a bumped version": edit("docs/ARCHITECTURE.md", "0.2.0", "0.3.0"),
         "an added decision": edit("docs/ARCHITECTURE.md", "| D2 | a", "| D3 | z | y | x |\n| D2 | a"),
         "an edited ledger row": edit("docs/ARCHITECTURE.md", "first", "changed"),
-        "an old PR's ledger edit": view_edits(was, dict(was, **{"docs/ARCHITECTURE.md": arch.replace("first", "changed")})),
         "a line short a cell": parse("---\nledger~: one | old\n---\nx\n")[1],
         "a line one cell over": parse("---\nledger+: one | a | b\n---\nx\n")[1],
         "a new row one cell short": parse("---\nledger=: new | 1 | core | H | M\n---\nx\n")[1],

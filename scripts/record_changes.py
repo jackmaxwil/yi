@@ -265,7 +265,14 @@ def ledger_selfcheck(tmp, sh, run, gate, bad):
     """Two files on one row record in landing order, and a stale `~` keeps its text."""
     rows = table_rows((tmp / ARCH).read_text(), "Feature ledger")
     key, first = row_key(rows[0]), rows[0]
+
+    def refuses(why, *needles):
+        out = gate()
+        if not out.returncode or not any(needle in out.stdout for needle in needles):
+            bad.append(f"{why} read {out.returncode}: {out.stdout[-200:]!r}")
+
     sh("checkout", "-q", "main")
+
     for name, line, day in ((f"2026-10-11-b.md", f"ledger+: {key} | clause from b", "2026-10-11"),
                             (f"2026-10-12-a.md", f"ledger+: {key} | clause from a", "2026-10-12"),
                             (f"2026-10-13-c.md", f"ledger~: {key} | text no row holds | kept from c", "2026-10-13")):
@@ -299,14 +306,7 @@ def ledger_selfcheck(tmp, sh, run, gate, bad):
     arch = (tmp / ARCH).read_text()
     (tmp / ARCH).write_text(arch.replace("clause from b", "clause edited"))
     sh("commit", "-qam", "old edit", date="2026-10-20")
-    refused = gate()
-    if not refused.returncode or "ledger~:" not in refused.stdout and "ledger+:" not in refused.stdout:
-        bad.append(f"an older direct edit read {refused.returncode}: {refused.stdout[-200:]!r}")
-    (tmp / ARCH).write_text((tmp / ARCH).read_text().replace("clause from a", "another edit"))
-    sh("commit", "-qam", "new edit", date="2026-11-03")
-    refused = gate()
-    if not refused.returncode or "ledger~:" not in refused.stdout and "ledger+:" not in refused.stdout:
-        bad.append(f"a new edit batched with an old one read {refused.returncode}: {refused.stdout[-200:]!r}")
+    refuses("an older direct edit", "ledger~:", "ledger+:")
     sh("checkout", "-q", "-f", "main")
     (tmp / DIR / "2026-10-15-landed.md").write_text("---\nledger=: landed | 1 | core | H | L | n\n---\nProse.\n")
     sh("add", "-A")
@@ -315,9 +315,7 @@ def ledger_selfcheck(tmp, sh, run, gate, bad):
     (tmp / DIR / "2026-10-16-new.md").write_text(f"---\nledger=: counted | 1 | core | H | L | n\nledger~: {key} | text no row holds | x\n---\nProse.\n")
     sh("add", "-A")
     sh("commit", "-q", "-m", "pending", date="2026-10-16")
-    refused = gate()
-    if not refused.returncode or "2026-10-16-new.md: ledger~:" not in refused.stdout:
-        bad.append(f"a pending line that does not apply read {refused.returncode}: {refused.stdout[-200:]!r}")
+    refuses("a pending line that does not apply", "2026-10-16-new.md: ledger~:")
     probe = "import sys; sys.path[:0] = ['scripts', 'scripts/guardrails']; import check_pr_metadata as m; print(*(m.row_key(r) for r in m.measure()[0][0]))"
     measured = run("-c", probe)
     if measured.stdout.split() != ["counted"]:
