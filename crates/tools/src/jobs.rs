@@ -108,6 +108,8 @@ struct Job {
     capture: Option<CommandCapture>,
     live: Arc<LiveOutput>,
     kill: Arc<AtomicBool>,
+    /// Invariant: set only on a running job whose owner is gone; [`Jobs::finish`] drops it.
+    retired: bool,
 }
 
 #[derive(Debug, Default)]
@@ -208,6 +210,7 @@ impl Jobs {
                 capture: None,
                 live,
                 kill,
+                retired: false,
             },
         );
         let owner = match jobs.get(&id).map(|job| &job.reaper) {
@@ -220,8 +223,12 @@ impl Jobs {
 
     fn finish(&self, id: JobId, capture: CommandCapture) {
         let mut jobs = self.lock();
-        if let Some(job) = jobs.get_mut(&id.0) {
+        let retired = jobs.get_mut(&id.0).map(|job| {
             job.capture = Some(capture);
+            job.retired
+        });
+        if retired == Some(true) {
+            jobs.remove(&id.0);
         }
         self.settles.fetch_add(1, Ordering::SeqCst);
         drop(jobs);
@@ -277,7 +284,8 @@ impl Jobs {
     }
 
     pub fn report(&self, id: JobId) -> Option<JobReport> {
-        self.lock().get(&id.0).map(|job| render(id.0, job))
+        let jobs = self.lock();
+        (jobs.get(&id.0).filter(|job| !job.retired)).map(|job| render(id.0, job))
     }
 
     /// Whether a poll returned this job's finished output, so its queued announcement is a repeat.
@@ -328,13 +336,31 @@ impl Jobs {
         }
     }
 
+    /// Stops every running job before the process that owns their watchdogs exits.
+    pub fn kill_running(&self) {
+        let ids: Vec<JobId> = (self.lock().iter())
+            .filter(|(_, job)| state(job) == JobState::Running)
+            .map(|(id, _)| JobId(*id))
+            .collect();
+        for id in ids {
+            let _settled_meanwhile_is_fine = self.kill(id);
+        }
+        let running =
+            |jobs: &mut HashMap<u64, Job>| jobs.values().any(|job| state(job) == JobState::Running);
+        drop(
+            self.settled
+                .wait_timeout_while(self.lock(), KILL_GRACE, running),
+        );
+    }
+
     pub fn retire(&self, owner: JobOwner) {
         self.lock().retain(|_, job| {
             if !owned_by(job, Some(owner)) {
                 return true;
             }
             job.kill.store(true, Ordering::SeqCst);
-            false
+            job.retired = state(job) == JobState::Running;
+            job.retired
         });
     }
 
@@ -355,6 +381,22 @@ impl Jobs {
             .map(|(id, job)| (*id, job.command.clone()))
             .collect();
         running.sort_by_key(|(id, _)| *id);
+        running.into_iter().map(|(_, command)| command).collect()
+    }
+
+    /// Stops every job still running under `root`: a discarded tree's server, a sleeping test. A
+    /// process that left its job is out of reach, and the caller's row says so.
+    pub fn kill_under(&self, root: &Path) -> Vec<String> {
+        let running: Vec<(u64, String)> = {
+            let jobs = self.lock();
+            (jobs.iter())
+                .filter(|(_, job)| job.cwd.starts_with(root) && state(job) == JobState::Running)
+                .map(|(id, job)| (*id, job.command.clone()))
+                .collect()
+        };
+        for (id, _) in &running {
+            let _settled_meanwhile = self.kill(JobId(*id));
+        }
         running.into_iter().map(|(_, command)| command).collect()
     }
 
@@ -571,6 +613,17 @@ fn start(
     process.current_dir(cwd);
     let (env, after) = spawn.map_or((Vec::new(), None), |spawn| (spawn.env, Some(spawn.after)));
     process.envs(env);
+    // Incident shape: a shared target dir read a sibling's binary as Fresh.
+    if crate::spawn::in_fresh_tree(cwd) {
+        process.env_remove("CARGO_TARGET_DIR");
+        if std::env::var_os("CARGO_INCREMENTAL").is_none() {
+            process.env("CARGO_INCREMENTAL", "0");
+        }
+    }
+    let mut first_rows = Vec::new();
+    if !crate::builtins::read_only_command(shell_command) {
+        first_rows = crate::spawn::run_first_use(cwd);
+    }
     let (child, program) = spawn_captured(process, false)?;
     let id = registry().insert(
         shell_command,
@@ -590,9 +643,9 @@ fn start(
             Some(live),
             spill_dir.as_deref(),
         );
-        let rows = after.map(|after| after()).unwrap_or_default();
+        first_rows.extend(after.map(|after| after()).unwrap_or_default());
         if let Ok(capture) = &mut capture {
-            capture.rows = rows;
+            capture.rows = first_rows;
         }
         // Invariant: before the job settles, so a lane settle never reads a job gone quiet
         // while what it started in a container still writes the tree.
@@ -939,6 +992,79 @@ mod tests {
         let report = registry().release(id)?;
         assert!(report.finished);
         assert_eq!(report.exit_code, None);
+        Ok(())
+    }
+
+    /// Incident: `yi acp` retired every session before the exit sweep ran, so a retired
+    /// owner's running job was already gone from the map and the sweep returned at once.
+    #[test]
+    fn a_retired_owners_running_job_is_still_waited_on_at_exit() -> Fallible {
+        let jobs = Jobs::default();
+        let owner = JobOwner::mint();
+        let kill = Arc::new(AtomicBool::new(false));
+        let reaper = Reaper::Poller {
+            reported: false,
+            owner: Some(owner),
+        };
+        let at = (Path::new("/yi-jobs-test/retired"), None);
+        let id = jobs.insert("sleep 300", at, reaper, Arc::default(), Arc::clone(&kill));
+        jobs.retire(owner);
+        assert!(
+            kill.load(Ordering::SeqCst),
+            "retire left the job unsignalled"
+        );
+        let settled = AtomicBool::new(false);
+        let mut waited = false;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                settled.store(true, Ordering::SeqCst);
+                let cancelled = CommandCapture {
+                    cancelled: true,
+                    ..exited()
+                };
+                jobs.finish(id, cancelled);
+            });
+            jobs.kill_running();
+            waited = settled.load(Ordering::SeqCst);
+        });
+        assert!(waited, "the sweep returned before the job settled");
+        assert!(
+            jobs.report_for(id, Some(owner)).is_none(),
+            "a settled retired job lingered"
+        );
+        Ok(())
+    }
+
+    /// Incident: a kernel bridge `exec.spawn` shell outlived `yi`; once the process is gone
+    /// nothing can release or kill it, so the exit sweep must reach handle jobs too.
+    #[test]
+    fn the_exit_sweep_stops_a_handle_job() -> Fallible {
+        let jobs = Jobs::default();
+        let kill = Arc::new(AtomicBool::new(false));
+        let at = (Path::new("/yi-jobs-test/exit-sweep"), None);
+        let id = jobs.insert(
+            "sleep 300",
+            at,
+            Reaper::Handle,
+            Arc::default(),
+            Arc::clone(&kill),
+        );
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _signalled = poll_until(|| kill.load(Ordering::SeqCst).then_some(()));
+                let cancelled = CommandCapture {
+                    cancelled: true,
+                    ..exited()
+                };
+                jobs.finish(id, cancelled);
+            });
+            jobs.kill_running();
+        });
+        assert!(
+            kill.load(Ordering::SeqCst),
+            "the sweep left a handle job running"
+        );
         Ok(())
     }
 

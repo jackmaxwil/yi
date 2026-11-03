@@ -5,6 +5,7 @@
 mod scratch;
 
 mod anthropic_mapper;
+mod build_params_conformance;
 #[path = "../../types/tests/support/model.rs"]
 mod common;
 mod compat;
@@ -25,12 +26,15 @@ mod oauth;
 mod openai_mapper;
 mod openai_responses;
 mod openrouter;
+mod provider_stream;
 mod proxy;
 mod pump_stop;
 mod quota;
+mod recommend;
 mod refresh;
 mod resend;
 mod strict_tools;
 mod structured;
+mod tool_args_stream;
 mod tool_choice;
 mod web_search;

@@ -76,10 +76,10 @@ fn result_text(result: &yi_types::event::ToolResult) -> String {
 }
 
 /// The source a bash call's text came from when it is not Yi's own: a command that runs the desktop
-/// program, or the shell tool's own mark on a background job that one started.
+/// or browser program, or the shell tool's own mark on a background job that one started.
 fn external_source<'a>(command: &str, details: &'a Value) -> Option<std::borrow::Cow<'a, str>> {
-    if yi_permission::runs(command) {
-        return Some(std::borrow::Cow::Borrowed(yi_permission::DESKTOP_SOURCE));
+    if let Some(source) = yi_permission::source(command) {
+        return Some(std::borrow::Cow::Borrowed(source));
     }
     details
         .get("externalSource")
@@ -749,11 +749,15 @@ impl ToolAdapter {
                 ));
             }
             let (cwd, hook_args) = (context.cwd.clone(), args.clone());
+            let mutating = !matches!(kind, yi_tools::ToolKind::Read | yi_tools::ToolKind::Ledger);
             let output = tokio::task::spawn_blocking(move || {
                 let _span = yi_types::trace::span("tool.execute").arg("tool", tool.name());
                 tool.execute(args, &context)
             })
             .await;
+            if mutating && let Some(store) = ledger.as_ref() {
+                crate::checkpoint::note_mutating_call(&cwd, tool_call_id, store.clone());
+            }
             match output {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());

@@ -1300,6 +1300,41 @@ mod forge {
         );
         Ok(())
     }
+
+    /// A pin that pins nothing is not a pin: an empty list made the recipe's own code run on the
+    /// host with no ask and no content check.
+    #[test]
+    fn a_recipe_with_no_pin_asks() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(vec![HostRecipe {
+            call: "just pr".to_owned(),
+            pin: Vec::new(),
+        }]);
+        let outcome = decide(&broker, "just pr status 1");
+        assert!(!outcome.allowed, "{}", outcome.reason);
+        assert!(
+            outcome.reason.contains("pin list is empty"),
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
+
+    /// A subagent's broker is built by `for_child`, so a recipe the owner wrote must reach it.
+    #[test]
+    fn a_child_session_meets_its_parents_recipes() -> TestResult {
+        let (_root, project) = repo()?;
+        let broker = gate(&project, Vec::new()).with_host_recipes(recipes());
+        let child = broker.for_child(&yi_runtime::Wall::default(), &project);
+        let outcome = decide(&child, "just pr status 1");
+        assert_eq!(
+            outcome.containment,
+            Containment::Uncontained,
+            "{}",
+            outcome.reason
+        );
+        Ok(())
+    }
 }
 
 fn sandboxed_broker(asker: Asker) -> PermissionBroker {
@@ -1393,6 +1428,101 @@ fn a_free_desktop_verb_runs_outside_unasked() -> TestResult {
     assert!(outcome.allowed);
     assert_eq!(outcome.containment, Containment::Uncontained);
     assert!(asks.lock().map_err(|_| "poisoned")?.is_empty());
+    Ok(())
+}
+
+/// The gate reads HOME, which a test cannot set in its own process, so the named test runs again in a
+/// child whose home holds the box. True in that child; a filter matching no test exits 0, so count.
+fn in_a_boxed_home(test: &str) -> Result<bool, Box<dyn Error>> {
+    let here = std::env::var_os("HOME").map(PathBuf::from);
+    if here.is_some_and(|home| yi_permission::browser_boxed(&home)) {
+        return Ok(true);
+    }
+    let scratch = Scratch::new("yi-browser-boxed")?;
+    let home = scratch.home()?;
+    let plugin = yi_tools::plugin::Plugin::named(yi_tools::plugin::BROWSER).ok_or("no row")?;
+    std::fs::create_dir_all(plugin.dir(&home))?;
+    for file in [plugin.name, "config.json", "chrome-box"] {
+        std::fs::write(plugin.dir(&home).join(file), "")?;
+    }
+    let child = yi_tools::command(std::env::current_exe()?)
+        .args(["--exact", test])
+        .env("HOME", &home)
+        .output()?;
+    let shown = String::from_utf8_lossy(&child.stdout);
+    assert!(
+        child.status.success() && shown.contains("1 passed"),
+        "{shown}"
+    );
+    Ok(false)
+}
+
+/// Chrome in the default session has only loopback and no credential, so nothing there needs a yes.
+#[test]
+fn the_local_browser_runs_outside_unasked() -> TestResult {
+    if !in_a_boxed_home("permission_scope::the_local_browser_runs_outside_unasked")? {
+        return Ok(());
+    }
+    let (broker, asks) = desktop_broker(AskOutcome::Reject);
+    let outcome = bash(&broker, "agent-browser open http://localhost:3000");
+    assert!(outcome.allowed);
+    assert_eq!(outcome.containment, Containment::Uncontained);
+    assert!(asks.lock().map_err(|_| "poisoned")?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn one_yes_covers_the_web_session_and_nothing_the_box_cannot_hold() -> TestResult {
+    if !in_a_boxed_home(
+        "permission_scope::one_yes_covers_the_web_session_and_nothing_the_box_cannot_hold",
+    )? {
+        return Ok(());
+    }
+    let (broker, asks) = desktop_broker(AskOutcome::AllowAlways(0));
+    for command in [
+        "agent-browser --session web open https://example.com",
+        "agent-browser --session web click @e3",
+    ] {
+        let outcome = bash(&broker, command);
+        assert!(outcome.allowed);
+        assert_eq!(outcome.containment, Containment::Uncontained);
+    }
+    assert_eq!(asks.lock().map_err(|_| "poisoned")?.len(), 1);
+    for command in [
+        "agent-browser read https://example.com",
+        "agent-browser read https://example.com",
+    ] {
+        assert!(bash(&broker, command).allowed);
+    }
+    let asks = asks.lock().map_err(|_| "poisoned")?;
+    assert_eq!(asks.len(), 3, "a yes reached past the box: {asks:?}");
+    assert!(asks.last().is_some_and(Vec::is_empty), "offered {asks:?}");
+    Ok(())
+}
+
+#[test]
+fn a_browser_command_by_any_other_spelling_stays_in_the_sandbox() -> TestResult {
+    if !in_a_boxed_home(
+        "permission_scope::a_browser_command_by_any_other_spelling_stays_in_the_sandbox",
+    )? {
+        return Ok(());
+    }
+    let (broker, _) = desktop_broker(AskOutcome::AllowOnce);
+    let plain = bash(&broker, "agent-browser open x");
+    assert_eq!(plain.containment, Containment::Uncontained);
+    for command in [
+        "./agent-browser open x",
+        "AGENT_BROWSER_EXECUTABLE_PATH=forged agent-browser open x",
+        "AGENT_BROWSER_SESSION=web agent-browser open x",
+        "timeout 5 agent-browser open x",
+    ] {
+        let (broker, _) = desktop_broker(AskOutcome::AllowOnce);
+        let outcome = bash(&broker, command);
+        assert!(
+            matches!(outcome.containment, Containment::Contained { .. }),
+            "{command} left the sandbox"
+        );
+    }
     Ok(())
 }
 

@@ -153,7 +153,7 @@ impl Breakpoints {
     /// slots, it keeps the system end, tail, shared end, previous tail, universal end, in order.
     pub fn build(
         policy: &CachePolicy,
-        messages: &[AgentMessage],
+        messages: &[impl std::borrow::Borrow<AgentMessage>],
         reuse: Reuse,
         shared: Option<usize>,
     ) -> Self {
@@ -167,15 +167,21 @@ impl Breakpoints {
         keep(Position::SystemEnd, policy.stable_ttl);
         let (mut tail, mut prev_tail) = (None, None);
         if matches!(reuse, Reuse::Loop | Reuse::ReadOnly) {
-            let last = messages.iter().rposition(is_tail_kind);
+            let last = messages
+                .iter()
+                .rposition(|message| is_tail_kind(message.borrow()));
             prev_tail = last
                 .and_then(|tail| {
-                    messages
-                        .get(..tail)?
-                        .iter()
-                        .rposition(|message| matches!(message, AgentMessage::Assistant { .. }))
+                    messages.get(..tail)?.iter().rposition(|message| {
+                        matches!(message.borrow(), AgentMessage::Assistant { .. })
+                    })
                 })
-                .and_then(|reply| messages.get(..reply)?.iter().rposition(is_tail_kind));
+                .and_then(|reply| {
+                    messages
+                        .get(..reply)?
+                        .iter()
+                        .rposition(|message| is_tail_kind(message.borrow()))
+                });
             // A read-only request writes no tail of its own; its previous tail is the read.
             tail = last.filter(|_| reuse == Reuse::Loop);
         }
