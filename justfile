@@ -178,6 +178,7 @@ journeys:
     # The true-terminal journey has no cargo home: no test can hand the binary
     # a pty that answers its cursor-position query, so the harness runs here.
     cargo build -p yi-cli
+    python3 scripts/intake/journey.py
     home="$PWD/target/journeys"
     rm -rf "$home"
     mkdir -p "$home"
@@ -260,6 +261,9 @@ postmerge-evals:
 # Prefill the PR narrative's counted sections from the diff against main.
 pr-body:
     python3 scripts/pr_body.py
+
+intake *args:
+    python3 scripts/intake/bridge.py {{args}}
 
 # Finishing a branch, as verbs that check first (the yi-forge skill is the procedure):
 # ratchet the baselines alone, commit with a judged subject, push through the lane,
@@ -364,9 +368,11 @@ package-musl version target='x86_64-unknown-linux-musl':
     echo "package-musl: smoke.sh NOT run on this host (cross binary can't execute on darwin);"
     echo "package-musl: the container's 'yi --version' preflight (evals/README) is the real smoke."
 
-# Catalog skills (§7.8) install into the global root; the fragments an
-# extension attaches are compiled in.
-install-skills:
-    mkdir -p ~/.yi/skills/yi
-    rsync -a --delete skills/yi/ ~/.yi/skills/yi/
-    @for stale in caveman ponytail superpowers diagram-design; do [ -d ~/.yi/skills/$stale ] && echo "stale bundle, remove by hand: ~/.yi/skills/$stale" || true; done
+# Catalog skills (§7.8) install into the global root (`dest`), which the gate points at a temp dir.
+# The fragments an extension attaches are compiled in.
+install-skills dest="$HOME/.yi/skills":
+    mkdir -p "{{dest}}"
+    cp -R .ruler/skills/. "{{dest}}/"
+    rm -rf "{{dest}}/yi"
+    cp -R skills/yi "{{dest}}/yi"
+    @for stale in caveman/caveman ponytail/ponytail superpowers diagram-design; do [ -d "{{dest}}/$stale" ] && echo "stale bundle, remove by hand: {{dest}}/$stale" || true; done

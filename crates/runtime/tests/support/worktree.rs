@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::json;
-use yi_runtime::lane::settle::{Candidate, Held, Quiescence};
+use yi_runtime::lane::handback::Held;
+use yi_runtime::lane::settle::{Candidate, Quiescence};
 use yi_runtime::lane::{BranchName, Pool, Sha};
 use yi_runtime::plan::ops::{Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
 use yi_runtime::plan::output::OutputResolve;
