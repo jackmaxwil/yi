@@ -54,6 +54,22 @@ impl AnswerTool {
         shown.push(&row);
         Some((path, shown.join("\n")))
     }
+
+    /// Invariant: a reply on screen is kept as written or replaced by a new `text`; a status line
+    /// under it is all a parent reads, and one over it prints the reply twice.
+    fn stand(&self, line: &str, draft: &str) -> ToolOutput {
+        let lost = crate::todo::coupling::opens_with(line, &["problem", "ready"])
+            && crate::session::headed(line, draft) != draft;
+        let refusal = (lost.then(|| "This status line would not be shown.".to_owned()))
+            .or_else(|| self.handle.judge(draft));
+        if let Some(refusal) = refusal {
+            return error_output(format!("{refusal}\n{}", crate::session::FINISH));
+        }
+        self.handle.stand();
+        let mut output = text_output("The reply above stands as the answer; the turn ends.");
+        output.result.terminate = Some(true);
+        output
+    }
 }
 
 impl Tool for AnswerTool {
@@ -93,20 +109,11 @@ impl Tool for AnswerTool {
             (None, None) if !line.is_empty() => (String::new(), false),
             (None, None) => return error_output("No draft is held: pass the answer as `text`."),
         };
-        // Invariant: a reply on screen stands as written; a line under it is all a parent would
-        // read, and a line over it prints the reply twice.
-        let reply = match stands {
-            true => draft.clone(),
-            false => crate::session::headed(line, &draft),
-        };
+        if stands {
+            return self.stand(line, &draft);
+        }
+        let reply = crate::session::headed(line, &draft);
         let Some(refusal) = self.handle.judge(&reply) else {
-            if stands {
-                self.handle.stand();
-                let mut output =
-                    text_output("The reply above stands as the answer; the turn ends.");
-                output.result.terminate = Some(true);
-                return output;
-            }
             self.handle.accept(reply);
             return text_output("Answer delivered; the turn ends.");
         };

@@ -18,7 +18,7 @@ mod hooks;
 mod prompt;
 mod run;
 
-pub(crate) use answer::{AnswerHandle, headed};
+pub(crate) use answer::{AnswerHandle, FINISH, headed};
 use deadline::Deadline;
 use prompt::assembled_prompt;
 use run::Queued;

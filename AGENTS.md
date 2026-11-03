@@ -44,7 +44,7 @@ necessary, not sufficient.
    the event stream). Size or startup claims use the dist profile
    (`cargo build --profile dist -p yi-cli`), never debug.
 4. Name each failure exactly; never soften an error you have not fixed. Its exact text goes in
-   the PR, commit or issue, and in a reply when the user asks for it.
+   saved work (a PR, commit, issue or report to another agent) and to a user who asks for it.
 
 Misdiagnosis defaults: a gate that turns red after your change was broken by
 your change — fix the code, never the baseline. That holds for the wall-clock
@@ -163,8 +163,8 @@ Wire-type drift corrections (these override instinct):
 # Guardrails
 
 Run `just check` (fmt-check + clippy -D warnings + scripts/guardrails/check_guardrails.sh)
-before claiming any task done; quote failures verbatim in the PR or commit, never softened in a
-reply.
+before claiming any task done; quote failures verbatim in saved work (a PR, commit, issue or
+report to another agent) and to a user who asks, and never soften one in a reply.
 
 - The size ceilings — net src growth, per-crate src lines, test LOC, comment volume and
   over-cap count — are measured at the fork point (`git merge-base origin/main HEAD`), not stored:

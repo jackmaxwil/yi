@@ -223,6 +223,77 @@ async fn a_sent_back_reply_that_passes_stands_without_a_second_copy() -> TestRes
     Ok(())
 }
 
+/// Dies with a Problem or Ready line dropped unseen: a reply on screen stands as written, so a
+/// status line that would head it is refused and comes back over new text.
+#[tokio::test]
+async fn a_problem_or_ready_line_over_a_reply_on_screen_comes_back_as_new_text() -> TestResult {
+    for line in [
+        "Ready: Pick the note's title.",
+        "Problem: The note has no title.",
+    ] {
+        let script = vec![
+            calls(vec![call(
+                "c1",
+                "todo",
+                json!({"op": "init", "items": ["write the note"]}),
+            )]),
+            says("Wrote the note."),
+            calls(vec![
+                call(
+                    "c2",
+                    "todo",
+                    json!({"op": "done", "label": "write the note", "evidence": "`true` exit 0"}),
+                ),
+                call("c3", "answer", json!({"summary": line})),
+            ]),
+            answered(line, "The note is written and waits for its title."),
+            says("A third answer nobody asked for."),
+        ];
+        let messages = run(&Scratch::new("yi-answer-lost-line")?, script).await?;
+        let reply = format!("{line}\n\nThe note is written and waits for its title.");
+        let expected = vec!["Wrote the note.".to_owned(), reply];
+        assert_eq!(answers(&messages), expected);
+    }
+    Ok(())
+}
+
+/// Dies with a reply on screen printed twice: a summary refused while work is open leaves the
+/// reply standing, so the summary sent after the fix keeps it as written.
+#[tokio::test]
+async fn a_refused_stand_keeps_the_reply_on_screen_without_a_second_copy() -> TestResult {
+    let script = vec![
+        calls(vec![call(
+            "c1",
+            "todo",
+            json!({"op": "init", "items": ["write the note"]}),
+        )]),
+        says("Done."),
+        summary_only("Wrote the note"),
+        calls(vec![
+            call(
+                "c2",
+                "todo",
+                json!({"op": "done", "label": "write the note", "evidence": "`true` exit 0"}),
+            ),
+            call("c3", "answer", json!({"summary": "Wrote the note"})),
+        ]),
+        says("A second answer nobody asked for."),
+    ];
+    let messages = run(&Scratch::new("yi-answer-refused-stand")?, script).await?;
+    let refused = (messages.iter())
+        .filter(|message| {
+            matches!(message, AgentMessage::ToolResult { tool_name, is_error: true, .. }
+                if tool_name == "answer")
+        })
+        .count();
+    assert_eq!(
+        refused, 1,
+        "the summary sent over open work was not refused"
+    );
+    assert_eq!(answers(&messages), vec!["Done.".to_owned()]);
+    Ok(())
+}
+
 /// Dies with the last word refusing the answer or dropping its status line: under the turn cap
 /// the `answer` call is still the answer, so the run neither ends empty nor asks again.
 #[tokio::test]

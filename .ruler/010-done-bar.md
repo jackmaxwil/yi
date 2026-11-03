@@ -16,7 +16,7 @@ necessary, not sufficient.
    the event stream). Size or startup claims use the dist profile
    (`cargo build --profile dist -p yi-cli`), never debug.
 4. Name each failure exactly; never soften an error you have not fixed. Its exact text goes in
-   the PR, commit or issue, and in a reply when the user asks for it.
+   saved work (a PR, commit, issue or report to another agent) and to a user who asks for it.
 
 Misdiagnosis defaults: a gate that turns red after your change was broken by
 your change — fix the code, never the baseline. That holds for the wall-clock
