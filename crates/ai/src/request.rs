@@ -43,6 +43,29 @@ pub(crate) fn assistant_block_mut(
     assistant_content_mut(message)?.get_mut(index)
 }
 
+/// A JSON object whose values move in; `json!` copies every interpolated value, an image too.
+pub(crate) fn object<const N: usize>(fields: [(&str, Value); N]) -> Value {
+    Value::Object(
+        fields
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}
+
+pub(crate) fn image_url(data: &str, mime_type: &str) -> Value {
+    object([
+        ("type", serde_json::json!("image_url")),
+        (
+            "image_url",
+            object([(
+                "url",
+                Value::String(format!("data:{mime_type};base64,{data}")),
+            )]),
+        ),
+    ])
+}
+
 pub(crate) fn push_assistant_block(message: &mut AgentMessage, block: Content) -> usize {
     let Some(content) = assistant_content_mut(message) else {
         return 0;

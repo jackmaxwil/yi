@@ -110,6 +110,31 @@ pub(crate) fn lifetime_of(custom_type: &str) -> Lifetime {
     }
 }
 
+/// The details key a goal notice carries; a `goal_prompt` without it is a continuation, which
+/// includes every one an older build recorded.
+pub const NOTICE_DETAIL: &str = "goalNotice";
+
+fn is_continuation(message: &AgentMessage) -> bool {
+    matches!(message, AgentMessage::Custom { custom_type, details, .. }
+        if custom_type == "goal_prompt"
+            && details.as_ref().and_then(|details| details.get(NOTICE_DETAIL)).is_none())
+}
+
+/// Invariant: a request carries only the newest goal continuation, and no cut re-drive a reply
+/// followed; both are scanned for once, so the test per message is a comparison.
+pub fn spent_in_request(messages: &[AgentMessage]) -> impl Fn(usize, &AgentMessage) -> bool + '_ {
+    let reply = messages
+        .iter()
+        .rposition(|message| matches!(message, AgentMessage::Assistant { .. }));
+    let newest = messages.iter().rposition(is_continuation);
+    move |index, message| match message {
+        AgentMessage::Custom { custom_type, .. } if custom_type == "length_redrive" => {
+            reply > Some(index)
+        }
+        _ => is_continuation(message) && newest != Some(index),
+    }
+}
+
 /// Removes wrapped internal context, so per-window injections die with it, and every host
 /// nudge a reply followed: one queued after the last reply is unread, and some are raised once.
 pub fn drop_internal(messages: &[AgentMessage]) -> Vec<AgentMessage> {
