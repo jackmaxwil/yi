@@ -235,7 +235,7 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
 /// record, so the apply above writes the one refusal the call ends on.
 fn dry(tool: &PlanTool, set: &Map<String, Value>) -> Result<(), PlanToolError> {
     let (request, _) = super::tool::declared(tool.actor(), set)?;
-    let (request, _) = keep_omitted(tool.engine(), request, &mut Vec::new());
+    let (request, ..) = keep_omitted(tool.engine(), request, &mut Vec::new());
     tool.engine().dry(request).map_err(Into::into)
 }
 
