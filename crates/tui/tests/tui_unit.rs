@@ -1,4 +1,5 @@
 use crate::common;
+use crate::tool_cell_support::{rendered, tool_cell};
 
 use std::error::Error;
 
@@ -20,6 +21,10 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn theme() -> Theme {
     Theme::new(ColorTier::TrueColor, true)
+}
+
+fn test_app() -> yi_tui::app::App {
+    common::app()
 }
 
 fn flat(line: &Line<'_>) -> String {
@@ -724,24 +729,7 @@ fn streamed(full: &str) -> yi_tui::app::App {
 
 /// The same stream with the message still open, so only what streaming committed shows.
 fn streamed_open(full: &str) -> yi_tui::app::App {
-    use yi_tui::app::{App, TuiOptions};
-    use yi_tui::keymap::default_keymap;
-    let mut app = App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-        },
-        theme(),
-        default_keymap(),
-        80,
-    );
+    let mut app = test_app();
     let assistant = |text: &str| {
         yi_runtime::faux::faux_assistant_message(
             vec![yi_runtime::faux::faux_text(text)],
@@ -1220,24 +1208,7 @@ fn table_cells_keep_inline_code_and_leak_nothing() -> TestResult {
 
 #[test]
 fn streaming_commits_each_list_item_exactly_once() -> TestResult {
-    use yi_tui::app::{App, TuiOptions};
-    use yi_tui::keymap::default_keymap;
-    let mut app = App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-        },
-        theme(),
-        default_keymap(),
-        80,
-    );
+    let mut app = test_app();
     let full =
         "Tools:\n\n1. read — reads files\n\n2. edit — patches files\n\n3. bash — runs commands\n";
     let assistant = |text: &str| yi_types::message::AgentMessage::Assistant {
@@ -1566,76 +1537,38 @@ fn nested_items_hang_under_their_own_marker() -> TestResult {
     Ok(())
 }
 
-fn tool_cell(name: &str, result: &str, failed: bool) -> ToolCell {
-    ToolCell {
-        name: name.to_owned(),
-        call_id: String::new(),
-        status: if failed {
-            ToolStatus::Failed
-        } else {
-            ToolStatus::Done
-        },
-        summary: ToolCell::summary_of(name, ""),
-        digest: ToolCell::digest_of(name, result, &serde_json::Value::Null, failed),
-        preview: result.lines().map(str::to_owned).collect(),
-        elapsed_ms: 0,
-        calls: 1,
-        details: serde_json::Value::Null,
-    }
-}
-
-fn rendered(cell: &ToolCell, mode: TranscriptMode) -> Vec<String> {
-    Cell::Tool(cell.clone())
-        .lines(80, &theme(), mode, 0)
-        .iter()
-        .map(flat)
-        .collect()
-}
-
 #[test]
-fn a_finished_tool_states_its_outcome_without_switching_modes() -> TestResult {
-    let theme = theme();
-    let cases = [
-        ("read", "[a.rs#CF8C]\n1:one\n2:two\n3:three", "3 lines"),
-        (
-            "edit",
-            "[a.rs#77BC]\nupdated; first change at line 210\n210:new",
-            "updated; first change at line 210",
-        ),
-        (
-            "grep",
-            "src/a.rs:3:hit\nsrc/a.rs-4-ctx\nsrc/b.rs:9:hit",
-            "2 hits",
-        ),
-        (
-            "write",
-            "Wrote 36 bytes to /tmp/x",
-            "Wrote 36 bytes to /tmp/x",
-        ),
-    ];
-    for (name, result, expected) in cases {
-        let lines = rendered(&tool_cell(name, result, false), TranscriptMode::Normal);
-        assert!(
-            lines.iter().any(|line| line.contains(expected)),
-            "{name} normal mode should state `{expected}`: {lines:?}"
-        );
-    }
-    // A single hit and a single line read as singular, not "1 hits".
-    let one = tool_cell("grep", "src/a.rs:3:hit", false);
-    assert_eq!(one.digest.as_deref(), Some("1 hit"));
-    let _ = theme;
+fn a_finished_write_states_its_outcome_without_switching_modes() -> TestResult {
+    let cell = tool_cell(
+        "write",
+        "",
+        "Wrote 36 bytes to /tmp/x",
+        &serde_json::Value::Null,
+        false,
+    );
+    let lines = rendered(&cell, 80, TranscriptMode::Normal);
+    assert!(
+        lines.iter().any(|line| line.contains("Wrote 36 bytes")),
+        "{lines:?}"
+    );
     Ok(())
 }
 
 #[test]
 fn a_failed_call_shows_why_in_every_mode() -> TestResult {
-    let cell = tool_cell("bash", "error[E0308]: mismatched types\n  --> a.rs:1", true);
+    let cell = tool_cell(
+        "bash",
+        "",
+        "error[E0308]: mismatched types\n  --> a.rs:1",
+        &serde_json::Value::Null,
+        true,
+    );
     for mode in [
         TranscriptMode::Normal,
         TranscriptMode::Thinking,
         TranscriptMode::Verbose,
     ] {
-        let lines = rendered(&cell, mode);
+        let lines = rendered(&cell, 80, mode);
         assert!(
             lines
                 .iter()
@@ -1643,51 +1576,6 @@ fn a_failed_call_shows_why_in_every_mode() -> TestResult {
             "a failure must be legible in {mode:?}: {lines:?}"
         );
     }
-    Ok(())
-}
-
-#[test]
-fn verbose_reads_hang_off_a_line_number_gutter_and_drop_the_anchor_header() -> TestResult {
-    let cell = tool_cell(
-        "read",
-        "[a.rs#CF8C]\n9:fn main() {\n10:    body()\n11:}",
-        false,
-    );
-    let lines = rendered(&cell, TranscriptMode::Verbose);
-    let body = lines.join("\n");
-    assert!(
-        !body.contains("CF8C"),
-        "anchor header must not reach the reader: {body}"
-    );
-    assert!(body.contains("   9 fn main() {"), "{body}");
-    assert!(body.contains("  10     body()"), "{body}");
-    Ok(())
-}
-
-#[test]
-fn verbose_grep_prints_each_path_once() -> TestResult {
-    let cell = tool_cell(
-        "grep",
-        "src/a.rs:3:one\nsrc/a.rs:7:two\nsrc/b.rs:9:three",
-        false,
-    );
-    let lines = rendered(&cell, TranscriptMode::Verbose);
-    assert_eq!(
-        lines
-            .iter()
-            .filter(|line| line.trim_matches(['│', ' ']) == "src/a.rs")
-            .count(),
-        1,
-        "{lines:?}"
-    );
-    assert!(
-        lines.iter().any(|line| line.contains("   3 one")),
-        "{lines:?}"
-    );
-    assert!(
-        lines.iter().any(|line| line.contains("   7 two")),
-        "{lines:?}"
-    );
     Ok(())
 }
 
@@ -1707,24 +1595,7 @@ fn streamed_thought_in(
     prose: &str,
     finish: bool,
 ) -> yi_tui::app::App {
-    use yi_tui::app::{App, TuiOptions};
-    use yi_tui::keymap::default_keymap;
-    let mut app = App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-        },
-        theme(),
-        default_keymap(),
-        80,
-    );
+    let mut app = test_app();
     while app.mode() != mode {
         app.cycle_mode();
     }

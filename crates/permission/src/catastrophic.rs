@@ -152,6 +152,24 @@ pub fn git_dirs(cwd: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// Origin's `HEAD` when set, else `master` when only that exists, else `main`: from the ref files,
+/// since a claim and every turn ask. ponytail: a reftable repository reads as `main`.
+pub fn trunk_of(common: &Path) -> String {
+    let origin_head = read_pointer(&common.join("refs/remotes/origin/HEAD"));
+    if let Some(name) = origin_head
+        .as_deref()
+        .and_then(|text| text.strip_prefix("ref: refs/remotes/origin/"))
+    {
+        return name.to_owned();
+    }
+    let packed = fs::read_to_string(common.join("packed-refs")).unwrap_or_default();
+    let exists =
+        |name: &str| common.join(name).is_file() || packed.lines().any(|line| line.ends_with(name));
+    let main = exists("refs/heads/main") || exists("refs/remotes/origin/main");
+    let master = exists("refs/heads/master") || exists("refs/remotes/origin/master");
+    if master && !main { "master" } else { "main" }.to_owned()
+}
+
 /// Checked, never believed: without this `gitdir: /` reads as a writable root (D205).
 fn git_dir_at(path: &Path) -> Option<PathBuf> {
     let path = lexical_normalize(path);
@@ -231,16 +249,23 @@ pub(crate) fn absolute(path: &Path, context: &CatastrophicContext) -> PathBuf {
 /// Whether destroying this path is categorically unacceptable. Checked before
 /// decide() and denied in every mode including yolo (design §8, D15).
 pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
-    let path = folded(&lexical_normalize(path));
+    let folded_path = folded(&lexical_normalize(path));
+    write_folded_is_catastrophic(&folded_path, context)
+        || (SYSTEM_PATHS_PROTECTED_RECURSIVELY
+            .iter()
+            .any(|protected| folded_path.starts_with(folded(Path::new(protected)))))
+}
+
+/// Whether writing a file here is categorically unacceptable: a file under a system path is
+/// overwritten as `tee` would, so only destroying one stays denied there.
+pub fn write_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
+    write_folded_is_catastrophic(&folded(&lexical_normalize(path)), context)
+}
+
+fn write_folded_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
     if PROTECTED_SYSTEM_PATHS
         .iter()
         .any(|protected| path == folded(Path::new(protected)))
-    {
-        return true;
-    }
-    if SYSTEM_PATHS_PROTECTED_RECURSIVELY
-        .iter()
-        .any(|protected| path.starts_with(folded(Path::new(protected))))
     {
         return true;
     }
@@ -323,7 +348,10 @@ pub struct ReadGate {
     /// Paths no wall covers, with all under them: a session's family spills and own transcript
     /// under the roots its wall holds (#971).
     spared: Vec<PathBuf>,
+    hold: Option<OpenHold>,
 }
+
+pub type OpenHold = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 impl ReadGate {
     pub fn new(context: &CatastrophicContext) -> Self {
@@ -345,6 +373,19 @@ impl ReadGate {
             tree_ids,
             ids,
             spared: Vec::new(),
+            hold: None,
+        }
+    }
+
+    /// A test seam: `hold` runs inside each [`Self::open`] and [`Self::open_write`] as `held`
+    /// does in [`Self::open_after`], so a test forces a swap inside a tool. Production sets none.
+    pub fn hold_opens(&mut self, hold: Option<OpenHold>) {
+        self.hold = hold;
+    }
+
+    fn held(&self) {
+        if let Some(hold) = &self.hold {
+            hold();
         }
     }
 
@@ -372,7 +413,7 @@ impl ReadGate {
     /// Opens the resolved `path`, judged with `walls`, with no link left to follow: the file judged
     /// is the file opened, so a link swapped in after an earlier check reaches nothing (#890).
     pub fn open(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
-        self.open_after(path, walls, &mut || ())
+        self.open_after(path, walls, &mut || self.held())
     }
 
     /// A test seam: [`Self::open`] with `held` run between the judgement and the act, the one
@@ -384,13 +425,13 @@ impl ReadGate {
         held: &mut dyn FnMut(),
     ) -> io::Result<File> {
         let real = fs::canonicalize(path)?;
-        self.opened(&real, walls, false, OpenOptions::new().read(true), held)
+        self.opened(&real, walls, READS, OpenOptions::new().read(true), held)
     }
 
     /// [`Self::open`] to write, under the destroy gate too: untruncated, or created only where
     /// nothing stands, not even a dangling link; the caller truncates through the handle.
     pub fn open_write(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
-        self.open_write_after(path, walls, &mut || ())
+        self.open_write_after(path, walls, &mut || self.held())
     }
 
     /// A test seam: [`Self::open_write`] with `held` run before each judged open, as in
@@ -412,9 +453,9 @@ impl ReadGate {
         };
         let mut options = OpenOptions::new();
         options.read(true).write(true);
-        match self.opened(&real, walls, true, &options, held) {
+        match self.opened(&real, walls, WRITES, &options, held) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.opened(&real, walls, true, options.create_new(true), held)
+                self.opened(&real, walls, WRITES, options.create_new(true), held)
             }
             opened => opened,
         }
@@ -439,18 +480,17 @@ impl ReadGate {
         };
         let parent = fs::canonicalize(parent)?;
         let real = parent.join(name);
-        self.guard_resolved(&real, walls, true)?;
+        self.guard_resolved(&real, walls, is_catastrophic)?;
         held();
         let dir = judged_dir(&parent, &real)?;
         held();
         Ok(unlinkat(&dir, name, AtFlags::empty())?)
     }
 
-    fn guard_resolved(&self, real: &Path, walls: &[PathBuf], writes: bool) -> io::Result<()> {
+    fn guard_resolved(&self, real: &Path, walls: &[PathBuf], protects: Protects) -> io::Result<()> {
         let spared = beneath(&self.spared, real);
-        let denied = self.denies(real)
-            || (writes && is_catastrophic(real, &self.context))
-            || (beneath(walls, real) && !spared);
+        let denied =
+            self.denies(real) || protects(real, &self.context) || (beneath(walls, real) && !spared);
         if denied { Err(refused(real)) } else { Ok(()) }
     }
 
@@ -458,11 +498,11 @@ impl ReadGate {
         &self,
         real: &Path,
         walls: &[PathBuf],
-        writes: bool,
+        protects: Protects,
         options: &OpenOptions,
         held: &mut dyn FnMut(),
     ) -> io::Result<File> {
-        self.guard_resolved(real, walls, writes)?;
+        self.guard_resolved(real, walls, protects)?;
         held();
         let (_dir, at) = beside(real)?;
         let file = no_link(options)?.open(&at)?;
@@ -489,6 +529,10 @@ impl ReadGate {
         (self.stores.iter()).any(|store| path.starts_with(store) || store.starts_with(&path))
     }
 }
+
+type Protects = fn(&Path, &CatastrophicContext) -> bool;
+const READS: Protects = |_, _| false;
+const WRITES: Protects = write_is_catastrophic;
 
 /// [`ReadGate::denies`] for one path.
 pub fn read_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {

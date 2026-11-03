@@ -22,15 +22,8 @@ fn theme() -> Theme {
 fn app() -> App {
     App::new(
         TuiOptions {
-            model: common::test_model("faux-1"),
             session_name: "cells".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
+            ..common::options()
         },
         theme(),
         default_keymap(),
@@ -73,6 +66,31 @@ fn ended_with(
         },
         is_error,
     });
+}
+
+#[test]
+fn a_running_tool_reserves_its_three_row_result_and_elision_space() -> TestResult {
+    let mut cell = ToolCell {
+        name: "bash".to_owned(),
+        call_id: "c1".to_owned(),
+        status: ToolStatus::Running,
+        summary: ToolCell::summary_of("bash", "printf 'one\\ntwo\\nthree\\n'"),
+        digest: None,
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 1,
+        details: serde_json::Value::Null,
+    };
+    let running = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
+    cell.status = ToolStatus::Done;
+    cell.preview = ["one", "two", "three"].map(str::to_owned).to_vec();
+    cell.digest = Some("one".to_owned());
+    let done = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
+    assert_eq!(running, done, "the card moved when its result landed");
+    cell.preview = vec!["one".to_owned()];
+    let short = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
+    assert_eq!(running, short, "a one-row result collapsed the card");
+    Ok(())
 }
 
 /// Eight rows of looking crowds out the answer that follows it, so the sources of a run cost

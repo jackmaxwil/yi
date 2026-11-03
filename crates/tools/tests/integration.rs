@@ -7,7 +7,12 @@ mod poll;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 
+#[path = "support/seatbelt.rs"]
+mod seatbelt;
+
+mod bash;
 mod checkpoint;
+mod contain;
 mod documents;
 mod endings;
 mod hashline_parser;

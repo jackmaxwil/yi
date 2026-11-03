@@ -63,18 +63,6 @@ pub type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
 pub fn command_channel() -> (CommandSender, CommandReceiver) {
     tokio::sync::mpsc::unbounded_channel()
 }
-pub struct TuiOptions {
-    pub model: yi_types::model::Model,
-    pub session_name: String,
-    pub cwd: String,
-    pub lane: Option<String>,
-    pub context_window: u64,
-    pub session_dir: String,
-    pub keys: Vec<(String, String)>,
-    pub initial_prompt: Option<String>,
-    /// The streamed reveal's speed as a percentage of the default; 0 paints text on arrival.
-    pub pace: u16,
-}
 
 const MIN_VIEWPORT_ROWS: u16 = 3;
 
@@ -210,8 +198,8 @@ pub struct App {
     pub(crate) rows: usize,
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
     pub(crate) pane_follow: Option<(usize, TranscriptMode, usize, usize)>,
-    /// The last pane paint's top row and each transcript row's cell, `None` on the live turn.
-    pub(crate) pane_rows: (u16, Vec<Option<usize>>),
+    pub(crate) follow: yi_types::config::FollowMode,
+    pub(crate) pane_rows: PaneRows,
 }
 
 mod asks;
@@ -219,6 +207,9 @@ mod bridge;
 mod children;
 pub use children::TaskState;
 mod clock;
+mod pane;
+pub(crate) use pane::PaneRows;
+mod options;
 mod stream;
 mod working;
 
@@ -226,9 +217,11 @@ pub use crate::frame::next_spinner_wake;
 pub(crate) use asks::mail_source;
 pub(crate) use bridge::spawn_runtime_bridge;
 pub use bridge::{forward, submit};
+pub use options::TuiOptions;
 
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {
+        let follow = options.follow;
         let mut app = Self {
             theme,
             keymap,
@@ -336,7 +329,8 @@ impl App {
             rows: 24,
             pane_hold: None,
             pane_follow: None,
-            pane_rows: (0, Vec::new()),
+            follow,
+            pane_rows: PaneRows::default(),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
         app.scheduler.request();
@@ -573,12 +567,6 @@ impl App {
 
     pub(crate) fn retain(&mut self, cell: Cell) {
         self.history.retain(cell);
-    }
-
-    pub fn pane_row(&self, y: u16) -> Option<Option<(usize, Option<&str>)>> {
-        let (top, rows) = &self.pane_rows;
-        let owner = *rows.get(usize::from(y.checked_sub(*top)?))?;
-        Some(owner.map(|index| (index, self.history.source(index))))
     }
 
     /// The source of transcript cell `index`, for rows a drag read before they scrolled away.

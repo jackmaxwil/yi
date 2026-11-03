@@ -18,7 +18,7 @@ use crate::app::App;
 use crate::header::{header_buttons, render_header, tab_hits};
 use crate::keys;
 use crate::layout::{PaneId, SplitBorder, pane_margin};
-use crate::model::{Link, Mode, Pane, PaneContent, SessionStatus, Zone};
+use crate::model::{Mode, Pane, PaneContent, SessionStatus, Zone};
 
 pub(crate) const NAME_WIDTH: usize = 20;
 
@@ -34,19 +34,7 @@ pub struct PaneView {
     pub chat: bool,
 }
 
-/// The one control table hover and press both walk; press maps it to an action, hover to a rect.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Hit {
-    Tab(usize),
-    Settings(PaneId, usize),
-    Button(keys::Action),
-    Gear,
-    Title(PaneId),
-    New(Option<String>),
-    Search,
-    Fold(String),
-    Session(usize),
-}
+pub use crate::hit::Hit;
 
 #[derive(Default)]
 pub struct Hits {
@@ -60,7 +48,7 @@ pub struct Hits {
     pub tabs: Vec<(Rect, usize)>,
     pub closers: Vec<(PaneId, Rect)>,
     pub titles: Vec<(PaneId, Rect)>,
-    pub settings_tabs: Vec<(Rect, PaneId, usize)>,
+    pub settings_targets: Vec<(Rect, PaneId, crate::settings::Target)>,
     /// Popups over the panes, outermost first: they take every click and hide kitty images.
     pub overlays: Vec<Rect>,
     pub dismiss: Option<Rect>,
@@ -104,10 +92,10 @@ impl Hits {
             .find(|(rect, _)| rect.contains(at))
             .map(|(rect, index)| (*rect, Hit::Tab(*index)))
             .or_else(|| {
-                self.settings_tabs
+                self.settings_targets
                     .iter()
                     .find(|(rect, ..)| rect.contains(at))
-                    .map(|(rect, pane, tab)| (*rect, Hit::Settings(*pane, *tab)))
+                    .map(|(rect, pane, target)| (*rect, Hit::Settings(*pane, *target)))
             })
             .or_else(|| {
                 (self.hint_buttons.iter().chain(&self.header_buttons))
@@ -181,7 +169,6 @@ pub struct ViewState {
     pub header: Rect,
     pub panes_area: Rect,
     pub panes: Vec<PaneView>,
-    pub split_borders: Vec<SplitBorder>,
     pub banner: Option<Rect>,
     pub framed: bool,
     pub rail_edge: Option<u16>,
@@ -342,9 +329,9 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         avatars,
         controls,
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
-        splits: split_borders.clone(),
+        splits: split_borders,
         tabs: tab_hits,
-        settings_tabs: settings_hits(app, &panes),
+        settings_targets: crate::settings::hits(app, &panes),
         gear: (gear.height > 0).then_some(gear),
         header_buttons: header_buttons(header, taken),
         ..Hits::default()
@@ -356,7 +343,6 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         header,
         panes_area,
         panes,
-        split_borders,
         banner: Some(banner),
         framed,
         rail_edge,
@@ -386,23 +372,6 @@ fn frames_panes(app: &App) -> bool {
             || !lone
             || !chat.is_some_and(|pane| matches!(pane.content, PaneContent::Session { .. }))
     })
-}
-
-fn settings_hits(app: &App, panes: &[PaneView]) -> Vec<(Rect, PaneId, usize)> {
-    let mut hits = Vec::new();
-    for view in panes {
-        let Some(PaneContent::Settings(settings)) =
-            app.state.panes.get(&view.id).map(|p| &p.content)
-        else {
-            continue;
-        };
-        let inner = view.rect.inner(view.margin);
-        for (x, width, tab) in crate::settings::tab_targets(settings, usize::from(inner.width)) {
-            let rect = Rect::new(inner.x.saturating_add(x), inner.y, width, 1);
-            hits.push((rect.intersection(inner), view.id, tab));
-        }
-    }
-    hits
 }
 
 type SidebarHits = (
@@ -669,12 +638,8 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
             continue;
         }
         let body = Paragraph::new(pane.lines.clone());
-        let body = if dim {
-            body.style(Style::default().add_modifier(Modifier::DIM))
-        } else {
-            body
-        };
-        frame.render_widget(body, inner);
+        let dim_style = Style::default().add_modifier(Modifier::DIM);
+        frame.render_widget(if dim { body.style(dim_style) } else { body }, inner);
     }
     if view.framed {
         render_borders(app, frame, view, theme);
@@ -691,6 +656,7 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         lift(frame.buffer_mut(), rect, theme);
     }
     let popup = match &app.state.mode {
+        Mode::Files(files) => Some(crate::files::render(files, frame, view.panes_area, theme)),
         Mode::Navigator { .. } => crate::palette::render_navigator(app, frame, view, theme),
         Mode::Menu(menu) => {
             let rects = crate::menu::rects(menu, frame.area());
@@ -793,6 +759,8 @@ fn paint_chat_pane(
     let mut scroll = pane.scroll_from_bottom;
     view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
     pane.scroll_from_bottom = scroll;
+    let runs = chat.app.run_chips();
+    crate::hit::offer_runs(app, view.id, runs);
     if dim {
         for y in inner.top()..inner.bottom() {
             for x in inner.left()..inner.right() {
@@ -806,30 +774,7 @@ fn paint_chat_pane(
 }
 
 fn render_banner(app: &mut App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let mut spans = Vec::new();
-    match &app.state.link {
-        Link::Connecting => spans.push(Span::styled(" connecting… ", theme.dim_style())),
-        Link::Connected => {}
-        Link::Disconnected { reason } => {
-            let short: String = reason.chars().take(28).collect();
-            spans.push(Span::styled(
-                format!(" ✕ disconnected: {short} "),
-                Style::default().fg(theme.error),
-            ));
-        }
-    }
-    if let Some(note) = &app.state.banner {
-        spans.push(Span::styled(
-            format!(" {note}"),
-            Style::default().fg(theme.warning),
-        ));
-    }
-    if app.state.dropped_frames > 0 {
-        spans.push(Span::styled(
-            format!("  dropped:{}", app.state.dropped_frames),
-            theme.dim_style(),
-        ));
-    }
+    let mut spans = crate::chrome::banner_spans(app, theme);
     if spans.is_empty()
         && let Some((flash, _)) = &app.flash
     {

@@ -239,3 +239,109 @@ async fn a_restore_after_a_conversation_rewind_also_moves_back_the_rewound_turns
     assert!(run.project.join("a.txt").exists(), "turn one's file stays");
     Ok(())
 }
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+fn snapshots(
+    store: &SharedSession,
+) -> Result<Vec<yi_types::checkpoint::TreeSnapshot>, Box<dyn Error>> {
+    Ok(lock_session(store).custom_records(yi_session::EntryOrder::OldestFirst, None))
+}
+
+/// Dies with the snapshot recorded as a checkpoint: `/undo` would land mid-turn, on the last call
+/// instead of where the turn began.
+#[tokio::test]
+async fn ten_calls_leave_snapshots_and_undo_still_goes_to_the_turn_start() -> TestResult {
+    let files = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+    let run = run(&files).await?;
+    for _ in 0..200 {
+        if !snapshots(&run.store)?.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let taken = snapshots(&run.store)?;
+    assert!(!taken.is_empty(), "no call was captured");
+    assert!(taken.iter().any(|one| one.call.is_some()), "{taken:?}");
+    yi_runtime::undo(&run.store, &run.project, &run.home);
+    assert!(run.project.join("i").exists(), "the turn before stands");
+    assert!(
+        !run.project.join("j").exists(),
+        "the last turn went back whole"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_capture_at_its_budget_stays_on_and_one_past_turns_off() {
+    let budget = std::time::Duration::from_millis(500);
+    assert!(!yi_runtime::over_budget(budget, budget));
+    assert!(yi_runtime::over_budget(
+        budget + std::time::Duration::from_millis(1),
+        budget
+    ));
+}
+
+/// Dies with the guard off: on a tree too slow for it, every tool call would load the machine with
+/// another background git. The notice is what `t.log` prints at the cut.
+#[tokio::test]
+async fn a_tree_too_slow_to_capture_stops_trying_and_says_so() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let shim = Scratch::new("yi-undo-to-shim")?;
+    let path = std::env::var_os("PATH").ok_or("no PATH")?;
+    let real = (std::env::split_paths(&path).map(|dir| dir.join("git")))
+        .find(|candidate| candidate.is_file())
+        .ok_or("no git on PATH")?;
+    let body = format!(
+        "#!/bin/sh\ncase \"$*\" in *write-tree*) sleep 1;; esac\nexec '{}' \"$@\"\n",
+        real.display()
+    );
+    std::fs::write(shim.join("git"), body)?;
+    std::fs::set_permissions(shim.join("git"), std::fs::Permissions::from_mode(0o755))?;
+    let joined = std::env::join_paths(
+        std::iter::once(shim.to_path_buf()).chain(std::env::split_paths(&path)),
+    )?;
+    // nextest gives each test its own process.
+    unsafe { std::env::set_var("PATH", joined) };
+    let run = run(&["a", "b"]).await?;
+    let mut row = None;
+    for _ in 0..300 {
+        row = yi_runtime::snapshots_off_row(&run.project);
+        if row.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let row = row.ok_or("snapshots stayed on")?;
+    assert!(
+        row.starts_with("[… per-call snapshots off: last capture "),
+        "{row}"
+    );
+    assert!(
+        row.contains("(snapshot.budget_ms 500); t.head() still works]"),
+        "{row}"
+    );
+    Ok(())
+}
+
+/// Dies with `restore` asked for a tree its store lacks, and with the refusal reading "no turn yet".
+#[tokio::test]
+async fn an_undo_whose_turn_end_is_in_another_store_moves_nothing() -> Result<(), Box<dyn Error>> {
+    let run = run(&["a"]).await?;
+    let missing = "0123456789abcdef0123456789abcdef01234567";
+    let data = yi_types::checkpoint::CheckpointData {
+        tree: missing.to_owned(),
+        at: yi_types::checkpoint::CheckpointAt::TurnEnd,
+        after: None,
+    };
+    lock_session(&run.store).append_custom_record(&data)?;
+    let outcome = yi_runtime::undo(&run.store, &run.project, &run.home);
+    let yi_runtime::UndoOutcome::Failed(why) = outcome else {
+        return Err(
+            "read as no checkpoint, which tells the person this session took no turn".into(),
+        );
+    };
+    assert!(why.contains("so nothing moved"), "{why}");
+    assert!(run.project.join("a").exists(), "the tree stands");
+    Ok(())
+}

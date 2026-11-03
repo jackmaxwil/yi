@@ -55,4 +55,4 @@
 
 ## Architecture notes
 <!-- The change file under docs/changes/ (issue, growth memo, raises, decisions
-     claimed or revised), feature-ledger rows touched (each names its journey test). -->
+     claimed or revised), feature-ledger lines written (each row names its journey test). -->

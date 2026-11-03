@@ -126,7 +126,7 @@ class YiRunner:
             command.append(prompt)
             try:
                 done = subprocess.run(
-                    command, capture_output=True, text=True, timeout=TURN_TIMEOUT
+                    command, capture_output=True, text=True, timeout=TURN_TIMEOUT  # nosemgrep: dangerous-subprocess-use-tainted-env-args Prompt stays one argv element; no shell.
                 )
             except subprocess.TimeoutExpired:
                 path.write_text("")
@@ -306,7 +306,7 @@ def build_agent_class():
 
 def yi_version():
     try:
-        done = subprocess.run([BINARY, "version"], capture_output=True, text=True, timeout=30)
+        done = subprocess.run([BINARY, "version"], capture_output=True, text=True, timeout=30)  # nosemgrep: dangerous-subprocess-use-tainted-env-args Fixed argv and no shell.
         return done.stdout.strip() or "unknown"
     except (OSError, subprocess.SubprocessError):
         return "unknown"

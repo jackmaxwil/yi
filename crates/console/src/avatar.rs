@@ -1,4 +1,4 @@
-//! A session's avatar: a 5×5 mirrored identicon seeded by the session id, rastered for
+//! A session's avatar: a 7×7 mirrored identicon seeded by the session id, rastered for
 //! the kitty graphics protocol, with the initials tile every terminal draws under it.
 
 use std::collections::HashMap;
@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 
 use yi_tui::orb::kitty;
 
-/// Pixels per side; 8 px cells, so a two-column, one-row placement is one cell per glyph.
+/// Pixels per side; the grid's cells and margin divide it exactly.
 pub const PX: usize = 40;
-const CELL: usize = 6;
+const SIDE: usize = 7;
+const HALF: usize = 4;
 const MARGIN: usize = 6;
 const FIRST_ID: u32 = 8000;
 
@@ -43,19 +44,18 @@ impl ImageIds {
     }
 }
 
-/// Row-major 5×5, mirror-symmetric about the middle column.
+/// Row-major 7×7, mirror-symmetric about the middle column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Grid([bool; 25]);
+pub struct Grid([bool; 49]);
 
 impl Grid {
     pub fn on(&self, row: usize, col: usize) -> bool {
         self.0
-            .get(row.saturating_mul(5).saturating_add(col))
+            .get(row.saturating_mul(SIDE).saturating_add(col))
             .copied()
             .unwrap_or(false)
     }
 }
-
 fn fnv1a(seed: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in seed.bytes() {
@@ -65,25 +65,24 @@ fn fnv1a(seed: &str) -> u64 {
     hash
 }
 
-/// Fifteen bits pick the left three columns of each row; the right two mirror them, and
-/// the centre cell is always on so no grid is blank.
+/// Four bits per row pick the left four columns; the right three mirror them, and the
+/// centre cell is always on so no grid is blank.
 pub fn grid(seed: &str) -> Grid {
     let bits = fnv1a(seed);
-    let mut cells = [false; 25];
-    for row in 0..5_usize {
-        for col in 0..3_usize {
-            let bit = row.saturating_mul(3).saturating_add(col);
+    let mut cells = [false; 49];
+    for row in 0..SIDE {
+        for col in 0..HALF {
+            let bit = row.saturating_mul(HALF).saturating_add(col);
             let on = (bits >> u32::try_from(bit).unwrap_or(0)) & 1 == 1;
-            let mirror = 4_usize.saturating_sub(col);
-            if let Some(cell) = cells.get_mut(row.saturating_mul(5).saturating_add(col)) {
-                *cell = on;
-            }
-            if let Some(cell) = cells.get_mut(row.saturating_mul(5).saturating_add(mirror)) {
-                *cell = on;
+            let mirror = SIDE.saturating_sub(1).saturating_sub(col);
+            for edge in [col, mirror] {
+                if let Some(cell) = cells.get_mut(row.saturating_mul(SIDE).saturating_add(edge)) {
+                    *cell = on;
+                }
             }
         }
     }
-    if let Some(centre) = cells.get_mut(12) {
+    if let Some(centre) = cells.get_mut(SIDE.saturating_mul(SIDE) / 2) {
         *centre = true;
     }
     Grid(cells)
@@ -91,11 +90,12 @@ pub fn grid(seed: &str) -> Grid {
 
 /// 40×40 RGBA on an opaque dark ground: the image covers the tile text under it whole.
 pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
+    let cell = (PX - 2 * MARGIN) / SIDE;
     let mut out = Vec::with_capacity(PX.saturating_mul(PX).saturating_mul(4));
     for y in 0..PX {
         for x in 0..PX {
             let inside = (MARGIN..PX - MARGIN).contains(&x) && (MARGIN..PX - MARGIN).contains(&y);
-            let (row, col) = ((y - MARGIN.min(y)) / CELL, (x - MARGIN.min(x)) / CELL);
+            let (row, col) = ((y - MARGIN.min(y)) / cell, (x - MARGIN.min(x)) / cell);
             if inside && grid.on(row, col) {
                 out.extend_from_slice(&[fg.0, fg.1, fg.2, 255]);
             } else {
@@ -416,19 +416,97 @@ mod tests {
     }
 
     #[test]
-    fn grids_are_deterministic_symmetric_and_distinct() {
+    fn grids_are_deterministic_and_symmetric() {
         assert_eq!(grid("s-alpha"), grid("s-alpha"));
         let g = grid("s-alpha");
-        for row in 0..5 {
-            for col in 0..5 {
-                assert_eq!(g.on(row, col), g.on(row, 4 - col));
+        for row in 0..SIDE {
+            for col in 0..SIDE {
+                assert_eq!(g.on(row, col), g.on(row, SIDE - 1 - col));
             }
         }
-        assert!(g.on(2, 2));
-        let distinct: std::collections::HashSet<[bool; 25]> =
-            (0..100).map(|n| grid(&format!("s-{n:02}")).0).collect();
-        assert!(distinct.len() >= 95, "{}", distinct.len());
+        assert!(g.on(3, 3));
         assert_eq!(rgba(&g, (1, 2, 3)).len(), PX * PX * 4);
+    }
+
+    fn ledger_grids() -> Vec<[bool; 49]> {
+        include_str!("../tests/fixtures/ledger-session-ids.txt")
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|seed| grid(seed).0)
+            .collect()
+    }
+
+    /// Incident: fifteen bits of a hash over a 5×5 mirror gave the real ledger's 2,572 sessions
+    /// 2,376 marks, 209 pairs of sessions wearing one avatar and 165 more pairs one cell apart.
+    #[test]
+    fn the_real_ledger_never_gives_two_sessions_one_mark() {
+        let grids = ledger_grids();
+        assert!(grids.len() > 2_500, "{} seeds", grids.len());
+        let marks: std::collections::HashSet<[bool; 49]> = grids.iter().copied().collect();
+        assert_eq!(
+            marks.len(),
+            grids.len(),
+            "{} of {} sessions share a mark",
+            grids.len() - marks.len(),
+            grids.len()
+        );
+    }
+
+    /// The mark's 28 bits only buy distance if no two rendered marks are near-identical: a pair
+    /// differing in one cell was the same blob at rail size. One pair two cells apart is the
+    /// ledger's observed closest; a second would mean the hash or the fixture changed.
+    #[test]
+    fn at_most_one_pair_of_ledger_marks_sits_within_two_cells() {
+        let grids = ledger_grids();
+        let (mut one, mut two) = (0_usize, 0_usize);
+        for (at, left) in grids.iter().enumerate() {
+            for right in grids.get(at.saturating_add(1)..).unwrap_or_default() {
+                match left.iter().zip(right).filter(|(l, r)| l != r).count() {
+                    1 => one = one.saturating_add(1),
+                    2 => two = two.saturating_add(1),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(one, 0, "{one} pairs of marks differ in one cell");
+        assert!(two <= 1, "{two} pairs of marks differ in two cells");
+    }
+
+    fn rgba_at(image: &[u8], width: usize, x: usize, y: usize) -> Option<[u8; 4]> {
+        let at = y.checked_mul(width)?.checked_add(x)?.checked_mul(4)?;
+        image.get(at..at.checked_add(4)?)?.try_into().ok()
+    }
+
+    #[test]
+    fn the_mark_inks_its_on_cells_and_leaves_the_margin_clear() {
+        const MARK: [&str; 7] = [
+            "##...##", "##...##", "..#.#..", "##.#.##", "##...##", "#.....#", ".......",
+        ];
+        let g = grid("s-alpha");
+        for (row, line) in MARK.iter().enumerate() {
+            for (col, cell) in line.chars().enumerate() {
+                assert_eq!(g.on(row, col), cell == '#', "grid cell {row},{col}");
+            }
+        }
+        let image = rgba(&g, (1, 2, 3));
+        let alpha = |x: usize, y: usize| rgba_at(&image, PX, x, y).map(|p| p[3]);
+        for (row, line) in MARK.iter().enumerate() {
+            for (col, cell) in line.chars().enumerate() {
+                let want = if cell == '#' { Some(255) } else { Some(0) };
+                for y in 6 + row * 4..6 + (row + 1) * 4 {
+                    for x in 6 + col * 4..6 + (col + 1) * 4 {
+                        assert_eq!(alpha(x, y), want, "cell {row},{col} at {x},{y}");
+                    }
+                }
+            }
+        }
+        assert_eq!(alpha(5, 5), Some(0), "the margin is clear");
+        assert_eq!(alpha(34, 34), Some(0), "past the 28 px field is clear");
+        assert_eq!(
+            rgba_at(&image, PX, 8, 8).map(|p| [p[0], p[1], p[2]]),
+            Some([1, 2, 3]),
+            "an on cell's ink is the accent"
+        );
     }
 
     #[test]
@@ -438,7 +516,7 @@ mod tests {
         assert_eq!(gear.len(), w * h * 4);
         let alpha = |x: f64, y: f64| {
             let (x, y) = (32.0 + x * 24.0, 48.0 + y * 24.0);
-            gear.get((y as usize * w + x as usize) * 4 + 3).copied()
+            rgba_at(&gear, w, x as usize, y as usize).map(|p| p[3])
         };
         assert_eq!(alpha(0.0, 0.0), Some(0), "the hub is open");
         assert_eq!(alpha(0.28, 0.0), Some(255), "the hub ring is drawn");
@@ -460,7 +538,7 @@ mod tests {
     fn a_left_cap_rounds_its_outer_corners_and_meets_the_body_flush() {
         let (w, h) = (16, 32);
         let cap = cap_rgba((1, 2, 3), w, h, true);
-        let alpha = |x: usize, y: usize| cap.get((y * w + x) * 4 + 3).copied();
+        let alpha = |x: usize, y: usize| rgba_at(&cap, w, x, y).map(|p| p[3]);
         assert_eq!(alpha(0, 0), Some(0), "the outer top corner is cut round");
         assert_eq!(
             alpha(0, h - 1),
