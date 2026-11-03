@@ -165,17 +165,16 @@ the row says so.
 
 ## Trust boundaries of warm directories
 
-A kernel check runs in one of `node.slots` directories per repository, whose cargo output outlives
-the check: one trust domain per family. The scrub removes what an honest check leaves, not what a
-hostile one plants. Runs are keyed by tree id and contained outside yolo. Tests: `warm_checks.rs`.
+A kernel check runs in one of `node.slots` directories: one trust domain per family. The scrub removes what an honest check leaves, not what a hostile one plants.
+Tests: `warm_checks.rs`.
 
 | boundary | instance | control | test |
 |---|---|---|---|
-| borrower → next | I: ignored output read by the next check | `clean -ffdx` but `target`, before each check | `an_ignored_report_from_one_borrower_is_gone_for_the_next` |
-| | T: a stale binary passes a test with no build | `target/<profile>` keeps only cargo's bookkeeping | `a_stale_binary_is_gone_and_cargos_bookkeeping_stays` |
-| | **T: a `.rlib` planted for the next borrower** | **residual; the forge gate lands** | |
-| check → pool | D: a dirty slot reads as an orphan | reset and scrub at release | `a_check_that_writes_and_edits_still_frees_its_directory` |
-| waiting → model | R: a cut check read as red; D: tickets piling up | `Abstain` is no verdict; `check.tickets` 256 | `past_its_budget_a_check_is_no_verdict_on_the_work` |
+| borrower → next | I: ignored output read by the next | `clean -ffdx` but `target` | `an_ignored_report_from_one_borrower_is_gone_for_the_next` |
+| | T: a stale binary passes with no build | `target/<profile>` keeps cargo's bookkeeping | `a_stale_binary_is_gone_and_cargos_bookkeeping_stays` |
+| | **T: a `.rlib` planted for the next borrower** | **residual** | |
+| check → pool | D: a dirty slot reads orphaned | scrub at release | `a_check_that_writes_and_edits_still_frees_its_directory` |
+| waiting → model | R: a cut check read as red; D: tickets | `Abstain` is no verdict; `check.tickets` 256 | `past_its_budget_a_check_is_no_verdict_on_the_work` |
 
 ## Trust boundaries of Linux containment
 
