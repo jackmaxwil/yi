@@ -9,13 +9,13 @@ use yi_runtime::plan::table::{RETRY_CAP, STEPS, op_name};
 use yi_types::plan::doc::TODO_LABEL_MAX;
 
 fn engine_vectors() -> Value {
-    let steps: Vec<Value> = STEPS
-        .iter()
-        .map(|step| {
-            json!({"from": step.from.as_str(), "op": op_name(step.op), "to": step.to.as_str()})
-        })
-        .collect();
-    json!({"label_max": TODO_LABEL_MAX, "retry_cap": RETRY_CAP.0, "steps": steps})
+    let mut legal = serde_json::Map::new();
+    for step in STEPS {
+        if let Value::Array(from) = legal.entry(op_name(step.op)).or_insert_with(|| json!([])) {
+            from.push(json!(step.from.as_str()));
+        }
+    }
+    json!({"label_max": TODO_LABEL_MAX, "retry_cap": RETRY_CAP.0, "legal_from": legal})
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn the_committed_plan_vectors_are_what_the_engine_writes() -> Result<(), Box<dyn
     assert_eq!(
         std::fs::read_to_string(&path)?,
         fresh,
-        "plan_steps.json is stale; run `YI_BLESS=1 cargo test -p yi-runtime --test plan_vectors`"
+        "plan_steps.json is stale; run `YI_BLESS=1 cargo test -p yi-runtime --test integration plan_vectors`"
     );
     Ok(())
 }

@@ -21,9 +21,7 @@ import rlm
 VECTORS = json.loads((pathlib.Path(__file__).parent / "vectors" / "plan_steps.json").read_text())
 LABEL_MAX = VECTORS["label_max"]
 RETRY_CAP = VECTORS["retry_cap"]
-LEGAL: dict[str, tuple[str, ...]] = {}
-for _step in VECTORS["steps"]:
-    LEGAL[_step["op"]] = (*LEGAL.get(_step["op"], ()), _step["from"])
+LEGAL = VECTORS["legal_from"]
 
 
 def refusal(kind: str, message: str, code: str = "refused", **extra) -> dict:
@@ -326,6 +324,8 @@ class FakeHost:
             if todo["attempt"] > self.retry_cap:
                 return refusal("retries_exhausted", f"{todo['label']} spent its {self.retry_cap} retries")
             todo["state"], todo["attempt"] = "pending", todo["attempt"] + 1
+        elif op == "accepted_by_user":
+            todo["state"] = "done"
         elif op == "drop":
             todo["state"] = "abandoned"
         elif op == "add_edge":

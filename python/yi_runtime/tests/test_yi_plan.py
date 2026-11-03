@@ -367,6 +367,17 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         await plan.refresh()
         self.assertEqual(plan["work"]._doc["after"], [hold.label], "a failed todo takes an edge")
 
+    async def test_the_fake_host_accepts_a_failed_todo_the_way_the_engine_does(self) -> None:
+        """The engine lets the user accept a blocked, running or failed todo; the fake once raised on the op."""
+        FakeHost()
+        plan = await Plan.create("ship it")
+        work = await plan.todo(key="work")
+        await work.start()
+        await work.fail("probe disagreed")
+        await plan._op("accepted_by_user", {"label": work.label})
+        await plan.refresh()
+        self.assertEqual(plan["work"]._doc["state"], "done")
+
 
 if __name__ == "__main__":
     unittest.main()

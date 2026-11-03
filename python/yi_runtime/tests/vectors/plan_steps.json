@@ -1,91 +1,43 @@
 {
   "label_max": 80,
   "retry_cap": 8,
-  "steps": [
-    {
-      "from": "pending",
-      "op": "start",
-      "to": "running"
-    },
-    {
-      "from": "pending",
-      "op": "block",
-      "to": "blocked"
-    },
-    {
-      "from": "pending",
-      "op": "drop",
-      "to": "abandoned"
-    },
-    {
-      "from": "pending",
-      "op": "add_edge",
-      "to": "pending"
-    },
-    {
-      "from": "running",
-      "op": "done",
-      "to": "done"
-    },
-    {
-      "from": "running",
-      "op": "fail",
-      "to": "failed"
-    },
-    {
-      "from": "running",
-      "op": "block",
-      "to": "blocked"
-    },
-    {
-      "from": "running",
-      "op": "decompose",
-      "to": "running"
-    },
-    {
-      "from": "running",
-      "op": "accepted_by_user",
-      "to": "done"
-    },
-    {
-      "from": "blocked",
-      "op": "unblock",
-      "to": "pending"
-    },
-    {
-      "from": "blocked",
-      "op": "drop",
-      "to": "abandoned"
-    },
-    {
-      "from": "blocked",
-      "op": "add_edge",
-      "to": "blocked"
-    },
-    {
-      "from": "blocked",
-      "op": "accepted_by_user",
-      "to": "done"
-    },
-    {
-      "from": "done",
-      "op": "add_edge",
-      "to": "done"
-    },
-    {
-      "from": "failed",
-      "op": "retry",
-      "to": "pending"
-    },
-    {
-      "from": "failed",
-      "op": "add_edge",
-      "to": "failed"
-    },
-    {
-      "from": "failed",
-      "op": "accepted_by_user",
-      "to": "done"
-    }
-  ]
+  "legal_from": {
+    "start": [
+      "pending"
+    ],
+    "block": [
+      "pending",
+      "running"
+    ],
+    "drop": [
+      "pending",
+      "blocked"
+    ],
+    "add_edge": [
+      "pending",
+      "blocked",
+      "done",
+      "failed"
+    ],
+    "done": [
+      "running"
+    ],
+    "fail": [
+      "running"
+    ],
+    "decompose": [
+      "running"
+    ],
+    "accepted_by_user": [
+      "running",
+      "blocked",
+      "failed"
+    ],
+    "unblock": [
+      "blocked"
+    ],
+    "retry": [
+      "failed"
+    ]
+  }
 }
