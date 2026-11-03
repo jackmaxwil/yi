@@ -290,7 +290,6 @@ fn wire_goal(
     service.register(registry);
     session.set_goal_service(service);
     let plan = crate::plan::attach_plan(session, plan_stale_turns, plans_dir.to_path_buf());
-    plan.register(registry);
     session.set_plan_service(plan);
 }
 
@@ -697,7 +696,6 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     }
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
-    registry.register_mcp_stubs();
     registry.register_exec(
         wiring.exec_home(),
         crate::kernel_state::job_profile(&wiring, session),

@@ -43,9 +43,12 @@ fn host_view(source: &str, content: &UserContent, timestamp: u64) -> AgentMessag
 /// are the requester's words; kinds with no LLM representation drop.
 pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     let _span = yi_types::trace::span("context.convert_to_llm").arg("messages", messages.len());
+    let spent = crate::wrapper::spent_in_request(messages);
     messages
         .iter()
-        .filter_map(|message| match message {
+        .enumerate()
+        .filter(|(index, message)| !spent(*index, message))
+        .filter_map(|(_, message)| match message {
             AgentMessage::BashExecution {
                 command,
                 output,
