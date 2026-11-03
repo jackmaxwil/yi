@@ -4,9 +4,11 @@ the status line every bot comment ends with. Each comment's meta line carries th
 the comments are the ledger: a PR's total and a day's total are sums over them, and `just pr spend`
 reads the same lines. No store of its own.
 """
+import collections
 import datetime
 import json
 import pathlib
+import re
 import sys
 import threading
 import time
@@ -20,6 +22,7 @@ BOT = "yi-bot"
 # The meta lines whose `cost=` the totals sum: a review round, a voided round, an autofix attempt.
 MARKERS = ("<!-- yi-round-meta ", "<!-- yi-round-void-meta ", "<!-- yi-autofix-meta ")
 FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs", "models")
+SKILL_READ = re.compile(r"(?:\.yi/skills/|yi://skills/)(.+?)(?:/SKILL\.md)?$")
 
 
 class Meter:
@@ -29,17 +32,23 @@ class Meter:
     def __init__(self):
         self.lock, self.started = threading.Lock(), time.monotonic()
         self.calls = self.turns = self.tin = self.tout = self.tcache = 0
-        self.cost, self.models = 0.0, set()
+        self.cost, self.models, self.skills = 0.0, set(), collections.Counter()
 
     def add_sessions(self, directory):
-        """One call's session files: every assistant reply's usage and model."""
+        """One call's session files: every assistant reply's usage, model and skill reads."""
         turns, tin, tout, tcache, cost, models = 0, 0, 0, 0, 0.0, set()
+        skills = collections.Counter()
         for path in pathlib.Path(directory).rglob("*.jsonl"):
             for line in path.read_text(errors="replace").splitlines():
                 try:
                     message = json.loads(line).get("message") or {}
                 except (json.JSONDecodeError, AttributeError):
                     continue
+                for part in message.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") == "toolCall" and part.get("name") == "read":
+                        read = SKILL_READ.search(str((part.get("arguments") or {}).get("path")))
+                        if read:
+                            skills[read.group(1)] += 1
                 usage = message.get("usage") or {}
                 if message.get("role") != "assistant" or not usage:
                     continue
@@ -55,11 +64,13 @@ class Meter:
             self.turns, self.tin, self.tout, self.tcache = self.turns + turns, self.tin + tin, self.tout + tout, self.tcache + tcache
             self.cost += cost
             self.models |= models
+            self.skills += skills
 
     def fields(self):
         return {"cost": f"{self.cost:.4f}", "tin": self.tin, "tout": self.tout, "tcache": self.tcache,
                 "calls": self.calls, "turns": self.turns, "secs": int(time.monotonic() - self.started),
-                "models": ",".join(sorted(m.split("/")[-1] for m in self.models)) or "none"}
+                "models": ",".join(sorted(m.split("/")[-1] for m in self.models)) or "none",
+                "skills": ",".join(f"{name}:{n}" for name, n in sorted(self.skills.items())) or "none"}
 
 
 def meta(fields):
@@ -81,7 +92,7 @@ def status_line(meter, pr_total, day_total, what):
     f = meter.fields()
     return (f"<sub>{what} · {f['models'].replace(',', ', ')} · {f['calls']} call(s), {f['turns']} turn(s) · in {tokens(f['tin'])} "
             f"(cached {tokens(f['tcache'])}) · out {tokens(f['tout'])} · ${float(f['cost']):.2f} · "
-            f"{duration(f['secs'])} · this PR ${pr_total:.2f} · today ${day_total:.2f}</sub>")
+            f"{duration(f['secs'])} · skills read {f['skills']} · this PR ${pr_total:.2f} · today ${day_total:.2f}</sub>")
 
 
 def rows(comments):
@@ -95,13 +106,17 @@ def rows(comments):
                 if line.startswith(marker) and line.endswith(" -->"):
                     fields = dict(p.split("=", 1) for p in line[len(marker):-4].split() if "=" in p)
                     url = comment.get("pull_request_url") or comment.get("issue_url") or ""
-                    out.append({**fields, "kind": marker[5:].split("-meta")[0], "at": comment.get("created_at", ""),
+                    out.append({**fields, "kind": marker[5:].split("-meta")[0], "at": comment.get("created_at", ""), "id": comment.get("id", 0),
                                 "pr": fields.get("pr") or url.rsplit("/", 1)[-1]})
     return out
 
 
+def cost(row):
+    return float(row.get("cost") or 0)
+
+
 def spent(found):
-    return sum(float(row.get("cost") or 0) for row in found)
+    return sum(cost(row) for row in found)
 
 
 def since(repo, start):
@@ -157,6 +172,18 @@ def selfcheck():
             errs.append(f"the meter read {f}")
         if "models=glm-5.3-flash" not in meta(f).split():
             errs.append(f"the meta line drops the models a comment paid for: {meta(f)}")
+        if f["skills"] != "none":
+            errs.append(f"a session with no read counts a skill: {f['skills']}")
+        read = lambda path: json.dumps({"message": {"role": "assistant", "content": [{"type": "toolCall", "name": "read", "arguments": {"path": path}}]}})
+        (tmp / "b").mkdir()
+        (tmp / "b/s.jsonl").write_text("\n".join([read("/root/.yi/skills/har/SKILL.md"), read("/root/.yi/skills/har/SKILL.md"), read("yi://skills/har-api"),
+                                                  read("crates/a/src/lib.rs"), read("/root/.yi/skills/har-io/SKILL.md").replace('"read"', '"write"'), json.dumps({"message": {"role": "user", "content": "/root/.yi/skills/har-io/SKILL.md"}})]))
+        reads = Meter()
+        reads.add_sessions(tmp / "b")
+        if reads.fields()["skills"] != "har:2,har-api:1":
+            errs.append(f"the meter's skill reads: {reads.fields()['skills']}")
+        if "skills read har:2,har-api:1" not in status_line(reads, 0, 0, "round"):
+            errs.append("the status line does not say which skills a round read")
         line = status_line(meter, 1.234, 5.5, "round 2")
         for part in ("round 2", "glm-5.3-flash", "2 call(s), 2 turn(s)", "in 3.0k", "(cached 2.7k)", "out 120", "$0.03", "this PR $1.23", "today $5.50"):
             if part not in line:
