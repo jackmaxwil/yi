@@ -81,6 +81,7 @@ impl Tool for AnswerTool {
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
+        let summary = input.get("summary").and_then(Value::as_str);
         let given = input.get("text").and_then(Value::as_str).map(str::trim_end);
         let (draft, stands) = match (given.filter(|text| !text.is_empty()), self.handle.held()) {
             (Some(text), _) => (text.to_owned(), false),
@@ -90,7 +91,8 @@ impl Tool for AnswerTool {
             },
             (None, None) => return error_output("No draft is held: pass the answer as `text`."),
         };
-        let Some(refusal) = self.handle.judge(&draft) else {
+        let reply = crate::session::headed(summary.unwrap_or_default(), &draft);
+        let Some(refusal) = self.handle.judge(&reply) else {
             if stands {
                 self.handle.stand();
                 let mut output =
@@ -98,7 +100,7 @@ impl Tool for AnswerTool {
                 output.result.terminate = Some(true);
                 return output;
             }
-            self.handle.accept(draft);
+            self.handle.accept(reply);
             return text_output("Answer delivered; the turn ends.");
         };
         let held = self.hold_file(&draft, context);

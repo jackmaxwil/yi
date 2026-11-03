@@ -135,19 +135,34 @@ fn answer_of(turn: &AgentMessage, text: String) -> AgentMessage {
     }
 }
 
-/// The `text` of an `answer` call the turn made, `Some(None)` for a call without one.
-fn answer_call(message: &AgentMessage) -> Option<Option<String>> {
+/// Invariant: a JSON answer is data a structured child hands back, so no summary heads it.
+pub(crate) fn headed(summary: &str, text: &str) -> String {
+    let (line, body) = (summary.trim(), text.trim_start());
+    if line.is_empty() || body.starts_with(line) || body.starts_with(['{', '[']) {
+        return text.to_owned();
+    }
+    if body.is_empty() {
+        return line.to_owned();
+    }
+    format!("{line}\n\n{text}")
+}
+
+/// The `summary` and `text` of an `answer` call the turn made, the text None for a call without one.
+fn answer_call(message: &AgentMessage) -> Option<(String, Option<String>)> {
     let AgentMessage::Assistant { content, .. } = message else {
         return None;
     };
     content.iter().find_map(|block| match block {
         Content::ToolCall {
             name, arguments, ..
-        } if name == "answer" => Some(
+        } if name == "answer" => Some((
+            (arguments.get("summary").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_owned(),
             (arguments.get("text").and_then(Value::as_str))
                 .filter(|text| !text.trim().is_empty())
                 .map(str::to_owned),
-        ),
+        )),
         _ => None,
     })
 }
@@ -232,8 +247,12 @@ pub(super) fn wire(
         let text = match (&*state, answer_call(snapshot.message)) {
             (Answering::Accepted(text), _) => Some(text.clone()),
             (Answering::Stood, _) => None,
-            (Answering::LastWord(_), Some(Some(text))) if !cut => Some(text),
-            (Answering::LastWord(Some(held)), Some(None)) if !cut => held.submitted(),
+            (Answering::LastWord(_), Some((summary, Some(text)))) if !cut => {
+                Some(headed(&summary, &text))
+            }
+            (Answering::LastWord(Some(held)), Some((summary, None))) if !cut => {
+                held.submitted().map(|text| headed(&summary, &text))
+            }
             _ => return None,
         };
         *state = Answering::Answered;

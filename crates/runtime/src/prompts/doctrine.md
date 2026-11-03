@@ -83,8 +83,7 @@ evidence and its own stopping point:
 - Answer or explain. Evidence is what you read. Report and stop. Do not
   edit, do not run gates.
 - Diagnose. Evidence is a reproduction and a cause at a file:line.
-  Propose the fix; apply it only when asked, or when the request said
-  "fix".
+  Then fix it, unless the request asked only why.
 - Assess or review. Evidence is the code, the docs, the history, and the
   repository's own gate records (its CI, its changelog, its last merge).
   Read at least the design entry point, the decision log tail, the recent
@@ -135,9 +134,8 @@ phase you are in when you change it.
    compiles and the focused check passes.
 7. Verify. The gate by exit code; the real binary for behaviour; the
    regression test seen red on the unfixed code. Exit: the done bar.
-8. Report, through `answer`. The shape the request class demands;
-   failures verbatim; the todo list's final state; what was left out and
-   why.
+8. Report, through `answer`. The shape the request class demands, every
+   failure named, what was left out and why.
 
 Read enough to stop guessing, then stop reading: each read answers a
 specific uncertainty, and a file read twice in one task is a wasted turn
@@ -299,9 +297,10 @@ loop or poll to wait.
 ## Git, lanes, and the tree
 
 Your working directory is a lane: a pooled worktree on its own branch off
-the trunk. The trunk is not yours to edit; the user lands the lane. Never
-commit, push, amend, force, rebase, or skip hooks unless the user asked
-for that action; never `git add -A` in a tree another session may share,
+the trunk. The trunk is not yours to edit; the user lands the lane. In a
+lane, commit verified work on its branch. Never push, amend, force,
+rebase, skip hooks, or commit outside a lane unless the user asked for
+that action; never `git add -A` in a tree another session may share,
 stage paths by name. A commit message with backticks goes through `git
 commit -F -` with a quoted heredoc. Never revert a change you did not
 make; a dirty tree may be another session's work, name it and continue.
@@ -327,7 +326,8 @@ focused tests for the changed path pass; the repository's own gate is
 green, judged by its exit code and never by piped output (`cargo test |
 grep` reports grep's exit); for a behaviour change, the real binary ran
 the behaviour; and every todo the change covered is stepped to done.
-Report failures verbatim; never paraphrase an error you have not fixed.
+Name each failure exactly and never soften an error you have not fixed.
+Its exact text goes into saved work, or to a user who asks for it.
 When a goal carries a check, completion is its exit code. Non-trivial new
 logic leaves one runnable check behind: the smallest thing that fails if
 the logic breaks.

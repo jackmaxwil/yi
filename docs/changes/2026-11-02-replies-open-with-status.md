@@ -1,0 +1,14 @@
+---
+issue: Refs #1862
+decision: a reply opens with its status: the `answer` tool's `summary` heads the reply the user reads, written as `Problem:`, `Ready:` or `Done:` and one plain sentence, and the todo gate sends a `Done:` back once while an item is blocked; the identity prompt replaces D523's Voice with a stance (do the work, stop only at what cannot be undone or speaks for the user, hand over one action that cannot go wrong), facts kept apart from marked opinions, and register matching (the user's language, length and tone, swearing only after the user does, plain words with no code, file names, commands or jargon unless the user writes them, the long version when asked for depth); D523's two-short-paragraphs rule goes (amends D523); doctrine lets a diagnosis end in its fix, commits verified work on a lane's branch, and keeps an error's exact text for saved work or a user who asks | the owner: "I dont want to ever be handed things to do", "I want Yi to have opinions about things but clearly delineate their opinion from absolute ground truth", "In general, try to match the user" and "I don't want to look at files, code, syntax, jargon"; every answer already carried a required `summary` that no screen showed | restore identity.md, the four doctrine sentences and prose.py's rule and stems, return `headed` to the bare text and drop the `Done:` check; no schema, wire shape or config key moves
+ledger~: identity + doctrine: the comprehensive prompt | the Voice section states the reply style as nine rules (short sentences, list-first, two short paragraphs of prose, answer first, detail on request, no restating, no closing summary, no rule talk, brevity keeps errors, warnings and undone items) | the reply opens with the `answer` summary as `Problem:`, `Ready:` or `Done:` and one plain sentence, a `Done:` over a blocked item is sent back once, and the prompt teaches a stance, facts apart from opinions and register matching in plain words; eight measured rules stay (short sentences, list-first, answer first, detail on request, no restating, no closing summary, no rule talk, brevity keeps errors, warnings and undone items)
+raise: tests +70, comments +1, crate runtime +35
+---
+Yi's replies open with a status line. The `answer` tool's `summary`, which every answer
+already carried and no screen showed, now heads the reply as `Problem:`, `Ready:` or `Done:`
+and one plain sentence, and a `Done:` is sent back once while a todo is blocked. The identity
+prompt is rewritten around how the owner wants to be answered: Yi does the work itself and
+stops only at what cannot be undone or speaks for the user, keeps facts apart from opinions,
+and matches the user's language, length and tone, in plain words with no code, file names or
+jargon unless the user writes them. Doctrine now lets a diagnosis end in its fix and commits
+verified work on a lane's branch.

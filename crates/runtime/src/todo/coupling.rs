@@ -55,6 +55,7 @@ pub struct Cycle {
     pub prompt_claims_impossible: bool,
     pub impossible: bool,
     pub artifact: bool,
+    pub done_refused: bool,
 }
 
 impl Cycle {
@@ -423,6 +424,14 @@ pub fn unsourced_text(numbers: &[String]) -> String {
 pub const EMPTY_STOP_TEXT: &str =
     "The turn produced no output. Call `answer` with the final answer, or make the next tool call.";
 
+pub const DONE_BLOCKED_TEXT: &str = "An item is still blocked, so this reply cannot open with Done. Open it with Problem: or Ready: and name what the item waits on.";
+
+fn says_done(text: &str) -> bool {
+    (text.split(|c: char| !c.is_alphanumeric()))
+        .find(|word| !word.is_empty())
+        .is_some_and(|word| word.eq_ignore_ascii_case("done"))
+}
+
 fn text_of(message: &AgentMessage) -> String {
     let AgentMessage::Assistant { content, .. } = message else {
         return String::new();
@@ -766,6 +775,11 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             }
             let list = todos.list();
             let posture = stop_posture(&list, children_running());
+            let blocked = matches!(posture, StopPosture::Ask | StopPosture::Cadence);
+            if blocked && says_done(&text) && !std::mem::replace(&mut cycle.done_refused, true) {
+                let note = DONE_BLOCKED_TEXT.to_owned();
+                return Some(custom(INTERCEPT_CUSTOM_TYPE, note, false));
+            }
             if posture != StopPosture::Continue {
                 drop(cycle);
                 return inner.as_ref().and_then(|inner| inner(snapshot));

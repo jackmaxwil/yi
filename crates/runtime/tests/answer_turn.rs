@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::ProviderStream;
-use yi_runtime::todo::coupling::INTERCEPT_CUSTOM_TYPE;
+use yi_runtime::todo::coupling::{DONE_BLOCKED_TEXT, INTERCEPT_CUSTOM_TYPE};
 use yi_types::message::{AgentMessage, Content, StopReason};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -265,6 +265,76 @@ async fn input_typed_during_the_turn_opens_the_next_one() -> TestResult {
     assert_eq!(
         answers(&messages),
         vec!["First.".to_owned(), "Second.".to_owned()]
+    );
+    Ok(())
+}
+
+fn answered(summary: &str, text: &str) -> AgentMessage {
+    calls(vec![call(
+        "c1",
+        "answer",
+        json!({"summary": summary, "text": text}),
+    )])
+}
+
+/// Dies with the summary dropped before anyone reads it: the status line the user scans first
+/// must head the reply, above the detail.
+#[tokio::test]
+async fn the_summary_heads_the_reply_the_user_reads() -> TestResult {
+    let text = "The parser read every date as UTC.\n\n- It reads the zone from the file now.\n- The full check passes.";
+    let script = vec![answered("Done: Fixed the date bug.", text)];
+    let messages = run(&Scratch::new("yi-answer-headed")?, script).await?;
+    assert_eq!(
+        answers(&messages),
+        vec![format!("Done: Fixed the date bug.\n\n{text}")]
+    );
+    Ok(())
+}
+
+/// Dies with a status line glued onto data: a structured child's JSON answer must reach the
+/// parent bare, or the parse picks up a bracket from the summary instead of the value.
+#[tokio::test]
+async fn a_json_answer_reaches_its_reader_bare() -> TestResult {
+    let data = r#"{"files": ["src/a.rs", "src/b.rs"]}"#;
+    let script = vec![answered("Done: Read [both] files.", data)];
+    let messages = run(&Scratch::new("yi-answer-json")?, script).await?;
+    assert_eq!(answers(&messages), vec![data.to_owned()]);
+    Ok(())
+}
+
+/// Dies with Done passing over an item that waits on the user: that reply is sent back once,
+/// and the status that names the wait heads what the user reads.
+#[tokio::test]
+async fn done_is_refused_while_an_item_is_blocked() -> TestResult {
+    let script = vec![
+        calls(vec![call(
+            "c1",
+            "todo",
+            json!({"op": "init", "items": ["write the note"]}),
+        )]),
+        calls(vec![call(
+            "c2",
+            "todo",
+            json!({"op": "block", "label": "write the note", "on": "user", "note": "which title?"}),
+        )]),
+        answered("Done: Wrote the note.", "The note waits for its title."),
+        calls(vec![call(
+            "c4",
+            "answer",
+            json!({"summary": "Ready: Pick the note's title."}),
+        )]),
+        says("A second answer nobody asked for."),
+    ];
+    let messages = run(&Scratch::new("yi-answer-done-blocked")?, script).await?;
+    let refused = (messages.iter()).any(|message| {
+        matches!(message, AgentMessage::ToolResult { tool_name, is_error: true, content, .. }
+            if tool_name == "answer"
+                && yi_types::message::join_text(content, "").contains(DONE_BLOCKED_TEXT))
+    });
+    assert!(refused, "the Done reply was not sent back");
+    assert_eq!(
+        answers(&messages),
+        vec!["Ready: Pick the note's title.\n\nThe note waits for its title.".to_owned()]
     );
     Ok(())
 }
