@@ -17,6 +17,9 @@ concurrency:
 env:
   CARGO_BUILD_JOBS: "5"
 
+permissions:
+  contents: read
+
 jobs:
   autofix:
     runs-on: ubuntu-latest
@@ -42,20 +45,20 @@ jobs:
             || echo 0)
           echo "newer=$newer" >> "$GITHUB_OUTPUT"
           [ "$newer" = 0 ] || echo "autofix: skipped, $newer newer pass(es) queued"
-      # Main's tree: the merged PR's code runs only inside a token-free clone.
+      # Main's tree: the PR's code and the model run only in a worker under a throwaway uid.
       - if: steps.queue.outputs.newer == '0'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the fixer fetches PR heads with the checkout's scoped token.
         with:
           ref: main
           fetch-depth: 0
       # A job's HOME starts with no skills, and this copy is main's, not the PR's tree.
-      # The PR's build, tests and hooks run under their own HOME (pr_autofix.untrusted), not this one.
+      # The worker gets a copy; this one stays root's (pr_autofix.in_worker).
       - if: steps.queue.outputs.newer == '0'
         run: just install-skills
       - if: steps.queue.outputs.newer == '0'
         run: rustup show
       - if: steps.queue.outputs.newer == '0'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: test
           cache-on-failure: true

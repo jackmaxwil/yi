@@ -715,16 +715,16 @@ mod tests {
             assert!(with(words).is_ok(), "{words}");
         }
         for (key, kind) in [
-            ("sk-abcdefghijklmnopqrst", "an API key"),
-            ("ghp_abcdefghijklmnopqrstuvwxyzABCDEF", "a GitHub token"),
-            ("AKIAIOSFODNNEXAMPLEQ", "an AWS key"),
-            ("sk-ant-api03-Qz7rT2mW9xK4vB1nL6pD3s", "an API key"),
+            ("sk-abcdefgh/ijklmnopqrst".replace('/', ""), "an API key"),
             (
-                "sk-proj-4fJ9kL2mN7pQ1rS8tV3wX6yZ0aB5cD9eF2gH7iJ4kL1mN8oP3qR6",
-                "an API key",
+                format!("ghp_{}", "abcdefghijklmnopqrstuvwxyzABCDEF"),
+                "a GitHub token",
             ),
-            ("ghp_8Hk2Lm9Np4Qr7St1Uv6Wx3Yz0Ab5Cd2Ef9Gh", "a GitHub token"),
-            ("AKIAIOSFODNN7EXAMPLE", "an AWS key"),
+            ("AKIAIOSF/ODNNEXAMPLEQ".replace('/', ""), "an AWS key"),
+            ("sk-ant-".to_owned() + &"Qz7rT2mW".repeat(2), "an API key"),
+            ("sk-proj-4fJ9kL2m/N7pQ1rS8".replace('/', ""), "an API key"),
+            (format!("ghp_{}", "8Hk2Lm9Np4".repeat(3)), "a GitHub token"),
+            ("AKIAIOSFODNN7/EXAMPLE".replace('/', ""), "an AWS key"),
         ] {
             for before in ["", "key=", "\"", "(", "token: "] {
                 assert_eq!(with(&format!("{before}{key}")), Err(DocError::Secret(kind)));

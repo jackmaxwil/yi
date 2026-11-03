@@ -859,7 +859,6 @@ async fn role_bodies(
         tools,
         max_depth,
     )?;
-    std::fs::create_dir_all(ws.join(".git"))?;
     if !matches!(workspace, Workspace::Bare) {
         upstream::git(&ws, &["add", "."])?;
         upstream::git(&ws, &["commit", "-q", "-m", "seed"])?;

@@ -1,0 +1,64 @@
+title = "Yi provider keys and shared path ignores"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "yi-gemini-api-key"
+description = "Gemini API key"
+regex = '''\bAIza[0-9A-Za-z_-]{35}\b'''
+keywords = ["aiza"]
+
+[[rules]]
+id = "yi-openrouter-api-key"
+description = "OpenRouter API key"
+regex = '''\bsk-or-v1-[\w-]{16,}'''
+keywords = ["sk-or-v1-"]
+
+[[rules]]
+id = "yi-anthropic-api-key"
+description = "Anthropic API key"
+regex = '''\bsk-ant-[\w-]{16,}'''
+keywords = ["sk-ant-"]
+
+[[rules]]
+id = "yi-openai-project-key"
+description = "OpenAI project API key"
+regex = '''\bsk-proj-[\w-]{16,}'''
+keywords = ["sk-proj-"]
+
+[[rules]]
+id = "yi-openai-api-key"
+description = "OpenAI API key"
+regex = '''\bsk-[0-9A-Za-z]{48}\b'''
+keywords = ["sk-"]
+
+[[rules]]
+id = "yi-github-pat"
+description = "GitHub personal access token"
+regex = '''\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{30,}'''
+keywords = ["ghp_", "gho_", "ghs_", "ghu_", "ghr_"]
+
+[[rules]]
+id = "yi-aws-access-key"
+description = "AWS access key pair"
+regex = '''\bAKIA[0-9A-Z]{16}\b'''
+keywords = ["akia"]
+
+[[allowlists]]
+description = "RFC examples and test-only sentinel values, not credentials"
+regexTarget = "secret"
+regexes = [
+  '''2YotnFZFEjr1zCsicMWpAA''',
+  '''tGzv3JOkF0XG5Qx2TlKWIA''',
+  '''e30\.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC03In19\.sig''',
+  '''SECRET=hunter2''',
+  '''consecutive-401''',
+  '''gpt-5\.6-sol\.md''',
+  '''sk-ant-api03-Qz7r[T]2mW9xK4vB1nL6pD3s''',
+  '''sk-ant-api03-a[b]cdefghijklmnop''',
+  '''sk-pro[j]-4fJ9kL2mN7pQ1rS8tV3wX6yZ0aB5cD9eF2gH7iJ4kL1mN8oP3qR6''',
+  '''ghp_8Hk2Lm9Np4Qr7St1[U]v6Wx3Yz0Ab5Cd2Ef9Gh''',
+  '''AKIAIOSFOD[N]N7EXAMPLE''',
+  '''AKIAIOSFOD[N]NEXAMPLEQ''',
+]

@@ -357,6 +357,7 @@ fn an_init_and_an_opening_set_replay_on_retry() -> TestResult {
                     spec: spec("cut")?,
                     state: yi_types::plan::doc::TodoStateName::Pending,
                 }],
+                keep_rest: false,
             },
             "r-set",
         )
@@ -1248,9 +1249,49 @@ fn a_set_on_a_long_plan_reduces_its_journal_exactly_twice() -> TestResult {
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
     let before = reduces(&trace)?;
-    let out = engine.apply(owner(Op::Set { goal: None, rows }))?;
+    let out = engine.apply(owner(Op::Set {
+        goal: None,
+        rows,
+        keep_rest: false,
+    }))?;
     let counted = reduces(&trace)?.saturating_sub(before);
     assert_eq!(out.plan, uncached(&store, &id)?);
     assert_eq!(counted, 2, "one set reduced the journal {counted} times");
+    Ok(())
+}
+
+/// Dies with a `keep_rest` set replaying to a plan that lost the rows it left out: the record
+/// beside `records.jsonl` carries one row and the reduced plan still holds all three.
+#[test]
+fn a_keep_rest_set_replays_the_rows_it_left_out() -> TestResult {
+    let path = fixtures().join("journal/set-keep-rest.jsonl");
+    verify_chain(&path)?;
+    let reading = Journal::open(path, Arc::new(RealFs)).read()?;
+    let set = (reading.records.iter())
+        .find(|record| record.record.op == "set")
+        .ok_or("no set record")?;
+    assert_eq!(set.args["rows"].as_array().map(Vec::len), Some(1));
+    assert_eq!(set.args["keep_rest"], Value::Bool(true));
+    let state = yi_runtime::plan::state::reduce(&reading.records)?;
+    let plan = state.plans.into_values().next().ok_or("no plan")?;
+    let rows: Vec<(String, String)> = (plan.todos.iter())
+        .map(|todo| {
+            (
+                todo.label.to_string(),
+                yi_types::plan::doc::TodoStateName::of(&todo.state)
+                    .as_str()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("polish".to_owned(), "pending".to_owned()),
+            ("cut".to_owned(), "blocked".to_owned()),
+            ("ship".to_owned(), "pending".to_owned()),
+        ],
+        "the rows the set did not name stay"
+    );
     Ok(())
 }

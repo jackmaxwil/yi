@@ -217,7 +217,7 @@ fn probe(path: PathBuf, deadline: std::time::Duration) -> Result<ExecTool, Skipp
 }
 
 #[cfg(unix)]
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     fs::metadata(path)
         .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
@@ -225,7 +225,7 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 #[cfg(not(unix))]
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     fs::metadata(path)
         .map(|meta| meta.is_file())
         .unwrap_or(false)

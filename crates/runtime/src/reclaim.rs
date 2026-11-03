@@ -170,6 +170,21 @@ impl Overlay {
     }
 }
 
+/// Renders every recorded cut and decides nothing: a request sent beside the loop repeats the
+/// bytes the loop last sent instead of spending a cut of its own (D338).
+pub(crate) fn convert(cut: Option<Arc<Mutex<Cut>>>) -> crate::compaction::Convert {
+    match cut {
+        Some(cut) => Arc::new(move |messages: &[AgentMessage]| {
+            let converted = yi_context::convert_to_llm(messages);
+            apply(
+                converted,
+                &cut.lock().unwrap_or_else(PoisonError::into_inner),
+            )
+        }),
+        None => Arc::new(yi_context::convert_to_llm),
+    }
+}
+
 fn name_entries(store: &yi_session::SessionStore, items: &mut [Reclaimed]) {
     let bounds = yi_session::BranchBounds::default();
     let query = yi_session::EntryQuery::default();

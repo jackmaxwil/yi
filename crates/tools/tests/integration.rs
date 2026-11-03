@@ -12,6 +12,7 @@ mod seatbelt;
 
 mod bash;
 mod checkpoint;
+mod contain;
 mod documents;
 mod endings;
 mod hashline_blocks;
