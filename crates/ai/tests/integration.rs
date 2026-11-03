@@ -26,6 +26,7 @@ mod oauth;
 mod openai_mapper;
 mod openai_responses;
 mod openrouter;
+mod provider_stream;
 mod proxy;
 mod pump_stop;
 mod quota;

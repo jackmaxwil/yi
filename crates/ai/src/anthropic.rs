@@ -839,9 +839,9 @@ fn run_request(
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
-    let resent = crate::request::pump_sse_with_resend(
+    let resent = match crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::send_with_retry(&url, &headers, body, proxy, &retried),
+        || crate::request::send_with_retry(&url, &headers, body, proxy, stop, &retried),
         |sse| {
             let kind = sse.event.as_deref().unwrap_or("");
             if kind == "error" {
@@ -857,8 +857,19 @@ fn run_request(
             }
             Ok(true)
         },
-    )
-    .map_err(|message| crate::request::auth_hint(&message, oauth, &model.provider))?;
+    ) {
+        Ok(resent) => resent,
+        // Incident: an error after the first delta threw the whole turn away, because the fresh
+        // mapper below was failed instead of the running one; the text and usage were billed.
+        Err(message) => {
+            let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
+                &message,
+                oauth,
+                &model.provider,
+            )));
+            return Ok(());
+        }
+    };
     if let Some(first_error) = resent {
         crate::request::note_resend(&mut mapper.output, &first_error);
     }

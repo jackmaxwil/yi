@@ -13,8 +13,8 @@ use crate::compat::{
     compat_bool, developer_role, moonshot, nested_reasoning, replays_reasoning_content,
 };
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
-use crate::request::object;
 use crate::request::{assistant_block_mut, content_end_events, push_assistant_block};
+use crate::request::{image_url, object};
 use crate::transform::{system_text, transform_messages};
 
 const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasoning_text"];
@@ -213,19 +213,6 @@ fn assistant_param(model: &Model, content: &[Content]) -> Option<Value> {
         }
         None
     }
-}
-
-fn image_url(data: &str, mime_type: &str) -> Value {
-    object([
-        ("type", json!("image_url")),
-        (
-            "image_url",
-            object([(
-                "url",
-                Value::String(format!("data:{mime_type};base64,{data}")),
-            )]),
-        ),
-    ])
 }
 
 fn push_tool_results(
@@ -573,6 +560,7 @@ pub struct ChunkMapper {
     thinking_index: Option<usize>,
     tools: Vec<ToolSlot>,
     has_finish_reason: bool,
+    refusal: String,
 }
 
 impl ChunkMapper {
@@ -584,6 +572,7 @@ impl ChunkMapper {
             thinking_index: None,
             tools: Vec::new(),
             has_finish_reason: false,
+            refusal: String::new(),
         }
     }
 
@@ -656,6 +645,9 @@ impl ChunkMapper {
         };
         self.on_text_delta(delta, &mut events);
         self.on_thinking_delta(delta, &mut events);
+        if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
+            self.refusal.push_str(refusal);
+        }
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tool_call in tool_calls {
                 self.on_tool_call_delta(tool_call, &mut events);
@@ -808,7 +800,15 @@ impl ChunkMapper {
 
     pub fn finish(mut self) -> Vec<AssistantMessageEvent> {
         self.settle_calls();
+        crate::leak::recover_in(&mut self.output);
         let mut events = content_end_events(&mut self.output, |_| true);
+        // Incident: a refusal arrived as `delta.refusal` and the turn ended as an empty Stop, so
+        // the loop read it as an answer with no text. It is the provider's answer, named.
+        if !self.refusal.is_empty() {
+            let refusal = std::mem::take(&mut self.refusal);
+            events.push(self.fail(&format!("The model refused: {refusal}")));
+            return events;
+        }
         let pending = matches!(
             &self.output,
             AgentMessage::Assistant {
@@ -901,29 +901,31 @@ fn run_request(
     wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
-    let crate::request::Wire {
-        api_key,
-        proxy,
-        stop,
-        extra,
-        oauth,
-        settle: _,
-    } = wire;
     let url = format!("{}/chat/completions", model.base_url);
     let mut mapper = ChunkMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
     let pumped = crate::request::pump_sse_with_resend(
-        stop,
-        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra, &retried),
+        wire.stop,
+        || crate::request::openai_bearer_post(&url, model, body, wire, &retried),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
             }
-            if let Ok(payload) = parse_json_with_repair(&sse.data) {
-                for event in mapper.push_chunk(&payload) {
-                    let _ = sender.blocking_send(event);
-                }
+            let data = sse.data.trim();
+            if data.is_empty() {
+                return Ok(true);
+            }
+            // Incident: an unparsable line was dropped, so a body that stopped being SSE read as
+            // an empty turn; Anthropic has failed its turn on one since the mapper existed.
+            let payload = parse_json_with_repair(data).map_err(|error| {
+                format!(
+                    "Could not parse chat SSE event: {error}: {}",
+                    data.chars().take(200).collect::<String>()
+                )
+            })?;
+            for event in mapper.push_chunk(&payload) {
+                let _ = sender.blocking_send(event);
             }
             Ok(true)
         },
@@ -937,7 +939,7 @@ fn run_request(
             detach_settlement(settle_from_record(&mut mapper.output, model, &wire));
             let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
                 &message,
-                oauth,
+                wire.oauth,
                 &model.provider,
             )));
             return Ok(());
@@ -948,7 +950,9 @@ fn run_request(
     }
     // a cut dropped the stream before its finish and usage chunks: the turn ends as a length
     // stop and is settled from the generation record (D163)
-    let cut = stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
+    let cut = wire
+        .stop
+        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
     if cut {
         mapper.cut();
     }

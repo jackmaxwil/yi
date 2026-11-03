@@ -1,5 +1,5 @@
 ---
 issue: Refs #1558
-raise: comments +1, crate ai +115, tests +371
+raise: crate ai +106, tests +371
 ---
 The three adapters no longer copy a request's history through `transform_messages` and `json!` on the way to the wire, and a streamed tool call's arguments are parsed once instead of on every delta (Refs #1558). `transform_messages` returns borrowed messages and copies only one it rewrites, and the adapters move their message and image values into the body. The owned history `convert_to_llm` returns is still one full copy per request; borrowing it through `LlmContext` is left open on the issue. With three 1 MB images in a session, `build_params` allocations fall from 12.0 MB to 3.0 MB on Anthropic and from 15.0 MB to 3.0 MB on both OpenAI wires. The body bytes are unchanged, and a recorded fixture holds them. The Anthropic, OpenAI chat and Responses mappers append argument deltas and parse them when the call ends, or when the stream is cut or fails. A cut or failed call stores the parse of every byte received, as before; on Anthropic it now also gets the leak repair a normal stop applies, and a call whose received bytes parse to nothing keeps the arguments its start event carried. A 238 KB write call took over 10 s to stream in 16-byte deltas and now takes 0.6 s for all three adapters together.

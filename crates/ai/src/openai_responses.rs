@@ -65,6 +65,7 @@ pub struct EventMapper {
     completed: bool,
     failed: bool,
     closed: bool,
+    refusal: String,
 }
 
 impl EventMapper {
@@ -78,6 +79,7 @@ impl EventMapper {
             completed: false,
             failed: false,
             closed: false,
+            refusal: String::new(),
         }
     }
 
@@ -221,6 +223,7 @@ impl EventMapper {
             }
             return Some(index);
         }
+        self.text_index = None;
         let content = assistant_content_mut(&mut self.output)?;
         let content_index = content.len();
         content.push(Content::ToolCall {
@@ -361,6 +364,7 @@ impl EventMapper {
 
     fn on_item_added(&mut self, item: &Value, events: &mut Vec<AssistantMessageEvent>) {
         match item.get("type").and_then(Value::as_str) {
+            Some("reasoning") => self.thinking_index = None,
             Some("function_call") => {
                 let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
                 let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
@@ -423,7 +427,16 @@ impl EventMapper {
         } else {
             StopReason::Stop
         };
-        self.set_stop(reason, None);
+        if self.refusal.is_empty() {
+            self.set_stop(reason, None);
+        } else {
+            // Incident: `response.refusal.*` ended the turn as an empty Stop and the loop read it
+            // as an answer with no text; the refusal is the provider's answer, named.
+            self.set_stop(
+                StopReason::Error,
+                Some(format!("The model refused: {}", self.refusal)),
+            );
+        }
         self.completed = true;
     }
 
@@ -460,6 +473,16 @@ impl EventMapper {
             "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
                 if let Some(delta) = payload.get("delta").and_then(Value::as_str) {
                     self.append_thinking(delta, &mut events);
+                }
+            }
+            "response.refusal.delta" => {
+                if let Some(delta) = payload.get("delta").and_then(Value::as_str) {
+                    self.refusal.push_str(delta);
+                }
+            }
+            "response.refusal.done" => {
+                if let Some(refusal) = payload.get("refusal").and_then(Value::as_str) {
+                    self.refusal = refusal.to_owned();
                 }
             }
             "response.output_item.added" => {
@@ -553,6 +576,7 @@ impl EventMapper {
             ));
             return events;
         }
+        crate::leak::recover_in(&mut self.output);
         let mut events = content_end_events(&mut self.output, |content_index| {
             !self
                 .tools
@@ -580,26 +604,19 @@ fn run_request(
     let mut mapper = EventMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
-    let resent = crate::request::pump_sse_with_resend(
+    let resent = match crate::request::pump_sse_with_resend(
         wire.stop,
-        || {
-            crate::request::openai_bearer_post(
-                &url,
-                model,
-                wire.api_key,
-                body,
-                wire.proxy,
-                wire.extra,
-                &retried,
-            )
-        },
+        || crate::request::openai_bearer_post(&url, model, body, wire, &retried),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
             }
-            let Ok(mut payload) = parse_json_with_repair(&sse.data) else {
+            let data = sse.data.trim();
+            if data.is_empty() {
                 return Ok(true);
-            };
+            }
+            let mut payload = parse_json_with_repair(data)
+                .map_err(|error| format!("Could not parse Responses SSE event: {error}"))?;
             if payload.get("type").is_none()
                 && let Some(kind) = sse.event.as_deref().filter(|kind| !kind.is_empty())
             {
@@ -616,8 +633,19 @@ fn run_request(
             }
             Ok(true)
         },
-    )
-    .map_err(|message| crate::request::auth_hint(&message, wire.oauth, &model.provider))?;
+    ) {
+        Ok(resent) => resent,
+        // Incident: an error after the first delta threw the turn away, because the fresh mapper in
+        // `stream` was failed instead of this one; the text and usage were billed.
+        Err(message) => {
+            let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
+                &message,
+                wire.oauth,
+                &model.provider,
+            )));
+            return Ok(());
+        }
+    };
     if let Some(first_error) = resent {
         crate::request::note_resend(&mut mapper.output, &first_error);
     }
