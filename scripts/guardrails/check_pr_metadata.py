@@ -31,12 +31,11 @@ import urllib.request
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from _common import ROOT, FREE_BAND, fail, row_key, table_rows  # noqa: E402
-from check_changes import DIR, pending  # noqa: E402
+from check_changes import DIR, LEDGER, apply_ledger, pending  # noqa: E402
 from check_commit_style import NAMED, subject_errors  # noqa: E402
 from pr_body import base_commit, diff_stats, git, sentences, surface_delta, surface_diff, surface_entry, tally  # noqa: E402
 
 ARCH = "docs/ARCHITECTURE.md"
-LEDGER = "Feature ledger"
 # `Closes apex/yi#4` is the same citation as `Closes #4`; `Closes other/repo#4`
 # is a citation of someone else's register and does not count as one here.
 # Incident: every PR body for a week ended in an assistant's generated-with footer, the
@@ -460,7 +459,8 @@ def measure():
     ref, base = base_commit()
     if base is None:
         return None, ("no origin/main or main to diff against; this gate cannot pass blind")
-    ledger = added_rows(git("show", f"{base}:{ARCH}").stdout, (ROOT / ARCH).read_text(), LEDGER)
+    lines = [line for _, fields in pending(base) for line in fields["ledger"]]
+    ledger = added_rows(git("show", f"{base}:{ARCH}").stdout, apply_ledger((ROOT / ARCH).read_text(), lines)[0], LEDGER)
     changes = [(name, (ROOT / DIR / name).read_text()) for name, _ in pending(base)]
     rows = diff_stats(base)
     return (ledger, changes, tally(rows)[2], surface_delta(base)), None

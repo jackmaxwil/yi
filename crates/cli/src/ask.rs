@@ -61,6 +61,9 @@ pub(super) fn run(args: &Args) -> i32 {
         release_lane(lane.as_deref());
         return refuse(args.json, 2, &config, &refusal);
     }
+    if args.no_tools {
+        session.set_tools(Vec::new());
+    }
     let attaching = yi_types::trace::span("ask.attach_store");
     let attached = attach_store(args, &session, &target);
     drop(attaching);
@@ -363,7 +366,7 @@ fn quota_window(text: &str) -> Option<&'static str> {
 fn final_event(deadline: bool, answered: bool, error: Option<&str>) -> serde_json::Value {
     let class = error.map(ErrorClass::from_provider_text);
     let kind = match (&class, deadline, answered) {
-        (Some(ErrorClass::Provider(what)), ..) if what == "quota" => "quota",
+        (Some(ErrorClass::ProviderQuota), ..) => "quota",
         (Some(ErrorClass::TransportTimeout), ..) => "timeout",
         (Some(_), ..) => "error",
         (None, true, _) => "deadline",
