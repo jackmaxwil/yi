@@ -147,6 +147,15 @@ class Tools(unittest.TestCase):
         self.assertTrue(rows and all(len(json.dumps(row).encode()) < 200 for row in rows), rows)
         self.assertIn("x" * 2_000, yi.tools.fetch.__doc__)
 
+    def test_a_cut_summary_names_the_cap_and_the_call_that_reads_the_rest(self) -> None:
+        catalog = copy.deepcopy(CATALOG)
+        catalog["tools"].append({"name": "fetch", "description": "Read " + "y" * 150 + ". Then more."})
+        tools._catalog = catalog
+        page = tools.search("fetch")
+        self.assertEqual(page["tools"][0]["summary"], "Read " + "y" * 114 + "…")
+        self.assertEqual(page["cut"], "[1 of 1 summaries cut to the first sentence, at most "
+                         "SUMMARY_CHARS=120; signature and whole description: help(yi.tools.<name>)]")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -202,6 +202,11 @@ def search(query: str = "", offset: int = 0, limit: int = SEARCH_LIMIT) -> dict[
     rows = [{"name": name, "summary": _summary(tool.get("description", ""))} for _, name, tool in shown]
     end = offset + len(shown)
     page = {"tools": rows, "matched": len(scored), "shown": len(shown)}
+    cut = sum(row["summary"] != tool.get("description", "").strip() for row, (_, _, tool) in zip(rows, shown))
+    if cut:
+        page["cut"] = (f"[{cut} of {len(rows)} summaries cut to the first sentence, at most "
+                       f"SUMMARY_CHARS={SUMMARY_CHARS}; signature and whole description: "
+                       f"help(yi.tools.<name>)]")
     if end < len(scored):
         page["more"] = (f"[{len(shown)} of {len(scored)} shown at limit={limit}; the rest: "
                         f"yi.tools.search({query!r}, offset={end})]")
