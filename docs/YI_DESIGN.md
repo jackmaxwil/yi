@@ -269,9 +269,12 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
-  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s.
+  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s. A
+  server wait past 60 s or `x-should-retry: false` ends the turn stamped `retry refused:`, which
+  the loop reads as final; `x-should-retry: true` retries any status.
 - `leak::recover_in` in both mappers' `finish` turns each well-formed text `<tool_call>` block
-  into a `ToolCall` (id `leak-N`) and `Stop` into `ToolUse`.
+  outside a fence or inline span into a `ToolCall` (id `leak-{clock}-{message}-{n}`) and `Stop`
+  into `ToolUse`.
 - Stable cached prefix: `read`'s description fixed per session, content-hashed fence ids, a
   minute-cached `time:`; adapters set `cache_control`, `prompt_cache_key`, cache retention.
 - yi-oauth: PKCE S256 from `/dev/urandom`, a `127.0.0.1` loopback, `login`/`logout`; tokens in
@@ -314,8 +317,9 @@ extension `Host` whose synchronous extensions turn session events into effects.
   §17.1), `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
-  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML
-  comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
+  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for whole-line
+  HTML comments and the leading, trailing or doubled blank line a removed comment leaves behind
+  rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
   granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
 - The table persists as `custom{ext_state2}` when an extension changes it: the build's own slots
