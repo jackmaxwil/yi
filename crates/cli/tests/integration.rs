@@ -20,10 +20,13 @@ mod repo;
 mod scratch;
 #[path = "support/session_files.rs"]
 mod session_files;
+#[path = "../../tui/tests/support/tool_cell.rs"]
+mod tool_cell_support;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
 
 mod acp_protocol;
+mod ask_check;
 mod browser;
 mod cli_surfaces;
 mod console_drive;
@@ -35,7 +38,9 @@ mod mcp_oauth;
 mod monkey;
 mod plan_cli;
 mod plan_ops;
-mod python_client;
 mod rpc_protocol;
 mod serve_daemon;
+mod tui_cells;
 mod tui_drive;
+#[cfg(target_os = "linux")]
+mod yi_contain;

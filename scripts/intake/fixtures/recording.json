@@ -1,0 +1,30 @@
+{
+  "recorded_at": "2026-10-28T05:53:41.803789+00:00",
+  "repository": "octocat/Hello-World",
+  "pull_request": 11636,
+  "authentication": "none; read-only unauthenticated GET requests only",
+  "endpoints": [
+    "GET /repos/octocat/Hello-World/pulls/11636",
+    "GET /repos/octocat/Hello-World/pulls/11636/commits?per_page=100",
+    "GET /repos/octocat/Hello-World/pulls/11636 with Accept: application/vnd.github.v3.patch"
+  ],
+  "base_sha": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d",
+  "head_sha": "16991ef417f2f1f5ab7ae4029ab3a4c373360907",
+  "commit_count": 1,
+  "sha256": {
+    "pull-request.json": "3dc56e36b9ac08ec70c69f739fc2f3c12e34d1fbdf5b5142ac74466032d21e3c",
+    "commits.json": "eebd95a4969840ff69a0e64b1eabedc28610482e3e0013b06eab8c4984aa0d47",
+    "pull-request.patch": "b26173ac016b48e35a7e6c19ffa8fde3145f757e24d4cbd6cf377dc6e410793b"
+  },
+  "local_signed_fixture": {
+    "producer": "git -c gpg.format=ssh commit --allow-empty -S",
+    "kind": "orphan empty-tree Ed25519 SSH-signed commit",
+    "public_key_fingerprint": "SHA256:EqY9zglJtekWC9HagB36RsYFwXdC5yOQGihNER7fNr0",
+    "private_key": "not recorded; generated under target/fixture-signing"
+  },
+  "mirror_blob_comparisons": {
+    "count": 147,
+    "producer": "git ls-tree -r and git cat-file blob over the real mirror rewrite",
+    "sha256": "df390618d0f2337400ec20683abf2be00b9e9c704ec4b8c61d66b9a55288688e"
+  }
+}
