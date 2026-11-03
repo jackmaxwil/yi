@@ -26,6 +26,7 @@ STALE_MINUTES = 80
 CLOSE_PATIENCE = 240
 INFRA_RETRIES = 2
 IDENTITY = ("-c", "user.name=yi-queue", "-c", "user.email=queue@yi")
+CI = ("-c", "user.name=yi-ci", "-c", "user.email=ci@yi")
 LANES = pr_review.GATE_LANES
 RETRY = re.compile(r"^Queue retry (\d+)\.$", re.M)
 MEMBER = re.compile(r"\(#(\d+)\) from ")
@@ -109,7 +110,7 @@ def closing(body):
 
 
 def use_driver(cwd):
-    git("config", "merge.baseline.driver", "python3 scripts/merge_baseline.py %O %A %B", cwd=cwd)
+    git("config", "merge.baseline.driver", f"{sys.executable} {ROOT / 'scripts/merge_baseline.py'} %O %A %B", cwd=cwd)
 
 
 def same_tree(base, tip, recipe):
@@ -270,18 +271,34 @@ def recipe_of(pr):
     return pr["number"], pr["head"]["sha"], pr["title"], pr["head"]["ref"]
 
 
+SUBJECT = "Record the change files main landed"
+
+
+def record_docs(tree):
+    """Run `tree`'s recorder under `tree` and list the docs paths it wrote; None when it refused."""
+    if subprocess.run((sys.executable, str(tree / "scripts/record_changes.py")), cwd=tree, check=False).returncode:
+        return None
+    return [line[3:] for line in git("status", "--porcelain", "docs", cwd=tree).stdout.splitlines()]
+
+
+def commit_record(identity, author, root=ROOT):
+    """Commit the recorder's writes under `docs` as `identity`, and return the commit's sha."""
+    git("add", "docs", cwd=root)
+    git(*identity, "commit", "-q", f"--author={author}", "-m", SUBJECT, cwd=root)
+    return git("rev-parse", "HEAD", cwd=root).stdout.strip()
+
+
 def record_main(root=ROOT):
     """Record what main has landed; False only when main moved under the push."""
     git("fetch", "-q", "origin", "main", cwd=root)
     git("checkout", "-q", "--detach", "origin/main", cwd=root)
-    if subprocess.run((sys.executable, str(root / "scripts/record_changes.py")), cwd=root, check=False).returncode:
+    written = record_docs(root)
+    if written is None:
         print("queue: the recorder refused, so main stays unrecorded; its lines above say why")
         return True
-    if not git("status", "--porcelain", "docs", cwd=root).stdout.strip():
+    if not written:
         return True
-    git("add", "docs", cwd=root)
-    # Incident: a git hook exports GIT_AUTHOR_*, which beats -c user.name, and postmerge reads this author.
-    git("-c", "user.name=yi-ci", "-c", "user.email=ci@yi", "commit", "-q", "--author=yi-ci <ci@yi>", "-m", "Record the change files main landed", cwd=root)
+    commit_record(CI, "yi-ci <ci@yi>", root)
     pushed = git("push", "-q", "origin", "HEAD:main", cwd=root, check=False)
     if not pushed.returncode:
         return True
@@ -294,16 +311,33 @@ def record_main(root=ROOT):
 
 
 def record_candidate(candidate):
-    """The tip to push and whether its record is included or needs no write; False means the recorder refused."""
-    git("checkout", "-q", "--detach", candidate)
-    if subprocess.run((sys.executable, str(ROOT / "scripts/record_changes.py")), cwd=ROOT, check=False).returncode:
+    """The tip to push and whether its record is included or needs no write; False means no record.
+
+    Invariant: main's recorder runs, never the candidate's, because this job holds the token that pushes
+    main; the candidate supplies the docs it is recorded from and never the process that runs."""
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-record-"))
+    work = tmp / "main"
+    try:
+        git("worktree", "add", "-q", "--detach", str(work), "origin/main", cwd=ROOT)
+        git("rm", "-rq", "docs", cwd=work)
+        git("checkout", candidate, "--", "docs", cwd=work)
+        git(*IDENTITY, "commit", "-q", "--allow-empty", "-m", "the candidate's docs", cwd=work)
+        written = record_docs(work)
+        kept = {path: (work / path).read_text() for path in written or [] if (work / path).is_file()}
+    finally:
+        git("worktree", "remove", "--force", str(work), cwd=ROOT, check=False)
+        shutil.rmtree(tmp, ignore_errors=True)
+    if written is None:
         print("queue: the recorder refused, so the candidate lands unrecorded; finish retries")
         return candidate, False
-    if git("status", "--porcelain", "docs").stdout.strip():
-        git("add", "docs")
-        # Invariant: the push's head stays yi-queue's, so postmerge skips the record it already contains.
-        git(*IDENTITY, "commit", "-q", "--author=yi-queue <queue@yi>", "-m", "Record the change files main landed")
-    return git("rev-parse", "HEAD").stdout.strip(), True
+    git("checkout", "-q", "--detach", candidate, cwd=ROOT)
+    for path, text in kept.items():
+        (ROOT / path).parent.mkdir(parents=True, exist_ok=True)
+        (ROOT / path).write_text(text)
+    if not kept:
+        return candidate, True
+    # Invariant: the push's head stays yi-queue's, so postmerge skips the record it already contains.
+    return commit_record(IDENTITY, "yi-queue <queue@yi>", ROOT), True
 
 
 def build(obs, mode):
@@ -434,8 +468,9 @@ def tick(mode):
     return 0
 
 
-def cmd_queue(args):
+def cmd_queue(args, mode=None):
     """Add one PR, refusing what a tick would skip; with no number, print the queue."""
+    mode = forge_pr.queue_mode() if mode is None else mode
     if args.number is None:
         pulls = order(queued_pulls())
         for pr in pulls:
@@ -449,8 +484,12 @@ def cmd_queue(args):
     if problem := eligible_problem(pr, forge_pr.jobs_of(pr)):
         print(f"queue: #{number} refused: {problem}")
         return 1
+    if mode == "off":
+        # Invariant: the workflow's own `if` skips every tick under off, so the label would land nothing.
+        print(f"queue: MERGE_QUEUE is off, so no tick reads the label; #{number} is not queued")
+        return 1
     set_label(number, LABEL, True)
-    print(f"#{number} queued; a tick lands it")
+    print(f"#{number} queued; " + ("a tick lands it" if mode == "on" else "a shadow tick says what it would land, and nothing lands"))
     return 0
 
 
@@ -575,30 +614,48 @@ def build_cases():
     return bad
 
 
+@contextlib.contextmanager
+def temp_origin(prefix):
+    """A bare origin, one clone of it with the seeded docs/ and stand-in recorder, and a clone(name) for another."""
+    with tempfile.TemporaryDirectory(prefix=prefix) as tmp:
+        tmp = pathlib.Path(tmp)
+        origin, root = tmp / "origin.git", tmp / "w"
+        subprocess.run(("git", "init", "-q", "--bare", "-b", "main", str(origin)), check=True)
+
+        def clone(name):
+            subprocess.run(("git", "clone", "-q", str(origin), str(tmp / name)), capture_output=True, check=True)
+            return tmp / name
+
+        root = clone("w")
+
+        def sh(*a, where=root):
+            return git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a, cwd=where, check=False)
+
+        (root / "docs").mkdir()
+        (root / "scripts").mkdir()
+        (root / "docs/r.txt").write_text("seed\n")
+        (root / "scripts/record_changes.py").write_text("")
+        sh("add", "."), sh("commit", "-qm", "seed"), sh("push", "-q", "origin", "HEAD:main")
+        sh("fetch", "-q", "origin", "main")
+        yield tmp, origin, root, sh, clone
+
+
+RECORDER = "import pathlib\nwith pathlib.Path('docs/r.txt').open('a') as f:\n    f.write('rë\\n')\n"
+
+
 def record_cases():
     """record_main's answers against real git: a stand-in recorder, a real push, real refusals."""
     bad = []
-    recorder = "import pathlib\nwith pathlib.Path('docs/r.txt').open('a') as f:\n    f.write('rë\\n')\n"
-    with tempfile.TemporaryDirectory(prefix="yi-record-main-") as tmp:
-        tmp = pathlib.Path(tmp)
-        origin, root, other = tmp / "origin.git", tmp / "w", tmp / "other"
-        subprocess.run(("git", "init", "-q", "--bare", "-b", "main", str(origin)), check=True)
-        for clone in (root, other):
-            subprocess.run(("git", "clone", "-q", str(origin), str(clone)), capture_output=True, check=True)
-        sh = lambda where, *a: git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a, cwd=where, check=False)
-        (root / "docs").mkdir()
-        (root / "docs/r.txt").write_text("seed\n")
-        sh(root, "add", "."), sh(root, "commit", "-qm", "seed"), sh(root, "push", "-q", "origin", "HEAD:main")
-        (root / "scripts").mkdir()
+    with temp_origin("yi-record-main-") as (tmp, origin, root, sh, clone):
+        other = clone("other")
         script = root / "scripts/record_changes.py"
         tip = lambda: git("rev-parse", "main", cwd=origin).stdout.strip()
 
-        script.write_text("")
         was = tip()
         if not record_main(root) or tip() != was:
             bad.append("nothing to record did not answer True with main unmoved")
 
-        script.write_text(recorder)
+        script.write_text(RECORDER)
         with mock.patch.dict(os.environ, {"GIT_AUTHOR_NAME": "hook", "GIT_AUTHOR_EMAIL": "hook@hook"}):
             if not record_main(root) or tip() == was:
                 bad.append("a record did not reach main")
@@ -623,12 +680,12 @@ def record_cases():
             kept = record_main(root)
         if not kept or tip() != was or "recorder refused" not in out.getvalue():
             bad.append(f"a recorder's refusal stopped the tick: {kept}, {out.getvalue()!r}")
-        script.write_text(recorder)
+        script.write_text(RECORDER)
 
         # The race itself: another pusher wins between the recorder's commit and its push.
-        sh(other, "pull", "-q", "origin", "main")
+        sh("pull", "-q", "origin", "main", where=other)
         (other / "moved.txt").write_text("moved\n")
-        sh(other, "add", "."), sh(other, "commit", "-qm", "moved")
+        sh("add", ".", where=other), sh("commit", "-qm", "moved", where=other)
         race = root / ".git/hooks/pre-push"
         race.write_text(f"#!/bin/sh\nenv -u GIT_DIR git -C '{other}' push -q origin HEAD:main\n")
         race.chmod(0o755)
@@ -638,20 +695,13 @@ def record_cases():
     return bad
 
 def landing_cases():
-    """A candidate and its record reach main through one push, with the record on the candidate."""
+    """A candidate and its record reach main through one push, and the record is main's over the candidate's docs."""
     bad = []
-    with tempfile.TemporaryDirectory(prefix="yi-land-") as tmp:
-        tmp = pathlib.Path(tmp)
-        origin, root = tmp / "origin.git", tmp / "w"
-        subprocess.run(("git", "init", "-q", "--bare", "-b", "main", str(origin)), check=True)
-        subprocess.run(("git", "clone", "-q", str(origin), str(root)), capture_output=True, check=True)
-        sh = lambda *a: git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a, cwd=root, check=False)
-        (root / "docs").mkdir()
-        (root / "scripts").mkdir()
-        (root / "docs/r.txt").write_text("seed\n")
-        (root / "scripts/record_changes.py").write_text("import pathlib\nwith pathlib.Path('docs/r.txt').open('a') as f:\n    f.write('recorded\\n')\n")
-        sh("add", "."), sh("commit", "-qm", "seed"), sh("push", "-q", "origin", "HEAD:main")
+    with temp_origin("yi-land-") as (tmp, origin, root, sh, clone):
+        (root / "scripts/record_changes.py").write_text(RECORDER)
+        sh("add", "."), sh("commit", "-qm", "recorder"), sh("push", "-q", "origin", "HEAD:main"), sh("fetch", "-q", "origin", "main")
         base = sh("rev-parse", "HEAD").stdout.strip()
+        (root / "scripts/record_changes.py").write_text("import pathlib\npathlib.Path('docs/from-the-pr.txt').write_text('x')\n")
         (root / "candidate.txt").write_text("candidate\n")
         sh("add", "."), sh("commit", "-qm", "candidate")
         candidate = sh("rev-parse", "HEAD").stdout.strip()
@@ -675,10 +725,11 @@ def landing_cases():
             bad.append("main's record commit is not on the gated candidate")
         if git("log", "-1", "--format=%an", landed, cwd=origin).stdout.strip() != "yi-queue":
             bad.append("a recorded landing's head is not yi-queue's, so postmerge would record it again")
-        if git("show", "main:docs/r.txt", cwd=origin).stdout != "seed\nrecorded\n":
+        if git("show", "main:docs/r.txt", cwd=origin).stdout != "seed\nrë\n":
             bad.append("the landing did not include the recorder's write")
+        if git("show", "main:docs/from-the-pr.txt", cwd=origin, check=False).returncode == 0:
+            bad.append("the candidate's own recorder ran inside the job that pushes main")
     return bad
-
 
 def shadow_cases():
     """Shadow's real paths with the forge stubbed: a head is announced once, and nothing lands or records."""
