@@ -371,7 +371,8 @@ fn a_bundle_past_the_cells_cap_falls_back_to_its_plain_text() {
         ),
         None,
     );
-    let kept = solo.result.clone().unwrap_or_default();
-    assert_eq!(kept.chars().count(), 256, "{kept}");
-    assert_eq!(solo.result_mime.as_deref(), Some("application/json"));
+    let kept = finish(solo, 1, false);
+    let shown = kept.result.unwrap_or_default();
+    assert!(shown.contains("DEFAULT_MAX_OUTPUT_CHARS 256"), "{shown}");
+    assert_eq!(kept.result_mime.as_deref(), Some("application/json"));
 }

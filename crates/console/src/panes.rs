@@ -2,7 +2,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_tui::colors::Theme;
 use yi_tui::diffview::{self, DiffBudget};
-use yi_types::kernel::{JSON_MIME, RESULT_MIMES};
+use yi_types::kernel::{JSON_MIME, MARKDOWN_MIME, PYTHON_MIME};
 
 /// An edit's patch names its file absolutely, while git and a model's read may name it from
 /// the repository root: one file either way.
@@ -278,10 +278,10 @@ enum Renderer {
     Text,
 }
 
-const RESULT_RENDERERS: [(&str, Renderer); RESULT_MIMES.len()] = [
-    (RESULT_MIMES[0], Renderer::Markdown),
+const RESULT_RENDERERS: [(&str, Renderer); 3] = [
+    (MARKDOWN_MIME, Renderer::Markdown),
     (JSON_MIME, Renderer::Json),
-    (RESULT_MIMES[2], Renderer::Code("python")),
+    (PYTHON_MIME, Renderer::Code("python")),
 ];
 
 fn renderer_for(mime: Option<&str>) -> Renderer {
@@ -447,6 +447,15 @@ fn markdown_rows(
     cap_rows(rows, (cap, tail, full), noun, theme)
 }
 
+/// Incident: the notebook's byte-cap notice rode inside a markdown table or fence and drew as a
+/// cell or as code; a trailing `[…` row is peeled off to draw as the pane's own muted row.
+fn split_notice(result: &str) -> (&str, Option<&str>) {
+    match result.rsplit_once('\n') {
+        Some((body, row)) if row.starts_with("[…") => (body, Some(row)),
+        _ => (result, None),
+    }
+}
+
 fn result_rows(
     result: &str,
     mime: Option<&str>,
@@ -459,7 +468,12 @@ fn result_rows(
         return Vec::new();
     }
     match renderer_for(mime) {
-        Renderer::Markdown => markdown_rows(result, &lead, shape, "result", theme),
+        Renderer::Markdown => {
+            let (body, notice) = split_notice(result);
+            let mut rows = markdown_rows(body, &lead, shape, "result", theme);
+            rows.extend(notice.map(|row| Line::styled(format!("  {row}"), theme.muted_style())));
+            rows
+        }
         Renderer::Json => match serde_json::from_str::<serde_json::Value>(result) {
             Ok(value) => {
                 let pretty =
@@ -468,11 +482,7 @@ fn result_rows(
             }
             Err(_) => {
                 let mut rows = capped(result, lead, style, None, shape, "result", theme);
-                let why = if result
-                    .rsplit('\n')
-                    .next()
-                    .is_some_and(|row| row.starts_with("[…"))
-                {
+                let why = if split_notice(result).1.is_some() {
                     "application/json result is past the cell's byte cap · the transcript holds all of it"
                 } else {
                     "application/json result did not parse as JSON · shown as text"

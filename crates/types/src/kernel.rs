@@ -81,7 +81,10 @@ pub const JSON_MIME: &str = "application/json";
 
 /// The display-bundle members a notebook draws, richest first: the rank the kernel picks a
 /// value's mime by and the renderers the console keys off, so neither list can drift alone.
-pub const RESULT_MIMES: [&str; 3] = ["text/markdown", JSON_MIME, "text/x-python"];
+pub const RESULT_MIMES: [&str; 3] = [MARKDOWN_MIME, JSON_MIME, PYTHON_MIME];
+
+pub const MARKDOWN_MIME: &str = "text/markdown";
+pub const PYTHON_MIME: &str = "text/x-python";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

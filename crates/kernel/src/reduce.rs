@@ -141,9 +141,11 @@ fn picked_result(data: &Value, max_chars: usize) -> Option<(&'static str, String
     if whole && sink.text.chars().count() <= max_chars {
         return Some((mime, sink.text));
     }
+    // Invariant: past the cap the walk's prefix is over `max_chars`, so `finish` cuts it with its
+    // notice; the notice's total is a lower bound, the walk having stopped early.
     match data.get(PLAIN_MIME).and_then(Value::as_str) {
         Some(plain) => Some((PLAIN_MIME, plain.to_owned())),
-        None => Some((mime, sink.text.chars().take(max_chars).collect())),
+        None => Some((mime, sink.text)),
     }
 }
 

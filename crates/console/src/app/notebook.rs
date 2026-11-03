@@ -800,8 +800,6 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the mime dropped between the tool's details and the cell: a declared markdown
-    /// value drew as the text it arrived in.
     /// Dies with Yi's own byte clamp read as bad JSON: a 2 KiB JSON result would be drawn flat
     /// under a row claiming the value did not parse.
     #[test]
@@ -825,6 +823,8 @@ mod tests {
         Ok(())
     }
 
+    /// Dies with the mime dropped between the tool's details and the cell: a declared markdown
+    /// value drew as the text it arrived in.
     #[test]
     fn a_cells_details_hand_its_mime_to_the_pane() -> TestResult {
         let cells = one_cell(json!({"result": "# Tide", "resultMime": "text/markdown"}));
@@ -919,6 +919,26 @@ mod tests {
                 .any(|row| row.contains("1. Crate line budgets")),
             "no list row"
         );
+        Ok(())
+    }
+
+    /// Dies with the byte-cap notice inside a markdown table: the cut lands in the table and the
+    /// notice draws as a one-cell row instead of the pane's own muted row.
+    #[test]
+    fn a_markdown_result_past_the_bytes_ends_in_the_cap_row_not_a_table_cell() -> TestResult {
+        let mut table = String::from("| tide | depth |\n|---|---|\n");
+        while table.len() < 3_000 {
+            table.push_str("| neap | 12 |\n");
+        }
+        let drawn = rows(
+            &one_cell(json!({"result": table, "resultMime": "text/markdown"})),
+            72,
+            true,
+        );
+        let cap = drawn.iter().find(|row| row.contains("bytes kept"));
+        let cap = cap.cloned().unwrap_or_default();
+        assert!(cap.trim_start().starts_with("[…"), "{drawn:#?}");
+        assert!(!cap.contains('│'), "{cap:?}");
         Ok(())
     }
 

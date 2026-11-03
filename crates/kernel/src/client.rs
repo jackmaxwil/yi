@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -367,7 +367,7 @@ impl Inner {
             content,
             &self.session,
             &self.username,
-            random_hex(16)?,
+            random_hex(Path::new("/dev/urandom"), 16)?,
             now_iso(),
         ))
     }
@@ -525,7 +525,7 @@ impl KernelManager {
                 runtime_source_dir: options.runtime_source_dir,
                 host: options.host,
                 on_progress: options.on_progress,
-                session: random_hex(16)?,
+                session: random_hex(Path::new("/dev/urandom"), 16)?,
                 state: Mutex::new(Lifecycle::Idle),
                 start_generation: AtomicU64::new(0),
                 start_lock: tokio::sync::Mutex::new(()),

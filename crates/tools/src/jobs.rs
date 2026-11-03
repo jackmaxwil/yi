@@ -108,6 +108,8 @@ struct Job {
     capture: Option<CommandCapture>,
     live: Arc<LiveOutput>,
     kill: Arc<AtomicBool>,
+    /// Invariant: set only on a running job whose owner is gone; [`Jobs::finish`] drops it.
+    retired: bool,
 }
 
 #[derive(Debug, Default)]
@@ -208,6 +210,7 @@ impl Jobs {
                 capture: None,
                 live,
                 kill,
+                retired: false,
             },
         );
         let owner = match jobs.get(&id).map(|job| &job.reaper) {
@@ -220,8 +223,12 @@ impl Jobs {
 
     fn finish(&self, id: JobId, capture: CommandCapture) {
         let mut jobs = self.lock();
-        if let Some(job) = jobs.get_mut(&id.0) {
+        let retired = jobs.get_mut(&id.0).map(|job| {
             job.capture = Some(capture);
+            job.retired
+        });
+        if retired == Some(true) {
+            jobs.remove(&id.0);
         }
         self.settles.fetch_add(1, Ordering::SeqCst);
         drop(jobs);
@@ -277,7 +284,8 @@ impl Jobs {
     }
 
     pub fn report(&self, id: JobId) -> Option<JobReport> {
-        self.lock().get(&id.0).map(|job| render(id.0, job))
+        let jobs = self.lock();
+        (jobs.get(&id.0).filter(|job| !job.retired)).map(|job| render(id.0, job))
     }
 
     /// Whether a poll returned this job's finished output, so its queued announcement is a repeat.
@@ -328,13 +336,31 @@ impl Jobs {
         }
     }
 
+    /// Stops every running job before the process that owns their watchdogs exits.
+    pub fn kill_running(&self) {
+        let ids: Vec<JobId> = (self.lock().iter())
+            .filter(|(_, job)| state(job) == JobState::Running)
+            .map(|(id, _)| JobId(*id))
+            .collect();
+        for id in ids {
+            let _settled_meanwhile_is_fine = self.kill(id);
+        }
+        let running =
+            |jobs: &mut HashMap<u64, Job>| jobs.values().any(|job| state(job) == JobState::Running);
+        drop(
+            self.settled
+                .wait_timeout_while(self.lock(), KILL_GRACE, running),
+        );
+    }
+
     pub fn retire(&self, owner: JobOwner) {
         self.lock().retain(|_, job| {
             if !owned_by(job, Some(owner)) {
                 return true;
             }
             job.kill.store(true, Ordering::SeqCst);
-            false
+            job.retired = state(job) == JobState::Running;
+            job.retired
         });
     }
 
@@ -355,6 +381,22 @@ impl Jobs {
             .map(|(id, job)| (*id, job.command.clone()))
             .collect();
         running.sort_by_key(|(id, _)| *id);
+        running.into_iter().map(|(_, command)| command).collect()
+    }
+
+    /// Stops every job still running under `root`: a discarded tree's server, a sleeping test. A
+    /// process that left its job is out of reach, and the caller's row says so.
+    pub fn kill_under(&self, root: &Path) -> Vec<String> {
+        let running: Vec<(u64, String)> = {
+            let jobs = self.lock();
+            (jobs.iter())
+                .filter(|(_, job)| job.cwd.starts_with(root) && state(job) == JobState::Running)
+                .map(|(id, job)| (*id, job.command.clone()))
+                .collect()
+        };
+        for (id, _) in &running {
+            let _settled_meanwhile = self.kill(JobId(*id));
+        }
         running.into_iter().map(|(_, command)| command).collect()
     }
 
@@ -440,9 +482,13 @@ fn render(id: u64, job: &Job) -> JobReport {
                 .map(|error| format!("\n[group kill failed: {error}]"));
             let cut = capture.cut_note().map(|note| format!("\n{note}"));
             let text = format!("{}{}", capture.stdout, capture.stderr);
+            let rows: String = (capture.rows.iter())
+                .map(|row| format!("\n{row}"))
+                .collect();
             crate::reduce::strip_ansi(&text)
                 + &cut.unwrap_or_default()
                 + &failed.unwrap_or_default()
+                + &rows
         }
         None => String::new(),
     };
@@ -518,11 +564,13 @@ pub fn interpreter() -> &'static str {
     })
 }
 
+type Contained<'a> = (&'a crate::sandbox::Sandbox, Option<&'a crate::SpawnFn>);
+
 fn start(
     shell_command: &str,
     cwd: &Path,
     cancelled: &CancelFlag,
-    sandbox: Option<&crate::sandbox::Sandbox>,
+    contained: Option<Contained<'_>>,
     reaper: Reaper,
     placed: Option<(&str, &str)>,
     spill_dir: Option<&Path>,
@@ -541,7 +589,15 @@ fn start(
     let outer = Arc::clone(cancelled);
     let stopped = Arc::clone(&kill);
     let flag: CancelFlag = Arc::new(move || stopped.load(Ordering::SeqCst) || outer());
-    let wrapped = sandbox.map(|sandbox| sandbox.wrap(interpreter(), &["-c", &text]));
+    let spawn = (contained.as_ref().and_then(|(_, spawn)| *spawn))
+        .map(|spawn| spawn(shell_command))
+        .transpose()
+        .map_err(|refused| refused.to_string())?;
+    let assign = spawn
+        .as_ref()
+        .map_or(&[][..], |spawn| spawn.assign.as_slice());
+    let wrapped = (contained.as_ref())
+        .map(|(sandbox, _)| sandbox.wrap_assigning(assign, interpreter(), &["-c", &text]));
     let mut process = match &wrapped {
         Some((program, args)) => {
             let mut process = crate::keyless_command(program);
@@ -555,6 +611,19 @@ fn start(
         }
     };
     process.current_dir(cwd);
+    let (env, after) = spawn.map_or((Vec::new(), None), |spawn| (spawn.env, Some(spawn.after)));
+    process.envs(env);
+    // Incident shape: a shared target dir read a sibling's binary as Fresh.
+    if crate::spawn::in_fresh_tree(cwd) {
+        process.env_remove("CARGO_TARGET_DIR");
+        if std::env::var_os("CARGO_INCREMENTAL").is_none() {
+            process.env("CARGO_INCREMENTAL", "0");
+        }
+    }
+    let mut first_rows = Vec::new();
+    if !crate::builtins::read_only_command(shell_command) {
+        first_rows = crate::spawn::run_first_use(cwd);
+    }
     let (child, program) = spawn_captured(process, false)?;
     let id = registry().insert(
         shell_command,
@@ -565,7 +634,7 @@ fn start(
     );
     let spill_dir = spill_dir.map(Path::to_path_buf);
     std::thread::spawn(move || {
-        let capture = run_child_captured_live(
+        let mut capture = run_child_captured_live(
             child,
             &program,
             None,
@@ -574,13 +643,16 @@ fn start(
             Some(live),
             spill_dir.as_deref(),
         );
+        first_rows.extend(after.map(|after| after()).unwrap_or_default());
+        if let Ok(capture) = &mut capture {
+            capture.rows = first_rows;
+        }
         // Invariant: before the job settles, so a lane settle never reads a job gone quiet
         // while what it started in a container still writes the tree.
         if let (Ok(capture), Some(sweep)) = (&capture, &sweep)
             && capture.cancelled
         {
-            let _swept_or_gone_with_the_container =
-                command(interpreter()).arg("-c").arg(sweep).output();
+            run_sweep(sweep);
         }
         if let Ok(capture) = &capture {
             registry().finish(id, capture.clone());
@@ -588,6 +660,25 @@ fn start(
         let _receiver_may_be_gone = sender.send(capture);
     });
     Ok((id, receiver))
+}
+
+/// What a killed `docker exec` left behind. Incident: an engine asleep answers nothing, so a
+/// sweep on a caller's own thread held a check past the deadline it had just hit.
+pub fn run_sweep_within(sweep: &str, bound: Option<Duration>) {
+    let mut process = command(interpreter());
+    process.arg("-c").arg(sweep);
+    let until = bound.and_then(|bound| std::time::Instant::now().checked_add(bound));
+    let past: CancelFlag =
+        Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
+    let _swept_or_gone_with_the_container =
+        crate::process::run_captured(process, None, &past, OUTPUT_CAP);
+}
+
+/// The bound the check path sweeps under, since the sweep runs on the thread that owes an answer.
+pub const SWEEP_BOUND: Duration = Duration::from_secs(5);
+
+pub fn run_sweep(sweep: &str) {
+    run_sweep_within(sweep, None);
 }
 
 /// `docker exec` of `command` under `sh -c` in `cwd` inside `container`, quoted for the host
@@ -620,12 +711,13 @@ pub fn spawn_job(
     cwd: &Path,
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
+    spawn: Option<&crate::SpawnFn>,
 ) -> Result<JobId, String> {
     start(
         shell_command,
         cwd,
         cancelled,
-        sandbox,
+        sandbox.map(|sandbox| (sandbox, spawn)),
         Reaper::Handle,
         None,
         None,
@@ -648,7 +740,7 @@ pub fn run_or_background(
         shell_command,
         &context.cwd,
         &context.cancelled,
-        sandbox,
+        sandbox.map(|sandbox| (sandbox, context.spawn.as_ref())),
         // Invariant: held until the call hands the turn back, or its output is announced twice.
         Reaper::Poller {
             reported: true,
@@ -696,6 +788,7 @@ pub fn run_or_background(
                         cut: None,
                         kill_error: None,
                         spill: None,
+                        rows: Vec::new(),
                     })))
                 }
             }
@@ -807,6 +900,7 @@ mod tests {
             cut: None,
             spill: None,
             kill_error: None,
+            rows: Vec::new(),
         }
     }
 
@@ -838,7 +932,7 @@ mod tests {
     #[test]
     fn output_is_readable_before_the_job_exits() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("printf hello; sleep 300", &dir, &never(), None)?;
+        let id = spawn_job("printf hello; sleep 300", &dir, &never(), None, None)?;
         let chunk = poll_until(|| {
             let chunk = registry().output_since(id, 0).ok()?;
             chunk.text.contains("hello").then_some(chunk)
@@ -864,6 +958,7 @@ mod tests {
             ),
             &dir,
             &never(),
+            None,
             None,
         )?;
         let first = poll_until(|| {
@@ -891,7 +986,7 @@ mod tests {
     #[test]
     fn kill_stops_a_sleeper_and_reports_killed() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("sleep 300", &dir, &never(), None)?;
+        let id = spawn_job("sleep 300", &dir, &never(), None, None)?;
         assert_eq!(registry().kill(id)?, KillOutcome::Signalled);
         assert_eq!(settled(id)?, Outcome::Killed);
         let report = registry().release(id)?;
@@ -900,10 +995,83 @@ mod tests {
         Ok(())
     }
 
+    /// Incident: `yi acp` retired every session before the exit sweep ran, so a retired
+    /// owner's running job was already gone from the map and the sweep returned at once.
+    #[test]
+    fn a_retired_owners_running_job_is_still_waited_on_at_exit() -> Fallible {
+        let jobs = Jobs::default();
+        let owner = JobOwner::mint();
+        let kill = Arc::new(AtomicBool::new(false));
+        let reaper = Reaper::Poller {
+            reported: false,
+            owner: Some(owner),
+        };
+        let at = (Path::new("/yi-jobs-test/retired"), None);
+        let id = jobs.insert("sleep 300", at, reaper, Arc::default(), Arc::clone(&kill));
+        jobs.retire(owner);
+        assert!(
+            kill.load(Ordering::SeqCst),
+            "retire left the job unsignalled"
+        );
+        let settled = AtomicBool::new(false);
+        let mut waited = false;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                settled.store(true, Ordering::SeqCst);
+                let cancelled = CommandCapture {
+                    cancelled: true,
+                    ..exited()
+                };
+                jobs.finish(id, cancelled);
+            });
+            jobs.kill_running();
+            waited = settled.load(Ordering::SeqCst);
+        });
+        assert!(waited, "the sweep returned before the job settled");
+        assert!(
+            jobs.report_for(id, Some(owner)).is_none(),
+            "a settled retired job lingered"
+        );
+        Ok(())
+    }
+
+    /// Incident: a kernel bridge `exec.spawn` shell outlived `yi`; once the process is gone
+    /// nothing can release or kill it, so the exit sweep must reach handle jobs too.
+    #[test]
+    fn the_exit_sweep_stops_a_handle_job() -> Fallible {
+        let jobs = Jobs::default();
+        let kill = Arc::new(AtomicBool::new(false));
+        let at = (Path::new("/yi-jobs-test/exit-sweep"), None);
+        let id = jobs.insert(
+            "sleep 300",
+            at,
+            Reaper::Handle,
+            Arc::default(),
+            Arc::clone(&kill),
+        );
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _signalled = poll_until(|| kill.load(Ordering::SeqCst).then_some(()));
+                let cancelled = CommandCapture {
+                    cancelled: true,
+                    ..exited()
+                };
+                jobs.finish(id, cancelled);
+            });
+            jobs.kill_running();
+        });
+        assert!(
+            kill.load(Ordering::SeqCst),
+            "the sweep left a handle job running"
+        );
+        Ok(())
+    }
+
     #[test]
     fn kill_after_exit_is_a_no_op() -> Fallible {
         let dir = Scratch::new("yi-jobs")?;
-        let id = spawn_job("exit 3", &dir, &never(), None)?;
+        let id = spawn_job("exit 3", &dir, &never(), None, None)?;
         let exited = Outcome::Exited { code: Some(3) };
         assert_eq!(settled(id)?, exited);
         assert_eq!(registry().kill(id)?, KillOutcome::AlreadySettled(exited));
@@ -1071,6 +1239,7 @@ mod tests {
                 cut: None,
                 spill: None,
                 kill_error: Some("/bin/sh: No such file or directory".to_owned()),
+                rows: Vec::new(),
             },
         );
         let report = registry().release(id)?;
@@ -1129,6 +1298,7 @@ mod tests {
             "awk 'BEGIN{for(i=0;i<5000;i++) print \"0123456789\"}'",
             &dir,
             &never(),
+            None,
             None,
         )?;
         settled(id)?;

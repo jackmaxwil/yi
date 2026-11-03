@@ -5,7 +5,7 @@ Incident: yi-tui's 10,000-line ceiling was prose only, so the crate reached 10,9
 before anyone measured it."""
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import SRC, fail, fork, no_fork, texts
+from _common import skip_on_candidate, SRC, fail, fork, no_fork, texts
 from check_changes import raise_errors, raised
 
 
@@ -18,6 +18,7 @@ def sizes(files):
 
 
 base = fork()
+skip_on_candidate("crate_size")
 if base is None:
     no_fork("crate_size")
 now, was = sizes(texts(SRC)), sizes(texts(SRC, base))

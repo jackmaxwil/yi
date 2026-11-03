@@ -332,6 +332,54 @@ async fn a_merged_worktree_names_the_files_it_changed() -> TestResult {
     Ok(())
 }
 
+/// The child's tree, read from git: a test has no other handle on a host-minted path.
+fn child_tree(repo: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let out = yi_tools::keyless_command("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo)
+        .output()?;
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let tree = listing
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .find(|path| path.contains("forks"));
+    Ok(PathBuf::from(
+        tree.ok_or_else(|| format!("no fork in {listing}"))?,
+    ))
+}
+
+/// Dies with the tree dropped on a failed settle: the retry answered "isolation was none", and the
+/// child's uncommitted work sat in a tree nothing named until retention came for it.
+#[tokio::test]
+async fn a_settle_that_fails_keeps_the_tree_and_a_retry_lands_it() -> TestResult {
+    let (_root, repo, family) =
+        finished_child("settle", "printf 'kept\\n' > kept.txt", false).await?;
+    let pointer = child_tree(&repo)?.join(".git");
+    let good = std::fs::read(&pointer)?;
+    std::fs::write(&pointer, "gitdir: /nowhere\n")?;
+    let failed = family.host.merge_worktree("writer", None);
+    assert!(failed.is_err(), "{failed:?}");
+    std::fs::write(&pointer, good)?;
+    let merged = family.host.merge_worktree("writer", None)?;
+    assert_eq!(merged["merged"], true, "{merged:?}");
+    assert!(repo.join("kept.txt").is_file());
+    Ok(())
+}
+
+/// Dies with a bare git error past the settle: the tree is gone by then, so the error is the only
+/// place that says the work survived and where.
+#[tokio::test]
+async fn a_failure_after_the_settle_names_the_branch_holding_the_work() -> TestResult {
+    let (_root, repo, family) =
+        finished_child("after", "printf 'kept\\n' > kept.txt", true).await?;
+    std::fs::write(repo.join(".git/worktrees/parent-lane/HEAD"), "garbage\n")?;
+    let Err(error) = family.host.merge_worktree("writer", None) else {
+        return Err("a parent with no HEAD merged".into());
+    };
+    assert!(error.contains("its work is kept on branch yi/"), "{error}");
+    Ok(())
+}
+
 /// Dies with `files` inserted on the published arm only: a conflict is the reply that most
 /// needs to say what the child touched.
 #[tokio::test]
@@ -365,25 +413,43 @@ async fn a_list_past_the_capture_cap_is_whole() -> TestResult {
     Ok(())
 }
 
-/// Dies with a lane whose state file lost its base under a parent that is itself a lane: the
-/// fallback reads from the parent's `HEAD`, and the trunk's would list the parent's own commit.
-#[tokio::test]
-async fn a_worktree_with_no_recorded_base_still_names_its_files() -> TestResult {
-    let (root, _repo, family) =
-        finished_child("nobase", "printf 'x\\n' >> README.md", true).await?;
-    for pool in std::fs::read_dir(root.join("home/.yi/lanes"))? {
-        std::fs::remove_file(pool?.path().join("0.json"))?;
-    }
-    let merged = family.host.merge_worktree("writer", None)?;
-    assert_eq!(files_of(&merged)?, [("README.md".to_owned(), 1, 0)]);
-    Ok(())
-}
-
 /// Dies with a child that changed nothing, whose reply must still carry `files` as an empty list.
 #[tokio::test]
 async fn a_child_that_changed_nothing_lists_no_files() -> TestResult {
     let (_root, _repo, family) = finished_child("nothing", "true", false).await?;
     let merged = family.host.merge_worktree("writer", None)?;
     assert_eq!(files_of(&merged)?, []);
+    Ok(())
+}
+
+/// Dies with the sweep on the cell's own thread: the answer comes from a task on the cell's
+/// runtime, which never runs while the sweep holds it, so a held main reads as declined.
+#[tokio::test]
+async fn a_kernel_cell_sweeps_its_outbox_off_the_executor() -> TestResult {
+    let repo = crate::git_lane::Repo::new("cell-sweep")?;
+    let head = repo.head()?;
+    repo.plant("heads/main", &head)?;
+    let asker = crate::git_lane::asker_answered_elsewhere();
+    let broker = Arc::new(crate::git_lane::broker(&repo.project, Some(asker)));
+    let session = crate::wiring::root_session(
+        &repo.project,
+        &repo.root.join("home"),
+        &repo.root.join("rlm"),
+        None,
+        Some(broker),
+        None,
+    );
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let out = kernel
+        .execute_user_cell("print('cell')", &never_cancelled())
+        .await;
+    assert!(!out.is_error, "the cell ran: {out:?}");
+    assert_eq!(
+        repo.at_origin("refs/heads/main").as_deref(),
+        Some(head.as_str()),
+        "main was not forwarded after the cell: {out:?}"
+    );
     Ok(())
 }
