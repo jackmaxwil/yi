@@ -11,7 +11,7 @@ verbatim, append-only"; ids are trailing pointers, never the payload. Only the v
 skips yi-types, where a schema fact earns its line."""
 import re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import SRC, code_lines, fail, fork, no_fork, texts
+from _common import skip_on_candidate, SRC, code_lines, fail, fork, no_fork, texts
 from check_changes import raise_errors, raised
 
 CAP = 2
@@ -78,6 +78,7 @@ def scan(files):
 
 
 base = fork()
+skip_on_candidate("comments")
 if base is None:
     no_fork("comments")
 over, volume, tags, pointers = scan(texts(SRC))

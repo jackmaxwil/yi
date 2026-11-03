@@ -811,6 +811,51 @@ fn a_whole_plan_set_lands_and_each_unreachable_row_says_why() -> TestResult {
     Ok(())
 }
 
+/// Dies with the repair loop journaling a refusal per pass: a set carrying three repairable graph
+/// problems wrote one refusal record for each pass before the set landed.
+#[test]
+fn a_whole_plan_set_repaired_three_times_journals_one_record() -> TestResult {
+    let rig = rig("apply-repair-journal")?;
+    opened(&rig, json!([{"label": "keep"}]))?;
+    let rows = json!([
+        {"label": "keep"},
+        {"label": "Survey", "after": ["Build"]},
+        {"label": "Build", "after": ["Survey"]},
+        {"label": "Ship", "after": ["missing"]},
+        {"label": "Note"},
+        {"label": "Note"},
+    ]);
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": rows}));
+    assert!(!refused, "{text}");
+    let id = rig.store.roots()?.into_iter().next().ok_or("no plan")?;
+    let records = rig.store.journal(&id).read()?.records;
+    let ops: Vec<&str> = records
+        .iter()
+        .map(|record| record.record.op.as_str())
+        .collect();
+    assert_eq!(
+        ops,
+        ["init", "set"],
+        "one record per applied op and none per repair pass"
+    );
+    Ok(())
+}
+
+/// Dies with a goal-less first set refused: with no plan open the dry pass saw no plan, skipped
+/// the repair, and the real apply refused the dangling `after` it used to repair.
+#[test]
+fn a_goalless_set_on_an_empty_store_is_repaired_and_journals_two_records() -> TestResult {
+    let rig = rig("apply-repair-open")?;
+    let rows = json!([{"label": "Ship", "after": ["missing"]}]);
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": rows}));
+    assert!(!refused, "{text}");
+    let id = rig.store.roots()?.into_iter().next().ok_or("no plan")?;
+    let records = rig.store.journal(&id).read()?.records;
+    let ops: Vec<&str> = records.iter().map(|r| r.record.op.as_str()).collect();
+    assert_eq!(ops, ["init", "set"]);
+    Ok(())
+}
+
 /// Dies with a stale-view refusal on a repeated set: the same whole plan sent twice is the same
 /// plan, so the second call lands with nothing to say.
 #[test]

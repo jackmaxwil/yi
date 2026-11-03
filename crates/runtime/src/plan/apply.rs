@@ -179,7 +179,6 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             "the `list` checklist was left out: the `todos` rows state the whole plan".to_owned(),
         );
     }
-    let mut open = None;
     for _ in 0..REPAIRS {
         set.insert(
             "todos".to_owned(),
@@ -187,28 +186,31 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
                 .map(|(row, _)| Value::Object(row.clone()))
                 .collect(),
         );
-        let issue = match tool.apply(&set) {
-            Ok(text) => {
-                let notes = text.lines().filter_map(|line| line.strip_prefix("note: "));
-                conditions.extend(notes.map(str::to_owned));
-                open = None;
-                break;
-            }
+        let issue = match dry(tool, &set) {
+            Ok(()) => break,
             Err(PlanToolError::Op(PlanOpError::LabelNotUnique { label })) => {
                 PlanIssue::DuplicateLabel { label }
             }
             Err(PlanToolError::Op(PlanOpError::Invalid { issue })) => issue,
-            Err(error) => return Err(error),
+            Err(_) => break,
         };
         let Some(note) = repair(&mut rows, &issue) else {
-            return Err(PlanOpError::Invalid { issue }.into());
+            break;
         };
         conditions.push(note);
-        open = Some(issue);
     }
-    if let Some(issue) = open {
-        return Err(PlanOpError::Invalid { issue }.into());
-    }
+    set.insert(
+        "todos".to_owned(),
+        rows.iter()
+            .map(|(row, _)| Value::Object(row.clone()))
+            .collect(),
+    );
+    let text = tool.apply(&set)?;
+    conditions.extend(
+        text.lines()
+            .filter_map(|line| line.strip_prefix("note: "))
+            .map(str::to_owned),
+    );
     for op in rows.iter().flat_map(|(_, moves)| moves) {
         let label = op.get("label").and_then(Value::as_str).unwrap_or_default();
         match tool.apply(op.as_object().unwrap_or(&Map::new())) {
@@ -227,6 +229,14 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
     }
     let text = tool.apply(&view)?;
     Ok(noted(text, conditions))
+}
+
+/// The set as the reducer would take it, journaled nowhere: a pass that cannot land costs no
+/// record, so the apply above writes the one refusal the call ends on.
+fn dry(tool: &PlanTool, set: &Map<String, Value>) -> Result<(), PlanToolError> {
+    let (request, _) = super::tool::declared(tool.actor(), set)?;
+    let (request, _) = keep_omitted(tool.engine(), request, &mut Vec::new());
+    tool.engine().dry(request).map_err(Into::into)
 }
 
 /// The ops that move a row where `set` cannot: out of a failed or blocked state, into a state the

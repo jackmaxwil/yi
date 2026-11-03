@@ -3,9 +3,10 @@ use yi_types::plan::canonical::{ArtifactRef, Digest, canonical_bytes};
 use yi_types::plan::contract::MANIFEST_FORMAT;
 use yi_types::plan::ids::INLINE_NOTE_MAX_BYTES;
 
-use yi_types::plan::doc::{Isolation, PlanId, PlanState, Todo, TodoLabel, TodoState};
+use yi_types::plan::doc::{GoalText, Isolation, PlanId, PlanState, Todo, TodoLabel, TodoState};
 
 use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
+use super::state::{self, Decided, RootState, root_of};
 use super::tool::ArgError;
 
 pub(super) const NOTE_REF: &str = "note_ref";
@@ -293,5 +294,41 @@ impl PlanEngine {
             }
         }
         Ok(())
+    }
+}
+
+impl PlanEngine {
+    /// The op as the reducer would take it, written nowhere: `set`'s repair loop asks this for
+    /// each pass, so only the refusal the call ends on is journaled.
+    pub fn dry(&self, request: OpRequest) -> Result<(), PlanOpError> {
+        let OpRequest { plan, op, .. } = request;
+        let (id, mut probe) = match self.resolve(plan) {
+            Ok(id) => {
+                let root = root_of(&id)?;
+                (id, self.store.load(&root, false)?.state)
+            }
+            Err(error) => {
+                let Op::Set { goal, rows } = &op else {
+                    return Err(error);
+                };
+                let goal = match (goal, rows.first()) {
+                    (Some(goal), _) => goal.clone(),
+                    (None, Some(row)) => {
+                        GoalText::new(row.spec.label.to_string()).map_err(PlanOpError::Doc)?
+                    }
+                    (None, None) => return Err(error),
+                };
+                let goal = &goal;
+                let id = self.store.allocate(goal).map_err(PlanOpError::from)?;
+                let init = Op::Init {
+                    goal: goal.clone(),
+                    todos: rows.iter().map(|row| row.spec.clone()).collect(),
+                };
+                let mut probe = RootState::default();
+                state::apply_op(&mut probe, &id, &init, &Decided::default())?;
+                (id, probe)
+            }
+        };
+        state::apply_op(&mut probe, &id, &op, &Decided::default()).map(drop)
     }
 }

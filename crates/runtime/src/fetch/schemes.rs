@@ -357,6 +357,30 @@ impl Resolver {
 
     /// `tree://<agent>/<path>`: a file in a family member's own checkout, read-only and walled
     /// by the reader's `deny_read` (D164).
+    /// `tree://<name>/`: what that tree changed, one file a row, paged like any other source.
+    pub(super) fn resolve_tree_rows(&self, url: &Url, page: Option<Page>) -> Paged {
+        let name = url.path().trim_end_matches('/');
+        let Some(trees) = self.member_trees() else {
+            return Err(unsupported(
+                url,
+                "this session has no family to read trees of",
+            ));
+        };
+        let rows = trees
+            .diff_rows(name)
+            .map_err(|detail| FetchError::NotFound {
+                url: url.to_string(),
+                what: detail,
+            })?;
+        let text = rows.join("\n");
+        let served_by = format!("member-tree {name}");
+        let Some(page) = page else {
+            return Ok((text, served_by, None));
+        };
+        let (text, next) = page.bytes(&text);
+        Ok((text, served_by, next))
+    }
+
     pub(super) fn resolve_tree(&self, url: &Url) -> Result<Served, FetchError> {
         let Some((agent, rel)) = url.path().split_once('/') else {
             return Err(FetchError::BadAddress {
@@ -934,7 +958,7 @@ mod tests {
         let workspace = Scratch::new("yi-schemes-mcp")?;
         let contents = r#"{"contents":[{"uri":"issue-42","text":"open"}]}"#;
         let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
-            .with_mcp_read(Arc::new(StubMcp(Ok(contents.to_owned()))));
+            .with_mcp_read(Some(Arc::new(StubMcp(Ok(contents.to_owned())))));
         let url: Url = "mcp://github/issue-42".parse()?;
         let fetched = resolver.fetch(&url)?;
         assert_eq!(fetched.text, contents);
@@ -944,9 +968,9 @@ mod tests {
             resolver.fetch(&serverless),
             Err(FetchError::BadAddress { .. })
         ));
-        let failing = Resolver::new(workspace.to_path_buf(), Wall::default()).with_mcp_read(
+        let failing = Resolver::new(workspace.to_path_buf(), Wall::default()).with_mcp_read(Some(
             Arc::new(StubMcp(Err("@github: resources/read failed".to_owned()))),
-        );
+        ));
         assert!(matches!(
             failing.fetch(&url),
             Err(FetchError::Backend { .. })
