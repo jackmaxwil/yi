@@ -149,6 +149,41 @@ pub(crate) fn headed(summary: &str, text: &str) -> String {
     if same { reply } else { text.to_owned() }
 }
 
+/// The words the prompt teaches a reply's first line to open with, each in one place so the todo
+/// gate and the answer tool cannot disagree on what a status line is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatusLine {
+    Problem,
+    Ready,
+    Done,
+}
+
+impl StatusLine {
+    pub(crate) const ALL: [StatusLine; 3] =
+        [StatusLine::Problem, StatusLine::Ready, StatusLine::Done];
+
+    pub(crate) fn of(text: &str) -> Option<Self> {
+        let first = (text.split(|c: char| !c.is_alphanumeric())).find(|word| !word.is_empty())?;
+        Self::ALL
+            .into_iter()
+            .find(|line| first.eq_ignore_ascii_case(line.word()))
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            StatusLine::Problem => "problem",
+            StatusLine::Ready => "ready",
+            StatusLine::Done => "done",
+        }
+    }
+
+    /// Invariant: a `Problem:` or `Ready:` line over a reply already on screen would replace the
+    /// body a parent reads or print the reply twice; a `Done:` line is the one that stands.
+    pub(crate) fn hides_a_standing_reply(self) -> bool {
+        matches!(self, StatusLine::Problem | StatusLine::Ready)
+    }
+}
+
 /// The `summary` and `text` of an `answer` call the turn made, the text None for a call without one.
 fn answer_call(message: &AgentMessage) -> Option<(String, Option<String>)> {
     let AgentMessage::Assistant { content, .. } = message else {

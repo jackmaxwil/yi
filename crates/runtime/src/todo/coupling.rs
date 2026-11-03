@@ -427,14 +427,9 @@ pub const EMPTY_STOP_TEXT: &str =
 
 pub const DONE_BLOCKED_TEXT: &str = "An item is still blocked, so this reply cannot open with Done. Open it with Problem: or Ready: and name what the item waits on.";
 
-pub(crate) fn opens_with(text: &str, words: &[&str]) -> bool {
-    (text.split(|c: char| !c.is_alphanumeric()))
-        .find(|word| !word.is_empty())
-        .is_some_and(|first| words.iter().any(|word| first.eq_ignore_ascii_case(word)))
-}
-
 fn says_done(text: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(text).is_err() && opens_with(text, &["done"])
+    serde_json::from_str::<serde_json::Value>(text).is_err()
+        && crate::session::StatusLine::of(text) == Some(crate::session::StatusLine::Done)
 }
 
 fn text_of(message: &AgentMessage) -> String {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 
-use crate::session::AnswerHandle;
+use crate::session::{AnswerHandle, StatusLine};
 
 const ANSWER_ECHO_BYTES: usize = 4096;
 const HELD: &str = "The answer is held, not shown. Fix what this names, patch any draft below with `edit`, then call `answer` with only `summary`, or with a new `text`.";
@@ -58,9 +58,9 @@ impl AnswerTool {
     /// Invariant: a reply on screen is kept as written or replaced by a new `text`; a status line
     /// under it is all a parent reads, and one over it prints the reply twice.
     fn stand(&self, line: &str, draft: &str) -> ToolOutput {
-        let lost = crate::todo::coupling::opens_with(line, &["problem", "ready"])
+        let hidden = StatusLine::of(line).is_some_and(StatusLine::hides_a_standing_reply)
             && crate::session::headed(line, draft) != draft;
-        let refusal = (lost.then(|| "This status line would not be shown.".to_owned()))
+        let refusal = (hidden.then(|| "This status line would not be shown.".to_owned()))
             .or_else(|| self.handle.judge(draft));
         if let Some(refusal) = refusal {
             return error_output(format!("{refusal}\n{}", crate::session::FINISH));
