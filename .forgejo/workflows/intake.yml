@@ -7,12 +7,15 @@ on:
   #   - cron: "*/20 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   poll:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the dry run reads history and pushes nothing.
         with:
           fetch-depth: 0
       - run: |

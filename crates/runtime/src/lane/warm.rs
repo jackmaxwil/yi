@@ -127,6 +127,7 @@ fn temp_index(tree: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let name = format!("yi-check-index-{}-{n}", std::process::id());
+    // nosemgrep: yi-rust-temp-dir the pid and a process counter make every index name unique.
     std::env::temp_dir().join(tree.file_name().map_or_else(
         || name.clone(),
         |dir| format!("{name}-{}", dir.to_string_lossy()),
