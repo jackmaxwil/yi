@@ -1,0 +1,43 @@
+{
+  "label_max": 80,
+  "retry_cap": 8,
+  "legal_from": {
+    "start": [
+      "pending"
+    ],
+    "block": [
+      "pending",
+      "running"
+    ],
+    "drop": [
+      "pending",
+      "blocked"
+    ],
+    "add_edge": [
+      "pending",
+      "blocked",
+      "done",
+      "failed"
+    ],
+    "done": [
+      "running"
+    ],
+    "fail": [
+      "running"
+    ],
+    "decompose": [
+      "running"
+    ],
+    "accepted_by_user": [
+      "running",
+      "blocked",
+      "failed"
+    ],
+    "unblock": [
+      "blocked"
+    ],
+    "retry": [
+      "failed"
+    ]
+  }
+}
