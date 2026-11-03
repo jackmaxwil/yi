@@ -235,23 +235,8 @@ fn instruction_text(content: &str) -> String {
         let line = line.trim();
         line.starts_with("<!--") && line.find("-->") == line.len().checked_sub(3)
     };
-    let mut kept: Vec<&str> = Vec::new();
-    let mut removed_comment = false;
-    for line in content.lines() {
-        if is_comment(&line) {
-            removed_comment = true;
-            continue;
-        }
-        let blank = line.trim().is_empty();
-        if blank && removed_comment && kept.last().is_some_and(|prev| prev.trim().is_empty()) {
-            removed_comment = false;
-            continue;
-        }
-        if !blank {
-            removed_comment = false;
-        }
-        kept.push(line);
-    }
+    let mut kept: Vec<&str> = content.lines().filter(|line| !is_comment(line)).collect();
+    kept.dedup_by(|a, b| a.trim().is_empty() && b.trim().is_empty());
     match (
         kept.iter().position(|line| !line.trim().is_empty()),
         kept.iter().rposition(|line| !line.trim().is_empty()),
