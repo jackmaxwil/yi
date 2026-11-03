@@ -2,10 +2,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yi_context::{
-    Preparation, Settings, Tokens, compose_summary, convert_to_llm, drop_internal,
-    estimate_context, estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
+    Preparation, Settings, Tokens, compose_summary, drop_internal, estimate_context,
+    estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
     serialize_conversation, should_compact,
 };
+
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
@@ -55,17 +56,39 @@ impl std::fmt::Display for Elision {
     }
 }
 
+/// What `Compactor::maybe_compact` did: the history was replaced, nothing was due, or another
+/// compaction already held the session's one slot.
+pub enum Compacted {
+    Applied(Replacement),
+    NotDue,
+    Busy,
+}
+
+impl Compacted {
+    /// The outcome of a call that replaced nothing: a refusal names itself, so `/compact` does
+    /// not read as nothing to do.
+    pub fn outcome(&self) -> CompactOutcome {
+        if matches!(self, Self::Busy) {
+            CompactOutcome::Busy
+        } else {
+            CompactOutcome::NotApplied
+        }
+    }
+}
+
 /// What `AgentSession::compact_now` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactOutcome {
     NotApplied,
     Summarized,
     Elided(Elision),
+    /// Another compaction was in flight and this request left the history to it.
+    Busy,
 }
 
 impl CompactOutcome {
     pub fn applied(&self) -> bool {
-        *self != Self::NotApplied
+        matches!(self, Self::Summarized | Self::Elided(_))
     }
 }
 
@@ -91,13 +114,14 @@ fn carried(summary: &str) -> &str {
     body.get(..end).unwrap_or(body).trim()
 }
 
-fn prefix_tokens(loop_request: &LoopRequest) -> Tokens {
-    let tools = loop_request
-        .tools
-        .as_ref()
-        .and_then(|tools| serde_json::to_string(tools).ok())
-        .unwrap_or_default();
-    text_tokens(&loop_request.system_prompt).saturating_add(text_tokens(&tools))
+fn left(messages: &[AgentMessage]) -> u64 {
+    wide(
+        messages
+            .iter()
+            .map(estimate_message)
+            .fold(Tokens(0), Tokens::saturating_add),
+    )
+    .0
 }
 
 /// The earliest cut point from which the rest of `messages` fits `budget`.
@@ -118,6 +142,9 @@ pub(crate) fn fitting_start(messages: &[AgentMessage], budget: Tokens) -> Option
 /// The custom type of every compaction notice and marker: a note, never a turn of its own.
 pub const COMPACTION_NOTICE: &str = "compaction_notice";
 
+/// `compaction.render`: 1 composes the checkpoint from the view and the file lists alone.
+pub const RENDER: u8 = 0;
+
 /// Why a due compaction left the history as it was; the text is the notice the model reads.
 #[derive(Debug, thiserror::Error)]
 pub enum CompactError {
@@ -135,13 +162,17 @@ impl Drop for Closing {
     }
 }
 
+/// The loop's view stage, cuts included: the compaction sends the bytes the loop last sent.
+pub type Convert = Arc<dyn Fn(&[AgentMessage]) -> Vec<AgentMessage> + Send + Sync>;
+
 /// What the loop sends beside its messages (its tool choice past the first request is none): a
 /// compaction on the session's model sends the same, so its prefix is a cache read (design §7).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LoopRequest {
     pub system_prompt: String,
     pub tools: Option<Vec<ToolDef>>,
     pub effort: Effort,
+    pub convert: Convert,
 }
 
 impl LoopRequest {
@@ -150,12 +181,14 @@ impl LoopRequest {
         system_prompt: String,
         tools: &[Arc<dyn yi_loop::AgentTool>],
         effort: Effort,
+        convert: Convert,
     ) -> Self {
         let tools: Vec<ToolDef> = tools.iter().map(|tool| tool.definition()).collect();
         Self {
             system_prompt,
             tools: (!tools.is_empty()).then_some(tools),
             effort,
+            convert,
         }
     }
 }
@@ -211,14 +244,14 @@ pub fn loop_hook(
                 .await;
             drop(closing);
             match replaced {
-                Ok(Some(replaced)) => {
+                Ok(Compacted::Applied(replaced)) => {
                     if let Some(elision) = &replaced.elision {
                         elided(elision);
                     }
                     compacted();
                     Some(replaced.messages)
                 }
-                Ok(None) => None,
+                Ok(Compacted::NotDue | Compacted::Busy) => None,
                 Err(error) => {
                     gave_up.store(true, Ordering::Relaxed);
                     failed(&error);
@@ -255,10 +288,13 @@ pub struct Compactor {
     /// The newest reply with a usage that the latest compaction kept: its count is the history
     /// before that compaction, so `due` does not read it (D338).
     stale: Mutex<Option<AgentMessage>>,
+    /// `compaction.render`: 1 spends no summarizer request on a checkpoint, so what it composes
+    /// is the view and the file lists a summary would have been prefixed with anyway.
+    pub render: bool,
     /// `compaction.at` in tokens, 0 when unset: due once the request passes it, if that comes
     /// before the window's reserve.
     ceiling: AtomicU64,
-    /// Invariant: the request a compaction left, prefix included, in tokens; 0 before the first.
+    /// Invariant: the messages a compaction left, at bytes/3 without the prefix; 0 before the first.
     /// Incident: a kept tail over the ceiling made every request summarize again (#1757).
     settled: AtomicU64,
 }
@@ -266,15 +302,18 @@ pub struct Compactor {
 struct Raised<'a>(&'a AtomicBool);
 
 impl<'a> Raised<'a> {
-    fn new(flag: &'a AtomicBool) -> Self {
-        flag.store(true, Ordering::Relaxed);
-        Self(flag)
+    /// Invariant: one compaction in flight per session. The caller that loses the guard gets
+    /// `None` and has spent neither the pending request nor a summarizer call.
+    fn new(flag: &'a AtomicBool) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self(flag))
     }
 }
 
 impl Drop for Raised<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Relaxed);
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -370,6 +409,16 @@ fn directive_message(
 }
 
 impl Compactor {
+    /// The row a session reads once, before it compacts: `compaction.render`.
+    pub fn new(settings: Settings, summarizer: Option<Model>) -> Self {
+        Self {
+            settings,
+            summarizer,
+            render: crate::levers::get().compaction_render == 1,
+            ..Self::default()
+        }
+    }
+
     /// The reason when `tokens` is under what a compaction keeps and was raised to it.
     pub fn set_ceiling(&self, tokens: Option<u64>) -> Option<String> {
         let tokens = tokens.unwrap_or(0);
@@ -392,9 +441,24 @@ impl Compactor {
     /// otherwise compact once more. A branch with none (a rewind past it) has no stale reply.
     pub fn resume(&self, entries: &[yi_types::entry::Entry]) {
         let latest = entries.iter().rev().find_map(|entry| match entry {
-            yi_types::entry::Entry::Compaction { retained_tail, .. } => Some(retained_tail),
+            yi_types::entry::Entry::Compaction {
+                summary,
+                retained_tail,
+                tokens_before,
+                ..
+            } => Some((summary, retained_tail, *tokens_before)),
             _ => None,
         });
+        let settled = latest.map_or(0, |(summary, tail, tokens_before)| {
+            let head = AgentMessage::CompactionSummary {
+                summary: summary.clone(),
+                tokens_before,
+                timestamp: 0,
+            };
+            left(&[head]).saturating_add(left(tail))
+        });
+        self.settled.store(settled, Ordering::Relaxed);
+        let latest = latest.map(|(_, tail, _)| tail);
         if let Ok(mut slot) = self.stale.lock() {
             *slot = latest.and_then(|tail| {
                 tail.iter()
@@ -494,12 +558,7 @@ impl Compactor {
                 .usage_tokens
                 .saturating_add(wide(estimate.trailing_tokens))
         } else {
-            wide(
-                messages
-                    .iter()
-                    .map(estimate_message)
-                    .fold(Tokens(0), Tokens::saturating_add),
-            )
+            Tokens(left(messages))
         };
         let window = match self.ceiling.load(Ordering::Relaxed) {
             0 => model.context_window,
@@ -512,9 +571,11 @@ impl Compactor {
             }
         };
         let settled = self.settled.load(Ordering::Relaxed);
-        let grown = sent.0 > settled.saturating_add(self.settings.reserve_tokens.0);
-        let overflowing = model.context_window != 0 && sent.0 >= model.context_window;
-        (grown || overflowing) && should_compact(sent, Tokens(window), &self.settings)
+        let grown =
+            settled == 0 || left(messages) > settled.saturating_add(self.settings.reserve_tokens.0);
+        (model.context_window != 0
+            && should_compact(sent, Tokens(model.context_window), &self.settings))
+            || (grown && should_compact(sent, Tokens(window), &self.settings))
     }
 
     /// No summary, no room (D337): keep the first user message, the work's opening and the earlier
@@ -542,16 +603,20 @@ impl Compactor {
         let run = opening
             .and_then(|opening| messages.iter().rposition(|message| *message == opening))
             .filter(|run| Some(*run) != first);
+        let tools = loop_request
+            .tools
+            .as_ref()
+            .and_then(|tools| serde_json::to_string(tools).ok())
+            .unwrap_or_default();
         // The marker rides twice: in the summary and where the dropped messages sat.
         let line = format!("[{}]", "#".repeat(96));
         let widest = format!("{earlier}\n\n{line}");
         let (summary_room, _) = compose_summary(&widest, &prepared.file_ops, &prepared.view);
         let cost = |index: usize| wide(estimate_message(&messages[index]));
-        let room = [&summary_room, &line]
+        let room = [&loop_request.system_prompt, &tools, &summary_room, &line]
             .into_iter()
             .map(|text| text_tokens(text))
             .chain(first.map(cost))
-            .chain([prefix_tokens(loop_request)])
             .fold(
                 window.saturating_sub(self.settings.reserve_tokens),
                 Tokens::saturating_sub,
@@ -608,12 +673,14 @@ impl Compactor {
         provider: &ProviderStream,
         store: Option<&yi_session::SharedSession>,
         signal: &InterruptSignal,
-    ) -> Result<Option<Replacement>, CompactError> {
+    ) -> Result<Compacted, CompactError> {
         if !self.wanted(messages, model) {
-            return Ok(None);
+            return Ok(Compacted::NotDue);
         }
+        let Some(_in_flight) = Raised::new(&self.running) else {
+            return Ok(Compacted::Busy);
+        };
         let scheduled = self.pending.swap(false, Ordering::Relaxed);
-        let _running = Raised::new(&self.running);
         let once = self
             .instructions
             .lock()
@@ -639,7 +706,7 @@ impl Compactor {
             .unwrap_or_default();
         let prepared = entries.and_then(|entries| prepare_compaction(&entries, &self.settings));
         let Some(mut prepared) = prepared else {
-            return Ok(None);
+            return Ok(Compacted::NotDue);
         };
         prepared.view.findings = findings;
         let inputs = store.and_then(|store| crate::fetch::user_inputs(store).ok());
@@ -649,13 +716,14 @@ impl Compactor {
             cache_ttl: yi_types::model::Ttl::Min5,
             system_prompt: loop_request.system_prompt.clone(),
             messages: {
-                let mut converted = convert_to_llm(window_messages);
                 // A cold attempt sends no tools, and Anthropic refuses tool blocks without them
-                // (#948): it reads the history as text.
-                if !warm {
-                    let text = serialize_conversation(&converted);
-                    converted = vec![AgentMessage::task(&text, 0)];
-                }
+                // (#948): it reads the history as text, whole, since no cache is gained by a cut.
+                let mut converted = if warm {
+                    (loop_request.convert)(window_messages)
+                } else {
+                    let text = serialize_conversation(&yi_context::convert_to_llm(window_messages));
+                    vec![AgentMessage::task(&text, 0)]
+                };
                 let key = yi_context::user_key(window_messages, inputs.as_deref().unwrap_or(&[]));
                 converted.push(directive_message(&prepared, instructions.as_deref(), &key));
                 converted
@@ -693,27 +761,34 @@ impl Compactor {
                 outcome => outcome,
             }
         };
-        // Past the window the warm request cannot go out: two cold tries, a quarter then half
-        // trimmed. Else warm, then a cold quarter-trimmed retry (no tools, so it must be text).
-        let over = estimate_context(messages).tokens >= Tokens(model.context_window);
-        let len = messages.len();
-        let attempts = if over {
-            [(len / 4, false), (len / 2, false)]
+        let summary = if self.render {
+            // Invariant: a render compaction is the view and the file lists alone, so it opens no
+            // summarizer stream and spends no side call.
+            Ok(String::new())
         } else {
-            [(0, warm), (len / 4, false)]
-        };
-        let mut summary = Err(String::new());
-        for (skip, warm) in attempts {
-            // Never open on a tool result, which no provider takes without its call.
-            let skip = messages[skip..]
-                .iter()
-                .position(is_cut_point)
-                .map_or(len, |offset| skip.saturating_add(offset));
-            summary = summarize(request(&messages[skip..], warm), warm).await;
-            if summary.is_ok() {
-                break;
+            // Past the window the warm request cannot go out: two cold tries, a quarter then half
+            // trimmed. Else warm, then a cold quarter-trimmed retry (no tools, so it must be text).
+            let over = estimate_context(messages).tokens >= Tokens(model.context_window);
+            let len = messages.len();
+            let attempts = if over {
+                [(len / 4, false), (len / 2, false)]
+            } else {
+                [(0, warm), (len / 4, false)]
+            };
+            let mut summary = Err(String::new());
+            for (skip, warm) in attempts {
+                // Never open on a tool result, which no provider takes without its call.
+                let skip = messages[skip..]
+                    .iter()
+                    .position(is_cut_point)
+                    .map_or(len, |offset| skip.saturating_add(offset));
+                summary = summarize(request(&messages[skip..], warm), warm).await;
+                if summary.is_ok() {
+                    break;
+                }
             }
-        }
+            summary
+        };
         let (composed, details, retained_tail, elision) = match summary {
             Ok(text) => {
                 let (composed, details) =
@@ -768,15 +843,8 @@ impl Compactor {
             timestamp,
         });
         replacement.extend(retained_tail);
-        let left = replacement
-            .iter()
-            .map(estimate_message)
-            .fold(Tokens(0), Tokens::saturating_add);
-        self.settled.store(
-            wide(left).saturating_add(prefix_tokens(loop_request)).0,
-            Ordering::Relaxed,
-        );
-        Ok(Some(Replacement {
+        self.settled.store(left(&replacement), Ordering::Relaxed);
+        Ok(Compacted::Applied(Replacement {
             messages: replacement,
             elision,
         }))

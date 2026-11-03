@@ -72,8 +72,10 @@ def _tree(name, commit):
         partial = root.with_suffix(".partial")
         shutil.rmtree(partial, ignore_errors=True)
         partial.mkdir(parents=True)
-        subprocess.run(f"git -C {shlex.quote(str(REPOS[name]['path']))} archive {commit} | tar -x -C "
-                       f"{shlex.quote(str(partial))}", shell=True, check=True)
+        with subprocess.Popen(["git", "-C", str(REPOS[name]["path"]), "archive", commit], stdout=subprocess.PIPE) as archive:
+            subprocess.run(["tar", "-x", "-C", str(partial)], stdin=archive.stdout, check=True)
+        if archive.returncode:
+            raise subprocess.CalledProcessError(archive.returncode, "git archive")
         partial.rename(root)
     return root
 
