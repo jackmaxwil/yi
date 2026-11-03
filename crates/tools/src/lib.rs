@@ -25,6 +25,7 @@ pub mod sandbox;
 mod scratch;
 mod spawn;
 mod spill;
+mod steer;
 mod syntax;
 mod tool;
 mod values;
