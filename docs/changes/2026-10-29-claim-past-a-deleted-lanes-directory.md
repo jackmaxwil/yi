@@ -1,4 +1,5 @@
 ---
+version: 0.899.0
 issue: Closes #664
 ledger+: lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | a claim over a slot whose lanes directory was deleted drops every registration under the lanes directory whose tree is gone, locked ones included, and rebuilds the slot instead of refusing it
 raise: crate runtime +29, tests +104, comments +4

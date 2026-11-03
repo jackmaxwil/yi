@@ -1,4 +1,6 @@
 ---
+version: 0.913.0
+decisions: D544
 issue: Closes #1514
 decision: a server wait past the retry cap, or `x-should-retry: false`, ends the turn stamped `retry refused:` instead of falling back to backoff, `x-should-retry: true` retries any status, and the loop reads that stamp, a quota and a refusal as final verdicts however much output they billed (revises the YI_DESIGN retry bullet) | a `retry-after: 61` was slept out and the same bytes sent again, and a refusal that billed output tokens was re-run with a steer saying the stream had dropped | restore the backoff fallback in `retry::wait_for` and drop the verdict gate in `stream_retry::nothing_delivered`
 ledger+: pure loop + event enum | a 4xx other than 408/409/429 refuses the same bytes again, so the loop spends no second request and no 99-byte steer on one (`loop_events::a_400_body_ends_the_turn_with_no_retry_and_no_steer`), while a routing 404 may be resent once, an unused budget ends a backoff before its request rather than after it (`provider_stream::an_interrupt_during_a_backoff_sends_no_further_request`), and a retry-after past the cap ends the turn naming the wait (`provider_stream::a_wait_past_the_cap_ends_the_turn_and_one_inside_it_retries`)

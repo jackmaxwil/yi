@@ -1,4 +1,5 @@
 ---
+version: 0.916.0
 issue: Refs #1558
 raise: crate ai +106, tests +371
 ---
