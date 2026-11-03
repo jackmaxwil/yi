@@ -250,8 +250,7 @@ async fn the_family_board_belongs_to_the_root_session() -> TestResult {
 }
 
 fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
-    let mut registry = yi_runtime::HostRegistry::default();
-    registry.register_mcp_stubs();
+    let registry = yi_runtime::HostRegistry::default();
     Ok(Arc::new(yi_runtime::KernelService::new(
         yi_runtime::KernelServiceOptions {
             cwd: root.to_path_buf(),

@@ -5,6 +5,7 @@
 mod scratch;
 
 mod anthropic_mapper;
+mod build_params_conformance;
 #[path = "../../types/tests/support/model.rs"]
 mod common;
 mod compat;
@@ -34,5 +35,6 @@ mod refresh;
 mod resend;
 mod strict_tools;
 mod structured;
+mod tool_args_stream;
 mod tool_choice;
 mod web_search;
