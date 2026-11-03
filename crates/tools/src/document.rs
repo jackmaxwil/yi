@@ -592,13 +592,12 @@ fn run(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
     /// Review of #925 (F2): the converter parses untrusted files, so its profile keeps no network,
     /// not even the loopback every other contained spawn has.
     #[cfg(target_os = "macos")]
     #[test]
     fn the_converter_runs_with_no_network() {
+        use std::path::{Path, PathBuf};
         if !super::Sandbox::available() {
             return;
         }

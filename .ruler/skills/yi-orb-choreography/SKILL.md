@@ -108,7 +108,7 @@ Prototype outside the tree (the session scratchpad), never in `crates/`:
 
 1. A throwaway `crates/orb/examples/<name>.rs` that calls `yi_orb::pose`, `render` and
    `kitty::paint_rgba`, and writes each tile's frames as raw RGBA to `<dir>/<id>.rgba`.
-   Delete the example before committing; `just commit` stages everything.
+   Delete the example before committing; `just commit` stages only the paths you name.
 2. `python3 .ruler/skills/yi-orb-choreography/gallery.py <dir> <px> <tiles.json> <out.html>`
    builds looping APNG tiles composited on the terminal ground, with IDs and descriptions.
 3. Review a filmstrip of every state over a minute before sending; send the page; ask
