@@ -177,7 +177,6 @@ fn service() -> Arc<KernelService> {
 }
 
 fn service_with(mut registry: HostRegistry) -> Arc<KernelService> {
-    registry.register_mcp_stubs();
     registry.register_exec((std::env::temp_dir(), None), || None);
     Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),
