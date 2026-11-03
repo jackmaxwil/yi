@@ -582,6 +582,9 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+spec (harness-run requirements check) | `todo_coupling::a_red_spec_refuses_the_stop_and_names_the_requirement`
+host-written memory (one file per fact, hook index) | `history::tests::history_search_finds_a_message_by_its_accented_word`
+host-written memory (one file per fact, hook index) | `history::tests::eight_threads_on_one_cold_corpus_build_one_index_and_agree`
 pure loop + event enum | `loop_events::a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail`
 goals + autonomous | `goal_e2e::three_idle_continuations_reach_the_next_request_as_one_newest_copy`
 extension system + yard + native voice/method | `ext_e2e::one_instruction_file_attaches_for_two_ruler_renders`
