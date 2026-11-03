@@ -1008,8 +1008,8 @@ def worker_python(work, executable=None, prefix=None):
     try:
         inside = executable.relative_to(prefix)
     except ValueError:
-        raise RuntimeError(f"the fixer's worker cannot start: {executable} is unreadable to its user and "
-                           f"is outside the interpreter prefix {prefix} that can be carried into the box") from None
+        raise Handoff(f"the fixer's worker cannot start: {executable} is unreadable to its user and "
+                      f"is outside the interpreter prefix {prefix} that can be carried into the box") from None
     copy = work.parent / "python"
     if not copy.exists():
         shutil.copytree(prefix, copy, symlinks=True)
@@ -2047,6 +2047,29 @@ def waits_selfcheck():
     return errs
 
 
+def stand_in_cargo(work, attack, payload):
+    """The stand-in cargo whose shebang is the worker's own interpreter, and what its run left behind.
+    An interpreter the box cannot carry is a named row, not the traceback that killed this gate."""
+    got = reach = owner = left = None
+    try:
+        attack.write_text(f"#!{worker_python(work)[0]}\n{payload}")
+        attack.chmod(0o755)
+    except (OSError, RuntimeError) as error:
+        return got, reach, owner, left, [f"the selfcheck could not build its stand-in cargo's interpreter: {error}"]
+    errs = []
+    try:
+        got = in_worker(work, "filter", {"expr": "test(=x)"})
+    except (OSError, RuntimeError) as error:
+        errs.append(f"the worker could not run its stand-in cargo: {error}")
+    try:
+        reach = json.loads((work / "tmp/reach.json").read_text())
+    except (OSError, ValueError):
+        errs.append("the PR's code left no reach report, so what its worker could see is unjudged")
+    owner = work.stat().st_uid
+    left = subprocess.run(["ps", "-eo", "uid=,stat="], capture_output=True, text=True).stdout.splitlines()
+    return got, reach, owner, left, errs
+
+
 def confined_selfcheck():
     """PR code run through the real worker. As root it must fail to reach what the next fix trusts;
     any other user has no second user to drop to, so there it proves the worker's own contract."""
@@ -2096,24 +2119,14 @@ sys.exit(7)
         with workspace(repo, git("rev-parse", "HEAD")) as work:
             # The fixture's shebang is the interpreter the worker itself runs, so a root-only runner
             # interpreter cannot make the stand-in cargo unexecutable to the user it drops to.
-            attack.write_text(f"#!{worker_python(work)[0]}\n{attack_payload}")
-            attack.chmod(0o755)
-            try:
-                got = in_worker(work, "filter", {"expr": "test(=x)"})
-            except OSError as error:
-                got = None
-                errs.append(f"the worker could not run its stand-in cargo: {error}")
-            try:
-                reach = json.loads((work / "tmp/reach.json").read_text())
-            except (OSError, ValueError):
-                reach = None
-                errs.append("the PR's code left no reach report, so what its worker could see is unjudged")
-            owner = work.stat().st_uid
-            left = subprocess.run(["ps", "-eo", "uid=,stat="], capture_output=True, text=True).stdout.splitlines()
+            got, reach, owner, left, rows = stand_in_cargo(work, attack, attack_payload)
+            errs += rows
         with workspace(repo, git("rev-parse", "HEAD")) as work:
             try:
                 in_worker(work, "no-such-op", {})
                 errs.append("a worker that died read as an answer")
+            except Handoff as err:
+                errs.append(f"the selfcheck could not start a worker at all: {err}")
             except RuntimeError as err:
                 if "no-such-op" not in str(err):
                     errs.append(f"a worker's death lost its reason: {err}")
@@ -2199,11 +2212,25 @@ sys.exit(7)
                 errs.append("carrying an interpreter prefix widened a root-only file the copy's symlink points at")
             try:
                 worker_python(box / "work", prefix / "bin/python3")
-            except RuntimeError as error:
+            except Handoff as error:
                 if "cannot start" not in str(error):
                     errs.append(f"an unreachable interpreter outside the prefix was refused for the wrong reason: {error}")
+            except RuntimeError as error:
+                errs.append(f"an unreachable interpreter outside the prefix was the PR's failure, not a hand-off: {error}")
             else:
                 errs.append("an interpreter its user cannot exec and the box cannot carry was handed out as runnable")
+            carried_python = worker_python
+
+            def unreachable(work, executable=None, prefix=None):
+                raise Handoff("the fixer's worker cannot start: a root-only interpreter outside the prefix")
+
+            globals()["worker_python"] = unreachable
+            try:
+                rows = stand_in_cargo(box / "work", box / "cargo", "payload")[4]
+            finally:
+                globals()["worker_python"] = carried_python
+            if not any("could not build its stand-in cargo's interpreter" in row for row in rows):
+                errs.append(f"an interpreter the box cannot carry was not a named row: {rows}")
             if worker_python(box / "work", "/bin/sh", box) != (os.path.realpath("/bin/sh"), {}):
                 errs.append("a reachable interpreter was copied instead of run where it is")
         finally:
