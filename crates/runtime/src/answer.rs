@@ -8,7 +8,7 @@ use crate::session::AnswerHandle;
 
 const ANSWER_ECHO_BYTES: usize = 4096;
 const HELD: &str = "The answer is held, not shown. Fix what this names, patch any draft below with `edit`, then call `answer` with only `summary`, or with a new `text`.";
-pub(crate) const GUIDE: &str = "# answer\n\nThe last call of a turn: `text` is the whole answer, `summary` one line on what changed or was found.\n\nIt is checked before anyone sees it: open todos, numbers no tool printed, an open plan step. A refusal holds the draft and prints it as `[path#TAG]` rows: do the missing work, patch those rows with `edit`, and call `answer` with only `summary`. Nothing after an accepted answer reaches the user.";
+pub(crate) const GUIDE: &str = "# answer\n\nThe last call of a turn: `summary` is the reply's first line, the status the user reads first, and `text` the rest. A summary alone is a whole reply.\n\nIt is checked before anyone sees it: open todos, numbers no tool printed, an open plan step. A refusal holds the draft and prints it as `[path#TAG]` rows: do the missing work, patch those rows with `edit`, and call `answer` with only `summary`. Nothing after an accepted answer reaches the user.";
 
 pub(crate) struct AnswerTool {
     handle: AnswerHandle,
@@ -62,7 +62,7 @@ impl Tool for AnswerTool {
     }
 
     fn description(&self) -> &str {
-        "End the turn, called alone and last: `text` is the final answer, `summary` one line. Checked before it is shown; a refusal holds the draft for `edit`. Guide: read(\"yi://tools/answer\")."
+        "End the turn, called alone and last: `summary` heads the reply, `text` the rest. Checked before it is shown; a refusal holds the draft for `edit`. Guide: read(\"yi://tools/answer\")."
     }
 
     fn schema(&self) -> Value {
@@ -82,6 +82,7 @@ impl Tool for AnswerTool {
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
         let summary = input.get("summary").and_then(Value::as_str);
+        let line = summary.unwrap_or_default().trim();
         let given = input.get("text").and_then(Value::as_str).map(str::trim_end);
         let (draft, stands) = match (given.filter(|text| !text.is_empty()), self.handle.held()) {
             (Some(text), _) => (text.to_owned(), false),
@@ -89,18 +90,20 @@ impl Tool for AnswerTool {
                 Some(text) => (text, false),
                 None => (held.text, true),
             },
+            (None, None) if !line.is_empty() => (String::new(), false),
             (None, None) => return error_output("No draft is held: pass the answer as `text`."),
         };
-        let reply = crate::session::headed(summary.unwrap_or_default(), &draft);
+        let reply = crate::session::headed(line, &draft);
         let Some(refusal) = self.handle.judge(&reply) else {
-            if stands {
+            if stands && reply == draft {
                 self.handle.stand();
                 let mut output =
                     text_output("The reply above stands as the answer; the turn ends.");
                 output.result.terminate = Some(true);
                 return output;
             }
-            self.handle.accept(reply);
+            self.handle
+                .accept(if stands { line.to_owned() } else { reply });
             return text_output("Answer delivered; the turn ends.");
         };
         let held = self.hold_file(&draft, context);

@@ -427,9 +427,11 @@ pub const EMPTY_STOP_TEXT: &str =
 pub const DONE_BLOCKED_TEXT: &str = "An item is still blocked, so this reply cannot open with Done. Open it with Problem: or Ready: and name what the item waits on.";
 
 fn says_done(text: &str) -> bool {
-    (text.split(|c: char| !c.is_alphanumeric()))
-        .find(|word| !word.is_empty())
-        .is_some_and(|word| word.eq_ignore_ascii_case("done"))
+    let data = serde_json::from_str::<serde_json::Value>(text).is_ok();
+    !data
+        && (text.split(|c: char| !c.is_alphanumeric()))
+            .find(|word| !word.is_empty())
+            .is_some_and(|word| word.eq_ignore_ascii_case("done"))
 }
 
 fn text_of(message: &AgentMessage) -> String {
@@ -777,6 +779,13 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             let posture = stop_posture(&list, children_running());
             let blocked = matches!(posture, StopPosture::Ask | StopPosture::Cadence);
             if blocked && says_done(&text) && !std::mem::replace(&mut cycle.done_refused, true) {
+                record_intercept(
+                    &store,
+                    0,
+                    "done_blocked",
+                    &list.fingerprint(),
+                    cycle.intercepts,
+                );
                 let note = DONE_BLOCKED_TEXT.to_owned();
                 return Some(custom(INTERCEPT_CUSTOM_TYPE, note, false));
             }

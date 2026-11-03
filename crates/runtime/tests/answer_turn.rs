@@ -198,7 +198,7 @@ async fn a_host_note_queued_on_the_answer_turn_is_dropped() -> TestResult {
 }
 
 /// Dies with a sent-back reply printed twice, or a turn that runs on after it: a reply on
-/// screen that passes once the work is done stands, even beside another call in its batch.
+/// screen that passes once the work is done stands, with only its status line added under it.
 #[tokio::test]
 async fn a_sent_back_reply_that_passes_stands_without_a_second_copy() -> TestResult {
     let script = vec![
@@ -219,7 +219,8 @@ async fn a_sent_back_reply_that_passes_stands_without_a_second_copy() -> TestRes
         says("A second answer nobody asked for."),
     ];
     let messages = run(&Scratch::new("yi-answer-stands")?, script).await?;
-    assert_eq!(answers(&messages), vec!["Done.".to_owned()]);
+    let status = "Wrote the note".to_owned();
+    assert_eq!(answers(&messages), vec!["Done.".to_owned(), status]);
     Ok(())
 }
 
@@ -318,25 +319,12 @@ async fn a_bracket_in_the_summary_never_becomes_the_parsed_answer() -> TestResul
 /// and the status that names the wait heads what the user reads.
 #[tokio::test]
 async fn done_is_refused_while_an_item_is_blocked() -> TestResult {
-    let script = vec![
-        calls(vec![call(
-            "c1",
-            "todo",
-            json!({"op": "init", "items": ["write the note"]}),
-        )]),
-        calls(vec![call(
-            "c2",
-            "todo",
-            json!({"op": "block", "label": "write the note", "on": "user", "note": "which title?"}),
-        )]),
+    let mut script = blocked_note();
+    script.extend([
         answered("Done: Wrote the note.", "The note waits for its title."),
-        calls(vec![call(
-            "c4",
-            "answer",
-            json!({"summary": "Ready: Pick the note's title."}),
-        )]),
+        summary_only("Ready: Pick the note's title."),
         says("A second answer nobody asked for."),
-    ];
+    ]);
     let messages = run(&Scratch::new("yi-answer-done-blocked")?, script).await?;
     let refused = (messages.iter()).any(|message| {
         matches!(message, AgentMessage::ToolResult { tool_name, is_error: true, content, .. }
@@ -348,6 +336,119 @@ async fn done_is_refused_while_an_item_is_blocked() -> TestResult {
         answers(&messages),
         vec!["Ready: Pick the note's title.\n\nThe note waits for its title.".to_owned()]
     );
+    Ok(())
+}
+
+fn blocked_note() -> Vec<AgentMessage> {
+    let block =
+        json!({"op": "block", "label": "write the note", "on": "user", "note": "which title?"});
+    vec![
+        calls(vec![call(
+            "c1",
+            "todo",
+            json!({"op": "init", "items": ["write the note"]}),
+        )]),
+        calls(vec![call("c2", "todo", block)]),
+    ]
+}
+
+fn summary_only(summary: &str) -> AgentMessage {
+    calls(vec![call("c4", "answer", json!({"summary": summary}))])
+}
+
+/// Dies with a refused plain Done left as the last word: the status the model sends back
+/// reaches the user under the reply already on screen.
+#[tokio::test]
+async fn a_plain_done_over_a_blocked_item_ends_on_its_status() -> TestResult {
+    let mut script = blocked_note();
+    script.extend([
+        says("Done."),
+        summary_only("Ready: Pick the note's title."),
+        says("A second answer nobody asked for."),
+    ]);
+    let messages = run(&Scratch::new("yi-answer-plain-done")?, script).await?;
+    assert_eq!(notes(&messages, INTERCEPT_CUSTOM_TYPE), 1);
+    let ready = "Ready: Pick the note's title.".to_owned();
+    assert_eq!(answers(&messages), vec!["Done.".to_owned(), ready]);
+    Ok(())
+}
+
+/// Dies with Done held past its one send-back: a model that answers Done again is let
+/// through, never refused until the turn cap.
+#[tokio::test]
+async fn a_second_done_over_a_blocked_item_is_let_through() -> TestResult {
+    let done = || answered("Done: Wrote the note.", "The note waits for its title.");
+    let mut script = blocked_note();
+    script.extend([done(), done(), says("A second answer nobody asked for.")]);
+    let messages = run(&Scratch::new("yi-answer-done-twice")?, script).await?;
+    let reply = "Done: Wrote the note.\n\nThe note waits for its title.".to_owned();
+    assert_eq!(answers(&messages), vec![reply]);
+    Ok(())
+}
+
+/// Dies with data read as a status: a blocked child's JSON whose first key is `done` is no
+/// Done line, so it passes as written.
+#[tokio::test]
+async fn a_json_answer_with_a_done_key_is_not_a_status_line() -> TestResult {
+    let data = r#"{"done": false, "waits_on": "the note's title"}"#;
+    let mut script = blocked_note();
+    script.extend([
+        answered("Ready: Pick the note's title.", data),
+        says("A second answer."),
+    ]);
+    let messages = run(&Scratch::new("yi-answer-done-key")?, script).await?;
+    assert_eq!(answers(&messages), vec![data.to_owned()]);
+    Ok(())
+}
+
+/// Dies with a one-line reply refused for having no `text`: the summary alone is the reply.
+#[tokio::test]
+async fn a_summary_alone_is_the_whole_reply() -> TestResult {
+    let script = vec![
+        summary_only("Done: Said hello back."),
+        says("A second answer."),
+    ];
+    let messages = run(&Scratch::new("yi-answer-summary-only")?, script).await?;
+    assert_eq!(
+        answers(&messages),
+        vec!["Done: Said hello back.".to_owned()]
+    );
+    Ok(())
+}
+
+/// Dies with the status line dropped from a reply that opens on a link: only text that
+/// parses whole as JSON is data, and Markdown is not.
+#[tokio::test]
+async fn a_reply_that_opens_on_a_link_keeps_its_status_line() -> TestResult {
+    let text = "[The pull request](https://git.example.test/pulls/voice) is green.";
+    let script = vec![answered("Ready: Merge the pull request.", text)];
+    let messages = run(&Scratch::new("yi-answer-link")?, script).await?;
+    let reply = format!("Ready: Merge the pull request.\n\n{text}");
+    assert_eq!(answers(&messages), vec![reply]);
+    Ok(())
+}
+
+/// Dies with a status line glued onto a scalar: `42` under a summary holds no JSON value, so
+/// an integer `--schema` answer exits 3.
+#[tokio::test]
+async fn a_scalar_answer_reaches_its_reader_bare() -> TestResult {
+    let script = vec![answered("Done: Counted the files.", "42")];
+    let messages = run(&Scratch::new("yi-answer-scalar")?, script).await?;
+    assert_eq!(answers(&messages), vec!["42".to_owned()]);
+    Ok(())
+}
+
+/// Dies with a status line inventing data: a prose reply holds no JSON, so a reader looking
+/// for some must not find the summary's `[2]`.
+#[tokio::test]
+async fn a_status_line_never_invents_json_in_a_prose_reply() -> TestResult {
+    let script = vec![answered(
+        "Problem: [2] checks fail.",
+        "Two checks fail on the parser.",
+    )];
+    let replies = answers(&run(&Scratch::new("yi-answer-no-json")?, script).await?);
+    let reply = replies.first().map_or("", String::as_str);
+    assert!(yi_runtime::schema::extract(reply).is_err(), "{reply}");
     Ok(())
 }
 /// Dies with a persisted turn losing its terminate decision on resume: the entry the store
@@ -370,7 +471,7 @@ async fn a_turn_ending_answer_persists_its_terminate_flag() -> TestResult {
                 "todo",
                 json!({"op": "done", "label": "write the note", "evidence": "`true` exit 0"}),
             ),
-            call("c3", "answer", json!({"summary": "Wrote the note"})),
+            call("c3", "answer", json!({"summary": "Done."})),
         ]),
         says("A second answer nobody asked for."),
     ]);

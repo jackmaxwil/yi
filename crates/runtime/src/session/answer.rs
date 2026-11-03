@@ -7,7 +7,7 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 
 use super::{InterceptStopFn, Shared};
 
-const FINISH: &str = "Finish with `answer`: only `summary` keeps the reply above as the answer once the work is fixed; `text` replaces it.";
+const FINISH: &str = "Finish with `answer` once the work is fixed: only `summary` keeps the reply above and adds the status line under it; `text` replaces it.";
 
 /// A refused answer: its text, the file `edit` patches it in, and whether it is a plain-text
 /// reply already on screen.
@@ -138,16 +138,15 @@ fn answer_of(turn: &AgentMessage, text: String) -> AgentMessage {
 /// Invariant: the line never changes the JSON a structured reader parses out of the reply.
 pub(crate) fn headed(summary: &str, text: &str) -> String {
     let (line, body) = (summary.trim(), text.trim_start());
-    if line.is_empty() || body.starts_with(line) || body.starts_with(['{', '[']) {
+    if line.is_empty() || body.starts_with(line) || serde_json::from_str::<Value>(body).is_ok() {
         return text.to_owned();
     }
     if body.is_empty() {
         return line.to_owned();
     }
     let reply = format!("{line}\n\n{text}");
-    let data = crate::schema::extract(text).ok();
-    let kept = data.is_none() || crate::schema::extract(&reply).ok() == data;
-    if kept { reply } else { text.to_owned() }
+    let same = crate::schema::extract(&reply).ok() == crate::schema::extract(text).ok();
+    if same { reply } else { text.to_owned() }
 }
 
 /// The `summary` and `text` of an `answer` call the turn made, the text None for a call without one.
