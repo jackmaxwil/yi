@@ -2805,6 +2805,7 @@ def selfcheck():
     module, tried_prs, climbed = sys.modules[__name__], [], []
     keep, settled_bases = {name: getattr(module, name) for name in ("attempt", "label_ids", "spent_today", "tidy", "settle_base_red")}, []
     keep_api, keep_repo = forge_pr.fgj_api, forge_pr.repo
+    keep_ci = os.environ.pop("CI", None)
     try:
         stale = [{"number": n, "labels": [{"name": "autofix:failed"}], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}} for n in (1, 2, 3)]
         fresh = {"number": 4, "labels": [], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
@@ -2828,6 +2829,8 @@ def selfcheck():
         forge_pr.fgj_api, forge_pr.repo = keep_api, keep_repo
         for name, value in keep.items():
             setattr(module, name, value)
+        if keep_ci is not None:
+            os.environ["CI"] = keep_ci
     if 4 not in tried_prs:
         errs.append(f"three PRs labelled failed used up the pass; it tried {tried_prs}")
     if climbed != [4, 4, 5]:
