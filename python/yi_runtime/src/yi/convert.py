@@ -214,7 +214,10 @@ def pdf_markdown(data, pages):
 def convert(source, pages, data):
     try:
         import anydoc
-
+    except ImportError as error:
+        raise Reply(missing=str(error))
+    kind = "this format"
+    try:
         kind = anydoc.format_from_bytes(data) or anydoc.format_from_path(source)
         if kind in (None, "csv"):
             raise Reply(unsupported=True)
@@ -228,8 +231,6 @@ def convert(source, pages, data):
                 markdown = tidy_sheets(markdown, sheet_names(data), zipped_workbook(data, source))
     except Reply:
         raise
-    except ImportError as error:
-        raise Reply(missing=str(error))
     except anydoc.UnsupportedError:
         raise Reply(unsupported=True)
     except anydoc.EncryptedError:

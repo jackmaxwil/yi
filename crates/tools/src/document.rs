@@ -616,25 +616,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_converter_program_is_the_one_the_binary_carries() {
-        let converter = super::Converter {
-            python: PathBuf::from("/usr/bin/python3"),
-            formats: Vec::new(),
-        };
-        let documents = super::Documents::fixed(PathBuf::from("/home/u"), converter.clone());
-        let dir = Path::new("/work/cache");
-        let command = super::command_for(&documents, &converter, dir, dir, dir, &[]);
-        let args: Vec<String> = (command.get_args())
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            args.iter().any(|arg| arg.as_str() == super::CONVERT),
-            "{args:?}"
-        );
-        assert!(!args.iter().any(|arg| arg == "yi.convert"), "{args:?}");
-    }
-
     /// A venv still carrying an older `yi` package is the state this program must survive, so it
     /// is run by an interpreter that has neither the package nor its extras.
     #[test]

@@ -66,5 +66,30 @@ class Shape(unittest.TestCase):
         self.assertEqual(convert.shape("## **Page 12** of 40"), "Page # of #")
 
 
+class MainReply(unittest.TestCase):
+    def test_detection_failure_is_a_json_error_line_not_a_crash(self):
+        import io
+        import sys
+        import types
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        class Unsupported(Exception):
+            pass
+
+        def boom(_data):
+            raise ValueError("bad header")
+
+        stub = types.SimpleNamespace(
+            format_from_bytes=boom,
+            UnsupportedError=Unsupported,
+            EncryptedError=type("Enc", (Exception,), {}),
+            ResourceLimitError=type("Lim", (Exception,), {}),
+        )
+        out = io.StringIO()
+        with mock.patch.dict(sys.modules, {"anydoc": stub}), mock.patch.object(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(b"x"))), redirect_stdout(out):
+            convert.main(["f.pdf", "/dev/null", "null"])
+        self.assertEqual(json.loads(out.getvalue().splitlines()[-1]), {"error": "not readable as this format: bad header"})
+
 if __name__ == "__main__":
     unittest.main()
