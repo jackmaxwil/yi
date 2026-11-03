@@ -144,4 +144,5 @@ def main():
             "a commit's message, or substitute the text in replace.txt (docs/FORGE.md, D172)"]
     fail(errs + hint if errs else [], "public_surface")
 
-main()
+if __name__ == "__main__":
+    main()

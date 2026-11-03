@@ -710,7 +710,7 @@ def repair_prompt(schema):
 
 
 def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=None, env=None, sessions=None, meter=None,
-        until=None):
+        until=None, flags=()):
     """One `yi ask` answering `schema`; raises Unanswered. A reader runs under --confirm
     with no terminal, so every write and command that would ask is refused; the fixer runs
     --yolo (owner, 2026-10-04): --auto asked about a network or install command, which a
@@ -721,6 +721,7 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
     sessions = pathlib.Path(sessions or pathlib.Path.home() / ".yi/sessions/pr-rounds") / os.urandom(6).hex()
     command = [yi_bin(), "ask", "--here", "--cwd", str(cwd), "--session-dir", str(sessions), "--schema", json.dumps(schema)]
     command += ["--yolo"] if write else ["--confirm"]
+    command += list(flags)
     model = model or os.environ.get("YI_REVIEW_MODEL")
     if model:
         command += ["--model", model]

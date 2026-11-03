@@ -3251,6 +3251,8 @@ fn loopback(
     Ok((port, bodies))
 }
 
+const OK_STREAM: &str = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+
 /// A root session sends its own id as OpenRouter's affinity key, the one its children inherit
 /// (D314): `build_session` hands the session id to the stream.
 #[test]
@@ -3264,10 +3266,7 @@ fn a_root_session_sends_its_id_as_the_openrouter_session() -> TestResult {
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
         "contextWindow": 100000, "maxTokens": 256}}});
     std::fs::write(catalog.join("openrouter.json"), entry.to_string())?;
-    let (port, bodies) = loopback(
-        "text/event-stream",
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
-    )?;
+    let (port, bodies) = loopback("text/event-stream", OK_STREAM)?;
     let proxy = format!("http://127.0.0.1:{port}");
     let answered = workspace.yi_env(
         &["ask", "--model", "openrouter/probe/flash", "--json", "hi"],
@@ -3290,6 +3289,41 @@ fn a_root_session_sends_its_id_as_the_openrouter_session() -> TestResult {
         })
         .ok_or("no session file")?;
     assert_eq!(body["session_id"], session.as_str(), "{body}");
+    Ok(())
+}
+#[test]
+fn ask_no_tools_omits_the_tool_table_from_the_real_request() -> TestResult {
+    let workspace = Workspace::new("ask-no-tools")?;
+    let catalog = workspace.0.join("home/.yi/catalog");
+    std::fs::create_dir_all(&catalog)?;
+    let entry = json!({"openai-completions": {"probe/flash": {
+        "id": "probe/flash", "name": "probe", "api": "openai-completions", "provider": "openrouter",
+        "baseUrl": "http://openrouter.ai.invalid/api/v1", "reasoning": false, "input": ["text"],
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": 100000, "maxTokens": 256}}});
+    std::fs::write(catalog.join("openrouter.json"), entry.to_string())?;
+    let (port, bodies) = loopback("text/event-stream", OK_STREAM)?;
+    let proxy = format!("http://127.0.0.1:{port}");
+    let answered = workspace.yi_env(
+        &[
+            "ask",
+            "--no-tools",
+            "--model",
+            "openrouter/probe/flash",
+            "hi",
+        ],
+        &[
+            ("OPENROUTER_API_KEY", "sk-test"),
+            ("HTTPS_PROXY", &proxy),
+            NO_KERNEL[0],
+        ],
+    )?;
+    assert_eq!(answered.status.code(), Some(0), "{answered:?}");
+    let body = bodies
+        .try_iter()
+        .find(|body| body.get("messages").is_some())
+        .ok_or_else(|| format!("no request: {}", String::from_utf8_lossy(&answered.stderr)))?;
+    assert!(body.get("tools").is_none(), "{body}");
     Ok(())
 }
 
