@@ -291,7 +291,7 @@ console chat pane images | `app::ids::tests::the_hundredth_pane_draws_below_the_
 console chat pane images | `app::ids::tests::every_close_frees_its_slot_across_250_opens` (T0)
 console title animation | `console_drive::a_console_start_is_covered_by_the_title_and_any_key_gives_the_screen_back` (T1)
 console session avatars | `avatar::tests::the_real_ledger_never_gives_two_sessions_one_mark` (T0)
-console session avatars | `avatar::tests::no_two_marks_of_the_real_ledger_sit_within_two_cells` (T0)
+console session avatars | `avatar::tests::at_most_one_pair_of_ledger_marks_sits_within_two_cells` (T0)
 console session avatars | `avatar::tests::the_mark_inks_its_on_cells_and_leaves_the_margin_clear` (T0)
 console title animation | `title::the_cover_replaces_every_cell_while_it_holds`
 console title animation | `title::the_name_lands_on_the_small_mark_and_the_screen_comes_back`

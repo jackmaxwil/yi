@@ -428,47 +428,40 @@ mod tests {
         assert_eq!(rgba(&g, (1, 2, 3)).len(), PX * PX * 4);
     }
 
+    fn ledger_grids() -> Vec<[bool; 49]> {
+        include_str!("../tests/fixtures/ledger-session-ids.txt")
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|seed| grid(seed).0)
+            .collect()
+    }
+
     /// Incident: fifteen bits of a hash over a 5×5 mirror gave the real ledger's 2,572 sessions
     /// 2,376 marks, 209 pairs of sessions wearing one avatar and 165 more pairs one cell apart.
     #[test]
     fn the_real_ledger_never_gives_two_sessions_one_mark() {
-        let ledger = include_str!("../tests/fixtures/ledger-session-ids.txt");
-        let seeds: Vec<&str> = ledger.lines().filter(|line| !line.is_empty()).collect();
-        assert!(seeds.len() > 2_500, "{} seeds", seeds.len());
-        let marks: std::collections::HashSet<[bool; 49]> =
-            seeds.iter().map(|seed| grid(seed).0).collect();
+        let grids = ledger_grids();
+        assert!(grids.len() > 2_500, "{} seeds", grids.len());
+        let marks: std::collections::HashSet<[bool; 49]> = grids.iter().copied().collect();
         assert_eq!(
             marks.len(),
-            seeds.len(),
+            grids.len(),
             "{} of {} sessions share a mark",
-            seeds.len() - marks.len(),
-            seeds.len()
+            grids.len() - marks.len(),
+            grids.len()
         );
     }
+
     /// The mark's 28 bits only buy distance if no two rendered marks are near-identical: a pair
-    /// differing in one or two cells was the same blob at rail size.
+    /// differing in one cell was the same blob at rail size. One pair two cells apart is the
+    /// ledger's observed closest; a second would mean the hash or the fixture changed.
     #[test]
-    fn no_two_marks_of_the_real_ledger_sit_within_two_cells() {
-        fn mask(seed: &str) -> u64 {
-            let cells = grid(seed).0;
-            (0..cells.len()).fold(0_u64, |bits, at| {
-                if cells.get(at).copied().unwrap_or(false) {
-                    bits | (1 << u32::try_from(at).unwrap_or(0))
-                } else {
-                    bits
-                }
-            })
-        }
-        let ledger = include_str!("../tests/fixtures/ledger-session-ids.txt");
-        let marks: Vec<u64> = ledger
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(mask)
-            .collect();
+    fn at_most_one_pair_of_ledger_marks_sits_within_two_cells() {
+        let grids = ledger_grids();
         let (mut one, mut two) = (0_usize, 0_usize);
-        for (at, left) in marks.iter().enumerate() {
-            for right in marks.get(at.saturating_add(1)..).unwrap_or_default() {
-                match (left ^ right).count_ones() {
+        for (at, left) in grids.iter().enumerate() {
+            for right in grids.get(at.saturating_add(1)..).unwrap_or_default() {
+                match left.iter().zip(right).filter(|(l, r)| l != r).count() {
                     1 => one = one.saturating_add(1),
                     2 => two = two.saturating_add(1),
                     _ => {}
@@ -476,7 +469,12 @@ mod tests {
             }
         }
         assert_eq!(one, 0, "{one} pairs of marks differ in one cell");
-        assert_eq!(two, 1, "{two} pairs of marks differ in two cells");
+        assert!(two <= 1, "{two} pairs of marks differ in two cells");
+    }
+
+    fn rgba_at(image: &[u8], width: usize, x: usize, y: usize) -> Option<[u8; 4]> {
+        let at = y.checked_mul(width)?.checked_add(x)?.checked_mul(4)?;
+        image.get(at..at.checked_add(4)?)?.try_into().ok()
     }
 
     #[test]
@@ -491,7 +489,7 @@ mod tests {
             }
         }
         let image = rgba(&g, (1, 2, 3));
-        let alpha = |x: usize, y: usize| image.get((y * PX + x) * 4 + 3).copied();
+        let alpha = |x: usize, y: usize| rgba_at(&image, PX, x, y).map(|p| p[3]);
         for (row, line) in MARK.iter().enumerate() {
             for (col, cell) in line.chars().enumerate() {
                 let want = if cell == '#' { Some(255) } else { Some(0) };
@@ -505,8 +503,8 @@ mod tests {
         assert_eq!(alpha(5, 5), Some(0), "the margin is clear");
         assert_eq!(alpha(34, 34), Some(0), "past the 28 px field is clear");
         assert_eq!(
-            image.get((8 * PX + 8) * 4..(8 * PX + 8) * 4 + 3),
-            Some(&[1, 2, 3][..]),
+            rgba_at(&image, PX, 8, 8).map(|p| [p[0], p[1], p[2]]),
+            Some([1, 2, 3]),
             "an on cell's ink is the accent"
         );
     }
@@ -518,7 +516,7 @@ mod tests {
         assert_eq!(gear.len(), w * h * 4);
         let alpha = |x: f64, y: f64| {
             let (x, y) = (32.0 + x * 24.0, 48.0 + y * 24.0);
-            gear.get((y as usize * w + x as usize) * 4 + 3).copied()
+            rgba_at(&gear, w, x as usize, y as usize).map(|p| p[3])
         };
         assert_eq!(alpha(0.0, 0.0), Some(0), "the hub is open");
         assert_eq!(alpha(0.28, 0.0), Some(255), "the hub ring is drawn");
@@ -540,7 +538,7 @@ mod tests {
     fn a_left_cap_rounds_its_outer_corners_and_meets_the_body_flush() {
         let (w, h) = (16, 32);
         let cap = cap_rgba((1, 2, 3), w, h, true);
-        let alpha = |x: usize, y: usize| cap.get((y * w + x) * 4 + 3).copied();
+        let alpha = |x: usize, y: usize| rgba_at(&cap, w, x, y).map(|p| p[3]);
         assert_eq!(alpha(0, 0), Some(0), "the outer top corner is cut round");
         assert_eq!(
             alpha(0, h - 1),
