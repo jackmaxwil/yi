@@ -397,6 +397,15 @@ impl SubagentHost {
                 "child \"{target}\" is still running; wait for it before touching its worktree"
             ));
         }
+        if record
+            .worktree
+            .as_ref()
+            .is_some_and(ChildTree::carries_dirt)
+        {
+            return Err(format!(
+                "child \"{target}\" took a tree that carries uncommitted files, which a commit would claim as its work: merge it with h.tree.merge() from the tree it came from"
+            ));
+        }
         let lane = record
             .worktree
             .take()
