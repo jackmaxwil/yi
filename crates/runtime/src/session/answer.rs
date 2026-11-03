@@ -135,7 +135,7 @@ fn answer_of(turn: &AgentMessage, text: String) -> AgentMessage {
     }
 }
 
-/// Invariant: a JSON answer is data a structured child hands back, so no summary heads it.
+/// Invariant: the line never changes the JSON a structured reader parses out of the reply.
 pub(crate) fn headed(summary: &str, text: &str) -> String {
     let (line, body) = (summary.trim(), text.trim_start());
     if line.is_empty() || body.starts_with(line) || body.starts_with(['{', '[']) {
@@ -144,7 +144,10 @@ pub(crate) fn headed(summary: &str, text: &str) -> String {
     if body.is_empty() {
         return line.to_owned();
     }
-    format!("{line}\n\n{text}")
+    let reply = format!("{line}\n\n{text}");
+    let data = crate::schema::extract(text).ok();
+    let kept = data.is_none() || crate::schema::extract(&reply).ok() == data;
+    if kept { reply } else { text.to_owned() }
 }
 
 /// The `summary` and `text` of an `answer` call the turn made, the text None for a call without one.

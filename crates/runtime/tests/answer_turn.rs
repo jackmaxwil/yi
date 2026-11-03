@@ -302,6 +302,18 @@ async fn a_json_answer_reaches_its_reader_bare() -> TestResult {
     Ok(())
 }
 
+/// Dies with a bracket in the summary parsed as the data: prose around inline JSON is what a
+/// `--schema` reader falls back to, so the line must not put a bracket ahead of the value.
+#[tokio::test]
+async fn a_bracket_in_the_summary_never_becomes_the_parsed_answer() -> TestResult {
+    let data = r#"The review found two issues: {"issues": 2}"#;
+    let script = vec![answered("Done: Found [2] issues.", data)];
+    let replies = answers(&run(&Scratch::new("yi-answer-inline-json")?, script).await?);
+    let parsed = yi_runtime::schema::extract(replies.first().map_or("", String::as_str))?;
+    assert_eq!(parsed, json!({"issues": 2}));
+    Ok(())
+}
+
 /// Dies with Done passing over an item that waits on the user: that reply is sent back once,
 /// and the status that names the wait heads what the user reads.
 #[tokio::test]
