@@ -19,7 +19,7 @@ pub fn init_repo(repo: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn git(repo: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
+pub fn git(repo: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
     #[expect(clippy::disallowed_methods, reason = "real git is the fixture builder")]
     let out = std::process::Command::new("git")
         .args(args)

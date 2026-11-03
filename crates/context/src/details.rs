@@ -136,7 +136,7 @@ pub fn format_file_operations(
     if reads_dropped > 0 {
         read_rows.push(format!(
             "[… {} read files listed; {reads_dropped} more read calls from cells are not, and their paths were not kept: a cell keeps {NESTED_READS_KEPT} distinct read rows (NESTED_READS_KEPT); the cells that made them: grep(pattern=\"yi.tools\", path=\"history://self\")]",
-            read_files.len()
+            read_files.len().min(FILE_LIST_CAP)
         ));
     }
     if !read_rows.is_empty() {

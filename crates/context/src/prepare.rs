@@ -12,8 +12,6 @@ use crate::view::{CompiledView, compile_view, view_extra, view_from_extra};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preparation {
-    pub messages_to_summarize: Vec<AgentMessage>,
-    pub turn_prefix_messages: Vec<AgentMessage>,
     pub retained_tail: Vec<AgentMessage>,
     pub is_split_turn: bool,
     pub tokens_before: Tokens,
@@ -94,8 +92,6 @@ pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Prepa
         previous_view.as_ref(),
     );
     Some(Preparation {
-        messages_to_summarize,
-        turn_prefix_messages,
         retained_tail,
         is_split_turn: cut.is_split_turn,
         tokens_before,

@@ -84,30 +84,56 @@ pub fn internal_source(message: &AgentMessage) -> Option<&str> {
     text.ends_with("</yi_internal_context>").then_some(source)
 }
 
-/// Custom entry kinds that ride the §4.2 wrapper: rendered `<yi_internal_context source="…">`
-/// and dropped at compaction, so injected prompts never accumulate across windows.
-pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
+/// A custom entry's lifetime: dropped with its window, dropped once a reply read it, or durable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lifetime {
+    Wrapped(&'static str),
+    OnceRead,
+    Durable,
+}
+
+pub(crate) fn lifetime_of(custom_type: &str) -> Lifetime {
     match custom_type {
-        "heartbeat_prompt" => Some("heartbeat"),
-        "advisory" => Some("advisory"),
-        "goal_prompt" => Some("goal"),
-        "ledger_prompt" => Some("ledger"),
-        "plan_dispatch" => Some("dispatch"),
-        "reminder" => Some("reminder"),
-        "classifier" => Some("classifier"),
-        "fragment" => Some("fragment"),
-        "todo_intercept" => Some("todo"),
-        _ => None,
+        "heartbeat_prompt" => Lifetime::Wrapped("heartbeat"),
+        "advisory" => Lifetime::Wrapped("advisory"),
+        "goal_prompt" => Lifetime::Wrapped("goal"),
+        "ledger_prompt" => Lifetime::Wrapped("ledger"),
+        "plan_dispatch" => Lifetime::Wrapped("dispatch"),
+        "reminder" => Lifetime::Wrapped("reminder"),
+        "classifier" => Lifetime::Wrapped("classifier"),
+        "fragment" => Lifetime::Wrapped("fragment"),
+        "todo_intercept" => Lifetime::Wrapped("todo"),
+        "stream_retry" => Lifetime::Wrapped("stream_retry"),
+        "todo_nudge" | "length_redrive" | "repeat_break" | "spend_alert" | "discovery"
+        | "cache_alert" | "plan_relevance" | "todo_prelude" => Lifetime::OnceRead,
+        _ => Lifetime::Durable,
     }
 }
 
-const HOST_NUDGES: [&str; 5] = [
-    "todo_nudge",
-    "length_redrive",
-    "repeat_break",
-    "spend_alert",
-    "discovery",
-];
+/// The details key a goal notice carries; a `goal_prompt` without it is a continuation, which
+/// includes every one an older build recorded.
+pub const NOTICE_DETAIL: &str = "goalNotice";
+
+fn is_continuation(message: &AgentMessage) -> bool {
+    matches!(message, AgentMessage::Custom { custom_type, details, .. }
+        if custom_type == "goal_prompt"
+            && details.as_ref().and_then(|details| details.get(NOTICE_DETAIL)).is_none())
+}
+
+/// Invariant: a request carries only the newest goal continuation, and no cut re-drive a reply
+/// followed; both are scanned for once, so the test per message is a comparison.
+pub fn spent_in_request(messages: &[AgentMessage]) -> impl Fn(usize, &AgentMessage) -> bool + '_ {
+    let reply = messages
+        .iter()
+        .rposition(|message| matches!(message, AgentMessage::Assistant { .. }));
+    let newest = messages.iter().rposition(is_continuation);
+    move |index, message| match message {
+        AgentMessage::Custom { custom_type, .. } if custom_type == "length_redrive" => {
+            reply > Some(index)
+        }
+        _ => is_continuation(message) && newest != Some(index),
+    }
+}
 
 /// Removes wrapped internal context, so per-window injections die with it, and every host
 /// nudge a reply followed: one queued after the last reply is unread, and some are raised once.
@@ -121,8 +147,11 @@ pub fn drop_internal(messages: &[AgentMessage]) -> Vec<AgentMessage> {
         .filter(|(index, message)| {
             if let AgentMessage::Custom { custom_type, .. } = message {
                 let read = last_reply.is_some_and(|reply| reply > *index);
-                return internal_source_of_custom(custom_type).is_none()
-                    && !(read && HOST_NUDGES.contains(&custom_type.as_str()));
+                return match lifetime_of(custom_type) {
+                    Lifetime::Wrapped(_) => false,
+                    Lifetime::OnceRead => !read,
+                    Lifetime::Durable => true,
+                };
             }
             internal_source(message).is_none()
         })
