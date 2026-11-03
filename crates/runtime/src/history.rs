@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use serde_json::{Map, Value};
 use yi_types::entry::Entry;
@@ -10,6 +10,7 @@ use yi_types::message::{AgentMessage, Content, UserContent};
 use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::args::Args;
+use crate::file_cache::{Slot, Stamp};
 use crate::memory::rank::{Bm25, tokens};
 use yi_session::SNIPPET_CHARS;
 
@@ -273,21 +274,40 @@ pub fn units_of(file: &Path) -> Vec<Unit> {
 #[derive(Default)]
 pub struct Corpus {
     dirs: Mutex<BTreeMap<PathBuf, Belongs>>,
-    files: Mutex<BTreeMap<PathBuf, Cached>>,
+    files: Mutex<BTreeMap<PathBuf, Arc<Slot<Vec<Unit>>>>>,
+    indexes: Mutex<BTreeMap<Vec<PathBuf>, Held>>,
+}
+
+type Key = Vec<(PathBuf, Option<Stamp>)>;
+type Held = Arc<Mutex<Option<(Key, Arc<Index>)>>>;
+
+const INDEX_SETS: usize = 8;
+
+pub struct Index {
+    units: Vec<Arc<Vec<Unit>>>,
+    at: Vec<(usize, usize)>,
+    bm: Bm25,
+}
+
+impl Index {
+    fn new(units: Vec<Arc<Vec<Unit>>>) -> Self {
+        let at = (units.iter().enumerate())
+            .flat_map(|(file, held)| (0..held.len()).map(move |unit| (file, unit)))
+            .collect();
+        let texts = units.iter().flat_map(|held| held.iter());
+        let bm = Bm25::new(texts.map(|unit| unit.text.as_str()));
+        Self { units, at, bm }
+    }
+
+    fn unit(&self, at: usize) -> Option<&Unit> {
+        let (file, unit) = *self.at.get(at)?;
+        self.units.get(file)?.get(unit)
+    }
 }
 
 /// Incident: every kernel kept its own copy of the repo's session text, and each query cloned
 /// all of it; one corpus per process, shared by reference, holds it once.
 static SHARED: LazyLock<Arc<Corpus>> = LazyLock::new(Arc::default);
-
-type Cached = ((u64, u64), Arc<Vec<Unit>>);
-
-/// Invariant: a torn-tail repair or fork replaces a session file by rename, which can keep its
-/// length and mtime; the inode is what moves.
-fn stamp_of(file: &Path) -> (u64, u64) {
-    use std::os::unix::fs::MetadataExt;
-    fs::metadata(file).map_or((0, 0), |meta| (meta.len(), meta.ino()))
-}
 
 impl Corpus {
     pub fn sessions(&self, sessions_dir: &Path, cwd: &Path) -> RepoSessions {
@@ -312,38 +332,63 @@ impl Corpus {
         found
     }
 
-    pub fn units(&self, files: &[PathBuf]) -> Vec<Arc<Vec<Unit>>> {
-        let Ok(mut cached) = self.files.lock() else {
-            return files.iter().map(|file| Arc::new(units_of(file))).collect();
-        };
-        let mut all = Vec::new();
+    /// Invariant: the map lock is held only to find a file's slot, so a cold parse blocks the
+    /// callers of that one file and no other search.
+    fn slot(&self, file: &Path) -> Arc<Slot<Vec<Unit>>> {
+        let mut slots = self.files.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(slots.entry(file.to_path_buf()).or_default())
+    }
+
+    pub fn index(&self, files: &[PathBuf]) -> Arc<Index> {
+        let mut key = Vec::with_capacity(files.len());
+        let mut units = Vec::with_capacity(files.len());
         for file in files {
-            let stamp = stamp_of(file);
-            let fresh = cached.get(file).is_some_and(|(seen, _)| *seen == stamp);
-            if !fresh {
-                cached.insert(file.clone(), (stamp, Arc::new(units_of(file))));
-            }
-            if let Some((_, units)) = cached.get(file) {
-                all.push(Arc::clone(units));
-            }
+            let stamp = Stamp::of(file, None);
+            units.push(match stamp.clone() {
+                Some(stamp) => match self
+                    .slot(file)
+                    .load(stamp, || Ok::<_, std::convert::Infallible>(units_of(file)))
+                {
+                    Ok(units) => units,
+                    Err(never) => match never {},
+                },
+                None => Arc::new(units_of(file)),
+            });
+            key.push((file.clone(), stamp));
         }
-        all
+        let cell = {
+            let mut sets = self.indexes.lock().unwrap_or_else(PoisonError::into_inner);
+            if sets.len() >= INDEX_SETS && !sets.contains_key(files) {
+                sets.clear();
+            }
+            Arc::clone(sets.entry(files.to_vec()).or_default())
+        };
+        let mut held = cell.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((seen, index)) = held.as_ref()
+            && *seen == key
+        {
+            return Arc::clone(index);
+        }
+        let index = Arc::new(Index::new(units));
+        if key.iter().all(|(_, stamp)| stamp.is_some()) {
+            *held = Some((key, Arc::clone(&index)));
+        }
+        index
     }
 }
 
 pub fn search_reply(
-    units: &[Arc<Vec<Unit>>],
+    index: &Index,
     query: &str,
     offset: usize,
     limit: usize,
     skipped: usize,
 ) -> Map<String, Value> {
     let limit = limit.clamp(1, PAGE_MAX);
-    let units: Vec<&Unit> = units.iter().flat_map(|file| file.iter()).collect();
-    let ranked = Bm25::new(units.iter().map(|unit| unit.text.as_str())).rank(query);
+    let ranked = index.bm.rank(query);
     let words = tokens(query);
     let rows = (ranked.iter().skip(offset).take(limit))
-        .filter_map(|(at, _)| units.get(*at).copied())
+        .filter_map(|(at, _)| index.unit(*at))
         .map(|unit| {
             let (text, cut) = yi_session::snippet(&unit.text, words.iter().map(String::as_str));
             let url = format!("history://{}/{}", unit.session, unit.entry);
@@ -500,8 +545,8 @@ pub fn register(registry: &mut crate::kernel::HostRegistry, sessions_dir: PathBu
             let (offset, limit) = page_of(&payload);
             tokio::task::spawn_blocking(move || {
                 let found = corpus.sessions(&sessions_dir, &cwd);
-                let units = corpus.units(&found.files);
-                search_reply(&units, &query, offset, limit, found.skipped)
+                let index = corpus.index(&found.files);
+                search_reply(&index, &query, offset, limit, found.skipped)
             })
             .await
             .map_err(|error| format!("history.search task failed: {error}"))
@@ -603,7 +648,7 @@ mod tests {
         let corpus = Corpus::default();
         let found = corpus.sessions(&sessions, &repo);
         assert_eq!((found.files.len(), found.skipped), (2, 1), "{found:?}");
-        let units = corpus.units(&found.files);
+        let units = corpus.index(&found.files);
         let reply = search_reply(&units, "scratch tmp", 0, 8, found.skipped);
         assert_eq!(reply["hits"][0]["session"], "s-lane");
         let entry = reply["hits"][0]["entryId"].as_str().unwrap().to_owned();
@@ -639,7 +684,7 @@ mod tests {
         let file = find_session(&sessions, &cwd, "s-one").ok_or("no session file")?;
         let corpus = Corpus::default();
         assert_eq!(
-            search_reply(&corpus.units(std::slice::from_ref(&file)), "alpha", 0, 8, 0)["total"],
+            search_reply(&corpus.index(std::slice::from_ref(&file)), "alpha", 0, 8, 0)["total"],
             1
         );
         let when = fs::metadata(&file)?.modified()?;
@@ -651,9 +696,87 @@ mod tests {
             .write(true)
             .open(&file)?
             .set_modified(when)?;
-        let units = corpus.units(&[file]);
+        let units = corpus.index(&[file]);
         assert_eq!(search_reply(&units, "alpha", 0, 8, 0)["total"], 0);
         assert_eq!(search_reply(&units, "gamma", 0, 8, 0)["total"], 1);
+        Ok(())
+    }
+
+    #[test]
+    fn history_search_finds_a_message_by_its_accented_word()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Scratch::new("yi-history-accent")?;
+        let (sessions, cwd) = (root.join("sessions"), root.join("cwd"));
+        fs::create_dir_all(&cwd)?;
+        let said = [
+            user("le résumé du noyau a échoué"),
+            user("the sum of the lane counts"),
+        ];
+        session(&sessions, &cwd, "s-one", &said);
+        let file = find_session(&sessions, &cwd, "s-one").ok_or("no session file")?;
+        let index = Corpus::default().index(std::slice::from_ref(&file));
+        let reply = search_reply(&index, "Résumé", 0, 8, 0);
+        assert_eq!(reply["total"], 1, "{reply:?}");
+        assert_eq!(reply["hits"][0]["snippet"], "le résumé du noyau a échoué");
+        Ok(())
+    }
+
+    #[test]
+    fn eight_threads_on_one_cold_corpus_build_one_index_and_agree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Scratch::new("yi-history-threads")?;
+        let (sessions, cwd) = (root.join("sessions"), root.join("cwd"));
+        fs::create_dir_all(&cwd)?;
+        for n in 0..40 {
+            session(
+                &sessions,
+                &cwd,
+                &format!("s-{n}"),
+                &[user(&format!("lane {n} buildhost"))],
+            );
+        }
+        let corpus = Corpus::default();
+        let files = corpus.sessions(&sessions, &cwd).files;
+        let built: Vec<Arc<Index>> = std::thread::scope(|scope| {
+            let runs: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| corpus.index(&files)))
+                .collect();
+            runs.into_iter().filter_map(|run| run.join().ok()).collect()
+        });
+        let first = built.first().ok_or("no thread finished")?;
+        assert_eq!(built.len(), 8);
+        assert!(built.iter().all(|index| Arc::ptr_eq(index, first)));
+        assert_eq!(search_reply(first, "buildhost", 0, 8, 0)["total"], 40);
+        Ok(())
+    }
+
+    #[test]
+    fn two_file_sets_keep_their_own_index_and_never_wait_on_each_other()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Scratch::new("yi-history-sets")?;
+        let (sessions, cwd) = (root.join("sessions"), root.join("cwd"));
+        fs::create_dir_all(&cwd)?;
+        for n in 0..6 {
+            session(&sessions, &cwd, &format!("s-{n}"), &[user("buildhost lane")]);
+        }
+        let corpus = Corpus::default();
+        let files = corpus.sessions(&sessions, &cwd).files;
+        let (a, b) = files.split_at(3);
+        let first = corpus.index(a);
+        let other = corpus.index(b);
+        assert!(Arc::ptr_eq(&first, &corpus.index(a)));
+        assert!(!Arc::ptr_eq(&first, &other));
+        let cell = {
+            let sets = corpus.indexes.lock().map_err(|_| "poisoned")?;
+            Arc::clone(sets.get(a).ok_or("no cell for set a")?)
+        };
+        let _building = cell.lock().map_err(|_| "poisoned")?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| tx.send(corpus.index(b)));
+            let served = rx.recv_timeout(std::time::Duration::from_secs(5));
+            assert!(served.is_ok_and(|index| Arc::ptr_eq(&index, &other)));
+        });
         Ok(())
     }
 
@@ -707,7 +830,7 @@ mod tests {
             let sessions = root.join(format!("sessions-{count}"));
             session(&sessions, &cwd, "s-one", &said);
             let file = find_session(&sessions, &cwd, "s-one").ok_or("no session file")?;
-            let units = Corpus::default().units(std::slice::from_ref(&file));
+            let units = Corpus::default().index(std::slice::from_ref(&file));
             let found = search_reply(&units, "limit", 0, PAGE_MAX, 0);
             let (hits, total) = yi_session::load_session(&file)?.grep_page("limit", 0, PAGE_MAX);
             for (reply, call) in [

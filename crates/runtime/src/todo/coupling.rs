@@ -9,6 +9,7 @@ use super::{Op, Target, TodoStore, text, tool};
 use crate::goal::StoreHandle;
 use crate::plan::loop_coupling::gate::eager_init;
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
+use crate::spec::SpecHandle;
 
 type EnvironmentHandle = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
@@ -55,6 +56,7 @@ pub struct Cycle {
     pub prompt_claims_impossible: bool,
     pub impossible: bool,
     pub artifact: bool,
+    pub spec_refusals: std::collections::BTreeMap<crate::spec::gate::Reason, u8>,
 }
 
 impl Cycle {
@@ -538,6 +540,8 @@ pub struct Options {
     pub eager: Eager,
     pub children_running: Arc<dyn Fn() -> bool + Send + Sync>,
     pub inner: Option<TurnCoupling>,
+    /// `--deadline`'s length: the spec rule's one exit other than a refusal.
+    pub deadline: Option<std::time::Duration>,
 }
 
 /// The ladder's last rung: the family reads its typed signal as `stuck`.
@@ -545,7 +549,7 @@ const LET_GO: &str = "let go";
 
 /// Interactive sessions check at `answer`: a green row closes with its evidence, a red stays open
 /// and names itself in the answer's run end.
-fn sweep_checks(todos: &TodoStore) {
+fn sweep_checks(todos: &TodoStore, checker: &crate::goal::Checker) {
     let Ok(cwd) = std::env::current_dir() else {
         return;
     };
@@ -560,7 +564,7 @@ fn sweep_checks(todos: &TodoStore) {
         let Some(check) = RowCheck::of(&item) else {
             continue;
         };
-        let Ok(ran) = super::check::run(&check.command, &cwd, &cancel) else {
+        let Ok(ran) = super::check::run(&check.command, &cwd, &cancel, checker) else {
             continue;
         };
         let label = item.label.clone();
@@ -676,12 +680,72 @@ fn claim_redrive(
     None
 }
 
+/// A request that enumerates items names requirements whether or not it says so: the fact is
+/// recorded before the model can claim the work, so the stop can refuse a spec that never came.
+fn spec_prelude(spec: &SpecHandle, text: &str, deliver: &Arc<dyn Fn(AgentMessage) + Send + Sync>) {
+    let Some(store) = spec() else {
+        return;
+    };
+    if store.spec().is_some() {
+        return;
+    }
+    let enumerated = crate::spec::enumerated_count(text);
+    if enumerated < crate::plan::loop_coupling::gate::ENUMERATED_ITEMS_MIN {
+        return;
+    }
+    store.note_request(enumerated);
+    deliver(custom(
+        crate::spec::SPEC_PRELUDE_TYPE,
+        crate::spec::prelude_text(text, None),
+        false,
+    ));
+}
+
+/// The spec gate owns the stop when a spec exists: a refusal names every red id with the
+/// check's own line, and past the cap with no clock the same refusal waives and says so.
+fn spec_stop(
+    cycle: &mut Cycle,
+    todos: &TodoStore,
+    store: &StoreHandle,
+    spec: Option<Arc<crate::spec::SpecStore>>,
+    left: Option<std::time::Duration>,
+) -> Option<AgentMessage> {
+    let spec = spec?;
+    match crate::spec::gate::judge(&spec, left) {
+        crate::spec::gate::Verdict::Pass => None,
+        crate::spec::gate::Verdict::Refuse { reason, text } => {
+            let count = cycle.spec_refusals.entry(reason).or_insert(0);
+            *count = count.saturating_add(1);
+            let fingerprint = todos.list().fingerprint();
+            if left.is_none() && *count > crate::spec::gate::REFUSAL_CAP {
+                record_intercept(
+                    store,
+                    cycle.rung,
+                    crate::spec::gate::WAIVED,
+                    &fingerprint,
+                    cycle.intercepts,
+                );
+                return None;
+            }
+            record_intercept(
+                store,
+                cycle.rung,
+                reason.as_str(),
+                &fingerprint,
+                cycle.intercepts,
+            );
+            Some(custom(INTERCEPT_CUSTOM_TYPE, text, false))
+        }
+    }
+}
+
 fn prompt_hook(
     cycle: Arc<Mutex<Cycle>>,
     todos: Arc<TodoStore>,
     deliver: Arc<dyn Fn(AgentMessage) + Send + Sync>,
     inner: Option<Arc<PromptChoiceFn>>,
     eager: Eager,
+    spec: SpecHandle,
 ) -> Arc<PromptChoiceFn> {
     Arc::new(move |prompt: &AgentMessage| {
         if let Ok(mut cycle) = cycle.lock() {
@@ -702,6 +766,7 @@ fn prompt_hook(
             cycle.prompt_claims_impossible = claims_impossible(text);
         }
         todos.resync();
+        spec_prelude(&spec, text, &deliver);
         let list = todos.list();
         let open = list.progress().open.saturating_add(list.progress().blocked) > 0;
         let mirrored = super::mirror::plan_of(&list).is_some();
@@ -721,11 +786,18 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
         eager,
         children_running,
         inner,
+        deadline,
     } = options;
+    let spec = session.spec_handle();
+    let started = std::time::Instant::now();
+    let left = move || deadline.map(|total| total.saturating_sub(started.elapsed()));
     let store = session.store_handle();
     let printed = session.environment_handle();
     let cycle = Arc::new(Mutex::new(rehydrate(&store)));
     let deliver = session.advisory_hook();
+    let checker = std::env::current_dir()
+        .ok()
+        .map(|cwd| session.checker(&cwd));
 
     let on_prompt: Arc<PromptChoiceFn> = prompt_hook(
         Arc::clone(&cycle),
@@ -733,6 +805,7 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
         Arc::clone(&deliver),
         inner.as_ref().map(|inner| Arc::clone(&inner.on_prompt)),
         eager,
+        Arc::clone(&spec),
     );
 
     let on_turn: Arc<TurnObserveFn> = {
@@ -797,8 +870,10 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             if called(snapshot.tool_results, "ask_user") {
                 return inner.as_ref().and_then(|inner| inner(snapshot));
             }
-            if called(snapshot.tool_results, "answer") {
-                sweep_checks(&todos);
+            if called(snapshot.tool_results, "answer")
+                && let Some(checker) = &checker
+            {
+                sweep_checks(&todos, checker);
             }
             let Ok(mut cycle) = cycle.lock() else {
                 return None;
@@ -818,6 +893,9 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 return None;
             }
             if let Some(message) = claim_redrive(&mut cycle, &todos, &store, &printed, &text) {
+                return Some(message);
+            }
+            if let Some(message) = spec_stop(&mut cycle, &todos, &store, spec(), left()) {
                 return Some(message);
             }
             let list = todos.list();

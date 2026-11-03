@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use proptest::prelude::{Strategy, any, prop};
 use proptest::test_runner::{Config, TestRunner};
 use serde_json::Value;
-use yi_runtime::plan::journal::{Damage, Fs, Journal, JournalError, RECORD_CAP, RealFs};
+use yi_runtime::journal::{Damage, Fs, Journal, JournalError, RECORD_CAP, RealFs};
 use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec,
 };
@@ -357,6 +357,7 @@ fn an_init_and_an_opening_set_replay_on_retry() -> TestResult {
                     spec: spec("cut")?,
                     state: yi_types::plan::doc::TodoStateName::Pending,
                 }],
+                keep_rest: false,
             },
             "r-set",
         )
@@ -1028,6 +1029,284 @@ fn a_memory_journal_sets_its_torn_tail_aside() -> Result<(), Box<dyn std::error:
         std::fs::read_to_string(&journal)?,
         whole,
         "the long torn run left the journal"
+    );
+    Ok(())
+}
+
+struct TraceFile(std::sync::Mutex<std::fs::File>);
+
+impl yi_types::trace::TraceSink for TraceFile {
+    fn write(&self, event: &str) {
+        if let Ok(mut file) = self.0.lock() {
+            let _ = std::io::Write::write_all(&mut *file, format!("{event}\n").as_bytes());
+        }
+    }
+}
+
+/// The trace sink is fixed at a process's first span, so a span count needs a fresh process:
+/// the parent reruns `test` under `YI_TRACE`, and the child gets its own trace file back.
+fn traced(test: &str) -> Result<Option<PathBuf>, Box<dyn Error>> {
+    if let Some(dir) = std::env::var_os("YI_TRACE") {
+        let trace = PathBuf::from(dir).join(format!("{}.jsonl", std::process::id()));
+        let file = std::fs::File::create(&trace)?;
+        yi_types::trace::install(
+            Box::new(TraceFile(std::sync::Mutex::new(file))),
+            std::process::id(),
+            0,
+        );
+        return Ok(Some(trace));
+    }
+    let dir = Scratch::new("yi-plan-journal-trace")?;
+    let child = yi_tools::command(std::env::current_exe()?)
+        .args(["--exact", test, "--nocapture"])
+        .env("YI_TRACE", &*dir)
+        .output()?;
+    let stdout = String::from_utf8_lossy(&child.stdout);
+    assert!(
+        child.status.success() && stdout.contains("1 passed"),
+        "{stdout}{}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    Ok(None)
+}
+
+fn reduces(trace: &Path) -> Result<usize, Box<dyn Error>> {
+    let text = std::fs::read_to_string(trace).unwrap_or_default();
+    let mut count = 0;
+    for line in text.lines() {
+        let event: Value = serde_json::from_str(line)?;
+        if event["name"] == "plan.reduce" {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn at(id: &PlanId, op: Op) -> OpRequest {
+    OpRequest {
+        plan: Some(id.clone()),
+        ..owner(op)
+    }
+}
+
+fn uncached(store: &PlanStore, id: &PlanId) -> Result<yi_types::plan::doc::Plan, Box<dyn Error>> {
+    let records = store.journal(id).read()?.records;
+    let state = yi_runtime::plan::state::reduce(&records)?;
+    let mut plan = state
+        .plans
+        .get(id)
+        .cloned()
+        .ok_or("the journal made no plan")?;
+    plan.journal = state
+        .mark
+        .map(|(seq, digest)| yi_types::plan::doc::JournalMark { seq, digest });
+    Ok(plan)
+}
+
+/// Thirty todos and two hundred records: each todo blocked and unblocked, then started and
+/// done, in order, until the journal holds two hundred, so the plan is still in flight.
+fn long_plan(engine: &PlanEngine) -> Result<PlanId, Box<dyn Error>> {
+    let todos = (0..30)
+        .map(|at| spec(&format!("step {at:02}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let id = engine
+        .apply(owner(Op::Init {
+            goal: GoalText::new("walk thirty steps, one at a time")?,
+            todos,
+        }))?
+        .plan
+        .id;
+    let mut ops = Vec::new();
+    for at in 0..30 {
+        let label = || TodoLabel::new(format!("step {at:02}"));
+        for _ in 0..if at < 19 { 3 } else { 2 } {
+            ops.push(Op::Block {
+                label: label()?,
+                on: yi_types::plan::doc::BlockedOn::External { probe: None },
+                note: format!("waiting on the review of step {at:02}"),
+                ask: None,
+            });
+            ops.push(Op::Unblock {
+                label: label()?,
+                answer: None,
+            });
+        }
+        ops.push(Op::Start { label: label()? });
+        ops.push(Op::Done {
+            label: label()?,
+            output: None,
+        });
+    }
+    for op in ops.into_iter().take(199) {
+        engine.apply(at(&id, op))?;
+    }
+    assert_eq!(engine.store().journal(&id).read()?.records.len(), 200);
+    Ok(id)
+}
+
+/// Sixteen first reads of one journal reduce it once, and every reader gets what an
+/// uncached reduce of the same bytes gives.
+#[test]
+fn sixteen_first_reads_of_one_journal_reduce_it_once() -> TestResult {
+    let Some(trace) = traced("plan_journal::sixteen_first_reads_of_one_journal_reduce_it_once")?
+    else {
+        return Ok(());
+    };
+    let dir = Scratch::new("yi-plan-journal-sixteen")?;
+    let written = PlanStore::open(dir.join("written"))?;
+    let id = long_plan(&PlanEngine::new(written.clone(), Arc::new(Stub)))?;
+    let store = PlanStore::open(dir.join("fresh"))?;
+    std::fs::create_dir_all(store.plan_dir(&id))?;
+    std::fs::copy(written.journal_path(&id), store.journal_path(&id))?;
+    let before = reduces(&trace)?;
+    let reads: Vec<_> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..16)
+            .map(|_| scope.spawn(|| store.read(&id).map_err(|error| error.to_string())))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().map_err(|_| "a reader panicked".to_owned()))
+            .collect()
+    });
+    let counted = reduces(&trace)?.saturating_sub(before);
+    let expected = uncached(&store, &id)?;
+    for read in reads {
+        assert_eq!(read??, expected);
+    }
+    assert_eq!(counted, 1, "sixteen readers of one unchanged journal");
+    Ok(())
+}
+
+/// A journal rewritten in place to the same length, with its mtime put back, reads as the
+/// new bytes, whether its last line is whole or torn.
+#[test]
+fn a_same_length_rewrite_with_its_mtime_restored_reads_the_new_plan() -> TestResult {
+    let dir = Scratch::new("yi-plan-journal-same-length")?;
+    let store = PlanStore::open(dir.to_path_buf())?;
+    let engine = PlanEngine::new(store.clone(), Arc::new(Stub));
+    let id = engine
+        .apply(owner(Op::Init {
+            goal: GoalText::new("ship the seam end to end")?,
+            todos: vec![spec("cut a")?],
+        }))?
+        .plan
+        .id;
+    let path = store.journal_path(&id);
+    let first = std::fs::read(&path)?;
+    engine.apply(at(
+        &id,
+        Op::Append {
+            todos: vec![spec("cut b")?],
+        },
+    ))?;
+    let b = std::fs::read(&path)?;
+    std::fs::write(&path, &first)?;
+    std::fs::remove_file(store.path(&id))?;
+    engine.apply(at(
+        &id,
+        Op::Append {
+            todos: vec![spec("cut c")?],
+        },
+    ))?;
+    let c = std::fs::read(&path)?;
+    assert_eq!(b.len(), c.len(), "the two histories are the same length");
+    use std::io::Write as _;
+    let rewrite_and_read_back = |b_tail: &[u8], c_tail: &[u8]| -> TestResult {
+        let mut b = b.clone();
+        let mut c = c.clone();
+        b.extend_from_slice(b_tail);
+        c.extend_from_slice(c_tail);
+        std::fs::write(&path, &c)?;
+        let mtime = std::fs::metadata(&path)?.modified()?;
+        assert_eq!(store.read(&id)?.todos[1].label.as_str(), "cut c");
+        let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+        (&file).write_all(&b)?;
+        file.set_times(std::fs::FileTimes::new().set_modified(mtime))?;
+        drop(file);
+        assert_eq!(std::fs::metadata(&path)?.modified()?, mtime);
+        std::fs::remove_file(store.path(&id))?;
+        assert_eq!(store.read(&id)?.todos[1].label.as_str(), "cut b");
+        assert_eq!(store.read(&id)?, uncached(&store, &id)?);
+        Ok(())
+    };
+    rewrite_and_read_back(b"", b"")?;
+    rewrite_and_read_back(b"{\"b\":", b"{\"c\":")?;
+    Ok(())
+}
+
+/// One `set` on a thirty-todo, two-hundred-record plan reduces the journal exactly twice:
+/// once to load, once to read back what it committed.
+#[test]
+fn a_set_on_a_long_plan_reduces_its_journal_exactly_twice() -> TestResult {
+    let Some(trace) =
+        traced("plan_journal::a_set_on_a_long_plan_reduces_its_journal_exactly_twice")?
+    else {
+        return Ok(());
+    };
+    let dir = Scratch::new("yi-plan-journal-long-set")?;
+    let store = PlanStore::open(dir.to_path_buf())?;
+    let engine = PlanEngine::new(store.clone(), Arc::new(Stub));
+    let id = long_plan(&engine)?;
+    let rows = store
+        .read(&id)?
+        .todos
+        .iter()
+        .map(|todo| {
+            Ok(yi_runtime::plan::ops::SetRow {
+                spec: spec(todo.label.as_str())?,
+                state: match yi_types::plan::doc::TodoStateName::of(&todo.state) {
+                    yi_types::plan::doc::TodoStateName::Running => {
+                        yi_types::plan::doc::TodoStateName::Done
+                    }
+                    other => other,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    let before = reduces(&trace)?;
+    let out = engine.apply(owner(Op::Set {
+        goal: None,
+        rows,
+        keep_rest: false,
+    }))?;
+    let counted = reduces(&trace)?.saturating_sub(before);
+    assert_eq!(out.plan, uncached(&store, &id)?);
+    assert_eq!(counted, 2, "one set reduced the journal {counted} times");
+    Ok(())
+}
+
+/// Dies with a `keep_rest` set replaying to a plan that lost the rows it left out: the record
+/// beside `records.jsonl` carries one row and the reduced plan still holds all three.
+#[test]
+fn a_keep_rest_set_replays_the_rows_it_left_out() -> TestResult {
+    let path = fixtures().join("journal/set-keep-rest.jsonl");
+    verify_chain(&path)?;
+    let reading = Journal::open(path, Arc::new(RealFs)).read()?;
+    let set = (reading.records.iter())
+        .find(|record| record.record.op == "set")
+        .ok_or("no set record")?;
+    assert_eq!(set.args["rows"].as_array().map(Vec::len), Some(1));
+    assert_eq!(set.args["keep_rest"], Value::Bool(true));
+    let state = yi_runtime::plan::state::reduce(&reading.records)?;
+    let plan = state.plans.into_values().next().ok_or("no plan")?;
+    let rows: Vec<(String, String)> = (plan.todos.iter())
+        .map(|todo| {
+            (
+                todo.label.to_string(),
+                yi_types::plan::doc::TodoStateName::of(&todo.state)
+                    .as_str()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("polish".to_owned(), "pending".to_owned()),
+            ("cut".to_owned(), "blocked".to_owned()),
+            ("ship".to_owned(), "pending".to_owned()),
+        ],
+        "the rows the set did not name stay"
     );
     Ok(())
 }

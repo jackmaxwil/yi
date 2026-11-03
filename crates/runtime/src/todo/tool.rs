@@ -12,7 +12,7 @@ pub const NAME: &str = "todo";
 
 pub const DESCRIPTION: &str = "Your task list; the user sees every change live. Create it before multi-step work: set with a checklist (`## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked). While a plan is open the plan is the list, and these ops move only your own items. One op per state change: start, done with evidence, block, unblock, drop, append, rm, view. A todo call rides with real work. Full guide: read(\"yi://tools/todo\").";
 
-pub const GUIDE: &str = "Your task list; the user sees every change live. Create it before multi-step work (init with phases, or set with a checklist: `## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked, two spaces nest one level). While a plan is open the plan is the list: its todos move by the plan tool, and these ops move only your own items. Every item is in one state and one op moves it: start (pending→running, one at a time), done with evidence (running→done, only after its check passed), block on user|external|child with a note on what unblocks it, unblock, drop with a reason, append (optionally under a parent), rm, view. Labels are verbatim and unique. A todo call rides with real work in the same message. Every result ends with next: lines you can copy. A row may carry a check (`start` with `check=`): `done` runs it and closes the row only on exit 0, the row staying running with the output otherwise, no call replaces or blanks a check, `drop` with a reason is the only way past a red, and `done`'s evidence becomes the command that passed.";
+pub const GUIDE: &str = "Task list; the user sees changes. Before multi-step work, `init` phases or `set` a checklist (`## Phase`, `- [ ] label`; states `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked; two spaces nest). An open plan owns its todos; these ops move only your items. Ops: `start` (pending→running, one at a time), `done` with evidence after its check passes, `block` on user|external|child or an address with an unblock note, `unblock`, `drop` with a reason, `append` (optionally under a parent), `rm`, `view`. Reminders block on `clock://at <ISO time>`, `clock://in 30m` or `file://<path>` and survive restarts. Repeat with `await rlm.subscribe(\"clock://<cron>\", create={\"label\": ...})` in ipython, never a system scheduler this session cannot see or stop. Labels are verbatim and unique. Batch todo calls with real work. Results end with next: lines to copy. `start check=` sets a row's check once; `done` runs it, closing only on exit 0 with the command as evidence, else leaving the row running with output. No call replaces or blanks it; only `drop` with a reason bypasses a red.";
 
 const OPS: [&str; 10] = [
     "set", "init", "append", "start", "done", "drop", "block", "unblock", "rm", "view",
@@ -240,6 +240,129 @@ pub fn unkey_op(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
     Cow::Owned(fixed)
 }
 
+fn arms_a_wait(word: &str) -> bool {
+    let word = word.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | '.'
+        )
+    });
+    word.starts_with(crate::schedule::clock::CLOCK_SCHEME)
+        || crate::schedule::channel::check_address(word).is_ok()
+}
+
+/// Incident: `on: "9am"` was stored as the blocker `Other`, which arms no wait, and the agent told
+/// the user the reminder was set; so a blocker naming a time is refused with the address it needs.
+fn names_a_time(word: &str) -> bool {
+    let lower = word.to_lowercase();
+    word.starts_with("at ")
+        || word.starts_with("clock:")
+        || crate::schedule::parse_local_ms(word, &crate::schedule::Zone::local()).is_some()
+        || crate::schedule::parse_schedule(word, yi_session::now_ms()).is_ok()
+        || a_clock_shape(&lower)
+        || lower.starts_with("in a ")
+        || lower.starts_with("in an ")
+        || a_day(&lower)
+        || [
+            "tomorrow", "tonight", "today", "noon", "midnight", "o'clock",
+        ]
+        .iter()
+        .any(|part| lower.contains(part))
+}
+
+/// A digit run that is a clock (`9:30`, `9am`) or a duration (`30min`, `2 hours`), never a bare
+/// number: `on: "thread 42"` and `on: "patch-3"` are ordinary blockers and stay `Other`.
+fn a_clock_shape(lower: &str) -> bool {
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    words.iter().any(|word| a_clock_word(word))
+        || words
+            .windows(2)
+            .any(|pair| a_clock_word(&format!("{}{}", pair[0], pair[1])))
+}
+
+const UNITS: [&str; 10] = [
+    "m", "min", "mins", "minute", "minutes", "h", "hr", "hrs", "hour", "hours",
+];
+
+fn a_clock_word(word: &str) -> bool {
+    let word = word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != ':');
+    let rest = word.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    if rest.len() == word.len() {
+        return false;
+    }
+    let rest = rest.trim_end_matches('.');
+    if let Some(after) = rest.strip_prefix(':') {
+        return after.chars().take(2).count() == 2
+            && after.chars().take(2).all(|ch| ch.is_ascii_digit());
+    }
+    let rest = rest.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    ["am", "pm"].contains(&rest) || UNITS.contains(&rest)
+}
+
+/// Invariant: `BlockedOn::Other` arms nothing, so a blocker word naming a day is refused too.
+fn a_day(lower: &str) -> bool {
+    const DAYS: [&str; 7] = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ];
+    let words: Vec<&str> = lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.iter().any(|word| {
+        DAYS.contains(word)
+            || [
+                "eod", "weekend", "weekday", "evening", "tomorrow", "tonight",
+            ]
+            .contains(word)
+    }) || (words.contains(&"next") && words.contains(&"week"))
+}
+
+fn refuse_a_wait_outside_on(op: &str, args: &Map<String, Value>) -> Result<(), ArgError> {
+    // Incident: `set` with `on=exec://…` left the row running and armed nothing, while the agent
+    // told the user the watch was live.
+    if op != "block" && args.contains_key("on") {
+        return Err(ArgError::Malformed {
+            op: "block",
+            field: "on",
+            cause: format!("`on` belongs to block, not {op}: make the item, then block it"),
+        });
+    }
+    // Incident: a wait written in `note`, or as the value of `block`, left no `on`, so the row
+    // waited on the user, nothing fired, and the agent told the user the reminder was set.
+    if op == "block" && !args.contains_key("on") {
+        for field in ["note", "block"] {
+            let Some(text) = string(args, field) else {
+                continue;
+            };
+            let cause = if text.split_whitespace().any(arms_a_wait) {
+                format!(
+                    "`{field}` names an address, but only `on` arms one, so nothing would fire; \
+                     pass on=<the address>, or on=user if it waits on the user"
+                )
+            } else if text.split_whitespace().any(names_a_time) || names_a_time(&text) {
+                format!(
+                    "`{field}` names a time, but only `on` arms one, so nothing would fire; \
+                     pass on=`clock://at <ISO time>`, or on=user if it waits on the user"
+                )
+            } else {
+                continue;
+            };
+            return Err(ArgError::Malformed {
+                op: "block",
+                field,
+                cause,
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
     let args = &unkey_op(args);
     let op = string(args, "op")
@@ -252,6 +375,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         "set" if !list && item_list(args).is_some() => "init",
         given => given,
     };
+    refuse_a_wait_outside_on(op, args)?;
     Ok(match op {
         "set" => Op::Set {
             list: need_string(args, "set", "list")?,
@@ -330,6 +454,25 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                         filter: string(args, "filter"),
                     }
                 }
+                // Incident: `at 2026-11-02T09:00:00-08:00` with no scheme was kept as a blocker
+                // nothing fires, and the agent told the user the reminder was set.
+                BlockedOn::Other(word) if names_a_time(&word) => {
+                    let instant = word.strip_prefix("at ").filter(|rest| {
+                        crate::schedule::parse_local_ms(rest, &crate::schedule::Zone::local())
+                            .is_some()
+                    });
+                    let suggested = instant.map_or_else(
+                        || "clock://at <ISO time>, e.g. clock://at 2026-11-02T09:00:00".to_owned(),
+                        |rest| format!("clock://at {rest}"),
+                    );
+                    return Err(ArgError::Malformed {
+                        op: "block",
+                        field: "on",
+                        cause: format!(
+                            "`{word}` is a time, so nothing would fire it; write `{suggested}`"
+                        ),
+                    });
+                }
                 on => on,
             },
             note: need_string(args, "block", "note")?,
@@ -372,11 +515,20 @@ pub enum TodoToolError {
 
 pub struct TodoTool {
     store: Arc<TodoStore>,
+    checker: crate::goal::Checker,
 }
 
 impl TodoTool {
     pub fn new(store: Arc<TodoStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            checker: crate::goal::Checker::default(),
+        }
+    }
+
+    pub fn with_checker(mut self, checker: crate::goal::Checker) -> Self {
+        self.checker = checker;
+        self
     }
 
     fn parse(&self, args: &Map<String, Value>) -> Result<Op, ArgError> {
@@ -439,7 +591,7 @@ impl TodoTool {
             Op::Start {
                 check: Some(command),
                 ..
-            } => match super::check::refused(command) {
+            } => match super::check::refused(command, &context.cwd) {
                 Some(reason) => Err(TodoError::Check { reason }.into()),
                 None => Ok(None),
             },
@@ -450,8 +602,13 @@ impl TodoTool {
                 }
                 let mut red: Option<String> = None;
                 for (label, command) in rows {
-                    let ran = super::check::run(&command, &context.cwd, &context.cancelled)
-                        .map_err(|reason| TodoError::Check { reason })?;
+                    let ran = super::check::run(
+                        &command,
+                        &context.cwd,
+                        &context.cancelled,
+                        &self.checker,
+                    )
+                    .map_err(|reason| TodoError::Check { reason })?;
                     let green = ran.green;
                     self.store.apply(
                         Op::MarkCheck {

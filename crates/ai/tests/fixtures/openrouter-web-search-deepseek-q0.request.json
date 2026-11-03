@@ -1,0 +1,26 @@
+{
+ "model": "deepseek/deepseek-v4-flash",
+ "stream": false,
+ "messages": [
+  {
+   "role": "system",
+   "content": "Perform exactly one web search for the user's query, then answer in at most 150 words using only what the search returned, citing each claim with a markdown link to its source."
+  },
+  {
+   "role": "user",
+   "content": "What changed in the latest stable Rust release?"
+  }
+ ],
+ "tools": [
+  {
+   "type": "openrouter:web_search",
+   "parameters": {
+    "engine": "exa",
+    "mode": "auto",
+    "max_results": 5,
+    "max_total_results": 5,
+    "max_uses": 1
+   }
+  }
+ ]
+}

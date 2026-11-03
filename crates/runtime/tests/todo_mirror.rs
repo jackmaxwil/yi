@@ -363,6 +363,7 @@ fn a_mirrored_list_with_a_running_child_does_not_nag() -> TestResult {
         &session,
         Arc::clone(&todos),
         Options {
+            deadline: None,
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
@@ -1004,10 +1005,10 @@ fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
     }
     Ok(())
 }
-/// Dies with the 2s wait budget expiring under plan churn: a stale armed unblock used to
-/// retry until it won; now it refuses and the blocked row stays blocked for a later fire.
+/// A quiet revision window before 2s may unblock; otherwise churn exhausts the budget and the
+/// blocked row stays blocked. A success after the budget is the pre-fix infinite retry.
 #[test]
-fn a_wait_under_constant_plan_churn_refuses_at_the_budget() -> TestResult {
+fn a_wait_under_constant_plan_churn_never_unblocks_after_the_budget() -> TestResult {
     let dir = Scratch::new("yi-todo-mirror-budget")?;
     let (_session, todos, engine) = mirrored(&dir)?;
     let engine = Arc::new(engine);
@@ -1034,9 +1035,11 @@ fn a_wait_under_constant_plan_churn_refuses_at_the_budget() -> TestResult {
         std::thread::sleep(std::time::Duration::from_millis(2600));
         timer.store(true, std::sync::atomic::Ordering::Relaxed);
     });
+    let started = std::time::Instant::now();
     let carried = todos.unblock_in(&plan.id, &gate, &address);
+    let elapsed = started.elapsed();
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let churned = churners
+    churners
         .into_iter()
         .map(|thread| {
             thread
@@ -1045,26 +1048,24 @@ fn a_wait_under_constant_plan_churn_refuses_at_the_budget() -> TestResult {
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
-    let error = match carried {
-        Err(error) => error,
+    let blocked = match carried {
         Ok(_) => {
-            return Err(
-                format!("the carry unblocked the row under constant churn: {churned:?}").into(),
+            assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+            false
+        }
+        Err(error) => {
+            assert!(elapsed >= std::time::Duration::from_secs(2), "{elapsed:?}");
+            assert!(
+                error.contains("still waits on clock://at 2026-09-29T09:00Z")
+                    && error.contains("the plan kept changing for 2s"),
+                "{error}"
             );
+            true
         }
     };
-    assert!(
-        error.contains("still waits on clock://at 2026-09-29T09:00Z")
-            && error.contains("the plan kept changing for 2s"),
-        "{error}"
-    );
     let fresh = engine.store().read(&engine.store().roots()?[0])?;
     let row = fresh.todo(&gate).ok_or("gate")?;
-    assert!(
-        matches!(row.state, TodoState::Blocked { .. }),
-        "the plan forgot the block: {:?}",
-        row.state
-    );
+    assert_eq!(matches!(row.state, TodoState::Blocked { .. }), blocked);
     Ok(())
 }
 
