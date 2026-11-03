@@ -1,4 +1,6 @@
 ---
+version: 0.887.0
+decisions: D537
 issue: Closes #1940
 growth: +197 is the flight states, the bounded capture and the record. Weighed for deletion: a capture per call on the tool's own thread, which is 42-96 ms a call in a tool's wait; and no guard, which leaves a tree too large for it running git after every call
 raise: tests +215, comments +11, crate runtime +121, crate tools +44, crate types +16

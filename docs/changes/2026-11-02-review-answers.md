@@ -1,4 +1,5 @@
 ---
+version: 0.889.0
 issue: Closes #1941
 raise: tests +112, crate runtime +40
 ---
