@@ -8,6 +8,7 @@ mod checker;
 mod own;
 #[path = "../../types/tests/support/recorded.rs"]
 mod recorded;
+mod reminder_zone;
 #[path = "../../types/tests/support/repo.rs"]
 mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
@@ -20,6 +21,8 @@ mod support;
 mod upstream;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/wiring.rs"]
+mod wiring;
 #[path = "support/worktree.rs"]
 mod worktree;
 
@@ -34,6 +37,7 @@ mod cache_miss;
 mod caps_runtime;
 mod channel_e2e;
 mod check_probe;
+mod child_forks;
 mod child_trail;
 mod child_transcript;
 mod claims;
@@ -51,6 +55,7 @@ mod fetch_grep;
 mod fetch_session;
 mod gate;
 mod gate_battery;
+mod git_lane;
 mod goal_e2e;
 mod host_facts;
 mod injection_canary;
@@ -64,6 +69,7 @@ mod kernel_tools;
 mod lanes;
 mod levers;
 mod memory_journal;
+mod merge_tree;
 mod node;
 mod permission_auto;
 mod permission_scope;
@@ -83,6 +89,7 @@ mod plan_readers;
 mod plan_recovery;
 mod plan_timer;
 mod plan_trace;
+mod plan_vectors;
 mod plan_verify;
 mod plan_walkthrough;
 mod plan_why;
@@ -116,8 +123,10 @@ mod title;
 mod todo_coupling;
 mod todo_e2e;
 mod todo_mirror;
+mod tree_verbs;
 mod undo_to;
 mod wall_e2e;
+mod warm_checks;
 mod web_search;
 mod worker_prompt;
 

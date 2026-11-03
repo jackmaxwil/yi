@@ -16,6 +16,9 @@ use crate::schedule::GateFn;
 use crate::session::AgentSession;
 
 mod build;
+pub(crate) mod tree;
+pub use build::{Fork, Isolation};
+use build::{parse_fork, parse_isolation};
 pub mod models;
 pub mod reader;
 mod record;
@@ -38,10 +41,7 @@ pub(crate) struct ChildRecord {
     session_dir: PathBuf,
     pub(crate) trail: Option<PathBuf>,
     spawned_by: Option<String>,
-    pub(crate) worktree: Option<crate::lane::Lane>,
-    /// The worker share of the lane pool this child's checkout was taken from; dropped with
-    /// the lane, so a settled child stops holding a slot nobody is standing in.
-    pub(crate) lane_permit: Option<crate::plan::capacity::Permit>,
+    pub(crate) worktree: Option<crate::lane::fork::ChildTree>,
     /// The container this child's bash runs in; it goes when the record does (D286).
     _container: Option<crate::node::Container>,
     /// How the worktree goes at reap, once the engine has journaled it (plan section 6.6).
@@ -245,7 +245,7 @@ pub struct SubagentHost {
     /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
     pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
     kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
-    pub(crate) checker: std::sync::OnceLock<crate::goal::Checker>,
+    checker: std::sync::OnceLock<crate::goal::Checker>,
 }
 
 pub(crate) fn random_suffix() -> Result<String, String> {
@@ -274,65 +274,6 @@ fn default_session_name(prompt: &str, child_id: &str) -> String {
         format!("subagent-{child_id}")
     } else {
         format!("{slug}-{child_id}")
-    }
-}
-
-/// How much parent history seeds a child's transcript. `LastN(n)` counts turn boundaries
-/// rather than messages, so a child never opens on half of an exchange (§11).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fork {
-    None,
-    All,
-    LastN(u64),
-}
-
-/// Whether a child edits the parent's checkout or gets a git worktree of its own (§11); a
-/// container child gets the same worktree and runs its bash in a container over it (D286).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Isolation {
-    None,
-    Worktree,
-    Container(String),
-}
-
-fn parse_isolation(kwargs: &Map<String, Value>) -> Result<Isolation, String> {
-    match kwargs.get("isolation") {
-        None | Some(Value::Null) => Ok(Isolation::None),
-        Some(Value::String(value)) => match value.trim() {
-            "none" => Ok(Isolation::None),
-            "worktree" => Ok(Isolation::Worktree),
-            other => match crate::node::image_of(other) {
-                Some(image) => Ok(Isolation::Container(image?.to_owned())),
-                None => Err(format!(
-                    "rlm.run isolation must be \"none\", \"worktree\" or \"container:<image>\", got {other}"
-                )),
-            },
-        },
-        Some(other) => Err(format!("rlm.run isolation must be a string, got {other}")),
-    }
-}
-
-fn parse_fork(kwargs: &Map<String, Value>) -> Result<Fork, String> {
-    match kwargs.get("fork") {
-        None | Some(Value::Null) => Ok(Fork::None),
-        Some(Value::String(value)) => match value.trim() {
-            "none" => Ok(Fork::None),
-            "all" => Ok(Fork::All),
-            other => other
-                .parse::<u64>()
-                .ok()
-                .filter(|turns| *turns > 0)
-                .map(Fork::LastN)
-                .ok_or_else(|| {
-                    format!("rlm.run fork must be \"none\", \"all\", or a positive turn count, got {other}")
-                }),
-        },
-        Some(Value::Number(number)) => number
-            .as_u64()
-            .filter(|turns| *turns > 0)
-            .map(Fork::LastN)
-            .ok_or_else(|| format!("rlm.run fork turn count must be positive, got {number}")),
-        Some(other) => Err(format!("rlm.run fork must be a string or number, got {other}")),
     }
 }
 
@@ -611,11 +552,13 @@ impl SubagentHost {
         if let Isolation::Container(image) = &isolation {
             crate::node::placeable(&self.options.home, image)?;
         }
-        let (worktree, lane_permit, left_out) = match isolation {
-            Isolation::None => (None, None, None),
+        let (worktree, left_out) = match isolation {
+            Isolation::None => (None, None),
             Isolation::Worktree | Isolation::Container(_) => {
-                let (lane, permit, left_out) = self.claim_child_lane(&child_id)?;
-                (Some(lane), Some(permit), left_out)
+                let in_image = matches!(isolation, Isolation::Container(_));
+                let (tree, rows) = self.fork_child_tree(&child_id, &kwargs, in_image)?;
+                let left_out = (!rows.is_empty()).then(|| rows.join("\n"));
+                (Some(tree), left_out)
             }
         };
         let cwd = worktree.as_ref().map(|lane| lane.path());
@@ -655,7 +598,6 @@ impl SubagentHost {
                     trail,
                     spawned_by: self.spawning_cell(),
                     worktree,
-                    lane_permit,
                     _container: container,
                     disposition: None,
                     managed: false,
@@ -1087,11 +1029,5 @@ impl SubagentHost {
             .unwrap_or_default();
             Box::pin(async move { Ok(reply) })
         });
-    }
-}
-
-impl crate::fetch::MemberTrees for SubagentHost {
-    fn cwd_of(&self, agent: &str) -> Option<PathBuf> {
-        SubagentHost::cwd_of(self, agent)
     }
 }

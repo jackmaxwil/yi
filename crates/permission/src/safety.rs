@@ -364,6 +364,8 @@ fn git_class(argv: &[String]) -> Class {
                 || given(argv, "-f")
                 || has("--delete")
                 || has("--prune")
+                // `+x` forces and `:x` deletes, neither of which the outbox can carry.
+                || argv.iter().skip(1).any(|word| word.starts_with(['+', ':']))
         }
         "branch" | "tag" => given(argv, "-D") || given(argv, "-d") || has("--delete"),
         "stash" => matches!(
@@ -399,7 +401,7 @@ fn git_class(argv: &[String]) -> Class {
 /// runs `uploadpack` from `-c` on the host, which a proof must never send out unasked.
 fn git_network(argv: &[String]) -> bool {
     match git_subcommand(argv) {
-        Some("clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule") => true,
+        Some("submodule") => true,
         Some("remote") => (argv.iter())
             .skip_while(|token| *token != "remote")
             .skip(1)
@@ -414,6 +416,27 @@ fn subcommand_after<'a>(argv: &'a [String], after: &str) -> Option<&'a str> {
     argv.get(index.saturating_add(1))
         .map(String::as_str)
         .filter(|token| !token.starts_with('-'))
+}
+
+/// Flags that move an install out of the tree and the package caches, where the sandbox would
+/// refuse it after the download; `--location=global` is npm's long spelling of `-g`.
+const OUTSIDE_THE_TREE: [&str; 7] = [
+    "-g",
+    "--global",
+    "--location=global",
+    "--user",
+    "--target",
+    "--prefix",
+    "--root",
+];
+
+fn installs_outside(argv: &[String]) -> bool {
+    argv.iter().any(|token| {
+        let flag = token
+            .split_once('=')
+            .map_or(token.as_str(), |(flag, _)| flag);
+        OUTSIDE_THE_TREE.contains(&token.as_str()) || OUTSIDE_THE_TREE.contains(&flag)
+    })
 }
 
 fn cargo_class(argv: &[String]) -> Class {
@@ -496,7 +519,7 @@ pub fn classify(argv: &[String]) -> Class {
     if DESTRUCTIVE.binary_search(&name).is_ok() {
         return Class::Destructive;
     }
-    if name == crate::desktop::PROGRAM {
+    if name == crate::desktop::PROGRAM || name == crate::browser::PROGRAM {
         return match crate::desktop::judge(argv) {
             Some(crate::desktop::Judged::Free) => Class::Safe,
             _ => Class::Destructive,
@@ -504,6 +527,7 @@ pub fn classify(argv: &[String]) -> Class {
     }
     let class = match name {
         "git" => git_class(argv),
+        "fgj" | "gh" => Class::Egress,
         "cargo" => cargo_class(argv),
         "find" => find_class(argv),
         "ripwire"
@@ -518,7 +542,14 @@ pub fn classify(argv: &[String]) -> Class {
         }
         "uniq" if argv.len() > flags(argv).len().saturating_add(2) => Class::Unknown,
         "grep" | "awk" => Class::Safe,
-        "npm" | "pnpm" | "yarn" | "pip" | "pip3" | "brew" | "gem" => match subcommand(argv) {
+        "npm" | "pnpm" | "yarn" | "pip" | "pip3" => match subcommand(argv) {
+            Some("publish" | "link" | "login" | "global") => Class::Destructive,
+            Some("install" | "uninstall" | "remove" | "add") if installs_outside(argv) => {
+                Class::Destructive
+            }
+            _ => Class::Unknown,
+        },
+        "brew" | "gem" => match subcommand(argv) {
             Some("install" | "uninstall" | "remove" | "add" | "publish" | "link") => {
                 Class::Destructive
             }
@@ -636,7 +667,7 @@ pub fn verdict_of(segments: &[Vec<String>]) -> Verdict {
                     ),
                 };
             }
-            Class::Egress => {
+            Class::Egress if scope(argv).is_some_and(|scope| scope.starts_with("git")) => {
                 return Verdict::Ask {
                     reason: format!(
                         "`git {}` needs the network; a contained run has none",
@@ -644,6 +675,11 @@ pub fn verdict_of(segments: &[Vec<String>]) -> Verdict {
                             .and_then(|at| git_subcommand(argv.get(at..)?))
                             .unwrap_or_default()
                     ),
+                };
+            }
+            Class::Egress => {
+                return Verdict::Ask {
+                    reason: format!("`{shown}` needs a forge login; a contained run has none"),
                 };
             }
             Class::Unknown => {
@@ -668,9 +704,9 @@ const KEYWORDS: [&str; 12] = [
 pub(crate) const OPENERS: [&str; 8] = ["!", "do", "done", "else", "esac", "fi", "then", "{"];
 pub(crate) const HEADERS: [&str; 6] = ["case", "elif", "for", "if", "until", "while"];
 
-const VERB_PROGRAMS: [&str; 16] = [
-    "brew", "bun", "cargo", "docker", "gem", "git", "go", "just", "make", "npm", "pip", "pip3",
-    "pnpm", "rustup", "uv", "yarn",
+const VERB_PROGRAMS: [&str; 18] = [
+    "brew", "bun", "cargo", "docker", "fgj", "gem", "gh", "git", "go", "just", "make", "npm",
+    "pip", "pip3", "pnpm", "rustup", "uv", "yarn",
 ];
 
 /// `argv` past the wrappers that run another program (`timeout`, `nice`, `env`, assignments).
@@ -884,19 +920,35 @@ pub fn command_segments(command: &str) -> Vec<Vec<String>> {
 /// Why one segment cannot run contained: `network` for a network program or git verb, `installs`
 /// for an install verb (a recipe named `install` writes outside the tree as a package manager does).
 pub fn host_need(argv: &[String]) -> Option<&'static str> {
-    if argv
-        .first()
-        .is_some_and(|argv0| argv0 == crate::desktop::PROGRAM)
-    {
-        return Some("desktop control");
+    match argv.first().map(String::as_str) {
+        Some(crate::desktop::PROGRAM) => return Some("desktop control"),
+        Some(crate::browser::PROGRAM) => return Some("browser control"),
+        _ => {}
     }
     let scope = scope(argv)?;
     let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
-    let git_network = name == "git" && unwrapped(argv).is_some_and(git_network);
+    // A forced push or a delete is what the outbox cannot carry, so its approval goes out.
+    let forced = |argv: &[String]| {
+        git_subcommand(argv) == Some("push") && git_class(argv) == Class::Destructive
+    };
+    let git_network =
+        name == "git" && unwrapped(argv).is_some_and(|argv| git_network(argv) || forced(argv));
     if HOST_PROGRAMS.contains(&name) || git_network {
         return Some("network");
     }
-    (name != "git" && matches!(verb, "add" | "install" | "login" | "publish")).then_some("installs")
+    if matches!(name, "fgj" | "gh") {
+        return Some("forge");
+    }
+    // Into the tree, through the proxy, with the package caches writable: nothing to leave for.
+    let contained = matches!(verb, "add" | "install")
+        && !installs_outside(argv)
+        && matches!(
+            name,
+            "npm" | "pnpm" | "yarn" | "pip" | "pip3" | "uv" | "bun"
+        )
+        || (name == "cargo" && verb == "add");
+    (name != "git" && !contained && matches!(verb, "add" | "install" | "login" | "publish"))
+        .then_some("installs")
 }
 
 /// Options that move a command's tree or repository, and so its blast radius, elsewhere.
@@ -924,7 +976,7 @@ pub(crate) fn grant_scope(command: &str) -> Option<String> {
         match crate::desktop::judge(argv) {
             Some(crate::desktop::Judged::Free) => continue,
             Some(crate::desktop::Judged::App(app)) => {
-                scopes.push(format!("{} on {app}", crate::desktop::PROGRAM));
+                scopes.push(format!("{argv0} on {app}"));
                 continue;
             }
             Some(_) => return None,

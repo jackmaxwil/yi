@@ -2,12 +2,15 @@ pure loop + event enum | `loop_events::tool_turn_executes_and_continues`
 pure loop + event enum | `loop_events::a_bare_length_stop_is_re_driven_twice_then_ends_on_the_third`
 pure loop + event enum | `interrupt::an_abort_during_the_cut_drain_returns_at_once`
 pure loop + event enum | `pump_stop::an_abort_stops_the_provider_pump_at_the_next_event`
+pure loop + event enum | `loop_events::a_400_body_ends_the_turn_with_no_retry_and_no_steer`
 pure loop + event enum | `openrouter::an_aborted_turn_is_settled_from_the_record`
 entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
+context P1–P19; prefix-aligned P7 | `compaction_faux::compaction_floors_a_host_notice_and_keeps_the_waking_letter`
+context P1–P19; prefix-aligned P7 | `primitives::each_host_notice_row_dies_once_read_and_an_unregistered_kind_survives`
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_render_compaction_spends_no_summarizer_request`
 context P1–P19; prefix-aligned P7 | `compaction_faux::the_retention_floor_keeps_the_users_typed_words_and_drops_host_text` (T1)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_second_compaction_while_one_is_in_flight_is_refused` (T1)
@@ -41,6 +44,9 @@ bash reduce (launch set) | `tools::a_line_past_the_clip_is_clipped_and_the_row_n
 bash reduce (launch set) | `session_faux::a_job_that_exits_mid_turn_lands_its_view_as_a_poll_reads_it`
 bash reduce (launch set) | `kernel_cell::a_shell_cell_keeps_its_failing_test_and_summary_inline`
 bash reduce (launch set) | `kernel_data_surface::a_cut_cell_stream_names_a_file_with_every_character`
+read-only shell reads steer to `read` and `grep` | `tools::a_shell_read_names_the_dedicated_tool_first`
+read-only shell reads steer to `read` and `grep` | `tools::a_write_a_vcs_or_build_call_gets_no_dedicated_tool_row`
+bash reduce (launch set) | `journeys::an_exiting_ask_kills_its_background_bash_process_group` (T2)
 file checkpoints + /undo | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 file checkpoints + /undo | `tools::a_capture_leaves_out_a_home_that_lives_inside_the_project`
 kernel + ipython + rlm() subagents | `reader_retry::schema_failure_gets_one_retry_and_a_second_failure_is_refused`
@@ -207,6 +213,7 @@ loud caps on model-facing text | `orient::the_skeleton_scan_names_where_it_stopp
 loud caps on model-facing text | `fetch_session::an_unpaged_local_read_past_its_cap_says_where_it_was_cut`
 loud caps on model-facing text | `tools::a_grep_page_stops_on_its_byte_cap_between_hits`
 loud caps on model-facing text | `tools::a_grep_page_cut_by_its_hit_cap_names_the_cap`
+loud caps on model-facing text | `tools::a_refused_file_is_named_rather_than_no_matches`
 loud caps on model-facing text | `tools::a_grep_page_over_recorded_long_lines_pages_exactly`
 loud caps on model-facing text | `ext_e2e::an_instruction_file_over_its_budget_names_the_read_that_gets_the_rest`
 trigger rules (gate + remind) | `rules_e2e::result_scope_fires_on_the_output_not_the_args`
@@ -289,6 +296,9 @@ console settings pane | `tests::a_frame_places_its_images_inside_its_own_update`
 console chat pane images | `app::ids::tests::the_hundredth_pane_draws_below_the_avatar_ids_and_the_next_waits_for_a_close`
 console chat pane images | `app::ids::tests::every_close_frees_its_slot_across_250_opens` (T0)
 console title animation | `console_drive::a_console_start_is_covered_by_the_title_and_any_key_gives_the_screen_back` (T1)
+console session avatars | `avatar::tests::the_real_ledger_never_gives_two_sessions_one_mark` (T0)
+console session avatars | `avatar::tests::at_most_one_pair_of_ledger_marks_sits_within_two_cells` (T0)
+console session avatars | `avatar::tests::the_mark_inks_its_on_cells_and_leaves_the_margin_clear` (T0)
 console title animation | `title::the_cover_replaces_every_cell_while_it_holds`
 console title animation | `title::the_name_lands_on_the_small_mark_and_the_screen_comes_back`
 console title animation | `title::the_small_mark_waits_for_the_big_one_to_land`
@@ -413,6 +423,8 @@ lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an e
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `kernel_lane::a_conflicting_merge_names_the_files_too`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_ref_only_hand_back_lists_the_edits_it_kept`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_fast_forward_hand_back_keeps_nothing_and_says_so_by_omission`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_claim_rebuilds_a_slot_git_still_registers_without_its_directory`
+lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_resume_past_a_deleted_lanes_directory_reclaims_a_branch_a_dead_slot_registers`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_conflicting_hand_back_names_the_branch_it_kept_and_how_to_use_it`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_checked_hand_back_merges_only_a_lane_whose_check_passes`
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_check_past_the_deadline_is_cut_while_the_executor_serves`
@@ -570,6 +582,12 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+pure loop + event enum | `loop_events::a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail`
+goals + autonomous | `goal_e2e::three_idle_continuations_reach_the_next_request_as_one_newest_copy`
+extension system + yard + native voice/method | `ext_e2e::one_instruction_file_attaches_for_two_ruler_renders`
+GitHub-to-forge intake | `scripts/intake/journey.py` (T2)
+model recommender | `cli_surfaces::models_recommend_prints_three_tagged_picks_from_the_offline_snapshot` (T0)
+model recommender | `recommend::popularity_cannot_flip_a_clearly_better_ratio` (T0)
 catastrophic-path denylist M10 | `decide::yolo_writes_a_system_config_but_not_a_key_or_the_git_dir`
 permission modes/rules/holds, deterministic auto | `permission_auto::auto_asks_before_an_uncontained_python_cell`
 permission modes/rules/holds, deterministic auto | `bash::a_command_that_writes_behind_a_read_verb_is_not_a_read`
@@ -593,4 +611,21 @@ console settings pane | `drive::a_press_on_a_settings_row_saves_the_control_it_n
 `agent-desktop` plugin | `skills_e2e::the_desktop_pointer_is_listed_only_when_its_skill_less_plugin_is_installed`
 contained network: a per-spawn egress proxy | `sandbox_seam::a_contained_bash_leaves_through_its_proxy_and_hears_what_it_refused`
 contained network: a per-spawn egress proxy | `kernel_sandbox::a_contained_kernel_leaves_through_its_proxy_and_hears_what_it_refused`
+contained git: a mirror and an outbox | `git_lane::contained::a_contained_push_lands_with_no_question_and_a_fetch_reads_the_new_branch`
+contained git: a mirror and an outbox | `kernel_sandbox::a_contained_kernels_push_is_forwarded_and_named`
+a child's fork: a linked worktree per child, cut at HEAD, third-party cargo units carried | `child_forks::a_child_builds_its_own_tree_and_reuses_only_what_names_nothing_in_it`
+a child's fork: a linked worktree per child, cut at HEAD, third-party cargo units carried | `lanes::a_discard_stops_what_still_runs_in_the_tree_and_says_so`
+`Tree`: fork, check, merge and rewind files from the kernel | `tree_verbs::a_merge_folds_what_it_can_names_what_it_cannot_and_commits_nothing`
+Linux containment: Landlock and the git-file seal | `contain::kernel::a_write_outside_the_roots_and_a_read_of_a_store_are_refused`
+Linux containment: Landlock and the git-file seal | `contain::a_planted_config_is_put_back_and_refuses_one_git`
 console run chip | `drive::pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not`
+heartbeats: clock subscriptions | `todo_e2e::a_block_on_a_time_with_no_scheme_is_refused`
+heartbeats: clock subscriptions | `todo_e2e::an_address_outside_on_is_refused_and_prose_is_not`
+heartbeats: clock subscriptions | `channel_e2e::a_file_wait_holds_until_the_file_exists`
+`agent-browser` plugin | `cli_surfaces::the_gate_says_what_a_browser_command_would_do`
+`agent-browser` plugin | `permission_scope::the_local_browser_runs_outside_unasked`
+`agent-browser` plugin | `permission_scope::one_yes_covers_the_web_session_and_nothing_the_box_cannot_hold`
+`agent-browser` plugin | `permission_scope::a_browser_command_by_any_other_spelling_stays_in_the_sandbox`
+`agent-browser` plugin | `kept_rules::what_a_browser_command_prints_comes_back_inside_the_external_fence`
+`agent-browser` plugin | `sandbox::the_browser_box_holds_credentials_writes_sockets_and_all_but_the_web_session_s_internet`
+`agent-browser` plugin | `skills_e2e::the_agent_browser_pointer_is_listed_only_when_its_plugin_is_installed`

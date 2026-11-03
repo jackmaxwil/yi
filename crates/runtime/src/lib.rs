@@ -68,8 +68,8 @@ pub mod web_search;
 pub mod wiring;
 
 pub use checkpoint::{
-    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes, undo_to,
-    wire_turn_checkpoints,
+    RecordedCheckpoint, UndoOutcome, describe_undo, over_budget, recorded, snapshots_off_row, undo,
+    undo_notes, undo_to, wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
 
@@ -100,11 +100,17 @@ pub use tools::ToolAdapter;
 pub use wall::Wall;
 pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
+pub use yi_ai::recommend;
 pub use yi_ai::request::ProxyConfig;
 pub use yi_ai::roots;
 pub use yi_ai::search;
 pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
 pub use yi_kernel::tarball;
+
+/// Stops shell jobs whose reaper would otherwise end with this process.
+pub fn kill_running_jobs() {
+    yi_tools::jobs::registry().kill_running();
+}
 
 /// None where the platform has no sandbox: a contained decision then degrades
 /// to a question rather than to an unenforced allowance.
@@ -116,6 +122,8 @@ pub fn workspace_sandbox(
     yi_tools::Sandbox::available()
         .then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir).with_caches(home))
 }
+
+pub use yi_tools::set_wrapper as set_sandbox_wrapper;
 
 pub fn identity_fragment() -> &'static str {
     include_str!("prompts/identity.md")

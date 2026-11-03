@@ -142,19 +142,10 @@ def required_jobs(contexts):
     """`pr / gate (test) (pull_request)` is the job named `gate (test)`."""
     jobs = []
     for context in contexts:
-        name = re.sub(r"^\w+ / ", "", context)
-        name = re.sub(r" \(pull_request(_target)?\)$", "", name)
+        name = re.sub(r"^[\w-]+ / ", "", context)
+        name = re.sub(r" \((?:pull_request(?:_target)?|push)\)$", "", name)
         jobs.append(name)
     return jobs
-
-
-def job_table(tasks, sha):
-    """Newest status per job for one head; a rerun outranks the run it replaced."""
-    table = {}
-    for task in sorted(tasks, key=lambda task: (task.get("run_number", 0), task.get("updated_at", ""))):
-        if task.get("head_sha", "").startswith(sha):
-            table[task["name"]] = task["status"]
-    return table
 
 
 def decide(pr, jobs, required, behind):
@@ -248,14 +239,17 @@ def cmd_commit(args):
     if dirty(baseline_paths()):
         print("commit: baselines moved — ratcheting them into their own commit first")
         cmd_ratchet(argparse.Namespace(topic=args.topic or "", no_binary=True))
-    git("add", "-A", check=True)
+    if args.paths:
+        git("add", "--", *args.paths, check=True)
     if not git("diff", "--cached", "--name-only"):
-        print("commit: nothing to commit")
-        return 0
+        left = git("status", "--porcelain")
+        print("commit: nothing staged; name the paths to commit:" if left else "commit: nothing to commit")
+        print(left)
+        return 1 if left else 0
     message = ["-m", args.subject.strip()]
     if args.body:
         message += ["-m", pathlib.Path(args.body).read_text().strip()]
-    out = subprocess.run(("git", "-C", str(ROOT), "commit", "-q", *message), check=False)
+    out = subprocess.run(("git", "-C", str(ROOT), "commit", "-q", *message, *(("--", *args.paths) if args.paths else ())), check=False)
     if out.returncode != 0:
         return out.returncode
     print(f"committed {git('rev-parse', '--short', 'HEAD')} {args.subject.strip()}")
@@ -400,10 +394,10 @@ def cmd_open(args):
             print(err)
         print("open: refused — the title job would fail; fix the above first")
         return 1
+    # A host-run recipe never builds: pushing here would run a child's build.rs outside the sandbox.
     if not pushed():
-        code = cmd_push(args)
-        if code:
-            return code
+        print("open: this branch is not pushed — just push first")
+        return 1
     out = subprocess.run(
         ("fgj", "pr", "create", *scope(), "--head", branch(), "--base", "main", "--title", title, "--body", body),
         capture_output=True, text=True, check=False,
@@ -487,17 +481,34 @@ def required():
     rule is a setting someone can shorten and the merge verb is where red must stop."""
     import pr_review
 
-    protections = fgj_api("GET", f"repos/{repo()}/branch_protections") or []
-    protected = ["size-report", "title"]
-    for protection in protections:
+    protections = fgj_api("GET", f"repos/{repo()}/branch_protections")
+    protected = ["title"]
+    for protection in protections if isinstance(protections, list) else []:
         if protection.get("branch_name") == "main":
             protected = required_jobs(protection.get("status_check_contexts") or [])
-    return list(dict.fromkeys([*pr_review.GATE_LANES, *protected]))
+    # Rounds are the review's check (unreviewed): an /override leaves the job's status red for good.
+    return [job for job in dict.fromkeys([*pr_review.GATE_LANES, *protected]) if job != "review"]
+
+
+# Invariant: a 403 or 500 answers with a message and no statuses, which must not read as nothing waiting.
+UNREAD = "the commit's statuses, unreadable"
+
+
+def head_jobs(name, sha):
+    """Job name to its newest status on one head. Incident: the task list has no row until a runner
+    claims a job, so #1887's waiting rerun read as its old failure, and 60 rows is an hour or two."""
+    combined = fgj_api("GET", f"repos/{name}/commits/{sha}/status") or {}
+    if "message" in combined:
+        return {UNREAD: "pending"}
+    jobs = {}
+    for status in combined.get("statuses") or []:
+        job = required_jobs([status["context"]])[0]
+        jobs[job] = "failure" if status["status"] == "error" else status["status"]
+    return jobs
 
 
 def jobs_of(pr):
-    tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
-    return job_table(tasks.get("workflow_runs", []), pr["head"]["sha"])
+    return head_jobs(repo(), pr["head"]["sha"])
 
 
 def report(pr, jobs, need, verdict):
@@ -542,8 +553,18 @@ def cmd_update(args):
     return 0
 
 
+def rerun_waits(pr):
+    """The gate's jobs still waiting on this head. The review job is left out: a round runs for hours."""
+    jobs = jobs_of(pr)
+    return [job for job in (*required(), UNREAD) if jobs.get(job) == "pending"]
+
+
 def cmd_rerun(args):
     number = pull_number(args.number)
+    # Incident: a second reopen on #1887 cancelled the run still waiting and wrote failure on every context.
+    if waiting := rerun_waits(pull(number)):
+        print(f"#{number}: a run is already waiting on {', '.join(waiting)}; a reopen would cancel it")
+        return 1
     subprocess.run(("fgj", "pr", "close", *scope(), str(number)), capture_output=True, check=False)
     time.sleep(2)
     subprocess.run(("fgj", "pr", "reopen", *scope(), str(number)), capture_output=True, check=False)
@@ -563,6 +584,10 @@ def unreviewed(number, pr):
 
 def cmd_merge(args):
     number = pull_number(args.number)
+    if getattr(args, "now", False):
+        import pr_queue
+
+        return pr_queue.cmd_merge_now(number)
     need = required()
     deadline = time.monotonic() + args.timeout * 60
     while True:
@@ -693,14 +718,7 @@ def selfcheck():
     assert required_jobs(["pr / gate (test) (pull_request)", "pr / title (pull_request)"]) == [
         "gate (test)", "title",
     ]
-    tasks = [
-        {"name": "title", "status": "failure", "run_number": 1, "head_sha": "abc123", "updated_at": "1"},
-        {"name": "title", "status": "success", "run_number": 2, "head_sha": "abc123", "updated_at": "2"},
-        {"name": "gate (test)", "status": "success", "run_number": 2, "head_sha": "abc123", "updated_at": "2"},
-        {"name": "gate (test)", "status": "failure", "run_number": 3, "head_sha": "other", "updated_at": "3"},
-    ]
-    jobs = job_table(tasks, "abc123")
-    assert jobs == {"title": "success", "gate (test)": "success"}, "a rerun outranks, another head is ignored"
+    jobs = {"title": "success", "gate (test)": "success"}
     need = ["gate (test)", "title"]
     open_pr = {"state": "open", "merged": False}
     assert decide({"merged": True}, {}, need, False) == "merged"
@@ -812,8 +830,6 @@ def selfcheck():
         """cmd_merge for #7 against a forge whose rule lists `protected` and whose head `abc1234` ran
         `statuses`: (exit code, the bodies posted to /merge)."""
         posts = []
-        tasks = [{"name": job, "status": status, "run_number": 1, "head_sha": "abc1234", "updated_at": "1"}
-                 for job, status in statuses.items()]
 
         def forge(method, path, payload=None):
             if path.endswith("/merge"):
@@ -821,8 +837,8 @@ def selfcheck():
                 return {}
             if path.endswith("/branch_protections"):
                 return [{"branch_name": "main", "status_check_contexts": protected}]
-            if "/actions/tasks" in path:
-                return {"workflow_runs": tasks}
+            if path.endswith("/commits/abc1234/status"):
+                return {"statuses": [{"context": f"pr / {job} (pull_request)", "status": status} for job, status in statuses.items()]}
             return {"number": 7, "title": "Keep the gate", "state": "closed" if posts else "open", "merged": bool(posts),
                     "head": {"sha": "abc1234", "ref": "x"}, "base": {"ref": "main"}}
 
@@ -845,6 +861,40 @@ def selfcheck():
     code, posts = merge_on_fake_forge(listed, {job: s for job, s in green.items() if job != "gate (lint)"})
     assert code == 2 and not posts, "a gate that has not run on the head is not merged"
     assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
+    assert required_jobs(["pr / gate (test) (push)", "bench-smoke / smoke (pull_request)"]) == ["gate (test)", "smoke"]
+    # The real order on f84b43871: failure, then the reopen's pending, while no runner has claimed a job.
+    head_status = {"statuses": [{"context": "pr / gate (test) (pull_request)", "status": "pending"},
+                           {"context": "pr / gate (lint) (pull_request)", "status": "error"},
+                           {"context": "review / review (pull_request_target)", "status": "pending"}]}
+    saved_forge = globals()["fgj_api"], globals()["repo"], globals()["pull"], subprocess.run
+    closed = []
+    globals().update(fgj_api=lambda *a, **k: head_status, repo=lambda: "o/r", pull=lambda n: {"number": n, "head": {"sha": "abc1234"}})
+    subprocess.run = lambda cmd, **kw: closed.append(cmd)
+    try:
+        seen = jobs_of({"head": {"sha": "abc1234"}})
+        assert seen.get("gate (test)") == "pending" and seen.get("gate (lint)") == "failure", ("a waiting run read as its old failure", seen)
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert cmd_rerun(argparse.Namespace(number=7)) == 1 and not closed, "a second reopen cancels the waiting run"
+            served, head_status = head_status, {"message": "forbidden"}
+            assert cmd_rerun(argparse.Namespace(number=7)) == 1 and not closed, "an unreadable status lets a reopen cancel a waiting run"
+            head_status = served
+            head_status["statuses"][0] = {"context": "pr / gate (test) (pull_request)", "status": "failure"}
+            real_sleep, time.sleep = time.sleep, lambda s: None
+            try:
+                assert cmd_rerun(argparse.Namespace(number=7)) == 0 and len(closed) == 2, "a pending review holds a rerun back"
+            finally:
+                time.sleep = real_sleep
+    finally:
+        subprocess.run = saved_forge[3]
+        globals().update(fgj_api=saved_forge[0], repo=saved_forge[1], pull=saved_forge[2])
+    # An error object from a token without admin rights, and a rule naming the review job.
+    for answer, want in (({"message": "forbidden"}, ["title"]), (None, ["title"]),
+                         ([{"branch_name": "main", "status_check_contexts": ["pr / title (pull_request)", "review / review (pull_request_target)"]}], ["title"])):
+        globals().update(fgj_api=lambda *a, **k: answer, repo=lambda: "o/r")
+        try:
+            assert required() == [*pr_review.GATE_LANES, *want], ("required()", answer, required())
+        finally:
+            globals().update(fgj_api=saved_forge[0], repo=saved_forge[1])
     real_measure, _ = fake_measure(([], [], 0, ([], [])))
     body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_body.md"
     body_file.write_text("## Summary\n\nwords\n")
@@ -892,7 +942,45 @@ def selfcheck():
     except SystemExit:
         pass
     assert flags.get("closes") == ["1"] and flags.get("refs") == ["2"], ("pr check takes the flags pr open takes", flags)
+    # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green.
+    commit_selfcheck()
     print("ok   forge_pr selfcheck")
+
+
+def commit_selfcheck():
+    """`commit` in a scratch repository holding one named and one unnamed untracked file."""
+    import contextlib, io, os
+
+    names = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths", "binary_ratchet")}
+    with tempfile.TemporaryDirectory() as scratch:
+        os.environ.update(names)
+        subprocess.run(("git", "-C", scratch, "init", "-q"), check=True)
+        globals().update(ROOT=pathlib.Path(scratch), baseline_paths=lambda: [], binary_ratchet=lambda topic: 0)
+        parse = build_parser().parse_args
+        try:
+            (pathlib.Path(scratch) / "a.txt").write_text("a\n")
+            (pathlib.Path(scratch) / "b.txt").write_text("b\n")
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                refused = cmd_commit(parse(["commit", "Add the files"]))
+            assert refused == 1 and "b.txt" in said.getvalue() and not git("log", "--oneline"), ("nothing named, nothing staged", said.getvalue())
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add the named file", "a.txt"]))
+            assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "a.txt", git("show", "--name-only", "--format=", "HEAD")
+            assert git("status", "--porcelain") == "?? b.txt", "a path the caller did not name stays out of the commit"
+            git("add", "--", "b.txt", check=True)
+            (pathlib.Path(scratch) / "c.txt").write_text("c\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add the third file", "c.txt"]))
+            assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "c.txt", "a file staged by someone else rides into a named-path commit"
+            assert git("diff", "--cached", "--name-only") == "b.txt", "the unrelated staged file stays staged"
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add the staged file"]))
+            assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "b.txt", "no paths named commits what is staged"
+        finally:
+            globals().update(saved)
+            for name in names:
+                del os.environ[name]
 
 
 def build_parser():
@@ -904,6 +992,7 @@ def build_parser():
     ratchet.set_defaults(run=cmd_ratchet)
     commit = verbs.add_parser("commit")
     commit.add_argument("subject")
+    commit.add_argument("paths", nargs="*")
     commit.add_argument("--body")
     commit.add_argument("--topic", default="")
     commit.set_defaults(run=cmd_commit)
@@ -958,11 +1047,20 @@ def build_parser():
     replay.add_argument("--label", required=True, help="what the PR is known to be: bad, kept, closed")
     replay.add_argument("--out", required=True, help="the JSON-lines file each reading is appended to")
     replay.set_defaults(run=pr_review.cmd_replay)
+    calibrate = pr.add_parser("calibrate", help="precision and recall of a high finding on replay files")
+    calibrate.add_argument("files", nargs="+")
+    calibrate.set_defaults(run=pr_review.cmd_calibrate)
     merge = pr.add_parser("merge")
     merge.add_argument("number", nargs="?")
     merge.add_argument("--no-wait", dest="wait", action="store_false")
     merge.add_argument("--timeout", type=int, default=40)
+    merge.add_argument("--now", action="store_true", help="the owner's explicit ask: force the merge, past the queue")
     merge.set_defaults(run=cmd_merge)
+    import pr_queue
+
+    queue = pr.add_parser("queue", help="add a reviewed PR to the merge queue; no number prints the queue")
+    queue.add_argument("number", nargs="?")
+    queue.set_defaults(run=pr_queue.cmd_queue)
     return parser
 
 
