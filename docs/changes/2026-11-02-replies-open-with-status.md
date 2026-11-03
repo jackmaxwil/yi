@@ -14,3 +14,11 @@ the work itself and stops only at what cannot be undone or speaks for the user, 
 apart from opinions, and matches the user's language, length and tone, in plain words with no
 code, file names or jargon unless the user writes them. Doctrine now lets a diagnosis end in
 its fix.
+
+The guardrails lane now names a gate that failed without printing a `FAIL` row. This branch's own
+`gate (guardrails)` job printed `guardrails: 1 failing` with nothing above it, and the failure took a second
+pass to attribute because the log never said which check it was. `drain` and the reporter the two dist gates
+print through both record the gate's command and exit code, and report `FAIL <cmd> (exit N, printed no FAIL
+line)` only when the gate printed nothing at all: a gate that printed its own traceback keeps it, because that
+tail is what `scripts/pr_autofix.py` hands a repair turn. The autofixer's hand-rolled environment save and
+restores are one `without_env` helper.

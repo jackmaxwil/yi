@@ -749,6 +749,17 @@ def run_filtered(cwd, expr):
 
 
 @contextlib.contextmanager
+def without_env(*keys):
+    """Those environment keys out of `os.environ` for the block, restored however it ends."""
+    saved = {k: os.environ.pop(k, None) for k in keys}
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            os.environ.pop(key, None) if value is None else os.environ.update({key: value})
+
+
+@contextlib.contextmanager
 def scratch_worktree(clone, rev):
     """A detached worktree of `clone` at `rev`, gone when the block ends however it ends."""
     tree = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-tree-"))
@@ -1651,29 +1662,28 @@ def gate_selfcheck():
         (dist / "dist").mkdir(parents=True)
         with open(dist / "dist/yi", "wb") as measured_bin:
             measured_bin.truncate(13603520)
-        target = os.environ.get("CARGO_TARGET_DIR")
-        os.environ["CARGO_TARGET_DIR"] = str(dist)
-        settled = fix(pr, ask=lambda *a, **k: asked.append(a) or {"summary": "no"}, root=tmp, kind="gate", lanes=["guardrails"])
-        # The size and the budget are read here: a row the PR's own lane printed moves nothing by itself.
-        sh(tmp, "git", "fetch", "-q", "origin")
-        git("checkout", "-q", "-f", "--detach", "origin/sized")
-        tracked = json.loads((tmp / BASELINES / "binary_size_budget_linux.json").read_text())["max_bytes"]
-        real = tracked + 50000
-        with open(dist / "dist/yi", "wb") as measured_bin:
-            measured_bin.truncate(real)
-        row = lambda size, budget: f"FAIL binary_size (x)\n  dist binary {size} > {budget} + 16384 bytes (binary_size_budget_linux.json)"
-        for text, why in ((row(real + 1, tracked), "a size the binary does not have"), (row(real, tracked - 1), "a budget the file does not hold"),
-                          ("FAIL machete (cargo install cargo-machete)\n" + row(real, tracked), "another failed gate beside it")):
-            if raise_binary(tmp, text):
-                errs.append(f"a lane's row with {why} moved the ceiling")
-        if not raise_binary(tmp, row(real, tracked)):
-            errs.append("a row matching the binary and the budget did not move the ceiling")
-        with open(dist / "dist/yi", "wb") as measured_bin:
-            measured_bin.truncate(15000000)
-        if raise_binary(tmp, f"FAIL binary_size (x)\n  dist binary 15000000 > {tracked} + 16384 bytes (binary_size_budget_linux.json)"):
-            errs.append("a binary past its hard cap moved the ceiling")
-        git("checkout", "-q", "-f", "sized")
-        os.environ.pop("CARGO_TARGET_DIR") if target is None else os.environ.update(CARGO_TARGET_DIR=target)
+        with without_env("CARGO_TARGET_DIR"):
+            os.environ["CARGO_TARGET_DIR"] = str(dist)
+            settled = fix(pr, ask=lambda *a, **k: asked.append(a) or {"summary": "no"}, root=tmp, kind="gate", lanes=["guardrails"])
+            # The size and the budget are read here: a row the PR's own lane printed moves nothing by itself.
+            sh(tmp, "git", "fetch", "-q", "origin")
+            git("checkout", "-q", "-f", "--detach", "origin/sized")
+            tracked = json.loads((tmp / BASELINES / "binary_size_budget_linux.json").read_text())["max_bytes"]
+            real = tracked + 50000
+            with open(dist / "dist/yi", "wb") as measured_bin:
+                measured_bin.truncate(real)
+            row = lambda size, budget: f"FAIL binary_size (x)\n  dist binary {size} > {budget} + 16384 bytes (binary_size_budget_linux.json)"
+            for text, why in ((row(real + 1, tracked), "a size the binary does not have"), (row(real, tracked - 1), "a budget the file does not hold"),
+                              ("FAIL machete (cargo install cargo-machete)\n" + row(real, tracked), "another failed gate beside it")):
+                if raise_binary(tmp, text):
+                    errs.append(f"a lane's row with {why} moved the ceiling")
+            if not raise_binary(tmp, row(real, tracked)):
+                errs.append("a row matching the binary and the budget did not move the ceiling")
+            with open(dist / "dist/yi", "wb") as measured_bin:
+                measured_bin.truncate(15000000)
+            if raise_binary(tmp, f"FAIL binary_size (x)\n  dist binary 15000000 > {tracked} + 16384 bytes (binary_size_budget_linux.json)"):
+                errs.append("a binary past its hard cap moved the ceiling")
+            git("checkout", "-q", "-f", "sized")
         shutil.rmtree(dist, ignore_errors=True)
         sh(tmp, "git", "fetch", "-q", "origin")
         subject = sh(tmp, "git", "log", "-1", "--format=%s", "origin/sized").stdout.strip()
@@ -1785,11 +1795,10 @@ def gate_selfcheck():
                      "FAIL binary_size (x)\n  dist binary embeds the build path /w: size now depends on where it was built"):
             if hopeless(text):
                 errs.append(f"a refusal a model can change was handed to a person: {text!r}")
-        saved_tmp = os.environ.get("TMPDIR")
-        os.environ["TMPDIR"] = str(tmp / ".." / "autofix-tmp")
-        if ".." in pathlib.Path(scrubbed()["TMPDIR"]).parts:
-            errs.append(f"a dotted TMPDIR reached the PR's code as {scrubbed()['TMPDIR']}")
-        os.environ.pop("TMPDIR") if saved_tmp is None else os.environ.update(TMPDIR=saved_tmp)
+        with without_env("TMPDIR"):
+            os.environ["TMPDIR"] = str(tmp / ".." / "autofix-tmp")
+            if ".." in pathlib.Path(scrubbed()["TMPDIR"]).parts:
+                errs.append(f"a dotted TMPDIR reached the PR's code as {scrubbed()['TMPDIR']}")
     finally:
         TEST_LANE = saved
         shutil.rmtree(tmp, ignore_errors=True)
@@ -2350,10 +2359,20 @@ def selfcheck():
         errs.append("the new-file rule keeps a build output or drops a new test")
     if not MARKER.search("a\n<<<<<<< HEAD\nb\n") or MARKER.search("a\n<<<<<<<< not one\n"):
         errs.append("the marker check misreads a conflict marker")
-    os.environ["FGJ_TOKEN"], before = "secret", os.environ.get("FGJ_TOKEN")
-    if "FGJ_TOKEN" in scrubbed():
-        errs.append("the model and the hooks would see the forge token")
-    os.environ.pop("FGJ_TOKEN") if before is None else os.environ.update(FGJ_TOKEN=before)
+    with without_env("FGJ_TOKEN"):
+        os.environ["FGJ_TOKEN"] = "secret"
+        if "FGJ_TOKEN" in scrubbed():
+            errs.append("the model and the hooks would see the forge token")
+    os.environ["AUTOFIX_SELFCHECK_KEPT"] = "kept"
+    try:
+        with without_env("AUTOFIX_SELFCHECK_KEPT"):
+            if "AUTOFIX_SELFCHECK_KEPT" in os.environ:
+                errs.append("a key without_env pops stayed set")
+            raise RuntimeError
+    except RuntimeError:
+        pass
+    if os.environ.pop("AUTOFIX_SELFCHECK_KEPT", None) != "kept":
+        errs.append("a key without_env popped was not restored when the block raised")
 
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-check-"))
     try:
@@ -2805,32 +2824,30 @@ def selfcheck():
     module, tried_prs, climbed = sys.modules[__name__], [], []
     keep, settled_bases = {name: getattr(module, name) for name in ("attempt", "label_ids", "spent_today", "tidy", "settle_base_red")}, []
     keep_api, keep_repo = forge_pr.fgj_api, forge_pr.repo
-    keep_ci = os.environ.pop("CI", None)
     try:
-        stale = [{"number": n, "labels": [{"name": "autofix:failed"}], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}} for n in (1, 2, 3)]
-        fresh = {"number": 4, "labels": [], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
-        queued = {"number": 5, "labels": [{"name": "queue"}], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
-        forge_pr.fgj_api, forge_pr.repo = (lambda *a, **k: stale + [fresh, queued]), (lambda: "o/r")
-        module.label_ids, module.spent_today, module.tidy = (lambda repo: {}), (lambda repo: 0.0), (lambda repo, pr: False)
-        module.settle_base_red = lambda repo, bases: settled_bases.append(bases)
-        module.attempt = lambda repo, pr, ids, asked=False: (tried_prs.append(pr["number"]) or
-                                                              decide({l["name"] for l in pr["labels"]}, [], 9e9, False, True))
-        cmd_autofix(type("A", (), {"number": None})())
-        if tried_prs[:1] != [5]:
-            errs.append(f"a pass did not start at the queued PR: {tried_prs}")
-        if settled_bases != [{"main"}]:
-            errs.append(f"a pass settled the red issues of {settled_bases}, not its PRs' bases")
-        misses_left = [True]
-        module.attempt = lambda repo, pr, ids, asked=False: (climbed.append(pr["number"]) or
-                                                              ("missed" if misses_left and misses_left.pop() else "pushed"))
-        forge_pr.fgj_api = lambda *a, **k: [fresh, dict(fresh, number=5)]
-        cmd_autofix(type("A", (), {"number": None})())
+        with without_env("CI"):
+            stale = [{"number": n, "labels": [{"name": "autofix:failed"}], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}} for n in (1, 2, 3)]
+            fresh = {"number": 4, "labels": [], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
+            queued = {"number": 5, "labels": [{"name": "queue"}], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
+            forge_pr.fgj_api, forge_pr.repo = (lambda *a, **k: stale + [fresh, queued]), (lambda: "o/r")
+            module.label_ids, module.spent_today, module.tidy = (lambda repo: {}), (lambda repo: 0.0), (lambda repo, pr: False)
+            module.settle_base_red = lambda repo, bases: settled_bases.append(bases)
+            module.attempt = lambda repo, pr, ids, asked=False: (tried_prs.append(pr["number"]) or
+                                                                  decide({l["name"] for l in pr["labels"]}, [], 9e9, False, True))
+            cmd_autofix(type("A", (), {"number": None})())
+            if tried_prs[:1] != [5]:
+                errs.append(f"a pass did not start at the queued PR: {tried_prs}")
+            if settled_bases != [{"main"}]:
+                errs.append(f"a pass settled the red issues of {settled_bases}, not its PRs' bases")
+            misses_left = [True]
+            module.attempt = lambda repo, pr, ids, asked=False: (climbed.append(pr["number"]) or
+                                                                  ("missed" if misses_left and misses_left.pop() else "pushed"))
+            forge_pr.fgj_api = lambda *a, **k: [fresh, dict(fresh, number=5)]
+            cmd_autofix(type("A", (), {"number": None})())
     finally:
         forge_pr.fgj_api, forge_pr.repo = keep_api, keep_repo
         for name, value in keep.items():
             setattr(module, name, value)
-        if keep_ci is not None:
-            os.environ["CI"] = keep_ci
     if 4 not in tried_prs:
         errs.append(f"three PRs labelled failed used up the pass; it tried {tried_prs}")
     if climbed != [4, 4, 5]:
