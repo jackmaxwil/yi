@@ -152,7 +152,7 @@ def zizmor(paths):
 
 def semgrep(paths, fixtures=False):
     require_uv(SEMGREP, "semgrep", SEMGREP.split("==", 1)[1])
-    args = ["scan", "--config", str(RULES / "semgrep"), "--json", "--metrics=off", "--disable-version-check", "--timeout", "30"]
+    args = ["scan", "--config", str(RULES / "semgrep"), "--json", "--metrics=off", "--disable-version-check", "--timeout", "0"]
     if not fixtures:
         args += ["--exclude", "scripts/scan/fixtures", "--exclude", "crates/**/tests"]
     proc = run(uv_argv(SEMGREP, "semgrep", [*args, *map(str, paths)]))
