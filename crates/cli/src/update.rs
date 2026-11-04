@@ -143,7 +143,7 @@ where
     next.prefix = prefix.display().to_string();
     next.version.clone_from(&release.version);
     next.target = job.target.to_owned();
-    publish(&dest, &unpacked.binary, job.home, &unpacked.skills)?;
+    publish(&dest, &unpacked, job.home, &release.version)?;
     write_receipt(job.home, &next)?;
     Ok(format!(
         "installed {} → {} at {}",
@@ -524,12 +524,8 @@ fn classify(path: &str) -> Result<Member, String> {
     Ok(Member::Skill(relative.to_owned()))
 }
 
-fn publish(
-    dest: &Path,
-    binary: &[u8],
-    home: &Path,
-    skills: &[(String, Vec<u8>)],
-) -> Result<(), String> {
+fn publish(dest: &Path, release: &Unpacked, home: &Path, version: &str) -> Result<(), String> {
+    let (binary, skills) = (&release.binary, &release.skills);
     let target = home.join(".yi/skills");
     let parent = dest
         .parent()
@@ -539,11 +535,37 @@ fn publish(
     let new_bin = parent.join(format!(".yi-new-{pid}"));
     let new_skills = home.join(format!(".yi/.skills-new-{pid}"));
     let result = write_exec(&new_bin, binary)
+        .and_then(|()| probe(&new_bin, version))
         .and_then(|()| stage_skills(&new_skills, &target, skills))
         .and_then(|()| swap(dest, &new_bin, &target, &new_skills));
     let _ = std::fs::remove_file(&new_bin);
     let _ = std::fs::remove_dir_all(&new_skills);
     result
+}
+
+/// Invariant: the Mac binary is cross-linked on Linux and first runs here, so a release that
+/// cannot start stops before the swap instead of replacing a working yi.
+fn probe(new_bin: &Path, version: &str) -> Result<(), String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the new binary is a different program from this one"
+    )]
+    let output = std::process::Command::new(new_bin)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(io(new_bin))?;
+    let said = String::from_utf8_lossy(&output.stdout);
+    if output.status.success() && said.trim() == format!("yi {version}") {
+        return Ok(());
+    }
+    let error = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "the release binary's --version ({}) said {:?}, not \"yi {version}\": {}; yi was left as it is",
+        output.status,
+        said.trim(),
+        error.trim()
+    ))
 }
 
 fn swap(dest: &Path, new_bin: &Path, target: &Path, new_skills: &Path) -> Result<(), String> {
@@ -708,6 +730,51 @@ mod tests {
             1
         );
         assert!(!argv.exists(), "a failed update asked nothing to sync");
+        Ok(())
+    }
+
+    const FAKE_YI: &[u8] = b"#!/bin/sh\necho yi 0.2.0\n";
+
+    fn fake(skills: &[(String, Vec<u8>)]) -> Unpacked {
+        Unpacked {
+            binary: FAKE_YI.to_vec(),
+            skills: skills.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_release_binary_that_cannot_start_leaves_yi() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, dest) = old_install(&tmp)?;
+        let skills = [("a/one.md".to_owned(), b"one".to_vec())];
+        let broken: [&[u8]; 3] = [
+            b"\xcf\xfa\xed\xfe not a program",
+            b"#!/bin/sh\necho dyld: missing symbol >&2\nexit 134\n",
+            b"#!/bin/sh\necho yi 0.1.0\n",
+        ];
+        for binary in broken {
+            let release = Unpacked {
+                binary: binary.to_vec(),
+                skills: skills.to_vec(),
+            };
+            let error = publish(&dest, &release, &home, "0.2.0").expect_err("probe");
+            assert!(
+                error.contains("not \"yi 0.2.0\"") || error.contains(".yi-new-"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read(&dest)?, b"old");
+            assert!(!home.join(".yi/skills/a").exists());
+        }
+        let mut left: Vec<_> = std::fs::read_dir(tmp.join("prefix"))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<_, _>>()?;
+        left.extend(
+            std::fs::read_dir(home.join(".yi"))?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        left.sort();
+        assert_eq!(left, ["skills", "yi"], "no staging left behind");
         Ok(())
     }
 
@@ -961,7 +1028,7 @@ mod tests {
             "note": "keep"
         });
         std::fs::write(home.join(".yi/install.json"), format!("{prior}\n"))?;
-        let packed = archive(b"new", b"skill body")?;
+        let packed = archive(FAKE_YI, b"skill body")?;
         let Signed {
             digest,
             signature,
@@ -984,7 +1051,7 @@ mod tests {
             line,
             format!("installed 0.1.0 → 0.2.0 at {}", prefix.display())
         );
-        assert_eq!(std::fs::read(&exe)?, b"new");
+        assert_eq!(std::fs::read(&exe)?, FAKE_YI);
         assert_eq!(
             installed_binary(&prefix, read_receipt(&home)?.as_ref()),
             exe,
@@ -1112,7 +1179,7 @@ mod tests {
         let held = format!("yi.old-{}", std::process::id());
         std::fs::write(tmp.join("prefix").join(&held), b"held")?;
         let skills = [("yi/SKILL.md".to_owned(), b"new skill".to_vec())];
-        let error = publish(&dest, b"new", &home, &skills).expect_err("rename");
+        let error = publish(&dest, &fake(&skills), &home, "0.2.0").expect_err("rename");
         assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(error.contains(&dest.display().to_string()), "{error}");
         assert_eq!(
@@ -1152,7 +1219,7 @@ mod tests {
             ("a/one.md".to_owned(), b"one".to_vec()),
             ("README.md".to_owned(), b"new readme".to_vec()),
         ];
-        publish(&dest, b"new", &home, &skills).expect_err("collision");
+        publish(&dest, &fake(&skills), &home, "0.2.0").expect_err("collision");
         assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(!home.join(".yi/skills/a").exists());
         assert_eq!(
@@ -1170,7 +1237,7 @@ mod tests {
         std::fs::create_dir_all(&blocker)?;
         std::fs::write(blocker.join("held"), b"held")?;
         let skills = [("a/one.md".to_owned(), b"one".to_vec())];
-        publish(&dest, b"new", &home, &skills).expect_err("swap");
+        publish(&dest, &fake(&skills), &home, "0.2.0").expect_err("swap");
         assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(!home.join(".yi/skills/a").exists());
         assert_eq!(
