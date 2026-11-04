@@ -1,4 +1,6 @@
 ---
+version: 0.922.0
+decisions: D548
 issue: Closes #2023
 raise: tests +98, comments +3, crate cli +145
 decision: A release goes out every night from CI, on the forge and on GitHub, and yi update never installs an older release unless asked | `yi update` read a latest release that had stood at 0.799.0 for a week while main reached 0.919.0, and installed it over 0.898.0, whose config the old binary could not read | delete release.yml and restore the old `already` check; releases go back to `just publish` and `scripts/mirror/publish.sh` by hand. Amends D274: a Mac binary linked off a Mac by zig keeps its function-starts table, since only Apple's ld takes -no_function_starts
