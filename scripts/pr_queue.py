@@ -113,22 +113,9 @@ def use_driver(cwd):
     git("config", "merge.baseline.driver", f"{sys.executable} {ROOT / 'scripts/merge_baseline.py'} %O %A %B", cwd=cwd)
 
 
-@contextlib.contextmanager
-def scratch_tree(ref, prefix, name="w"):
-    """A throwaway worktree of `ref`, deregistered and deleted on the way out."""
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
-    tree = tmp / name
-    try:
-        git("worktree", "add", "-q", "--detach", str(tree), ref)
-        yield tree
-    finally:
-        git("worktree", "remove", "--force", str(tree), check=False)
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 def same_tree(base, tip, recipe):
     """Rebuild the merges in a scratch tree: only reviewed bytes land, whatever the ref now holds."""
-    with scratch_tree(base, "yi-queue-") as tree:
+    with pr_review.scratch_worktree(git, base, "yi-queue-") as tree:
         use_driver(tree)
         for number, head, title, branch in recipe:
             if merge_member(tree, number, head, title, branch):
@@ -323,7 +310,7 @@ def record_candidate(candidate):
 
     Invariant: main's recorder runs, never the candidate's, because this job holds the token that pushes
     main; the candidate supplies the docs it is recorded from and never the process that runs."""
-    with scratch_tree("origin/main", "yi-record-", name="main") as work:
+    with pr_review.scratch_worktree(git, "origin/main", "yi-record-", name="main") as work:
         git("rm", "-rq", "docs", cwd=work)
         git("checkout", candidate, "--", "docs", cwd=work)
         git(*IDENTITY, "commit", "-q", "--allow-empty", "-m", "the candidate's docs", cwd=work)
@@ -844,6 +831,7 @@ def queue_verb_cases():
     pr = {"number": 7, "title": "t", "head": {"sha": "h", "ref": "b"}, "base": {"ref": "main"}}
     with mock.patch.object(forge_pr, "pull_number", lambda number: 7), \
             mock.patch.object(forge_pr, "pull", lambda number: pr), \
+            mock.patch.object(forge_pr, "jobs_of", lambda number: []), \
             mock.patch.multiple(sys.modules[__name__], eligible_problem=lambda p, j: None,
                                 set_label=lambda number, name, present: labels.append((number, name, present))):
         with contextlib.redirect_stdout(io.StringIO()) as told:
@@ -858,9 +846,24 @@ def queue_verb_cases():
     return bad
 
 
+def offline_cases():
+    """Every case with the forge's read failing: one that reaches it is a gate `just check` cannot run, since
+    the guardrails lane installs no fgj."""
+    cases = (rule_cases, git_cases, build_cases, record_cases, landing_cases, shadow_cases, forge_cases, queue_verb_cases)
+    bad = []
+    with mock.patch.object(forge_pr, "fgj_api", side_effect=RuntimeError("fgj")):
+        for case in cases:
+            try:
+                bad += case()
+            except RuntimeError as refused:
+                if str(refused) != "fgj":
+                    raise
+                bad.append(f"{case.__name__} asked the forge, which `just check` cannot answer")
+    return bad
+
+
 def selfcheck():
-    bad = rule_cases() + git_cases() + build_cases() + record_cases() + landing_cases() + shadow_cases() + forge_cases()
-    bad += queue_verb_cases()
+    bad = offline_cases()
     bad += [f"rule `{name}` disabled and every case still passes, so it refutes nothing"
             for name, _, _ in RULES if not rule_cases(name)]
     for gate in ("growth", "crate_size", "comments", "test_size"):
