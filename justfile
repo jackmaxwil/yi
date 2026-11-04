@@ -27,7 +27,7 @@ clippy-no-tui:
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    scripts/suite_home.sh test
+    . scripts/suite_home.sh test
     if command -v cargo-nextest >/dev/null; then
       # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
       profile=local
@@ -45,7 +45,7 @@ py := `scripts/py.sh`
 test-quick:
     #!/usr/bin/env bash
     set -euo pipefail
-    scripts/suite_home.sh test-quick
+    . scripts/suite_home.sh test-quick
     {{py}} scripts/slow_tests.py --check
     profile=quick
     [ -z "${CI:-}" ] || profile=quick-ci
@@ -55,7 +55,7 @@ test-quick:
 slow-tests:
     #!/usr/bin/env bash
     set -euo pipefail
-    scripts/suite_home.sh slow-tests
+    . scripts/suite_home.sh slow-tests
     cargo nextest run --workspace --profile timing
     {{py}} scripts/slow_tests.py target/nextest/timing/timing.xml
 
