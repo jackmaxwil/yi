@@ -1,4 +1,5 @@
 ---
+version: 0.915.0
 issue: Closes #1559
 raise: crate context +28, crate runtime +11, tests +234, comments +5
 ledger+: pure loop + event enum | a cut turn's re-drive is dropped from a request once a reply answered it, and the record keeps it (`loop_events::a_read_re_drive_quotes_nothing_while_an_unread_one_quotes_its_tail`)
