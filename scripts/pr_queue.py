@@ -113,19 +113,27 @@ def use_driver(cwd):
     git("config", "merge.baseline.driver", f"{sys.executable} {ROOT / 'scripts/merge_baseline.py'} %O %A %B", cwd=cwd)
 
 
+@contextlib.contextmanager
+def scratch_tree(ref, prefix, name="w"):
+    """A throwaway worktree of `ref`, deregistered and deleted on the way out."""
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
+    tree = tmp / name
+    try:
+        git("worktree", "add", "-q", "--detach", str(tree), ref)
+        yield tree
+    finally:
+        git("worktree", "remove", "--force", str(tree), check=False)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def same_tree(base, tip, recipe):
     """Rebuild the merges in a scratch tree: only reviewed bytes land, whatever the ref now holds."""
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-queue-"))
-    try:
-        git("worktree", "add", "-q", "--detach", str(tmp / "w"), base)
-        use_driver(tmp / "w")
+    with scratch_tree(base, "yi-queue-") as tree:
+        use_driver(tree)
         for number, head, title, branch in recipe:
-            if merge_member(tmp / "w", number, head, title, branch):
+            if merge_member(tree, number, head, title, branch):
                 return False
-        return git("rev-parse", "HEAD^{tree}", cwd=tmp / "w").stdout == git("rev-parse", f"{tip}^{{tree}}").stdout
-    finally:
-        git("worktree", "remove", "--force", str(tmp / "w"), check=False)
-        shutil.rmtree(tmp, ignore_errors=True)
+        return git("rev-parse", "HEAD^{tree}", cwd=tree).stdout == git("rev-parse", f"{tip}^{{tree}}").stdout
 
 
 def api(method, path, payload=None):
@@ -315,18 +323,12 @@ def record_candidate(candidate):
 
     Invariant: main's recorder runs, never the candidate's, because this job holds the token that pushes
     main; the candidate supplies the docs it is recorded from and never the process that runs."""
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-record-"))
-    work = tmp / "main"
-    try:
-        git("worktree", "add", "-q", "--detach", str(work), "origin/main", cwd=ROOT)
+    with scratch_tree("origin/main", "yi-record-", name="main") as work:
         git("rm", "-rq", "docs", cwd=work)
         git("checkout", candidate, "--", "docs", cwd=work)
         git(*IDENTITY, "commit", "-q", "--allow-empty", "-m", "the candidate's docs", cwd=work)
         written = record_docs(work)
         kept = {path: (work / path).read_text() for path in written or [] if (work / path).is_file()}
-    finally:
-        git("worktree", "remove", "--force", str(work), cwd=ROOT, check=False)
-        shutil.rmtree(tmp, ignore_errors=True)
     if written is None:
         print("queue: the recorder refused, so the candidate lands unrecorded; finish retries")
         return candidate, False
@@ -619,7 +621,7 @@ def temp_origin(prefix):
     """A bare origin, one clone of it with the seeded docs/ and stand-in recorder, and a clone(name) for another."""
     with tempfile.TemporaryDirectory(prefix=prefix) as tmp:
         tmp = pathlib.Path(tmp)
-        origin, root = tmp / "origin.git", tmp / "w"
+        origin = tmp / "origin.git"
         subprocess.run(("git", "init", "-q", "--bare", "-b", "main", str(origin)), check=True)
 
         def clone(name):
@@ -836,8 +838,29 @@ def forge_cases():
     return bad
 
 
+def queue_verb_cases():
+    """cmd_queue refuses a queue no tick reads, and labels a PR only where a tick will land it."""
+    bad, labels = [], []
+    pr = {"number": 7, "title": "t", "head": {"sha": "h", "ref": "b"}, "base": {"ref": "main"}}
+    with mock.patch.object(forge_pr, "pull_number", lambda number: 7), \
+            mock.patch.object(forge_pr, "pull", lambda number: pr), \
+            mock.patch.multiple(sys.modules[__name__], eligible_problem=lambda p, j: None,
+                                set_label=lambda number, name, present: labels.append((number, name, present))):
+        with contextlib.redirect_stdout(io.StringIO()) as told:
+            refused = cmd_queue(argparse.Namespace(number=7), "off")
+        off_label = list(labels)
+        with contextlib.redirect_stdout(io.StringIO()):
+            queued = cmd_queue(argparse.Namespace(number=7), "on")
+    if refused != 1 or off_label or "off" not in told.getvalue():
+        bad.append(f"an off queue answered {refused}, labelled {off_label}, said {told.getvalue()!r}")
+    if queued != 0 or labels != [(7, LABEL, True)]:
+        bad.append(f"an on queue answered {queued} and labelled {labels}")
+    return bad
+
+
 def selfcheck():
     bad = rule_cases() + git_cases() + build_cases() + record_cases() + landing_cases() + shadow_cases() + forge_cases()
+    bad += queue_verb_cases()
     bad += [f"rule `{name}` disabled and every case still passes, so it refutes nothing"
             for name, _, _ in RULES if not rule_cases(name)]
     for gate in ("growth", "crate_size", "comments", "test_size"):
