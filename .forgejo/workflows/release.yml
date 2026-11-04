@@ -2,7 +2,7 @@
 # against a trimmed macOS SDK) and for static x86_64 Linux, signed with the release key, published
 # on the forge, then built again from the public mirror's tree and published on GitHub. Each half
 # is skipped when its release already exists, so a rerun finishes whichever half failed.
-# Forge releases past the newest seven are deleted; their tags stay.
+# Forge v* releases past the newest seven are deleted; their tags stay, as does macos-sdk-15.4.
 name: release
 
 on:
@@ -20,7 +20,7 @@ permissions:
 env:
   CARGO_BUILD_JOBS: "5"
   FORGE_RELEASES: ${{ github.api_url }}/repos/${{ github.repository }}/releases
-  SDK_URL: https://git.example.invalid/api/packages/apex/generic/macos-sdk/15.4/MacOSX15.4-yi.sdk.tar.xz
+  SDK_URL: https://git.example.invalid/apex/yi/releases/download/macos-sdk-15.4/MacOSX15.4-yi.sdk.tar.xz
   SDK_SHA256: de070744ae36dac9981d33784c5fe1becffe64a08965b6b13da560de336d8935
 
 jobs:
