@@ -255,7 +255,9 @@ fn the_git_surface_splits_along_what_it_destroys() -> TestResult {
         ("git clean -fd", Class::Destructive),
         ("git checkout main", Class::Unknown),
         ("git checkout -- src", Class::Destructive),
-        ("git push origin main", Class::Egress),
+        ("git push origin main", Class::Unknown),
+        ("git push origin +main", Class::Destructive),
+        ("git push origin :old", Class::Destructive),
         (
             "git push --force-with-lease origin main",
             Class::Destructive,
@@ -274,11 +276,14 @@ fn the_git_surface_splits_along_what_it_destroys() -> TestResult {
 fn a_package_manager_is_destructive_exactly_when_it_installs() -> TestResult {
     for command in [
         "npm install -g typescript",
-        "pip install requests",
+        "npm install --location=global typescript",
+        "pip install --user requests",
+        "pip install --target=/opt/site requests",
+        "yarn global add left-pad",
+        "npm publish",
         "brew install jq",
         "cargo install ripgrep",
         "gem install bundler",
-        "yarn add left-pad",
     ] {
         assert_eq!(
             classify(&argv(command)[0]),
@@ -286,7 +291,18 @@ fn a_package_manager_is_destructive_exactly_when_it_installs() -> TestResult {
             "{command:?}"
         );
     }
-    for command in ["npm test", "npm run build", "pip list", "brew --version"] {
+    for command in [
+        "npm test",
+        "npm run build",
+        "pip list",
+        "brew --version",
+        "npm install left-pad",
+        "npm ci",
+        "pip install requests",
+        "yarn add left-pad",
+        "cargo add serde",
+        "cargo fetch",
+    ] {
         assert_eq!(classify(&argv(command)[0]), Class::Unknown, "{command:?}");
     }
     Ok(())
@@ -339,15 +355,7 @@ fn find_and_sed_are_read_until_they_are_not() -> TestResult {
 
 #[test]
 fn git_network_verbs_ask_for_egress() -> TestResult {
-    for command in [
-        "git fetch origin",
-        "git pull --rebase",
-        "git push origin main",
-        "git clone https://example.com/repo.git",
-        "git ls-remote origin",
-        "git submodule update --init",
-        "git -C ../other fetch",
-    ] {
+    for command in ["git submodule update --init", "git remote update"] {
         assert_eq!(classify(&argv(command)[0]), Class::Egress, "{command:?}");
         match verdict(command) {
             Verdict::Ask { reason } => assert!(reason.contains("network"), "{reason}"),
@@ -359,6 +367,19 @@ fn git_network_verbs_ask_for_egress() -> TestResult {
         Class::Destructive,
         "a force push stays destructive, not merely egress"
     );
+    Ok(())
+}
+
+/// Dies if a contained `git clone` or `git ls-remote` goes back to asking for egress: both run
+/// inside the sandbox through the proxy now, and the ask is the friction this rule removed.
+#[test]
+fn a_contained_clone_and_an_ls_remote_are_not_egress() -> TestResult {
+    for command in [
+        "git clone https://example.invalid/owner/repo.git",
+        "git ls-remote origin",
+    ] {
+        assert_ne!(classify(&argv(command)[0]), Class::Egress, "{command:?}");
+    }
     Ok(())
 }
 
@@ -507,15 +528,20 @@ fn only_network_and_install_approvals_need_the_host() {
     for command in [
         "curl -o out.json https://example.invalid/x",
         "git push --force origin main",
-        "timeout 60 git fetch origin",
-        "npm install left-pad",
-        "cargo add serde",
+        "timeout 60 git submodule update",
+        "npm install -g left-pad",
+        "cargo install ripgrep",
+        "npm publish",
         "scp a host:b",
         "cd sub && wget https://example.invalid/x > log",
     ] {
         assert!(needs_host(command), "{command}");
     }
     for command in [
+        "npm install left-pad",
+        "cargo add serde",
+        "uv add six",
+        "pip install requests",
         "git add -A",
         "rm -rf target/old",
         "cargo test",
@@ -546,7 +572,7 @@ fn each_segment_says_why_it_leaves() {
     );
     assert!(matches!(verdict("git remote update"), Verdict::Ask { .. }));
     assert_eq!(
-        need("cargo test && cargo add serde"),
+        need("cargo test && cargo install ripgrep"),
         [None, Some("installs")]
     );
 }
@@ -654,7 +680,7 @@ const FLAG_SPELLINGS: [(&str, &str); 64] = [
     ("git push -f origin main", "ask"),
     ("chmod -R 777 .", "ask"),
     ("rsync -a src host:dst", "ask"),
-    ("git pull", "ask"),
+    ("git pull", "contain"),
     ("sh -c ls", "ask"),
     ("ls > out.txt", "contain"),
 ];
@@ -670,9 +696,11 @@ fn a_flag_that_runs_or_writes_is_not_read_only() -> TestResult {
         Verdict::Ask { reason } => assert!(reason.starts_with("`rm` is destructive"), "{reason}"),
         other => return Err(format!("FOO=1 rm must ask, got {other:?}").into()),
     }
-    match verdict("FOO=1 git pull") {
-        Verdict::Ask { reason } => assert!(reason.starts_with("`git pull` needs"), "{reason}"),
-        other => return Err(format!("FOO=1 git pull must ask, got {other:?}").into()),
+    match verdict("FOO=1 git submodule update") {
+        Verdict::Ask { reason } => {
+            assert!(reason.starts_with("`git submodule` needs"), "{reason}")
+        }
+        other => return Err(format!("FOO=1 git submodule must ask, got {other:?}").into()),
     }
     Ok(())
 }

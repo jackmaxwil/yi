@@ -23,7 +23,7 @@ def note(**row):
         sink.write(json.dumps(row) + "\n")
 if argv[:2] == ["doctor", "--fix"]:
     (home / ".yi" / ("kernel-venv-fake" if not config.get("no_venv") else "no-venv")).mkdir(parents=True)
-    note(build="doctor")
+    note(build="doctor", binary=__file__)
     print("[]")
 elif argv[:3] == ["login", "kimi", "--refresh"]:
     lock = home / ".yi" / "providers" / "locks" / "kimi.lock"
@@ -47,7 +47,7 @@ elif argv[:1] == ["ask"]:
         note(build="boot")
     token = home / ".yi" / "providers" / "tokens" / "kimi.json"
     asked = sum(1 for line in open(log) if '"ask"' in line) if log.exists() else 0
-    note(ask=os.getcwd(), home=str(home), venvs=venvs, git=Path(".git").is_dir(),
+    note(ask=os.getcwd(), binary=__file__, home=str(home), venvs=venvs, git=Path(".git").is_dir(),
          config=json.loads((home / ".yi" / "config.json").read_text()),
          token=json.loads(token.read_text()) if token.exists() else None,
          mode=oct(token.stat().st_mode & 0o777) if token.exists() else None, env=dict(os.environ))
@@ -512,6 +512,18 @@ class Runs(unittest.TestCase):
             base = r.root / "t" / row["run"]
             self.assertEqual((row["id"], (base / "checks.py").read_text()), ("one", "print('PASS kept')\n"))
             self.assertFalse((base / "repo").exists() or (base / "absent.py").exists(), sorted(base.iterdir()))
+
+    def test_a_spec_naming_its_binary_runs_and_seeds_with_that_binary(self):
+        # Failure: both arms of an A/B ran the harness's own head binary, so the experiment
+        # compared a build against itself and its verdict measured nothing.
+        with rig() as r:
+            other = r.tmp / "yi-with-mode"
+            other.write_text(FAKE_YI + "# the other arm's build\n")
+            other.chmod(0o755)
+            r.streams(EVENTS)
+            kill.ask("t", "flash", {**r.spec, "binary": str(other)}, str(r.yi), 1.0)
+            used = {(("ask" if "ask" in n else "doctor"), n["binary"]) for n in r.notes() if "binary" in n}
+            self.assertEqual(used, {("ask", str(other)), ("doctor", str(other))})
 
     def test_a_run_past_its_deadline_is_killed_as_a_timeout(self):
         with rig() as r:
