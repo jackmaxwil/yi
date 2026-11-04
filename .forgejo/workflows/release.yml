@@ -19,6 +19,7 @@ permissions:
 
 env:
   CARGO_BUILD_JOBS: "5"
+  FORGE_RELEASES: ${{ github.api_url }}/repos/${{ github.repository }}/releases
   SDK_URL: https://git.example.invalid/api/packages/apex/generic/macos-sdk/15.4/MacOSX15.4-yi.sdk.tar.xz
   SDK_SHA256: de070744ae36dac9981d33784c5fe1becffe64a08965b6b13da560de336d8935
 
@@ -40,10 +41,10 @@ jobs:
         run: |
           set -euo pipefail
           version=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import forge_tracking; print(forge_tracking.version())')
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
           printf 'Authorization: token %s\n' "$FORGEJO_TOKEN" > "$RUNNER_TEMP/forge-auth"
           forge=$(curl -s -o /dev/null -w '%{http_code}' -H @"$RUNNER_TEMP/forge-auth" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/releases/tags/v$version")
+            "$FORGE_RELEASES/tags/v$version")
           github=$(curl -s -o /dev/null -w '%{http_code}' "https://api.github.com/repos/jackmaxwil/yi/releases/tags/v$version")
           echo "forge=$([ "$forge" = 200 ] && echo done || echo todo)" >> "$GITHUB_OUTPUT"
           echo "github=$([ "$github" = 200 ] && echo done || echo todo)" >> "$GITHUB_OUTPUT"
@@ -76,8 +77,8 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          scripts/release_build.sh "${{ steps.plan.outputs.version }}"
-          just publish "${{ steps.plan.outputs.version }}"
+          scripts/release_build.sh "$VERSION"
+          just publish "$VERSION"
       - name: the tag on the mirror
         if: steps.plan.outputs.github == 'todo'
         env:
@@ -85,7 +86,7 @@ jobs:
           MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
         run: |
           set -euo pipefail
-          tag="v${{ steps.plan.outputs.version }}"
+          tag="v$VERSION"
           git fetch -q --tags origin
           uv tool install -q "git-filter-repo==$(cat scripts/mirror/filter-repo.version)"
           bash scripts/mirror/sync.sh
@@ -102,16 +103,14 @@ jobs:
           MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
         run: |
           set -euo pipefail
-          version="${{ steps.plan.outputs.version }}"
-          echo "yi $version, built nightly from main ($(git rev-parse --short HEAD) on the forge)." > "$RUNNER_TEMP/notes.md"
-          bash scripts/mirror/publish.sh "$version" "$RUNNER_TEMP/notes.md"
+          echo "yi $VERSION, built nightly from main ($(git rev-parse --short HEAD) on the forge)." > "$RUNNER_TEMP/notes.md"
+          bash scripts/mirror/publish.sh "$VERSION" "$RUNNER_TEMP/notes.md"
       - name: forge releases past the newest seven
         if: steps.plan.outputs.forge == 'todo'
         run: |
           set -euo pipefail
-          api="${{ github.api_url }}/repos/${{ github.repository }}/releases"
-          old=$(curl -fsS -H @"$RUNNER_TEMP/forge-auth" "$api?limit=50" | python3 -c '
+          old=$(curl -fsS -H @"$RUNNER_TEMP/forge-auth" "$FORGE_RELEASES?limit=50" | python3 -c '
           import json, sys
           tagged = [r for r in json.load(sys.stdin) if r["tag_name"].startswith("v")]
           print(" ".join(str(r["id"]) for r in tagged[7:]))')
-          for id in $old; do curl -fsS -X DELETE -H @"$RUNNER_TEMP/forge-auth" "$api/$id"; echo "deleted release $id"; done
+          for id in $old; do curl -fsS -X DELETE -H @"$RUNNER_TEMP/forge-auth" "$FORGE_RELEASES/$id"; echo "deleted release $id"; done
