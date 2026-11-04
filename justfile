@@ -316,7 +316,7 @@ publish version:
     { echo "# yi {{version}} forge build of commit $(git rev-parse HEAD)"; cat target/package/yi-{{version}}-*.tar.gz.sha256; } \
       > target/package/SHA256SUMS
     assets+=(target/package/SHA256SUMS)
-    body=$(printf '{"tag_name":"v%s","name":"v%s"}' '{{version}}' '{{version}}')
+    body=$(printf '{"tag_name":"v%s","name":"v%s","target_commitish":"%s"}' '{{version}}' '{{version}}' "$(git rev-parse HEAD)")
     # python3, not sed: the response carries several "id" keys -- the author's
     # among them -- and a greedy match takes the last one rather than the
     # release's. python3 is already a hard requirement for the guardrails.

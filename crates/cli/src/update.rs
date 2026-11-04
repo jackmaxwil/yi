@@ -6,6 +6,8 @@ use yi_runtime::tarball;
 use yi_types::install::InstallReceipt;
 
 const FORGE: &str = "https://git.example.invalid";
+/// Invariant: spelled whole, so the mirror's replace rule makes a public build read GitHub's.
+const LATEST: &str = "https://api.github.com/repos/jackmaxwil/yi/releases/latest";
 const NAMESPACE: &str = "yi-release";
 const SIGNERS: &str = include_str!("../../../allowed_signers");
 
@@ -19,11 +21,15 @@ pub(crate) fn early() {
 }
 
 fn run() -> i32 {
-    if std::env::args().nth(2).is_some() {
-        eprintln!("usage: yi update");
-        return 2;
-    }
-    report(installed())
+    let downgrade = match std::env::args().nth(2).as_deref() {
+        None => false,
+        Some("--downgrade") if std::env::args().nth(3).is_none() => true,
+        Some(_) => {
+            eprintln!("usage: yi update [--downgrade]");
+            return 2;
+        }
+    };
+    report(installed(downgrade))
 }
 
 fn report(installed: Result<(String, PathBuf), String>) -> i32 {
@@ -39,7 +45,7 @@ fn report(installed: Result<(String, PathBuf), String>) -> i32 {
     }
 }
 
-fn installed() -> Result<(String, PathBuf), String> {
+fn installed(downgrade: bool) -> Result<(String, PathBuf), String> {
     let home = absolute_home()?;
     let prefix = prefix_dir(&home)?;
     let exe = std::env::current_exe().map_err(|error| format!("current exe: {error}"))?;
@@ -50,6 +56,7 @@ fn installed() -> Result<(String, PathBuf), String> {
         current: env!("ARCHITECTURE_VERSION"),
         target: env!("RELEASE_TRIPLE"),
         signers: SIGNERS,
+        downgrade,
         get: &http_get,
     })?;
     let binary = installed_binary(&prefix, read_receipt(&home)?.as_ref());
@@ -83,6 +90,7 @@ struct Apply<'a, F> {
     current: &'a str,
     target: &'a str,
     signers: &'a str,
+    downgrade: bool,
     get: &'a F,
 }
 
@@ -100,12 +108,18 @@ where
     let receipt = read_receipt(job.home)?;
     let dest = installed_binary(job.prefix, receipt.as_ref());
     guard(job.exe, job.prefix, receipt.as_ref(), &dest)?;
-    let body = (job.get)(&format!("{FORGE}/api/v1/repos/apex/yi/releases/latest"))?;
+    let body = (job.get)(LATEST)?;
     let latest: serde_json::Value =
         serde_json::from_slice(&body).map_err(|error| error.to_string())?;
     let release = release_from(&latest, job.target)?;
     if release.version == job.current {
         return Ok(format!("already {}", job.current));
+    }
+    if !job.downgrade && older(&release.version, job.current)? {
+        return Ok(format!(
+            "already {}, newer than the latest release {}; yi update --downgrade installs it",
+            job.current, release.version
+        ));
     }
     let archive = (job.get)(&release.archive)?;
     let digest = (job.get)(&release.digest)?;
@@ -137,6 +151,17 @@ where
         release.version,
         prefix.display()
     ))
+}
+
+fn older(release: &str, current: &str) -> Result<bool, String> {
+    let parts = |version: &str| -> Result<Vec<u64>, String> {
+        version
+            .split('.')
+            .map(|part| part.parse::<u64>())
+            .collect::<Result<_, _>>()
+            .map_err(|_| format!("version {version} is not dotted numbers"))
+    };
+    Ok(parts(release)? < parts(current)?)
 }
 
 fn prefix_dir(home: &Path) -> Result<PathBuf, String> {
@@ -795,6 +820,23 @@ mod tests {
         version: &str,
         files: &[(&str, &[u8])],
     ) -> Result<String, String> {
+        run_job_as(home, prefix, exe, current, signers, version, files, false)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the job's fields, one per argument"
+    )]
+    fn run_job_as(
+        home: &Path,
+        prefix: &Path,
+        exe: &Path,
+        current: &str,
+        signers: &str,
+        version: &str,
+        files: &[(&str, &[u8])],
+        downgrade: bool,
+    ) -> Result<String, String> {
         let name = format!("yi-{version}-aarch64-apple-darwin.tar.gz");
         let latest = serde_json::json!({
             "tag_name": format!("v{version}"),
@@ -805,7 +847,6 @@ mod tests {
             ],
         })
         .to_string();
-        let latest_url = format!("{FORGE}/api/v1/repos/apex/yi/releases/latest");
         apply(Apply {
             home,
             prefix,
@@ -813,8 +854,9 @@ mod tests {
             current,
             target: "aarch64-apple-darwin",
             signers,
+            downgrade,
             get: &|url: &str| {
-                if url == latest_url {
+                if url == LATEST {
                     return Ok(latest.clone().into_bytes());
                 }
                 files
@@ -979,6 +1021,42 @@ mod tests {
         let (home, prefix, exe) = layout(&tmp)?;
         let line = run_job(&home, &prefix, &exe, "0.2.0", "unused\n", "0.2.0", &[])?;
         assert_eq!(line, "already 0.2.0");
+        assert_eq!(std::fs::read(&exe)?, b"old");
+        Ok(())
+    }
+
+    #[test]
+    fn an_older_release_is_refused_and_downloads_nothing() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, prefix, exe) = layout(&tmp)?;
+        let line = run_job(&home, &prefix, &exe, "0.898.0", "unused\n", "0.799.0", &[])?;
+        assert_eq!(
+            line,
+            "already 0.898.0, newer than the latest release 0.799.0; yi update --downgrade installs it"
+        );
+        assert_eq!(std::fs::read(&exe)?, b"old");
+        Ok(())
+    }
+
+    #[test]
+    fn versions_compare_by_number_and_the_flag_downgrades() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, prefix, exe) = layout(&tmp)?;
+        let newer = run_job(&home, &prefix, &exe, "0.999.0", "unused\n", "0.1000.0", &[]);
+        assert_eq!(newer, Err("downloaded archive".to_owned()));
+        let forced = run_job_as(
+            &home,
+            &prefix,
+            &exe,
+            "0.898.0",
+            "unused\n",
+            "0.799.0",
+            &[],
+            true,
+        );
+        assert_eq!(forced, Err("downloaded archive".to_owned()));
         assert_eq!(std::fs::read(&exe)?, b"old");
         Ok(())
     }

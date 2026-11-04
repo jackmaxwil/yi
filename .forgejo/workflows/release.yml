@@ -1,0 +1,117 @@
+# The nightly release: main's version, built on the forge for the Mac (cross-linked through zig
+# against a trimmed macOS SDK) and for static x86_64 Linux, signed with the release key, published
+# on the forge, then built again from the public mirror's tree and published on GitHub. Each half
+# is skipped when its release already exists, so a rerun finishes whichever half failed.
+# Forge releases past the newest seven are deleted; their tags stay.
+name: release
+
+on:
+  schedule:
+    - cron: "23 10 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_BUILD_JOBS: "5"
+  SDK_URL: https://git.example.invalid/api/packages/apex/generic/macos-sdk/15.4/MacOSX15.4-yi.sdk.tar.xz
+  SDK_SHA256: de070744ae36dac9981d33784c5fe1becffe64a08965b6b13da560de336d8935
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Forgejo mirror SHA is unverified offline; sync.sh reads origin's tags with the checkout's scoped token.
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: what is unreleased
+        id: plan
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import forge_tracking; print(forge_tracking.version())')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          printf 'Authorization: token %s\n' "$FORGEJO_TOKEN" > "$RUNNER_TEMP/forge-auth"
+          forge=$(curl -s -o /dev/null -w '%{http_code}' -H @"$RUNNER_TEMP/forge-auth" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/releases/tags/v$version")
+          github=$(curl -s -o /dev/null -w '%{http_code}' "https://api.github.com/repos/jackmaxwil/yi/releases/tags/v$version")
+          echo "forge=$([ "$forge" = 200 ] && echo done || echo todo)" >> "$GITHUB_OUTPUT"
+          echo "github=$([ "$github" = 200 ] && echo done || echo todo)" >> "$GITHUB_OUTPUT"
+          echo "v$version: forge $forge, github $github"
+      - name: toolchains, the macOS SDK and the release key
+        if: steps.plan.outputs.forge == 'todo' || steps.plan.outputs.github == 'todo'
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${RELEASE_SIGNING_KEY:-}" || { echo "no RELEASE_SIGNING_KEY secret: nothing can be signed"; exit 1; }
+          (umask 077 && printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/yi-release")
+          echo "YI_SIGNING_KEY=$RUNNER_TEMP/yi-release" >> "$GITHUB_ENV"
+          apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends musl-tools xz-utils >/dev/null
+          rustup target add x86_64-unknown-linux-musl aarch64-apple-darwin
+          uv tool install -q cargo-zigbuild==0.24.0
+          uv tool install -q ziglang==0.17.0
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "CARGO_ZIGBUILD_ZIG_PATH=$HOME/.local/bin/python-zig" >> "$GITHUB_ENV"
+          curl -fsSL -H @"$RUNNER_TEMP/forge-auth" -o "$RUNNER_TEMP/sdk.tar.xz" "$SDK_URL"
+          echo "$SDK_SHA256  $RUNNER_TEMP/sdk.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/sdk" && tar -C "$RUNNER_TEMP/sdk" -xJf "$RUNNER_TEMP/sdk.tar.xz"
+          echo "SDKROOT=$RUNNER_TEMP/sdk/MacOSX15.4.sdk" >> "$GITHUB_ENV"
+      - name: the forge release
+        if: steps.plan.outputs.forge == 'todo'
+        env:
+          FORGEJO_URL: ${{ github.server_url }}
+          FORGEJO_REPO: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          scripts/release_build.sh "${{ steps.plan.outputs.version }}"
+          just publish "${{ steps.plan.outputs.version }}"
+      - name: the tag on the mirror
+        if: steps.plan.outputs.github == 'todo'
+        env:
+          MIRROR_SOURCE: ${{ github.workspace }}
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.plan.outputs.version }}"
+          git fetch -q --tags origin
+          uv tool install -q "git-filter-repo==$(cat scripts/mirror/filter-repo.version)"
+          bash scripts/mirror/sync.sh
+          # sync.sh stops when main moved under it; the mirror run that push started carries the tag.
+          for _ in $(seq 60); do
+            git ls-remote --exit-code https://github.com/jackmaxwil/yi.git "refs/tags/$tag" >/dev/null && exit 0
+            sleep 30
+          done
+          echo "$tag never reached github.com/jackmaxwil/yi"
+          exit 1
+      - name: the GitHub release
+        if: steps.plan.outputs.github == 'todo'
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.plan.outputs.version }}"
+          echo "yi $version, built nightly from main ($(git rev-parse --short HEAD) on the forge)." > "$RUNNER_TEMP/notes.md"
+          bash scripts/mirror/publish.sh "$version" "$RUNNER_TEMP/notes.md"
+      - name: forge releases past the newest seven
+        if: steps.plan.outputs.forge == 'todo'
+        run: |
+          set -euo pipefail
+          api="${{ github.api_url }}/repos/${{ github.repository }}/releases"
+          old=$(curl -fsS -H @"$RUNNER_TEMP/forge-auth" "$api?limit=50" | python3 -c '
+          import json, sys
+          tagged = [r for r in json.load(sys.stdin) if r["tag_name"].startswith("v")]
+          print(" ".join(str(r["id"]) for r in tagged[7:]))')
+          for id in $old; do curl -fsS -X DELETE -H @"$RUNNER_TEMP/forge-auth" "$api/$id"; echo "deleted release $id"; done
