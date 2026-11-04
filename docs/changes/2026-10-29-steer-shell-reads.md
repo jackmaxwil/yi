@@ -1,4 +1,6 @@
 ---
+version: 0.907.0
+decisions: D543
 issue: Closes #1436
 decision: a read-only shell read answers with a `[…]` row naming the dedicated tool, not a refusal | a refusal would take the raw bytes away from calls whose point is those bytes (a binary probe, a format read cannot reproduce, an exit status), and the bash tool already answers `pdftotext`/`pandoc` with a hint rather than a refusal; the row rides the first line of the answer, so it cannot be missed the way a doctrine line was | reversible via deleting the `shell_read_hint` call in `BashTool::execute`
 growth: +67 the classifier, its two messages and their tests; the verbs cannot come from `segment_category`, whose `list_files`, `vcs` and `build` arms must not steer
