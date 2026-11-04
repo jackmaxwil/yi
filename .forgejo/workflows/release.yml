@@ -1,7 +1,8 @@
 # The nightly release: main's version, built on the forge for the Mac (cross-linked through zig
 # against a trimmed macOS SDK) and for static x86_64 Linux, signed with the release key, published
 # on the forge, then built again from the public mirror's tree and published on GitHub. Each half
-# is skipped when its release already exists, so a rerun finishes whichever half failed.
+# is skipped once its release is live; a release stays a draft until every asset is up, so a rerun
+# finishes whichever half failed.
 # Forge v* releases past the newest seven are deleted; their tags stay, as does macos-sdk-15.4.
 name: release
 
@@ -28,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Forgejo mirror SHA is unverified offline; sync.sh reads origin's tags with the checkout's scoped token.
         with:
@@ -38,17 +39,31 @@ jobs:
         id: plan
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
         run: |
           set -euo pipefail
           version=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import forge_tracking; print(forge_tracking.version())')
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          printf 'Authorization: token %s\n' "$FORGEJO_TOKEN" > "$RUNNER_TEMP/forge-auth"
-          forge=$(curl -s -o /dev/null -w '%{http_code}' -H @"$RUNNER_TEMP/forge-auth" \
-            "$FORGE_RELEASES/tags/v$version")
-          github=$(curl -s -o /dev/null -w '%{http_code}' "https://api.github.com/repos/jackmaxwil/yi/releases/tags/v$version")
-          echo "forge=$([ "$forge" = 200 ] && echo done || echo todo)" >> "$GITHUB_OUTPUT"
-          echo "github=$([ "$github" = 200 ] && echo done || echo todo)" >> "$GITHUB_OUTPUT"
-          echo "v$version: forge $forge, github $github"
+          # The commit this version is released from: its forge tag once the forge half is out.
+          git fetch -q --tags origin
+          commit=$(git rev-parse -q --verify "refs/tags/v$version^{commit}" || git rev-parse HEAD)
+          echo "RELEASE_COMMIT=$commit" >> "$GITHUB_ENV"
+          (umask 077 && printf 'Authorization: token %s\n' "$FORGEJO_TOKEN" > "$RUNNER_TEMP/forge-auth" \
+            && printf 'Authorization: Bearer %s\n' "$MIRROR_TOKEN" > "$RUNNER_TEMP/github-auth")
+          released() {
+            curl -s "$@" | python3 -c '
+          import json, sys
+          try:
+              r = json.load(sys.stdin)
+          except ValueError:
+              r = {}
+          print("done" if isinstance(r, dict) and r.get("tag_name") and not r.get("draft") else "todo")'
+          }
+          forge=$(released -H @"$RUNNER_TEMP/forge-auth" "$FORGE_RELEASES/tags/v$version")
+          github=$(released -H @"$RUNNER_TEMP/github-auth" "https://api.github.com/repos/jackmaxwil/yi/releases/tags/v$version")
+          echo "forge=$forge" >> "$GITHUB_OUTPUT"
+          echo "github=$github" >> "$GITHUB_OUTPUT"
+          echo "v$version at ${commit:0:10}: forge $forge, github $github"
       - name: toolchains, the macOS SDK and the release key
         if: steps.plan.outputs.forge == 'todo' || steps.plan.outputs.github == 'todo'
         env:
@@ -87,15 +102,23 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$VERSION"
-          git fetch -q --tags origin
+          export MIRROR_COMMIT_MAP="$RUNNER_TEMP/commit-map"
           uv tool install -q "git-filter-repo==$(cat scripts/mirror/filter-repo.version)"
-          bash scripts/mirror/sync.sh
-          # sync.sh stops when main moved under it; the mirror run that push started carries the tag.
-          for _ in $(seq 60); do
-            git ls-remote --exit-code https://github.com/jackmaxwil/yi.git "refs/tags/$tag" >/dev/null && exit 0
+          # sync.sh pushes only from forge main's tip, so each try catches the checkout up first. The
+          # tag counts only at the commit filter-repo made of the release commit.
+          for try in 1 2 3 4 5; do
+            git fetch -q --tags origin
+            git merge -q --ff-only origin/main
+            bash scripts/mirror/sync.sh
+            mirror=$(awk -v c="$RELEASE_COMMIT" '$1 == c { print $2 }' "$MIRROR_COMMIT_MAP")
+            pushed=$(git ls-remote https://github.com/jackmaxwil/yi.git "refs/tags/$tag" | cut -f1)
+            if [ -n "$mirror" ] && [ "$pushed" = "$mirror" ]; then
+              echo "MIRROR_COMMIT=$mirror" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "try $try: $tag on GitHub is ${pushed:-absent}, the mirror of ${RELEASE_COMMIT:0:10} is ${mirror:-unknown}"
             sleep 30
           done
-          echo "$tag never reached github.com/jackmaxwil/yi"
           exit 1
       - name: the GitHub release
         if: steps.plan.outputs.github == 'todo'
@@ -103,8 +126,8 @@ jobs:
           MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
         run: |
           set -euo pipefail
-          echo "yi $VERSION, built nightly from main ($(git rev-parse --short HEAD) on the forge)." > "$RUNNER_TEMP/notes.md"
-          bash scripts/mirror/publish.sh "$VERSION" "$RUNNER_TEMP/notes.md"
+          echo "yi $VERSION, built nightly from main (${RELEASE_COMMIT:0:10} on the forge)." > "$RUNNER_TEMP/notes.md"
+          bash scripts/mirror/publish.sh "$VERSION" "$RUNNER_TEMP/notes.md" "$MIRROR_COMMIT"
       - name: forge releases past the newest seven
         if: steps.plan.outputs.forge == 'todo'
         run: |

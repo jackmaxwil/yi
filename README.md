@@ -13,7 +13,7 @@ yi --version
 ```
 
 It checks the release's sha256 and the owner's key, then installs `yi` to `~/.local/bin` and its
-runtime to `~/.yi`; Apple Silicon only, and `| bash -s -- --help` prints that key. By hand:
+runtime to `~/.yi`; Apple-silicon Macs and x86_64 Linux, and `| bash -s -- --help` prints that key. By hand:
 
 ```bash
 v=X.Y.Z t=aarch64-apple-darwin; base=https://github.com/jackmaxwil/yi/releases/download/v$v; a=yi-$v-$t.tar.gz
