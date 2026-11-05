@@ -118,7 +118,10 @@ fn responses_params_are_not_chat_completions() -> TestResult {
     assert_eq!(params["max_output_tokens"], 4096);
     assert_eq!(params["prompt_cache_key"], "session-1");
     assert!(params.get("prompt_cache_retention").is_none());
-    assert_eq!(params["reasoning"]["effort"], "high");
+    assert_eq!(
+        params["reasoning"],
+        json!({"effort": "high", "summary": "auto"})
+    );
     assert_eq!(params["include"][0], "reasoning.encrypted_content");
     assert_eq!(params["tools"][0]["type"], "function");
     assert_eq!(params["tools"][0]["name"], "bash");
