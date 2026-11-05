@@ -138,6 +138,13 @@ def selfcheck():
     # A message is judged as the mirror rewrites it, and a hit names its own commit.
     log = "\x1eaaa\nhost git.estate.lan\n\n\x1ebbb\nsubject\n\nsays ESTATE.LAN\n"
     assert messages(log, deny, swaps) == ["bbb:3: says ESTATE.LAN"]
+    # A planted fake the scanners skip still reaches the mirror unless exclude.txt names it, and
+    # GitHub's push protection refuses the key by its own rule (GH013). Incident: the push was refused.
+    if (RULES / "exclude.txt").is_file():
+        prefixes = rule_lines(RULES / "exclude.txt")
+        for planted in sorted((ROOT / "scripts/scan/fixtures/gitleaks").glob("*.txt")):
+            rel = planted.relative_to(ROOT).as_posix()
+            assert excluded(rel, prefixes), f"the mirror would carry the planted fixture {rel}"
     wired()
     print("ok   public_surface --selfcheck")
 
