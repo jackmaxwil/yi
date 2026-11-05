@@ -478,6 +478,23 @@ fn the_restore_notice_lists_a_bounded_number_of_names() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn the_compaction_notice_lists_a_bounded_number_of_names() -> TestResult {
+    let names =
+        |count: usize| -> Vec<String> { (0..count).map(|at| format!("v{at:03}")).collect() };
+    let whole = yi_runtime::compaction_notice(Some(&names(40)));
+    assert!(row_in(&whole).is_none(), "{whole}");
+    assert!(whole.contains("v039."), "{whole}");
+    let over = yi_runtime::compaction_notice(Some(&names(41)));
+    let row = row_of(&over)?;
+    assert_eq!(
+        (row.kept, row.total, row.what, row.cap, row.limit, row.next),
+        (40, 41, "names", "NAMES_SHOWN", 40, "%who")
+    );
+    assert!(!over.contains("v040"), "{over}");
+    Ok(())
+}
+
 fn add_notes(dir: &std::path::Path, range: std::ops::Range<usize>, hook: usize) -> TestResult {
     std::fs::create_dir_all(dir)?;
     for at in range {
