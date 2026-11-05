@@ -2,13 +2,14 @@
 //! is probed before any provider request: an unrunnable one exits 2, running nothing.
 use std::error::Error;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use serde_json::{Value, json};
 use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_types::message::StopReason;
 
 use crate::scratch::Scratch;
+use crate::yi_bin::yi_command;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -27,18 +28,13 @@ impl Workspace {
     }
 
     fn yi(&self, args: &[&str]) -> Result<Output, Box<dyn Error>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the surfaces are the spawned binary's argv, exit code and output"
-        )]
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut command = yi_command(&self.0.join("home"));
         command
             .args(args)
             .arg("--session-dir")
             .arg(self.0.join("home/sessions"))
             .arg("--cwd")
             .arg(self.project())
-            .env("HOME", self.0.join("home"))
             .current_dir(self.project());
         Ok(command.output()?)
     }
@@ -396,11 +392,7 @@ impl Check {
     }
 
     fn run(&self, command: &str) -> Result<std::process::Output, Box<dyn Error>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the contract is the spawned binary's argv, exit code and stderr"
-        )]
-        let mut process = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut process = yi_command(&self.root.join("home"));
         process
             .arg("ask")
             .arg("--check")

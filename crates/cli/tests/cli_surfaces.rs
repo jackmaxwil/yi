@@ -11,6 +11,7 @@ use yi_types::plan::doc::PlanId;
 
 use crate::repo::{git, init_repo};
 use crate::scratch::Scratch;
+use crate::yi_bin::{yi_command, yi_command_homeless};
 
 use crate::prompt_slots_support::prompt_slots;
 use crate::session_files::{recursive_files, session_files, session_text};
@@ -36,18 +37,13 @@ impl Workspace {
     }
 
     fn yi_env(&self, args: &[&str], env: &[(&str, &str)]) -> Result<Output, Box<dyn Error>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
-        )]
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut command = yi_command(&self.0.join("home"));
         command
             .args(args)
             .arg("--session-dir")
             .arg(self.0.join("home/sessions"))
             .arg("--cwd")
-            .arg(self.project())
-            .env("HOME", self.0.join("home"));
+            .arg(self.project());
         // Incident: a shell's OPENROUTER_API_KEY turned the keyless doctor FAIL into a live probe.
         for (_, key) in yi_types::PROVIDER_KEY_VARS {
             command.env_remove(key);
@@ -62,15 +58,10 @@ impl Workspace {
 impl Workspace {
     /// `yi plugin` takes no session flags, and PATH holds no ripwire the test did not place.
     fn plugin(&self, args: &[&str]) -> std::io::Result<Output> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
-        )]
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut command = yi_command(&self.0.join("home"));
         command
             .arg("plugin")
             .args(args)
-            .env("HOME", self.0.join("home"))
             .env("PATH", "/usr/bin:/bin")
             .output()
     }
@@ -79,18 +70,13 @@ impl Workspace {
     fn acp(&self, args: &[&str], frames: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
         use std::io::Write;
         use std::process::Stdio;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
-        )]
-        let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+        let mut child = yi_command(&self.0.join("home"))
             .arg("acp")
             .args(args)
             .arg("--session-dir")
             .arg(self.0.join("home/sessions"))
             .arg("--cwd")
             .arg(self.project())
-            .env("HOME", self.0.join("home"))
             .current_dir(self.project())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -127,14 +113,9 @@ fn login_logout_round_trip() -> TestResult {
     let login = |args: &[&str], stdin_text: &str| -> Result<Output, Box<dyn Error>> {
         use std::io::Write;
         use std::process::Stdio;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the login fast path's contract is argv, stdin, exit code and files"
-        )]
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut command = yi_command(&home);
         let mut child = command
             .args(args)
-            .env("HOME", &home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -232,17 +213,12 @@ fn ask_reads_a_prompt_past_the_argument_cap_from_stdin() -> TestResult {
     use std::process::Stdio;
     let workspace = Workspace::new("ask-stdin")?;
     let run = |text: &str| -> Result<Output, Box<dyn Error>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the contract is the spawned binary's stdin, exit code and stdout"
-        )]
-        let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+        let mut child = yi_command(&workspace.0.join("home"))
             .args(["ask", "--model", "faux/faux-1", "--json", "-"])
             .arg("--session-dir")
             .arg(workspace.0.join("home/sessions"))
             .arg("--cwd")
             .arg(workspace.project())
-            .env("HOME", workspace.0.join("home"))
             .current_dir(workspace.project())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -427,7 +403,7 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
 /// The binary's answer, not this process's: a test binary has no `__contain`, so on Linux it alone
 /// would say no sandbox while the `yi` it runs refuses the grant.
 fn the_binary_contains() -> bool {
-    yi_tools::set_wrapper(std::path::PathBuf::from(env!("CARGO_BIN_EXE_yi")));
+    yi_tools::set_wrapper(crate::yi_bin::bin().to_path_buf());
     yi_tools::Sandbox::available()
 }
 
@@ -908,17 +884,12 @@ fn gc_fix_takes_the_checkpoints_of_a_deleted_project() -> TestResult {
     let workspace = Workspace::new("gc")?;
     let gone = workspace.0.join("gone");
     std::fs::create_dir_all(&gone)?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the turn must run in a project the test deletes afterwards"
-    )]
-    let turn = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let turn = yi_command(&workspace.0.join("home"))
         .args(["ask", "--model", "faux/faux-1", "--session-dir"])
         .arg(workspace.0.join("home/sessions"))
         .arg("--cwd")
         .arg(&gone)
         .arg("start a turn")
-        .env("HOME", workspace.0.join("home"))
         .current_dir(&gone)
         .output()?;
     assert!(
@@ -1651,12 +1622,8 @@ fn a_relative_home_is_refused_at_boot() -> TestResult {
 #[test]
 fn a_homeless_plugin_verb_is_refused_and_writes_nothing_here() -> TestResult {
     let workspace = Workspace::new("plugin-unset-home")?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the contract is the spawned binary's exit code and what it wrote"
-    )]
     let homeless = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_yi"))
+        yi_command_homeless()
             .args(args)
             .env_remove("HOME")
             .envs(NO_KERNEL.iter().copied())
@@ -1681,12 +1648,8 @@ fn a_homeless_plugin_verb_is_refused_and_writes_nothing_here() -> TestResult {
 #[test]
 fn an_unset_home_is_refused_and_writes_nothing_here() -> TestResult {
     let workspace = Workspace::new("unset-home")?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the contract is the spawned binary's exit code and what it wrote"
-    )]
     let homeless = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_yi"))
+        yi_command_homeless()
             .args(args)
             .env_remove("HOME")
             .envs(NO_KERNEL.iter().copied())
@@ -3216,11 +3179,7 @@ fn a_contained_bash_call_cannot_write_the_session_corpus() -> TestResult {
         )],
         Some("done"),
     )?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the spawned binary's session dir must sit outside tmp, unlike Workspace::yi's"
-    )]
-    let ran = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let ran = yi_command(&workspace.0.join("home"))
         .args([
             "ask",
             "--model",
@@ -3233,7 +3192,6 @@ fn a_contained_bash_call_cannot_write_the_session_corpus() -> TestResult {
         .arg(&corpus)
         .arg("--cwd")
         .arg(workspace.project())
-        .env("HOME", workspace.0.join("home"))
         .current_dir(workspace.project())
         .output();
     let wrote = planted.is_file();
