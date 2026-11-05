@@ -306,7 +306,9 @@ publish version:
     : "${FORGEJO_REPO:?set FORGEJO_REPO (e.g. jack/yi)}"
     : "${FORGEJO_TOKEN:?set FORGEJO_TOKEN (a release-scoped token)}"
     api="$FORGEJO_URL/api/v1/repos/$FORGEJO_REPO/releases"
-    auth="Authorization: token $FORGEJO_TOKEN"
+    auth="$(mktemp)"
+    trap 'rm -f "$auth"' EXIT
+    printf 'Authorization: token %s\n' "$FORGEJO_TOKEN" > "$auth"
     assets=(target/package/yi-{{version}}-*.tar.gz*)
     [ -e "${assets[0]}" ] || { echo "nothing built for {{version}} -- run: just prerelease {{version}}"; exit 1; }
     for archive in target/package/yi-{{version}}-*.tar.gz; do
@@ -316,17 +318,30 @@ publish version:
     { echo "# yi {{version}} forge build of commit $(git rev-parse HEAD)"; cat target/package/yi-{{version}}-*.tar.gz.sha256; } \
       > target/package/SHA256SUMS
     assets+=(target/package/SHA256SUMS)
-    body=$(printf '{"tag_name":"v%s","name":"v%s"}' '{{version}}' '{{version}}')
+    # A draft until every asset is up: a run that dies leaves nothing yi update reads, and the
+    # next run deletes that draft and starts again.
+    existing=$(curl -fsS -H @"$auth" "$api?limit=50" | python3 -c '
+    import json, sys
+    for r in json.load(sys.stdin):
+        if r["tag_name"] == sys.argv[1]:
+            print(r["id"], "draft" if r["draft"] else "live")' 'v{{version}}')
+    case "$existing" in
+      *live) echo "v{{version}} is already released"; exit 0 ;;
+      *draft) curl -fsS -X DELETE -H @"$auth" "$api/${existing%% *}"; echo "deleted the unfinished draft of v{{version}}" ;;
+    esac
+    body=$(printf '{"tag_name":"v%s","name":"v%s","target_commitish":"%s","draft":true}' '{{version}}' '{{version}}' "$(git rev-parse HEAD)")
     # python3, not sed: the response carries several "id" keys -- the author's
     # among them -- and a greedy match takes the last one rather than the
     # release's. python3 is already a hard requirement for the guardrails.
-    id=$(curl -fsS -X POST "$api" -H "$auth" -H 'Content-Type: application/json' -d "$body" \
+    id=$(curl -fsS -X POST "$api" -H @"$auth" -H 'Content-Type: application/json' -d "$body" \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
     for asset in "${assets[@]}"; do
-      curl -fsS -X POST "$api/$id/assets?name=$(basename "$asset")" -H "$auth" \
+      curl -fsS -X POST "$api/$id/assets?name=$(basename "$asset")" -H @"$auth" \
         -F "attachment=@$asset" > /dev/null
       echo "uploaded $(basename "$asset")"
     done
+    curl -fsS -X PATCH "$api/$id" -H @"$auth" -H 'Content-Type: application/json' -d '{"draft":false}' > /dev/null
+    echo "released v{{version}}"
 
 # One release tarball for the host, signed, then the smoke test on it.
 package version target=`rustc -vV | sed -n 's|host: ||p'`:
