@@ -1,3 +1,4 @@
+use crate::view::one_line;
 use yi_types::message::{AgentMessage, Attribution, Content, UserContent};
 
 // Tool results are truncated in serialized summaries; full content is not
@@ -162,4 +163,71 @@ pub fn user_key(window: &[AgentMessage], inputs: &[UserContent]) -> String {
         "<user-messages>\nThe user's own messages above, by address; each quote is at most its first {KEY_HEAD_CHARS} characters and the whole message is in the conversation above.\n{}\n</user-messages>\n\n",
         rows.join("\n")
     )
+}
+
+const UNVERIFIED: &str = " [unverified: not in user://";
+
+fn quote_end(after: &str) -> Option<usize> {
+    let mut escaped = false;
+    after.char_indices().find_map(|(at, c)| {
+        let end = c == '"' && !escaped;
+        escaped = c == '\\' && !escaped;
+        end.then_some(at)
+    })
+}
+
+/// Incident: a tool result could plant a quote the summary then cited as `user://N`; a quote
+/// the addressed typed message lacks, as typed or as its key row escapes it, gets marked.
+pub fn mark_unmatched_quotes(summary: &str, inputs: &[UserContent]) -> String {
+    let mut out = String::with_capacity(summary.len());
+    let mut rest = summary;
+    let mut address: Option<usize> = None;
+    loop {
+        let at = rest.find("user://");
+        let quote = rest.find('"');
+        match (at, quote) {
+            (Some(at), quote) if quote.is_none_or(|quote| at < quote) => {
+                let (before, after) = rest.split_at(at.saturating_add("user://".len()));
+                out.push_str(before);
+                let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+                address = digits.parse().ok();
+                out.push_str(&digits);
+                rest = after.get(digits.len()..).unwrap_or_default();
+            }
+            (_, Some(open)) => {
+                let (before, after) = rest.split_at(open.saturating_add(1));
+                out.push_str(before);
+                if before.contains('\n') {
+                    address = None;
+                }
+                let Some(end) = quote_end(after) else {
+                    out.push_str(after);
+                    return out;
+                };
+                let (body, tail) = after.split_at(end);
+                out.push_str(body);
+                rest = tail.get(1..).unwrap_or_default();
+                out.push('"');
+                if let Some(n) = address
+                    && !rest.starts_with(UNVERIFIED)
+                {
+                    let found = n
+                        .checked_sub(1)
+                        .and_then(|index| inputs.get(index))
+                        .map(user_text)
+                        .is_some_and(|text| {
+                            one_line(&text).contains(&one_line(body))
+                                || format!("{text:?}").contains(body)
+                        });
+                    if !found {
+                        out.push_str(&format!("{UNVERIFIED}{n}]"));
+                    }
+                }
+            }
+            (_, None) => {
+                out.push_str(rest);
+                return out;
+            }
+        }
+    }
 }
