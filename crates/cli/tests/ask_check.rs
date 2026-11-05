@@ -3,7 +3,8 @@
 
 use std::error::Error;
 use std::path::PathBuf;
-use std::process::Command;
+
+use crate::yi_bin::yi_command;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -26,11 +27,7 @@ impl Check {
     }
 
     fn run(&self, command: &str) -> Result<std::process::Output, Box<dyn Error>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the contract is the spawned binary's argv, exit code and stderr"
-        )]
-        let mut process = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut process = yi_command(&self.root.join("home"));
         process
             .arg("ask")
             .arg("--check")
