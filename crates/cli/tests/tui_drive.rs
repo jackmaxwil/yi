@@ -1,15 +1,36 @@
 use std::error::Error;
+use std::path::Path;
 use std::process::Command;
 
 use crate::scratch::Scratch;
 use crate::session_files::{frame_entries, frames_text, session_files};
+use crate::yi_bin::yi_command;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+/// The headless drive every scene runs from its scratch home and session dir.
+fn drive(dir: &Scratch, keys: &Path, frames: &Path) -> std::io::Result<Command> {
+    let home = dir.home()?;
+    let mut command = yi_command(&home);
+    command
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+        ])
+        .arg(dir.join("sessions"))
+        .arg("--keys")
+        .arg(keys)
+        .arg("--frames")
+        .arg(frames);
+    Ok(command)
+}
 
 #[test]
 fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     let dir = Scratch::new("yi-tui-drive")?;
-    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -20,28 +41,7 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     )?;
     let frames = dir.join("frames");
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "ping",
-        ])
-        // Incident: the drive gate read the developer's own ~/.yi/config.json,
-        // so a `keys` entry there decided whether it passed.
-        .env("HOME", &home)
-        .output()?;
+    let output = drive(&dir, &keys, &frames)?.arg("ping").output()?;
     assert!(
         output.status.success(),
         "drive run must exit 0: {}",
@@ -63,7 +63,6 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
 #[test]
 fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     let dir = Scratch::new("yi-tui-rewind")?;
-    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -76,29 +75,10 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     )?;
     let frames = dir.join("frames");
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--cwd",
-            &dir.display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "--size",
-            "160x30",
-            "first question",
-        ])
-        .env("HOME", &home)
+    let output = drive(&dir, &keys, &frames)?
+        .arg("--cwd")
+        .arg(&dir)
+        .args(["--size", "160x30", "first question"])
         .output()?;
     assert!(
         output.status.success(),
@@ -141,7 +121,6 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
 #[test]
 fn the_at_picker_over_101_files_reaches_the_last_by_typing_its_name() -> TestResult {
     let dir = Scratch::new("yi-tui-picker")?;
-    let home = dir.home()?;
     let tree = dir.join("tree");
     std::fs::create_dir_all(&tree)?;
     for n in 0..101 {
@@ -156,27 +135,10 @@ fn the_at_picker_over_101_files_reaches_the_last_by_typing_its_name() -> TestRes
     )?;
     let frames = dir.join("frames");
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--cwd",
-            &tree.display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "ping",
-        ])
-        .env("HOME", &home)
+    let output = drive(&dir, &keys, &frames)?
+        .arg("--cwd")
+        .arg(&tree)
+        .arg("ping")
         .output()?;
     assert!(
         output.status.success(),
@@ -189,7 +151,6 @@ fn the_at_picker_over_101_files_reaches_the_last_by_typing_its_name() -> TestRes
 #[test]
 fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
     let dir = Scratch::new("yi-tui-new")?;
-    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -201,26 +162,7 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
     let frames = dir.join("frames");
     let sessions = dir.join("sessions");
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &sessions.display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "ping",
-        ])
-        .env("HOME", &home)
-        .output()?;
+    let output = drive(&dir, &keys, &frames)?.arg("ping").output()?;
     assert!(
         output.status.success(),
         "drive run must exit 0: {}",
@@ -256,7 +198,6 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
 #[test]
 fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     let dir = Scratch::new("yi-tui-surfaces")?;
-    let home = dir.home()?;
     let work = dir.join("work");
     std::fs::create_dir_all(&work)?;
     let keys = dir.join("script.keys");
@@ -271,27 +212,10 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     )?;
     let frames = dir.join("frames");
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--cwd",
-            &work.display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "ping",
-        ])
-        .env("HOME", &home)
+    let output = drive(&dir, &keys, &frames)?
+        .arg("--cwd")
+        .arg(&work)
+        .arg("ping")
         .output()?;
     assert!(
         output.status.success(),
@@ -336,7 +260,6 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
 #[test]
 fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
     let dir = Scratch::new("yi-tui-isearch")?;
-    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -347,26 +270,7 @@ fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
     )?;
     let frames = dir.join("frames");
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "ping",
-        ])
-        .env("HOME", &home)
-        .output()?;
+    let output = drive(&dir, &keys, &frames)?.arg("ping").output()?;
     assert!(
         output.status.success(),
         "drive run must exit 0: {}",
@@ -406,11 +310,7 @@ fn an_absurd_deadline_is_clamped_rather_than_panicking() -> TestResult {
     let home = dir.home()?;
     let keys = dir.join("keys");
     std::fs::write(&keys, "quit\n")?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let output = yi_command(&home)
         .args([
             "tui",
             "--headless",
@@ -423,7 +323,6 @@ fn an_absurd_deadline_is_clamped_rather_than_panicking() -> TestResult {
             "--deadline",
             &u64::MAX.to_string(),
         ])
-        .env("HOME", &home)
         .output()?;
     assert_ne!(
         output.status.code(),
@@ -449,26 +348,8 @@ fn a_headless_drive_renders_at_the_size_it_is_given() -> TestResult {
     let keys = dir.join("keys");
     std::fs::write(&keys, "wait-frame 5000 faux-1\nquit\n")?;
     let frames = dir.join("frames");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "--size",
-            "254x30",
-        ])
-        .env("HOME", &home)
+    let output = drive(&dir, &keys, &frames)?
+        .args(["--size", "254x30"])
         .output()?;
     assert!(
         output.status.success(),
@@ -484,11 +365,7 @@ fn a_headless_drive_renders_at_the_size_it_is_given() -> TestResult {
     assert_eq!(widest, Some(254), "{last}");
     assert_eq!(last.lines().count(), 30, "{last}");
     for refused in ["1x1", "1001x30", "254x501"] {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the flag is parsed by the spawned binary; tests must run the real process"
-        )]
-        let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        let output = yi_command(&home)
             .args([
                 "tui",
                 "--headless",
@@ -497,7 +374,6 @@ fn a_headless_drive_renders_at_the_size_it_is_given() -> TestResult {
                 "--size",
                 refused,
             ])
-            .env("HOME", &home)
             .output()?;
         assert_eq!(
             output.status.code(),
@@ -520,25 +396,7 @@ fn a_snap_keeps_the_frame_of_its_own_step() -> TestResult {
         "wait-frame 5000 faux-1\ntype first\nsnap early\ntype  second\nsnap late\nquit\n",
     )?;
     let frames = dir.join("frames");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-        ])
-        .env("HOME", &home)
-        .output()?;
+    let output = drive(&dir, &keys, &frames)?.output()?;
     assert!(
         output.status.success(),
         "{}",
@@ -558,16 +416,11 @@ fn a_snap_keeps_the_frame_of_its_own_step() -> TestResult {
         ("snap a\nsnap a\nquit\n", "appears twice"),
     ] {
         std::fs::write(&keys, script)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the script is parsed by the spawned binary; tests must run the real process"
-        )]
-        let refused = Command::new(env!("CARGO_BIN_EXE_yi"))
+        let refused = yi_command(&home)
             .args(["tui", "--headless", "--model", "faux/faux-1", "--keys"])
             .arg(&keys)
             .arg("--frames")
             .arg(&frames)
-            .env("HOME", &home)
             .output()?;
         let stderr = String::from_utf8_lossy(&refused.stderr);
         assert!(
@@ -583,7 +436,6 @@ fn a_snap_keeps_the_frame_of_its_own_step() -> TestResult {
 #[test]
 fn a_frozen_scene_moves_only_when_it_ticks() -> TestResult {
     let dir = Scratch::new("yi-tui-frozen")?;
-    let home = dir.home()?;
     let cassette = dir.join("cassette.jsonl");
     std::fs::write(
         &cassette,
@@ -597,20 +449,9 @@ fn a_frozen_scene_moves_only_when_it_ticks() -> TestResult {
     )?;
     let frames = dir.join("frames");
     let run = |script: &std::path::Path| -> std::io::Result<std::process::Output> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-        )]
-        Command::new(env!("CARGO_BIN_EXE_yi"))
-            .args(["tui", "--headless", "--model", "faux/faux-1", "--faux"])
+        drive(&dir, script, &frames)?
+            .args(["--faux"])
             .arg(&cassette)
-            .arg("--session-dir")
-            .arg(dir.join("sessions"))
-            .arg("--keys")
-            .arg(script)
-            .arg("--frames")
-            .arg(&frames)
-            .env("HOME", &home)
             .output()
     };
     let output = run(&keys)?;
@@ -647,7 +488,6 @@ fn a_frozen_scene_moves_only_when_it_ticks() -> TestResult {
 #[test]
 fn a_recorded_reply_streams_over_its_recorded_time_on_the_frozen_clock() -> TestResult {
     let dir = Scratch::new("yi-tui-paced")?;
-    let home = dir.home()?;
     let cassette = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../scripts/proof/tui_see/paced.jsonl");
     let keys = dir.join("keys");
@@ -658,20 +498,9 @@ fn a_recorded_reply_streams_over_its_recorded_time_on_the_frozen_clock() -> Test
          tick 3000\nsnap middle\ntick 20000\nwait-idle 10000\nsnap done\nquit\n",
     )?;
     let run = |frames: &std::path::Path| -> std::io::Result<std::process::Output> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-        )]
-        Command::new(env!("CARGO_BIN_EXE_yi"))
-            .args(["tui", "--headless", "--model", "faux/faux-1", "--faux"])
+        drive(&dir, &keys, frames)?
+            .args(["--faux"])
             .arg(&cassette)
-            .arg("--session-dir")
-            .arg(dir.join("sessions"))
-            .arg("--keys")
-            .arg(&keys)
-            .arg("--frames")
-            .arg(frames)
-            .env("HOME", &home)
             .output()
     };
     let (first, second) = (dir.join("first"), dir.join("second"));
@@ -748,7 +577,9 @@ fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult
             "/../../scripts/tui_pty.py"
         ))
         .args(["--seconds", "60", "--stdin"])
-        .args(["--binary", env!("CARGO_BIN_EXE_yi"), "--home"])
+        .arg("--binary")
+        .arg(crate::yi_bin::bin())
+        .arg("--home")
         .arg(&home)
         .args(["--", "tui", "--model", "faux/faux-1", "--faux"])
         .arg(&cassette)
@@ -830,11 +661,7 @@ fn one_path_for_both_capture_sinks_is_refused() -> TestResult {
     let keys = dir.join("keys");
     std::fs::write(&keys, "quit\n")?;
     let both = dir.join("both.cast");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let output = yi_command(&home)
         .args([
             "tui",
             "--headless",
@@ -849,7 +676,6 @@ fn one_path_for_both_capture_sinks_is_refused() -> TestResult {
             "--snap",
             &both.display().to_string(),
         ])
-        .env("HOME", &home)
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_eq!(output.status.code(), Some(2), "{stderr}");
@@ -873,13 +699,8 @@ fn a_cassette_is_refused_where_it_cannot_reach_the_model() -> TestResult {
         vec!["console", "--headless", "--faux", &cassette],
         vec!["serve", "--socket", &socket, "--faux", &cassette],
     ] {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the flag contract is the spawned binary's argument parser"
-        )]
-        let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+        let mut child = yi_command(dir.home()?.as_path())
             .args(&road)
-            .env("HOME", dir.home()?)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()?;
@@ -919,30 +740,24 @@ fn a_cassette_run_with_a_routed_model_stays_offline() -> TestResult {
     let keys = dir.join("script.keys");
     std::fs::write(&keys, "wait-idle 20000\nquit\n")?;
     let frames = dir.join("frames");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
-    command
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "openrouter/anthropic/claude-opus-5",
-            "--faux",
-            &cassette.display().to_string(),
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "--deadline",
-            "30",
-            "ping",
-        ])
-        .env("HOME", &home);
+    let mut command = yi_command(&home);
+    command.args([
+        "tui",
+        "--headless",
+        "--model",
+        "openrouter/anthropic/claude-opus-5",
+        "--faux",
+        &cassette.display().to_string(),
+        "--session-dir",
+        &dir.join("sessions").display().to_string(),
+        "--keys",
+        &keys.display().to_string(),
+        "--frames",
+        &frames.display().to_string(),
+        "--deadline",
+        "30",
+        "ping",
+    ]);
     let output = offline(&mut command, &address).output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(output.status.success(), "drive run must exit 0: {stderr}");
@@ -965,7 +780,6 @@ fn a_cassette_run_with_a_routed_model_stays_offline() -> TestResult {
 #[test]
 fn a_todo_row_wider_than_the_screen_ends_in_an_ellipsis_at_the_edge() -> TestResult {
     let dir = Scratch::new("yi-tui-hud-fit")?;
-    let home = dir.home()?;
     let label = "Put a check that cannot run here to the classifier via accepted_by_user";
     let cassette = dir.join("cassette.jsonl");
     std::fs::write(
@@ -987,32 +801,12 @@ fn a_todo_row_wider_than_the_screen_ends_in_an_ellipsis_at_the_edge() -> TestRes
     let keys = dir.join("script.keys");
     std::fs::write(&keys, "wait-idle 20000\nquit\n")?;
     let frames = dir.join("frames");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--here",
-            "--model",
-            "faux/faux-1",
-            "--faux",
-            &cassette.display().to_string(),
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--cwd",
-            &dir.display().to_string(),
-            "--size",
-            "60x30",
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "set up the check",
-        ])
-        .env("HOME", &home)
+    let output = drive(&dir, &keys, &frames)?
+        .args(["--here", "--faux"])
+        .arg(&cassette)
+        .arg("--cwd")
+        .arg(&dir)
+        .args(["--size", "60x30", "set up the check"])
         .output()?;
     assert!(
         output.status.success(),
@@ -1123,11 +917,7 @@ fn a_cassette_run_in_a_repo_with_an_origin_and_a_classifier_stays_offline() -> T
     let cassette = cassette.display().to_string();
     let sessions = dir.join("sessions").display().to_string();
     for lanes in [&[][..], &["--lanes"]] {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the claim and the classifier run in the spawned binary; tests must run the real process"
-        )]
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut command = yi_command(&home);
         command
             .arg("ask")
             .args(lanes)
@@ -1141,7 +931,6 @@ fn a_cassette_run_in_a_repo_with_an_origin_and_a_classifier_stays_offline() -> T
                 "land the branch",
             ])
             .current_dir(&project)
-            .env("HOME", &home)
             .env("GIT_CONFIG_GLOBAL", "/dev/null");
         let output = offline(&mut command, &address).output()?;
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -1175,33 +964,14 @@ fn a_cassette_run_in_a_repo_with_an_origin_and_a_classifier_stays_offline() -> T
 #[test]
 fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
     let dir = Scratch::new("yi-tui-paced")?;
-    let home = dir.home()?;
     let keys = dir.join("keys");
     let frames = dir.join("frames");
     // 40 characters at 100 ms is 4 s of typing against a 1 s deadline, so at
     // most a quarter of them may reach the screen.
     let typed = "x".repeat(40);
     std::fs::write(&keys, format!("type-ms 100\ntype {typed}\nquit\n"))?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "--deadline",
-            "1",
-        ])
-        .env("HOME", &home)
+    let output = drive(&dir, &keys, &frames)?
+        .args(["--deadline", "1"])
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let dumps = frame_entries(&frames)?;
@@ -1304,7 +1074,6 @@ fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>
 #[test]
 fn a_lane_session_commits_contained() -> TestResult {
     let dir = Scratch::new("yi-tui-lane-commit")?;
-    let home = dir.home()?;
     // Outside tmp: every tmp root is writable, which would hide the trunk's git dir.
     let trunk = TargetScratch::new("yi-tui-lane-commit")?;
     if !trunk.outside_tmp() {
@@ -1335,29 +1104,11 @@ fn a_lane_session_commits_contained() -> TestResult {
     std::fs::write(&keys, "wait-idle 30000\nquit\n")?;
     let frames = dir.join("frames");
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--lanes",
-            "--model",
-            "faux/faux-1",
-            "--faux",
-            &cassette.display().to_string(),
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "commit it",
-        ])
+    let output = drive(&dir, &keys, &frames)?
+        .args(["--lanes", "--faux"])
+        .arg(&cassette)
+        .arg("commit it")
         .current_dir(&project)
-        .env("HOME", &home)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()?;
     assert!(
@@ -1384,7 +1135,6 @@ fn a_lane_session_commits_contained() -> TestResult {
 #[test]
 fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResult {
     let dir = Scratch::new("yi-tui-refused-retry")?;
-    let home = dir.home()?;
     let outside = TargetScratch::new("yi-tui-refused-retry")?;
     if !outside.outside_tmp() {
         return Ok(());
@@ -1403,28 +1153,11 @@ fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResu
     )?;
     let frames = dir.join("frames");
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--faux",
-            &cassette.display().to_string(),
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "make the dirs",
-        ])
+    let output = drive(&dir, &keys, &frames)?
+        .args(["--faux"])
+        .arg(&cassette)
+        .arg("make the dirs")
         .current_dir(&*dir)
-        .env("HOME", &home)
         .output()?;
     let all_frames = frames_text(&frames)?;
     assert!(
@@ -1448,7 +1181,6 @@ fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResu
 #[test]
 fn an_always_allowed_directory_edits_without_a_second_prompt() -> TestResult {
     let dir = Scratch::new("yi-tui-grant")?;
-    let home = dir.home()?;
     let write = |path: &str, text: &str| {
         (
             "write",
@@ -1474,29 +1206,11 @@ fn an_always_allowed_directory_edits_without_a_second_prompt() -> TestResult {
     )?;
     let frames = dir.join("frames");
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--confirm",
-            "--model",
-            "faux/faux-1",
-            "--faux",
-            &cassette.display().to_string(),
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-            "write the notes",
-        ])
+    let output = drive(&dir, &keys, &frames)?
+        .args(["--confirm", "--faux"])
+        .arg(&cassette)
+        .arg("write the notes")
         .current_dir(&*dir)
-        .env("HOME", &home)
         .output()?;
     let all_frames = frames_text(&frames)?;
     assert!(
@@ -1532,11 +1246,7 @@ fn quitting_during_a_running_kernel_cell_exits_promptly() -> TestResult {
     std::fs::write(&cassette, cassette_lines(&calls, "done"))?;
     let keys = dir.join("script.keys");
     std::fs::write(&keys, "wait-frame 600000 time.sleep(900)\nquit\n")?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let mut child = yi_command(&home)
         .args([
             "tui",
             "--headless",
@@ -1548,7 +1258,6 @@ fn quitting_during_a_running_kernel_cell_exits_promptly() -> TestResult {
         .args(["--faux", &cassette.display().to_string()])
         .args(["--session-dir", &dir.join("sessions").display().to_string()])
         .args(["--keys", &keys.display().to_string(), "go"])
-        .env("HOME", &home)
         // One venv per target dir, reused by every run rather than rebuilt under each HOME.
         .env(
             "YI_KERNEL_VENV",
@@ -1581,29 +1290,10 @@ fn quitting_during_a_running_kernel_cell_exits_promptly() -> TestResult {
 #[test]
 fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult {
     let dir = Scratch::new("yi-tui-paste-slash")?;
-    let home = dir.home()?;
     let keys = dir.join("keys");
     std::fs::write(&keys, "type /tree\ntype x\u{1b}[31mredy\nquit\n")?;
     let frames = dir.join("frames");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-        ])
-        .env("HOME", &home)
-        .output()?;
+    let output = drive(&dir, &keys, &frames)?.output()?;
     assert!(
         output.status.success(),
         "{}",
@@ -1622,7 +1312,6 @@ fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult 
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_long_bash_call_backgrounds_in_the_tui_drive_at_the_default() -> TestResult {
     let dir = Scratch::new("yi-tui-background")?;
-    let home = dir.home()?;
     let calls = [("bash", serde_json::json!({ "command": "sleep 65" }))];
     let cassette = dir.join("cassette.jsonl");
     std::fs::write(&cassette, cassette_lines(&calls, "done"))?;
@@ -1632,28 +1321,9 @@ fn a_long_bash_call_backgrounds_in_the_tui_drive_at_the_default() -> TestResult 
         "wait-frame 5000 faux-1\ntype run a long command\nkey enter\nwait-frame 90000 still running\nquit\n",
     )?;
     let frames = dir.join("frames");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--deadline",
-            "300",
-            "--model",
-            "faux/faux-1",
-            "--yolo",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-        ])
-        .args(["--faux", &cassette.display().to_string()])
-        .env("HOME", &home)
+    let output = drive(&dir, &keys, &frames)?
+        .args(["--deadline", "300", "--yolo", "--faux"])
+        .arg(&cassette)
         .output()?;
     assert!(
         output.status.success(),
@@ -1674,7 +1344,6 @@ fn a_long_bash_call_backgrounds_in_the_tui_drive_at_the_default() -> TestResult 
 #[test]
 fn a_typo_and_pr_answer_locally_without_a_model_turn() -> TestResult {
     let dir = Scratch::new("yi-tui-slash-local")?;
-    let home = dir.home()?;
     let keys = dir.join("keys");
     std::fs::write(
         &keys,
@@ -1682,26 +1351,9 @@ fn a_typo_and_pr_answer_locally_without_a_model_turn() -> TestResult {
          type /pr\nkey enter\nwait-frame 10000 /pr: \nquit\n",
     )?;
     let frames = dir.join("frames");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "tui",
-            "--headless",
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-            "--cwd",
-            &dir.display().to_string(),
-            "--keys",
-            &keys.display().to_string(),
-            "--frames",
-            &frames.display().to_string(),
-        ])
-        .env("HOME", &home)
+    let output = drive(&dir, &keys, &frames)?
+        .arg("--cwd")
+        .arg(&dir)
         .output()?;
     assert!(
         output.status.success(),
@@ -1730,11 +1382,7 @@ fn a_chord_in_the_keys_config_stops_the_drive_naming_it() -> TestResult {
     )?;
     let keys = dir.join("keys");
     std::fs::write(&keys, "quit\n")?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let output = yi_command(&home)
         .args([
             "tui",
             "--headless",
@@ -1745,7 +1393,6 @@ fn a_chord_in_the_keys_config_stops_the_drive_naming_it() -> TestResult {
             "--keys",
             &keys.display().to_string(),
         ])
-        .env("HOME", &home)
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(2), "{stderr}");
@@ -1763,11 +1410,7 @@ fn a_failed_wait_frame_never_runs_the_steps_after_it() -> TestResult {
         &keys,
         "wait-frame 25 never-on-screen\ntype hello\nkey enter\nwait-idle 10000\nquit\n",
     )?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
-    )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let output = yi_command(&home)
         .args([
             "tui",
             "--headless",
@@ -1778,7 +1421,6 @@ fn a_failed_wait_frame_never_runs_the_steps_after_it() -> TestResult {
             "--keys",
             &keys.display().to_string(),
         ])
-        .env("HOME", &home)
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
