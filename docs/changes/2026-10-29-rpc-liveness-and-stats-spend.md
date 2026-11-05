@@ -1,7 +1,7 @@
 ---
 issue: Closes #1542
-raise: crate cli +96, crate types +8, tests +359
-ledger+: Pi RPC mode | each command answers from its own task, so a compact that takes seconds never parks the event arm and fills the broadcast buffer, `isCompacting` reports a compact in flight, `get_commands` lists the runtime's slash verbs, and the two steering-mode setters refuse rather than echo a mode nothing reads
+raise: crate cli +101, crate types +8, tests +432
+ledger+: Pi RPC mode | each command answers from its own task, so a compact that takes seconds never parks the event arm and fills the broadcast buffer, `isCompacting` reports a compact in flight, `get_commands` lists the RPC commands this transport answers, and the two steering-mode setters refuse rather than echo a mode nothing reads
 ---
 `yi stats <id>` billed only the messages it could fold, so a family's child lanes
 and a session's side calls, which book their spend as `usage` records and never
@@ -19,7 +19,7 @@ query sent meanwhile answered only once the command ahead of it had finished.
 Each command now answers from its own task against shared state, so the loop
 never stops reading events and a reply lands in the order its command finished.
 Three Pi compatibility stubs are honest with it: `isCompacting` reports a compact
-in flight instead of a constant false, `get_commands` lists the runtime's slash
-verbs instead of an empty array, and `get_state` no longer echoes
-`steeringMode`/`followUpMode` values nothing reads, their setters answering with
-the reason instead.
+in flight instead of a constant false, `get_commands` lists the RPC commands
+this transport answers rather than slash verbs it does not route, and
+`get_state` no longer echoes `steeringMode`/`followUpMode` values nothing reads,
+their setters answering with the reason instead.

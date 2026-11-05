@@ -14,7 +14,6 @@ use yi_runtime::session_store::{
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
-use yi_types::record::LaneRecord;
 
 #[derive(Default)]
 struct ToolRow {
@@ -203,14 +202,6 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
     }
 }
 
-/// Invariant: child lanes and side calls book their spend as [`LaneRecord::Usage`] rows no message carries.
-fn reduce_record(record: &LaneRecord, totals: &mut Totals) {
-    let (LaneRecord::Usage { .. }, Some(usage)) = (record, record.billed_usage()) else {
-        return;
-    };
-    totals.all.spend(usage);
-}
-
 fn fold_usage(
     session: &SessionStore,
     totals: &mut Totals,
@@ -221,7 +212,9 @@ fn fold_usage(
         ..RecordQuery::default()
     };
     for record in &session.find_records(&query)? {
-        reduce_record(record, totals);
+        if let Some(usage) = record.billed_usage() {
+            totals.all.spend(usage);
+        }
     }
     Ok(())
 }

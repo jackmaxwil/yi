@@ -10,93 +10,13 @@ use yi_runtime::plan::store::PlanStore;
 use yi_types::plan::doc::PlanId;
 
 use crate::repo::{git, init_repo};
-use crate::scratch::Scratch;
 use crate::yi_bin::{yi_command, yi_command_homeless};
 
 use crate::prompt_slots_support::prompt_slots;
 use crate::session_files::{recursive_files, session_files, session_text};
+use crate::workspace::Workspace;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-struct Workspace(Scratch);
-
-impl Workspace {
-    fn new(tag: &str) -> Result<Self, Box<dyn Error>> {
-        let dir = Scratch::new(&format!("yi-cli-{tag}"))?;
-        std::fs::create_dir_all(dir.join("project"))?;
-        dir.home()?;
-        Ok(Self(dir))
-    }
-
-    fn project(&self) -> PathBuf {
-        self.0.join("project")
-    }
-
-    fn yi(&self, args: &[&str]) -> Result<Output, Box<dyn Error>> {
-        self.yi_env(args, &[])
-    }
-
-    fn yi_env(&self, args: &[&str], env: &[(&str, &str)]) -> Result<Output, Box<dyn Error>> {
-        let mut command = yi_command(&self.0.join("home"));
-        command
-            .args(args)
-            .arg("--session-dir")
-            .arg(self.0.join("home/sessions"))
-            .arg("--cwd")
-            .arg(self.project());
-        // Incident: a shell's OPENROUTER_API_KEY turned the keyless doctor FAIL into a live probe.
-        for (_, key) in yi_types::PROVIDER_KEY_VARS {
-            command.env_remove(key);
-        }
-        command
-            .envs(env.iter().copied())
-            .current_dir(self.project());
-        Ok(command.output()?)
-    }
-}
-
-impl Workspace {
-    /// `yi plugin` takes no session flags, and PATH holds no ripwire the test did not place.
-    fn plugin(&self, args: &[&str]) -> std::io::Result<Output> {
-        let mut command = yi_command(&self.0.join("home"));
-        command
-            .arg("plugin")
-            .args(args)
-            .env("PATH", "/usr/bin:/bin")
-            .output()
-    }
-
-    /// One `yi acp` process fed every frame at once; the contract is the response stream.
-    fn acp(&self, args: &[&str], frames: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
-        use std::io::Write;
-        use std::process::Stdio;
-        let mut child = yi_command(&self.0.join("home"))
-            .arg("acp")
-            .args(args)
-            .arg("--session-dir")
-            .arg(self.0.join("home/sessions"))
-            .arg("--cwd")
-            .arg(self.project())
-            .current_dir(self.project())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        {
-            let mut stdin = child.stdin.take().ok_or("acp has no stdin")?;
-            for frame in frames {
-                serde_json::to_writer(&mut stdin, frame)?;
-                stdin.write_all(b"\n")?;
-            }
-        }
-        let output = child.wait_with_output()?;
-        let mut responses = Vec::new();
-        for line in stdout(&output).lines() {
-            responses.push(serde_json::from_str::<Value>(line)?);
-        }
-        Ok(responses)
-    }
-}
 
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
@@ -3539,5 +3459,63 @@ fn models_recommend_prints_three_tagged_picks_from_the_offline_snapshot() -> Tes
     );
     let config = std::fs::read_to_string(workspace.0.join("home/.yi/config.json"))?;
     assert_eq!(config, r#"{"kernel":{"prewarm":false}}"#);
+    Ok(())
+}
+
+/// A session priced 0.10 by its assistant reply and 0.05 by a child's usage record: the fold
+/// that reads replies alone reports 0.10 and silently truncates a family's bill.
+#[test]
+fn stats_bills_a_sessions_usage_records_as_its_ledger_does() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+
+    let workspace = Workspace::new("stats-child-spend")?;
+    let sessions = workspace.0.join("home/sessions");
+    std::fs::create_dir_all(&sessions)?;
+    let mut repo = JsonlRepo::new(sessions, workspace.project().display().to_string());
+    let store = repo.create(CreateOptions::default())?;
+    let id = lock_session(&store).metadata().id.clone();
+    {
+        let mut session = lock_session(&store);
+        let reply: yi_types::message::AgentMessage = serde_json::from_value(json!({
+            "role": "assistant", "api": "faux", "provider": "faux", "model": "faux-1",
+            "content": [{"type": "text", "text": "priced"}], "stopReason": "stop", "timestamp": 0,
+            "usage": {"input": 300, "output": 20, "cacheRead": 9_700, "cacheWrite": 0,
+                      "totalTokens": 10_020,
+                      "cost": {"input": 0.04, "output": 0.03, "cacheRead": 0.03,
+                               "cacheWrite": 0, "total": 0.1}}
+        }))?;
+        session.append_message("main", reply)?;
+        let record = crate::usage_record::child_usage(session.next_id(), 100, 0.05)?;
+        session.append_record(record)?;
+    }
+    let ledger = lock_session(&store).stats();
+    drop(store);
+
+    let out = workspace.yi(&["stats", &id, "--json"])?;
+    assert!(
+        out.status.success(),
+        "stats exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let folded: Value = serde_json::from_slice(&out.stdout)?;
+    let cost = folded["cost"].as_f64().ok_or("no cost in the row")?;
+    assert!(
+        (cost - ledger.cost_total).abs() < 1e-9,
+        "yi stats billed {cost} where the ledger bills {}: {}",
+        ledger.cost_total,
+        folded
+    );
+    assert!(
+        (cost - 0.15).abs() < 1e-9,
+        "the reply is 0.10 and the child's row 0.05, so the session bills 0.15: {folded}"
+    );
+    let models = folded["models"].as_array().ok_or("no models in the row")?;
+    assert_eq!(
+        models.len(),
+        1,
+        "a usage cause is not a model, so the model table holds the reply's model alone: {folded}"
+    );
+    assert_eq!(models[0]["model"], "faux/faux-1", "{folded}");
     Ok(())
 }

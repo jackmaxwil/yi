@@ -563,6 +563,56 @@ fn a_command_in_flight_does_not_starve_the_event_stream() -> TestResult {
     Ok(())
 }
 
+/// A compact queued behind a blocking goal check has not started: it must not let a state query
+/// jump ahead of the session switch whose answer the query is meant to observe.
+#[test]
+fn a_queued_compact_does_not_reorder_a_state_query() -> TestResult {
+    let dir = temp_dir("queued-compact")?;
+    let stream = cassette(&dir, &[])?;
+    let mut live = Live::start(&dir, &stream)?;
+    live.send(json!({"id": "before", "type": "get_state"}))?;
+    let initial = live
+        .until(|frame| frame["type"] == "response" && frame["id"] == "before")?
+        .ok_or("the initial state never answered")?;
+    let old_id = initial["data"]["sessionId"]
+        .as_str()
+        .ok_or("the initial state has no session id")?
+        .to_owned();
+    live.send(json!({"id": "g", "type": "goal", "action": "create",
+                     "objective": "hold the queue", "check": "sleep 2",
+                     "checkTimeoutMs": 5_000}))?;
+    assert!(
+        live.until(|frame| frame["type"] == "response" && frame["id"] == "g")?
+            .is_some_and(|frame| frame["success"] == true),
+        "the checked goal was not created"
+    );
+    live.send(json!({"id": "u", "type": "goal", "action": "update", "status": "complete"}))?;
+    live.send(json!({"id": "c", "type": "compact"}))?;
+    live.send(json!({"id": "n", "type": "new_session"}))?;
+    live.send(json!({"id": "s", "type": "get_state"}))?;
+    let mut order = Vec::new();
+    let mut new_id = None;
+    while order.len() < 2 {
+        let frame = live
+            .next_frame()?
+            .ok_or("the switch and state query did not both answer")?;
+        if frame["type"] == "response" && (frame["id"] == "n" || frame["id"] == "s") {
+            order.push(
+                frame["id"]
+                    .as_str()
+                    .ok_or("response id is not text")?
+                    .to_owned(),
+            );
+            if frame["id"] == "s" {
+                new_id = frame["data"]["sessionId"].as_str().map(str::to_owned);
+            }
+        }
+    }
+    assert_eq!(order, ["n", "s"], "the state query jumped the switch");
+    assert_ne!(new_id.as_deref(), Some(old_id.as_str()));
+    Ok(())
+}
+
 /// A compact over a paced summary takes seconds; a client asking its state meanwhile must hear
 /// about it, not a constant false delivered behind the compact's own reply.
 #[test]
@@ -645,9 +695,38 @@ fn pi_compatibility_surfaces_answer_what_this_build_honours() -> TestResult {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert!(
-        verbs.contains(&"compact") && verbs.contains(&"plan"),
-        "the verb list is not the runtime's slash verbs: {commands}"
+    assert_eq!(
+        verbs,
+        [
+            "compact",
+            "compact_status",
+            "prompt",
+            "heartbeat",
+            "goal",
+            "plan",
+            "advisor_stats",
+            "steer",
+            "follow_up",
+            "abort",
+            "new_session",
+            "get_state",
+            "set_model",
+            "get_available_models",
+            "set_thinking_level",
+            "get_available_thinking_levels",
+            "set_steering_mode",
+            "set_follow_up_mode",
+            "get_messages",
+            "get_entries",
+            "get_session_stats",
+            "set_session_name",
+            "get_last_assistant_text",
+            "get_commands",
+            "switch_session",
+            "fork",
+            "get_log",
+        ],
+        "get_commands must name the RPC commands, not unrouted slash verbs: {commands}"
     );
     for id in ["s", "f"] {
         let refused = reply(id)?;

@@ -24,6 +24,8 @@ mod session_files;
 mod tool_cell_support;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/workspace.rs"]
+mod workspace;
 #[path = "support/yi_bin.rs"]
 mod yi_bin;
 
@@ -42,7 +44,6 @@ mod plan_cli;
 mod plan_ops;
 mod rpc_protocol;
 mod serve_daemon;
-mod stats;
 mod tui_cells;
 mod tui_drive;
 #[cfg(target_os = "linux")]

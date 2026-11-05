@@ -1,6 +1,5 @@
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde_json::{Map, Value, json};
@@ -25,6 +24,36 @@ pub struct RpcOptions {
     pub session_dir: PathBuf,
     pub cwd: PathBuf,
 }
+
+const RPC_COMMANDS: [&str; 27] = [
+    "compact",
+    "compact_status",
+    "prompt",
+    "heartbeat",
+    "goal",
+    "plan",
+    "advisor_stats",
+    "steer",
+    "follow_up",
+    "abort",
+    "new_session",
+    "get_state",
+    "set_model",
+    "get_available_models",
+    "set_thinking_level",
+    "get_available_thinking_levels",
+    "set_steering_mode",
+    "set_follow_up_mode",
+    "get_messages",
+    "get_entries",
+    "get_session_stats",
+    "set_session_name",
+    "get_last_assistant_text",
+    "get_commands",
+    "switch_session",
+    "fork",
+    "get_log",
+];
 
 fn write_line(value: &Value) {
     let mut stdout = std::io::stdout().lock();
@@ -85,8 +114,6 @@ struct RpcState {
     session: AgentSession,
     repo: Mutex<JsonlRepo>,
     store: Mutex<SharedSession>,
-    session_id: Mutex<String>,
-    compacts_in_flight: AtomicUsize,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -106,13 +133,11 @@ impl RpcState {
     }
 
     fn adopt(&self, store: SharedSession) -> Result<(), String> {
-        let id = lock_session(&store).metadata().id.clone();
         self.session.reset();
         self.session
             .attach_store(Arc::clone(&store))
             .map_err(|error| error.to_string())?;
         *locked(&self.store) = store;
-        *locked(&self.session_id) = id;
         Ok(())
     }
 
@@ -258,10 +283,11 @@ impl RpcState {
             }
             "get_state" => {
                 let model = self.session.model();
-                let (name, file) = self.store_value(|store| {
+                let (name, file, session_id) = self.store_value(|store| {
                     (
                         store.name(),
                         store.file_path().map(|path| path.display().to_string()),
+                        store.metadata().id.clone(),
                     )
                 });
                 data_frame(
@@ -275,7 +301,7 @@ impl RpcState {
                             .session
                             .compactor()
                             .is_some_and(|compactor| compactor.compacting()),
-                        "sessionId": locked(&self.session_id).clone(),
+                        "sessionId": session_id,
                         "sessionFile": file,
                         "sessionName": name,
                         "autoCompactionEnabled": self.session.compactor().is_some(),
@@ -383,11 +409,7 @@ impl RpcState {
                     .map(message_text);
                 data_frame(id, "get_last_assistant_text", json!({"text": text}))
             }
-            "get_commands" => data_frame(
-                id,
-                "get_commands",
-                json!({"commands": yi_runtime::slash::SESSION_VERBS}),
-            ),
+            "get_commands" => data_frame(id, "get_commands", json!({"commands": RPC_COMMANDS})),
             "switch_session" => {
                 let path = PathBuf::from(text_arg("sessionPath"));
                 match yi_runtime::session_store::load_session(&path) {
@@ -409,8 +431,9 @@ impl RpcState {
                         })
                         .unwrap_or_default()
                 });
+                let session_id = self.store_value(|store| store.metadata().id.clone());
                 let forked = locked(&self.repo).fork(
-                    &locked(&self.session_id).clone(),
+                    &session_id,
                     &ForkScope::Branch {
                         entry_id: Some(entry_id),
                         position: Some(ForkPosition::Before),
@@ -457,7 +480,6 @@ pub fn run_rpc(
             return 1;
         }
     };
-    let session_id = lock_session(&store).metadata().id.clone();
     if let Err(error) = session.attach_store(Arc::clone(&store)) {
         eprintln!("error: failed to attach session store: {error}");
         return 1;
@@ -466,8 +488,6 @@ pub fn run_rpc(
         session,
         repo: Mutex::new(repo),
         store: Mutex::new(store),
-        session_id: Mutex::new(session_id),
-        compacts_in_flight: AtomicUsize::new(0),
     });
 
     runtime.block_on(async move {
@@ -501,12 +521,9 @@ pub fn run_rpc(
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_owned();
-                            if command_type == "compact" {
-                                state.compacts_in_flight.fetch_add(1, Ordering::SeqCst);
-                            }
                             // Invariant: a state query answers while a compact runs; mutations stay ordered.
                             let bypass = command_type == "get_state"
-                                && state.compacts_in_flight.load(Ordering::SeqCst) > 0;
+                                && state.session.compactor().is_some_and(|c| c.compacting());
                             let queued = if bypass { None } else { ahead.take() };
                             let (finished, next) = tokio::sync::oneshot::channel();
                             if !bypass {
@@ -520,11 +537,6 @@ pub fn run_rpc(
                                 let frame = answering
                                     .handle(&command_type, id.as_deref(), &payload)
                                     .await;
-                                if command_type == "compact" {
-                                    answering
-                                        .compacts_in_flight
-                                        .fetch_sub(1, Ordering::SeqCst);
-                                }
                                 write_line(&frame);
                                 if !bypass {
                                     let _ = finished.send(());
