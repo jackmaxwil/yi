@@ -61,6 +61,7 @@ pub(crate) struct Setup {
     pub(crate) parent: Option<yi_session::SharedSession>,
     pub(crate) provider: Option<Arc<ProviderStream>>,
     pub(crate) model: Option<Model>,
+    pub(crate) kernel: Option<Hook>,
 }
 
 impl Default for Setup {
@@ -73,6 +74,7 @@ impl Default for Setup {
             parent: None,
             provider: None,
             model: None,
+            kernel: None,
         }
     }
 }
@@ -95,6 +97,7 @@ pub(crate) fn family_with(
         parent,
         provider,
         model,
+        kernel,
     } = setup;
     let model = model.unwrap_or_else(|| faux_model(window));
     let fresh = || Arc::new(ProviderStream::new(None));
@@ -149,7 +152,12 @@ pub(crate) fn family_with(
                 provider,
                 build,
                 &reader,
-                |_| yi_tools::builtin_tools(),
+                (yi_tools::builtin_tools, |_| {
+                    if let Some(kernel) = &kernel {
+                        kernel();
+                    }
+                    None
+                }),
                 (cwd.clone(), &home),
                 broker.clone(),
                 rules.clone(),
@@ -842,6 +850,34 @@ async fn a_worker_writes_where_a_reader_is_walled_and_holds_a_worker_slot() -> T
     assert_eq!(names, ["read", "edit", "write", "grep"]);
     let turns = family.turns.lock().map_err(|_| "poisoned")?.clone();
     assert_eq!(turns, [12], "a worker's default turn cap");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_one_turn_worker_naming_ipython_builds_no_kernel() -> TestResult {
+    let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sink = Arc::clone(&builds);
+    let kernel: Hook = Arc::new(move || {
+        sink.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    let family = family_with(
+        1,
+        Arc::new(Mutex::new(vec![reply("done")])),
+        Setup {
+            kernel: Some(kernel),
+            ..Setup::default()
+        },
+    )?;
+    family.host.spawn(
+        "Answer once".to_owned(),
+        kwargs(json!({"name": "once", "role": "worker", "tools": ["ipython"], "turns": 1})),
+    )?;
+    let rows = transcript(&family, "once").await?;
+    assert_eq!(
+        builds.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "a one-turn worker built a kernel it cannot call: {rows:?}"
+    );
     Ok(())
 }
 

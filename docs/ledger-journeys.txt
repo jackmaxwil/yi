@@ -61,6 +61,9 @@ kernel + ipython + rlm() subagents | `reader_retry::a_follow_up_restores_tools_a
 kernel + ipython + rlm() subagents | `reader_retry::ordinary_mail_preserves_the_schema_answer_and_its_repair`
 kernel + ipython + rlm() subagents | `child_transcript::a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land` (T2)
 kernel + ipython + rlm() subagents | `kernel_across_sessions::a_worker_naming_ipython_holds_its_own_kernel`
+kernel + ipython + rlm() subagents | `kernel_across_sessions::a_worker_fetches_a_parent_kernel_value`
+kernel + ipython + rlm() subagents | `kernel_across_sessions::a_walled_worker_naming_ipython_keeps_the_kernel_boundary`
+kernel + ipython + rlm() subagents | `reader_e2e::a_one_turn_worker_naming_ipython_builds_no_kernel`
 kernel + ipython + rlm() subagents | `child_trail::a_child_lives_inside_its_parent_and_the_parent_points_at_it`
 kernel + ipython + rlm() subagents | `reader_e2e::a_reader_brief_carries_its_partition_numbered_and_fenced`
 kernel + ipython + rlm() subagents | `reader_e2e::held_readers_fill_the_family_cap`

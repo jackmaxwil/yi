@@ -280,28 +280,3 @@ pub fn ipython_tool(
         calls,
     })
 }
-
-pub(crate) fn worker_ipython(
-    child: &crate::session::AgentSession,
-    wiring: &crate::wiring::RuntimeWiring,
-) -> Arc<dyn yi_tools::Tool> {
-    let mut registry = HostRegistry::default();
-    crate::kernel_state::register_host_stores(&mut registry, wiring);
-    registry.register_exec(
-        wiring.exec_home(),
-        crate::kernel_state::job_profile(wiring, child),
-    );
-    let calls = Arc::new(Calls::default());
-    register(
-        &mut registry,
-        child.tools_handle(),
-        Arc::clone(&calls),
-        false,
-    );
-    let service = crate::wiring::wire_kernel(child, wiring, registry);
-    if let Some(link) = &wiring.parent_link {
-        wiring.kernels.insert(link.child_name.clone(), &service);
-    }
-    child.set_kernel_service(Arc::clone(&service));
-    ipython_tool(service, Some(calls))
-}

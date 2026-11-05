@@ -179,7 +179,10 @@ pub fn session(
     provider: Arc<crate::provider::ProviderStream>,
     build: crate::subagent::ChildBuild<'_>,
     reader: &Reader,
-    tools: impl FnOnce(&AgentSession) -> Vec<Arc<dyn yi_tools::Tool>>,
+    (tools, kernel): (
+        impl FnOnce() -> Vec<Arc<dyn yi_tools::Tool>>,
+        impl FnOnce(&AgentSession) -> Option<Arc<dyn yi_tools::Tool>>,
+    ),
     (cwd, home): (std::path::PathBuf, &Path),
     broker: Option<Arc<crate::permission::PermissionBroker>>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
@@ -216,10 +219,14 @@ pub fn session(
         }
         child.set_rules_engine(rules);
     }
-    let mut named: Vec<_> = tools(&child)
+    let admitted = |name: &str| reader.turns > 1 && reader.tools.iter().any(|tool| tool == name);
+    let mut named: Vec<_> = tools()
         .into_iter()
-        .filter(|tool| reader.turns > 1 && reader.tools.iter().any(|name| name == tool.name()))
+        .filter(|tool| admitted(tool.name()))
         .collect();
+    if admitted("ipython") {
+        named.extend(kernel(&child));
+    }
     let resolver = crate::fetch::Resolver::for_child(
         cwd.clone(),
         wall,

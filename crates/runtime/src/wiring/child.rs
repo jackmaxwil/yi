@@ -30,17 +30,12 @@ pub(crate) fn child_factory(
         if let Some(reader) = build.reader.clone() {
             let rules = crate::rules::discover_armed(&child_cwd, &wiring.home).rules;
             let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
-            let kernel = reader.tools.iter().any(|name| name == "ipython");
-            let tools = |child: &AgentSession| {
-                let mut tools = (wiring.tools)();
-                tools.extend(kernel.then(|| crate::kernel_tools::worker_ipython(child, &below)));
-                tools
-            };
+            let kernel = |child: &AgentSession| Some(crate::wiring::worker_ipython(child, &below));
             let child = crate::subagent::reader::session(
                 provider,
                 build,
                 &reader,
-                tools,
+                (|| (wiring.tools)(), kernel),
                 (child_cwd, &wiring.home),
                 below.broker.clone(),
                 rules,

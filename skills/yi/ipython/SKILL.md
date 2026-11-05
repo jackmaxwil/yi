@@ -106,7 +106,7 @@ surviving a restart.
 `rlm.run(..., role="worker", tools=["read", "edit", "ipython"])` boots the worker a kernel of its
 own, so a cell computes in the worker's namespace and not yours; read a value back with
 `kernel://<name>/<var>`. Its cells reach the worker's tools and `bash()` under the worker's wall,
-and it has no `rlm` handlers, so a worker cannot spawn from a cell. A walled worker on a host
+and it has no spawn or messaging handlers, so a worker cannot spawn from a cell. A walled worker on a host
 without the Seatbelt sandbox is refused with the same `ipython is unavailable to a walled
 session here` text a walled root gets: give it `bash` instead. A reader never takes `ipython`.
 
