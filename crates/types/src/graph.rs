@@ -19,6 +19,7 @@ pub const CHILD_FINISHED: &str = "child_state(finished)";
 pub const COROUTINE_UNAWAITED: &str = "coroutine_unawaited";
 pub const METHOD_AWAITED: &str = "method_awaited";
 pub const LISTING_NAME_MISSED: &str = "listing_name_missed";
+pub const LARGE_PRINT: &str = "large_print";
 pub const SESSION_ON_DISK: &str = "session_on_disk";
 pub const SESSION_IN_MEMORY: &str = "session_in_memory";
 
@@ -41,6 +42,7 @@ pub const PREDICATES: &[(&str, &str)] = &[
     (COROUTINE_UNAWAITED, ""),
     (METHOD_AWAITED, ""),
     (LISTING_NAME_MISSED, ""),
+    (LARGE_PRINT, ""),
     (SESSION_ON_DISK, ""),
     (SESSION_IN_MEMORY, ""),
 ];
