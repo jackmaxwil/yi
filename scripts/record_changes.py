@@ -86,9 +86,9 @@ def last_id(arch):
     return max((int(m.group(1)) for row in table(arch, DECISIONS) if (m := ROW_ID.match(row))), default=0)
 
 
-def shrink(log):
-    """(log, {path: text}): a changelog past the blob cap sends its oldest rows to a new archive file
-    and keeps the newest that fit in LIVE bytes; one that archiving cannot bring under the cap is returned as is."""
+def shrink(log, keep=None):
+    """(log, {path: text}): archive a changelog past the cap, keeping the newest rows that fit LIVE.
+    `keep` pins the live-row count when validating an earlier archive; an unfit log is returned as is."""
     if len(log.encode()) <= CAP:
         return log, {}
     lines = log.split("\n")
@@ -99,8 +99,10 @@ def shrink(log):
     end = first
     while end < len(lines) and lines[end].startswith("|"):
         end += 1
-    rows, size, keep = lines[first:end], len(log.encode()), end - first
-    while keep > 1 and size > LIVE:
+    rows, size = lines[first:end], len(log.encode())
+    fit = keep is None
+    keep = end - first if fit else min(max(keep, 1), end - first)
+    while fit and keep > 1 and size > LIVE:
         keep -= 1
         size -= len(rows[keep].encode()) + 1
     old = rows[keep:]
@@ -199,6 +201,13 @@ def expected_at(root, rev):
     todo = pending(root, rev, changes)
     views, writes, _, _ = record(views, todo)
     return {**views, **writes} if todo or writes else {}
+
+
+def archived_at(root, rev, keep):
+    """The exact archive-only diff from `rev`, retaining `keep` live rows."""
+    views, _ = state(root, rev)
+    views[LOG], writes = shrink(views[LOG], keep)
+    return {**views, **writes} if writes else {}
 
 
 def ahead(root, last, given):
