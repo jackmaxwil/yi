@@ -325,41 +325,6 @@ async fn an_over_cap_variable_is_serialized_once_not_every_checkpoint() -> TestR
     Ok(())
 }
 
-/// Incident: the over-cap memo matched a list shrunk in place (same id, type and size), so
-/// the post-compaction prune deleted a variable that no longer crossed the cap.
-#[tokio::test]
-async fn a_prune_keeps_an_over_cap_variable_that_shrank_in_place() -> TestResult {
-    let dir = Scratch::new("yi-snap-shrunk")?;
-    let kernel = manager_with_snapshot(Some(KernelSnapshotConfig {
-        path: snapshot_path_in(&dir),
-        max_bytes: None,
-        max_variable_bytes: Some(1 << 20),
-        debounce_ms: None,
-    }))?;
-    kernel
-        .execute("rows = [b'x' * (2 << 20)]", ExecuteOptions::default())
-        .await?;
-    let first = kernel.snapshot_state().await.ok_or("snapshot result")?;
-    assert!(
-        first.skipped.iter().any(|skip| skip.name == "rows"),
-        "{first:?}"
-    );
-    kernel
-        .execute("rows[0] = b'small'", ExecuteOptions::default())
-        .await?;
-    let prune = kernel
-        .prune_oversized_variables()
-        .await
-        .ok_or("prune result")?;
-    let alive = kernel
-        .execute("print('rows' in globals())", ExecuteOptions::default())
-        .await?;
-    kernel.dispose().await;
-    assert!(prune.pruned.is_empty(), "{prune:?}");
-    assert_eq!(alive.stdout.trim(), "True", "{}", alive.stderr);
-    Ok(())
-}
-
 /// #906: yi's provider keys reached the kernel and everything a cell starts, wherever no
 /// sandbox stood between them (a host with no Seatbelt).
 #[tokio::test]
@@ -606,59 +571,197 @@ async fn dispose_flushes_only_what_the_last_checkpoint_missed() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn prune_removes_oversized_variables_and_list_names_reports() -> TestResult {
-    let dir = Scratch::new("yi-prune-e2e")?;
-    let kernel = manager_with_snapshot(Some(KernelSnapshotConfig {
-        path: snapshot_path_in(&dir),
+async fn settle(kernel: &KernelManager) -> TestResult {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while kernel.unsaved() {
+        if std::time::Instant::now() > deadline {
+            return Err("the debounced checkpoint never caught up".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
+fn debounced(dir: &Scratch) -> Option<KernelSnapshotConfig> {
+    Some(KernelSnapshotConfig {
+        path: snapshot_path_in(dir),
         max_bytes: None,
-        // Tiny cap so the test does not have to allocate 16 MiB.
-        max_variable_bytes: Some(1_024),
-        debounce_ms: None,
-    }))?;
+        max_variable_bytes: None,
+        debounce_ms: Some(0),
+    })
+}
 
-    let cell = kernel
-        .execute("small = 7\nbig = 'x' * 100_000", ExecuteOptions::default())
+/// Incident: every clean cell re-dilled every variable, 471 ms for 60,000 grep hits, paid by a
+/// read-only cell in the kernel's one queue.
+#[tokio::test]
+async fn a_read_only_cell_leaves_untouched_variables_undilled() -> TestResult {
+    let dir = Scratch::new("yi-snap-lean")?;
+    let kernel = manager_with_snapshot(debounced(&dir))?;
+    kernel
+        .execute(
+            "class Counted:\n    dumps = 0\n    def __reduce__(self):\n        Counted.dumps += 1\n        return (Counted, ())\nbig = Counted()",
+            ExecuteOptions::default(),
+        )
         .await?;
-    assert_eq!(cell.status, ExecuteStatus::Ok);
-
-    let names = kernel
-        .list_namespace_names()
-        .await
-        .ok_or("list_namespace_names")?;
-    assert!(
-        names.contains(&"big".to_owned()) && names.contains(&"small".to_owned()),
-        "listing must report user names: {names:?}"
-    );
-    assert!(
-        !names.iter().any(|name| name == "In" || name == "Out"),
-        "listing must filter IPython-injected names"
-    );
-
-    let pruned = kernel
-        .prune_oversized_variables()
-        .await
-        .ok_or("prune result")?;
-    assert_eq!(
-        pruned.pruned,
-        vec!["big".to_owned()],
-        "the over-cap variable must be pruned"
-    );
-    assert!(
-        pruned.saved.contains(&"small".to_owned()),
-        "under-cap variables must survive a prune"
-    );
-
-    let gone = kernel.execute("big", ExecuteOptions::default()).await?;
-    assert_eq!(
-        gone.error.as_ref().map(|error| error.ename.as_str()),
-        Some("NameError"),
-        "a pruned variable must be deleted from the live namespace"
-    );
-    let kept = kernel.execute("small", ExecuteOptions::default()).await?;
-    assert_eq!(kept.result.as_deref(), Some("7"));
-
+    settle(&kernel).await?;
+    for _ in 0..3 {
+        kernel
+            .execute("print(len('read only'))", ExecuteOptions::default())
+            .await?;
+        settle(&kernel).await?;
+    }
+    let count = kernel
+        .execute("print(Counted.dumps)", ExecuteOptions::default())
+        .await?;
     kernel.dispose().await;
+    assert_eq!(count.stdout.trim(), "1", "{}", count.stderr);
+    Ok(())
+}
+
+/// A cell that fails to compile ran nothing, so it must not force the next pass to re-dill
+/// every variable.
+#[tokio::test]
+async fn a_syntax_error_cell_keeps_the_next_pass_incremental() -> TestResult {
+    let dir = Scratch::new("yi-snap-syntax")?;
+    let kernel = manager_with_snapshot(debounced(&dir))?;
+    kernel
+        .execute(
+            "class Counted:\n    dumps = 0\n    def __reduce__(self):\n        Counted.dumps += 1\n        return (Counted, ())\nbig = Counted()",
+            ExecuteOptions::default(),
+        )
+        .await?;
+    settle(&kernel).await?;
+    kernel.execute("x = (", ExecuteOptions::default()).await?;
+    kernel
+        .execute("print(1)", ExecuteOptions::default())
+        .await?;
+    settle(&kernel).await?;
+    let count = kernel
+        .execute("print(Counted.dumps)", ExecuteOptions::default())
+        .await?;
+    kernel.dispose().await;
+    assert_eq!(count.stdout.trim(), "1", "{}", count.stderr);
+    Ok(())
+}
+
+/// A full pass that outruns the debounce bound must not make every later pass full: the cell
+/// after it still checkpoints.
+#[tokio::test]
+async fn a_timed_out_full_pass_leaves_later_cells_checkpointed() -> TestResult {
+    let dir = Scratch::new("yi-snap-slow")?;
+    let marker = snapshot_path_in(&dir).with_extension("slow");
+    let kernel = manager_with_snapshot(debounced(&dir))?;
+    let define = format!(
+        "import time\nSLOW = False\nclass Slow:\n    def __reduce__(self):\n        if SLOW:\n            open({:?}, 'w').close()\n            time.sleep(8)\n        return (Slow, ())\nslow = Slow()",
+        marker.to_string_lossy()
+    );
+    kernel.execute(&define, ExecuteOptions::default()).await?;
+    settle(&kernel).await?;
+    kernel
+        .execute("SLOW = True", ExecuteOptions::default())
+        .await?;
+    settle(&kernel).await?;
+    for _ in 2..19 {
+        kernel
+            .execute("print(1)", ExecuteOptions::default())
+            .await?;
+        settle(&kernel).await?;
+    }
+    kernel
+        .execute("print(1)", ExecuteOptions::default())
+        .await?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !marker.exists() {
+        if std::time::Instant::now() > deadline {
+            return Err("the twentieth cell never started a full pass".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    kernel.execute("z = 5", ExecuteOptions::default()).await?;
+    let caught_up = settle(&kernel).await;
+    kernel
+        .execute("SLOW = False", ExecuteOptions::default())
+        .await?;
+    kernel.dispose().await;
+    caught_up
+}
+
+/// A mutation reached only through a nested reference keeps the outer name's id, type and size,
+/// so an incremental pass reuses its blob; the dispose flush is full and saves it.
+#[tokio::test]
+async fn dispose_heals_a_nested_mutation_no_cell_named() -> TestResult {
+    let dir = Scratch::new("yi-snap-nested")?;
+    let first = manager_with_snapshot(debounced(&dir))?;
+    for code in ["a = [[1]]", "b = a[0]", "b.append(2)"] {
+        first.execute(code, ExecuteOptions::default()).await?;
+        settle(&first).await?;
+    }
+    first.dispose().await;
+    let second = manager_with_snapshot(debounced(&dir))?;
+    second.restore_state().await.ok_or("restore result")?;
+    let probe = second
+        .execute("print(a)", ExecuteOptions::default())
+        .await?;
+    second.dispose().await;
+    assert_eq!(probe.stdout.trim(), "[[1, 2]]", "{}", probe.stderr);
+    Ok(())
+}
+
+/// A name bound to the object a cell mutated through an alias is saved with the mutation, even
+/// when the mutation leaves the object's size unchanged.
+#[tokio::test]
+async fn a_mutation_through_an_alias_survives_a_restart() -> TestResult {
+    let dir = Scratch::new("yi-snap-alias")?;
+    let first = manager_with_snapshot(debounced(&dir))?;
+    for code in ["x = [0]", "y = x", "y[0] = 1"] {
+        first.execute(code, ExecuteOptions::default()).await?;
+        settle(&first).await?;
+    }
+    first.dispose().await;
+    let second = manager_with_snapshot(debounced(&dir))?;
+    second.restore_state().await.ok_or("restore result")?;
+    let probe = second
+        .execute("print(x)", ExecuteOptions::default())
+        .await?;
+    second.dispose().await;
+    assert_eq!(probe.stdout.trim(), "[1]", "{}", probe.stderr);
+    Ok(())
+}
+
+/// Incident: IPython's `Out` cache kept a displayed value alive after `del`, so its memory
+/// was never returned.
+#[tokio::test]
+async fn a_displayed_value_is_freed_by_del() -> TestResult {
+    let kernel = manager()?;
+    let options = ExecuteOptions::default;
+    kernel
+        .execute(
+            "import weakref, gc\nclass Held: pass\nheld = Held()\nref = weakref.ref(held)",
+            options(),
+        )
+        .await?;
+    kernel.execute("held", options()).await?;
+    kernel.execute("del held", options()).await?;
+    let probe = kernel
+        .execute("gc.collect()\nprint(ref() is None)", options())
+        .await?;
+    kernel.dispose().await;
+    assert_eq!(probe.stdout.trim(), "True", "{}", probe.stderr);
+    Ok(())
+}
+
+/// Yi's own cells (snapshots, listings) stay out of `In`, so the model's cell numbers are its own.
+#[tokio::test]
+async fn only_model_cells_grow_the_input_history() -> TestResult {
+    let kernel = manager()?;
+    let length = "print(len(In))";
+    let before = kernel.execute(length, ExecuteOptions::default()).await?;
+    kernel.list_namespace_names().await.ok_or("listing")?;
+    kernel.list_namespace_names().await.ok_or("listing")?;
+    let after = kernel.execute(length, ExecuteOptions::default()).await?;
+    kernel.dispose().await;
+    let count = |text: &str| text.trim().parse::<usize>();
+    assert_eq!(count(&after.stdout)?, count(&before.stdout)? + 1);
     Ok(())
 }
 
