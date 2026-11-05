@@ -2,11 +2,12 @@
 
 Host-written notes that outlive a session: one markdown file per fact, an index file, and a usage
 counter per store. The model requests a write or a read through kernel verbs; the host validates,
-renders and writes every file. The only part that reaches a prompt is the index, as one untrusted
-yard block at session start. `§N` refers to [YI_DESIGN.md](YI_DESIGN.md).
+renders and writes every file. The only part that reaches a prompt is one untrusted yard block
+ranked by the first typed prompt, with the bodies that prompt earns. `§N` refers to
+[YI_DESIGN.md](YI_DESIGN.md).
 
 Invariants:
-- Only the root session keeps memory. A child session (depth > 0) gets no start block, and every
+- Only the root session keeps memory. A child session (depth > 0) gets no focused block, and every
   verb refuses with `only the root session keeps memory`.
 - At most 3 `memory.save` calls succeed per session. A refused save does not count against the cap.
 - The host writes every note file in one canonical form: frontmatter `name`, `description`,
@@ -35,7 +36,7 @@ Invariants:
 - Replies never carry a filesystem path; the kernel sandbox cannot read `~/.yi`.
 
 Owner: [`crates/runtime/src/memory/`](../crates/runtime/src/memory/mod.rs) (`mod.rs` verbs,
-`doc.rs` note format, `store.rs` files, `ext.rs` start block),
+`doc.rs` note format, `store.rs` files, `ext.rs` session start and focused block),
 [`python/skills/memory/`](../python/skills/memory/src/memory/__init__.py) (kernel verbs),
 [`crates/cli/src/memory.rs`](../crates/cli/src/memory.rs) (CLI).
 
@@ -87,30 +88,22 @@ lanes. A cut page names the call for the next one; a directory whose checkout is
 repository is therefore unknown is counted in a second notice line, never searched. The parsed
 units are cached per file and re-read when a file's length changes. Root session only.
 
-## Start block
+## Session start
 
 `MemoryExt` is a built-in extension interested in `SessionStart` (§6). On every start, fresh or
-resumed, it does the following:
-1. Reconciles each store's `MEMORY.md`: drops lines whose note is gone or duplicated, appends a
-   line per unindexed note, keeps every other line and the order.
-2. Builds the block: the header (the verbs, the four types and the save template), the note
-   counts, the repo lines, then `global:` and the global lines.
-3. Loads at most 200 lines or 25,000 bytes per store, keeping the most recently used, in index
-   order, then a row `[… K of T notes loaded (LOAD_LINES 200); the rest: await
-   memory.search("words")]` that names `LOAD_BYTES 25000` instead when the bytes cut. With no
-   notes, the block reads `No notes yet.`
-4. Marks a line `⚠ <path>` when its text or description names a relative path that is missing
-   under the git root.
-5. Fits the block to the `memory` source budget (32,768 bytes) and emits it as
-   `AttachExternal { source: "memory", trust: Untrusted }`, which lands in the yard (§6).
+resumed, it reconciles each store's `MEMORY.md`: drops lines whose note is gone or duplicated,
+appends a line per unindexed note, keeps every other line and the order, and journals hand edits.
+It emits the summary to the activity feed, and a fresh start increments the repo store's
+`sessions`. It does not attach a memory block: the first typed prompt renders the only block a
+request carries. A resumed session keeps the ranked block restored from its snapshot.
 
 
 ## The first prompt
 
-The start block is the index, and the first typed prompt decides which of it earns bodies. The
-prompt reaches the host before the first request, so `MemoryExt` renders the block a second time
-then (`focused`) and the yard keeps that text; every later prompt leaves the frozen prefix alone.
-The pass is a composition of what the store already had:
+The first typed prompt decides which notes earn rows and bodies. The prompt reaches the host
+before the first request, so `MemoryExt` renders and attaches the block once (`focused`); every
+later prompt leaves the frozen prefix alone. The pass is a composition of what the store already
+had:
 
 1. Every note is scored by `memory::rank`'s BM25 over its name, hook and body, weighted by type:
    `feedback` 1.5, `project` 1.4, `user` 1.25, `reference` 1.0, untyped 1.1.
@@ -118,25 +111,26 @@ The pass is a composition of what the store already had:
    row but earns no body, so near-identical saves earn one body.
 3. The bodies of at most 3 scored notes, each cut at 1,200 bytes, come first; the notes left
    over print as index lines in rank order, the unscored ones after them, at most 8.
-4. The budget is the start block's row bytes, never under two body caps and never past 6,000, so
-   one real body fits a small store; rows, then bodies, are dropped until the text fits it.
+4. The budget is the unranked index's row bytes, never under two body caps and never past 6,000,
+   so one real body fits a small store; rows, then bodies, are dropped until the text fits it.
 5. A cut names what it dropped and how to get it: `[… K of T notes (the index budget N, or FOCUS_ROWS 8); the rest: await
    memory.search("words")]`, a `[… body cut at 1200 B of N · the rest: await memory.read("name")]`
    row per truncated body, and `[no note shares a word with this request · …]` when nothing
-   matched. A store that failed to load and a store past its load cap are named as in the start
-   block, and the cut row counts the notes past the cap.
+   matched. A store that failed to load and a store past its load cap are named. A failed store
+   also counts as one not-loaded entry in the focused cut's total.
 
-A blank first prompt (a host or custom message carries no typed words) leaves the start block and
-spends nothing; a resumed session never re-ranks, so "continue" cannot replace the block the
-original task earned. A subagent's brief is its first prompt and ranks the block like any other.
+A blank first prompt (a host or custom message carries no typed words) spends nothing and leaves
+the first real prompt free to rank the block. A resumed session never re-ranks, so "continue"
+cannot replace the block the original task earned. A subagent's brief is its first prompt and
+ranks the block like any other.
 
 The eval that holds it is `evals/memory_inject.py` over `evals/fixtures/memory-inject`: eleven
 real first messages, hand-labelled against a sixteen-note fixture store, scored on both arms
 (`crates/runtime/tests/memory_inject.rs` renders this build's blocks and `replay` scores them
 against `before/block.txt`, what the pre-change build rendered). The paid judge run is
 `label --model openrouter/… --cap-usd 10` and its row is the owner's to write.
-A fresh start also increments the repo store's `sessions`. The TUI commits the start summary
-and one line per save or forget as footer cells; the HUD shows `saved N`.
+The TUI commits the start summary and one line per save or forget as footer cells; the HUD shows
+`saved N`.
 
 ## CLI
 

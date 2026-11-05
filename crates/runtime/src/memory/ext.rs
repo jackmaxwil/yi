@@ -91,10 +91,11 @@ fn stale_path(hook: &str, root: &Path) -> Option<String> {
 
 struct Row {
     text: String,
-    note: Option<Note>,
+    note: Option<usize>,
 }
 
 struct Scoped {
+    notes: Vec<Note>,
     rows: Vec<Row>,
     count: usize,
     stale: usize,
@@ -113,8 +114,10 @@ fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError
         .into_iter()
         .filter_map(|line| match line {
             IndexLine::Note { text, name } => {
-                let note = notes.iter().find(|note| &note.name == name).cloned();
-                let hook = note.as_ref().map_or("", |note| note.hook.as_str());
+                let note = notes.iter().position(|note| &note.name == name);
+                let hook = note
+                    .and_then(|at| notes.get(at))
+                    .map_or("", |note| note.hook.as_str());
                 let text = match stale_path(text, root).or_else(|| stale_path(hook, root)) {
                     Some(path) => {
                         stale = stale.saturating_add(1);
@@ -128,20 +131,21 @@ fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError
         })
         .collect();
     Ok(Scoped {
-        rows,
         count: notes.len(),
-        stale,
         unparsed: notes.iter().filter(|note| note.trouble.is_some()).count(),
+        notes,
+        rows,
+        stale,
         not_loaded,
     })
 }
 
-/// The start block, reconciling each store first: a session start journals hand edits.
+/// The index block, reconciling each store first: explicit renders journal hand edits.
 pub fn block(home: &Path, cwd: &Path) -> (String, Summary) {
     render(home, cwd, Store::reconcile)
 }
 
-/// The start block's summary as the stores stand, written nowhere: `yi memory list` reads.
+/// The index block's summary as the stores stand, written nowhere: `yi memory list` reads.
 pub fn listed(home: &Path, cwd: &Path) -> Summary {
     render(home, cwd, Store::indexed).1
 }
@@ -149,7 +153,7 @@ pub fn listed(home: &Path, cwd: &Path) -> Summary {
 /// The block the first typed prompt earns: the index it would have carried, ranked by the
 /// prompt's words, with the bodies of the few notes that earn them and a row naming the cut.
 pub fn focused(home: &Path, cwd: &Path, prompt: &str) -> (String, Summary) {
-    render_focus(home, cwd, prompt, Store::indexed)
+    focus(home, cwd, prompt, Store::indexed)
 }
 
 fn load_cut(scoped: &Scoped) -> Option<String> {
@@ -174,18 +178,48 @@ fn load_cut(scoped: &Scoped) -> Option<String> {
     ))
 }
 
-fn render(home: &Path, cwd: &Path, index: Index) -> (String, Summary) {
+fn gather(
+    home: &Path,
+    cwd: &Path,
+    index: Index,
+) -> (
+    Result<Scoped, StoreError>,
+    Result<Scoped, StoreError>,
+    Summary,
+) {
     let root = crate::ext::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let repo = scoped(&Store::new(repo_dir(home, cwd)), &root, index);
     let global = scoped(&Store::new(global_dir(home)), &root, index);
     let mut summary = Summary::default();
-    let mut body: Vec<String> = Vec::new();
-    for (label, result) in [("repo", &repo), ("global", &global)] {
+    for result in [&repo, &global] {
         match result {
             Ok(scoped) => {
                 summary.stale = summary.stale.saturating_add(scoped.stale);
                 summary.unparsed = summary.unparsed.saturating_add(scoped.unparsed);
                 summary.not_loaded = summary.not_loaded.saturating_add(scoped.not_loaded);
+            }
+            Err(_) => summary.not_loaded = summary.not_loaded.saturating_add(1),
+        }
+    }
+    summary.repo = repo.as_ref().map_or(0, |scoped| scoped.count);
+    summary.global = global.as_ref().map_or(0, |scoped| scoped.count);
+    (repo, global, summary)
+}
+
+fn counts(summary: &Summary) -> String {
+    format!("{} repo · {} global", summary.repo, summary.global)
+}
+
+fn assemble(summary: &Summary, body: &[String]) -> String {
+    format!("{HEADER}\n{}\n{}", counts(summary), body.join("\n"))
+}
+
+fn render(home: &Path, cwd: &Path, index: Index) -> (String, Summary) {
+    let (repo, global, summary) = gather(home, cwd, index);
+    let mut body: Vec<String> = Vec::new();
+    for (label, result) in [("repo", &repo), ("global", &global)] {
+        match result {
+            Ok(scoped) => {
                 if label == "global" && !scoped.rows.is_empty() {
                     body.push("global:".to_owned());
                 }
@@ -195,18 +229,10 @@ fn render(home: &Path, cwd: &Path, index: Index) -> (String, Summary) {
             Err(error) => body.push(format!("{label} notes not loaded: {error}")),
         }
     }
-    summary.repo = repo.as_ref().map_or(0, |scoped| scoped.count);
-    summary.global = global.as_ref().map_or(0, |scoped| scoped.count);
     if body.is_empty() {
         body.push("No notes yet.".to_owned());
     }
-    let text = format!(
-        "{HEADER}\n{} repo · {} global\n{}",
-        summary.repo,
-        summary.global,
-        body.join("\n")
-    );
-    (text, summary)
+    (assemble(&summary, &body), summary)
 }
 
 /// A note and what the first prompt earned it: `feedback` and `project` outrank `reference`.
@@ -296,39 +322,23 @@ fn earned(candidates: &[(&Note, &str)], prompt: &str) -> (Vec<usize>, Vec<usize>
     (ranked, scored_at, deduped)
 }
 
-fn render_focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String, Summary) {
-    let root = crate::ext::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let repo = scoped(&Store::new(repo_dir(home, cwd)), &root, index);
-    let global = scoped(&Store::new(global_dir(home)), &root, index);
-    let mut summary = Summary::default();
+fn focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String, Summary) {
+    let (repo, global, summary) = gather(home, cwd, index);
     let mut candidates: Vec<(&Note, &str)> = Vec::new();
     let mut budget = 0usize;
     let mut extras: Vec<String> = Vec::new();
-    let mut unloaded = 0usize;
     for (label, result) in [("repo", &repo), ("global", &global)] {
         match result {
             Ok(scoped) => {
-                summary.stale = summary.stale.saturating_add(scoped.stale);
-                summary.unparsed = summary.unparsed.saturating_add(scoped.unparsed);
-                if label == "global" {
-                    summary.global = scoped.count;
-                } else {
-                    summary.repo = scoped.count;
-                }
-                summary.not_loaded = summary.not_loaded.saturating_add(scoped.not_loaded);
-                unloaded = unloaded.saturating_add(scoped.not_loaded);
                 extras.extend(load_cut(scoped));
                 for row in &scoped.rows {
                     budget = budget.saturating_add(row.text.len().saturating_add(1));
-                    if let Some(note) = &row.note {
+                    if let Some(note) = row.note.and_then(|at| scoped.notes.get(at)) {
                         candidates.push((note, row.text.as_str()));
                     }
                 }
             }
-            Err(error) => {
-                summary.not_loaded = summary.not_loaded.saturating_add(1);
-                extras.push(format!("{label} notes not loaded: {error}"));
-            }
+            Err(error) => extras.push(format!("{label} notes not loaded: {error}")),
         }
     }
     budget = budget.max(BODY_CAP.saturating_mul(2)).min(FOCUS_BYTES);
@@ -377,7 +387,7 @@ fn render_focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String,
         rows.push(text);
     }
     let next = "await memory.search(\"words\")";
-    let counts = format!("{} repo · {} global", summary.repo, summary.global);
+    let counts = counts(&summary);
     let ceiling = HEADER
         .len()
         .saturating_add(counts.len())
@@ -387,7 +397,7 @@ fn render_focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String,
     let mut text = String::new();
     while rows.len() + bodies.len() > 0 || text.is_empty() {
         let shown = rows.len().saturating_add(bodies.len());
-        let total = candidates.len().saturating_add(unloaded);
+        let total = candidates.len().saturating_add(summary.not_loaded);
         let mut body: Vec<String> = rows.iter().map(|text| (*text).to_owned()).collect();
         for (_, block, cut) in &bodies {
             body.push(block.clone());
@@ -413,7 +423,7 @@ fn render_focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String,
         if body.is_empty() {
             body.push("No notes yet.".to_owned());
         }
-        text = format!("{HEADER}\n{counts}\n{}", body.join("\n"));
+        text = assemble(&summary, &body);
         if text.len() <= ceiling {
             break;
         }
@@ -489,7 +499,7 @@ impl Extension for MemoryExt {
             Event::SessionStart { cwd, reason } => {
                 self.cwd = Some(cwd.clone());
                 self.focused = *reason == StartReason::Resume;
-                let (text, summary) = block(&self.home, cwd);
+                let (_, _, summary) = gather(&self.home, cwd, Store::reconcile);
                 if *reason == StartReason::Fresh {
                     let counted = Store::new(repo_dir(&self.home, cwd))
                         .record(|usage| usage.sessions = usage.sessions.saturating_add(1));
@@ -499,7 +509,6 @@ impl Extension for MemoryExt {
                     }
                 }
                 self.activity.push(summary.line());
-                self.attach(text, out);
             }
             _ => {}
         }
@@ -764,6 +773,19 @@ mod tests {
     }
 
     #[test]
+    fn a_store_failure_is_named_and_counted_in_the_focused_cut() {
+        let (home, cwd) = notes("focus-store-failure", &PAIR);
+        let repo = repo_dir(&home, &cwd);
+        fs::create_dir_all(repo.parent().unwrap()).unwrap();
+        fs::write(repo, "not a directory").unwrap();
+        let (text, summary) = focused(&home, &cwd, "orphaned worktrees hold the lane pool");
+        assert!(text.contains("repo notes not loaded:"), "{text}");
+        assert!(!text.contains("No notes yet."), "{text}");
+        assert!(text.contains("2 of 3 notes"), "{text}");
+        assert_eq!(summary.not_loaded, 1);
+    }
+
+    #[test]
     fn a_resumed_host_and_a_blank_first_prompt_keep_the_first_real_prompt_unspent() {
         let (home, cwd) = notes("focus-latch", &PAIR);
         let ask = |prompt: &str| Event::PromptSubmitted {
@@ -778,13 +800,16 @@ mod tests {
         let mut fresh = MemoryExt::new(home.to_path_buf(), Arc::new(Activity::default()));
         let mut out = Vec::new();
         fresh.on(&start(StartReason::Fresh), &mut out);
+        assert!(out.is_empty(), "start reconciles without attaching");
         out.clear();
         fresh.on(&ask("  "), &mut out);
         assert!(out.is_empty());
         fresh.on(&ask("orphaned worktrees hold the lane pool"), &mut out);
         assert_eq!(out.len(), 1);
         let mut resumed = MemoryExt::new(home.to_path_buf(), Arc::new(Activity::default()));
+        out.clear();
         resumed.on(&start(StartReason::Resume), &mut out);
+        assert!(out.is_empty(), "resume leaves the restored yard alone");
         out.clear();
         resumed.on(&ask("continue"), &mut out);
         assert!(out.is_empty(), "a resumed session keeps its block");
