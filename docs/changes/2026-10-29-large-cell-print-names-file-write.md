@@ -1,4 +1,5 @@
 ---
+version: 0.929.0
 issue: Refs #79
 ledger+: kernel + ipython + rlm() subagents | a successful Python `ipython` result past 10,000 characters carries the next line `open(path,'w').write(var)`, the mechanism that writes a kernel variable to a file without printing it or re-typing it through `write` (`tools::tests::only_a_large_successful_python_result_is_a_large_print`, T0)
 raise: crate runtime +33, crate types +2, comments +2, tests +29
