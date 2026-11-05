@@ -62,6 +62,24 @@ class HandleTests(unittest.IsolatedAsyncioTestCase):
             answer = await asyncio.wait_for(handle.result(timeout=5.0), timeout=1.0)
         self.assertEqual(answer, {"text": "done"})
 
+    async def test_a_result_by_child_id_digests_the_wait_by_session_name(self) -> None:
+        async def host_wait(timeout: float, cursor: int | None = None) -> dict:
+            return {"cursor": 1, "changed": ["n"], "states": {"n": "finished"}, "notes": {}}
+
+        sent: list[tuple[str, dict]] = []
+
+        async def fake_host_request(kind: str, payload: dict | None = None) -> dict:
+            sent.append((kind, payload or {}))
+            return {"text": "done"}
+
+        with mock.patch.object(rlm, "wait", host_wait), mock.patch.object(
+            rlm, "host_request", fake_host_request
+        ):
+            answer = await rlm.result("sub-1", timeout=1.0)
+        self.assertEqual(answer, {"text": "done"})
+        self.assertEqual(sent, [("rlm.result", {"target": "sub-1"})])
+
+
 
 if __name__ == "__main__":
     unittest.main()

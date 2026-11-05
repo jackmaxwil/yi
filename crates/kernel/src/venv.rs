@@ -129,14 +129,23 @@ pub(crate) fn overlay_dir(deps: &Path, identity: &str) -> PathBuf {
     deps.join(OVERLAYS).join(format!("{OVERLAY_PREFIX}{slot}"))
 }
 
-pub(crate) fn site_packages(venv: &Path) -> Result<PathBuf, String> {
+pub(crate) fn site_packages_dirs(venv: &Path) -> Result<Vec<PathBuf>, String> {
     let lib = venv.join("lib");
     std::fs::read_dir(&lib)
         .map_err(|error| format!("{}: {error}", lib.display()))?
-        .flatten()
-        .map(|entry| entry.path().join("site-packages"))
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path().join("site-packages"))
+                .map_err(|error| format!("{}: {error}", lib.display()))
+        })
+        .collect()
+}
+
+pub(crate) fn site_packages(venv: &Path) -> Result<PathBuf, String> {
+    site_packages_dirs(venv)?
+        .into_iter()
         .find(|site| site.is_dir())
-        .ok_or_else(|| format!("no site-packages under {}", lib.display()))
+        .ok_or_else(|| format!("no site-packages under {}", venv.join("lib").display()))
 }
 
 fn running_commands() -> Option<String> {

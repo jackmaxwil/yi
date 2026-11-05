@@ -223,12 +223,19 @@ async def _await_child(name: str, target: str, schema: Any, timeout: float) -> d
         if isinstance(next_cursor, int):
             cursor = next_cursor
         try:
-            state, note = await _digest_child(reply, name)
+            state, note = await _digest_child(reply, name, resolve_target=name == target)
         except NoSuchChild as error:
-            raise RuntimeError(
-                f"child {name} ({target}) is no longer registered with "
-                "the parent; rlm.delete_subagent reaps a child and its answer with it"
-            ) from error
+            if name != target:
+                raise RuntimeError(
+                    f"child {name} ({target}) is no longer registered with "
+                    "the parent; rlm.delete_subagent reaps a child and its answer with it"
+                ) from error
+            poll = {"target": target, **({"schema": schema} if schema is not None else {})}
+            try:
+                return await host_request("rlm.result", poll)
+            except RuntimeError as poll_error:
+                if "still running" not in str(poll_error):
+                    raise
         if state == "stuck":
             raise RuntimeError(
                 f"child {name} is stuck ({note or 'no progress in its records'}); "
@@ -262,23 +269,28 @@ def _merge_digest(reply: dict[str, Any], states: dict, notes: dict) -> tuple[dic
     return states, notes
 
 
-async def _digest_child(reply: dict[str, Any], name: str) -> tuple[Any, Any]:
+async def _digest_child(reply: dict[str, Any], name: str, resolve_target: bool = False) -> tuple[Any, Any]:
     states = reply.get("states")
     if not isinstance(states, dict):
         raise RuntimeError("rlm.wait returned an invalid state map")
     causes = reply.get("causes")
-    if isinstance(causes, dict) and causes.get(name) == "reaped":
+    digest_name = name
+    if resolve_target and digest_name not in states:
+        candidates = set(states)
+        if isinstance(causes, dict):
+            candidates.update(causes)
+        if len(candidates) == 1:
+            digest_name = next(iter(candidates))
+    if isinstance(causes, dict) and causes.get(digest_name) == "reaped":
         raise NoSuchChild(name)
-    if name not in states:
+    if digest_name not in states:
         if "counts" not in reply:
             raise NoSuchChild(name)
         current = await status(name)
         return current.get("state"), current.get("note")
-    note = None
-    if name in states or (isinstance(causes, dict) and name in causes):
-        notes = reply.get("notes")
-        note = notes.get(name) if isinstance(notes, dict) else None
-    return states[name], note
+    notes = reply.get("notes")
+    note = notes.get(digest_name) if isinstance(notes, dict) else None
+    return states[digest_name], note
 
 
 class Reply(dict):
@@ -1573,4 +1585,18 @@ __all__ = [
     "RLMModel",
     "RLMSpawnHandle",
     "RLMSubagent",
+    "McpToolError",
+    "McpIntegration",
+    "NotEnabled",
 ]
+
+
+_LAZY_MCP = {"McpIntegration", "McpToolError", "NotEnabled"}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_MCP:
+        from . import mcp_base
+
+        return getattr(mcp_base, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

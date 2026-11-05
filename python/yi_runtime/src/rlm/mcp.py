@@ -16,7 +16,7 @@ import re
 from typing import Any
 
 
-__all__ = ["McpStartupError", "McpToolError", "call_tool", "list_tools"]
+__all__ = ["McpStartupError", "McpToolError", "call_tool", "close", "list_tools", "reload"]
 
 _DEFAULT_STARTUP_TIMEOUT = 20.0
 _DEFAULT_CALL_TIMEOUT = 60.0
@@ -118,3 +118,13 @@ async def call_tool(server: str, tool: str, arguments: dict[str, Any] | None = N
         await _connect(server)
         result = await _run(args, stdin=stdin, timeout=_DEFAULT_CALL_TIMEOUT)
     return _parse_result(result)
+
+
+async def reload(server: str | None = None) -> None:
+    if server is not None:
+        _validate_name(server, "server")
+        await _run([f"@{_session(server)}", "restart", "--json"], timeout=_DEFAULT_STARTUP_TIMEOUT)
+
+
+async def close() -> None:
+    return None

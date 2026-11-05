@@ -1,5 +1,5 @@
 //! Import probes of a kernel python, and the stamp a passing ready probe leaves in its venv.
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const READY_STAMP_FILE: &str = ".ready-stamp";
 
@@ -22,11 +22,7 @@ pub(crate) fn failed_imports(python: &Path, names: &[&str]) -> Vec<String> {
 /// and mtime; `None` when one is unreadable, so the live probe runs.
 fn fingerprint(python: &Path, venv: &Path) -> Option<String> {
     let mut paths = vec![std::fs::canonicalize(python).ok()?];
-    let mut sites: Vec<PathBuf> = std::fs::read_dir(venv.join("lib"))
-        .ok()?
-        .map(|lib| lib.map(|lib| lib.path().join("site-packages")))
-        .collect::<Result<_, _>>()
-        .ok()?;
+    let mut sites = crate::venv::site_packages_dirs(venv).ok()?;
     sites.sort();
     paths.append(&mut sites);
     let check = crate::bootstrap::fnv1a(crate::bootstrap::RUNTIME_READY_CHECK.as_bytes());

@@ -29,7 +29,6 @@ __all__ = ["Result", "Value", "ToolError", "UnknownTool", "InvalidInput", "ToolF
            "call", "search", "excluded"]
 
 SEARCH_LIMIT = 10
-SUMMARY_CHARS = 120
 _TYPES = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list,
           "object": dict}
 _catalog: dict[str, Any] | None = None
@@ -77,7 +76,7 @@ class Value:
         if name.startswith("_"):
             raise AttributeError(name)
         try:
-            return _wrap(self._data[name if name in self._data else _camel(name)])
+            return _wrap(self._data[name])
         except KeyError:
             raise AttributeError(f"this value has no {name!r}; it has {', '.join(self._data)}") from None
 
@@ -99,10 +98,6 @@ class Value:
     def __repr__(self) -> str:
         return repr(self._data)
 
-
-def _camel(name: str) -> str:
-    head, *rest = name.split("_")
-    return head + "".join(part.title() for part in rest)
 
 
 def _wrap(data: Any) -> Any:
@@ -178,18 +173,11 @@ def excluded() -> list[dict[str, str]]:
     return list(_load().get("excluded", []))
 
 
-def _summary(description: str) -> str:
-    """The description's first sentence, cut at SUMMARY_CHARS; ``help(yi.tools.<name>)`` is whole."""
-    first = description.split(". ", 1)[0].strip()
-    return first if len(first) <= SUMMARY_CHARS else first[: SUMMARY_CHARS - 1] + "…"
-
 
 def search(query: str = "", offset: int = 0, limit: int = SEARCH_LIMIT) -> dict[str, Any]:
     """Tools whose name or description holds every word of ``query``, name matches first.
 
-    The result names how many matched, how many it shows, and the call that shows the rest. Each
-    row is the tool's name and its description's first sentence; ``help(yi.tools.<name>)`` reads
-    the signature and the whole description.
+    The result names how many matched, how many it shows, and the call that shows the rest.
     """
     words = query.lower().split()
     scored = []
@@ -199,14 +187,10 @@ def search(query: str = "", offset: int = 0, limit: int = SEARCH_LIMIT) -> dict[
             scored.append((-sum(word in name for word in words), name, tool))
     scored.sort(key=lambda row: (row[0], row[1]))
     shown = scored[offset:offset + limit]
-    rows = [{"name": name, "summary": _summary(tool.get("description", ""))} for _, name, tool in shown]
+    rows = [{"name": name, "signature": f"yi.tools.{name}{_signature(tool)}",
+             "description": tool.get("description", "")} for _, name, tool in shown]
     end = offset + len(shown)
     page = {"tools": rows, "matched": len(scored), "shown": len(shown)}
-    cut = sum(row["summary"] != tool.get("description", "").strip() for row, (_, _, tool) in zip(rows, shown))
-    if cut:
-        page["cut"] = (f"[{cut} of {len(rows)} summaries cut to the first sentence, at most "
-                       f"SUMMARY_CHARS={SUMMARY_CHARS}; signature and whole description: "
-                       f"help(yi.tools.<name>)]")
     if end < len(scored):
         page["more"] = (f"[{len(shown)} of {len(scored)} shown at limit={limit}; the rest: "
                         f"yi.tools.search({query!r}, offset={end})]")

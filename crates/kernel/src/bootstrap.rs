@@ -622,6 +622,19 @@ pub(crate) fn write_bootstrap_version(
         .map_err(|error| error.to_string())
 }
 
+fn refresh_document_formats(
+    venv: &Path,
+    runtime_identity: &str,
+    python: &Path,
+    version: Option<&BootstrapVersion>,
+) {
+    let probe = serde_json::Value::from(document_probe_hash());
+    if version.is_some_and(|version| version.extra.get(DOCUMENT_PROBE_KEY) != Some(&probe)) {
+        let _record_refreshed =
+            write_bootstrap_version(venv, runtime_identity, document_formats_of(python));
+    }
+}
+
 /// The version file, then the import probe, which a stamp of the files it last proved
 /// stands in for: a warm boot spent ~150 ms re-importing ipykernel to learn nothing.
 pub(crate) fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -> bool {
@@ -643,16 +656,44 @@ pub(crate) fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -
     if live && !stamped {
         crate::probe::stamp(python, venv);
     }
-    let probe = serde_json::Value::from(document_probe_hash());
-    if live && version.is_some_and(|version| version.extra.get(DOCUMENT_PROBE_KEY) != Some(&probe))
-    {
-        let _record_refreshed =
-            write_bootstrap_version(venv, runtime_identity, document_formats_of(python));
+    if live {
+        refresh_document_formats(venv, runtime_identity, python, version.as_ref());
     }
     if live {
         restart_sweep_clock(venv);
     }
     live
+}
+
+fn install_skills(
+    toolchain: &Toolchain,
+    python: &Path,
+    options: &BootstrapOptions,
+    extra_args: &[&str],
+) {
+    let skills: Vec<String> = PYTHON_SKILLS
+        .iter()
+        .filter_map(|(import_name, subdir)| {
+            let skill_dir = options.skills_source_dir.join(subdir);
+            if skill_dir.is_dir() {
+                return Some(skill_dir.to_string_lossy().into_owned());
+            }
+            options.progress(&format!(
+                "Warning: Python skill {import_name} source missing at {}; skipping",
+                skill_dir.display()
+            ));
+            None
+        })
+        .collect();
+    let mut refs = extra_args.to_vec();
+    refs.extend(skills.iter().map(String::as_str));
+    if !skills.is_empty()
+        && let Err(error) = pip_install(toolchain, python, &refs)
+    {
+        options.progress(&format!(
+            "Warning: Python skills failed to install and will be unavailable: {error}"
+        ));
+    }
 }
 
 fn bootstrap_venv(venv: &Path, options: &BootstrapOptions) -> Result<(), String> {
@@ -675,30 +716,7 @@ fn bootstrap_venv(venv: &Path, options: &BootstrapOptions) -> Result<(), String>
             &runtime_dir,
         ],
     )?;
-    let skills: Vec<String> = PYTHON_SKILLS
-        .iter()
-        .filter_map(|(import_name, subdir)| {
-            let skill_dir = options.skills_source_dir.join(subdir);
-            if skill_dir.is_dir() {
-                return Some(skill_dir.to_string_lossy().into_owned());
-            }
-            options.progress(&format!(
-                "Warning: Python skill {import_name} source missing at {}; skipping",
-                skill_dir.display()
-            ));
-            None
-        })
-        .collect();
-    let skill_refs: Vec<&str> = skills.iter().map(String::as_str).collect();
-    // A broken skill or extra degrades to its unavailable wrapper; it must never
-    // fail the whole venv, and an extra the image already carries is not fetched.
-    if !skill_refs.is_empty()
-        && let Err(error) = pip_install(&toolchain, &python, &skill_refs)
-    {
-        options.progress(&format!(
-            "Warning: Python skills failed to install and will be unavailable: {error}"
-        ));
-    }
+    install_skills(&toolchain, &python, options, &[]);
     let extras = missing_extra_packages(&python);
     if !extras.is_empty()
         && let Err(error) = pip_install(&toolchain, &python, &extras)
@@ -760,21 +778,7 @@ fn bootstrap_overlay(
     let python = kernel_python(overlay);
     let runtime_dir = options.runtime_source_dir.to_string_lossy().into_owned();
     pip_install(&toolchain, &python, &["--no-deps", &runtime_dir])?;
-    let skills: Vec<String> = PYTHON_SKILLS
-        .iter()
-        .map(|(_, subdir)| options.skills_source_dir.join(subdir))
-        .filter(|dir| dir.is_dir())
-        .map(|dir| dir.to_string_lossy().into_owned())
-        .collect();
-    let mut args = vec!["--no-deps"];
-    args.extend(skills.iter().map(String::as_str));
-    if !skills.is_empty()
-        && let Err(error) = pip_install(&toolchain, &python, &args)
-    {
-        options.progress(&format!(
-            "Warning: Python skills failed to install and will be unavailable: {error}"
-        ));
-    }
+    install_skills(&toolchain, &python, options, &["--no-deps"]);
     write_bootstrap_version(overlay, runtime_identity, Vec::new())
 }
 
@@ -789,11 +793,12 @@ fn dependencies_ready(deps: &Path) -> bool {
     if !ready {
         return false;
     }
-    let probe = serde_json::Value::from(document_probe_hash());
-    if version.is_some_and(|version| version.extra.get(DOCUMENT_PROBE_KEY) != Some(&probe)) {
-        let formats = document_formats_of(&kernel_python(deps));
-        let _record_refreshed = write_bootstrap_version(deps, DEPENDENCY_RUNTIME, formats);
-    }
+    refresh_document_formats(
+        deps,
+        DEPENDENCY_RUNTIME,
+        &kernel_python(deps),
+        version.as_ref(),
+    );
     restart_sweep_clock(deps);
     true
 }
@@ -999,9 +1004,15 @@ mod tests {
     -> Result<(), String> {
         let root = Scratch::new("yi-kernel-overlay").map_err(|error| error.to_string())?;
         let (uv, log) = fake_uv(&root)?;
+        let warnings = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let boot = |line: &str| -> Result<PathBuf, String> {
+            let warnings = warnings.clone();
             ensure_kernel_python(&BootstrapOptions {
-                on_progress: Some(Box::new(|_| {})),
+                on_progress: Some(Box::new(move |line: &str| {
+                    if let Ok(mut warnings) = warnings.lock() {
+                        warnings.push(line.to_owned());
+                    }
+                })),
                 home: root.to_path_buf(),
                 runtime_source_dir: runtime_tree(&root, line)?,
                 skills_source_dir: root.join("no-skills"),
@@ -1014,6 +1025,16 @@ mod tests {
         std::fs::write(&marker, "").map_err(|error| error.to_string())?;
         let installs = std::fs::read_to_string(&log).map_err(|error| error.to_string())?;
         let second = boot("x = 2\n")?;
+        let missing_warnings = warnings
+            .lock()
+            .map_err(|error| error.to_string())?
+            .iter()
+            .filter(|line| line.contains("source missing"))
+            .count();
+        assert_eq!(
+            missing_warnings, 12,
+            "the dependency venv and each of two overlays must name every missing skill source"
+        );
         let after = std::fs::read_to_string(&log).map_err(|error| error.to_string())?;
         assert_ne!(first, second, "two identities booted one python");
         assert!(

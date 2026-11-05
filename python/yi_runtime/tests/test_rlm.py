@@ -849,6 +849,16 @@ class SurfaceTests(unittest.TestCase):
         text = pydoc.render_doc(rlm, renderer=pydoc.plaintext)
         self.assertEqual([name for name in sorted(defined) if f"{name}(" not in text], [])
 
+    def test_mcp_public_names_remain_importable(self) -> None:
+        from rlm import mcp
+
+        self.assertIs(rlm.McpToolError, mcp.McpToolError)
+        self.assertTrue(callable(rlm.McpIntegration))
+        self.assertTrue(callable(rlm.NotEnabled))
+        self.assertTrue(callable(mcp.reload))
+        self.assertTrue(callable(mcp.close))
+
+
 
 class ReplyTests(unittest.IsolatedAsyncioTestCase):
     """The paid rerun's r1-r3: five guesses at rlm.wait's shape died unpacking or indexing it."""
