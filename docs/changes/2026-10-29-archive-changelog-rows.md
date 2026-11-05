@@ -1,4 +1,5 @@
 ---
+version: 0.938.0
 issue: Refs #1743
 ---
 `scripts/record_changes.py` keeps `docs/CHANGELOG.md` under the 512000-byte blob cap itself (Refs #1743). When recording would leave the changelog past the cap, or it already is past it, the recorder moves the oldest rows verbatim into new `docs/archive/changelog-<lo>-to-<hi>.md` files, each under the cap, keeps the newest rows that fit in three quarters of the cap, and adds a pointer line per new archive beside the existing ones. A log that archiving cannot bring under the cap is left alone and the existing refusal names it. This run archives rows 0.250.0 to 0.647.0 into two files, taking the changelog from 940951 to 383614 bytes, so the `docs/CHANGELOG.md` entry leaves the blob allowlist; `docs/ARCHITECTURE.md` is past the cap too and stays on it. `check_changes` now refuses an edit or delete of an archive file main already holds.
