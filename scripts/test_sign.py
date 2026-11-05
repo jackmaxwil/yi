@@ -12,7 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SIGN = ROOT / "scripts/sign.sh"
 PASSPHRASE = "correct horse"
 # The public fingerprint of the owner's release key (~/.ssh/yi-release): the one signer yi update trusts.
-OWNER_RELEASE_KEY = "SHA256:lNXKild9bEMo3z1To8V08WGUGJvag3cLRasaxyGVawo"
+OWNER_RELEASE_KEY = "SHA256:Tb4DlV9Kzm6hIEEnTNTjGNPv4msLyf4zlFPIZZlpsOE"
 
 
 def run(*args, env=None, check=True, stdin_text=None):
