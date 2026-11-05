@@ -1,4 +1,5 @@
 ---
+version: 0.921.0
 issue: Closes #1506
 raise: crate context +19, crate runtime +11, tests +166, comments +2
 ---
