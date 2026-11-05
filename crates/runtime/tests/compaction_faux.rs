@@ -669,6 +669,122 @@ async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dy
     Ok(())
 }
 
+/// Incident (#1757): a kept tail over `compaction.at` made every request summarize again, 16
+/// compactions in 48 requests. A request has to grow past the ceiling the last one left.
+#[tokio::test]
+async fn a_kept_tail_over_the_ceiling_compacts_once_not_on_every_request()
+-> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-thrash")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-thrash");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-thrash".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        (0..32)
+            .map(|_| reply_with_usage("ok", 2_800, 2_850))
+            .collect(),
+    );
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(100_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.enable_compaction_with(tight_settings());
+    session
+        .compactor()
+        .ok_or("no compactor")?
+        .set_ceiling(Some(2_010));
+    session.attach_store(Arc::clone(&store))?;
+    // The 8,000-character opening survives compaction verbatim: the tail it keeps is over the
+    // 2,010-token ceiling on its own, and each live ask adds a few tokens to it.
+    session.prompt(&"a".repeat(8_000))?;
+    session.wait_idle().await;
+    for ask in [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    ] {
+        session.prompt(ask)?;
+        session.wait_idle().await;
+    }
+    let compactions = compaction_entries(&store).len();
+    assert!(
+        (1..=2).contains(&compactions),
+        "{compactions} compactions in ten requests"
+    );
+    // A resume rebuilds what the last compaction left; it must not summarize again at once.
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![reply_with_usage("ok", 2_800, 2_850)]);
+    let mut resumed = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(100_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    resumed.enable_compaction_with(tight_settings());
+    resumed
+        .compactor()
+        .ok_or("no compactor")?
+        .set_ceiling(Some(2_010));
+    resumed.attach_store(Arc::clone(&store))?;
+    resumed.prompt("ten")?;
+    resumed.wait_idle().await;
+    assert_eq!(
+        compaction_entries(&store).len(),
+        compactions,
+        "resume compacted"
+    );
+    Ok(())
+}
+
+/// Holding the ceiling back must not hold back the window: a kept tail within one reserve of
+/// the window's reserve line still compacts there, or the request leaves no room for the reply.
+#[tokio::test]
+async fn a_kept_tail_near_the_window_still_compacts_at_the_reserve() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-window")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-window");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-window".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        (0..16)
+            .map(|_| reply_with_usage(&"x".repeat(600), 9_100, 9_150))
+            .collect(),
+    );
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(10_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.enable_compaction_with(tight_settings());
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt(&"a".repeat(24_600))?;
+    session.wait_idle().await;
+    for ask in ["one", "two", "three", "four"] {
+        session.prompt(ask)?;
+        session.wait_idle().await;
+    }
+    let compactions = compaction_entries(&store).len();
+    assert!(
+        compactions >= 2,
+        "{compactions} compactions past the window's reserve"
+    );
+    Ok(())
+}
+
 /// Dies with the unknown-window arm of `Compactor::due` dropped: a model whose window is
 /// unknown (0) never passes `should_compact`'s reserve rule, so only the ceiling can compact.
 #[tokio::test]

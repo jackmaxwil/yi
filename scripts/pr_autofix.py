@@ -335,7 +335,8 @@ def resolve_in(clone, pr, base_ref, answer, tried=0):
         raise RuntimeError(f"git merge refused: {(merged.stdout + merged.stderr).strip()[-600:]}")
     walled = pr_review.walled(conflicted)
     if walled:
-        raise Handoff(f"a conflict in a file the fixer may not touch: {', '.join(walled)}")
+        raise Handoff(f"a conflict in a file the fixer may not touch: {', '.join(walled)}. "
+                      f"A person resolves it in this branch: `git fetch origin && git merge origin/{base_ref}`.")
     summary, model, touched = "git merged it without a conflict", None, []
     if conflicted:
         hunks = sum(len(re.findall(r"^<<<<<<< ", (clone / p).read_text(errors="replace"), re.M))
@@ -939,7 +940,8 @@ def findings_in(clone, pr, rnd, answer, tried=0, floor=0):
     if not sh(clone, "git", "diff", "--cached", "--name-only").stdout.strip():
         if todo and {d["n"] for d in declined} == set(range(1, len(todo) + 1)):
             raise Declined(reasons.strip(), declined_highs)
-        raise Missed("the fixer changed nothing" + reasons)
+        raise Missed(f"the fixer changed nothing of the {len(todo)} finding(s) listed; it said "
+                     f"'{(said.get('summary') or '').strip()[:600] or 'nothing'}'" + reasons)
     return summary, model, touched, declined_highs
 
 
@@ -1248,7 +1250,7 @@ def render(n, fields, verdict, reason="", status="", meter=None):
     elif verdict == "capped":
         lines += ["**Autofix is waiting**, not stopped: a spend limit delays a fix.", "", reason.strip()]
     elif verdict == "deferred":
-        lines += ["**Autofix deferred**: the model's provider was busy, so the next pass tries again.", "", "```", reason.strip(), "```"]
+        lines += ["**Autofix deferred**: a blip that frees itself (a busy provider, a full disk, a held git lock), so the next pass tries again.", "", "```", reason.strip(), "```"]
     elif verdict == "missed":
         lines += ["**Autofix missed**; the next pass tries again a tier up while one is left, and a miss on the top tier stops it.",
                   "", "```", reason.strip(), "```"]
@@ -1487,14 +1489,15 @@ def attempt(repo, pr, ids, asked=False):
         reason = f"{reason} It left the merge queue; add the `queue` label again once that is answered."
     if verdict in ("handoff", "base-red") and "autofix" in labels:
         set_label(repo, number, ids, "autofix", False)
-    # Stop and wait: a high the fixer showed wrong is the owner's call, not another round's.
+    what = f"autofix ({fields.get('kind') or KINDS[said]})"
+    status = bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), what)
+    # Incident: #1732 and #1733 were labelled `autofix:failed` with no comment; the label means "its comment
+    # says why", so it follows the comment. A high the fixer showed wrong is the owner's call, not another round's.
+    post(render(number, fields, verdict, reason, status, meter))
     if verdict == "failed" or fields.get("declined"):
         set_label(repo, number, ids, "autofix:failed", True)
     if verdict == "pushed" and "autofix" in labels:
         set_label(repo, number, ids, "autofix", False)
-    what = f"autofix ({fields.get('kind') or KINDS[said]})"
-    status = bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), what)
-    post(render(number, fields, verdict, reason, status, meter))
     print(status)
     return verdict
 
@@ -1586,10 +1589,16 @@ def cmd_autofix(args):
             break
         if not any(label["name"] == "autofix:hold" for label in pr.get("labels") or []):
             tidy(repo, pr)
-        said = attempt(repo, pr, ids)
+        try:
+            said = attempt(repo, pr, ids)
+        except Exception as err:
+            # One PR the pass cannot read is that PR's; "error" counts toward the quota because the fix
+            # may have paid a model before the comment failed, and its cost is on no ledger.
+            said = "error"
+            print(f"#{pr['number']}: the pass could not finish this PR: {err}")
         # Incident: a PR already labelled failed answered "failed" here too, so three of them
         # filled every pass's quota with skips and no other PR was tried for a day.
-        fixed += said in ("pushed", "failed", "missed", "moved", "declined")
+        fixed += said in ("pushed", "failed", "missed", "moved", "declined", "error")
         print(f"#{pr['number']}: {said}")
         # A missed tier climbs in this pass, not 15 minutes and a queue later: #1187 took four passes.
         if said != "missed":
@@ -1757,7 +1766,7 @@ def gate_selfcheck():
                       ask=lambda *a, **k: asked.append(a) or {"summary": "no"}, root=tmp, kind="conflict")
         except RuntimeError as err:
             got = err
-        if asked or not (isinstance(got, Handoff) and "may not touch" in str(got)):
+        if asked or not (isinstance(got, Handoff) and "may not touch" in str(got) and "`git fetch origin && git merge origin/main`" in str(got)):
             errs.append(f"a conflict in a walled file asked {len(asked)} model turn(s) and read {got!r}")
         git("checkout", "-q", "-f", "-b", "ruled", "origin/main"); (tmp / "justfile").write_text("lane name:\n    sh ruled.sh\n")
         (tmp / "ruled.sh").write_text("echo 'FAIL commit_style (50 commits)'; echo '  9a31c18a seed'; exit 1\n")
@@ -2657,6 +2666,9 @@ def selfcheck():
         if "names no finding" not in str(findings_run({}, declined=[99])):
             errs.append("a decline that names no listed finding lost its reason")
         whole, part = findings_run({}, declined=[1, 2]), findings_run({}, declined=[1])
+        empty = findings_run({})
+        if "changed nothing" not in str(empty) or "it said '" not in str(empty):
+            errs.append(f"a fix that changed nothing and declined none read {empty!r}, not the model's own words")
         if "changed nothing" in str(whole) or "Declined 2 (high)" not in str(whole) or "changed nothing" not in str(part):
             errs.append(f"declining every finding read {whole!r} and declining one read {part!r}")
         first = len(asked)
@@ -2870,6 +2882,17 @@ def selfcheck():
             owner = bool(highs) and "a false alarm (`a.rs:3`)" in "".join(posted)
             if said != "declined" or (("autofix:failed", True) in labelled) != bool(highs) or bool(highs) != owner:
                 errs.append(f"a round declined whole (highs={len(highs)}) read {said} with labels {labelled}, owner list shown={owner}")
+        labelled[:] = []
+        module.fix = lambda pr, **kw: (_ for _ in ()).throw(RuntimeError("the clone's hook refused the fix"))
+        forge_pr.fgj_api = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("the forge was down"))
+        try:
+            attempt("o/r", draft, {})
+            refused = "returned"
+        except RuntimeError:
+            refused = "raised"
+        if refused != "raised" or ("autofix:failed", True) in labelled:
+            errs.append(f"a comment the forge refused {refused} with labels {labelled}, not an error and no label")
+        module.fix = stand["fix"]
         forge_pr.fgj_api = lambda *a, **k: {}
         declined = tried_notes + [dict(bot, body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 kind=findings from=abc round=2 verdict=declined -->\n")]
         pr_review.comments, module.fix = (lambda repo, n: declined), stand["fix"]
@@ -3012,6 +3035,15 @@ def selfcheck():
                                                               ("missed" if misses_left and misses_left.pop() else "pushed"))
         forge_pr.fgj_api = lambda *a, **k: [fresh, dict(fresh, number=5)]
         cmd_autofix(type("A", (), {"number": None})())
+        reached = []
+        def all_bad(repo, pr, ids, asked=False):
+            reached.append(pr["number"])
+            raise RuntimeError(f"#{pr['number']}: its comment was refused")
+        module.attempt = all_bad
+        forge_pr.fgj_api = lambda *a, **k: [dict(fresh, number=n) for n in range(10, 10 + PER_RUN + 3)]
+        cmd_autofix(type("A", (), {"number": None})())
+        if reached != list(range(10, 10 + PER_RUN)):
+            errs.append(f"a pass whose attempts all raised reached {reached}, not {PER_RUN} PRs and a stop")
     finally:
         forge_pr.fgj_api, forge_pr.repo = keep_api, keep_repo
         for name, value in keep.items():
