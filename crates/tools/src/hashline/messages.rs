@@ -601,7 +601,7 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
                 "removed rows clipped",
                 "EDIT_REMOVED_CLIP",
                 EDIT_REMOVED_CLIP,
-                &gone,
+                "details.patch",
             ));
         }
         if removed.len() > EDIT_REMOVED_CAP {
