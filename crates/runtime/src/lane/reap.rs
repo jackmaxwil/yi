@@ -7,6 +7,141 @@ use super::{
     ClaimBase, Head, LIST_BUDGET, LaneError, Pool, STATUS, Sha, SlotIndex, git, git_capture, head,
 };
 
+const INTEGRATED_WALK_MAX: usize = 256;
+const INTEGRATED_PATHS_MAX: usize = 1024;
+
+/// How a branch's content is in trunk, cheapest test first.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rung {
+    SameCommit,
+    Ancestor,
+    EmptyDiff,
+    SameTree,
+    SameContent,
+    PatchId,
+}
+
+impl std::fmt::Display for Rung {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::SameCommit => "same commit",
+            Self::Ancestor => "ancestor",
+            Self::EmptyDiff => "no changes",
+            Self::SameTree => "same tree",
+            Self::SameContent => "same content",
+            Self::PatchId => "patch-id",
+        })
+    }
+}
+
+/// Whether `tip`'s content is in `trunk` however it landed: a squash merge leaves no ancestry to read.
+/// Any failed question is an `Err`, which keeps the branch; only git's own exit 1 is a no.
+pub fn integrated(repo: &Path, tip: &str, trunk: &str) -> Result<Option<Rung>, LaneError> {
+    integrated_within(repo, tip, trunk, INTEGRATED_WALK_MAX)
+}
+
+/// A slot handed back: its branch went with `main`, or stayed and this says what git answered.
+pub(super) enum Handback {
+    Deleted,
+    Kept(String),
+}
+
+fn integrated_within(
+    repo: &Path,
+    tip: &str,
+    trunk: &str,
+    walk_max: usize,
+) -> Result<Option<Rung>, LaneError> {
+    if !super::no(git(repo, &["merge-base", "--is-ancestor", tip, trunk]))? {
+        let commits = (format!("{tip}^{{commit}}"), format!("{trunk}^{{commit}}"));
+        let ids = git(repo, &["rev-parse", &commits.0, &commits.1])?;
+        let mut ids = ids.lines().map(str::trim);
+        let rung = match (ids.next(), ids.next()) {
+            (Some(tip_id), Some(trunk_id)) if tip_id == trunk_id => Rung::SameCommit,
+            _ => Rung::Ancestor,
+        };
+        return Ok(Some(rung));
+    }
+    let range = format!("{trunk}...{tip}");
+    if !super::no(git(repo, &["diff", "--quiet", "--no-ext-diff", &range]))? {
+        return Ok(Some(Rung::EmptyDiff));
+    }
+    let trees = (format!("{tip}^{{tree}}"), format!("{trunk}^{{tree}}"));
+    let trees = git(repo, &["rev-parse", &trees.0, &trees.1])?;
+    let mut trees = trees.lines().map(str::trim);
+    if let (Some(tip_tree), Some(trunk_tree)) = (trees.next(), trees.next())
+        && tip_tree == trunk_tree
+    {
+        return Ok(Some(Rung::SameTree));
+    }
+    let listing = [
+        "diff",
+        "--name-only",
+        "-z",
+        "--no-ext-diff",
+        "--no-renames",
+        &range,
+    ];
+    let touched = git(repo, &listing)?;
+    let touched = touched
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    // Invariant: a list past the cap skips this rung, not the ladder; the cap is loud only when
+    // no later rung can answer either.
+    let past_paths = touched.len() > INTEGRATED_PATHS_MAX;
+    // Invariant: a non-UTF-8 path decodes lossily; its pathspec matches nothing and reads equal.
+    let unread = touched.iter().any(|path| path.contains('\u{FFFD}'));
+    if !past_paths && !unread && !touched.is_empty() {
+        let paths = touched
+            .iter()
+            .map(|path| format!(":(literal){path}"))
+            .collect::<Vec<_>>();
+        let mut scoped = vec![
+            "diff",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-renames",
+            tip,
+            trunk,
+            "--",
+        ];
+        scoped.extend(paths.iter().map(String::as_str));
+        if !super::no(git(repo, &scoped))? {
+            return Ok(Some(Rung::SameContent));
+        }
+    }
+    let counts = git(repo, &["rev-list", "--count", "--left-right", &range])?;
+    let mut counts = counts
+        .split_whitespace()
+        .map(|count| count.parse::<usize>().unwrap_or(usize::MAX));
+    let behind = counts.next().unwrap_or(usize::MAX);
+    let ahead = counts.next().unwrap_or(usize::MAX);
+    if ahead > walk_max || behind > walk_max {
+        let past = if past_paths {
+            format!(
+                "{} paths changed past the {INTEGRATED_PATHS_MAX}-path content comparison, and ",
+                touched.len()
+            )
+        } else {
+            String::new()
+        };
+        return Err(LaneError::Git {
+            args: vec!["cherry".to_owned(), trunk.to_owned(), tip.to_owned()],
+            exit_code: None,
+            output: format!(
+                "[not judged: {past}{ahead} commits on this branch and {behind} on {trunk} past the {walk_max}-commit patch-id walk; compare it with trunk by hand, or rebase it]"
+            ),
+        });
+    }
+    let cherry = git(repo, &["cherry", trunk, tip])?;
+    // Invariant: cherry skips merges, so one row per commit proves no merge content went unread.
+    let rows = cherry.lines().count();
+    let all_in = rows > 0 && rows == ahead && cherry.lines().all(|row| row.starts_with("- "));
+    Ok(all_in.then_some(Rung::PatchId))
+}
+
 /// Uncommitted paths one status read named; past the capture cap the count is a floor, and
 /// `submodules` is how many of them a gitlink read attributed, so a survivor can name its cause.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -177,9 +312,37 @@ impl Pool {
             Ok(Head::Branch(branch)) => branch,
             Err(_) => return Ok(false),
         };
-        let branch = branch.as_str();
+        Ok(matches!(self.land(branch.as_str())?, Handback::Deleted))
+    }
+
+    /// Invariant: read-only, so the caller can ask before taking the lock a delete serializes on.
+    pub(super) fn land(&self, branch: &str) -> Result<Handback, LaneError> {
         let base = self.resolve(&ClaimBase::Main, false)?;
-        Ok(git(&self.repo, &["merge-base", "--is-ancestor", branch, &base]).is_ok())
+        match integrated(&self.repo, branch, &base) {
+            Ok(Some(_)) => Ok(Handback::Deleted),
+            Ok(None) => Ok(Handback::Kept("unmerged".to_owned())),
+            Err(why) => Ok(Handback::Kept(why.to_string())),
+        }
+    }
+
+    /// Invariant: the worktree is detached before the branch goes, or git refuses the delete.
+    pub(super) fn detach(
+        &self,
+        slot: SlotIndex,
+        branch: Option<&str>,
+        landed: Handback,
+    ) -> Result<Handback, LaneError> {
+        let path = self.slot_path(slot);
+        let text = path.to_string_lossy().into_owned();
+        let _ = git(&self.repo, &["worktree", "unlock", &text]);
+        git(&path, &["checkout", "-q", "--detach"])?;
+        match (branch, landed) {
+            (Some(branch), Handback::Deleted) => {
+                git(&self.repo, &["branch", "-q", "-D", branch])?;
+                Ok(Handback::Deleted)
+            }
+            (_, kept) => Ok(kept),
+        }
     }
 
     /// Invariant: an orphan's branch is the only copy of its work; it goes only once `main` has it.
@@ -200,6 +363,11 @@ impl Pool {
     }
 
     fn reap_if(&self, slot: SlotIndex, expected: Option<&str>) -> Result<String, LaneError> {
+        let branch = self.branch_of(slot);
+        let landed = match branch.as_deref() {
+            Some(branch) => self.land(branch)?,
+            None => Handback::Deleted,
+        };
         let _pool = self.lock()?;
         let (guard, holder) = self.probe(slot)?;
         if let Some(session) = holder {
@@ -215,16 +383,15 @@ impl Pool {
                 });
             }
         }
-        let branch = self.branch_of(slot);
-        let kept = self.detach(slot, branch.as_deref())?;
+        let kept = self.detach(slot, branch.as_deref(), landed)?;
         let lost = self.wipe(slot)?.discarded();
         self.clear_session(slot)?;
         drop(guard);
         Ok(match (branch, kept) {
-            (Some(branch), true) => {
-                format!("lane {slot} freed{lost}; branch {branch} kept (unmerged)")
+            (Some(branch), Handback::Kept(why)) => {
+                format!("lane {slot} freed{lost}; branch {branch} kept ({why})")
             }
-            (Some(branch), false) => {
+            (Some(branch), Handback::Deleted) => {
                 format!("lane {slot} freed{lost}; branch {branch} deleted (merged)")
             }
             (None, _) => format!("lane {slot} freed{lost}"),
@@ -443,7 +610,7 @@ impl Pool {
                 Err(why) => format!("kept {shown}: {why}"),
                 // Incident: sixty worktrees' own `target/` directories filled a 1.8 TB disk. Git
                 // removes ignored files with a clean tree and refuses the rest.
-                Ok(()) => match (|| {
+                Ok(rung) => match (|| {
                     if let Some(slot) = slot {
                         self.stop_warmer(slot)?;
                     }
@@ -460,7 +627,7 @@ impl Pool {
                 .map(drop)
                 .map_err(|error| error.to_string())
                 {
-                    Ok(()) => format!("removed {shown}"),
+                    Ok(()) => format!("removed {shown} (merged: {rung})"),
                     Err(why) => format!("kept {shown}: {why}"),
                 },
             });
@@ -475,7 +642,7 @@ impl Pool {
         here: &Path,
         pool_slot: bool,
         status: bool,
-    ) -> Result<(), String> {
+    ) -> Result<Rung, String> {
         let current = head(&tree.path).map_err(|_| "HEAD missing".to_owned())?;
         let name = current
             .branch()
@@ -497,15 +664,16 @@ impl Pool {
         if current.branch().is_some() && tip == base {
             return Err(format!("{name} is at {base}, no commits of its own"));
         }
-        git(&self.repo, &["merge-base", "--is-ancestor", &tip, base])
-            .map_err(|_| format!("{name} is not merged into {base}"))?;
+        let rung = integrated(&self.repo, &tip, base)
+            .map_err(|error| format!("{name}: {error}"))?
+            .ok_or_else(|| format!("{name} is not merged into {base}"))?;
         if !status {
-            return Ok(());
+            return Ok(rung);
         }
         let dirty = Uncommitted::read(&tree.path, Some(&self.home))
             .map_err(|e| format!("status unreadable: {e}"))?;
         match dirty.is_empty() {
-            true => Ok(()),
+            true => Ok(rung),
             false => Err(dirty.to_string()),
         }
     }
@@ -554,7 +722,7 @@ mod tests {
             .ok_or("no detached tree")?;
         let base = git(&repo, &["rev-parse", "main"])?.trim().to_owned();
         let pool = Pool::open(&root.join("home"), &repo, 1)?;
-        pool.judge(&tree, &base, &repo, false, true)?;
+        let _rung = pool.judge(&tree, &base, &repo, false, true)?;
 
         std::fs::write(path.join("new.txt"), "unreferenced\n")?;
         git(&path, &["add", "."])?;
@@ -564,6 +732,83 @@ mod tests {
             verdict.is_err(),
             "stale listing HEAD authorized removing new work"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn the_walk_cap_holds_at_its_limit_and_is_loud_one_past()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("yi-gc-walk-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo)?;
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "lanes@test"][..],
+            &["config", "user.name", "lanes"][..],
+        ] {
+            git(&repo, args)?;
+        }
+        std::fs::write(repo.join("base.txt"), "base\n")?;
+        git(&repo, &["add", "."])?;
+        git(&repo, &["commit", "-qm", "base"])?;
+        git(&repo, &["switch", "-qc", "work"])?;
+        std::fs::write(repo.join("work.txt"), "work\n")?;
+        git(&repo, &["add", "."])?;
+        git(&repo, &["commit", "-qm", "work"])?;
+        git(&repo, &["switch", "-q", "main"])?;
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "moved on"])?;
+        git(&repo, &["cherry-pick", "work"])?;
+        std::fs::write(repo.join("work.txt"), "changed since\n")?;
+        git(&repo, &["commit", "-qam", "changed since"])?;
+        assert_eq!(
+            integrated_within(&repo, "work", "main", 3)?,
+            Some(Rung::PatchId)
+        );
+        let past = integrated_within(&repo, "work", "main", 2)
+            .err()
+            .ok_or("no refusal past the cap")?
+            .to_string();
+        assert!(
+            past.contains("1 commits on this branch and 3 on main past the 2-commit patch-id walk"),
+            "{past}"
+        );
+        Ok(())
+    }
+
+    /// Dies with the path cap refusing the ladder: both caps are named when neither rung answers.
+    #[test]
+    fn a_path_list_past_its_cap_still_names_the_walk_that_refused()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("yi-gc-path-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo)?;
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "lanes@test"][..],
+            &["config", "user.name", "lanes"][..],
+        ] {
+            git(&repo, args)?;
+        }
+        std::fs::write(repo.join("base.txt"), "base\n")?;
+        git(&repo, &["add", "."])?;
+        git(&repo, &["commit", "-qm", "base"])?;
+        git(&repo, &["switch", "-qc", "wide"])?;
+        for n in 0..1025 {
+            std::fs::write(repo.join(format!("f{n:04}.txt")), format!("{n}\n"))?;
+        }
+        git(&repo, &["add", "."])?;
+        git(&repo, &["commit", "-qm", "wide"])?;
+        let past = integrated_within(&repo, "wide", "main", 0)
+            .err()
+            .ok_or("no refusal with both caps past")?
+            .to_string();
+        assert!(
+            past.contains("1025 paths changed past the 1024-path content comparison"),
+            "{past}"
+        );
+        assert!(past.contains("past the 0-commit patch-id walk"), "{past}");
         Ok(())
     }
 
