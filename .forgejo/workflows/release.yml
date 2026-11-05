@@ -78,7 +78,7 @@ jobs:
           test -n "${RELEASE_SIGNING_KEY:-}" || { echo "no RELEASE_SIGNING_KEY secret: nothing can be signed"; exit 1; }
           (umask 077 && printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/yi-release")
           echo "YI_SIGNING_KEY=$RUNNER_TEMP/yi-release" >> "$GITHUB_ENV"
-          apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends musl-tools xz-utils >/dev/null
+          apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends xz-utils >/dev/null
           rustup target add x86_64-unknown-linux-musl aarch64-apple-darwin
           uv tool install -q cargo-zigbuild==0.24.0
           uv tool install -q ziglang==0.17.0
