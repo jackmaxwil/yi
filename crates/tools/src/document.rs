@@ -12,20 +12,6 @@ pub const INPUT_CEILING: u64 = 256 * 1024 * 1024;
 pub(crate) const PAGED_CEILING: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The most bytes a document may be; a page selection parses only those pages, so it is allowed further.
-pub(crate) fn ceiling(paged: bool) -> u64 {
-    if paged { PAGED_CEILING } else { INPUT_CEILING }
-}
-
-/// The converter's one refusal sentence for a document past its ceiling.
-/// Invariant: the converter checks the ceiling itself, so no caller can hand it a document it may not parse.
-pub(crate) fn ceiling_refusal(size: u64, paged: bool) -> String {
-    format!(
-        "{size} bytes is past the {} MiB ceiling for converting a document",
-        ceiling(paged) / (1024 * 1024)
-    )
-}
-
 /// The window a format marker is looked for in; a read probe takes the same window.
 pub(crate) const MARKER_WINDOW: usize = 1024;
 const STEM_CHARS: usize = 64;
@@ -424,11 +410,6 @@ pub(crate) fn convert(
         Some(Err(message)) => return Converted::Refused(message),
         None => Vec::new(),
     };
-    let paged = !pages.is_empty();
-    let size = source.bytes.len() as u64;
-    if size > ceiling(paged) {
-        return Converted::Refused(ceiling_refusal(size, paged));
-    }
     if let Err(error) = std::fs::create_dir_all(&dir) {
         return Converted::Refused(format!("cannot create {}: {error}", dir.display()));
     }

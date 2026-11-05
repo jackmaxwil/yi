@@ -327,8 +327,8 @@ impl Cap {
     fn limit(self) -> usize {
         let bytes = match self {
             Self::Text => u64::try_from(READ_FILE_CAP).unwrap_or(u64::MAX),
-            Self::Document { .. } => crate::document::ceiling(false),
-            Self::Paged => crate::document::ceiling(true),
+            Self::Document { .. } => crate::document::INPUT_CEILING,
+            Self::Paged => crate::document::PAGED_CEILING,
         };
         usize::try_from(bytes).unwrap_or(usize::MAX)
     }

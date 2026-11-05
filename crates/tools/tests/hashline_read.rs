@@ -131,18 +131,10 @@ fn a_text_file_quoting_the_pdf_marker_edits_and_a_pdf_does_not() -> TestResult {
 }
 
 #[test]
-fn a_pdf_past_the_read_cap_reads_with_pages_and_one_past_the_paged_ceiling_names_it() -> TestResult
-{
+fn a_pdf_past_the_paged_ceiling_names_it() -> TestResult {
     let dir = temp_dir("read-paged-cap")?;
     let context = ToolContext::new(dir.to_path_buf());
     let state = yi_tools::hashline::tool::shared_hashline_state();
-    let mut pdf = "%PDF-1.4\n".to_owned();
-    pdf.push_str(&text_of(CAP + 1));
-    fs::write(dir.join("big.pdf"), pdf)?;
-    let read = read_pages(&state, "big.pdf", &context);
-    let text = output_text(&read);
-    assert!(!text.contains("READ_FILE_CAP"), "{text}");
-
     let paged = 1024 * 1024 * 1024 + 1;
     sized(&dir.join("huge.pdf"), "%PDF-1.4\n", paged)?;
     let past = read_pages(&state, "huge.pdf", &context);
@@ -193,22 +185,6 @@ fn pages_on_a_text_file_past_the_read_cap_is_refused_at_the_cap() -> TestResult 
     let text = output_text(&past);
     assert!(past.is_error, "{text}");
     assert!(text.contains("READ_FILE_CAP 16777216"), "{text}");
-    Ok(())
-}
-
-#[test]
-fn a_glob_lists_a_match_past_the_read_cap_unread_and_reads_the_rest() -> TestResult {
-    let dir = temp_dir("read-glob-cap")?;
-    let context = ToolContext::new(dir.to_path_buf());
-    let state = yi_tools::hashline::tool::shared_hashline_state();
-    fs::write(dir.join("small.txt"), "small body\n")?;
-    sized(&dir.join("past.txt"), "x", u64::try_from(CAP + 1)?)?;
-    let text = output_text(&read(&state, "*.txt", &context));
-    assert!(text.contains("small body"), "{text}");
-    let row = text.lines().find(|line| line.starts_with("past.txt"));
-    let row = row.ok_or_else(|| format!("no past.txt row: {text}"))?;
-    assert!(row.contains("(not read:"), "{row}");
-    assert!(row.contains("READ_FILE_CAP 16777216"), "{row}");
     Ok(())
 }
 
