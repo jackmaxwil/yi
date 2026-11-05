@@ -1,4 +1,6 @@
 ---
+version: 0.923.0
+decisions: D549
 issue: Closes #1538
 decision: A contained member's kernel writes no family board, and its `kernel://` objects read as text | D240 granted the board to every child so D164's upward channel reached the root, but the grant is also write access to the one directory the root's unconfined kernel unpickles from, and the child it protects is exactly the one with a wall, a container or a checkout of its own | restore the grant in `session_sandbox` and let `Resolver::dump_kernel` hand back its path again
 ledger~: fetch: one addressable read path | `offset`/`limit` pages; a `kernel://` read | `offset`/`limit` pages; a `kernel://<agent>/<var>` object read answers as text for a member whose kernel may not write the family board, so the root loads no pickle a contained child authored (`kernel_sandbox::a_parent_kernel_loads_no_pickle_a_contained_child_wrote`); a `kernel://` read
