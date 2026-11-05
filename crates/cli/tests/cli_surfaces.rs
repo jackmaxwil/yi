@@ -3023,11 +3023,10 @@ fn turns_script(
     Ok(path.display().to_string())
 }
 
-/// Dies with a headless run that needed an approval nobody could give exiting 0 with the call
-/// unnamed, so a caller could not tell a refusal from an answer. The `permissions.allow` entry
-/// the refusal prints is the remedy, so it is run: the same call, with that entry, goes through.
+/// Dies with a headless denial that hid the call or offered a person's config edit: the caller
+/// needs the failed call and exit 4, while the model needs only remedies it can use itself.
 #[test]
-fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -> TestResult {
+fn a_headless_denial_names_the_call_exits_4_and_offers_model_remedies() -> TestResult {
     let workspace = Workspace::new("headless-denial")?;
     let command = "touch 'made[1]'";
     let script = bash_script(&workspace, command, Some("I could not run it."))?;
@@ -3050,21 +3049,11 @@ fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -
     assert_eq!(denied["tool"], "bash", "{out}");
     assert_eq!(denied["args"]["command"], command, "{out}");
     let reason = denied["reason"].as_str().ok_or("no reason")?;
-
-    let (_, tail) = reason
-        .split_once("permissions.allow entry ")
-        .ok_or(reason)?;
-    let entry: String = serde_json::Deserializer::from_str(tail)
-        .into_iter()
-        .next()
-        .ok_or(tail)??;
-    write_config(
-        &workspace,
-        &json!({"permissions": {"allow": [entry]}}).to_string(),
-    )?;
-    let run = ask(&workspace, "go", &flags)?;
-    assert_eq!(run.status.code(), Some(0), "{}", stdout(&run));
-    assert!(workspace.project().join("made[1]").exists());
+    for remedy in ["Split the command", "working tree", "ask the user"] {
+        assert!(reason.contains(remedy), "no `{remedy}` in {reason}");
+    }
+    assert!(!reason.contains("permissions.allow"), "{reason}");
+    assert!(!reason.contains("--yolo"), "{reason}");
     Ok(())
 }
 

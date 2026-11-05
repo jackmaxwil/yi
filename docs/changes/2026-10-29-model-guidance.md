@@ -1,9 +1,8 @@
 ---
 issue: Closes #1521
-raise: comments +2
-raise: crate runtime +164
-raise: tests +236
-growth: +164 the shared breaker_notice and the classifier breaker moved to its own file, the four model-facing refusals and ask_user each reworded with one test per path, and the kernel surface tests moved in-crate; weighed deleting the Approver notice (kept: the journal-only trip was the defect) and the duplicate notice builder (deleted, folded into breaker_notice)
+raise: crate runtime +132
+raise: tests +251
+growth: +132 the shared breaker_notice and the classifier breaker moved to its own file, the four model-facing refusals and ask_user each reworded with one test per path, and the kernel surface tests moved in-crate; weighed deleting the Approver notice (kept: the journal-only trip was the defect) and the duplicate notice builder (deleted, folded into breaker_notice)
 ---
 The model's map of the kernel and its refusals both named things that do not exist. The surface note called `help(rlm)` exact, which renders 45,631 bytes of the whole package, and the signature table kept any non-class callable, so the typing alias `rlm.HarnessScope` was listed as a function; the table is now functions and coroutine functions only and the note points at `help(rlm.<name>)`.
 

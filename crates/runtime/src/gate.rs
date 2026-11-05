@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use crate::permission::CallOutcome;
 use serde_json::{Value, json};
 use yi_permission::{
     CatastrophicContext, Class, Decision, Parsed, PermissionMode, SessionRules, ToolCall,
@@ -103,12 +102,18 @@ pub(crate) fn headless_refusal(
     match refusal {
         yi_tools::SandboxRefusal::Path(path) => {
             let dir = path.parent().unwrap_or(path);
-            let widen = match crate::permission::protected(sandbox, dir) {
-                true => format!("`{}` is protected, so no approval widens it", dir.display()),
-                false => format!("an interactive run asks to widen it by `{}`", dir.display()),
+            let (widen, remedies) = match crate::permission::protected(sandbox, dir) {
+                true => (
+                    format!("`{}` is protected, so no approval widens it", dir.display()),
+                    "Split the command or keep the writes inside the working tree.",
+                ),
+                false => (
+                    format!("an interactive run asks to widen it by `{}`", dir.display()),
+                    MODEL_REMEDIES,
+                ),
             };
             format!(
-                "{HEAD} writing `{}`, and {widen}. {MODEL_REMEDIES} For a build, set CARGO_TARGET_DIR under the working tree.",
+                "{HEAD} writing `{}`, and {widen}. {remedies} For a build, set CARGO_TARGET_DIR under the working tree.",
                 path.display()
             )
         }
@@ -157,23 +162,6 @@ pub(crate) fn headless_split(why: &str) -> String {
     format!(
         "Permission required but no interactive surface is available: part of this command must run outside the sandbox ({why}) and would take the rest with it. {MODEL_REMEDIES}"
     )
-}
-
-/// A refusal with no one to ask gains a `permissions.allow` entry only when the display names
-/// one exact call: the pattern is a glob, so the call's own `*` and `[` are escaped.
-pub(crate) fn named_rule(
-    mut outcome: CallOutcome,
-    headless: bool,
-    (tool, display): (&str, &str),
-) -> CallOutcome {
-    if headless && (tool == "bash" || display != tool) {
-        let entry = Value::String(format!("{tool} {}", globset::escape(display)));
-        let said = std::mem::take(&mut outcome.reason);
-        outcome.reason = format!(
-            "{said} The user can allow exactly this call with the permissions.allow entry {entry} in ~/.yi/config.json."
-        );
-    }
-    outcome
 }
 
 pub fn mode_label(mode: PermissionMode) -> &'static str {
@@ -286,25 +274,8 @@ pub fn render(report: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Report, compile_ask, headless_refusal, headless_split, named_rule, unaskable};
-    use crate::permission::{CallOutcome, Containment};
+    use super::{Report, compile_ask, headless_refusal, headless_split, unaskable};
     use yi_permission::Decision;
-
-    /// Dies with pathless advice allowing every later call of that tool, not only the denied one.
-    #[test]
-    fn only_a_call_with_an_exact_subject_gets_a_named_allow_entry() {
-        let outcome = || CallOutcome {
-            allowed: false,
-            reason: "denied".to_owned(),
-            containment: Containment::Uncontained,
-        };
-        let pathless = named_rule(outcome(), true, ("mail", "mail"));
-        assert!(!pathless.reason.contains("permissions.allow entry"));
-        let bash = named_rule(outcome(), true, ("bash", "bash"));
-        assert!(bash.reason.contains("permissions.allow entry"));
-        let pathed = named_rule(outcome(), true, ("read", "read note.rs"));
-        assert!(pathed.reason.contains("permissions.allow entry"));
-    }
 
     /// A model told to "run with --yolo, or add an allow rule" reaches for a person's remedy. Each
     /// refusal names the three it has: split the command, keep writes in the tree, ask the user.
@@ -338,27 +309,24 @@ mod tests {
         }
     }
 
-    /// Dies with the default headless denial ending in a bare order to edit the user's config, and
-    /// `ask_user` answering a model that asked the user with "ask the user".
     #[test]
-    fn a_headless_denial_passes_the_allow_entry_on_and_ask_user_does_not_loop() {
-        let reason = Report::reason_of(&compile_ask(
-            Decision::Ask {
-                title: "bash requires permission".to_owned(),
-                description: "writes outside the workspace".to_owned(),
-                reviewable: true,
-            },
-            false,
-        ));
-        let outcome = CallOutcome {
-            allowed: false,
-            reason,
-            containment: Containment::Uncontained,
-        };
-        let named = named_rule(outcome, true, ("bash", "make build")).reason;
-        assert!(named.contains("ask the user to approve"), "{named}");
-        assert!(named.contains("The user can allow exactly"), "{named}");
-        assert!(!named.contains(" Allow exactly"), "{named}");
+    fn a_protected_headless_path_refusal_never_offers_an_approval()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let home = std::env::var_os("HOME").ok_or("HOME is unset")?;
+        let text = headless_refusal(
+            None,
+            &yi_tools::SandboxRefusal::Path(std::path::PathBuf::from(home).join("notes")),
+        );
+        assert!(text.contains("no approval widens it"), "{text}");
+        assert!(text.contains("Split the command"), "{text}");
+        assert!(text.contains("working tree"), "{text}");
+        assert!(!text.contains("ask the user"), "{text}");
+        Ok(())
+    }
+
+    /// `ask_user` must not answer a model that already asked the user with "ask the user".
+    #[test]
+    fn ask_user_does_not_loop() {
         let answer = unaskable(7, "writes outside the workspace").to_lowercase();
         assert!(!answer.contains("ask the user"), "{answer}");
         assert!(answer.contains("final answer"), "{answer}");
