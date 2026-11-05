@@ -1,20 +1,8 @@
 //! What a sweep of the outbox must refuse to take, and the entries no sweep can clear.
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::Path;
 
 use yi_permission::outbox::{DEPTH_MAX, take_refs};
-
-fn fresh(name: &str) -> PathBuf {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "yi-outbox-{name}-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
 
 fn a_branch(admin: &Path) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(admin.join("refs/heads/main"))?;
@@ -25,7 +13,7 @@ fn a_branch(admin: &Path) -> Result<(), Box<dyn std::error::Error>> {
 /// A link at the outbox's own path once resolved into `.git` and unlinked a branch of the project.
 #[test]
 fn a_link_where_the_outbox_should_be_takes_no_ref() -> Result<(), Box<dyn std::error::Error>> {
-    let admin = fresh("link");
+    let admin = crate::scratch::Scratch::new("yi-outbox-link")?;
     a_branch(&admin)?;
     let store = admin.join("yi-outbox");
     std::os::unix::fs::symlink(&admin, &store)?;
@@ -43,7 +31,8 @@ fn a_link_where_the_outbox_should_be_takes_no_ref() -> Result<(), Box<dyn std::e
 #[test]
 fn a_directory_past_the_cap_is_named_and_not_counted_as_refused()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = fresh("deep");
+    let store = crate::scratch::Scratch::new("yi-outbox-deep")?;
+    let store_path = store.to_path_buf();
     let mut deep = store.join("refs");
     for level in 0..=DEPTH_MAX.saturating_add(1) {
         deep = deep.join(format!("d{level}"));
@@ -52,5 +41,7 @@ fn a_directory_past_the_cap_is_named_and_not_counted_as_refused()
     let taken = take_refs(&store, 16);
     assert_eq!(taken.refused, 0, "{taken:?}");
     assert_eq!(taken.too_deep, 1, "{taken:?}");
+    drop(store);
+    assert!(!store_path.exists(), "the test scratch dir was left behind");
     Ok(())
 }

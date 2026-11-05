@@ -662,16 +662,30 @@ fn start(
     Ok((id, receiver))
 }
 
+/// The sweep's result: a timeout is unknown work still running, never a failed exit.
+pub enum SweepOutcome {
+    Completed,
+    TimedOut,
+    Failed(String),
+}
+
 /// What a killed `docker exec` left behind. Incident: an engine asleep answers nothing, so a
 /// sweep on a caller's own thread held a check past the deadline it had just hit.
-pub fn run_sweep_within(sweep: &str, bound: Option<Duration>) -> bool {
+pub fn run_sweep_within(sweep: &str, bound: Option<Duration>) -> SweepOutcome {
     let mut process = command(interpreter());
     process.arg("-c").arg(sweep);
     let until = bound.and_then(|bound| std::time::Instant::now().checked_add(bound));
     let past: CancelFlag =
         Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
-    crate::process::run_captured(process, None, &past, OUTPUT_CAP)
-        .is_ok_and(|capture| capture.exit_code == Some(0))
+    match crate::process::run_captured(process, None, &past, OUTPUT_CAP) {
+        Ok(capture) if capture.cancelled => SweepOutcome::TimedOut,
+        Ok(capture) if capture.exit_code == Some(0) => SweepOutcome::Completed,
+        Ok(capture) => SweepOutcome::Failed(capture.exit_code.map_or_else(
+            || "failed without an exit code".to_owned(),
+            |code| format!("failed with exit code {code}"),
+        )),
+        Err(error) => SweepOutcome::Failed(format!("could not run: {error}")),
+    }
 }
 
 /// The bound the check path sweeps under, since the sweep runs on the thread that owes an answer.

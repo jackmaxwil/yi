@@ -117,13 +117,17 @@ pub(crate) fn captured(
         .lease
         .map(crate::egress::Lease::revoke)
         .unwrap_or_default();
-    if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep)
-        && !yi_tools::jobs::run_sweep_within(sweep, Some(yi_tools::jobs::SWEEP_BOUND))
-    {
-        capture.rows.push(
-            "[… the container sweep did not finish inside SWEEP_BOUND (5 s); what a killed call left may still write the tree]"
-                .to_owned(),
-        );
+    if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
+        match yi_tools::jobs::run_sweep_within(sweep, Some(yi_tools::jobs::SWEEP_BOUND)) {
+            yi_tools::jobs::SweepOutcome::Completed => {}
+            yi_tools::jobs::SweepOutcome::TimedOut => capture.rows.push(
+                "[… the container sweep did not finish inside SWEEP_BOUND (5 s); what a killed call left may still write the tree]"
+                    .to_owned(),
+            ),
+            yi_tools::jobs::SweepOutcome::Failed(reason) => capture.rows.push(format!(
+                "[… the container sweep {reason}; what a killed call left may still write the tree]"
+            )),
+        }
     }
     Ok(capture)
 }
@@ -1061,6 +1065,27 @@ mod sweep_tests {
             "the flag trips a check that never finishes"
         );
         assert!(marker.exists(), "a cancelled check's sweep ran");
+        Ok(())
+    }
+
+    /// Incident: a sweep that exited nonzero was reported as a SWEEP_BOUND timeout, hiding the
+    /// failure and telling the model a hang happened when none did.
+    #[test]
+    fn a_failed_sweep_names_its_exit_code_not_the_time_bound()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut command = yi_tools::keyless_command("sh");
+        command.args(["-c", "sleep 5"]);
+        let shell = CheckShell {
+            command,
+            lease: None,
+            sweep: Some("exit 23".to_owned()),
+        };
+        let cancelled: yi_tools::CancelFlag = Arc::new(|| true);
+        let capture = captured(shell, None, &cancelled)?;
+        assert!(capture.cancelled);
+        let rows = capture.rows.join("\n");
+        assert!(rows.contains("sweep failed with exit code 23"), "{rows}");
+        assert!(!rows.contains("SWEEP_BOUND"), "{rows}");
         Ok(())
     }
 }
