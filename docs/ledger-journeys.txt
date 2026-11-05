@@ -9,6 +9,7 @@ entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_type
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
+context P1–P19; prefix-aligned P7 | `compaction_faux::a_kept_tail_over_the_ceiling_compacts_once_not_on_every_request` (T1)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_summary_quote_the_addressed_message_lacks_is_marked_unverified`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compaction_floors_a_host_notice_and_keeps_the_waking_letter`
 context P1–P19; prefix-aligned P7 | `primitives::each_host_notice_row_dies_once_read_and_an_unregistered_kind_survives`
