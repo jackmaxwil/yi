@@ -42,6 +42,13 @@ RUNNER_FAILURES = (
         "Error response from daemon: No such image: yi-term:dev",
     ),
     (
+        "dns",
+        re.compile(r"Could not resolve host", re.I),
+        "⚙️ [runner]: could not fetch remote 'origin': fatal: unable to access "
+        "'https://github.com/actions/checkout/': Could not resolve host: github.com "
+        "(DNS server returned general failure): exit status 128",
+    ),
+    (
         "disk-full",
         re.compile(r"No space left on device|ENOSPC|Out of diskspace", re.I),
         "failed to create container: write /var/lib/docker/tmp: ENOSPC: no space left on device",
