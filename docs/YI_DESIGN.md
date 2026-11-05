@@ -380,10 +380,10 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   and locks each tool's text and sha256 in `tool_surface.json`;
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
-  never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
-  (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
-  the whole guide; `read`, `grep`, `bash`, `write`, `get_context` and `ipython` stay whole. An
-  edit refusal names the address. There is no dispatcher tool.
+  never the tool. `edit`, `annotate`, `answer`, `get_context`, `plan`, `todo` and `ask_user`
+  carry a summary, their full schema (`plan` without field prose below the top level) and
+  `read("yi://tools/<name>")`, which serves the whole guide; `read`, `grep`, `bash`, `write`
+  and `ipython` stay whole. An edit refusal names the address. There is no dispatcher tool.
 - `Tool { name, description, schema, kind, kind_for, freeform, irreversible, validate, preview,
   execute -> ToolOutput }`. `kind_for` decides per call; Read runs parallel, the rest sequential.
   The adapter runs rule check, reviewer wall, permission gate (§8), next-step lines (§6).
@@ -801,10 +801,12 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
   deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns,
   schema`;
-  `fork=all` refuses a model. `fork=N` counts typed turns only, never host notices, and
-  keeps what fits from the first cut point compaction would take, behind a `[… fork kept K of N`
-  row when the budget cut; the seed is appended to the child's transcript, so a respawned
-  service keeps it.
+  `fork=all` refuses a model and seeds the child from the parent's view: its cut results rendered
+  as the placeholders the parent's own requests carry, never the bytes behind them. `fork=N`
+  counts typed turns only, never host notices; both keep what fits from the first cut point
+  compaction would take, inside 80% of the child's own route window and under its compaction threshold, behind a `[… fork kept K
+  of N` row when that ceiling cut; the seed is appended to the child's transcript, so a
+  respawned service keeps it.
 - A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
