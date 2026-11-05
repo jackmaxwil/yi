@@ -21,4 +21,7 @@ while IFS= read -r flag; do
   [ -n "$flag" ] && remap+=("$flag")
 done <<< "$remap_text"
 
-exec env RUSTFLAGS="${RUSTFLAGS:-} ${remap[*]}" cargo build --profile dist -p yi-cli "$@"
+# Off a Mac, the Mac target links through cargo-zigbuild against the SDK that SDKROOT names.
+verb=build
+case " $* " in *apple-darwin*) [ "$(uname -s)" = Darwin ] || verb=zigbuild ;; esac
+exec env RUSTFLAGS="${RUSTFLAGS:-} ${remap[*]}" cargo "$verb" --profile dist -p yi-cli "$@"
