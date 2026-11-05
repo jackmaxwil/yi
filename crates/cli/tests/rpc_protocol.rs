@@ -1,13 +1,14 @@
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use crate::scratch::Scratch;
+use crate::yi_bin::yi_command;
 
 use crate::prompt_slots_support::prompt_slots;
 use crate::session_files::session_files;
@@ -22,11 +23,7 @@ fn spawn_rpc(
     dir: &Path,
     cassette: Option<&Path>,
 ) -> Result<(Child, ChildStdin, Receiver<Value>), Box<dyn Error>> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the protocol contract is the spawned binary's stdio; tests must drive the real process"
-    )]
-    let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+    let mut command = yi_command(&dir.join("home"));
     command.args([
         "rpc",
         "--model",
