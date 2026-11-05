@@ -801,10 +801,12 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
   deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns,
   schema`;
-  `fork=all` refuses a model. `fork=N` counts typed turns only, never host notices, and
-  keeps what fits from the first cut point compaction would take, behind a `[… fork kept K of N`
-  row when the budget cut; the seed is appended to the child's transcript, so a respawned
-  service keeps it.
+  `fork=all` refuses a model and seeds the child from the parent's view: its cut results rendered
+  as the placeholders the parent's own requests carry, never the bytes behind them. `fork=N`
+  counts typed turns only, never host notices; both keep what fits from the first cut point
+  compaction would take, inside 80% of the child's own route window and under its compaction threshold, behind a `[… fork kept K
+  of N` row when that ceiling cut; the seed is appended to the child's transcript, so a
+  respawned service keeps it.
 - A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
