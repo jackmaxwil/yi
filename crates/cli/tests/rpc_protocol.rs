@@ -1,10 +1,11 @@
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde_json::Value;
 
 use crate::scratch::Scratch;
+use crate::yi_bin::yi_command;
 
 use crate::prompt_slots_support::prompt_slots;
 use crate::session_files::session_files;
@@ -16,11 +17,7 @@ fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
 }
 
 fn run_rpc(dir: &std::path::Path, commands: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the protocol contract is the spawned binary's stdio; tests must drive the real process"
-    )]
-    let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let mut child = yi_command(&dir.join("home"))
         .args([
             "rpc",
             "--model",

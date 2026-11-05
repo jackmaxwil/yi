@@ -2,7 +2,7 @@
 //! owner through the tool's own parser, and argv can neither name nor mint a user.
 
 use std::error::Error;
-use std::process::{Command, Output};
+use std::process::Output;
 use std::sync::Arc;
 
 use serde_json::Map;
@@ -15,15 +15,12 @@ use yi_types::plan::op::TodoSpec;
 use yi_types::url::Url;
 
 use crate::scratch::Scratch;
+use crate::yi_bin::yi_command;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
 pub(crate) fn yi_plan(root: &Scratch, args: &[&str]) -> Result<Output, Box<dyn Error>> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the surface under test is the spawned binary's argv, exit code and streams"
-    )]
-    let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+    let mut command = yi_command(&root.join("home"));
     command
         .arg("plan")
         .args(args)
@@ -31,7 +28,6 @@ pub(crate) fn yi_plan(root: &Scratch, args: &[&str]) -> Result<Output, Box<dyn E
         .arg(root.join("home/sessions"))
         .arg("--cwd")
         .arg(root.join("project"))
-        .env("HOME", root.join("home"))
         .current_dir(root.join("project"));
     Ok(command.output()?)
 }
