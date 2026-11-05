@@ -520,5 +520,6 @@ edited by hand.
 - [D547](adr/d547.md) - a branch whose content is in trunk counts as merged however it landed
 - [D548](adr/d548.md) - A release goes out every night from CI, on the forge and on GitHub, and yi...
 - [D549](adr/d549.md) - A contained member's kernel writes no family board, and its `kernel
+- [D550](adr/d550.md) - `annotate` and `get_context` join the deferred-guide set
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
