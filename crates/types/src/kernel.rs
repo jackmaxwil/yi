@@ -155,7 +155,7 @@ pub struct KernelSnapshotResult {
     pub saved: Vec<String>,
     #[serde(default)]
     pub skipped: Vec<KernelSnapshotSkip>,
-    /// Oversized live variables removed by an explicit compaction prune.
+    /// Always empty now that an oversized variable stays live; kept so old readers decode.
     #[serde(default)]
     pub pruned: Vec<String>,
     #[serde(default)]

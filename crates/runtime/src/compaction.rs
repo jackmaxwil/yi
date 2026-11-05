@@ -1,8 +1,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub use yi_context::Tokens;
 use yi_context::{
-    CompiledView, Preparation, Settings, Tokens, compose_summary, drop_internal, estimate_context,
+    CompiledView, Preparation, Settings, compose_summary, drop_internal, estimate_context,
     estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
     serialize_conversation, should_compact,
 };
@@ -41,6 +42,8 @@ pub struct Replacement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Elision {
     pub messages: usize,
+    pub total: usize,
+    pub window: Tokens,
 }
 
 /// One text for the user's notice, the summary's line and the marker where the messages sat.
@@ -50,8 +53,12 @@ impl std::fmt::Display for Elision {
         write!(
             formatter,
             "[compaction elided {} earlier message{plural} from the model's view: summary failed; \
-             the transcript keeps them]",
-            self.messages
+             kept {} of {} (context_window {} tokens); the transcript keeps them: \
+             read(\"history://self/since/0\")]",
+            self.messages,
+            self.total.saturating_sub(self.messages),
+            self.total,
+            self.window.0
         )
     }
 }
@@ -112,6 +119,16 @@ fn carried(summary: &str) -> &str {
         .min()
         .unwrap_or(body.len());
     body.get(..end).unwrap_or(body).trim()
+}
+
+fn left(messages: &[AgentMessage]) -> u64 {
+    wide(
+        messages
+            .iter()
+            .map(estimate_message)
+            .fold(Tokens(0), Tokens::saturating_add),
+    )
+    .0
 }
 
 /// The earliest cut point from which the rest of `messages` fits `budget`.
@@ -284,6 +301,9 @@ pub struct Compactor {
     /// `compaction.at` in tokens, 0 when unset: due once the request passes it, if that comes
     /// before the window's reserve.
     ceiling: AtomicU64,
+    /// Invariant: the messages a compaction left, at bytes/3 without the prefix; 0 before the first.
+    /// Incident: a kept tail over the ceiling made every request summarize again (#1757).
+    settled: AtomicU64,
 }
 
 struct Raised<'a>(&'a AtomicBool);
@@ -428,9 +448,24 @@ impl Compactor {
     /// otherwise compact once more. A branch with none (a rewind past it) has no stale reply.
     pub fn resume(&self, entries: &[yi_types::entry::Entry]) {
         let latest = entries.iter().rev().find_map(|entry| match entry {
-            yi_types::entry::Entry::Compaction { retained_tail, .. } => Some(retained_tail),
+            yi_types::entry::Entry::Compaction {
+                summary,
+                retained_tail,
+                tokens_before,
+                ..
+            } => Some((summary, retained_tail, *tokens_before)),
             _ => None,
         });
+        let settled = latest.map_or(0, |(summary, tail, tokens_before)| {
+            let head = AgentMessage::CompactionSummary {
+                summary: summary.clone(),
+                tokens_before,
+                timestamp: 0,
+            };
+            left(&[head]).saturating_add(left(tail))
+        });
+        self.settled.store(settled, Ordering::Relaxed);
+        let latest = latest.map(|(_, tail, _)| tail);
         if let Ok(mut slot) = self.stale.lock() {
             *slot = latest.and_then(|tail| {
                 tail.iter()
@@ -530,12 +565,7 @@ impl Compactor {
                 .usage_tokens
                 .saturating_add(wide(estimate.trailing_tokens))
         } else {
-            wide(
-                messages
-                    .iter()
-                    .map(estimate_message)
-                    .fold(Tokens(0), Tokens::saturating_add),
-            )
+            Tokens(left(messages))
         };
         let window = match self.ceiling.load(Ordering::Relaxed) {
             0 => model.context_window,
@@ -547,7 +577,12 @@ impl Compactor {
                 }
             }
         };
-        should_compact(sent, Tokens(window), &self.settings)
+        let settled = self.settled.load(Ordering::Relaxed);
+        let grown =
+            settled == 0 || left(messages) > settled.saturating_add(self.settings.reserve_tokens.0);
+        (model.context_window != 0
+            && should_compact(sent, Tokens(model.context_window), &self.settings))
+            || (grown && should_compact(sent, Tokens(window), &self.settings))
     }
 
     /// No summary, no room (D337): keep the first user message, the work's opening and the earlier
@@ -611,26 +646,29 @@ impl Compactor {
         }
         let mut pinned: Vec<usize> = first.into_iter().chain(run).collect();
         pinned.sort_unstable();
+        let mut tail: Vec<AgentMessage> = pinned
+            .iter()
+            .map(|index| messages[*index].clone())
+            .collect();
+        tail.extend_from_slice(&messages[cut..]);
+        let mut tail = drop_internal(&tail);
+        let dropped = (start..cut)
+            .filter(|index| !pinned.contains(index))
+            .filter(|index| !matches!(messages[*index], AgentMessage::Custom { .. }))
+            .count();
         let elision = Elision {
-            messages: (start..cut)
-                .filter(|index| !pinned.contains(index))
-                .filter(|index| !matches!(messages[*index], AgentMessage::Custom { .. }))
-                .count(),
+            total: tail.len().saturating_add(dropped),
+            window,
+            messages: dropped,
         };
         if elision.messages == 0 {
             return None;
         }
         let marker = elision.to_string();
-        let mut tail: Vec<AgentMessage> = pinned
-            .iter()
-            .map(|index| messages[*index].clone())
-            .collect();
-        tail.push(AgentMessage::host_note(
-            COMPACTION_NOTICE,
-            marker.clone(),
-            0,
-        ));
-        tail.extend_from_slice(&messages[cut..]);
+        tail.insert(
+            pinned.len().min(tail.len()),
+            AgentMessage::host_note(COMPACTION_NOTICE, marker.clone(), 0),
+        );
         let body = if earlier.is_empty() {
             marker
         } else {
@@ -643,7 +681,7 @@ impl Compactor {
         let (full, _) = compose_summary(&body, &prepared.file_ops, &prepared.view);
         let extra = text_tokens(&full).saturating_sub(text_tokens(&bare_summary));
         let summary = if extra <= spare { full } else { bare_summary };
-        Some((summary, drop_internal(&tail), elision))
+        Some((summary, tail, elision))
     }
 
     /// The loop's request plus the directive, a cache read on its model (§7). A failed summary
@@ -831,6 +869,7 @@ impl Compactor {
             timestamp,
         });
         replacement.extend(retained_tail);
+        self.settled.store(left(&replacement), Ordering::Relaxed);
         Ok(Compacted::Applied(Replacement {
             messages: replacement,
             elision,
