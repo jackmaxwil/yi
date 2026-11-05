@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::{Child, Stdio};
 
 use crate::scratch::Scratch;
+use crate::yi_bin::yi_command;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -63,11 +64,7 @@ struct Output {
 }
 
 fn yi_mcp(home: &std::path::Path, args: &[&str]) -> Result<Output, Box<dyn Error>> {
-    let output = command(env!("CARGO_BIN_EXE_yi"))
-        .arg("mcp")
-        .args(args)
-        .env("HOME", home)
-        .output()?;
+    let output = yi_command(home).arg("mcp").args(args).output()?;
     Ok(Output {
         code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -92,9 +89,8 @@ fn drive_browser(auth_url: &str) -> Result<(), Box<dyn Error>> {
 }
 
 fn login(home: &std::path::Path, server: &str) -> Result<i32, Box<dyn Error>> {
-    let mut child = command(env!("CARGO_BIN_EXE_yi"))
+    let mut child = yi_command(home)
         .args(["mcp", "login", server, "--no-browser", "--json"])
-        .env("HOME", home)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;

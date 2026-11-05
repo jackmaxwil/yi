@@ -24,6 +24,8 @@ mod session_files;
 mod tool_cell_support;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/yi_bin.rs"]
+mod yi_bin;
 
 mod acp_protocol;
 mod ask_check;
