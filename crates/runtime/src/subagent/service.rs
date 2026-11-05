@@ -202,8 +202,9 @@ impl SubagentHost {
             (name, kwargs, dir, store, lease, next, settled)
         };
         self.journal_settled(settled);
+        let isolation = super::parse_isolation(&kwargs).unwrap_or(super::Isolation::None);
         let built = self
-            .cast(&kwargs)
+            .cast(&kwargs, &isolation)
             .and_then(|cast| self.build(cast, &name, &dir, None, &lease, store));
         let session = match built {
             Ok(session) => Arc::new(session),
