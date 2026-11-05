@@ -6,8 +6,10 @@ type Guide = fn() -> String;
 
 /// Invariant: every tool whose description names `yi://tools/<name>` has a row here; the
 /// request-budget test reads each pointer back through the session's own `read`.
-const TOOL_GUIDES: [(&str, Guide); 5] = [
+const TOOL_GUIDES: [(&str, Guide); 7] = [
+    ("annotate", || crate::annotate::GUIDE.to_owned()),
     ("edit", || yi_tools::hashline::tool::EDIT_GUIDE.to_owned()),
+    ("get_context", || yi_tools::GET_CONTEXT_GUIDE.to_owned()),
     ("plan", plan_guide),
     ("todo", || crate::todo::tool::GUIDE.to_owned()),
     ("ask_user", || crate::auto_review::ASK_USER_GUIDE.to_owned()),

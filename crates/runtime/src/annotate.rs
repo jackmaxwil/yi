@@ -10,6 +10,7 @@ use crate::reclaim::{Cut, Sections, annotations, brief, calls, hash, never_cut, 
 
 const NOTE_CAP: usize = 280;
 const KINDS: [&str; 3] = ["pin", "discard", "finding"];
+pub(crate) const GUIDE: &str = "Mark an earlier tool result, named by part of its call (`call`: e.g. `read src/lib.rs`; the newest match): `pin` keeps it whole in your view however old, `discard` lets Yi drop it from your view at the next cut (the stored result stays). Or record a `finding` (`note`, at most 280 chars) that compaction keeps.";
 
 /// The model's marks on its own history: read and written through the session store, since the
 /// session's message list catches up only when a run ends.
@@ -125,7 +126,7 @@ impl Tool for AnnotateTool {
     }
 
     fn description(&self) -> &str {
-        "Mark an earlier tool result, named by part of its call (`call`: e.g. `read src/lib.rs`; the newest match): `pin` keeps it whole in your view however old, `discard` lets Yi drop it from your view at the next cut (the stored result stays). Or record a `finding` (`note`, at most 280 chars) that compaction keeps."
+        "Mark an earlier tool result (pin, discard) or record a finding that compaction keeps. Guide: read(\"yi://tools/annotate\")."
     }
 
     fn schema(&self) -> Value {
