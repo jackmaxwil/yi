@@ -1,7 +1,9 @@
 include!("pack.rs");
+include!("pack_file.rs");
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo::rerun-if-changed=pack.rs");
+    println!("cargo::rerun-if-changed=pack_file.rs");
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR unset")?);
     for dir in ["src/prompts", "src/goal/prompts"] {
         println!("cargo::rerun-if-changed={dir}");

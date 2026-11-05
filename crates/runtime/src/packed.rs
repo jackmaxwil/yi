@@ -22,9 +22,9 @@ mod tests {
     use crate::{auto_review, ext::install, goal, subagent::reader};
     use std::sync::LazyLock;
 
-    /// A prompt the binary carries raw, or a static handed another stem, ships the wrong bytes.
+    /// The size ratchet catches a raw prompt; this table catches a static handed another stem.
     #[test]
-    fn every_packed_prompt_ships_deflated_and_reads_as_its_own_file() {
+    fn every_packed_prompt_reads_as_its_own_file() {
         let rows: [(&str, &LazyLock<String>, &[u8], &str); 14] = [
             (
                 "identity",
@@ -131,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_graph_ships_deflated_and_is_its_own_file() -> Result<(), serde_json::Error> {
+    fn the_shipped_graph_reads_as_its_own_file() -> Result<(), serde_json::Error> {
         let source = include_str!("prompts/graph.json");
         let packed = include_bytes!(concat!(env!("OUT_DIR"), "/graph.zz"));
         assert!(packed.len() < source.len() && packed.first() == Some(&0x78));
