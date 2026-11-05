@@ -9,6 +9,7 @@ entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_type
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
+context P1–P19; prefix-aligned P7 | `compaction_faux::a_kept_tail_over_the_ceiling_compacts_once_not_on_every_request` (T1)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_summary_quote_the_addressed_message_lacks_is_marked_unverified`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compaction_floors_a_host_notice_and_keeps_the_waking_letter`
 context P1–P19; prefix-aligned P7 | `primitives::each_host_notice_row_dies_once_read_and_an_unregistered_kind_survives`
@@ -103,6 +104,7 @@ kernel tool calls (`yi.tools`) | `kernel_tools::a_console_cell_running_while_the
 kernel tool calls (`yi.tools`) | `kernel_tools::a_program_gets_whole_values_and_edits_a_line_the_view_never_showed`
 kernel tool calls (`yi.tools`) | `kernel_tools::every_tool_hands_a_program_its_typed_value`
 dill snapshot | `snapshot_e2e::session_dir_snapshot_revives_through_the_service`
+dill snapshot | `snapshot_e2e::post_compaction_sync_reports_only_the_models_names`
 heartbeats: clock subscriptions | `serve_daemon::workers_do_not_lose_heartbeats_or_tear_the_job_ledger` (T2)
 heartbeats: clock subscriptions | `schedule_e2e::a_heartbeat_due_mid_compaction_is_deferred`
 heartbeats: clock subscriptions | `schedule_e2e::a_rearming_block_does_not_hide_a_sibling_coming_due`
@@ -583,6 +585,7 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+kernel + ipython + rlm() subagents | `tools::tests::a_large_cell_result_names_the_file_write_one_liner` (T0)
 fetch: one addressable read path | `kernel_sandbox::a_parent_kernel_loads_no_pickle_a_contained_child_wrote`
 fetch: one addressable read path | `kernel_sandbox::a_contained_childs_kernel_creates_no_board_file`
 spec (harness-run requirements check) | `todo_coupling::a_red_spec_refuses_the_stop_and_names_the_requirement`
