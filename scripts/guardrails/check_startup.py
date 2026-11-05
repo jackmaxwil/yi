@@ -32,6 +32,12 @@ def scratch():
     return root
 
 
+def minimum_seconds(result):
+    if "min" in result:
+        return result["min"]
+    return result["summary"]["time_wall_clock"]["min"]
+
+
 def errors(bin_path, budgets, runs=50, off="", env=None):
     if off != "required":
         errs = [f"startup budget missing required command {args!r}" for args in COMMANDS if args not in budgets]
@@ -64,7 +70,7 @@ def errors(bin_path, budgets, runs=50, off="", env=None):
                 errs.append(f"{args}: hyperfine exit {run.returncode}: {diagnostic[-300:] if off == 'stderr' else diagnostic}")
                 continue
             result = json.loads(out.read_text())["results"][0]
-            min_ms = (result["min"] if "min" in result else result["summary"]["time_wall_clock"]["min"]) * 1000
+            min_ms = minimum_seconds(result) * 1000
             report.append(f"{args}: {min_ms:.2f} ms / {max_ms:.1f} ms")
             if min_ms > max_ms:
                 errs.append(f"{args}: {min_ms:.2f} ms > {max_ms} ms")
@@ -86,6 +92,10 @@ def selfcheck(off=""):
     diagnostic is preserved whole; the stand-in also proves the scratch HOME, cwd and git ceiling."""
     budgets = dict.fromkeys(COMMANDS, 10.0)
     errs = []
+    schema_minimums = (minimum_seconds({"min": 1}),
+                       minimum_seconds({"summary": {"time_wall_clock": {"min": 2}}}))
+    if schema_minimums != (1, 2):
+        errs.append(f"Hyperfine v1 and v2 minimum schemas read {schema_minimums}, not (1, 2)")
     with tempfile.TemporaryDirectory() as tmp:
         stand_in = pathlib.Path(tmp) / "yi"
         stand_in.write_text(STAND_IN)
