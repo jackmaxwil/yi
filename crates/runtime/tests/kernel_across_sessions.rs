@@ -148,12 +148,10 @@ async fn child_kernel_answer(
         host.list()
     );
     if contained && !yi_tools::Sandbox::available() {
-        let mut transcript = String::new();
-        for dir in std::fs::read_dir(root.join("family"))? {
-            for file in std::fs::read_dir(dir?.path())? {
-                transcript.push_str(&std::fs::read_to_string(file?.path())?);
-            }
-        }
+        let store = host
+            .transcript("helper")
+            .ok_or("the worker has no transcript")?;
+        let transcript = serde_json::to_string(&yi_runtime::family::recent_entries(&store))?;
         assert!(
             transcript.contains("ipython is unavailable to a walled session here"),
             "{transcript}"
