@@ -19,9 +19,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("TARGET")?
     );
     // A release-derived build ships stripped, so the function-starts table only told a profiler
-    // where functions begin in a binary without symbols: 45 KB of it (D274).
+    // where functions begin in a binary without symbols: 45 KB of it (D274). Apple's ld only.
     let macos = std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos");
-    if macos && std::env::var("PROFILE").is_ok_and(|profile| profile == "release") {
+    let apple_ld = std::env::var("HOST").is_ok_and(|host| host.ends_with("apple-darwin"));
+    if macos && apple_ld && std::env::var("PROFILE").is_ok_and(|profile| profile == "release") {
         println!("cargo::rustc-link-arg-bins=-Wl,-no_function_starts");
     }
     Ok(())
