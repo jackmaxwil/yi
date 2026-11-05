@@ -27,7 +27,8 @@ pub use details::{FileOps, nested_calls};
 pub use floor::{RETENTION_FLOOR_BUDGET, retain_floor};
 pub use policy::{Settings, should_compact};
 pub use prepare::{
-    Preparation, VALUES_CARRIED_CAP, compose_summary, keep_values, prepare_compaction,
+    DROPPED_CARRIED_CAP, Preparation, VALUES_CARRIED_CAP, compose_summary, keep_values,
+    prepare_compaction,
 };
 pub use project::{project, project_attributed};
 pub use serialize::{

@@ -130,17 +130,18 @@ pub fn compose_summary(
     )
 }
 
-/// Invariant: a reply with no `## Values` section at all lost the section, so the previous rows
-/// come back as one. A reply that has the section is trusted, edits and removals included.
+/// Invariant: a reply missing Values or Dropped lost that section, so previous rows return with
+/// the oldest rows cut first. A reply that has a section is trusted, edits and removals included.
 pub const VALUES_CARRIED_CAP: usize = 40;
+pub const DROPPED_CARRIED_CAP: usize = 40;
 
-fn value_rows(summary: &str) -> Vec<&str> {
+fn section_rows<'a>(summary: &'a str, heading: &str) -> Vec<&'a str> {
     let mut rows = Vec::new();
     let mut inside = false;
     for line in summary.lines() {
         if line.starts_with("## ") {
-            inside = line.trim_end() == "## Values";
-        } else if line.starts_with('<') || line.starts_with('[') {
+            inside = line.trim_end() == heading;
+        } else if line.starts_with('<') || (line.starts_with('[') && !line.starts_with("[… ")) {
             inside = false;
         } else if inside && line.starts_with("- ") && line.trim() != "- (none)" {
             rows.push(line.trim_end());
@@ -149,30 +150,81 @@ fn value_rows(summary: &str) -> Vec<&str> {
     rows
 }
 
-pub fn keep_values(previous: Option<&str>, summary: &str) -> String {
-    if summary.lines().any(|line| line.trim_end() == "## Values") {
-        return summary.to_owned();
+fn carried_block(
+    previous: Option<&str>,
+    summary: &str,
+    heading: &str,
+    cap: usize,
+    cap_name: &str,
+    what: &str,
+    next_call: &str,
+) -> Option<String> {
+    if summary.lines().any(|line| line.trim_end() == heading) {
+        return None;
     }
-    let rows = previous.map(value_rows).unwrap_or_default();
+    let rows = previous
+        .map(|text| section_rows(text, heading))
+        .unwrap_or_default();
     if rows.is_empty() {
-        return summary.to_owned();
+        return None;
     }
-    let mut block = String::from("## Values");
-    for row in rows.iter().take(VALUES_CARRIED_CAP) {
+    let mut block = String::from(heading);
+    if rows.len() > cap {
+        block.push('\n');
+        block.push_str(&yi_tools::cut_row(
+            cap,
+            rows.len(),
+            what,
+            cap_name,
+            cap,
+            next_call,
+        ));
+    }
+    for row in rows.iter().skip(rows.len().saturating_sub(cap)) {
         block.push('\n');
         block.push_str(row);
     }
-    if rows.len() > VALUES_CARRIED_CAP {
-        block.push_str(&format!(
-            "\n[… {VALUES_CARRIED_CAP} of {} earlier value rows carried (VALUES_CARRIED_CAP); the rest: grep(pattern=\"## Values\", path=\"history://self\")]",
-            rows.len()
-        ));
+    Some(block)
+}
+
+pub fn keep_values(previous: Option<&str>, summary: &str) -> String {
+    let values = carried_block(
+        previous,
+        summary,
+        "## Values",
+        VALUES_CARRIED_CAP,
+        "VALUES_CARRIED_CAP",
+        "earlier value rows carried",
+        "grep(pattern=\"<value>\", path=\"history://self\")",
+    );
+    let dropped = carried_block(
+        previous,
+        summary,
+        "## Dropped",
+        DROPPED_CARRIED_CAP,
+        "DROPPED_CARRIED_CAP",
+        "earlier dropped rows carried",
+        "grep(pattern=\"## Dropped\", path=\"history://self\")",
+    );
+    if values.is_none() && dropped.is_none() {
+        return summary.to_owned();
     }
-    match summary.find("\n## Dropped") {
-        Some(at) => {
-            let (head, tail) = summary.split_at(at);
-            format!("{}\n\n{block}\n{tail}", head.trim_end())
+    let mut text = summary.trim_end().to_owned();
+    if let Some(block) = values {
+        match text.find("\n## Dropped") {
+            Some(at) => {
+                let (head, tail) = text.split_at(at);
+                text = format!("{}\n\n{block}\n{tail}", head.trim_end());
+            }
+            None => {
+                text.push_str("\n\n");
+                text.push_str(&block);
+            }
         }
-        None => format!("{}\n\n{block}", summary.trim_end()),
     }
+    if let Some(block) = dropped {
+        text.push_str("\n\n");
+        text.push_str(&block);
+    }
+    text
 }

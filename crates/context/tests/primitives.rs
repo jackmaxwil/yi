@@ -1256,6 +1256,16 @@ fn a_summary_that_lost_its_values_section_gets_the_previous_rows_back() {
 }
 
 #[test]
+fn a_summary_that_lost_its_dropped_section_gets_the_previous_rows_back() {
+    let second = "## Goal\n- user://1\n\n## Values\n- port 48214 (config.toml:12)";
+    let kept = keep_values(Some(FIRST_SUMMARY), second);
+    assert_eq!(
+        kept,
+        format!("{second}\n\n## Dropped\n- the full cargo log: history://self")
+    );
+}
+
+#[test]
 fn an_edited_values_section_is_trusted_not_topped_up() {
     let second = "## Goal\n- user://1\n\n## Values\n- port 48214 (config.toml:12)\n\n## Dropped\n- the old port";
     assert_eq!(keep_values(Some(FIRST_SUMMARY), second), second);
@@ -1288,15 +1298,47 @@ fn carried_values_past_the_cap_say_how_many_were_left_out() {
     let previous = format!("## Values\n{}", rows.join("\n"));
     let kept = keep_values(Some(&previous), "## Goal\n- user://1");
     let total = VALUES_CARRIED_CAP + 3;
+    let notice = format!(
+        "[… {VALUES_CARRIED_CAP} of {total} earlier value rows carried (VALUES_CARRIED_CAP {VALUES_CARRIED_CAP}); the rest: grep(pattern=\"<value>\", path=\"history://self\")]"
+    );
+    assert!(kept.contains(&notice), "{kept}");
+    assert!(kept.find(&notice) < kept.find("- value 003"), "{kept}");
     assert!(
-        kept.contains(&format!(
-            "[… {VALUES_CARRIED_CAP} of {total} earlier value rows carried (VALUES_CARRIED_CAP)"
-        )),
+        kept.contains("- value 003")
+            && kept.contains("- value 042")
+            && !kept.contains("- value 002"),
         "{kept}"
     );
+    let third = keep_values(Some(&kept), "## Goal\n- user://1");
     assert!(
-        kept.contains("- value 039") && !kept.contains("- value 040"),
+        third.contains("- value 042") && !third.contains("- value 002"),
+        "{third}"
+    );
+}
+
+#[test]
+fn carried_dropped_rows_past_the_cap_keep_the_newest_and_name_the_cut() {
+    let rows: Vec<String> = (0..VALUES_CARRIED_CAP + 3)
+        .map(|n| format!("- dropped {n:03}: history://self/since/{n}"))
+        .collect();
+    let previous = format!("## Dropped\n{}", rows.join("\n"));
+    let kept = keep_values(Some(&previous), "## Values\n- current value");
+    let total = VALUES_CARRIED_CAP + 3;
+    let notice = format!(
+        "[… {VALUES_CARRIED_CAP} of {total} earlier dropped rows carried (DROPPED_CARRIED_CAP {VALUES_CARRIED_CAP}); the rest: grep(pattern=\"## Dropped\", path=\"history://self\")]"
+    );
+    assert!(kept.contains(&notice), "{kept}");
+    assert!(kept.find(&notice) < kept.find("- dropped 003"), "{kept}");
+    assert!(
+        kept.contains("- dropped 003")
+            && kept.contains("- dropped 042")
+            && !kept.contains("- dropped 002"),
         "{kept}"
+    );
+    let third = keep_values(Some(&kept), "## Values\n- next value");
+    assert!(
+        third.contains("- dropped 042") && !third.contains("- dropped 002"),
+        "{third}"
     );
 }
 
