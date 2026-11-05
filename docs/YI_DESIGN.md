@@ -380,10 +380,10 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   and locks each tool's text and sha256 in `tool_surface.json`;
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
-  never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
-  (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
-  the whole guide; `read`, `grep`, `bash`, `write`, `get_context` and `ipython` stay whole. An
-  edit refusal names the address. There is no dispatcher tool.
+  never the tool. `edit`, `annotate`, `answer`, `get_context`, `plan`, `todo` and `ask_user`
+  carry a summary, their full schema (`plan` without field prose below the top level) and
+  `read("yi://tools/<name>")`, which serves the whole guide; `read`, `grep`, `bash`, `write`
+  and `ipython` stay whole. An edit refusal names the address. There is no dispatcher tool.
 - `Tool { name, description, schema, kind, kind_for, freeform, irreversible, validate, preview,
   execute -> ToolOutput }`. `kind_for` decides per call; Read runs parallel, the rest sequential.
   The adapter runs rule check, reviewer wall, permission gate (§8), next-step lines (§6).

@@ -1,4 +1,5 @@
 ---
+version: 0.933.0
 issue: Closes #1767
 raise: crate runtime +56, tests +155, comments +4
 ledger~: kernel + ipython + rlm() subagents | written to its transcript | a `fork=all` child from the parent's view with its cut results as the placeholders its own requests carry, both inside 80% of the child's route window behind a `[… fork kept K of N` row when that ceiling cut, written to the child's transcript
