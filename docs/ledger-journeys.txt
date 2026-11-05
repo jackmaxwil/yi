@@ -587,6 +587,8 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+fetch: one addressable read path | `kernel_sandbox::a_parent_kernel_loads_no_pickle_a_contained_child_wrote`
+fetch: one addressable read path | `kernel_sandbox::a_contained_childs_kernel_creates_no_board_file`
 spec (harness-run requirements check) | `todo_coupling::a_red_spec_refuses_the_stop_and_names_the_requirement`
 host-written memory (one file per fact, hook index) | `history::tests::history_search_finds_a_message_by_its_accented_word`
 host-written memory (one file per fact, hook index) | `history::tests::eight_threads_on_one_cold_corpus_build_one_index_and_agree`

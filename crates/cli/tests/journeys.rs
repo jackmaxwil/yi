@@ -10,6 +10,7 @@ use std::process::{Command, Output, Stdio};
 use serde_json::{Value, json};
 
 use crate::session_files::session_files;
+use crate::yi_bin::yi_command;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -46,11 +47,7 @@ impl Journey {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "a journey's contract is the spawned binary's argv, exit code and files"
-        )]
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut command = yi_command(&self.root.join("home"));
         command
             .args(args)
             .arg("--model")
@@ -59,7 +56,6 @@ impl Journey {
             .arg(self.root.join("home/sessions"))
             .arg("--cwd")
             .arg(self.project())
-            .env("HOME", self.root.join("home"))
             .current_dir(self.project())
             // The kernel provisioner narrates on stderr; only stdout is contract.
             .stderr(Stdio::null());
