@@ -872,6 +872,7 @@ async fn run_walled_juror(
             deny_read: vec![project.join("secret")],
             deny_url: Vec::new(),
             container: None,
+            isolated: false,
         },
         session: Some("juror"),
         ..BrokerSetup::default()
@@ -1055,6 +1056,7 @@ async fn walled_retry(
             deny_read: vec![project.join("secret")],
             deny_url: Vec::new(),
             container: None,
+            isolated: false,
         },
         ..BrokerSetup::default()
     };
