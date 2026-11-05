@@ -13,12 +13,12 @@ yi --version
 ```
 
 It checks the release's sha256 and the owner's key, then installs `yi` to `~/.local/bin` and its
-runtime to `~/.yi`; Apple Silicon only, and `| bash -s -- --help` prints that key. By hand:
+runtime to `~/.yi`; Apple-silicon Macs and x86_64 Linux, and `| bash -s -- --help` prints that key. By hand:
 
 ```bash
 v=X.Y.Z t=aarch64-apple-darwin; base=https://github.com/jackmaxwil/yi/releases/download/v$v; a=yi-$v-$t.tar.gz
 curl -fLO "$base/$a" -O "$base/$a.sig" -O "$base/SHA256SUMS"; shasum -a 256 -c SHA256SUMS --ignore-missing
-echo 'jackmaxwil-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICRKvW82jaXOFg8jkpg7ZHj8YkZ5TKQr9U1bU1ygJiAj' > allowed_signers
+echo 'jackmaxwil-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAaFfxFxxkIpL0TuZcvkcLpzT164hwIaCbzyFnVkAMX7' > allowed_signers
 ssh-keygen -Y verify -f allowed_signers -I jackmaxwil-release -n yi-release -s "$a.sig" < "$a"
 tar -xzf "$a" && "./yi-$v-$t/install.sh"
 ```
