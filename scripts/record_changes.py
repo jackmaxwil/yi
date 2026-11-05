@@ -11,6 +11,7 @@ Per file, in the order main's first-parent history added them (name order within
 minor version in docs/ARCHITECTURE.md goes up by one, its CHANGELOG row goes on top, each `decision:`
 becomes the next D-row with its ADR and index line, and the file is stamped `version:` and
 `decisions:`, which check_changes.py refuses a branch to write. A stamped file is never recorded again.
+A changelog past the blob cap sends its oldest rows to a new docs/archive/changelog-<lo>-to-<hi>.md.
 """
 import datetime, os, pathlib, re, shutil, subprocess, sys, tempfile
 
@@ -23,6 +24,8 @@ from check_changes import DECISIONS, DIR, LEDGER_FROM, VERSION, apply_ledger, ch
 ARCH, LOG, INDEX = "docs/ARCHITECTURE.md", "docs/CHANGELOG.md", "docs/solutions/README.md"
 LOG_HEADER = "| ver | date | change |"
 ROW_ID = re.compile(r"^\| D(\d+) \|")
+LIVE = CAP * 3 // 4
+SLACK = 1000
 
 
 def git(root, *args):
@@ -83,6 +86,80 @@ def last_id(arch):
     return max((int(m.group(1)) for row in table(arch, DECISIONS) if (m := ROW_ID.match(row))), default=0)
 
 
+def shrink(log, keep=None):
+    """(log, {path: text}): archive a changelog past the cap, keeping the newest rows that fit LIVE.
+    `keep` pins the live-row count when validating an earlier archive; an unfit log is returned as is."""
+    if len(log.encode()) <= CAP:
+        return log, {}
+    lines = log.split("\n")
+    first = next((i for i, line in enumerate(lines) if line.startswith(LOG_HEADER)), None)
+    if first is None:
+        return log, {}
+    first += 2
+    end = first
+    while end < len(lines) and lines[end].startswith("|"):
+        end += 1
+    rows, size = lines[first:end], len(log.encode())
+    fit = keep is None
+    keep = end - first if fit else min(max(keep, 1), end - first)
+    while fit and keep > 1 and size > LIVE:
+        keep -= 1
+        size -= len(rows[keep].encode()) + 1
+    old = rows[keep:]
+    if not old:
+        return log, {}
+    chunks, cur, used = [], [], 0
+    for row in reversed(old):
+        if cur and used + len(row.encode()) + 1 > CAP - SLACK:
+            chunks.append(cur[::-1])
+            cur, used = [], 0
+        cur.append(row)
+        used += len(row.encode()) + 1
+    chunks.append(cur[::-1])
+    files, pointers = {}, []
+    for chunk in reversed(chunks):
+        hi, lo = (row.split(" | ")[0][2:] for row in (chunk[0], chunk[-1]))
+        path = f"docs/archive/changelog-{lo}-to-{hi}.md"
+        pointers.append(f"Rows for {hi} back to {lo} live in [{path[5:]}]({path[5:]}).")
+        head = (f"# Changelog archive: {lo} to {hi}\n\nRows of [../CHANGELOG.md](../CHANGELOG.md), moved here verbatim so the\n"
+                f"live file stays under the committed-blob cap. Newest first, as there.\n\n{LOG_HEADER}\n|---|---|---|\n")
+        files[path] = head + "\n".join(chunk) + "\n"
+    tail = lines[end:] if lines[end:end + 1] == [""] else [""] + lines[end:]
+    shrunk = "\n".join(lines[:first] + rows[:keep] + tail[:1] + pointers + [""] + tail[1:])
+    if any(len(t.encode()) > CAP for t in [shrunk, *files.values()]):
+        return log, {}
+    return shrunk, files
+
+
+def archive_cases():
+    """The shrink at its cap and its cap plus one, and the logs it must leave alone."""
+    row = lambda n, pad: f"| 0.{n}.0 | 2026-09-01 | {'x' * pad} |"
+    build = lambda rows: "# Changelog\n\n" + f"{LOG_HEADER}\n|---|---|---|\n" + "\n".join(rows) + "\n\nOlder rows: [a](a).\n"
+    rows = [row(n, 9000) for n in range(60, 0, -1)]
+    full = build(rows)
+    fit = build([row(1, CAP - len(build([row(1, 0)]).encode()))])
+    bad = []
+    if len(fit.encode()) != CAP or shrink(fit) != (fit, {}):
+        bad.append(f"a changelog of {len(fit.encode())} bytes, the cap itself, was archived")
+    log, files = shrink(full)
+    (path, text), = files.items() if len(files) == 1 else ((None, ""),)
+    kept = [line for line in log.splitlines() if line.startswith("| 0.")]
+    moved = [line for line in text.splitlines() if line.startswith("| 0.")]
+    if len(log.encode()) > LIVE + 1000 or kept + moved != rows or not kept or not moved:
+        bad.append(f"a changelog of {len(full.encode())} bytes became {len(log.encode())} bytes, {len(kept)} rows kept and {len(moved)} archived, not the same rows in order under {LIVE}")
+    if path != f"docs/archive/changelog-0.1.0-to-0.{60 - len(kept)}.0.md" or f"live in [{path[5:]}]({path[5:]})." not in log or "Older rows: [a](a)." not in log:
+        bad.append(f"the archive is {path}, or the live file does not point at it: {log[-300:]!r}")
+    if shrink(log) != (log, {}):
+        bad.append("an archived changelog was archived again")
+    log, files = shrink(build([row(n, 9000) for n in range(120, 0, -1)]))
+    if len(files) < 2 or any(len(t.encode()) > CAP for t in [log, *files.values()]):
+        bad.append(f"a changelog past {CAP + LIVE} bytes left {len(files)} archive file(s) of {[len(t.encode()) for t in files.values()]} bytes")
+    big = build([row(1, CAP)])
+    if shrink(big) != (big, {}):
+        bad.append("a changelog no archive could bring under the cap was cut")
+    return bad
+
+
 def record(views, todo):
     """(views, writes, plan, {number: who gets it}) after recording `todo` in order. Pure."""
     arch, log, index = views[ARCH], views[LOG], views[INDEX]
@@ -113,6 +190,8 @@ def record(views, todo):
         log = insert_row(log, LOG_HEADER, f"| {version} | {date} | {prose} |")
         writes[f"{DIR}/{name}"] = stamp(text, version, numbers)
         plan.append(f"{name} -> {version}, {len(numbers)} decision(s){': ' + ', '.join(numbers) if numbers else ''}")
+    log, archived = shrink(log)
+    writes.update(archived)
     return {ARCH: arch, LOG: log, INDEX: index}, writes, plan, given
 
 
@@ -120,10 +199,15 @@ def expected_at(root, rev):
     """Every path the recorder would write from `rev`'s tree, with its text; empty when nothing is pending."""
     views, changes = state(root, rev)
     todo = pending(root, rev, changes)
-    if not todo:
-        return {}
     views, writes, _, _ = record(views, todo)
-    return {**views, **writes}
+    return {**views, **writes} if todo or writes else {}
+
+
+def archived_at(root, rev, keep):
+    """The exact archive-only diff from `rev`, retaining `keep` live rows."""
+    views, _ = state(root, rev)
+    views[LOG], writes = shrink(views[LOG], keep)
+    return {**views, **writes} if writes else {}
 
 
 def ahead(root, last, given):
@@ -188,7 +272,7 @@ def main(argv, root=ROOT):
         errs = drift(todo, datetime.date.today(), len(todo) == len(changes))
         print("\n".join(errs) or f"record: {len(todo)} change file(s) unrecorded, within {DRIFT_FILES} files and {DRIFT_DAYS} days")
         return 1 if errs else 0
-    if not todo:
+    if not todo and not shrink(views[LOG])[1]:
         print("record: nothing to record")
         return 0
     if len(todo) == len(changes) and "--backfill" not in argv:
@@ -212,6 +296,7 @@ def main(argv, root=ROOT):
     for path, text in {**views, **writes}.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text(text)
+    print("\n".join(f"record: {p} archived, {len(t.encode())} bytes" for p, t in writes.items() if p.startswith("docs/archive/")))
     print(f"record: {len(todo)} file(s) recorded, version {VERSION.search(views[ARCH]).group(1)}")
     return 0
 
@@ -332,7 +417,7 @@ def selfcheck():
         return 1
     real = landed(ROOT, PIN)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-record-"))
-    bad = drift_cases() + [f"the drift selfcheck passes with the {c} check off, so it refutes nothing"
+    bad = archive_cases() + drift_cases() + [f"the drift selfcheck passes with the {c} check off, so it refutes nothing"
                            for c in DRIFT_CHECKS if not drift_cases(c)]
     # Incident: CI writes bytecode, so the scratch repo showed __pycache__ as untracked and every clean-tree check failed.
     run = lambda *a: subprocess.run((sys.executable, "-B") + a, cwd=tmp, capture_output=True, text=True)
@@ -397,13 +482,26 @@ def selfcheck():
         if not sized:
             bad.append(f"the dry run printed no changelog size: {dry.stdout[-200:]}")
         log, size = (tmp / LOG).read_text(), int(sized.group(1)) if sized else 0
-        for pad, want, args in ((CAP - size, 0, ("--dry-run", "--backfill")), (CAP - size + 1, 1, ("--backfill",))) if sized else ():
+        for pad, archived in ((CAP - size, False), (CAP - size + 1, True)) if sized else ():
             (tmp / LOG).write_text(log + "\n" * pad)
-            capped = run("scripts/record_changes.py", *args)
-            if capped.returncode != want or status() != f" M {LOG}\n" or (tmp / LOG).read_text() != log + "\n" * pad:
+            capped = run("scripts/record_changes.py", "--dry-run", "--backfill")
+            after = re.search(rf"{LOG} \d+ -> (\d+) bytes", capped.stdout)
+            if capped.returncode or status() != f" M {LOG}\n" or (tmp / LOG).read_text() != log + "\n" * pad:
                 bad.append(f"a changelog recorded to {size + pad} bytes exited {capped.returncode}, status {status()!r}")
-            if want and f"{LOG} would be {CAP + 1} bytes, past blob_size's {CAP}" not in capped.stdout:
-                bad.append(f"the capped run does not name the cap: {capped.stdout[-200:]}")
+            if not after or (int(after.group(1)) < size + pad) != archived:
+                bad.append(f"a changelog recorded to {size + pad} bytes, the cap {'plus one' if archived else 'itself'}, ended at {after and after.group(1)}")
+        (tmp / LOG).write_text(log + "\n" * (CAP - size + 1))
+        spare = pathlib.Path(tempfile.mkdtemp(prefix="yi-record-over-"))
+        shutil.copytree(tmp, spare, dirs_exist_ok=True)
+        real_run = subprocess.run((sys.executable, "-B", "scripts/record_changes.py", "--backfill"), cwd=spare, capture_output=True, text=True)
+        made = [p for p in (spare / "docs/archive").glob("changelog-*.md")] if (spare / "docs/archive").is_dir() else []
+        if real_run.returncode or len(made) != 1 or "?? docs/archive/" not in git(spare, "status", "--porcelain") or len((spare / LOG).read_bytes()) > LIVE + SLACK:
+            bad.append(f"recording a changelog past the cap exited {real_run.returncode}, wrote {len(made)} archive file(s): {real_run.stdout[-200:]}")
+        shutil.rmtree(spare, ignore_errors=True)
+        (tmp / LOG).write_text(insert_row(log, LOG_HEADER, f"| 0.1.0 | 2026-09-01 | {'x' * CAP} |"))
+        stuck = run("scripts/record_changes.py", "--dry-run", "--backfill")
+        if stuck.returncode != 1 or f"past blob_size's {CAP}" not in stuck.stdout:
+            bad.append(f"a changelog archiving could not fit exited {stuck.returncode}: {stuck.stdout[-200:]!r}")
         (tmp / LOG).write_text(log)
         sh("checkout", "-q", "-b", "topic")
         run("scripts/record_changes.py", "--backfill")
