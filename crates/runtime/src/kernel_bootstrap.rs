@@ -134,6 +134,22 @@ pub fn rlm_bootstrap_code(import_names: &[&str]) -> String {
 
 const RESTORE_NAMES_SHOWN: usize = 40;
 const RESTORE_FAILED_SHOWN: usize = 40;
+const NAMES_SHOWN: usize = 40;
+
+/// The post-compaction note; `None` names is a listing that failed, so it claims nothing.
+pub fn compaction_notice(names: Option<&[String]>) -> String {
+    let detail = match names {
+        None => String::new(),
+        Some([]) => " You have not defined any names yet.".to_owned(),
+        Some(names) => format!(
+            " These names are still defined: {}.",
+            crate::listed::listed(names, "names", "NAMES_SHOWN", NAMES_SHOWN, "%who")
+        ),
+    };
+    format!(
+        "<ipython_state>\nYour IPython kernel persisted through compaction; its remaining variables, imports, and helpers are still available.{detail}\n</ipython_state>"
+    )
+}
 
 pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> String {
     let mut lines = vec!["<ipython_state_restored>".to_owned()];

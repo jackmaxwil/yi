@@ -97,7 +97,7 @@ fn run(dir: &Path, namespace: &str, code: &str) -> Result<String, Box<dyn Error>
 fn a_name_the_snapshot_skipped_comes_back_named_at_resume() -> TestResult {
     let dir = scratch("resume")?;
     let state = dir.join("kernel-state.dill");
-    let snapshot = build_snapshot_code(&state, 1 << 20, 64, false);
+    let snapshot = build_snapshot_code(&state, 1 << 20, 64, None);
     let said = run(&dir, NAMESPACE, &snapshot)?;
     assert!(
         said.contains("\"saved\": [\"small\"]"),
