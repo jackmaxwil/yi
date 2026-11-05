@@ -471,9 +471,23 @@ fn reason(
     pays.then_some("breakeven")
 }
 
+/// In a forked child `self` and "you" mean the child, so its seed's placeholders name the parent.
+pub(crate) fn for_fork(cut: &Mutex<Cut>, messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+    let cut = cut.lock().unwrap_or_else(PoisonError::into_inner);
+    render(messages, &cut, ("the parent", "parent", "the parent's"))
+}
+
 /// Every cut result as its placeholder: kept nothing of how much, the rule, and the read
 /// that restores it, all from the stored result, so the line is the same on every request.
-pub(crate) fn apply(mut messages: Vec<AgentMessage>, cut: &Cut) -> Vec<AgentMessage> {
+pub(crate) fn apply(messages: Vec<AgentMessage>, cut: &Cut) -> Vec<AgentMessage> {
+    render(messages, cut, ("you", "self", "this session's"))
+}
+
+fn render(
+    mut messages: Vec<AgentMessage>,
+    cut: &Cut,
+    (who, agent, store): (&str, &str, &str),
+) -> Vec<AgentMessage> {
     if cut.marks.is_empty() {
         return messages;
     }
@@ -486,7 +500,7 @@ pub(crate) fn apply(mut messages: Vec<AgentMessage>, cut: &Cut) -> Vec<AgentMess
         };
         // A discard is refused once its result is cut, so this reads the same on every request.
         let rule = match find(&cut.discards, message) {
-            Some(()) => "you discarded it".to_owned(),
+            Some(()) => format!("{who} discarded it"),
             None => format!(
                 "results older than {} requests (reclaim.keep_turns) are cut once dropping them costs less than resending them",
                 crate::levers::get().reclaim_keep_turns
@@ -495,8 +509,8 @@ pub(crate) fn apply(mut messages: Vec<AgentMessage>, cut: &Cut) -> Vec<AgentMess
         if let AgentMessage::ToolResult { content, .. } = message {
             let call = call.as_deref().unwrap_or("a tool call");
             let restore = match &mark.entry {
-                Some(entry) => format!("get it: read(\"history://self/{entry}\")"),
-                None => "it is not in this session's store".to_owned(),
+                Some(entry) => format!("get it: read(\"history://{agent}/{entry}\")"),
+                None => format!("it is not in {store} store"),
             };
             let text = format!(
                 "[reclaimed: {call} → none of {} chars kept; {rule} (cut at request {}); {restore}]",

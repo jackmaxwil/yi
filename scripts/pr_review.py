@@ -744,12 +744,19 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
         # Under a tenth of the budget is no attempt: it could only time out.
         if left < (deadline + 120) / 10:
             return subprocess.CompletedProcess(command, 124, "", spent)
-        try:
-            return subprocess.run(command + ["--deadline", str(max(int(left) - 120, 1))] + extra + ["-"], input=text,
-                                  capture_output=True, text=True, timeout=left, check=False,
-                                  env=env if env is not None else token_free_env)
-        except subprocess.TimeoutExpired as err:
-            return subprocess.CompletedProcess(command, 124, "", f"timed out after {err.timeout:.0f}s")
+        # Incident: #1779's clone kept a git the model's timed-out turn left running; killing only `yi ask`
+        # orphaned its children, so the child leads its own session and the whole group dies on timeout.
+        with subprocess.Popen(command + ["--deadline", str(max(int(left) - 120, 1))] + extra + ["-"], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+                              env=env if env is not None else token_free_env) as proc:
+            try:
+                out, err = proc.communicate(text, timeout=left)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, 9)
+                proc.communicate()
+                return subprocess.CompletedProcess(command, 124, "", f"timed out after {left:.0f}s")
+            return subprocess.CompletedProcess(command, proc.returncode, out, err)
 
     def is_json(text):
         try:
@@ -894,16 +901,24 @@ def raw_diff(repo, number):
     return out.stdout
 
 
-def checkout(sha, ref):
+@contextlib.contextmanager
+def scratch_worktree(run, rev, prefix, name="w"):
+    """A detached worktree of `rev` in a temp dir of its own, deregistered and deleted however the block ends."""
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
+    tree = tmp / name
+    try:
+        run("worktree", "add", "-q", "--detach", "-f", str(tree), rev, check=True)
+        yield tree
+    finally:
+        run("worktree", "remove", "--force", str(tree), check=False)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def checked_out(sha, ref):
     forge_pr.git("fetch", "-q", "origin", ref, check=True)
-    tree = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-"))
-    forge_pr.git("worktree", "add", "-q", "--detach", str(tree), sha, check=True)
-    return tree
-
-
-def discard(tree):
-    forge_pr.git("worktree", "remove", "--force", str(tree))
-    shutil.rmtree(tree, ignore_errors=True)
+    with scratch_worktree(forge_pr.git, sha, "yi-round-") as tree:
+        yield tree
 
 
 def intake_of(repo, pr):
@@ -930,8 +945,7 @@ def read_pr(repo, number, allowed):
     pr = forge_pr.pull(number)
     notes = comments(repo, number)
     rounds, sha = rounds_of(notes, allowed, number), pr["head"]["sha"]
-    tree = checkout(sha, f"refs/pull/{number}/head")
-    try:
+    with checked_out(sha, f"refs/pull/{number}/head") as tree:
         forge_pr.git("fetch", "-q", "origin", pr["base"]["ref"])
         merge_base = forge_pr.git("merge-base", f"origin/{pr['base']['ref']}", sha, check=True)
         is_ancestor = lambda rev: subprocess.run(("git", "-C", str(ROOT), "merge-base", "--is-ancestor", rev, sha), capture_output=True).returncode == 0
@@ -955,8 +969,6 @@ def read_pr(repo, number, allowed):
                 pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd, thinking=REVIEW_THINKING, until=JOB_ENDS),
                 load_probes(), full_read=base == merge_base, own=own, carry=carried(rounds, mine), fix_note=fix_note, memory=earlier(rounds),
                 narrow=lambda fit: lost_only(fit, attempts_of(notes, allowed, number), sha, holds_for(number, pr["base"]["ref"])))
-    finally:
-        discard(tree)
     # A second round on an unchanged head is a second independent read, which a draft needs.
     return {"pr": pr, "n": rounds[-1]["n"] + 1 if rounds else 1, "sha": sha, "base": base,
             "intake": found, "kept": kept, "dropped": dropped, "outside": outside,

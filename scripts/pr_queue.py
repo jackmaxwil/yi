@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""The merge queue's tick: gate a PR merged onto current main, then fast-forward main to that commit.
+"""The merge queue's tick: gate a PR merged onto current main, then push it and its record in one ref update.
 
     pr_queue.py               one tick, in the mode the MERGE_QUEUE variable names (shadow, on)
     pr_queue.py --selfcheck   every rule with each one disabled in turn, and the git steps for real
 
 Nothing is stored: the state is the `queue` label, the `queue/candidate` ref and that ref's statuses,
 so a crashed tick loses nothing. A red candidate stays until it is replaced, since it is the memory
-of what comes next. A retry's count rides the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
+of what comes next. Base, retry and split markers ride the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
 import argparse, contextlib, io, os, pathlib, re, shutil, subprocess, sys, tempfile, time
 from unittest import mock
 
@@ -14,11 +14,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "scripts/guardrails")]
 import forge_pr, forge_tracking, pr_review
 from check_pr_metadata import CITE
+from _common import scratch_repo
 
 LABEL, CANDIDATE = "queue", "queue/candidate"
 # Sessions sign in as `jack` too, so an enqueue only when the owner asked stays a rule of conduct.
 MERGERS = {"jack"}
-K = 1
+K = 4
 # Invariant: the slowest green gate lane is about an hour on a loaded runner, and a run that has not
 # reported by then is lost, because a candidate whose pr.yml runs no lanes has no statuses at all.
 STALE_MINUTES = 80
@@ -26,8 +27,11 @@ STALE_MINUTES = 80
 CLOSE_PATIENCE = 240
 INFRA_RETRIES = 2
 IDENTITY = ("-c", "user.name=yi-queue", "-c", "user.email=queue@yi")
+CI = ("-c", "user.name=yi-ci", "-c", "user.email=ci@yi")
 LANES = pr_review.GATE_LANES
 RETRY = re.compile(r"^Queue retry (\d+)\.$", re.M)
+SPLIT = re.compile(r"^Queue split (\d+)\.$", re.M)
+FORK = re.compile(r"^Queue base ([0-9a-f]{40})\.$", re.M)
 MEMBER = re.compile(r"\(#(\d+)\) from ")
 
 
@@ -61,6 +65,7 @@ RULES = (
     ("green", lambda o: o["candidate"] and lanes_state(o) == "green", "land"),
     ("infra, retries left", lambda o: o["candidate"] and infra(o) and o["retries"] < INFRA_RETRIES, "retry"),
     ("infra, retries spent", lambda o: o["candidate"] and infra(o), "paused"),
+    ("red batch", lambda o: o["candidate"] and len(o["members"]) > 1, "split"),
     ("red, first time", lambda o: o["candidate"] and o["retries"] == 0, "retry"),
     ("red, retried", lambda o: o["candidate"], "eject"),
     ("queue waiting", lambda o: o["queued"], "build"),
@@ -72,7 +77,8 @@ def step(obs, off=""):
     return next(((action, name) for name, holds, action in RULES if name != off and holds(obs)), ("none", "none"))
 
 
-def git(*args, cwd=ROOT, check=True):
+def git(*args, cwd=None, check=True):
+    cwd = ROOT if cwd is None else cwd
     out = subprocess.run(("git", "-C", str(cwd), *args), capture_output=True, text=True, errors="replace", check=False)
     if check and out.returncode:
         raise SystemExit(f"queue: git {' '.join(args)}: {out.stderr.strip()}")
@@ -114,17 +120,18 @@ def use_driver(cwd):
 
 def same_tree(base, tip, recipe):
     """Rebuild the merges in a scratch tree: only reviewed bytes land, whatever the ref now holds."""
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-queue-"))
-    try:
-        git("worktree", "add", "-q", "--detach", str(tmp / "w"), base)
-        use_driver(tmp / "w")
+    with pr_review.scratch_worktree(git, base, "yi-queue-") as tree:
+        use_driver(tree)
         for number, head, title, branch in recipe:
-            if merge_member(tmp / "w", number, head, title, branch):
+            if merge_member(tree, number, head, title, branch):
                 return False
-        return git("rev-parse", "HEAD^{tree}", cwd=tmp / "w").stdout == git("rev-parse", f"{tip}^{{tree}}").stdout
-    finally:
-        git("worktree", "remove", "--force", str(tmp / "w"), check=False)
-        shutil.rmtree(tmp, ignore_errors=True)
+        return git("rev-parse", "HEAD^{tree}", cwd=tree).stdout == git("rev-parse", f"{tip}^{{tree}}").stdout
+
+
+def main_conflict(pr):
+    with pr_review.scratch_worktree(git, "origin/main", "yi-queue-main-") as tree:
+        use_driver(tree)
+        return merge_member(tree, *recipe_of(pr), pr.get("body") or "")
 
 
 def api(method, path, payload=None):
@@ -219,6 +226,15 @@ def order(pulls):
     return [pr for _, pr in sorted(dated, key=lambda pair: pair[0])]
 
 
+def base_of(tip, body, in_main):
+    """The main a candidate was built on: its marker, else a pre-batch tip's first parent."""
+    if fork := FORK.search(body):
+        return fork.group(1)
+    if in_main:
+        return git("rev-parse", f"{tip}^1").stdout.strip()
+    return git("merge-base", tip, "origin/main").stdout.strip()
+
+
 def observe(mode):
     git("fetch", "-q", "origin", "main")
     pulls = queued_pulls()
@@ -228,20 +244,22 @@ def observe(mode):
             comment(pr["number"], f"Left the queue: {reason}. Add the `{LABEL}` label again once that is answered.")
             pulls.remove(pr)
     obs = {"candidate": None, "in_main": False, "base": None, "main": git("rev-parse", "origin/main").stdout.strip(),
-           "stale_member": None, "lanes": {}, "age_minutes": 0, "retries": 0, "members": [], "queued": [], "pulls": pulls}
+           "stale_member": None, "lanes": {}, "age_minutes": 0, "retries": 0, "splits": 0, "members": [], "queued": [], "pulls": pulls}
     if git("ls-remote", "origin", f"refs/heads/{CANDIDATE}").stdout.strip():
         git("fetch", "-q", "origin", f"+refs/heads/{CANDIDATE}:refs/remotes/origin/{CANDIDATE}")
         tip = git("rev-parse", f"origin/{CANDIDATE}").stdout.strip()
         obs["candidate"] = tip
         obs["in_main"] = git("merge-base", "--is-ancestor", tip, "origin/main", check=False).returncode == 0
-        obs["base"] = git("rev-parse", f"{tip}^1").stdout.strip()
+        body = git("log", "-1", "--format=%B", tip).stdout
+        obs["base"] = base_of(tip, body, obs["in_main"])
         obs["members"] = members_of(tip, obs["base"])
         obs["lanes"] = forge_pr.head_jobs(forge_pr.repo(), tip)
         date = git("log", "-1", "--format=%ct", tip).stdout.strip()
         obs["age_minutes"] = (time.time() - int(date)) / 60
-        body = git("log", "-1", "--format=%B", tip).stdout
         retry = RETRY.search(body)
+        split = SPLIT.search(body)
         obs["retries"] = int(retry.group(1)) if retry else 0
+        obs["splits"] = int(split.group(1)) if split else 0
         by_number = {pr["number"]: pr for pr in pulls}
         for number, head in obs["members"]:
             pr = by_number.get(number)
@@ -270,18 +288,34 @@ def recipe_of(pr):
     return pr["number"], pr["head"]["sha"], pr["title"], pr["head"]["ref"]
 
 
+SUBJECT = "Record the change files main landed"
+
+
+def record_docs(tree):
+    """Run `tree`'s recorder under `tree` and list the docs paths it wrote; None when it refused."""
+    if subprocess.run((sys.executable, str(tree / "scripts/record_changes.py")), cwd=tree, check=False).returncode:
+        return None
+    return [line[3:] for line in git("status", "--porcelain", "docs", cwd=tree).stdout.splitlines()]
+
+
+def commit_record(identity, author, root=ROOT):
+    """Commit the recorder's writes under `docs` as `identity`, and return the commit's sha."""
+    git("add", "docs", cwd=root)
+    git(*identity, "commit", "-q", f"--author={author}", "-m", SUBJECT, cwd=root)
+    return git("rev-parse", "HEAD", cwd=root).stdout.strip()
+
+
 def record_main(root=ROOT):
     """Record what main has landed; False only when main moved under the push."""
     git("fetch", "-q", "origin", "main", cwd=root)
     git("checkout", "-q", "--detach", "origin/main", cwd=root)
-    if subprocess.run((sys.executable, str(root / "scripts/record_changes.py")), cwd=root, check=False).returncode:
+    written = record_docs(root)
+    if written is None:
         print("queue: the recorder refused, so main stays unrecorded; its lines above say why")
         return True
-    if not git("status", "--porcelain", "docs", cwd=root).stdout.strip():
+    if not written:
         return True
-    git("add", "docs", cwd=root)
-    # Incident: a git hook exports GIT_AUTHOR_*, which beats -c user.name, and postmerge reads this author.
-    git("-c", "user.name=yi-ci", "-c", "user.email=ci@yi", "commit", "-q", "--author=yi-ci <ci@yi>", "-m", "Record the change files main landed", cwd=root)
+    commit_record(CI, "yi-ci <ci@yi>", root)
     pushed = git("push", "-q", "origin", "HEAD:main", cwd=root, check=False)
     if not pushed.returncode:
         return True
@@ -293,7 +327,31 @@ def record_main(root=ROOT):
     return True
 
 
-def build(obs, mode):
+def record_candidate(candidate):
+    """The tip to push and whether its record is included or needs no write; False means no record.
+
+    Invariant: main's recorder runs, never the candidate's, because this job holds the token that pushes
+    main; the candidate supplies the docs it is recorded from and never the process that runs."""
+    with pr_review.scratch_worktree(git, "origin/main", "yi-record-", name="main") as work:
+        git("rm", "-rq", "docs", cwd=work)
+        git("checkout", candidate, "--", "docs", cwd=work)
+        git(*IDENTITY, "commit", "-q", "--allow-empty", "-m", "the candidate's docs", cwd=work)
+        written = record_docs(work)
+        kept = {path: (work / path).read_text() for path in written or [] if (work / path).is_file()}
+    if written is None:
+        print("queue: the recorder refused, so the candidate lands unrecorded; finish retries")
+        return candidate, False
+    git("checkout", "-q", "--detach", candidate, cwd=ROOT)
+    for path, text in kept.items():
+        (ROOT / path).parent.mkdir(parents=True, exist_ok=True)
+        (ROOT / path).write_text(text)
+    if not kept:
+        return candidate, True
+    # Invariant: the push's head stays yi-queue's, so postmerge skips the record it already contains.
+    return commit_record(IDENTITY, "yi-queue <queue@yi>", ROOT), True
+
+
+def build(obs, mode, split=0):
     # Incident: the recorder's job waited on a runner and pushed while candidate d862f188 went green,
     # so a green gate was thrown away. A shadow candidate never lands, so it has nothing to protect.
     if mode == "on" and not record_main():
@@ -305,7 +363,10 @@ def build(obs, mode):
     for pr in obs["queued"][:K]:
         git("fetch", "-q", "origin", f"refs/pull/{pr['number']}/head")
         if left := merge_member(ROOT, *recipe_of(pr), pr.get("body") or ""):
-            # Invariant: the batch's first member merges against main alone, so its conflict is main's.
+            if built:
+                left = main_conflict(pr)
+                if not left:
+                    continue
             names = ", ".join(f"`{path}`" for path in left)
             comment(pr["number"], f"The queue could not merge this onto main: {names}. The fixer takes it from here, and the label stays.")
             set_label(pr["number"], "autofix", True)
@@ -314,22 +375,40 @@ def build(obs, mode):
     if not built:
         print("queue: nothing merged, so no candidate")
         return
-    git("push", "-q", "--force", "origin", f"HEAD:refs/heads/{CANDIDATE}")
-    print(f"queue: candidate {git('rev-parse', 'HEAD').stdout.strip()[:10]} for {built}")
+    tip = git("rev-parse", "HEAD").stdout.strip()
+    base = git("rev-parse", "origin/main").stdout.strip()
+    body = git("log", "-1", "--format=%B", "HEAD").stdout.strip()
+    message = f"{body}\n\nQueue base {base}."
+    if split:
+        message += f"\nQueue split {split}."
+    tip = rewrite(tip, message)
+    git("push", "-q", "--force", "origin", f"{tip}:refs/heads/{CANDIDATE}")
+    print(f"queue: candidate {tip[:10]} for {built}")
 
 
-def retry(obs):
-    tip, parents = obs["candidate"], git("log", "-1", "--format=%P", obs["candidate"]).stdout.split()
-    body = RETRY.sub("", git("log", "-1", "--format=%B", tip).stdout).strip()
-    message = f"{body}\n\nQueue retry {obs['retries'] + 1}."
+def rewrite(tip, message):
+    parents = git("log", "-1", "--format=%P", tip).stdout.split()
     env = {**os.environ, "GIT_AUTHOR_NAME": "yi-queue", "GIT_AUTHOR_EMAIL": "queue@yi",
            "GIT_COMMITTER_NAME": "yi-queue", "GIT_COMMITTER_EMAIL": "queue@yi"}
     args = ["git", "-C", str(ROOT), "commit-tree", f"{tip}^{{tree}}", "-m", message]
     for parent in parents:
         args += ["-p", parent]
-    made = subprocess.run(args, capture_output=True, text=True, env=env, check=True).stdout.strip()
+    return subprocess.run(args, capture_output=True, text=True, env=env, check=True).stdout.strip()
+
+
+def retry(obs):
+    body = RETRY.sub("", git("log", "-1", "--format=%B", obs["candidate"]).stdout).strip()
+    made = rewrite(obs["candidate"], f"{body}\n\nQueue retry {obs['retries'] + 1}.")
     git("push", "-q", "--force", "origin", f"{made}:refs/heads/{CANDIDATE}")
     print(f"queue: retry {obs['retries'] + 1} as {made[:10]}")
+
+
+def split(obs, mode):
+    half = (len(obs["members"]) + 1) // 2
+    by_number = {pr["number"]: pr for pr in obs["pulls"]}
+    queued = [by_number[number] for number, _ in obs["members"][:half]]
+    # ponytail: the right half may rebundle with newer PRs; keeping it intact requires a store.
+    build({**obs, "queued": queued}, mode, split=obs["splits"] + 1)
 
 
 def statuses_url(sha, lane):
@@ -355,7 +434,7 @@ def eject(obs):
     delete_ref()
 
 
-def finish(obs):
+def finish(obs, recorded=False):
     """Idempotent, so a tick killed after the push does this through the `landed` rule instead."""
     for number, _ in obs["members"]:
         pr = forge_pr.pull(number)
@@ -369,7 +448,7 @@ def finish(obs):
                 print(f"queue: gave up closing #{issue}: {refused}")
                 comment(number, f"Landed, but the forge refused to close #{issue}: {refused}. It needs closing by hand.")
         set_label(number, LABEL, False)
-    if not record_main():
+    if not recorded and not record_main():
         print("queue: the recorder's push was refused; the next push to main records")
     delete_ref()
     print(f"queue: landed {[n for n, _ in obs['members']]}")
@@ -387,11 +466,12 @@ def land(obs, mode):
         for number, head in obs["members"]:
             comment(number, shadow_note(obs["candidate"], head, obs["base"]))
         return delete_ref()
-    pushed = git("push", "-q", "origin", f"{obs['candidate']}:refs/heads/main", check=False)
+    tip, recorded = record_candidate(obs["candidate"])
+    pushed = git("push", "-q", "origin", f"{tip}:refs/heads/main", check=False)
     if pushed.returncode:
         print(f"queue: main refused the push, so the candidate goes: {pushed.stderr.strip()[:200]}")
         return delete_ref()
-    finish(obs)
+    finish(obs, recorded=recorded)
 
 
 def tick(mode):
@@ -407,6 +487,8 @@ def tick(mode):
         build(obs, mode)
     elif action == "retry":
         retry(obs)
+    elif action == "split":
+        split(obs, mode)
     elif action == "eject":
         eject(obs)
     elif action == "land":
@@ -420,8 +502,9 @@ def tick(mode):
     return 0
 
 
-def cmd_queue(args):
+def cmd_queue(args, mode=None):
     """Add one PR, refusing what a tick would skip; with no number, print the queue."""
+    mode = forge_pr.queue_mode() if mode is None else mode
     if args.number is None:
         pulls = order(queued_pulls())
         for pr in pulls:
@@ -435,8 +518,12 @@ def cmd_queue(args):
     if problem := eligible_problem(pr, forge_pr.jobs_of(pr)):
         print(f"queue: #{number} refused: {problem}")
         return 1
+    if mode == "off":
+        # Invariant: the workflow's own `if` skips every tick under off, so the label would land nothing.
+        print(f"queue: MERGE_QUEUE is off, so no tick reads the label; #{number} is not queued")
+        return 1
     set_label(number, LABEL, True)
-    print(f"#{number} queued; a tick lands it")
+    print(f"#{number} queued; " + ("a tick lands it" if mode == "on" else "a shadow tick says what it would land, and nothing lands"))
     return 0
 
 
@@ -454,7 +541,7 @@ def cmd_merge_now(number):
 
 
 OBS = {"candidate": "c", "in_main": False, "base": "m", "main": "m", "stale_member": None, "lanes": {},
-       "age_minutes": 5, "retries": 0, "members": [(1, "h")], "queued": []}
+       "age_minutes": 5, "retries": 0, "splits": 0, "members": [(1, "h")], "queued": [], "pulls": []}
 GREEN = {lane: "success" for lane in LANES}
 RED = {**GREEN, LANES[-1]: "failure"}
 CASES = (
@@ -466,7 +553,10 @@ CASES = (
     ("green", dict(lanes=GREEN), "land"),
     ("infra, retries left", dict(lanes={}, age_minutes=STALE_MINUTES), "retry"),
     ("infra, retries left", dict(lanes={lane: "failure" for lane in LANES}), "retry"),
+    ("infra, retries left", dict(lanes={lane: "failure" for lane in LANES}, members=[(1, "h"), (2, "i")]), "retry"),
     ("infra, retries spent", dict(lanes={lane: "failure" for lane in LANES}, retries=INFRA_RETRIES), "paused"),
+    ("red batch", dict(lanes=RED, members=[(1, "h"), (2, "i")]), "split"),
+    ("red batch", dict(lanes=RED, retries=1, members=[(1, "h"), (2, "i")]), "split"),
     ("red, first time", dict(lanes=RED), "retry"),
     ("red, retried", dict(lanes=RED, retries=1), "eject"),
     ("queue waiting", dict(candidate=None, queued=[{}]), "build"),
@@ -536,17 +626,194 @@ def git_cases():
     return bad
 
 
+@contextlib.contextmanager
+def scenario_repo(numbers, shared=False):
+    with tempfile.TemporaryDirectory(prefix="yi-queue-scenarios-") as tmp:
+        tmp = pathlib.Path(tmp)
+        root, origin = tmp / "w", tmp / "origin.git"
+        subprocess.run(("git", "init", "-q", "--bare", "-b", "main", str(origin)), check=True)
+        subprocess.run(("git", "clone", "-q", str(origin), str(root)), capture_output=True, check=True)
+        real_git = git
+        sh = lambda *a: real_git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a, cwd=root, check=False)
+        (root / "seed.txt").write_text("seed\n")
+        if shared:
+            (root / "shared.txt").write_text("base\n")
+        sh("add", "."), sh("commit", "-qm", "seed"), sh("push", "-q", "origin", "HEAD:main"), sh("fetch", "-q", "origin", "main")
+        base = sh("rev-parse", "HEAD").stdout.strip()
+        pulls = {}
+        for number in numbers:
+            sh("checkout", "-q", "--detach", base)
+            path = root / ("shared.txt" if shared else f"pr-{number}.txt")
+            path.write_text(f"pr {number}\n")
+            sh("add", "."), sh("commit", "-qm", f"pr {number}")
+            head = sh("rev-parse", "HEAD").stdout.strip()
+            sh("push", "-q", "origin", f"{head}:refs/pull/{number}/head")
+            pulls[number] = {"number": number, "title": f"PR {number}", "body": "", "head": {"sha": head, "ref": f"topic-{number}"}}
+        queued, comments, autofix, pushes = set(numbers), [], set(), []
+
+        def counted(*args, cwd=None, check=True):
+            if args[:1] == ("push",) and any(arg.endswith(":refs/heads/main") for arg in args):
+                pushes.append(args)
+            return real_git(*args, cwd=cwd, check=check)
+
+        def label(number, name, present):
+            if name == LABEL and not present:
+                queued.discard(number)
+            if name == "autofix" and present:
+                autofix.add(number)
+
+        def remove():
+            state["landed_obs"] = scenario_obs(state)
+            real_git("push", "-q", "origin", "--delete", CANDIDATE, cwd=root, check=False)
+        module = sys.modules[__name__]
+        with mock.patch.multiple(module, ROOT=root, git=counted, record_main=lambda root=ROOT: True,
+                                 record_candidate=lambda candidate: (candidate, True), use_driver=lambda cwd: None,
+                                 comment=lambda number, text: comments.append((number, text)), set_label=label, delete_ref=remove,
+                                 statuses_url=lambda sha, lane: ""), \
+                mock.patch.object(forge_pr, "pull", lambda number: pulls[number]), mock.patch.object(forge_pr, "is_behind", lambda pr: False):
+            state = {"base": base, "pulls": pulls, "queued": queued, "comments": comments, "autofix": autofix, "pushes": pushes}
+            yield state
+
+def scenario_obs(state, red=None):
+    git("fetch", "-q", "origin", "main")
+    pulls = [state["pulls"][number] for number in sorted(state["queued"])]
+    obs = {"candidate": None, "in_main": False, "base": None, "main": git("rev-parse", "origin/main").stdout.strip(),
+           "stale_member": None, "lanes": {}, "age_minutes": 5, "retries": 0, "splits": 0, "members": [], "queued": pulls, "pulls": pulls}
+    if not git("ls-remote", "origin", f"refs/heads/{CANDIDATE}").stdout.strip():
+        return obs
+    git("fetch", "-q", "origin", f"+refs/heads/{CANDIDATE}:refs/remotes/origin/{CANDIDATE}")
+    tip = git("rev-parse", f"origin/{CANDIDATE}").stdout.strip()
+    obs["candidate"] = tip
+    obs["in_main"] = git("merge-base", "--is-ancestor", tip, "origin/main", check=False).returncode == 0
+    body = git("log", "-1", "--format=%B", tip).stdout
+    obs["base"] = base_of(tip, body, obs["in_main"])
+    obs["members"] = members_of(tip, obs["base"])
+    obs["lanes"] = RED if red in {number for number, _ in obs["members"]} else GREEN
+    retry, split = RETRY.search(body), SPLIT.search(body)
+    obs["retries"] = int(retry.group(1)) if retry else 0
+    obs["splits"] = int(split.group(1)) if split else 0
+    return obs
+
+
+def drive_scenario(state, red=None, off=""):
+    actions, bad = [], []
+    real_step = step
+    for _ in range(20):
+        obs = scenario_obs(state, red)
+        action, _ = real_step(obs, off)
+        actions.append(action)
+        if action == "idle":
+            return actions, bad
+        before = [number for number, _ in obs["members"]]
+        pushes = len(state["pushes"])
+        with mock.patch.multiple(sys.modules[__name__], observe=lambda mode: scenario_obs(state, red),
+                                 step=lambda obs: real_step(obs, off)), contextlib.redirect_stdout(io.StringIO()):
+            tick("on")
+        if action == "land" and len(state["pushes"]) != pushes + 1:
+            bad.append(f"a green candidate made {len(state['pushes']) - pushes} main pushes, not one")
+        if action == "split":
+            after = scenario_obs(state, red)
+            want = before[:(len(before) + 1) // 2]
+            got = [number for number, _ in after["members"]]
+            if got != want:
+                bad.append(f"a split of {before} built {got}, not {want}")
+            if not SPLIT.search(git("log", "-1", "--format=%B", after["candidate"]).stdout):
+                bad.append("a split candidate's tip carried no Queue split marker")
+    return actions, bad + [f"scenario did not become idle: {actions}"]
+
+
+def batch_cases(off=""):
+    bad = []
+    with scenario_repo((1, 2, 3, 4)) as state:
+        actions, found = drive_scenario(state, red=4, off=off)
+        bad += found
+        want = ["build", "split", "land", "build", "split", "land", "build", "retry", "eject", "idle"]
+        if actions != want:
+            bad.append(f"batch of four with one planted red PR read actions {actions}, not {want}")
+        main = git("rev-parse", "origin/main").stdout.strip()
+        landed = [number for number, _ in members_of(main, state["base"])]
+        if landed != [1, 2, 3]:
+            bad.append(f"the red batch left {landed} on main, not [1, 2, 3]")
+        ejected = {number for number, text in state["comments"] if "Left the queue" in text}
+        if ejected != {4}:
+            bad.append(f"the red batch ejected {ejected}, not {{4}}")
+    return bad
+
+
+def conflict_cases(off=""):
+    bad = []
+    with scenario_repo((1, 2), shared=True) as state:
+        module = sys.modules[__name__]
+        disabled = mock.patch.object(module, "main_conflict", lambda pr: ["shared.txt"]) if off else contextlib.nullcontext()
+        with disabled, contextlib.redirect_stdout(io.StringIO()):
+            build(scenario_obs(state), "on")
+        obs = scenario_obs(state)
+        members = [number for number, _ in obs["members"]]
+        if members != [1]:
+            bad.append(f"a member-only conflict left candidate members {members}, not [1]")
+        if state["comments"] or state["autofix"]:
+            bad.append(f"member-only conflict deferral wrote comments={state['comments']} or autofix={state['autofix']}")
+        if 2 not in state["queued"]:
+            bad.append("a member-only conflict removed the deferred PR from the queue")
+    return bad
+
+
+def green_cases(off=""):
+    bad = []
+    with scenario_repo((1, 2, 3, 4)) as state:
+        module = sys.modules[__name__]
+        disabled = mock.patch.object(module, "FORK", re.compile(r"a^")) if off == "FORK" else (
+            mock.patch.object(module, "K", 1) if off else contextlib.nullcontext())
+        with disabled:
+            actions, found = drive_scenario(state)
+        bad += found
+        if actions != ["build", "land", "idle"]:
+            bad.append(f"green batch of four read actions {actions}")
+        main = git("rev-parse", "origin/main").stdout.strip()
+        landed = [number for number, _ in members_of(main, state["base"])]
+        if landed != [1, 2, 3, 4]:
+            bad.append(f"green batch of four landed {landed}")
+        if len(state["pushes"]) != 1 or any("--force" in call for call in state["pushes"]):
+            bad.append(f"green batch of four needed one main push without force, got {state['pushes']}")
+        if state["queued"]:
+            bad.append(f"the landed path did not finish every member: {state['queued']}")
+        recovered = state.get("landed_obs", {})
+        if not recovered.get("in_main") or [number for number, _ in recovered.get("members", [])] != [1, 2, 3, 4]:
+            bad.append(f"a landed batch lost its members before recovery: {recovered}")
+    return bad
+
+
+def candidate_gate_cases():
+    bad = []
+    seed = {"crates/a/src/lib.rs": "// one\nfn a() {}\n", "crates/a/tests/t.rs": "fn t() {}\n"}
+    with scratch_repo("yi-queue-gates-", seed) as (tmp, run):
+        with open(tmp / "crates/a/src/lib.rs", "a") as f:
+            f.write("// two\n// three\n// four\n" + "".join(f"fn g{i}() {{}}\n" for i in range(200)))
+        (tmp / "crates/a/tests/t.rs").write_text("fn t() {}\nfn u() {}\n")
+        for gate in ("growth", "crate_size", "comments", "test_size"):
+            script = f"scripts/guardrails/check_{gate}.py"
+            disabled = run(sys.executable, script)
+            if disabled.returncode == 0:
+                bad.append(f"check_{gate} with its candidate skip disabled passed: {disabled.stdout!r}")
+            candidate = subprocess.run((sys.executable, script), cwd=tmp, capture_output=True, text=True,
+                                       env={**os.environ, "GITHUB_REF": f"refs/heads/{CANDIDATE}"})
+            want = f"skip {gate} (queue candidate: each member was judged at its own head)"
+            if candidate.returncode or candidate.stdout.strip() != want:
+                bad.append(f"check_{gate} on a candidate read {candidate.returncode}: {candidate.stdout.strip()!r}, not {want!r}")
+    return bad
+
+
 def build_cases():
     """What build does around a record, with the forge and git replaced by a call list."""
     bad = []
-    saved = {name: globals()[name] for name in ("git", "record_main", "use_driver", "merge_member")}
+    saved = {name: globals()[name] for name in ("git", "record_main", "use_driver", "merge_member", "rewrite")}
     pr = {"number": 7, "title": "t", "head": {"sha": "h", "ref": "b"}}
     for mode, recorded, want_record, want_build in (("on", True, True, True), ("on", False, True, False), ("shadow", False, False, True)):
         calls = []
         class Done:
             stdout = "abc\n"
         globals().update(git=lambda *a, **k: (calls.append(a[0:2]), Done)[1], use_driver=lambda cwd: None,
-                         merge_member=lambda *a: [],
+                         merge_member=lambda *a: [], rewrite=lambda tip, message: "abc",
                          record_main=lambda recorded=recorded: (calls.append("record"), recorded)[1])
         try:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -561,30 +828,48 @@ def build_cases():
     return bad
 
 
+@contextlib.contextmanager
+def temp_origin(prefix):
+    """A bare origin, one clone of it with the seeded docs/ and stand-in recorder, and a clone(name) for another."""
+    with tempfile.TemporaryDirectory(prefix=prefix) as tmp:
+        tmp = pathlib.Path(tmp)
+        origin = tmp / "origin.git"
+        subprocess.run(("git", "init", "-q", "--bare", "-b", "main", str(origin)), check=True)
+
+        def clone(name):
+            subprocess.run(("git", "clone", "-q", str(origin), str(tmp / name)), capture_output=True, check=True)
+            return tmp / name
+
+        root = clone("w")
+
+        def sh(*a, where=root):
+            return git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a, cwd=where, check=False)
+
+        (root / "docs").mkdir()
+        (root / "scripts").mkdir()
+        (root / "docs/r.txt").write_text("seed\n")
+        (root / "scripts/record_changes.py").write_text("")
+        sh("add", "."), sh("commit", "-qm", "seed"), sh("push", "-q", "origin", "HEAD:main")
+        sh("fetch", "-q", "origin", "main")
+        yield tmp, origin, root, sh, clone
+
+
+RECORDER = "import pathlib\nwith pathlib.Path('docs/r.txt').open('a') as f:\n    f.write('rë\\n')\n"
+
+
 def record_cases():
     """record_main's answers against real git: a stand-in recorder, a real push, real refusals."""
     bad = []
-    recorder = "import pathlib\nwith pathlib.Path('docs/r.txt').open('a') as f:\n    f.write('rë\\n')\n"
-    with tempfile.TemporaryDirectory(prefix="yi-record-main-") as tmp:
-        tmp = pathlib.Path(tmp)
-        origin, root, other = tmp / "origin.git", tmp / "w", tmp / "other"
-        subprocess.run(("git", "init", "-q", "--bare", "-b", "main", str(origin)), check=True)
-        for clone in (root, other):
-            subprocess.run(("git", "clone", "-q", str(origin), str(clone)), capture_output=True, check=True)
-        sh = lambda where, *a: git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a, cwd=where, check=False)
-        (root / "docs").mkdir()
-        (root / "docs/r.txt").write_text("seed\n")
-        sh(root, "add", "."), sh(root, "commit", "-qm", "seed"), sh(root, "push", "-q", "origin", "HEAD:main")
-        (root / "scripts").mkdir()
+    with temp_origin("yi-record-main-") as (tmp, origin, root, sh, clone):
+        other = clone("other")
         script = root / "scripts/record_changes.py"
         tip = lambda: git("rev-parse", "main", cwd=origin).stdout.strip()
 
-        script.write_text("")
         was = tip()
         if not record_main(root) or tip() != was:
             bad.append("nothing to record did not answer True with main unmoved")
 
-        script.write_text(recorder)
+        script.write_text(RECORDER)
         with mock.patch.dict(os.environ, {"GIT_AUTHOR_NAME": "hook", "GIT_AUTHOR_EMAIL": "hook@hook"}):
             if not record_main(root) or tip() == was:
                 bad.append("a record did not reach main")
@@ -609,12 +894,12 @@ def record_cases():
             kept = record_main(root)
         if not kept or tip() != was or "recorder refused" not in out.getvalue():
             bad.append(f"a recorder's refusal stopped the tick: {kept}, {out.getvalue()!r}")
-        script.write_text(recorder)
+        script.write_text(RECORDER)
 
         # The race itself: another pusher wins between the recorder's commit and its push.
-        sh(other, "pull", "-q", "origin", "main")
+        sh("pull", "-q", "origin", "main", where=other)
         (other / "moved.txt").write_text("moved\n")
-        sh(other, "add", "."), sh(other, "commit", "-qm", "moved")
+        sh("add", ".", where=other), sh("commit", "-qm", "moved", where=other)
         race = root / ".git/hooks/pre-push"
         race.write_text(f"#!/bin/sh\nenv -u GIT_DIR git -C '{other}' push -q origin HEAD:main\n")
         race.chmod(0o755)
@@ -623,6 +908,42 @@ def record_cases():
         race.unlink()
     return bad
 
+def landing_cases():
+    """A candidate and its record reach main through one push, and the record is main's over the candidate's docs."""
+    bad = []
+    with temp_origin("yi-land-") as (tmp, origin, root, sh, clone):
+        (root / "scripts/record_changes.py").write_text(RECORDER)
+        sh("add", "."), sh("commit", "-qm", "recorder"), sh("push", "-q", "origin", "HEAD:main"), sh("fetch", "-q", "origin", "main")
+        base = sh("rev-parse", "HEAD").stdout.strip()
+        (root / "scripts/record_changes.py").write_text("import pathlib\npathlib.Path('docs/from-the-pr.txt').write_text('x')\n")
+        (root / "candidate.txt").write_text("candidate\n")
+        sh("add", "."), sh("commit", "-qm", "candidate")
+        candidate = sh("rev-parse", "HEAD").stdout.strip()
+        pushes = tmp / "pushes"
+        hook = origin / "hooks/pre-receive"
+        hook.write_text(f"#!/bin/sh\necho push >> '{pushes}'\n")
+        hook.chmod(0o755)
+        obs = {"base": base, "candidate": candidate, "members": [(7, candidate)]}
+        pr = {"title": "A title", "head": {"ref": "topic"}, "body": ""}
+        real_git, real_record_main = git, record_main
+        at_root = lambda *a, **kw: real_git(*a, **{"cwd": root, **kw})
+        with mock.patch.object(forge_pr, "pull", lambda number: pr), \
+                mock.patch.multiple(sys.modules[__name__], same_tree=lambda *a: True, git=at_root, ROOT=root,
+                                    record_main=lambda: real_record_main(root), set_label=mock.DEFAULT, delete_ref=mock.DEFAULT):
+            land(obs, "on")
+        landed = git("rev-parse", "main", cwd=origin).stdout.strip()
+        count = len(pushes.read_text().splitlines()) if pushes.exists() else 0
+        if count != 1:
+            bad.append(f"a landing and its record took {count} pushes, not one")
+        if git("rev-parse", f"{landed}^", cwd=origin).stdout.strip() != candidate:
+            bad.append("main's record commit is not on the gated candidate")
+        if git("log", "-1", "--format=%an", landed, cwd=origin).stdout.strip() != "yi-queue":
+            bad.append("a recorded landing's head is not yi-queue's, so postmerge would record it again")
+        if git("show", "main:docs/r.txt", cwd=origin).stdout != "seed\nrë\n":
+            bad.append("the landing did not include the recorder's write")
+        if git("show", "main:docs/from-the-pr.txt", cwd=origin, check=False).returncode == 0:
+            bad.append("the candidate's own recorder ran inside the job that pushes main")
+    return bad
 
 def shadow_cases():
     """Shadow's real paths with the forge stubbed: a head is announced once, and nothing lands or records."""
@@ -729,15 +1050,52 @@ def forge_cases():
     return bad
 
 
+def queue_verb_cases():
+    """cmd_queue refuses a queue no tick reads, and labels a PR only where a tick will land it."""
+    bad, labels = [], []
+    pr = {"number": 7, "title": "t", "head": {"sha": "h", "ref": "b"}, "base": {"ref": "main"}}
+    with mock.patch.object(forge_pr, "pull_number", lambda number: 7), \
+            mock.patch.object(forge_pr, "pull", lambda number: pr), \
+            mock.patch.object(forge_pr, "jobs_of", lambda number: []), \
+            mock.patch.multiple(sys.modules[__name__], eligible_problem=lambda p, j: None,
+                                set_label=lambda number, name, present: labels.append((number, name, present))):
+        with contextlib.redirect_stdout(io.StringIO()) as told:
+            refused = cmd_queue(argparse.Namespace(number=7), "off")
+        off_label = list(labels)
+        with contextlib.redirect_stdout(io.StringIO()):
+            queued = cmd_queue(argparse.Namespace(number=7), "on")
+    if refused != 1 or off_label or "off" not in told.getvalue():
+        bad.append(f"an off queue answered {refused}, labelled {off_label}, said {told.getvalue()!r}")
+    if queued != 0 or labels != [(7, LABEL, True)]:
+        bad.append(f"an on queue answered {queued} and labelled {labels}")
+    return bad
+
+
+def offline_cases():
+    """Every case with the forge's read failing: one that reaches it is a gate `just check` cannot run, since
+    the guardrails lane installs no fgj."""
+    cases = (rule_cases, git_cases, build_cases, record_cases, landing_cases, shadow_cases, forge_cases, queue_verb_cases,
+             batch_cases, conflict_cases, green_cases, candidate_gate_cases)
+    bad = []
+    with mock.patch.object(forge_pr, "fgj_api", side_effect=RuntimeError("fgj")):
+        for case in cases:
+            try:
+                bad += case()
+            except RuntimeError as refused:
+                if str(refused) != "fgj":
+                    raise
+                bad.append(f"{case.__name__} asked the forge, which `just check` cannot answer")
+    return bad
+
+
 def selfcheck():
-    bad = rule_cases() + git_cases() + build_cases() + record_cases() + shadow_cases() + forge_cases()
+    bad = offline_cases()
     bad += [f"rule `{name}` disabled and every case still passes, so it refutes nothing"
             for name, _, _ in RULES if not rule_cases(name)]
-    for gate in ("growth", "crate_size", "comments", "test_size"):
-        run = subprocess.run((sys.executable, str(ROOT / f"scripts/guardrails/check_{gate}.py")), capture_output=True, text=True,
-                             env={**os.environ, "GITHUB_REF": f"refs/heads/{CANDIDATE}"})
-        if run.returncode or not run.stdout.startswith(f"skip {gate}"):
-            bad.append(f"check_{gate} on a candidate read {run.returncode}: {run.stdout[:80]!r}")
+    for name, call in (("red batch", lambda: batch_cases("red batch")), ("member-only conflict", lambda: conflict_cases("main_conflict")),
+                       ("green batch of four", lambda: green_cases("K")), ("landed batch recovery", lambda: green_cases("FORK"))):
+        if not call():
+            bad.append(f"{name} passes with its new behavior disabled, so its scenario refutes nothing")
     add = lambda who, at: {"type": "label", "label": {"name": LABEL}, "user": {"login": who}, "body": "1", "created_at": at}
     drop = {"type": "label", "label": {"name": LABEL}, "user": {"login": "jack"}, "body": ""}
     if enqueue_time([add("jack", "t1"), add("jack", "t2")]) != "t2":
