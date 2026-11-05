@@ -78,7 +78,10 @@ class Unavailable(Exception):
 
 def environment():
     env = dict(os.environ)
-    env["UV_CACHE_DIR"] = str(ROOT / "target/uv-cache")
+    # Incident: rust-cache prunes any target/ dir holding a CACHEDIR.TAG as a build dir, so a restored
+    # cache handed CI a gutted uv cache and zizmor failed with no output (PR 2025, tasks 41033, 41083).
+    cache = pathlib.Path(tempfile.gettempdir()) / "yi-uv-cache" if os.environ.get("CI") else ROOT / "target/uv-cache"
+    env["UV_CACHE_DIR"] = str(cache)
     return env
 
 
@@ -97,7 +100,7 @@ def require_uv(package, executable, version):
     proc = run(uv_argv(package, executable, ["--version"]))
     if proc.returncode or version not in proc.stdout:
         reason = (proc.stdout + proc.stderr).strip().splitlines()
-        raise Unavailable(reason[-1] if reason else f"{executable} {version} is unavailable")
+        raise Unavailable(reason[-1] if reason else f"{executable} {version} exited {proc.returncode} with no output")
 
 
 def install_gitleaks(script):
