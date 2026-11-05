@@ -6,6 +6,8 @@ use yi_runtime::tarball;
 use yi_types::install::InstallReceipt;
 
 const FORGE: &str = "https://git.example.invalid";
+/// Invariant: spelled whole, so the mirror's replace rule makes a public build read GitHub's.
+const LATEST: &str = "https://api.github.com/repos/jackmaxwil/yi/releases/latest";
 const NAMESPACE: &str = "yi-release";
 const SIGNERS: &str = include_str!("../../../allowed_signers");
 
@@ -19,11 +21,15 @@ pub(crate) fn early() {
 }
 
 fn run() -> i32 {
-    if std::env::args().nth(2).is_some() {
-        eprintln!("usage: yi update");
-        return 2;
-    }
-    report(installed())
+    let downgrade = match std::env::args().nth(2).as_deref() {
+        None => false,
+        Some("--downgrade") if std::env::args().nth(3).is_none() => true,
+        Some(_) => {
+            eprintln!("usage: yi update [--downgrade]");
+            return 2;
+        }
+    };
+    report(installed(downgrade))
 }
 
 fn report(installed: Result<(String, PathBuf), String>) -> i32 {
@@ -39,7 +45,7 @@ fn report(installed: Result<(String, PathBuf), String>) -> i32 {
     }
 }
 
-fn installed() -> Result<(String, PathBuf), String> {
+fn installed(downgrade: bool) -> Result<(String, PathBuf), String> {
     let home = absolute_home()?;
     let prefix = prefix_dir(&home)?;
     let exe = std::env::current_exe().map_err(|error| format!("current exe: {error}"))?;
@@ -50,6 +56,7 @@ fn installed() -> Result<(String, PathBuf), String> {
         current: env!("ARCHITECTURE_VERSION"),
         target: env!("RELEASE_TRIPLE"),
         signers: SIGNERS,
+        downgrade,
         get: &http_get,
     })?;
     let binary = installed_binary(&prefix, read_receipt(&home)?.as_ref());
@@ -83,6 +90,7 @@ struct Apply<'a, F> {
     current: &'a str,
     target: &'a str,
     signers: &'a str,
+    downgrade: bool,
     get: &'a F,
 }
 
@@ -100,12 +108,18 @@ where
     let receipt = read_receipt(job.home)?;
     let dest = installed_binary(job.prefix, receipt.as_ref());
     guard(job.exe, job.prefix, receipt.as_ref(), &dest)?;
-    let body = (job.get)(&format!("{FORGE}/api/v1/repos/apex/yi/releases/latest"))?;
+    let body = (job.get)(LATEST)?;
     let latest: serde_json::Value =
         serde_json::from_slice(&body).map_err(|error| error.to_string())?;
     let release = release_from(&latest, job.target)?;
     if release.version == job.current {
         return Ok(format!("already {}", job.current));
+    }
+    if !job.downgrade && older(&release.version, job.current)? {
+        return Ok(format!(
+            "already {}, newer than the latest release {}; yi update --downgrade installs it",
+            job.current, release.version
+        ));
     }
     let archive = (job.get)(&release.archive)?;
     let digest = (job.get)(&release.digest)?;
@@ -129,7 +143,7 @@ where
     next.prefix = prefix.display().to_string();
     next.version.clone_from(&release.version);
     next.target = job.target.to_owned();
-    publish(&dest, &unpacked.binary, job.home, &unpacked.skills)?;
+    publish(&dest, &unpacked, job.home, &release.version)?;
     write_receipt(job.home, &next)?;
     Ok(format!(
         "installed {} → {} at {}",
@@ -137,6 +151,17 @@ where
         release.version,
         prefix.display()
     ))
+}
+
+fn older(release: &str, current: &str) -> Result<bool, String> {
+    let parts = |version: &str| -> Result<Vec<u64>, String> {
+        version
+            .split('.')
+            .map(|part| part.parse::<u64>())
+            .collect::<Result<_, _>>()
+            .map_err(|_| format!("version {version} is not dotted numbers"))
+    };
+    Ok(parts(release)? < parts(current)?)
 }
 
 fn prefix_dir(home: &Path) -> Result<PathBuf, String> {
@@ -499,12 +524,8 @@ fn classify(path: &str) -> Result<Member, String> {
     Ok(Member::Skill(relative.to_owned()))
 }
 
-fn publish(
-    dest: &Path,
-    binary: &[u8],
-    home: &Path,
-    skills: &[(String, Vec<u8>)],
-) -> Result<(), String> {
+fn publish(dest: &Path, release: &Unpacked, home: &Path, version: &str) -> Result<(), String> {
+    let (binary, skills) = (&release.binary, &release.skills);
     let target = home.join(".yi/skills");
     let parent = dest
         .parent()
@@ -514,11 +535,37 @@ fn publish(
     let new_bin = parent.join(format!(".yi-new-{pid}"));
     let new_skills = home.join(format!(".yi/.skills-new-{pid}"));
     let result = write_exec(&new_bin, binary)
+        .and_then(|()| probe(&new_bin, version))
         .and_then(|()| stage_skills(&new_skills, &target, skills))
         .and_then(|()| swap(dest, &new_bin, &target, &new_skills));
     let _ = std::fs::remove_file(&new_bin);
     let _ = std::fs::remove_dir_all(&new_skills);
     result
+}
+
+/// Invariant: the Mac binary is cross-linked on Linux and first runs here, so a release that
+/// cannot start stops before the swap instead of replacing a working yi.
+fn probe(new_bin: &Path, version: &str) -> Result<(), String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the new binary is a different program from this one"
+    )]
+    let output = std::process::Command::new(new_bin)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(io(new_bin))?;
+    let said = String::from_utf8_lossy(&output.stdout);
+    if output.status.success() && said.trim() == format!("yi {version}") {
+        return Ok(());
+    }
+    let error = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "the release binary's --version ({}) said {:?}, not \"yi {version}\": {}; yi was left as it is",
+        output.status,
+        said.trim(),
+        error.trim()
+    ))
 }
 
 fn swap(dest: &Path, new_bin: &Path, target: &Path, new_skills: &Path) -> Result<(), String> {
@@ -686,6 +733,51 @@ mod tests {
         Ok(())
     }
 
+    const FAKE_YI: &[u8] = b"#!/bin/sh\necho yi 0.2.0\n";
+
+    fn fake(skills: &[(String, Vec<u8>)]) -> Unpacked {
+        Unpacked {
+            binary: FAKE_YI.to_vec(),
+            skills: skills.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_release_binary_that_cannot_start_leaves_yi() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, dest) = old_install(&tmp)?;
+        let skills = [("a/one.md".to_owned(), b"one".to_vec())];
+        let broken: [&[u8]; 3] = [
+            b"\xcf\xfa\xed\xfe not a program",
+            b"#!/bin/sh\necho dyld: missing symbol >&2\nexit 134\n",
+            b"#!/bin/sh\necho yi 0.1.0\n",
+        ];
+        for binary in broken {
+            let release = Unpacked {
+                binary: binary.to_vec(),
+                skills: skills.to_vec(),
+            };
+            let error = publish(&dest, &release, &home, "0.2.0").expect_err("probe");
+            assert!(
+                error.contains("not \"yi 0.2.0\"") || error.contains(".yi-new-"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read(&dest)?, b"old");
+            assert!(!home.join(".yi/skills/a").exists());
+        }
+        let mut left: Vec<_> = std::fs::read_dir(tmp.join("prefix"))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<_, _>>()?;
+        left.extend(
+            std::fs::read_dir(home.join(".yi"))?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        left.sort();
+        assert_eq!(left, ["skills", "yi"], "no staging left behind");
+        Ok(())
+    }
+
     fn layout(tmp: &Path) -> Result<(PathBuf, PathBuf, PathBuf), Box<dyn std::error::Error>> {
         let home = tmp.join("home");
         let prefix = tmp.join("prefix");
@@ -795,6 +887,23 @@ mod tests {
         version: &str,
         files: &[(&str, &[u8])],
     ) -> Result<String, String> {
+        run_job_as(home, prefix, exe, current, signers, version, files, false)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the job's fields, one per argument"
+    )]
+    fn run_job_as(
+        home: &Path,
+        prefix: &Path,
+        exe: &Path,
+        current: &str,
+        signers: &str,
+        version: &str,
+        files: &[(&str, &[u8])],
+        downgrade: bool,
+    ) -> Result<String, String> {
         let name = format!("yi-{version}-aarch64-apple-darwin.tar.gz");
         let latest = serde_json::json!({
             "tag_name": format!("v{version}"),
@@ -805,7 +914,6 @@ mod tests {
             ],
         })
         .to_string();
-        let latest_url = format!("{FORGE}/api/v1/repos/apex/yi/releases/latest");
         apply(Apply {
             home,
             prefix,
@@ -813,8 +921,9 @@ mod tests {
             current,
             target: "aarch64-apple-darwin",
             signers,
+            downgrade,
             get: &|url: &str| {
-                if url == latest_url {
+                if url == LATEST {
                     return Ok(latest.clone().into_bytes());
                 }
                 files
@@ -919,7 +1028,7 @@ mod tests {
             "note": "keep"
         });
         std::fs::write(home.join(".yi/install.json"), format!("{prior}\n"))?;
-        let packed = archive(b"new", b"skill body")?;
+        let packed = archive(FAKE_YI, b"skill body")?;
         let Signed {
             digest,
             signature,
@@ -942,7 +1051,7 @@ mod tests {
             line,
             format!("installed 0.1.0 → 0.2.0 at {}", prefix.display())
         );
-        assert_eq!(std::fs::read(&exe)?, b"new");
+        assert_eq!(std::fs::read(&exe)?, FAKE_YI);
         assert_eq!(
             installed_binary(&prefix, read_receipt(&home)?.as_ref()),
             exe,
@@ -979,6 +1088,42 @@ mod tests {
         let (home, prefix, exe) = layout(&tmp)?;
         let line = run_job(&home, &prefix, &exe, "0.2.0", "unused\n", "0.2.0", &[])?;
         assert_eq!(line, "already 0.2.0");
+        assert_eq!(std::fs::read(&exe)?, b"old");
+        Ok(())
+    }
+
+    #[test]
+    fn an_older_release_is_refused_and_downloads_nothing() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, prefix, exe) = layout(&tmp)?;
+        let line = run_job(&home, &prefix, &exe, "0.898.0", "unused\n", "0.799.0", &[])?;
+        assert_eq!(
+            line,
+            "already 0.898.0, newer than the latest release 0.799.0; yi update --downgrade installs it"
+        );
+        assert_eq!(std::fs::read(&exe)?, b"old");
+        Ok(())
+    }
+
+    #[test]
+    fn versions_compare_by_number_and_the_flag_downgrades() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = Scratch::new("yi-update-test")?;
+        let (home, prefix, exe) = layout(&tmp)?;
+        let newer = run_job(&home, &prefix, &exe, "0.999.0", "unused\n", "0.1000.0", &[]);
+        assert_eq!(newer, Err("downloaded archive".to_owned()));
+        let forced = run_job_as(
+            &home,
+            &prefix,
+            &exe,
+            "0.898.0",
+            "unused\n",
+            "0.799.0",
+            &[],
+            true,
+        );
+        assert_eq!(forced, Err("downloaded archive".to_owned()));
         assert_eq!(std::fs::read(&exe)?, b"old");
         Ok(())
     }
@@ -1034,7 +1179,7 @@ mod tests {
         let held = format!("yi.old-{}", std::process::id());
         std::fs::write(tmp.join("prefix").join(&held), b"held")?;
         let skills = [("yi/SKILL.md".to_owned(), b"new skill".to_vec())];
-        let error = publish(&dest, b"new", &home, &skills).expect_err("rename");
+        let error = publish(&dest, &fake(&skills), &home, "0.2.0").expect_err("rename");
         assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(error.contains(&dest.display().to_string()), "{error}");
         assert_eq!(
@@ -1074,7 +1219,7 @@ mod tests {
             ("a/one.md".to_owned(), b"one".to_vec()),
             ("README.md".to_owned(), b"new readme".to_vec()),
         ];
-        publish(&dest, b"new", &home, &skills).expect_err("collision");
+        publish(&dest, &fake(&skills), &home, "0.2.0").expect_err("collision");
         assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(!home.join(".yi/skills/a").exists());
         assert_eq!(
@@ -1092,7 +1237,7 @@ mod tests {
         std::fs::create_dir_all(&blocker)?;
         std::fs::write(blocker.join("held"), b"held")?;
         let skills = [("a/one.md".to_owned(), b"one".to_vec())];
-        publish(&dest, b"new", &home, &skills).expect_err("swap");
+        publish(&dest, &fake(&skills), &home, "0.2.0").expect_err("swap");
         assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(!home.join(".yi/skills/a").exists());
         assert_eq!(
