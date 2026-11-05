@@ -13,11 +13,10 @@ use crate::compat::{
     compat_bool, developer_role, moonshot, nested_reasoning, replays_reasoning_content,
 };
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
+use crate::reasoning::{self, REASONING_FIELDS, ReasoningCarry};
 use crate::request::{assistant_block_mut, content_end_events, push_assistant_block};
 use crate::request::{image_url, object};
 use crate::transform::{system_text, transform_messages};
-
-const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasoning_text"];
 
 #[derive(Debug, Clone, Default)]
 pub struct OpenAiOptions {
@@ -161,12 +160,6 @@ fn assistant_param(model: &Model, content: &[Content]) -> Option<Value> {
             })
             .collect::<Vec<_>>()
             .join("");
-        let thinking: Vec<&Content> = content
-                    .iter()
-                    .filter(|block| {
-                        matches!(block, Content::Thinking { thinking, .. } if !thinking.trim().is_empty())
-                    })
-                    .collect();
         let tool_calls: Vec<Value> = content
             .iter()
             .filter_map(|block| match block {
@@ -174,15 +167,14 @@ fn assistant_param(model: &Model, content: &[Content]) -> Option<Value> {
                     id,
                     name,
                     arguments,
+                    thought_signature,
                     ..
-                } => Some(json!({
-                    "id": id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": Value::Object(arguments.clone()).to_string(),
-                    },
-                })),
+                } => Some(reasoning::tool_call_param(
+                    id,
+                    name,
+                    arguments,
+                    thought_signature.as_deref(),
+                )),
                 _ => None,
             })
             .collect();
@@ -190,17 +182,7 @@ fn assistant_param(model: &Model, content: &[Content]) -> Option<Value> {
         if !text.is_empty() {
             message["content"] = Value::String(text.clone());
         }
-        if let Some(Content::Thinking {
-            thinking,
-            thinking_signature,
-            ..
-        }) = thinking.first()
-            && let Some(field) = thinking_signature
-                .as_deref()
-                .filter(|signature| REASONING_FIELDS.contains(signature))
-        {
-            message[field] = Value::String(thinking.clone());
-        }
+        reasoning::apply(&mut message, content);
         if !tool_calls.is_empty() {
             message["tool_calls"] = Value::Array(tool_calls);
         }
@@ -558,6 +540,7 @@ pub struct ChunkMapper {
     model: Model,
     text_index: Option<usize>,
     thinking_index: Option<usize>,
+    details: ReasoningCarry,
     tools: Vec<ToolSlot>,
     has_finish_reason: bool,
     refusal: String,
@@ -570,6 +553,7 @@ impl ChunkMapper {
             model: model.clone(),
             text_index: None,
             thinking_index: None,
+            details: ReasoningCarry::default(),
             tools: Vec::new(),
             has_finish_reason: false,
             refusal: String::new(),
@@ -644,6 +628,7 @@ impl ChunkMapper {
             return events;
         };
         self.on_text_delta(delta, &mut events);
+        self.details.absorb(delta);
         self.on_thinking_delta(delta, &mut events);
         if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
             self.refusal.push_str(refusal);
@@ -687,6 +672,11 @@ impl ChunkMapper {
         }
     }
 
+    fn seal_details(&mut self) {
+        self.details
+            .seal(&mut self.output, &mut self.thinking_index);
+    }
+
     fn on_thinking_delta(&mut self, delta: &Value, events: &mut Vec<AssistantMessageEvent>) {
         for field in REASONING_FIELDS {
             let Some(text) = delta.get(field).and_then(Value::as_str) else {
@@ -704,6 +694,8 @@ impl ChunkMapper {
                             thinking: String::new(),
                             thinking_signature: Some(field.to_owned()),
                             redacted: None,
+                            reasoning_field: Some(field.to_owned()),
+                            reasoning_details: None,
                         },
                     );
                     self.thinking_index = Some(content_index);
@@ -781,6 +773,7 @@ impl ChunkMapper {
             if let Some(Content::ToolCall {
                 id: block_id,
                 name: block_name,
+                thought_signature: block_signature,
                 ..
             }) = assistant_block_mut(&mut self.output, content_index)
             {
@@ -789,6 +782,9 @@ impl ChunkMapper {
                 }
                 if block_name.is_empty() && !name.is_empty() {
                     *block_name = name.to_owned();
+                }
+                if let Some(signature) = reasoning::thought_signature_of(tool_call) {
+                    *block_signature = Some(signature);
                 }
             }
             events.push(AssistantMessageEvent::ToolCallDelta {
@@ -802,6 +798,7 @@ impl ChunkMapper {
         self.settle_calls();
         crate::leak::recover_in(&mut self.output);
         let mut events = content_end_events(&mut self.output, |_| true);
+        self.seal_details();
         // Incident: a refusal arrived as `delta.refusal` and the turn ended as an empty Stop, so
         // the loop read it as an answer with no text. It is the provider's answer, named.
         if !self.refusal.is_empty() {

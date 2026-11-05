@@ -700,6 +700,137 @@ async fn a_fork_budget_never_opens_on_a_tool_result() -> TestResult {
     Ok(())
 }
 
+/// Dies with the control: budget the seed at the window less compaction's reserve (111,616) and a
+/// 106,667-token result (bytes/3) under it but over 80% (102,400) rides into the first request.
+#[tokio::test]
+async fn a_fork_all_seed_stops_at_its_share_of_the_childs_window() -> TestResult {
+    let forked = harness(0, 1, "forked")?;
+    let mut args = Map::new();
+    args.insert("text".to_owned(), Value::String("x".to_owned()));
+    {
+        let mut parent = forked.parent.lock().map_err(|_| "poisoned")?;
+        parent.push(AgentMessage::user_input(
+            yi_types::message::UserContent::Text("load it".to_owned()),
+            0,
+        ));
+        parent.push(faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("call-wide", "ipython", args)],
+            StopReason::ToolUse,
+        ));
+        parent.push(serde_json::from_value(json!({
+            "role": "toolResult", "toolCallId": "call-wide", "toolName": "ipython",
+            "content": [{"type": "text", "text": "x".repeat(320_000)}],
+            "isError": false, "timestamp": 0
+        }))?);
+        parent.push(child_reply("loaded the frame"));
+    }
+    forked
+        .host
+        .spawn(
+            "carry on".to_owned(),
+            kwargs(&[("name", "ceiling"), ("fork", "all")]),
+        )
+        .map_err(|error| error.to_string())?;
+    let messages = first_child_messages(&forked).await;
+    let notice = user_texts(&messages).into_iter().next().unwrap_or_default();
+    assert!(
+        notice.contains("[… fork kept 1 of 4 messages")
+            && notice.contains("80% of the child's 128000-token window is 102400 tokens"),
+        "the seed stops at 80% of the child's own window and says so: {notice}"
+    );
+    assert!(
+        !messages.iter().any(|message| matches!(
+            message,
+            AgentMessage::ToolResult { content, .. }
+                if content.iter().any(|block| matches!(block, yi_types::message::Content::Text { text, .. } if text.len() > 1_000))
+        )),
+        "the result past the ceiling never reaches the child"
+    );
+    Ok(())
+}
+
+/// Dies with the control: seed the fork from the raw history and the child re-reads a result the
+/// parent's own requests had stopped carrying, or follows a pointer into its own empty store.
+#[tokio::test]
+async fn a_fork_all_seed_carries_the_parents_cuts_not_the_bytes_behind_them() -> TestResult {
+    let cut_text = "the whole 4000-byte build log".repeat(100);
+    let store = support::memory_store("fork-view");
+    {
+        let mut session = yi_session::lock_session(&store);
+        session.append_message(
+            "main",
+            AgentMessage::user_input(
+                yi_types::message::UserContent::Text("load it".to_owned()),
+                0,
+            ),
+        )?;
+        session.append_message(
+            "main",
+            faux_assistant_message(
+                vec![yi_ai::faux::faux_tool_call("call-log", "bash", Map::new())],
+                StopReason::ToolUse,
+            ),
+        )?;
+        session.append_message(
+            "main",
+            serde_json::from_value(json!({
+                "role": "toolResult", "toolCallId": "call-log", "toolName": "bash",
+                "content": [{"type": "text", "text": cut_text.clone()}],
+                "isError": false, "timestamp": 0
+            }))?,
+        )?;
+        session.append_custom_record(&yi_types::reclaim::ReclaimRecord {
+            items: vec![yi_types::reclaim::Reclaimed {
+                tool_call_id: "call-log".to_owned(),
+                hash: yi_runtime::ext::content_hash(&cut_text)
+                    .chars()
+                    .take(16)
+                    .collect(),
+                entry_id: Some("e-log".to_owned()),
+            }],
+            reason: "breakeven".to_owned(),
+            turn: 9,
+            extra: Map::new(),
+        })?;
+    }
+    let parent = parent_session(&[]);
+    parent.attach_store(store)?;
+    let view = (parent.history_handle())();
+    assert!(
+        matches!(
+            view.get(2),
+            Some(AgentMessage::ToolResult { content, .. })
+                if yi_types::message::join_text(content.as_slice(), "\n").starts_with("[reclaimed: bash")
+        ),
+        "the parent's view is the placeholder its own requests send: {:?}",
+        view.get(2)
+    );
+    let forked = harness(0, 1, "forked")?;
+    {
+        let mut source = forked.parent.lock().map_err(|_| "poisoned")?;
+        *source = view;
+    }
+    forked
+        .host
+        .spawn(
+            "carry on".to_owned(),
+            kwargs(&[("name", "view"), ("fork", "all")]),
+        )
+        .map_err(|error| error.to_string())?;
+    let messages = first_child_messages(&forked).await;
+    assert!(
+        messages.iter().any(|message| matches!(
+            message,
+            AgentMessage::ToolResult { content, .. }
+                if yi_types::message::join_text(content.as_slice(), "\n").starts_with("[reclaimed: bash")
+                    && !yi_types::message::join_text(content.as_slice(), "\n").contains("the whole 4000-byte build log")
+                    && yi_types::message::join_text(content.as_slice(), "\n").contains("read(\"history://parent/e-log\")")
+        )),
+        "the child is seeded with the cut, not the bytes: {messages:?}"
+    );
+    Ok(())
+}
+
 /// Dies with the control: set the seed in memory only and the respawn reloads a transcript
 /// that never held it, so incarnation 2 runs cold.
 #[tokio::test]

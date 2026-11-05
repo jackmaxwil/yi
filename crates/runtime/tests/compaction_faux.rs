@@ -645,6 +645,122 @@ async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dy
     Ok(())
 }
 
+/// Incident (#1757): a kept tail over `compaction.at` made every request summarize again, 16
+/// compactions in 48 requests. A request has to grow past the ceiling the last one left.
+#[tokio::test]
+async fn a_kept_tail_over_the_ceiling_compacts_once_not_on_every_request()
+-> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-thrash")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-thrash");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-thrash".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        (0..32)
+            .map(|_| reply_with_usage("ok", 2_800, 2_850))
+            .collect(),
+    );
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(100_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.enable_compaction_with(tight_settings());
+    session
+        .compactor()
+        .ok_or("no compactor")?
+        .set_ceiling(Some(2_010));
+    session.attach_store(Arc::clone(&store))?;
+    // The 8,000-character opening survives compaction verbatim: the tail it keeps is over the
+    // 2,010-token ceiling on its own, and each live ask adds a few tokens to it.
+    session.prompt(&"a".repeat(8_000))?;
+    session.wait_idle().await;
+    for ask in [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    ] {
+        session.prompt(ask)?;
+        session.wait_idle().await;
+    }
+    let compactions = compaction_entries(&store).len();
+    assert!(
+        (1..=2).contains(&compactions),
+        "{compactions} compactions in ten requests"
+    );
+    // A resume rebuilds what the last compaction left; it must not summarize again at once.
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![reply_with_usage("ok", 2_800, 2_850)]);
+    let mut resumed = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(100_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    resumed.enable_compaction_with(tight_settings());
+    resumed
+        .compactor()
+        .ok_or("no compactor")?
+        .set_ceiling(Some(2_010));
+    resumed.attach_store(Arc::clone(&store))?;
+    resumed.prompt("ten")?;
+    resumed.wait_idle().await;
+    assert_eq!(
+        compaction_entries(&store).len(),
+        compactions,
+        "resume compacted"
+    );
+    Ok(())
+}
+
+/// Holding the ceiling back must not hold back the window: a kept tail within one reserve of
+/// the window's reserve line still compacts there, or the request leaves no room for the reply.
+#[tokio::test]
+async fn a_kept_tail_near_the_window_still_compacts_at_the_reserve() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-window")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-window");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-window".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        (0..16)
+            .map(|_| reply_with_usage(&"x".repeat(600), 9_100, 9_150))
+            .collect(),
+    );
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(10_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.enable_compaction_with(tight_settings());
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt(&"a".repeat(24_600))?;
+    session.wait_idle().await;
+    for ask in ["one", "two", "three", "four"] {
+        session.prompt(ask)?;
+        session.wait_idle().await;
+    }
+    let compactions = compaction_entries(&store).len();
+    assert!(
+        compactions >= 2,
+        "{compactions} compactions past the window's reserve"
+    );
+    Ok(())
+}
+
 /// Dies with the unknown-window arm of `Compactor::due` dropped: a model whose window is
 /// unknown (0) never passes `should_compact`'s reserve rule, so only the ceiling can compact.
 #[tokio::test]
@@ -1684,12 +1800,17 @@ async fn an_over_window_history_sheds_its_oldest_turns_when_no_summary_comes()
         "the request after the failed summaries fits the 2,000-token window: {sent}"
     );
     assert!(
-        sent.contains("[compaction elided 3 earlier messages from the model's view: summary failed; the transcript keeps them]") && sent.contains("next ask"),
+        sent.contains(
+            "[compaction elided 3 earlier messages from the model's view: summary failed; kept "
+        ) && sent.contains("next ask"),
         "{sent}"
     );
     // One text in three places: the summary's line, the marker where they sat, the notice.
     assert_eq!(
-        sent.matches("[compaction elided 3 earlier messages from the model's view: summary failed; the transcript keeps them]").count(),
+        sent.matches(
+            "[compaction elided 3 earlier messages from the model's view: summary failed; kept "
+        )
+        .count(),
         3,
         "the user and the model are told, on the same request: {sent}"
     );
@@ -1703,7 +1824,7 @@ async fn an_over_window_history_sheds_its_oldest_turns_when_no_summary_comes()
             .iter()
             .any(|entry| matches!(entry,
             Entry::Compaction { summary, .. } if summary.starts_with("<yi_compact_view>")
-                && summary.contains("[compaction elided 3 earlier messages from the model's view: summary failed; the transcript keeps them]"))),
+                && summary.contains("[compaction elided 3 earlier messages from the model's view: summary failed; kept "))),
         "the elided range is a compaction entry that keeps D115's recall view"
     );
     Ok(())
@@ -1936,11 +2057,19 @@ async fn a_rescue_keeps_the_prompt_of_a_long_turn_and_whole_tool_steps()
         .await?
         .ok_or("no rescue")?;
     let kept = &replaced.messages;
-    let gone = replaced.elision.ok_or("no elision")?.messages;
+    let elision = replaced.elision.ok_or("no elision")?;
     assert_eq!(text_of(kept.get(1)), Some("THE TASK: fix the parser"));
+    assert_eq!(text_of(kept.get(2)), Some(elision.to_string().as_str()));
     assert_eq!(
-        text_of(kept.get(2)),
-        Some(format!("[compaction elided {gone} earlier messages from the model's view: summary failed; the transcript keeps them]").as_str())
+        elision.to_string(),
+        format!(
+            "[compaction elided {} earlier messages from the model's view: summary failed; kept {} of {} (context_window {} tokens); the transcript keeps them: read(\"history://self/since/0\")]",
+            elision.messages,
+            kept.len() - 2,
+            kept.len() - 2 + elision.messages,
+            elision.window.0
+        ),
+        "the marker names kept of total, the window that forced it and the read that restores them"
     );
     assert!(matches!(kept.get(3), Some(AgentMessage::Assistant { .. })));
     assert!(every_result_has_its_call(kept), "{kept:#?}");

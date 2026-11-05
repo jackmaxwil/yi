@@ -34,7 +34,7 @@ PREDICATES = {
     "child_state": "queued running finished failed needs_you stuck repossession_pending",
     "blocked_on": "user child external", "done_refused": "",
     "coroutine_unawaited": "", "method_awaited": "",
-    "listing_name_missed": "", "session_on_disk": "",
+    "listing_name_missed": "", "large_print": "", "session_on_disk": "",
     "session_in_memory": "",
 }
 EDGE_KEYS = {"from", "relation", "to", "condition", "guidance", "weight"}

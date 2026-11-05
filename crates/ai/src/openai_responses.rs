@@ -148,6 +148,8 @@ impl EventMapper {
             thinking: String::new(),
             thinking_signature: None,
             redacted: None,
+            reasoning_field: None,
+            reasoning_details: None,
         });
         self.thinking_index = Some(content_index);
         events.push(AssistantMessageEvent::ThinkingStart { content_index });

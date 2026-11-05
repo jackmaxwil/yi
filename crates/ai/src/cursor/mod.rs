@@ -333,6 +333,8 @@ impl Blocks {
                         thinking: String::new(),
                         thinking_signature: None,
                         redacted: None,
+                        reasoning_field: None,
+                        reasoning_details: None,
                     });
                     out.push(AssistantMessageEvent::ThinkingStart {
                         content_index: index,
