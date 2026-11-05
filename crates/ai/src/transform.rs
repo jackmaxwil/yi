@@ -134,6 +134,7 @@ pub fn transform_messages<'a>(
                             thinking,
                             thinking_signature,
                             redacted,
+                            ..
                         } => {
                             if redacted == &Some(true) {
                                 if same_model {

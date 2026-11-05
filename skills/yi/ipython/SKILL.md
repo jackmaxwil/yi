@@ -116,8 +116,9 @@ session here` text a walled root gets: give it `bash` instead. A reader never ta
   aborted is not checkpointed, so names it bound exist only in the live kernel until the next
   clean cell.
 - A restart revives the last checkpoint, minus what cannot be serialized (a live connection, a
-  running job handle) and any variable over 16 MiB serialized. After a compaction those oversized
-  variables are also removed from the live namespace, and the state note names them.
+  running job handle) and any variable over 16 MiB serialized. Such a variable stays live through a
+  compaction, so it is lost only when the kernel restarts.
+- A displayed value is not cached in `Out`: `del` frees it.
 - Keep big data in a file in the tree (parquet, npy, JSON) with a function that reloads it, so a
   lost name costs one call.
 
