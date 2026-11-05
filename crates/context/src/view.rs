@@ -225,11 +225,16 @@ fn brief_text(
         } => {
             if exit_code.is_some_and(|code| code != 0) {
                 format!(
-                    "bash: {command} {}",
+                    "bash: {} {}",
+                    truncate(&one_line(command), BRIEF_LINE_CHARS),
                     truncate(&one_line(output), BRIEF_LINE_CHARS)
                 )
             } else {
-                format!("bash: {command} → {} chars", output.chars().count())
+                format!(
+                    "bash: {} → {} chars",
+                    truncate(&one_line(command), BRIEF_LINE_CHARS),
+                    output.chars().count()
+                )
             }
         }
         AgentMessage::BranchSummary { summary, .. } => format!("earlier attempt: {summary}"),
@@ -275,15 +280,16 @@ fn assistant_tools(
 // Only `path` and `command` name a call: the map's "first string argument" was
 // order-dependent, so the same call briefed differently between runs.
 fn tool_call_brief(name: &str, arguments: &serde_json::Map<String, serde_json::Value>) -> String {
-    let first = arguments
-        .get("path")
-        .or_else(|| arguments.get("command"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    if first.is_empty() {
-        name.to_owned()
-    } else {
-        format!("{name} {first}")
+    let text = |key| arguments.get(key).and_then(|value| value.as_str());
+    let first = match name {
+        "ipython" => {
+            text("code").and_then(|code| code.lines().find(|line| !line.trim().is_empty()))
+        }
+        _ => text("path").or_else(|| text("command")),
+    };
+    match first.map(one_line).filter(|first| !first.is_empty()) {
+        Some(first) => format!("{name} {}", truncate(&first, BRIEF_LINE_CHARS)),
+        None => name.to_owned(),
     }
 }
 
@@ -292,7 +298,20 @@ pub(crate) fn one_line(text: &str) -> String {
 }
 
 fn truncate(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
+    let total = text.chars().count();
+    if total <= max {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(max).collect();
+    let row = cut_row(
+        max,
+        total,
+        "chars",
+        "BRIEF_LINE_CHARS",
+        BRIEF_LINE_CHARS,
+        "read history://self",
+    );
+    format!("{kept}{row}")
 }
 
 pub fn view_extra(view: &CompiledView) -> Vec<(String, serde_json::Value)> {
