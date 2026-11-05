@@ -77,6 +77,7 @@ struct SessionEntry {
     /// client has attached since, so its asks are refused instead of parked for nobody.
     headless: bool,
     owed: Vec<Envelope>,
+    woken: HashSet<String>,
     /// Invariant: true only while a live worker holds the session, never for a ledger row.
     loaded: bool,
 }
@@ -101,6 +102,7 @@ impl SessionEntry {
             provisional: false,
             headless: false,
             owed: Vec::new(),
+            woken: HashSet::new(),
             loaded: false,
         }
     }
@@ -231,7 +233,6 @@ struct Supervisor {
     /// Worker-originated requests that arrived with no attached client, flushed on the next
     /// attach; without this the worker's synchronous asker blocks on an unseen answer.
     parked: HashMap<String, Vec<Value>>,
-    woken: HashSet<String>,
     next_request: u64,
     input: mpsc::UnboundedSender<Input>,
     settings_tail: Option<tokio::task::JoinHandle<()>>,
@@ -933,7 +934,6 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
             requests: HashMap::new(),
             worker_requests: HashMap::new(),
             parked: HashMap::new(),
-            woken: HashSet::new(),
             settings_tail: None,
             next_request: 0,
             input: input_tx.clone(),
@@ -1060,7 +1060,6 @@ mod tests {
             requests: HashMap::new(),
             worker_requests: HashMap::new(),
             parked: HashMap::new(),
-            woken: HashSet::new(),
             settings_tail: None,
             next_request: 0,
             input,
@@ -1071,6 +1070,24 @@ mod tests {
             supervisor.sessions.insert(id.to_owned(), entry);
         }
         supervisor
+    }
+    async fn failure_letter(channels: &std::path::Path, request: &str) -> Result<Value, String> {
+        let mailbox = yi_runtime::schedule::channel::Channel::at(channels.join("mail-asker.jsonl"));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(letter) = mailbox
+                    .entries()
+                    .into_iter()
+                    .map(|entry| entry.data)
+                    .find(|data| data["inReplyTo"] == request)
+                {
+                    return letter;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| format!("no failure letter answered {request}"))
     }
 
     /// Dies with a dead worker's pinned row still attached or still running, which lists a
@@ -1145,7 +1162,13 @@ mod tests {
         let ledger_row = SessionEntry::new("/repo".to_owned(), None);
         supervisor.sessions.insert("sleeper".to_owned(), ledger_row);
         let session = "sleeper".to_owned();
-        supervisor.wake(vec![Waiting { session, request }]).await;
+        supervisor
+            .wake(vec![Waiting {
+                session,
+                request,
+                root: Some(PathBuf::from("/repo")),
+            }])
+            .await;
         let resumed = supervisor
             .requests
             .values()
@@ -1161,17 +1184,105 @@ mod tests {
         assert_eq!(reply["id"], "perm_1");
         assert_eq!(reply["result"]["outcome"]["outcome"], "cancelled");
         assert!(supervisor.parked.is_empty(), "nothing waits for a client");
-        let mailbox = yi_runtime::schedule::channel::Channel::at(channels.join("mail-asker.jsonl"));
-        let told = mailbox.entries();
-        let letter = told.first().ok_or("the asker was not told")?;
-        assert_eq!(letter.data["kind"], "failure");
-        assert_eq!(letter.data["inReplyTo"], "asker-1");
+        let letter = failure_letter(&channels, "asker-1").await?;
+        assert_eq!(letter["kind"], "failure");
         assert!(
-            letter.data["body"]
+            letter["body"]
                 .as_str()
                 .is_some_and(|body| body.contains("Run rm -rf build")),
-            "{}",
-            letter.data
+            "{letter}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Dies with a worker exit leaving the requester waiting forever for a session that died.
+    #[tokio::test]
+    async fn a_dead_worker_tells_the_asker() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("yi-mail-exit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let channels = dir.join("channels");
+        std::fs::create_dir_all(&channels).map_err(|error| error.to_string())?;
+        let mut supervisor = supervisor_with_rows();
+        supervisor.options.session_dir = dir.clone();
+        let request: Envelope = serde_json::from_value(json!({
+            "id": "asker-exit", "from": "history://asker", "to": "history://sleeper",
+            "kind": "request", "conversation": "asker-exit", "seq": 1, "sentAt": 1,
+            "body": "tidy",
+        }))
+        .map_err(|error| error.to_string())?;
+        let mut entry = SessionEntry::new("/repo".to_owned(), None);
+        entry.owed.push(request);
+        supervisor.sessions.insert("sleeper".to_owned(), entry);
+        supervisor.handle_worker_closed("/repo".to_owned());
+        let letter = failure_letter(&channels, "asker-exit").await?;
+        assert_eq!(letter["kind"], "failure");
+        assert!(
+            letter["body"]
+                .as_str()
+                .is_some_and(|body| body.contains("exited before answering")),
+            "{letter}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Dies with a missing history leaving the requester uninformed or suppressing its later retry.
+    #[tokio::test]
+    async fn a_missing_history_tells_the_asker_and_a_later_wake_retries() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("yi-mail-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let channels = dir.join("channels");
+        std::fs::create_dir_all(&channels).map_err(|error| error.to_string())?;
+        let mut supervisor = supervisor_with_rows();
+        supervisor.options.session_dir = dir.clone();
+        let request: Envelope = serde_json::from_value(json!({
+            "id": "asker-retry", "from": "history://asker", "to": "history://sleeper",
+            "kind": "request", "conversation": "asker-retry", "seq": 1, "sentAt": 1,
+            "body": "tidy",
+        }))
+        .map_err(|error| error.to_string())?;
+        let session = "sleeper".to_owned();
+        supervisor
+            .wake(vec![Waiting {
+                session: session.clone(),
+                request: request.clone(),
+                root: None,
+            }])
+            .await;
+        let letter = failure_letter(&channels, "asker-retry").await?;
+        assert!(
+            letter["body"]
+                .as_str()
+                .is_some_and(|body| body.contains("has no history to start")),
+            "{letter}"
+        );
+        std::fs::create_dir_all(dir.join("repo")).map_err(|error| error.to_string())?;
+        let header = r#"{"kind":"header","version":4,"id":"sleeper","createdAt":1,"cwd":"/repo"}"#;
+        std::fs::write(dir.join("repo/1_sleeper.jsonl"), format!("{header}\n"))
+            .map_err(|error| error.to_string())?;
+        let mut stub = tokio::process::Command::new("cat");
+        stub.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = stub.spawn().map_err(|error| error.to_string())?;
+        let stdin = child.stdin.take().ok_or("the stub worker has no stdin")?;
+        supervisor
+            .workers
+            .insert("/repo".to_owned(), Worker { child, stdin });
+        supervisor
+            .wake(vec![Waiting {
+                session,
+                request,
+                root: Some(PathBuf::from("/repo")),
+            }])
+            .await;
+        assert!(
+            supervisor
+                .requests
+                .values()
+                .any(|request| request.resumed.as_deref() == Some("sleeper")),
+            "the later wake did not retry"
         );
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())

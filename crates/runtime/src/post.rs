@@ -42,21 +42,40 @@ pub fn configure(hop_limit: Option<u32>) {
 /// request unread for longer than that belongs to a session no process holds.
 const HELD_READS_WITHIN_MS: u64 = crate::schedule::channel::DEFAULT_CADENCE_MS + 15_000;
 
-/// Mailboxes a scan found fully read, by the modification times of their letters and acks.
+/// Mailbox scans cached by the modification times of their letters and acks. The optional time
+/// is when a young request becomes old enough to return, so an unchanged mailbox is read again.
 pub type Quiet = std::collections::HashMap<
     PathBuf,
-    (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
+    (
+        (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
+        Vec<Waiting>,
+        Option<u64>,
+    ),
 >;
 
-/// A request still unread in the mailbox of `session`.
+/// A request still unread in the mailbox of `session`, with its repository when one exists.
 #[derive(Debug, Clone)]
 pub struct Waiting {
     pub session: String,
     pub request: Envelope,
+    pub root: Option<PathBuf>,
+}
+
+fn eligible(request: &Envelope, now: u64) -> bool {
+    request.kind == Kind::Request
+        && request.sent_at.saturating_add(HELD_READS_WITHIN_MS) <= now
+        && request.deadline_ms.is_none_or(|deadline| deadline > now)
+}
+
+fn resolve_roots(channels: &Path, session: &str, waiting: &mut [Waiting]) {
+    for item in waiting.iter_mut().filter(|item| item.root.is_none()) {
+        item.root =
+            (channels.parent()).and_then(|sessions| crate::history::session_cwd(sessions, session));
+    }
 }
 
 /// Requests no subscription has read, older than a held session would leave them and not past
-/// their deadline; a fully read mailbox goes in `quiet`, unparsed again until its files change.
+/// their deadline; unchanged mailboxes replay their cached result until a young request ages.
 pub fn waiting_requests(channels: &Path, now: u64, quiet: &mut Quiet) -> Vec<Waiting> {
     let Ok(files) = std::fs::read_dir(channels) else {
         return Vec::new();
@@ -74,30 +93,44 @@ pub fn waiting_requests(channels: &Path, now: u64, quiet: &mut Quiet) -> Vec<Wai
             modified(channel.path()),
             modified(&channel.path().with_extension("json")),
         );
-        if quiet.get(channel.path()) == Some(&stamp) {
+        if let Some((cached, waiting, next)) = quiet.get(channel.path())
+            && cached == &stamp
+            && next.is_none_or(|due| now < due)
+        {
+            let mut waiting = waiting.clone();
+            resolve_roots(channels, session, &mut waiting);
+            found.extend(
+                waiting
+                    .into_iter()
+                    .filter(|item| eligible(&item.request, now)),
+            );
             continue;
         }
         let Ok(meta) = channel.meta() else { continue };
         let read = meta.acks.values().max().copied().unwrap_or(0);
-        let letters: Vec<_> = (channel.entries().into_iter())
-            .filter(|entry| entry.offset > read)
-            .collect();
-        if letters.is_empty() {
-            quiet.insert(channel.path().to_path_buf(), stamp);
-        }
-        for letter in letters
-            .into_iter()
-            .filter_map(|entry| serde_json::from_value::<Envelope>(entry.data).ok())
+        let letters = (channel.entries().into_iter()).filter(|entry| entry.offset > read);
+        let mut waiting = Vec::new();
+        let mut next = None;
+        for letter in
+            letters.filter_map(|entry| serde_json::from_value::<Envelope>(entry.data).ok())
         {
-            let old = letter.sent_at.saturating_add(HELD_READS_WITHIN_MS) <= now;
-            let open = letter.deadline_ms.is_none_or(|deadline| deadline > now);
-            if letter.kind == Kind::Request && old && open {
-                found.push(Waiting {
+            if letter.kind != Kind::Request {
+                continue;
+            }
+            let due = letter.sent_at.saturating_add(HELD_READS_WITHIN_MS);
+            if eligible(&letter, now) {
+                waiting.push(Waiting {
                     session: session.to_owned(),
                     request: letter,
+                    root: None,
                 });
+            } else if letter.deadline_ms.is_none_or(|deadline| deadline > due) {
+                next = Some(next.map_or(due, |known: u64| known.min(due)));
             }
         }
+        resolve_roots(channels, session, &mut waiting);
+        quiet.insert(channel.path().to_path_buf(), (stamp, waiting.clone(), next));
+        found.extend(waiting);
     }
     found
 }
@@ -490,6 +523,7 @@ mod tests {
         Ok(Waiting {
             session: "sleeper".to_owned(),
             request,
+            root: None,
         })
     }
 
@@ -500,8 +534,8 @@ mod tests {
         Ok(dir)
     }
 
-    /// Dies with the daemon starting a session a live process still holds (a fresh letter), one
-    /// whose reader already took the letter, an inform, or a request past its deadline.
+    /// Dies with an unread mailbox parsed on every poll, a quiet mailbox hiding a new letter,
+    /// or a fresh, held, inform, expired, or acked letter being treated as waiting.
     #[test]
     fn only_an_old_unread_open_request_is_waiting() -> TestResult {
         let dir = scratch("waiting")?;
@@ -509,9 +543,14 @@ mod tests {
         request_in(&dir, Kind::Inform, 1_001, None)?;
         request_in(&dir, Kind::Request, 1_002, Some(50_000))?;
         let now = 1_000 + 75_000;
-        let found = waiting_requests(&dir, now, &mut Quiet::new());
+        let mut quiet = Quiet::new();
+        let found = waiting_requests(&dir, now, &mut quiet);
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].request.id, old.request.id);
+        assert!(!quiet.is_empty(), "the unread mailbox was not cached");
+        let cached = waiting_requests(&dir, now, &mut quiet);
+        assert_eq!(cached.len(), 1, "{cached:?}");
+        assert_eq!(cached[0].request.id, old.request.id);
         assert!(
             waiting_requests(&dir, now - 1, &mut Quiet::new()).is_empty(),
             "a held session reads it first"
@@ -524,9 +563,13 @@ mod tests {
             serde_json::to_string(&meta)?,
         )?;
         assert!(
-            waiting_requests(&dir, now, &mut Quiet::new()).is_empty(),
+            waiting_requests(&dir, now, &mut quiet).is_empty(),
             "an acked letter is read"
         );
+        let newer = request_in(&dir, Kind::Request, 999, None)?;
+        let appended = waiting_requests(&dir, now, &mut quiet);
+        assert_eq!(appended.len(), 1, "{appended:?}");
+        assert_eq!(appended[0].request.id, newer.request.id);
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
@@ -536,7 +579,8 @@ mod tests {
     #[test]
     fn a_refusal_reaches_the_sender_as_a_failure_naming_the_request() -> TestResult {
         let dir = scratch("refuse")?;
-        let asked = request_in(&dir, Kind::Request, 1_000, None)?;
+        let mut asked = request_in(&dir, Kind::Request, 1_000, None)?;
+        asked.request.to = "sleeper".to_owned();
         refuse(&dir, &asked.request, "refused: nobody to approve")?;
         let entries = open(&dir, "asker")?.entries();
         let first = entries.first().ok_or("no letter in the sender's mailbox")?;

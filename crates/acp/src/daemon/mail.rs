@@ -2,6 +2,7 @@
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use yi_runtime::post::Waiting;
+use yi_types::acp::{AcpPermissionOutcome, AcpResponse};
 use yi_types::mail::Envelope;
 
 use super::{ClientId, Input, SessionEntry, Supervisor, now_ms};
@@ -56,6 +57,9 @@ impl Supervisor {
             return;
         };
         let (owed, provisional) = (std::mem::take(&mut entry.owed), entry.provisional);
+        for request in &owed {
+            entry.woken.remove(&request.id.0);
+        }
         entry.headless = false;
         if provisional {
             self.sessions.remove(&id);
@@ -80,15 +84,22 @@ impl Supervisor {
     }
 
     pub(super) fn tell(&self, requests: &[Envelope], why: &str) {
-        let channels = self.options.session_dir.join("channels");
-        for request in requests {
-            if let Err(error) = yi_runtime::post::refuse(&channels, request, why) {
-                eprintln!(
-                    "daemon: could not tell {} of the refusal: {error}",
-                    request.from
-                );
-            }
+        if requests.is_empty() {
+            return;
         }
+        let channels = self.options.session_dir.join("channels");
+        let requests = requests.to_vec();
+        let why = why.to_owned();
+        let _tell = tokio::task::spawn_blocking(move || {
+            for request in requests {
+                if let Err(error) = yi_runtime::post::refuse(&channels, &request, &why) {
+                    eprintln!(
+                        "daemon: could not tell {} of the refusal: {error}",
+                        request.from
+                    );
+                }
+            }
+        });
     }
 
     pub(super) fn refuse_ask(
@@ -101,10 +112,12 @@ impl Supervisor {
         if let Some(request_id) = frame.get("id").and_then(Value::as_str) {
             self.worker_requests.remove(request_id);
         }
-        let reply = json!({
-            "jsonrpc": "2.0",
-            "id": frame.get("id"),
-            "result": {"outcome": {"outcome": "cancelled"}},
+        let result = json!({"outcome": AcpPermissionOutcome::Cancelled});
+        let id = frame.get("id").cloned().unwrap_or(Value::Null);
+        let reply = json!(AcpResponse {
+            jsonrpc: "2.0".to_owned(),
+            id,
+            result,
         });
         let _ = self.input.send(Input::WorkerReply(root, reply));
         let title = frame
@@ -120,18 +133,27 @@ impl Supervisor {
     /// Starts the stopped sessions mail is waiting on: the worker for the session's repository
     /// resumes it with no replay and no turn, which binds its mailbox, and the letter is read.
     pub(super) async fn wake(&mut self, waiting: Vec<Waiting>) {
-        for Waiting { session, request } in waiting {
-            if !self.woken.insert(request.id.0.clone()) {
+        for Waiting {
+            session,
+            request,
+            root,
+        } in waiting
+        {
+            if self
+                .sessions
+                .get(&session)
+                .is_some_and(|entry| entry.woken.contains(&request.id.0))
+            {
                 continue;
             }
-            let dir = self.options.session_dir.clone();
             if let Some(entry) = self.sessions.get_mut(&session).filter(|e| e.loaded) {
+                entry.woken.insert(request.id.0.clone());
                 if entry.headless {
                     entry.owed.push(request);
                 }
                 continue;
             }
-            let Some(root) = yi_runtime::history::session_cwd(&dir, &session) else {
+            let Some(root) = root else {
                 self.tell(
                     &[request],
                     &format!("session {session} has no history to start"),
@@ -146,6 +168,7 @@ impl Supervisor {
             }
             let entry = (self.sessions.entry(session.clone()))
                 .or_insert_with(|| SessionEntry::provisional(root.clone()));
+            entry.woken.insert(request.id.0.clone());
             if entry.attached.is_empty() {
                 entry.headless = true;
                 entry.owed.push(request);
