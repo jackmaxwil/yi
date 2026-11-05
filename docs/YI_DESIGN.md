@@ -753,10 +753,12 @@ A persistent IPython process per session that reaches the host only through host
   `RLM_FAMILY_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR`.
 - Snapshot: `<kernel dir>/<store id>.kernel-state.dill` is an index over per-variable blobs in
   `<store id>.kernel-state.blobs/`; only changed variables are rewritten. Dilled 1.5 s after an `ok`
-  cell, flushed on dispose (≤ 5 s), restored at boot; ≤ 256 MiB, 16 MiB per variable.
+  cell, flushed on dispose (≤ 5 s), restored at boot; ≤ 256 MiB, 16 MiB per variable. A pass after a
+  cell re-dills only the names the cells' source could change; every 20th cell and the flush are full.
+  A variable over the cap stays live and unsaved. The kernel runs with `cache_size=0`: no `Out`.
 - Owner: [`kernel/src/client.rs`](../crates/kernel/src/client.rs),
   [`bootstrap.rs`](../crates/kernel/src/bootstrap.rs),
-  [`uv_install.rs`](../crates/kernel/src/uv_install.rs),
+  [`install/uv.rs`](../crates/kernel/src/install/uv.rs),
   [`runtime/src/kernel.rs`](../crates/runtime/src/kernel.rs),
   [`rlm/__init__.py`](../python/yi_runtime/src/rlm/__init__.py)
 - Shapes: [`types/src/kernel.rs`](../crates/types/src/kernel.rs)

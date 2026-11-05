@@ -103,6 +103,7 @@ kernel tool calls (`yi.tools`) | `kernel_tools::a_console_cell_running_while_the
 kernel tool calls (`yi.tools`) | `kernel_tools::a_program_gets_whole_values_and_edits_a_line_the_view_never_showed`
 kernel tool calls (`yi.tools`) | `kernel_tools::every_tool_hands_a_program_its_typed_value`
 dill snapshot | `snapshot_e2e::session_dir_snapshot_revives_through_the_service`
+dill snapshot | `snapshot_e2e::post_compaction_sync_reports_only_the_models_names`
 heartbeats: clock subscriptions | `serve_daemon::workers_do_not_lose_heartbeats_or_tear_the_job_ledger` (T2)
 heartbeats: clock subscriptions | `schedule_e2e::a_heartbeat_due_mid_compaction_is_deferred`
 heartbeats: clock subscriptions | `schedule_e2e::a_rearming_block_does_not_hide_a_sibling_coming_due`
