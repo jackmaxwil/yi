@@ -131,6 +131,7 @@ impl SubagentHost {
     pub(super) fn cast(
         &self,
         kwargs: &serde_json::Map<String, serde_json::Value>,
+        isolation: &super::Isolation,
     ) -> Result<Cast, String> {
         let thinking = super::optional_string(kwargs, "thinking")?
             .map(|level| level.parse::<Effort>())
@@ -151,7 +152,8 @@ impl SubagentHost {
         if !self.options.provider.has_credential(&model.provider) {
             return Err(yi_ai::auth::missing_message(&model.provider));
         }
-        let wall = self.wall_for(kwargs)?;
+        let mut wall = self.wall_for(kwargs)?;
+        wall.isolated |= *isolation != super::Isolation::None;
         let reader = super::reader::parse(kwargs)?;
         Ok((model, thinking.unwrap_or(parent_effort), wall, reader))
     }

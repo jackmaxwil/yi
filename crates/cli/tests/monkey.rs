@@ -28,7 +28,8 @@ fn monkey_seeds_play_without_a_crash_hang_or_control_cell() -> TestResult {
             "/../../scripts/tui_see.py"
         ))
         .args(["monkey", "--runs", RUNS, "--seed", SEEDS])
-        .args(["--bin", env!("CARGO_BIN_EXE_yi")])
+        .arg("--bin")
+        .arg(crate::yi_bin::bin())
         .arg("--out")
         .arg(dir.join("monkey"))
         .env("HOME", home)
