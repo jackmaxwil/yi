@@ -108,6 +108,8 @@ pub fn apply(message: &mut AgentMessage, event: &AssistantMessageEvent) {
                 thinking: String::new(),
                 thinking_signature: None,
                 redacted: None,
+                reasoning_field: None,
+                reasoning_details: None,
             },
         ),
         AssistantMessageEvent::ToolCallStart {
