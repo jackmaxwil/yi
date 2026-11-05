@@ -476,11 +476,22 @@ def check_lens_runs_without_tools_and_repairs_prose() -> None:
     calls = []
     answers = ["I found nothing wrong.", '{"refusals": []}']
 
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs["env"]))
-        return subprocess.CompletedProcess(command, 0, answers[len(calls) - 1], "")
+    class FakePopen:
+        returncode = 0
 
-    with unittest.mock.patch.dict(os.environ, {"YI_BIN": "yi-stub", "FGJ_TOKEN": "forge-token"}), unittest.mock.patch("subprocess.run", fake_run):
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs["env"]))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def communicate(self, text=None, timeout=None):
+            return answers[len(calls) - 1], ""
+
+    with unittest.mock.patch.dict(os.environ, {"YI_BIN": "yi-stub", "FGJ_TOKEN": "forge-token"}), unittest.mock.patch("subprocess.Popen", FakePopen):
         assert bridge.default_lens("diff") == {"refusals": []}
     assert len(calls) == 2 and "--continue" in calls[1][0]
     assert all("--no-tools" in command and "FGJ_TOKEN" not in env for command, env in calls)

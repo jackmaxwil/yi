@@ -269,19 +269,22 @@ def sh(cwd, *args, env=None, input=None, check=True):
     return out
 
 
-def conflicts_of(base_ref, sha, repo=ROOT):
-    """Paths a merge of `origin/<base_ref>` into `sha` leaves conflicted, by a trial merge in a
-    throwaway clone with the baseline driver the fix uses. Incident: `git merge-tree --write-tree`
-    needs git 2.38 and the runner has 2.34, so every PR read clean there; the forge's mergeable
-    flag counts conflicts the baseline driver resolves and goes stale."""
-    trial = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-trial-"))
-    try:
-        make_clone(repo, trial, sha)
-        sh(trial, "git", "-c", "user.name=t", "-c", "user.email=t@t", "merge", "--no-commit", "--no-ff",
-           f"origin/{base_ref}", env=scrubbed(), check=False)
-        return sh(trial, "git", "diff", "--name-only", "--diff-filter=U").stdout.split()
-    finally:
-        shutil.rmtree(trial, ignore_errors=True)
+def merge_clean(pr, repo=ROOT):
+    """Merge the base with main's driver and push it when git needs no model. Returns conflict paths, or None once pushed."""
+    sha, ref, base_ref = pr["head"]["sha"], pr["head"]["ref"], pr["base"]["ref"]
+    with workspace(repo, sha) as work:
+        clone = work / "clone"
+        merged = sh(clone, "git", "-c", "user.name=yi-bot", "-c", "user.email=yi-bot@noreply.example.invalid",
+                    "merge", "--no-edit", f"origin/{base_ref}", env=scrubbed(), check=False)
+        conflicted = sh(clone, "git", "diff", "--name-only", "--diff-filter=U").stdout.split()
+        if merged.returncode:
+            if conflicted:
+                return conflicted
+            raise RuntimeError(f"git merge refused: {(merged.stdout + merged.stderr).strip()[-600:]}")
+        sh(repo, "git", "fetch", "-q", str(clone), "HEAD")
+        new = sh(repo, "git", "rev-parse", "FETCH_HEAD").stdout.strip()
+        push_head(repo, ref, new)
+        return None
 
 
 def make_clone(repo, into, sha):
@@ -332,7 +335,8 @@ def resolve_in(clone, pr, base_ref, answer, tried=0):
         raise RuntimeError(f"git merge refused: {(merged.stdout + merged.stderr).strip()[-600:]}")
     walled = pr_review.walled(conflicted)
     if walled:
-        raise Handoff(f"a conflict in a file the fixer may not touch: {', '.join(walled)}")
+        raise Handoff(f"a conflict in a file the fixer may not touch: {', '.join(walled)}. "
+                      f"A person resolves it in this branch: `git fetch origin && git merge origin/{base_ref}`.")
     summary, model, touched = "git merged it without a conflict", None, []
     if conflicted:
         hunks = sum(len(re.findall(r"^<<<<<<< ", (clone / p).read_text(errors="replace"), re.M))
@@ -936,7 +940,8 @@ def findings_in(clone, pr, rnd, answer, tried=0, floor=0):
     if not sh(clone, "git", "diff", "--cached", "--name-only").stdout.strip():
         if todo and {d["n"] for d in declined} == set(range(1, len(todo) + 1)):
             raise Declined(reasons.strip(), declined_highs)
-        raise Missed("the fixer changed nothing" + reasons)
+        raise Missed(f"the fixer changed nothing of the {len(todo)} finding(s) listed; it said "
+                     f"'{(said.get('summary') or '').strip()[:600] or 'nothing'}'" + reasons)
     return summary, model, touched, declined_highs
 
 
@@ -995,18 +1000,45 @@ def handed_over(work):
                  "UV_CACHE_DIR": str(home / ".cache/uv"), "RUSTUP_AUTO_INSTALL": "0"}
 
 
+def worker_python(work, executable=None, prefix=None):
+    """The interpreter the dropped-to user can run: a copy in the box when the runner's lives under a
+    root-only HOME. Incident: it could not exec /root/.local/bin/python3.12 and the whole gate died."""
+    executable = pathlib.Path(os.path.realpath(executable or sys.executable))
+    if all(os.stat(path).st_mode & 0o001 for path in (executable, *executable.parents)):
+        return str(executable), {}
+    prefix = pathlib.Path(os.path.realpath(prefix or sys.base_prefix))
+    try:
+        inside = executable.relative_to(prefix)
+    except ValueError:
+        raise Handoff(f"the fixer's worker cannot start: {executable} is unreadable to its user and "
+                      f"is outside the interpreter prefix {prefix} that can be carried into the box") from None
+    copy = work.parent / "python"
+    if not copy.exists():
+        shutil.copytree(prefix, copy, symlinks=True)
+        # Incident: chmod followed a copied symlink out of the box and widened the runner's root-only target.
+        for base, dirs, files in os.walk(copy):
+            for path in (pathlib.Path(base), *(pathlib.Path(base) / name for name in (*dirs, *files))):
+                if path.is_symlink():
+                    continue
+                mode = path.lstat().st_mode
+                with contextlib.suppress(OSError):
+                    path.chmod(mode | (0o555 if path.is_dir() or mode & 0o100 else 0o444))
+    return str(copy / inside), {"PYTHONHOME": str(copy)}
+
+
 def in_worker(work, op, args):
     """`OPS[op]` in a new process that holds no token and, as root, runs as a user that owns only `work`.
     Output goes to files, not pipes: a daemon the PR left behind would hold a pipe open for ever."""
-    env, drop = {**scrubbed(), "TMPDIR": str(work / "tmp")}, {}
+    env, drop, python = {**scrubbed(), "TMPDIR": str(work / "tmp")}, {}, PYTHON
     if not os.geteuid():
         uid, moved = handed_over(work)
-        env, drop = {**env, **moved}, {"user": uid, "group": uid, "extra_groups": []}
+        python, carried = worker_python(work)
+        env, drop = {**env, **moved, **carried}, {"user": uid, "group": uid, "extra_groups": []}
     with tempfile.TemporaryFile("w+") as asked, tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
         json.dump({"op": op, "args": {"work": str(work), **args}}, asked)
         asked.seek(0)
         try:
-            subprocess.run([PYTHON, str(pathlib.Path(__file__).resolve()), "--worker"], cwd=work, env=env,
+            subprocess.run([python, str(pathlib.Path(__file__).resolve()), "--worker"], cwd=work, env=env,
                            stdin=asked, stdout=out, stderr=err, **drop)
         finally:
             if drop:
@@ -1066,6 +1098,16 @@ def bundle_in(work):
     return bundle
 
 
+def push_head(root, ref, new):
+    """Push a commit through the trusted checkout, treating a moved branch as the next pass's work."""
+    pushed = sh(root, "git", "push", "-q", "origin", f"{new}:refs/heads/{ref}", env=push_url_env(root), check=False)
+    said = (pushed.stdout + pushed.stderr).strip()[-600:]
+    if pushed.returncode and re.search(r"non-fast-forward|fetch first|rejected", said):
+        raise LookupError(said)
+    if pushed.returncode:
+        raise RuntimeError(f"git push refused: {said}")
+
+
 def fix(pr, ask=None, root=ROOT, kind="conflict", rnd=None, tried=0, meter=None, stopped=0.0, lanes=()):
     """One attempt on one PR, a model and the PR's code in a worker; root takes back a bundle and pushes it.
     `ask` stands in for the model, in-process, in the selfcheck. Returns the ledger fields."""
@@ -1087,12 +1129,7 @@ def fix(pr, ask=None, root=ROOT, kind="conflict", rnd=None, tried=0, meter=None,
             shutil.copyfile(bundle, kept)
             sh(root, "git", "fetch", "-q", str(kept), "HEAD")
             new = sh(root, "git", "rev-parse", "FETCH_HEAD").stdout.strip()
-        pushed = sh(root, "git", "push", "-q", "origin", f"{new}:refs/heads/{ref}", env=push_url_env(root), check=False)
-        said = (pushed.stdout + pushed.stderr).strip()[-600:]
-        if pushed.returncode and re.search(r"non-fast-forward|fetch first|rejected", said):
-            raise LookupError(said)
-        if pushed.returncode:
-            raise RuntimeError(f"git push refused: {said}")
+        push_head(root, ref, new)
         return {**fields, "to": new[:12]}
 
 
@@ -1215,7 +1252,7 @@ def render(n, fields, verdict, reason="", status="", meter=None):
     elif verdict == "capped":
         lines += ["**Autofix is waiting**, not stopped: a spend limit delays a fix.", "", reason.strip()]
     elif verdict == "deferred":
-        lines += ["**Autofix deferred**: the model's provider was busy, so the next pass tries again.", "", "```", reason.strip(), "```"]
+        lines += ["**Autofix deferred**: a blip that frees itself (a busy provider, a full disk, a held git lock), so the next pass tries again.", "", "```", reason.strip(), "```"]
     elif verdict == "missed":
         lines += ["**Autofix missed**; the next pass tries again a tier up while one is left, and a miss on the top tier stops it.",
                   "", "```", reason.strip(), "```"]
@@ -1332,7 +1369,21 @@ def attempt(repo, pr, ids, asked=False):
     if ((pr.get("head") or {}).get("repo") or {}).get("full_name") != repo:
         return "fork"
     labels = {label["name"] for label in pr.get("labels") or []}
+    if "autofix:hold" in labels:
+        return "hold"
     forge_pr.git("fetch", "-q", "origin", f"refs/pull/{number}/head", pr["base"]["ref"])
+    behind = sh(ROOT, "git", "merge-base", "--is-ancestor", f"origin/{pr['base']['ref']}", pr["head"]["sha"], check=False).returncode != 0
+    if behind and time.time() - when(pr.get("updated_at")) < 5 * 60:
+        return "recent"
+    try:
+        conflicted = merge_clean(pr) if behind else []
+    except LookupError as err:
+        print(f"#{number}: the clean-merge push was refused, the branch moved: {err}")
+        return "moved"
+    if conflicted is None:
+        return "merged"
+    if conflicted:
+        print(f"#{number}: merge conflicts for the fixer: {', '.join(conflicted)}")
     notes = pr_review.comments(repo, number)
     # A stop is a delay: the label clears itself once the window its comment named has run out,
     # twice per PR. Incident: seven PRs sat on it until a person read them.
@@ -1350,7 +1401,6 @@ def attempt(repo, pr, ids, asked=False):
     # push mid-landing restarts its checks. Conflict fixes still go to every PR.
     if blocked and not pr.get("title", "").startswith(forge_pr.DRAFT):
         blocked = False
-    conflicted = conflicts_of(pr["base"]["ref"], pr["head"]["sha"])
     # A round the fixer declined whole on this head waits for a person, a new round, a new head or
     # an explicit `just pr autofix N`.
     if blocked and not conflicted and not asked and any(
@@ -1441,14 +1491,15 @@ def attempt(repo, pr, ids, asked=False):
         reason = f"{reason} It left the merge queue; add the `queue` label again once that is answered."
     if verdict in ("handoff", "base-red") and "autofix" in labels:
         set_label(repo, number, ids, "autofix", False)
-    # Stop and wait: a high the fixer showed wrong is the owner's call, not another round's.
+    what = f"autofix ({fields.get('kind') or KINDS[said]})"
+    status = bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), what)
+    # Incident: #1732 and #1733 were labelled `autofix:failed` with no comment; the label means "its comment
+    # says why", so it follows the comment. A high the fixer showed wrong is the owner's call, not another round's.
+    post(render(number, fields, verdict, reason, status, meter))
     if verdict == "failed" or fields.get("declined"):
         set_label(repo, number, ids, "autofix:failed", True)
     if verdict == "pushed" and "autofix" in labels:
         set_label(repo, number, ids, "autofix", False)
-    what = f"autofix ({fields.get('kind') or KINDS[said]})"
-    status = bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), what)
-    post(render(number, fields, verdict, reason, status, meter))
     print(status)
     return verdict
 
@@ -1540,10 +1591,16 @@ def cmd_autofix(args):
             break
         if not any(label["name"] == "autofix:hold" for label in pr.get("labels") or []):
             tidy(repo, pr)
-        said = attempt(repo, pr, ids)
+        try:
+            said = attempt(repo, pr, ids)
+        except Exception as err:
+            # One PR the pass cannot read is that PR's; "error" counts toward the quota because the fix
+            # may have paid a model before the comment failed, and its cost is on no ledger.
+            said = "error"
+            print(f"#{pr['number']}: the pass could not finish this PR: {err}")
         # Incident: a PR already labelled failed answered "failed" here too, so three of them
         # filled every pass's quota with skips and no other PR was tried for a day.
-        fixed += said in ("pushed", "failed", "missed", "moved", "declined")
+        fixed += said in ("pushed", "failed", "missed", "moved", "declined", "error")
         print(f"#{pr['number']}: {said}")
         # A missed tier climbs in this pass, not 15 minutes and a queue later: #1187 took four passes.
         if said != "missed":
@@ -1711,7 +1768,7 @@ def gate_selfcheck():
                       ask=lambda *a, **k: asked.append(a) or {"summary": "no"}, root=tmp, kind="conflict")
         except RuntimeError as err:
             got = err
-        if asked or not (isinstance(got, Handoff) and "may not touch" in str(got)):
+        if asked or not (isinstance(got, Handoff) and "may not touch" in str(got) and "`git fetch origin && git merge origin/main`" in str(got)):
             errs.append(f"a conflict in a walled file asked {len(asked)} model turn(s) and read {got!r}")
         git("checkout", "-q", "-f", "-b", "ruled", "origin/main"); (tmp / "justfile").write_text("lane name:\n    sh ruled.sh\n")
         (tmp / "ruled.sh").write_text("echo 'FAIL commit_style (50 commits)'; echo '  9a31c18a seed'; exit 1\n")
@@ -1822,7 +1879,7 @@ def waits_selfcheck():
             raise err
         return run
     stub = ((forge_pr, "git"), (forge_pr, "fgj_api"), (forge_pr, "cmd_rerun"), (pr_review, "comments"), (pr_review, "authors"),
-            (bot_meter, "since"), (pr_review, "rounds_of"), (module, "conflicts_of"), (module, "set_label"), (module, "quiet_for"),
+            (bot_meter, "since"), (pr_review, "rounds_of"), (module, "merge_clean"), (module, "set_label"), (module, "quiet_for"),
             (module, "red_lanes"), (module, "fix"), (module, "in_worker"), (module, "workspace"), (module, "sh"))
     saved = [getattr(mod, name) for mod, name in stub]
     pr = {"number": 1, "title": "t", "labels": [], "head": {"sha": "a" * 40, "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
@@ -1831,7 +1888,7 @@ def waits_selfcheck():
     try:
         forge_pr.git, forge_pr.fgj_api, forge_pr.cmd_rerun = (lambda *a, **k: ""), api, (lambda ns: reruns.append(ns.number))
         pr_review.comments, pr_review.authors, bot_meter.since = (lambda repo, n: notes), (lambda: {"jack"}), (lambda *a: [])
-        pr_review.rounds_of, module.conflicts_of, module.quiet_for = (lambda *a: []), (lambda base, sha: []), (lambda *a: QUIET)
+        pr_review.rounds_of, module.merge_clean, module.quiet_for = (lambda *a: []), (lambda pr: []), (lambda *a: QUIET)
         module.set_label = lambda repo, n, ids, name, on: labelled.append((name, on))
         module.red_lanes = lambda repo, sha: ["test"]
         t1, t2 = ("yi-cli::integration", "console_drive::a_hidden_sidebar"), ("yi", "t::two")
@@ -2017,6 +2074,29 @@ def waits_selfcheck():
     return errs
 
 
+def stand_in_cargo(work, attack, payload):
+    """The stand-in cargo whose shebang is the worker's own interpreter, and what its run left behind.
+    An interpreter the box cannot carry is a named row, not the traceback that killed this gate."""
+    got = reach = owner = left = None
+    try:
+        attack.write_text(f"#!{worker_python(work)[0]}\n{payload}")
+        attack.chmod(0o755)
+    except (OSError, RuntimeError) as error:
+        return got, reach, owner, left, [f"the selfcheck could not build its stand-in cargo's interpreter: {error}"]
+    errs = []
+    try:
+        got = in_worker(work, "filter", {"expr": "test(=x)"})
+    except (OSError, RuntimeError) as error:
+        errs.append(f"the worker could not run its stand-in cargo: {error}")
+    try:
+        reach = json.loads((work / "tmp/reach.json").read_text())
+    except (OSError, ValueError):
+        errs.append("the PR's code left no reach report, so what its worker could see is unjudged")
+    owner = work.stat().st_uid
+    left = subprocess.run(["ps", "-eo", "uid=,stat="], capture_output=True, text=True).stdout.splitlines()
+    return got, reach, owner, left, errs
+
+
 def confined_selfcheck():
     """PR code run through the real worker. As root it must fail to reach what the next fix trusts;
     any other user has no second user to drop to, so there it proves the worker's own contract."""
@@ -2041,8 +2121,7 @@ def confined_selfcheck():
         git("init", "-q", "-b", "main"); git("add", "-A"); git("commit", "-qm", "seed")
         (tmp / "bin").mkdir(mode=0o755)
         attack = tmp / "bin/cargo"
-        attack.write_text(f"""#!{PYTHON}
-import json, os, pathlib, pwd, subprocess, sys
+        attack_payload = f"""import json, os, pathlib, pwd, subprocess, sys
 def tried(fn):
     try:
         fn()
@@ -2060,28 +2139,29 @@ reach = dict(uid=os.getuid(), user=tried(lambda: pwd.getpwuid(os.getuid())), tok
 (pathlib.Path(os.environ["TMPDIR"]) / "reach.json").write_text(json.dumps(reach))
 subprocess.Popen(["sleep", "20"])
 sys.exit(7)
-""")
-        attack.chmod(0o755)
+"""
         os.environ.update(PATH=f"{tmp / 'bin'}{os.pathsep}{saved['PATH']}", HOME=str(bot_home), FGJ_TOKEN="canary", CARGO_HOME=str(tmp / "cargo-home"),
                           CARGO_TARGET_DIR=str(tmp / "seed-target"))
         os.environ.pop("RUSTUP_HOME", None)
         with workspace(repo, git("rev-parse", "HEAD")) as work:
-            got = in_worker(work, "filter", {"expr": "test(=x)"})
-            reach = json.loads((work / "tmp/reach.json").read_text())
-            owner = work.stat().st_uid
-            left = subprocess.run(["ps", "-eo", "uid=,stat="], capture_output=True, text=True).stdout.splitlines()
+            # The fixture's shebang is the interpreter the worker itself runs, so a root-only runner
+            # interpreter cannot make the stand-in cargo unexecutable to the user it drops to.
+            got, reach, owner, left, rows = stand_in_cargo(work, attack, attack_payload)
+            errs += rows
         with workspace(repo, git("rev-parse", "HEAD")) as work:
             try:
                 in_worker(work, "no-such-op", {})
                 errs.append("a worker that died read as an answer")
+            except Handoff as err:
+                errs.append(f"the selfcheck could not start a worker at all: {err}")
             except RuntimeError as err:
                 if "no-such-op" not in str(err):
                     errs.append(f"a worker's death lost its reason: {err}")
-        if got != 7:
+        if got is not None and got != 7:
             errs.append(f"the PR code's exit crossed the worker as {got!r}, not 7")
-        if reach["token"]:
+        if reach is not None and reach["token"]:
             errs.append("the PR's code read the forge token from its environment")
-        if not os.geteuid():
+        if reach is not None and not os.geteuid():
             live = [row for row in left if row.split()[0] == str(owner) and not row.split()[1].startswith("Z")]
             for what, held in (("the next fix's skills", reach["skills"]), ("the next fix's binary", reach["binary"]),
                                ("the warm build every fix copies", reach["seed"])):
@@ -2139,6 +2219,51 @@ sys.exit(7)
             pass
         finally:
             os.geteuid = real
+        box = pathlib.Path(tempfile.mkdtemp(prefix="autofix-python-"))
+        try:
+            box.chmod(0o755)
+            (box / "work").mkdir()
+            prefix = box / "prefix"
+            (prefix / "bin").mkdir(parents=True)
+            (prefix / "bin/python3").write_text("")
+            prefix.chmod(0o700)
+            (prefix / "bin/python3").chmod(0o700)
+            outside = box / "root-only.txt"
+            outside.write_text("root\n")
+            outside.chmod(0o600)
+            (prefix / "bin/python3.12").symlink_to(outside)
+            carried, moved = worker_python(box / "work", prefix / "bin/python3", prefix)
+            if carried != str(box / "python/bin/python3") or moved != {"PYTHONHOME": str(box / "python")}:
+                errs.append(f"a root-only interpreter was not carried into the box: {carried} {moved}")
+            if (box / "python/bin/python3").stat().st_mode & 0o005 != 0o005:
+                errs.append("the box's copy of the runner's interpreter is unreadable or unexecutable to its user")
+            if outside.stat().st_mode & 0o777 != 0o600:
+                errs.append("carrying an interpreter prefix widened a root-only file the copy's symlink points at")
+            try:
+                worker_python(box / "work", prefix / "bin/python3")
+            except Handoff as error:
+                if "cannot start" not in str(error):
+                    errs.append(f"an unreachable interpreter outside the prefix was refused for the wrong reason: {error}")
+            except RuntimeError as error:
+                errs.append(f"an unreachable interpreter outside the prefix was the PR's failure, not a hand-off: {error}")
+            else:
+                errs.append("an interpreter its user cannot exec and the box cannot carry was handed out as runnable")
+            carried_python = worker_python
+
+            def unreachable(work, executable=None, prefix=None):
+                raise Handoff("the fixer's worker cannot start: a root-only interpreter outside the prefix")
+
+            globals()["worker_python"] = unreachable
+            try:
+                rows = stand_in_cargo(box / "work", box / "cargo", "payload")[4]
+            finally:
+                globals()["worker_python"] = carried_python
+            if not any("could not build its stand-in cargo's interpreter" in row for row in rows):
+                errs.append(f"an interpreter the box cannot carry was not a named row: {rows}")
+            if worker_python(box / "work", "/bin/sh", box) != (os.path.realpath("/bin/sh"), {}):
+                errs.append("a reachable interpreter was copied instead of run where it is")
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
     finally:
         for key, value in saved.items():
             os.environ.pop(key, None) if value is None else os.environ.update({key: value})
@@ -2207,8 +2332,67 @@ print(json.dumps(dict(summary="resolved a.txt")))
     return errs
 
 
+def merge_selfcheck():
+    """A baseline-only clash merges and pushes with no model; a text clash stays for the fixer, named in its brief."""
+    errs = []
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-merge-"))
+    repo, bare = tmp / "repo", tmp / "remote.git"
+    repo.mkdir()
+    git = lambda *a: sh(repo, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a).stdout.strip()
+    baseline = repo / "scripts/guardrails/baselines/b.json"
+    try:
+        git("init", "-q", "-b", "main")
+        (repo / ".gitattributes").write_text("scripts/guardrails/baselines/*.json merge=baseline\n")
+        (repo / "a.txt").write_text("seed\n")
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text(merge_baseline.layout({"max_bytes": 10}))
+        git("add", ".gitattributes", "a.txt", "scripts/guardrails/baselines/b.json")
+        git("commit", "-qm", "seed")
+        git("checkout", "-q", "-b", "topic")
+        baseline.write_text(merge_baseline.layout({"max_bytes": 20}))
+        (repo / "a.txt").write_text("topic\n")
+        git("add", "a.txt", "scripts/guardrails/baselines/b.json")
+        git("commit", "-qm", "topic")
+        git("checkout", "-q", "main")
+        baseline.write_text(merge_baseline.layout({"max_bytes": 30}))
+        git("add", "scripts/guardrails/baselines/b.json")
+        git("commit", "-qm", "main")
+        sh(tmp, "git", "init", "-q", "--bare", str(bare))
+        git("remote", "add", "origin", str(bare))
+        git("push", "-q", "origin", "main", "topic")
+        git("fetch", "-q", "origin")
+        pr = {"number": 7, "title": "t", "head": {"sha": git("rev-parse", "topic"), "ref": "topic"}, "base": {"ref": "main"}}
+        before = git("rev-parse", "origin/topic")
+        try:
+            clean = merge_clean(pr, repo)
+            git("fetch", "-q", "origin")
+            merged = git("rev-parse", "origin/topic")
+            parents = git("log", "-1", "--format=%P", "origin/topic").split()
+            content = json.loads(git("show", "origin/topic:scripts/guardrails/baselines/b.json"))
+            if clean is not None or merged == before or len(parents) != 2 or content != {"max_bytes": 30}:
+                errs.append(f"a baseline-only merge read {clean!r}, moved={merged != before}, parents={len(parents)}, baseline={content}")
+        except RuntimeError as err:
+            errs.append(f"a baseline-only merge did not push by git alone: {err}")
+        (repo / "a.txt").write_text("main\n")
+        git("add", "a.txt")
+        git("commit", "-qm", "main text")
+        git("push", "-q", "origin", "main")
+        git("fetch", "-q", "origin")
+        pr["head"]["sha"] = git("rev-parse", "origin/topic")
+        before = pr["head"]["sha"]
+        conflicted = merge_clean(pr, repo)
+        git("fetch", "-q", "origin")
+        if conflicted != ["a.txt"] or git("rev-parse", "origin/topic") != before:
+            errs.append(f"a real conflict read {conflicted!r}, pushed={git('rev-parse', 'origin/topic') != before}")
+        elif "- a.txt\n" not in resolve_prompt(pr, "main", conflicted):
+            errs.append("the real conflict's filename is missing from the fixer's brief")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return errs
+
+
 def selfcheck():
-    errs = gate_selfcheck() + waits_selfcheck() + confined_selfcheck()
+    errs = merge_selfcheck() + gate_selfcheck() + waits_selfcheck() + confined_selfcheck()
     installed, pr_review.SKILLS = pr_review.SKILLS, pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-skills-"))
     (pr_review.SKILLS / "har").mkdir()
     (pr_review.SKILLS / "har/SKILL.md").write_text("---\nname: har\ndescription: d\n---\n")
@@ -2368,11 +2552,6 @@ def selfcheck():
         git("checkout", "-q", "-b", "topic"); (tmp / "a.txt").write_text("topic\n"); git("commit", "-qam", "topic")
         git("checkout", "-q", "main"); (tmp / "a.txt").write_text("main\n"); git("commit", "-qam", "main")
         git("update-ref", "refs/remotes/origin/main", "main")
-        topic = sh(tmp, "git", "rev-parse", "topic").stdout.strip()
-        if conflicts_of("main", topic, tmp) != ["a.txt"]:
-            errs.append(f"the trial merge read {conflicts_of('main', topic, tmp)}, not the conflicted a.txt")
-        if conflicts_of("main", sh(tmp, "git", "rev-parse", "main~1").stdout.strip(), tmp):
-            errs.append("a branch main already contains read as conflicted")
         pr = {"number": 7, "title": "t"}
         staged = []
 
@@ -2491,6 +2670,9 @@ def selfcheck():
         if "names no finding" not in str(findings_run({}, declined=[99])):
             errs.append("a decline that names no listed finding lost its reason")
         whole, part = findings_run({}, declined=[1, 2]), findings_run({}, declined=[1])
+        empty = findings_run({})
+        if "changed nothing" not in str(empty) or "it said '" not in str(empty):
+            errs.append(f"a fix that changed nothing and declined none read {empty!r}, not the model's own words")
         if "changed nothing" in str(whole) or "Declined 2 (high)" not in str(whole) or "changed nothing" not in str(part):
             errs.append(f"declining every finding read {whole!r} and declining one read {part!r}")
         first = len(asked)
@@ -2595,7 +2777,7 @@ def selfcheck():
     saved = {name: getattr(mod, name) for mod, name in ((forge_pr, "git"), (forge_pr, "fgj_api"), (pr_review, "comments"),
                                                         (pr_review, "authors"), (bot_meter, "since"), (pr_review, "rounds_of"))}
     passed, module = {}, sys.modules[__name__]
-    stand = {"conflicts_of": lambda base, sha: ["a.rs"], "set_label": lambda *a: None, "quiet_for": lambda *a: 0,
+    stand = {"merge_clean": lambda pr: ["a.rs"], "set_label": lambda *a: None, "quiet_for": lambda *a: 0,
              "fix": lambda pr, **kw: passed.update(kw) or {"kind": "conflict", "from": "a", "to": "b", "base": "main",
                                                             "model": TIERS[1][0], "tier": "medium", "round": "", "files": 1,
                                                             "summary": "s", "touched": [], "declined": []}}
@@ -2613,8 +2795,31 @@ def selfcheck():
             errs.append("a fork's PR was handed to the fixer, which pushes to origin")
         if passed.get("tried") != 1:
             errs.append(f"attempt handed fix() tried={passed.get('tried')}, not the 1 failed try since the last push")
+        attempted = []
+        module.merge_clean = lambda pr: attempted.append(pr) or None
+        sample = {"number": 1, "labels": [{"name": "autofix"}], "head": {"sha": "abc", "repo": {"full_name": "o/r"}},
+                  "base": {"ref": "main"}}
+        passed.clear()
+        if attempt("o/r", sample, {}) != "merged" or passed:
+            errs.append("a clean merge reached the agent instead of finishing by git alone")
+        fresh = dict(sample, updated_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+        if attempt("o/r", fresh, {}) != "recent" or len(attempted) != 1:
+            errs.append("a head updated inside the five-minute guard was merged")
+        held = dict(sample, labels=[{"name": "autofix:hold"}])
+        if attempt("o/r", held, {}) != "hold" or len(attempted) != 1:
+            errs.append("an autofix:hold PR reached the clean-merge path")
+        def moved(pr):
+            raise LookupError("non-fast-forward")
+        module.merge_clean = moved
+        try:
+            raced = attempt("o/r", sample, {})
+        except LookupError:
+            raced = "raised"
+        if raced != "moved":
+            errs.append(f"a head that moved during its clean merge read {raced}, not moved")
+        module.merge_clean = stand["merge_clean"]
         # A blocked round at the head: answered on a draft, left alone on a ready PR.
-        module.conflicts_of = lambda base, sha: []
+        module.merge_clean = lambda pr: []
         pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
         for title, want in ((forge_pr.DRAFT + "t", "findings"), ("t", None)):
             passed.clear()
@@ -2644,7 +2849,7 @@ def selfcheck():
             errs.append(f"a provider 429 read {said} with labels {labelled}, not deferred and unlabelled")
         # The label clears itself inside attempt(), where it runs: an aged failure row releases the PR
         # and an 11-hour one does not. Delete that branch and the first case reads stopped.
-        module.conflicts_of = lambda base, sha: []
+        module.merge_clean = lambda pr: []
         pr_review.rounds_of = lambda *a: [{"n": 1, "sha": "abc", "verdict": "clean", "findings": []}]
         stale = lambda at: [row(0, at, "failed")]
         for stale_rows, want in ((stale(now - RETRY_AFTER - 60), "clean"), (stale(now - RETRY_AFTER + 3600), "stopped")):
@@ -2656,7 +2861,7 @@ def selfcheck():
                 errs.append(f"a failure {int((now - when(stale_rows[0]['created_at'])) // 3600)}h old read {said} "
                             f"with labels {labelled}, not {want} and the label {'lifted' if want == 'clean' else 'kept'}")
         # The capped branch itself: one wait comment and no failed label, and silence inside its window.
-        module.conflicts_of, posted = (lambda base, sha: []), []
+        module.merge_clean, posted = (lambda pr: []), []
         pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
         forge_pr.fgj_api = lambda method, path, body=None, **k: posted.append((body or {}).get("body", "")) or {}
         over = [row(CAP_PR, now - 3600)]
@@ -2681,6 +2886,17 @@ def selfcheck():
             owner = bool(highs) and "a false alarm (`a.rs:3`)" in "".join(posted)
             if said != "declined" or (("autofix:failed", True) in labelled) != bool(highs) or bool(highs) != owner:
                 errs.append(f"a round declined whole (highs={len(highs)}) read {said} with labels {labelled}, owner list shown={owner}")
+        labelled[:] = []
+        module.fix = lambda pr, **kw: (_ for _ in ()).throw(RuntimeError("the clone's hook refused the fix"))
+        forge_pr.fgj_api = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("the forge was down"))
+        try:
+            attempt("o/r", draft, {})
+            refused = "returned"
+        except RuntimeError:
+            refused = "raised"
+        if refused != "raised" or ("autofix:failed", True) in labelled:
+            errs.append(f"a comment the forge refused {refused} with labels {labelled}, not an error and no label")
+        module.fix = stand["fix"]
         forge_pr.fgj_api = lambda *a, **k: {}
         declined = tried_notes + [dict(bot, body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 kind=findings from=abc round=2 verdict=declined -->\n")]
         pr_review.comments, module.fix = (lambda repo, n: declined), stand["fix"]
@@ -2823,6 +3039,15 @@ def selfcheck():
                                                               ("missed" if misses_left and misses_left.pop() else "pushed"))
         forge_pr.fgj_api = lambda *a, **k: [fresh, dict(fresh, number=5)]
         cmd_autofix(type("A", (), {"number": None})())
+        reached = []
+        def all_bad(repo, pr, ids, asked=False):
+            reached.append(pr["number"])
+            raise RuntimeError(f"#{pr['number']}: its comment was refused")
+        module.attempt = all_bad
+        forge_pr.fgj_api = lambda *a, **k: [dict(fresh, number=n) for n in range(10, 10 + PER_RUN + 3)]
+        cmd_autofix(type("A", (), {"number": None})())
+        if reached != list(range(10, 10 + PER_RUN)):
+            errs.append(f"a pass whose attempts all raised reached {reached}, not {PER_RUN} PRs and a stop")
     finally:
         forge_pr.fgj_api, forge_pr.repo = keep_api, keep_repo
         for name, value in keep.items():
