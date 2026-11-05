@@ -754,13 +754,8 @@ def run_filtered(cwd, expr):
 @contextlib.contextmanager
 def scratch_worktree(clone, rev):
     """A detached worktree of `clone` at `rev`, gone when the block ends however it ends."""
-    tree = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-tree-"))
-    try:
-        sh(clone, "git", "worktree", "add", "-q", "--detach", "-f", str(tree), rev)
+    with pr_review.scratch_worktree(lambda *a, **k: sh(clone, "git", *a, **k), rev, "yi-autofix-tree-") as tree:
         yield tree
-    finally:
-        sh(clone, "git", "worktree", "remove", "--force", str(tree), check=False)
-        shutil.rmtree(tree, ignore_errors=True)
 
 
 def filter_of(pairs):

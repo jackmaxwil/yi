@@ -1,4 +1,5 @@
 ---
+version: 0.925.0
 issue: Closes #1761
 ledger+: context P1–P19; prefix-aligned P7 | a summary quote that the `user://<n>` message it cites does not contain, as typed or as its key row escapes it, is marked `[unverified: not in user://<n>]` in the summary the compaction entry stores, the cited messages untouched (`compaction_faux::a_summary_quote_the_addressed_message_lacks_is_marked_unverified`, T1)
 raise: tests +78, comments +2, crate context +70, crate runtime +4
