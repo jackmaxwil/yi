@@ -5,7 +5,7 @@
 use std::error::Error;
 use std::io::{BufReader, Write};
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use crate::loopback::read_request;
 use crate::plan_ops::streams as text;
 use crate::scratch::Scratch;
+use crate::yi_bin::yi_command;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -117,14 +118,9 @@ impl Account {
     }
 
     fn yi(&self, args: &[&str]) -> std::io::Result<Output> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the journey is the spawned binary's argv, exit code, stdout and files"
-        )]
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut command = yi_command(&self.home);
         command
             .args(args)
-            .env("HOME", &self.home)
             .env_remove("HTTPS_PROXY")
             .env_remove("HTTP_PROXY")
             .current_dir(self.dir.join("project"))

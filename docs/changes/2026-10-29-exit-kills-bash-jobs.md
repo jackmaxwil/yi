@@ -1,4 +1,5 @@
 ---
+version: 0.904.0
 issue: Refs #819
 raise: crate cli +2, crate runtime +5, crate tools +99, tests +137, comments +3
 ---
