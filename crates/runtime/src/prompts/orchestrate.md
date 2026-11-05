@@ -115,9 +115,10 @@ session, not a stateless call: it can send you a line mid-run, and you can
 message it again after it reports.
 
     from yi import Plan, Writer, contract, cmd, fork_join
+    api_notes = "the new API's migration rules"
     plan = await Plan.create("port foo and bar to the new API")
     for name in ("foo", "bar"):
-        brief = f"Port crates/{name} to the new API. Scope: crates/{name}/** only. Read kernel://main/api_notes."
+        brief = f"Port crates/{name} to the new API. Scope: crates/{name}/** only. API notes: {api_notes}"
         await plan.todo(key=name, delegate=Writer(accept=contract(cmd(f"cargo test -p {name}", critical=True)),
                                                   deny_write=["docs/"], note=brief))
     run = await plan.run(shape=fork_join, budget="8m")

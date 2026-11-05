@@ -100,6 +100,13 @@ fn every_prompt_example_defines_the_constants_it_uses() {
 }
 
 #[test]
+fn the_writer_example_carries_computed_notes_in_its_brief() {
+    let prompt = include_str!("../src/prompts/orchestrate.md");
+    assert!(prompt.contains("API notes: {api_notes}"));
+    assert!(!prompt.contains("Read kernel://main/api_notes."));
+}
+
+#[test]
 fn the_rot_the_test_exists_for_is_caught() {
     let missing = undefined_constants("r = await h.result(schema=TASK_SCHEMA)");
     assert_eq!(missing.into_iter().collect::<Vec<_>>(), ["TASK_SCHEMA"]);

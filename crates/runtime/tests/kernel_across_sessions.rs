@@ -209,16 +209,11 @@ pub(crate) fn root_session(
     Ok((session, kernel))
 }
 
-pub(crate) async fn printed(
+async fn printed(
     kernel: &Arc<yi_runtime::KernelService>,
     code: &'static str,
 ) -> Result<String, Box<dyn Error>> {
-    let service = Arc::clone(kernel);
-    let outcome = tokio::task::spawn_blocking(move || {
-        let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
-        yi_tools::KernelBridge::execute_cell(service.as_ref(), code, "", &cancelled, None)
-    })
-    .await??;
+    let outcome = run_cell(kernel, &Arc::new(AtomicBool::new(false)), code).await??;
     Ok(format!(
         "{}{}",
         outcome.result.stdout, outcome.result.stderr
@@ -250,7 +245,7 @@ async fn the_family_board_belongs_to_the_root_session() -> TestResult {
     Ok(())
 }
 
-pub(crate) fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
+fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
     let registry = yi_runtime::HostRegistry::default();
     Ok(Arc::new(yi_runtime::KernelService::new(
         yi_runtime::KernelServiceOptions {
@@ -271,9 +266,9 @@ pub(crate) fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn
     )))
 }
 
-pub(crate) type Read = tokio::task::JoinHandle<Result<yi_runtime::fetch::Fetched, FetchError>>;
+type Read = tokio::task::JoinHandle<Result<yi_runtime::fetch::Fetched, FetchError>>;
 
-pub(crate) fn read_main(
+fn read_main(
     root: &Scratch,
     service: &Arc<KernelService>,
     name: &str,
@@ -286,29 +281,16 @@ pub(crate) fn read_main(
     Ok(tokio::task::spawn_blocking(move || resolver.fetch(&url)))
 }
 
-pub(crate) type Cell = tokio::task::JoinHandle<Result<yi_tools::KernelCellOutcome, String>>;
+type Cell = tokio::task::JoinHandle<Result<yi_tools::KernelCellOutcome, String>>;
 
-pub(crate) const SLEEP: &str = "import time\nopen('sleeping', 'w').close()\ntime.sleep(20)";
+const SLEEP: &str = "import time\nopen('sleeping', 'w').close()\ntime.sleep(20)";
 
-pub(crate) fn run_cell(
-    service: &Arc<KernelService>,
-    stop: &Arc<AtomicBool>,
-    code: &'static str,
-) -> Cell {
+fn run_cell(service: &Arc<KernelService>, stop: &Arc<AtomicBool>, code: &'static str) -> Cell {
     let (service, stop) = (Arc::clone(service), Arc::clone(stop));
     tokio::task::spawn_blocking(move || {
         let cancelled: yi_tools::CancelFlag = Arc::new(move || stop.load(Ordering::SeqCst));
         yi_tools::KernelBridge::execute_cell(service.as_ref(), code, "", &cancelled, None)
     })
-}
-
-pub(crate) async fn wait_for_file(path: &std::path::Path) {
-    for _ in 0..600 {
-        if path.is_file() {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
 }
 
 /// Incident: a read of an agent mid-cell waited for the whole cell, up to the 600 s ceiling,
@@ -320,11 +302,7 @@ async fn a_read_of_a_busy_kernel_gives_up_within_its_deadline() -> TestResult {
     let stop = Arc::new(AtomicBool::new(false));
     run_cell(&service, &stop, "x = 1").await??;
     let sleeper = run_cell(&service, &stop, SLEEP);
-    wait_for_file(&root.join("sleeping")).await;
-    assert!(
-        root.join("sleeping").is_file(),
-        "the sleeper cell never started"
-    );
+    crate::support::wait_for_path(&root.join("sleeping"), "the sleeper cell never started").await?;
 
     let started = std::time::Instant::now();
     let read = read_main(&root, &service, "x")?.await?;
@@ -392,7 +370,7 @@ async fn a_put_readback_lands_while_the_parent_cell_still_runs() -> TestResult {
     printed(&parent, "rlm.put('x', 'from the parent')").await?;
     let stop = Arc::new(AtomicBool::new(false));
     let sleeper = run_cell(&parent, &stop, SLEEP);
-    wait_for_file(&root.join("sleeping")).await;
+    crate::support::wait_for_path(&root.join("sleeping"), "the sleeper cell never started").await?;
     let seen = printed(&child, "print(rlm.get('x'))").await?;
     let mid_cell = root.join("sleeping").is_file();
     stop.store(true, Ordering::SeqCst);
