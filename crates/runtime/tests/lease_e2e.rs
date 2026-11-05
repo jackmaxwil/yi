@@ -3,24 +3,20 @@
 //! terminal `ChildUpdate`, so these tests read the update a parent's bus carries.
 
 use crate::scratch;
-use crate::support::faux_model;
+use crate::support::{self, Family};
 use scratch::Scratch;
 
 use std::error::Error;
-use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
-use yi_loop::ExecutionMode;
-use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::subagent::{ChildExit, ChildStatus, ChildUpdate, FailClass};
+use yi_types::subagent::{ChildActivity, ChildExit, ChildStatus, ChildUpdate, FailClass};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// One reply whose price is `fresh` new tokens on top of a `cached` prefix: the prefix is what a
-/// context gauge reads, the fresh part is what a lease is drawn in.
+/// One reply whose price is `fresh` new tokens on top of a `cached` prefix.
 fn reply(text: &str, stop: StopReason, fresh: u64, cached: u64) -> AgentMessage {
     let content = match stop {
         StopReason::ToolUse => {
@@ -56,76 +52,27 @@ fn turns(turns: usize, fresh: u64, cached: u64) -> Vec<AgentMessage> {
 }
 
 struct Rig {
-    host: Arc<SubagentHost>,
-    events: tokio::sync::broadcast::Sender<AgentEvent>,
-    notices: Arc<Mutex<Vec<String>>>,
+    family: Family,
     _root: Scratch,
 }
 
 fn rig(depth: u8, max_depth: u8, script: Vec<AgentMessage>) -> Result<Rig, Box<dyn Error>> {
     let root = Scratch::new("yi-lease")?;
-    let notices = Arc::new(Mutex::new(Vec::new()));
-    let notice_sink = Arc::clone(&notices);
-    let (events, _keep) = tokio::sync::broadcast::channel(256);
-    let provider: Arc<ProviderStream> = Arc::new(ProviderStream::new(None));
-    let queued = Arc::new(Mutex::new(Some(script)));
-    let store: yi_session::SharedSession = Arc::new(Mutex::new(
-        yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
-            id: "lease-test".to_owned(),
-            created_at: 0,
-            parent_session_id: None,
-            name: None,
-        }),
-    ));
-    let home = root.to_path_buf();
-    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
-        depth,
-        max_depth,
-        max_children: 4,
-        parent_session_dir: root.to_path_buf(),
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
-        factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
-            let provider = Arc::new(ProviderStream::new(None));
-            let script = queued
-                .lock()
-                .ok()
-                .and_then(|mut script| script.take())
-                .unwrap_or_default();
-            provider.queue_faux(script);
-            let mut child = AgentSession::new(
-                SessionConfig {
-                    system_prompt: "child sys".to_owned(),
-                    model: build.model,
-                    thinking_level: build.thinking,
-                    tool_execution: ExecutionMode::Sequential,
-                },
-                provider,
-            );
-            child.set_wall(build.wall.clone());
-            child.use_tools(yi_tools::builtin_tools(), std::env::temp_dir(), None);
-            Ok(child)
-        }),
-        provider,
-        notice: Arc::new(move |text: &str, _| {
-            if let Ok(mut sink) = notice_sink.lock() {
-                sink.push(text.to_owned());
-            }
-        }),
-        events: events.clone(),
-        parent_messages: Arc::new(Vec::new),
-        cwd: std::env::temp_dir(),
-        home,
-        lane_slots: 1,
-        report: Arc::new(|_, _| {}),
-        attribute: Arc::new(|_| {}),
-        store: Arc::new(move || Some(store.clone())),
-        plans_dir: root.join("plans"),
-        family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }));
+    let store = support::memory_store("lease-test");
+    let family = if (depth, max_depth) == (0, 1) {
+        support::family(root.to_path_buf(), std::env::temp_dir(), store, None)
+    } else {
+        support::family_at(
+            root.to_path_buf(),
+            std::env::temp_dir(),
+            store,
+            depth,
+            max_depth,
+        )
+    };
+    family.queue(script)?;
     Ok(Rig {
-        host,
-        events,
-        notices,
+        family,
         _root: root,
     })
 }
@@ -141,39 +88,46 @@ fn kwargs(tokens: Option<u64>) -> Map<String, Value> {
     args
 }
 
-const POLL_ATTEMPTS: usize = 400;
-const POLL_INTERVAL_MS: u64 = 30;
-
-/// The parent's bus, drained to the child's terminal update: the last thing a parent can see.
-async fn run(rig: &Rig, tokens: Option<u64>) -> Result<(ChildUpdate, Vec<String>), String> {
-    let mut receiver = rig.events.subscribe();
-    rig.host
+async fn run_updates(
+    rig: &Rig,
+    tokens: Option<u64>,
+) -> Result<(Vec<ChildUpdate>, Vec<String>), String> {
+    let mut receiver = rig.family.events.subscribe();
+    rig.family
+        .host
         .spawn("sweep the logs".to_owned(), kwargs(tokens))
         .map_err(|error| error.to_string())?;
-    let mut last = None;
-    for _ in 0..POLL_ATTEMPTS {
-        let Ok(Ok(event)) = tokio::time::timeout(
-            std::time::Duration::from_millis(POLL_INTERVAL_MS),
-            receiver.recv(),
-        )
-        .await
-        else {
-            continue;
-        };
-        if let AgentEvent::ChildUpdate { update } = event {
-            let terminal = update.status != ChildStatus::Running;
-            last = Some(update);
-            if terminal {
-                break;
+    let mut updates = Vec::new();
+    let terminal = support::wait_until(12_000, || {
+        while let Ok(event) = receiver.try_recv() {
+            if let AgentEvent::ChildUpdate { update } = event {
+                updates.push(update);
             }
         }
+        updates
+            .iter()
+            .any(|update| update.status != ChildStatus::Running)
+    })
+    .await;
+    if !terminal {
+        return Err("no terminal child update rode the bus".to_owned());
     }
-    let update = last.ok_or("no child update rode the bus")?;
     let notices = rig
+        .family
         .notices
         .lock()
         .map(|notices| notices.clone())
         .map_err(|_| "poisoned")?;
+    Ok((updates, notices))
+}
+
+/// The parent's bus, drained to the child's terminal update: the last thing a parent can see.
+async fn run(rig: &Rig, tokens: Option<u64>) -> Result<(ChildUpdate, Vec<String>), String> {
+    let (updates, notices) = run_updates(rig, tokens).await?;
+    let update = updates
+        .last()
+        .cloned()
+        .ok_or("no child update rode the bus")?;
     Ok((update, notices))
 }
 
@@ -194,12 +148,6 @@ async fn a_child_is_charged_for_its_fresh_tokens_not_its_cached_prefix() -> Test
         update.token_count, 1_300,
         "thirteen replies of 100 fresh tokens on a 14.9k cached prefix bill 1300, not 195000"
     );
-    assert_eq!(
-        update.context_tokens,
-        Some(15_000),
-        "the gauge reads the last request's whole context"
-    );
-    assert_eq!(update.context_window, Some(128_000));
     Ok(())
 }
 
@@ -257,5 +205,55 @@ async fn a_grandchild_is_held_to_the_same_lease() -> TestResult {
         update.exit
     );
     assert_eq!(update.token_count, 1_200);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_final_reply_that_crosses_the_lease_is_not_raced_by_the_watcher() -> TestResult {
+    let rig = rig(
+        0,
+        1,
+        vec![reply("swept the logs", StopReason::Stop, 1_200, 0)],
+    )?;
+    let (update, _) = run(&rig, Some(1_000)).await?;
+    assert!(
+        lease_spent(&update),
+        "the transcript, not watcher scheduling, decides the ending: {:?}",
+        update.exit
+    );
+    assert_eq!(update.token_count, 1_200);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_spent_lease_refuses_a_follow_up_instead_of_running_unpriced() -> TestResult {
+    let rig = rig(
+        0,
+        1,
+        vec![
+            reply("first answer", StopReason::Stop, 1_200, 0),
+            reply("unpriced answer", StopReason::Stop, 600, 0),
+        ],
+    )?;
+    let (update, _) = run(&rig, Some(1_000)).await?;
+    assert!(lease_spent(&update), "{:?}", update.exit);
+    let sent = rig
+        .family
+        .host
+        .route("parent", "sweeper", "what did you find?", true)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(sent["receipts"][0]["state"], "inboxed", "{sent:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reply_moves_the_child_back_to_waiting_before_its_next_event() -> TestResult {
+    let rig = rig(0, 1, turns(2, 100, 0))?;
+    let (updates, _) = run_updates(&rig, None).await?;
+    let billed = updates
+        .iter()
+        .find(|update| update.status == ChildStatus::Running && update.token_count > 0)
+        .ok_or("no running update carried a billed reply")?;
+    assert_eq!(billed.activity, ChildActivity::Waiting, "{updates:?}");
     Ok(())
 }

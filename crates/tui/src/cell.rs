@@ -96,7 +96,6 @@ pub struct TaskCell {
     pub prev_tool: Option<String>,
     pub toolcalls: u32,
     pub tokens: u64,
-    pub context: Option<(u64, u64)>,
     pub elapsed_ms: u64,
     pub error: Option<String>,
     /// The spawning cell's code preview; None for a child born outside a drawn cell.
@@ -729,8 +728,36 @@ pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
 
 const ANSWER_CAP: usize = 16 * 1024;
 
-mod rows;
-pub use rows::AnswerRows;
+/// Incident: every running card rendered its whole answer each frame to keep four rows, 12 ms a
+/// frame for eight cards in the dist build. The rows are kept until the answer or width changes.
+#[derive(Default)]
+pub struct AnswerRows(std::sync::Mutex<Option<KeptRows>>);
+
+type KeptRows = (usize, ColorTier, bool, String, Vec<Line<'static>>);
+
+impl AnswerRows {
+    fn window<R>(
+        &self,
+        answer: &str,
+        width: usize,
+        theme: &Theme,
+        pick: impl FnOnce(&[Line<'static>]) -> R,
+    ) -> R {
+        let mut held = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fresh = held.as_ref().is_some_and(|(w, tier, dark, source, _)| {
+            (*w, *tier, *dark) == (width, theme.tier, theme.dark) && source == answer
+        });
+        if !fresh {
+            let rows = markdown::render(answer, width.saturating_sub(6), theme).into_iter();
+            let rows = rows.skip_while(|line| line.spans.is_empty()).collect();
+            *held = Some((width, theme.tier, theme.dark, answer.to_owned(), rows));
+        }
+        pick(held.as_ref().map_or(&[], |(.., rows)| rows.as_slice()))
+    }
+}
 
 impl TaskCell {
     /// A repeated call is the same step, so it does not push itself into the previous row.

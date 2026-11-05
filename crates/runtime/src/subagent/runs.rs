@@ -334,6 +334,7 @@ impl SubagentHost {
         exit: ChildExit,
         error: Option<String>,
     ) -> (ChildExit, Option<String>) {
+        self.refold(child_id);
         let spent = self.children.lock().ok().and_then(|children| {
             children
                 .get(child_id)
@@ -502,6 +503,47 @@ mod tests {
         assert_eq!(
             crate::subagent::answer_text(selected).as_deref(),
             Some("{\"answer\":\"sea\"}")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lease_ending_refolds_a_final_reply_the_watcher_has_not_charged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut reply = crate::plan::dispatch::tests::reply("done");
+        if let AgentMessage::Assistant { usage, .. } = &mut reply {
+            usage.input = 1_200;
+            usage.total_tokens = 1_200;
+        }
+        let rig = crate::plan::dispatch::tests::rig_of(vec![reply], false)?;
+        let kwargs = serde_json::Map::from_iter([
+            ("name".to_owned(), serde_json::Value::from("kid")),
+            ("tokens".to_owned(), serde_json::Value::from(1_000)),
+        ]);
+        rig.host.spawn("finish".to_owned(), kwargs)?;
+        for _ in 0..400 {
+            if rig
+                .host
+                .children_view()
+                .iter()
+                .any(|child| child.update.exit.is_some())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let key = {
+            let mut children = rig.host.children.lock().map_err(|_| "poisoned")?;
+            let (key, record) = children.iter_mut().next().ok_or("no child")?;
+            record.spent = crate::subagent::record::Billing::default();
+            key.clone()
+        };
+        let (exit, _) = rig.host.lease_ending(&key, ChildExit::Completed, None);
+        assert_eq!(
+            exit,
+            ChildExit::Failed {
+                class: FailClass::LeaseSpent
+            }
         );
         Ok(())
     }

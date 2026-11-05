@@ -240,8 +240,6 @@ impl App {
                 activity: yi_types::subagent::ChildActivity::Waiting,
                 tool_use_count: u64::from(state.cell.toolcalls),
                 token_count: state.cell.tokens,
-                context_tokens: state.cell.context.map(|context| context.0),
-                context_window: state.cell.context.map(|context| context.1),
                 cost: None,
                 answer_preview: None,
                 error: Some(GONE.to_owned()),
@@ -304,7 +302,6 @@ impl App {
                         prev_tool: None,
                         toolcalls: 0,
                         tokens: 0,
-                        context: None,
                         elapsed_ms: 0,
                         error: None,
                         spawn,
@@ -365,7 +362,6 @@ impl App {
         if state.cell.status != status
             || state.cell.toolcalls != toolcalls
             || state.cell.tokens != update.token_count
-            || state.cell.context.map(|context| context.0) != update.context_tokens
             || state.cell.activity != update.activity
             || state.cell.flag != update.flag
         {
@@ -388,10 +384,6 @@ impl App {
             state.cell.error = update.error.clone();
             state.cell.toolcalls = toolcalls;
             state.cell.tokens = update.token_count;
-            state.cell.context = update
-                .context_tokens
-                .zip(update.context_window)
-                .filter(|(_, window)| *window > 0);
             state.cell.elapsed_ms = elapsed_ms(state.started, self.clock.now());
             // The record's preview outranks a folded stream that lost events to a gap, unless the
             // card cut that stream's head itself: a tail never holds the head the preview is.

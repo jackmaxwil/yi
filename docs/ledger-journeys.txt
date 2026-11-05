@@ -62,7 +62,6 @@ kernel + ipython + rlm() subagents | `reader_retry::ordinary_mail_preserves_the_
 kernel + ipython + rlm() subagents | `child_transcript::a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land` (T2)
 kernel + ipython + rlm() subagents | `lease_e2e::a_child_is_stopped_after_the_reply_that_crosses_its_lease`
 kernel + ipython + rlm() subagents | `lease_e2e::a_child_is_charged_for_its_fresh_tokens_not_its_cached_prefix`
-kernel + ipython + rlm() subagents | `tui_e2e::a_childs_gauge_is_its_last_request_over_its_own_window`
 kernel + ipython + rlm() subagents | `child_trail::a_child_lives_inside_its_parent_and_the_parent_points_at_it`
 kernel + ipython + rlm() subagents | `reader_e2e::a_reader_brief_carries_its_partition_numbered_and_fenced`
 kernel + ipython + rlm() subagents | `reader_e2e::held_readers_fill_the_family_cap`

@@ -935,8 +935,6 @@ mod tests {
             activity: ChildActivity::Waiting,
             tool_use_count: 0,
             token_count: 0,
-            context_tokens: None,
-            context_window: None,
             cost: None,
             answer_preview: None,
             error: None,

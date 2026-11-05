@@ -80,11 +80,10 @@ pub(crate) fn preview(text: &str, name: &str) -> String {
     crate::mailbox::clamp(&compact, PREVIEW_CHARS, "PREVIEW_CHARS", &next)
 }
 
-/// One incarnation's spend: its fresh fold, its last request's context, its lease crossed or not.
+/// One incarnation's spend: its fresh fold and whether its lease is crossed.
 #[derive(Default)]
 pub(crate) struct Billing {
     pub(crate) tokens: u64,
-    pub(crate) context: Option<u64>,
     pub(crate) crossed: bool,
 }
 
@@ -118,7 +117,6 @@ impl ChildRecord {
     /// Invariant: a child is stopped at the reply that crosses its lease, so no turn runs unpriced.
     pub(super) fn charge(&mut self, usage: &yi_types::message::Usage) {
         self.spent.tokens = self.spent.tokens.saturating_add(usage.fresh());
-        self.spent.context = Some(usage.context());
         self.enforce();
     }
 
@@ -128,10 +126,6 @@ impl ChildRecord {
         }
         self.spent.crossed = true;
         self.session.abort();
-    }
-
-    fn window(&self) -> Option<u64> {
-        Some(self.session.model().context_window).filter(|window| *window > 0)
     }
 
     pub(crate) fn finish(&mut self) {
@@ -171,8 +165,6 @@ impl ChildRecord {
             activity: self.activity,
             tool_use_count: self.tool_use_count,
             token_count: self.spent.tokens,
-            context_tokens: self.spent.context,
-            context_window: self.window(),
             cost: self.cost(),
             answer_preview: self.answer_preview.clone(),
             error: self.error.clone(),
@@ -293,6 +285,7 @@ impl ChildRecord {
             } => {
                 self.charge(usage);
                 self.cost += usage.cost.total.as_f64().unwrap_or(0.0);
+                self.activity = ChildActivity::Waiting;
                 let text: String = yi_types::message::join_text(content, "\n");
                 if !text.is_empty() {
                     self.answer_preview = Some(preview(&text, &self.session_name));

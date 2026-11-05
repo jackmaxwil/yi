@@ -119,12 +119,6 @@ pub struct ChildUpdate {
     /// This incarnation's fresh spend: the cache-excluded fold of its replies, so a cached
     /// prefix is not charged to the child again on every turn.
     pub token_count: u64,
-    /// The context the child's last request held, and the window its own model reads it
-    /// against: absent before its first reply and from a host older than the field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window: Option<u64>,
     /// Dollars this incarnation's replies were billed; absent before its first priced reply,
     /// and from a host older than the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]

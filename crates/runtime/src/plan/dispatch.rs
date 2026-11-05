@@ -287,7 +287,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(in crate::plan) fn reply(text: &str) -> AgentMessage {
+    pub(crate) fn reply(text: &str) -> AgentMessage {
         yi_ai::faux::faux_assistant_message(vec![yi_ai::faux::faux_text(text)], StopReason::Stop)
     }
 
@@ -322,9 +322,9 @@ pub(crate) mod tests {
         (sink, push)
     }
 
-    pub(in crate::plan) struct Rig {
+    pub(crate) struct Rig {
         pub(in crate::plan) engine: Arc<PlanEngine>,
-        pub(in crate::plan) host: Arc<SubagentHost>,
+        pub(crate) host: Arc<SubagentHost>,
         pins: Arc<FetchLog>,
         pub(in crate::plan) reports: Sink<AgentMessage>,
         /// The host's own lifecycle notices, which a child the engine took never sends.
@@ -345,7 +345,10 @@ pub(crate) mod tests {
         rig_of(script, true)
     }
 
-    fn rig_of(script: Vec<AgentMessage>, finish: bool) -> Result<Rig, Box<dyn std::error::Error>> {
+    pub(crate) fn rig_of(
+        script: Vec<AgentMessage>,
+        finish: bool,
+    ) -> Result<Rig, Box<dyn std::error::Error>> {
         let root = Scratch::new("yi-dispatch-rig")?;
         let (events, _keep) = tokio::sync::broadcast::channel(64);
         let (reports, report) = sink();

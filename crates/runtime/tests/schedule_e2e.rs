@@ -1024,8 +1024,6 @@ fn child_named(id: &str, tokens: u64) -> yi_types::event::AgentEvent {
             activity: yi_types::subagent::ChildActivity::Executing,
             tool_use_count: 1,
             token_count: tokens,
-            context_tokens: None,
-            context_window: None,
             cost: None,
             answer_preview: None,
             error: None,
