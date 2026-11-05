@@ -420,6 +420,8 @@ def check_merge_flow():
         return {"gate (test)": status}
 
     def api(method, path, payload=None):
+        if "actions/variables/MERGE_QUEUE" in path:
+            return {"data": "off"}
         state["merged"] = True
         return {}
 
