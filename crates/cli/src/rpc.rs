@@ -538,7 +538,7 @@ fn compact_frame(
 
 #[cfg(test)]
 mod tests {
-    use yi_runtime::compaction::{CompactError, CompactOutcome, Elision};
+    use yi_runtime::compaction::{CompactError, CompactOutcome, Elision, Tokens};
 
     #[test]
     fn a_compact_frame_tells_an_elision_and_a_failure_apart_from_a_summary() {
@@ -548,7 +548,11 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(
-            frame(Ok(CompactOutcome::Elided(Elision { messages: 5 })))["elided"],
+            frame(Ok(CompactOutcome::Elided(Elision {
+                messages: 5,
+                total: 9,
+                window: Tokens(1000)
+            })))["elided"],
             5
         );
         let busy = frame(Ok(CompactOutcome::Busy));

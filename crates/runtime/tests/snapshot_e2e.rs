@@ -262,7 +262,7 @@ async fn a_store_switch_rekeys_the_live_kernel() -> TestResult {
 }
 
 #[tokio::test]
-async fn post_compaction_sync_prunes_and_reports_names() -> TestResult {
+async fn post_compaction_sync_reports_only_the_models_names() -> TestResult {
     let dir = Scratch::new("yi-sync-svc")?;
     let notices = Arc::new(Mutex::new(Vec::new()));
     let service = service(&dir, &notices);
@@ -272,7 +272,17 @@ async fn post_compaction_sync_prunes_and_reports_names() -> TestResult {
         "sync must be a peek, never a boot: no kernel, no notice"
     );
 
-    let outcome = cell(&service, "kept = 1")
+    cell(&service, "pass").await?;
+    let fresh = service
+        .sync_after_compaction()
+        .await
+        .ok_or("fresh notice")?;
+    assert!(
+        fresh.contains("You have not defined any names yet."),
+        "a fresh kernel lists only the model's names: {fresh}"
+    );
+
+    let outcome = cell(&service, "kept = 1\nbig = b'x' * (20 << 20)")
         .await
         .map_err(|e| e.to_string())?;
     assert_eq!(outcome.result.status, yi_types::kernel::ExecuteStatus::Ok);
@@ -286,7 +296,7 @@ async fn post_compaction_sync_prunes_and_reports_names() -> TestResult {
         .map(|probe| probe.result.stderr)
         .unwrap_or_default();
     assert!(
-        notice.contains("<ipython_state>") && notice.contains("kept"),
+        notice.contains("These names are still defined: big, kept."),
         "the notice must list surviving names: {notice}\nkernel diagnostics: {diagnostics}"
     );
     service.dispose().await;
