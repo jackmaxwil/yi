@@ -176,6 +176,12 @@ pub struct Imported {
     pub unreadable: usize,
 }
 
+#[derive(Debug)]
+pub(crate) struct Snapshot {
+    pub index: Vec<IndexLine>,
+    pub notes: Vec<Note>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Saved {
     pub updated: bool,
@@ -277,7 +283,7 @@ impl Store {
         Some(read_note(name, &String::from_utf8_lossy(&bytes)))
     }
 
-    pub fn notes(&self) -> Vec<Note> {
+    fn names(&self) -> Vec<MemoryName> {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return Vec::new();
         };
@@ -291,6 +297,10 @@ impl Store {
             .collect();
         names.sort();
         names
+    }
+
+    pub fn notes(&self) -> Vec<Note> {
+        self.names()
             .into_iter()
             .filter_map(|name| self.note_at(name))
             .collect()
@@ -382,8 +392,11 @@ impl Store {
 
     /// The index as reconcile would write it, read without writing anything.
     pub(crate) fn indexed(&self) -> Result<Vec<IndexLine>, StoreError> {
+        self.index_from(&self.notes())
+    }
+
+    fn index_from(&self, notes: &[Note]) -> Result<Vec<IndexLine>, StoreError> {
         let lines = self.index()?;
-        let notes = self.notes();
         let mut seen: Vec<MemoryName> = Vec::new();
         let mut kept: Vec<IndexLine> = Vec::new();
         for line in &lines {
@@ -398,7 +411,7 @@ impl Store {
                 IndexLine::Other(_) => kept.push(line.clone()),
             }
         }
-        for note in &notes {
+        for note in notes {
             if !seen.contains(&note.name) {
                 kept.push(IndexLine::Note {
                     name: note.name.clone(),
@@ -545,13 +558,43 @@ impl Store {
     /// Copies a directory of notes in, tagging each with `source` when one is named; a tagged
     /// import never replaces a note changed since it wrote it, nor lands one save would refuse.
     pub fn import(&self, from: &Path, source: Option<&str>) -> Result<Imported, StoreError> {
+        self.import_report(from, source, true)
+            .map(|(report, _)| report)
+    }
+
+    pub(crate) fn import_snapshot(
+        &self,
+        from: &Path,
+        source: Option<&str>,
+        adopt_forgotten: bool,
+    ) -> Result<(Imported, Snapshot), StoreError> {
+        let (report, index) = self.import_report(from, source, adopt_forgotten)?;
+        let notes = self.notes();
+        Ok((report, Snapshot { index, notes }))
+    }
+
+    fn import_report(
+        &self,
+        from: &Path,
+        source: Option<&str>,
+        adopt_forgotten: bool,
+    ) -> Result<(Imported, Vec<IndexLine>), StoreError> {
         let origin = Self::new(from.to_path_buf());
         let mut report = Imported::default();
-        self.reconcile()?;
         {
             let _lock = self.lock()?;
-            for note in origin.notes() {
-                let file = note.name.file();
+            let replay = self.journal().replay()?;
+            let heads = replay.heads();
+            for name in origin.names() {
+                if !adopt_forgotten
+                    && heads
+                        .get(name.as_str())
+                        .is_some_and(|head| head.op == journal::FORGET)
+                {
+                    report.kept = report.kept.saturating_add(1);
+                    continue;
+                }
+                let file = name.file();
                 let Ok(bytes) = fs::read(from.join(&file)) else {
                     report.unreadable = report.unreadable.saturating_add(1);
                     continue;
@@ -583,8 +626,15 @@ impl Store {
                 self.replace(&file, &text)?;
             }
             let mut lines = self.index()?;
+            lines.retain(
+                |line| !matches!(line, IndexLine::Note { text, .. } if super::doc::refused(text)),
+            );
             for line in origin.index()? {
-                if let IndexLine::Note { name, .. } = &line {
+                if let IndexLine::Note { name, text } = &line {
+                    if super::doc::refused(text) {
+                        report.refused = report.refused.saturating_add(1);
+                        continue;
+                    }
                     let indexed = lines.iter().any(
                         |own| matches!(own, IndexLine::Note { name: have, .. } if have == name),
                     );
@@ -595,8 +645,8 @@ impl Store {
             }
             self.replace(INDEX, &render_index(&lines))?;
         }
-        self.reconcile()?;
-        Ok(report)
+        let index = self.reconcile()?;
+        Ok((report, index))
     }
 }
 

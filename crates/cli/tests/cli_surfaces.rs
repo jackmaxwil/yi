@@ -2237,6 +2237,51 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn doctor_reports_the_claude_memory_row_and_its_off_state() -> TestResult {
+    let workspace = Workspace::new("doctor-claude-memory")?;
+    let key: String = workspace
+        .project()
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let dir = workspace
+        .0
+        .join("home/.claude/projects")
+        .join(key)
+        .join("memory");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("alpha.md"),
+        "---\nname: alpha\ndescription: the doctor hook\ntype: project\n---\n\nbody\n",
+    )?;
+    let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&json))?;
+    assert_eq!(rows[11]["name"], "claude-memory", "{rows}");
+    let detail = rows[11]["detail"].as_str().ok_or("detail")?;
+    assert!(
+        detail.contains("1 notes in ~/.claude/projects/") && detail.contains("0 imported"),
+        "{detail}"
+    );
+    let import = workspace.yi_env(&["memory", "import-claude"], NO_KERNEL)?;
+    assert_eq!(import.status.code(), Some(0), "{}", stdout(&import));
+    let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&json))?;
+    let detail = rows[11]["detail"].as_str().ok_or("detail")?;
+    assert!(detail.contains("1 imported"), "{detail}");
+    write_config(&workspace, r#"{"memory":{"importClaude":false}}"#)?;
+    let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&json))?;
+    let detail = rows[11]["detail"].as_str().ok_or("detail")?;
+    assert!(detail.starts_with("memory.importClaude is off"), "{detail}");
+    assert!(
+        detail.contains("1 notes in ~/.claude/projects/"),
+        "{detail}"
+    );
+    Ok(())
+}
+
 /// C5: the cache row replays the newest session and reports its notice without failing,
 /// and never repairs the file, which may be the live session another process appends to.
 #[test]

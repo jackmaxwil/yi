@@ -93,6 +93,8 @@ config sets it false) imports them at every session start, fresh or resumed, and
   `claude-memory` row counts what was found, imported and stale. The note is stale only when no
   Claude Code directory of this home still holds it, since one store serves every worktree of a
   repository.
+- A note forgotten from the Yi store stays forgotten at later automatic starts while its Claude
+  source remains. `yi memory import-claude` is the explicit act that adopts it again.
 - The line a start commits reads `claude · N notes in ~/.claude/projects/…/memory · N imported ·
   N updated · N stale`, and an import that leaves the store past the block's load cap appends
   the `[… K of T notes loaded (LOAD_LINES 200); the rest: await memory.search("words")]` row.

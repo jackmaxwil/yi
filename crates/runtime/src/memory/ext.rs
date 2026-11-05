@@ -1,10 +1,11 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::Activity;
 use super::claude::{self, Sources};
 use super::store::{
-    IndexLine, LOAD_BYTES, LOAD_LINES, Store, StoreError, global_dir, loaded, repo_dir,
+    IndexLine, LOAD_BYTES, LOAD_LINES, Snapshot, Store, StoreError, global_dir, loaded, repo_dir,
 };
 use crate::ext::{Effect, Event, EventMask, Extension, StartReason, Trust};
 
@@ -95,9 +96,15 @@ fn scoped(
     root: &Path,
     index: Index,
     sources: &Sources,
+    snapshot: Option<&Snapshot>,
 ) -> Result<Scoped, StoreError> {
-    let index = index(store)?;
-    let notes = store.notes();
+    let (index, notes) = match snapshot {
+        Some(snapshot) => (
+            Cow::Borrowed(&snapshot.index),
+            Cow::Borrowed(&snapshot.notes),
+        ),
+        None => (Cow::Owned(index(store)?), Cow::Owned(store.notes())),
+    };
     let (shown, not_loaded) = loaded(&index, &store.usage());
     let mut stale = 0usize;
     let lines = shown
@@ -133,19 +140,37 @@ fn scoped(
 }
 /// The start block, reconciling each store first: a session start journals hand edits.
 pub fn block(home: &Path, cwd: &Path, sources: &Sources) -> (String, Summary) {
-    render(home, cwd, Store::reconcile, sources)
+    render(home, cwd, Store::reconcile, sources, None)
 }
 
 /// The start block's summary as the stores stand, written nowhere: `yi memory list` reads.
 pub fn listed(home: &Path, cwd: &Path) -> Summary {
     let sources = Sources::discover(home, cwd);
-    render(home, cwd, Store::indexed, &sources).1
+    render(home, cwd, Store::indexed, &sources, None).1
 }
 
-fn render(home: &Path, cwd: &Path, index: Index, sources: &Sources) -> (String, Summary) {
+fn render(
+    home: &Path,
+    cwd: &Path,
+    index: Index,
+    sources: &Sources,
+    imported: Option<&claude::Outcome>,
+) -> (String, Summary) {
     let root = crate::ext::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let repo = scoped(&Store::new(repo_dir(home, cwd)), &root, index, sources);
-    let global = scoped(&Store::new(global_dir(home)), &root, index, sources);
+    let repo = scoped(
+        &Store::new(repo_dir(home, cwd)),
+        &root,
+        index,
+        sources,
+        imported.and_then(|outcome| outcome.repo.as_ref()),
+    );
+    let global = scoped(
+        &Store::new(global_dir(home)),
+        &root,
+        index,
+        sources,
+        imported.and_then(|outcome| outcome.global.as_ref()),
+    );
     let mut summary = Summary::default();
     let mut body: Vec<String> = Vec::new();
     for (label, result) in [("repo", &repo), ("global", &global)] {
@@ -213,10 +238,11 @@ impl Extension for MemoryExt {
             return;
         };
         let sources = Sources::discover(&self.home, cwd);
-        for report in claude::run_if_enabled(&self.home, cwd, &sources) {
+        let imported = claude::run_at_start(&self.home, cwd, &sources);
+        for report in &imported.reports {
             self.activity.push(report.line());
         }
-        let (text, summary) = block(&self.home, cwd, &sources);
+        let (text, summary) = render(&self.home, cwd, Store::reconcile, &sources, Some(&imported));
         if *reason == StartReason::Fresh {
             let counted = Store::new(repo_dir(&self.home, cwd))
                 .record(|usage| usage.sessions = usage.sessions.saturating_add(1));
