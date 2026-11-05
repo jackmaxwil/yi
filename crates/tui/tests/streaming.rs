@@ -38,6 +38,8 @@ fn thinking(text: &str) -> Content {
         thinking: text.to_owned(),
         thinking_signature: None,
         redacted: None,
+        reasoning_field: None,
+        reasoning_details: None,
     }
 }
 

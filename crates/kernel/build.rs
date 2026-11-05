@@ -8,7 +8,11 @@ use std::path::{Path, PathBuf};
 type BuildResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn skipped(name: &str) -> bool {
-    name.starts_with('.') || name == "__pycache__" || name == "tests" || name.ends_with(".pyc")
+    name.starts_with('.')
+        || name == "__pycache__"
+        || name == "uv.lock"
+        || name == "tests"
+        || name.ends_with(".pyc")
 }
 
 fn push(out: &mut Vec<u8>, bytes: &[u8]) -> BuildResult<()> {

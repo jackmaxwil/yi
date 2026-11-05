@@ -71,6 +71,10 @@ fn verdict_is_a_result(output: &mut yi_tools::ToolOutput) {
     }
 }
 
+/// Incident: session 01a04c94 printed 26,490 and 18,747 characters of a kernel variable, then
+/// re-typed the second through `write`; a cell result past this many characters earns the line.
+const LARGE_PRINT_CHARS: usize = 10_000;
+
 fn result_text(result: &yi_types::event::ToolResult) -> String {
     yi_types::message::join_text(&result.content, "\n")
 }
@@ -112,6 +116,12 @@ fn facts_of(tool: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
     };
     if let Some(needle) = needle.filter(|_| tool == "ipython") {
         holds.push(needle.to_owned());
+    }
+    let shell = output.result.details["code"]
+        .as_str()
+        .is_some_and(|code| yi_tools::shell_cell(code).is_some());
+    if tool == "ipython" && !output.is_error && !shell && text.chars().count() > LARGE_PRINT_CHARS {
+        holds.push(yi_types::graph::LARGE_PRINT.to_owned());
     }
     holds
 }
@@ -890,6 +900,29 @@ impl ToolAdapter {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+
+    fn large_print(tool: &str, chars: usize, code: &str, is_error: bool) -> bool {
+        let mut output = yi_tools::text_output("é".repeat(chars));
+        output.result.details = serde_json::json!({ "code": code });
+        output.is_error = is_error;
+        super::facts_of(tool, &output).contains(&yi_types::graph::LARGE_PRINT.to_owned())
+    }
+
+    #[test]
+    fn only_a_large_successful_python_result_is_a_large_print() {
+        let limit = super::LARGE_PRINT_CHARS;
+        assert!(large_print("ipython", limit + 1, "print(x)", false));
+        assert!(!large_print("ipython", limit, "print(x)", false));
+        assert!(!large_print("bash", limit + 1, "print(x)", false));
+        assert!(!large_print("ipython", limit + 1, "f()", true));
+        assert!(!large_print(
+            "ipython",
+            limit + 1,
+            "%%bash\ncargo test",
+            false
+        ));
+        assert!(!large_print("ipython", limit + 1, "!cargo test", false));
+    }
 
     #[test]
     fn a_flag_after_cd_still_scopes_the_relative_paths_that_follow() {
