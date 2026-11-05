@@ -1,4 +1,6 @@
 ---
+version: 0.920.0
+decisions: D547
 issue: Closes #1942
 decision: a branch whose content is in trunk counts as merged however it landed | squash-merged branches kept lanes and disk forever | restore merge-base --is-ancestor in Pool::judge and Pool::detach
 raise: tests +403, comments +11, crate runtime +239
