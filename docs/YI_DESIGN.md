@@ -381,11 +381,11 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
 - `yi tool import just [recipe ...]` writes one exec tool per recipe of the project's justfile
   into `~/.yi/tools`, from just's own `--dump --dump-format json`: the schema is the recipe's
-  parameters (a default makes one optional, `*` and `+` a variadic array), its doc comment the
-  description; a doc line `yi: read` makes the tool `read` and its name never does, `yi: skip` and
-  a `[private]` recipe are left out, and a built-in's name is refused by name. Each wrapper's
-  marker line names its justfile and recipe, so a rerun rewrites only what changed and removes
-  the wrappers it wrote for recipes the justfile dropped, never a hand-written tool.
+  parameters (a default makes one optional, `*` and `+` a variadic array) and its doc comment the
+  description. Every recipe stays `exec`; `yi: skip` and a `[private]` recipe are left out, and a
+  built-in's name is refused by name. Each wrapper's marker line names its justfile and recipe, so
+  a rerun rewrites only what changed and removes the wrappers it wrote for recipes the justfile
+  dropped, never a hand-written tool. A name another justfile's wrapper holds refuses the import.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `annotate`, `answer`, `get_context`, `plan`, `todo` and `ask_user`
   carry a summary, their full schema (`plan` without field prose below the top level) and

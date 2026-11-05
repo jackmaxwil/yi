@@ -19,8 +19,7 @@ yi tool import just [recipe ...]        # no names: every recipe of the justfile
 
 imported 3 just recipes from /p/justfile into /h/.yi/tools
   added 3: build, deploy, test        # also: updated, unchanged, removed,
-                                      # left out (skipped), conflict (another
-                                      # project's wrapper of that name)
+                                      # left out (skipped)
 exit 0 imported      exit 2 refused, one sentence on stderr: quote it, never retry
 
 <recipe> --schema
@@ -33,18 +32,19 @@ exit 0 imported      exit 2 refused, one sentence on stderr: quote it, never ret
 
 A parameter without a default is `required`; one with a default carries it and
 is optional; `*`/`+` is an array of strings (`+` also required). `kind` is
-`read` or `exec`. A call hands the wrapper one JSON object on stdin and the
-wrapper turns it into `just --justfile <file> <recipe> <argv…>`: one element
-per parameter in order, a variadic spread one element each, an omitted default
-passed as its default, so no value can land in another parameter. A required
-parameter the call omits is refused by name.
+always `exec`: a repository-authored doc line cannot grant read-only
+permission. A call hands the wrapper one JSON object on stdin and the wrapper
+turns it into `just --justfile <file> <recipe> <argv…>`: one element per
+parameter in order, a variadic spread one element each, an omitted literal
+default passed as its default, and an omitted computed default left for just
+to fill. Once a computed default is omitted, no later value can be supplied;
+the wrapper refuses one rather than shifting it into the wrong parameter. A
+required parameter the call omits is refused by name.
 
-The markers are the recipe's doc line, which is the comment directly above it
-with nothing between: `yi: read` publishes the tool as `read` (the permission
-gate treats a read call as reads-only, so mark only a recipe that truly only
-reads), `yi: skip` keeps the recipe out, and `[private]` does the same. A
-recipe's name never decides its kind. A project opts in by having a justfile
-with those doc lines; there is no config key.
+The marker is the recipe's doc line, which is the comment directly above it
+with nothing between: `yi: skip` keeps the recipe out, and `[private]` does the
+same. A project opts in by having a justfile with that doc line; there is no
+config key.
 
 ## What it writes
 
@@ -64,9 +64,8 @@ The second line of every wrapper is `# yi: {"justfile":…, "recipe":…}`. A re
 compares each wrapper against what it would write now (`added`, `updated`,
 `unchanged`) and deletes the ones it wrote for recipes the justfile dropped; a
 file with no marker, or one that is not text, is never deleted or overwritten,
-and one holding a name it wants is a refusal naming the file. A wrapper another
-justfile wrote is a `conflict`, left exactly as it is: two projects that share
-a recipe name keep one tool, and the other project's import leaves it out.
+and one holding a name it wants is a refusal naming the file. A name held by
+another justfile's wrapper refuses the whole import before any write.
 Deleting `~/.yi/tools/<name>` by hand is safe and permanent.
 
 ## When it refuses

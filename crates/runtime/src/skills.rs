@@ -92,7 +92,7 @@ pub fn skills_catalog(cwd: &Path, home: &Path, budget: Bytes) -> Option<Truncate
 
 pub const CATALOG_FLOOR: Bytes = Bytes(8_192);
 pub const CATALOG_CEILING: Bytes = Bytes(32_768);
-pub const DESCRIPTION_CLIP: usize = 60;
+const DESCRIPTION_CLIP: usize = 60;
 
 pub fn catalog_budget(context_window: u64) -> Bytes {
     let bytes = usize::try_from(context_window.saturating_mul(4) / 50).unwrap_or(usize::MAX);

@@ -10,7 +10,6 @@ const USAGE: &str = "usage: yi tool import just [recipe ...]";
 const MARKER: &str = "# yi: ";
 const MARKED: &str = "# yi: {";
 const SKIP: &str = "yi: skip";
-const READ: &str = "yi: read";
 const WIRED: [&str; 7] = [
     "annotate",
     "answer",
@@ -20,20 +19,19 @@ const WIRED: [&str; 7] = [
     "todo",
     "web_search",
 ];
-const ARGV: &str = r#"import hashlib, json, os, sys
+const ARGV: &str = r#"import json, os, sys
 spec = json.loads(sys.argv[1])
 call = json.load(sys.stdin)
 if not isinstance(call, dict):
     sys.exit("yi: the just wrapper takes a JSON object on stdin")
-pin = spec.get("sha256")
-if pin and hashlib.sha256(open(spec["justfile"], "rb").read()).hexdigest() != pin:
-    sys.exit("yi: the justfile changed since import; rerun `yi tool import just`")
 argv = ["just", "--justfile", spec["justfile"], spec["recipe"]]
 gap = None
 for name, variadic, default, required in spec["parameters"]:
     value = call.get(name)
     if gap and value is not None:
         sys.exit("yi: %s needs %s, whose default just computes, before %s" % (spec["recipe"], gap, name))
+    if gap:
+        continue
     if variadic:
         if value is not None:
             argv.extend(str(item) for item in (value if isinstance(value, list) else [value]))
@@ -63,6 +61,7 @@ pub(crate) struct Recipe {
 }
 
 pub(crate) struct Dump {
+    source: PathBuf,
     recipes: Vec<Recipe>,
     skipped: Vec<String>,
     module_recipes: usize,
@@ -75,9 +74,6 @@ pub(crate) struct Report {
     unchanged: Vec<String>,
     removed: Vec<String>,
     skipped: Vec<String>,
-    conflicts: Vec<String>,
-    reads: Vec<String>,
-    demoted: Vec<String>,
     module_recipes: usize,
 }
 
@@ -118,19 +114,10 @@ fn import(cwd: &Path, picked: &[&str]) -> Result<i32, String> {
     }
     let text = String::from_utf8(dump.stdout)
         .map_err(|error| format!("just --dump printed no UTF-8: {error}"))?;
-    let justfile = justfile(&text)?;
     let dir = crate::update::absolute_home()?.join(".yi/tools");
-    let report = sync(&dir, &justfile, &text, picked)?;
+    let (justfile, report) = sync(&dir, &text, picked)?;
     print(&dir, &justfile, &report);
     Ok(0)
-}
-
-fn justfile(dump: &str) -> Result<PathBuf, String> {
-    parse(dump)?
-        .get("source")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .ok_or_else(|| "just --dump named no source justfile".to_owned())
 }
 
 fn parse(dump: &str) -> Result<Value, String> {
@@ -144,6 +131,11 @@ fn text(value: Option<&Value>) -> Option<String> {
 
 pub(crate) fn recipes(dump: &str) -> Result<Dump, String> {
     let value = parse(dump)?;
+    let source = value
+        .get("source")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| "just --dump named no source justfile".to_owned())?;
     let mut recipes = Vec::new();
     let mut skipped = Vec::new();
     for recipe in value
@@ -156,7 +148,9 @@ pub(crate) fn recipes(dump: &str) -> Result<Dump, String> {
             continue;
         };
         let doc = text(recipe.get("doc"));
-        if marker(doc.as_deref()) == Some("skip")
+        if doc
+            .as_deref()
+            .is_some_and(|doc| doc.trim().eq_ignore_ascii_case(SKIP))
             || recipe.get("private").and_then(Value::as_bool) == Some(true)
         {
             skipped.push(name);
@@ -196,6 +190,7 @@ pub(crate) fn recipes(dump: &str) -> Result<Dump, String> {
     recipes.sort_by(|left, right| left.name.cmp(&right.name));
     skipped.sort();
     Ok(Dump {
+        source,
         recipes,
         skipped,
         module_recipes: value
@@ -217,20 +212,10 @@ fn submodule(module: &Value) -> Option<usize> {
     Some(own.saturating_add(nested))
 }
 
-/// Invariant: just keeps only a recipe's last comment line as its doc, so `yi: read` and
-/// `yi: skip` are that line — a marker riding above a description never reaches the dump.
-fn marker(doc: Option<&str>) -> Option<&'static str> {
-    match doc.map(str::trim) {
-        Some(doc) if doc.eq_ignore_ascii_case(READ) => Some("read"),
-        Some(doc) if doc.eq_ignore_ascii_case(SKIP) => Some("skip"),
-        _ => None,
-    }
-}
-
 fn description(recipe: &Recipe, justfile: &Path) -> String {
     let dir = justfile.parent().unwrap_or(justfile).display();
     match recipe.doc.as_deref().map(str::trim) {
-        Some(doc) if marker(Some(doc)).is_none() && !doc.is_empty() => {
+        Some(doc) if !doc.is_empty() => {
             format!("{doc} (just recipe in {dir})")
         }
         _ => format!("Run just recipe {} in {dir}", recipe.name),
@@ -276,12 +261,12 @@ fn shell(text: &str) -> String {
     text.replace('\'', r"'\''")
 }
 
-fn wrapper(justfile: &Path, recipe: &Recipe, pin: Option<&str>) -> String {
+fn wrapper(justfile: &Path, recipe: &Recipe) -> String {
     let declaration = json!({
         "name": recipe.name,
         "description": description(recipe, justfile),
         "input_schema": schema(recipe),
-        "kind": if pin.is_some() { "read" } else { "exec" },
+        "kind": "exec",
     });
     let name = &recipe.name;
     let mut script = format!(
@@ -301,7 +286,7 @@ fi
         shell(&justfile.to_string_lossy()),
         shell(name)
     );
-    if recipe.params.is_empty() && pin.is_none() {
+    if recipe.params.is_empty() {
         script.push_str(&just);
         script.push('\n');
         return script;
@@ -314,7 +299,6 @@ fi
             .iter()
             .map(|param| json!([param.name, param.variadic, param.default, param.required]))
             .collect::<Vec<_>>(),
-        "sha256": pin,
     });
     script.push_str(&format!(
         "command -v python3 >/dev/null 2>&1 || {{
@@ -346,13 +330,9 @@ fn reserved() -> Vec<String> {
     names
 }
 
-pub(crate) fn sync(
-    dir: &Path,
-    justfile: &Path,
-    dump: &str,
-    picked: &[&str],
-) -> Result<Report, String> {
+pub(crate) fn sync(dir: &Path, dump: &str, picked: &[&str]) -> Result<(PathBuf, Report), String> {
     let Dump {
+        source: justfile,
         recipes,
         skipped,
         module_recipes,
@@ -394,19 +374,12 @@ pub(crate) fn sync(
         module_recipes,
         ..Report::default()
     };
-    let source = fs::read(justfile)
-        .map_err(|error| format!("could not read {}: {error}", justfile.display()))?;
-    let digest = yi_runtime::tarball::sha256_hex(&source);
-    let imports = String::from_utf8_lossy(&source).lines().any(|line| {
-        let line = line.trim_start();
-        line.starts_with("import") || line.starts_with("mod ") || line.starts_with("mod?")
-    });
     let mut written = Vec::new();
+    let mut conflicts = Vec::new();
     let mut planned = Vec::new();
     for recipe in &chosen {
         let path = dir.join(&recipe.name);
-        let pin = (marker(recipe.doc.as_deref()) == Some("read") && !imports).then_some(&digest);
-        let body = wrapper(justfile, recipe, pin.map(String::as_str));
+        let body = wrapper(&justfile, recipe);
         let previous = match held(&path) {
             Held::Absent => None,
             Held::Foreign => {
@@ -423,26 +396,19 @@ pub(crate) fn sync(
                     ));
                 }
                 Some((source, _)) if source != justfile => {
-                    report
-                        .conflicts
-                        .push(format!("{} (from {})", recipe.name, source.display()));
+                    conflicts.push(format!("{} (from {})", recipe.name, source.display()));
                     continue;
                 }
                 Some(_) => Some(script),
             },
         };
-        if pin.is_some() {
-            report.reads.push(recipe.name.clone());
-        } else if marker(recipe.doc.as_deref()) == Some("read") {
-            report.demoted.push(recipe.name.clone());
-        }
         planned.push((recipe.name.as_str(), path, body, previous));
         written.push(recipe.name.as_str());
     }
-    if !picked.is_empty() && !report.conflicts.is_empty() {
+    if !conflicts.is_empty() {
         return Err(format!(
             "{} is another project's wrapper, so yi imports nothing over that name",
-            report.conflicts.join(", ")
+            conflicts.join(", ")
         ));
     }
     for (name, path, body, previous) in planned {
@@ -459,18 +425,12 @@ pub(crate) fn sync(
         }
     }
     if picked.is_empty() {
-        report.removed = prune(dir, justfile, &written)?;
+        report.removed = prune(dir, &justfile, &written)?;
     }
-    for names in [
-        &mut report.added,
-        &mut report.removed,
-        &mut report.conflicts,
-        &mut report.reads,
-        &mut report.demoted,
-    ] {
+    for names in [&mut report.added, &mut report.removed] {
         names.sort();
     }
-    Ok(report)
+    Ok((justfile, report))
 }
 
 /// Invariant: a file yi cannot read as text is a tool yi did not write, so it is neither
@@ -528,15 +488,6 @@ fn print(dir: &Path, justfile: &Path, report: &Report) {
         ("unchanged", &report.unchanged),
         ("removed", &report.removed),
         ("left out", &report.skipped),
-        ("conflict", &report.conflicts),
-        (
-            "read, runs without a prompt while the justfile is unchanged",
-            &report.reads,
-        ),
-        (
-            "yi: read ignored, the justfile has imports or modules",
-            &report.demoted,
-        ),
     ] {
         if !names.is_empty() {
             println!("  {label} {}: {}", names.len(), names.join(", "));

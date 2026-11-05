@@ -5,6 +5,7 @@ use std::process::{Command, Output};
 use serde_json::Value;
 
 use crate::scratch::Scratch;
+use crate::yi_bin::yi_command;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -40,15 +41,10 @@ impl Workspace {
     }
 
     fn import_in(&self, project: &Path, words: &[&str]) -> Result<Output, Box<dyn Error>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the spawned binary's argv, exit code and stdout are the contract"
-        )]
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut command = yi_command(&self.home());
         Ok(command
             .args(["tool", "import"])
             .args(words)
-            .env("HOME", self.home())
             .current_dir(project)
             .output()?)
     }
@@ -327,7 +323,7 @@ fn a_hand_written_tool_of_the_same_name_is_not_replaced() -> TestResult {
 }
 
 #[test]
-fn a_recipe_marked_read_is_a_read_tool() -> TestResult {
+fn a_read_marker_never_makes_a_recipe_a_read_tool() -> TestResult {
     let space = Workspace::new(
         "read",
         "\
@@ -345,7 +341,7 @@ status:
     )?;
     let imported = space.import(&["just"])?;
     assert!(imported.status.success(), "{imported:?}");
-    assert_eq!(space.schema("show")?["kind"], "read");
+    assert_eq!(space.schema("show")?["kind"], "exec");
     assert_eq!(
         space.schema("status")?["kind"],
         "exec",
@@ -448,7 +444,7 @@ build:
 }
 
 #[test]
-fn another_project_s_recipe_is_left_out_instead_of_written_over() -> TestResult {
+fn another_project_s_name_collision_refuses_the_whole_import() -> TestResult {
     let space = Workspace::new("cross-project", "build:\n    echo first\n")?;
     let first = space.import(&["just"])?;
     assert!(first.status.success(), "{first:?}");
@@ -456,22 +452,20 @@ fn another_project_s_recipe_is_left_out_instead_of_written_over() -> TestResult 
     let other = space.sibling("other", "build:\n    echo second\npack:\n    echo packed\n")?;
 
     let second = space.import_in(&other, &["just"])?;
-    assert!(second.status.success(), "{second:?}");
-    let said = String::from_utf8(second.stdout)?;
-    assert!(said.contains("conflict 1: build (from"), "{said}");
-    assert!(said.contains("added 1: pack"), "{said}");
+    assert_eq!(second.status.code(), Some(2), "{second:?}");
+    let complaint = String::from_utf8(second.stderr)?;
+    assert!(
+        complaint.contains("build (from") && complaint.contains("another project's wrapper"),
+        "the refusal names the colliding recipe and its project: {complaint}"
+    );
     assert_eq!(
         std::fs::read(space.path("build"))?,
         mine,
         "the first project's wrapper of that name is untouched"
     );
-
-    let picked = space.import_in(&other, &["just", "build"])?;
-    assert_eq!(picked.status.code(), Some(2), "{picked:?}");
-    let complaint = String::from_utf8(picked.stderr)?;
     assert!(
-        complaint.contains("another project's wrapper"),
-        "naming it must refuse rather than write it: {complaint}"
+        !space.path("pack").exists(),
+        "one collision refuses every write from that import"
     );
     Ok(())
 }
@@ -554,40 +548,24 @@ fn naming_recipes_imports_only_those_and_skips_the_prune() -> TestResult {
 }
 
 #[test]
-fn a_read_recipe_refuses_to_run_once_the_justfile_changes() -> TestResult {
-    let space = Workspace::new("pin", "# yi: read\nshow:\n    echo shown\n")?;
-    let imported = space.import(&["just"])?;
-    assert!(imported.status.success(), "{imported:?}");
-    assert!(
-        String::from_utf8(imported.stdout)?.contains("show"),
-        "the report names the read recipe"
-    );
-    let first = space.tool("show", "{}")?;
-    assert_eq!(
-        String::from_utf8_lossy(&first.stdout),
-        "shown\n",
-        "{first:?}"
-    );
-
-    space.justfile("# yi: read\nshow:\n    echo changed\n")?;
-    let second = space.tool("show", "{}")?;
-    assert!(!second.status.success(), "{second:?}");
-    assert!(String::from_utf8(second.stderr)?.contains("justfile changed since import"));
-    assert!(second.stdout.is_empty(), "the changed body must not run");
-    Ok(())
-}
-
-#[test]
-fn a_read_marker_is_ignored_when_the_justfile_imports_another() -> TestResult {
+fn a_changed_recipe_updates_only_its_wrapper_and_schema() -> TestResult {
     let space = Workspace::new(
-        "pin-import",
-        "import 'more.just'\n# yi: read\nshow:\n    echo shown\n",
+        "updated",
+        "build:\n    echo build\n\ntest:\n    echo test\n",
     )?;
-    std::fs::write(space.project.join("more.just"), "other:\n    echo other\n")?;
-    let imported = space.import(&["just"])?;
-    assert!(imported.status.success(), "{imported:?}");
-    assert_eq!(space.schema("show")?["kind"], "exec");
-    assert!(String::from_utf8(imported.stdout)?.contains("yi: read ignored"));
+    let first = space.import(&["just"])?;
+    assert!(first.status.success(), "{first:?}");
+    space.justfile("build mode=\"debug\":\n    echo build {{mode}}\n\ntest:\n    echo test\n")?;
+
+    let second = space.import(&["just"])?;
+    assert!(second.status.success(), "{second:?}");
+    let said = String::from_utf8(second.stdout)?;
+    assert!(said.contains("updated 1: build"), "{said}");
+    assert!(said.contains("unchanged 1: test"), "{said}");
+    assert_eq!(
+        space.schema("build")?["input_schema"]["properties"]["mode"]["default"],
+        "debug"
+    );
     Ok(())
 }
 
@@ -628,6 +606,43 @@ fn a_computed_default_is_optional_and_just_fills_it() -> TestResult {
         String::from_utf8_lossy(&given.stdout),
         "hello yi\n",
         "{given:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_computed_default_does_not_shift_a_later_literal_default() -> TestResult {
+    let space = Workspace::new(
+        "computed-shift",
+        "deploy env=uppercase(\"world\") region=\"us\":\n    printf '%s %s\\n' \"{{env}}\" \"{{region}}\"\n",
+    )?;
+    let imported = space.import(&["just"])?;
+    assert!(imported.status.success(), "{imported:?}");
+    let called = space.tool("deploy", "{}")?;
+    assert!(called.status.success(), "{called:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&called.stdout),
+        "WORLD us\n",
+        "just fills both omitted defaults in their own positions"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_value_after_a_computed_default_gap_is_refused() -> TestResult {
+    let space = Workspace::new(
+        "computed-refusal",
+        "deploy env=uppercase(\"world\") region=\"us\":\n    printf '%s %s\\n' \"{{env}}\" \"{{region}}\"\n",
+    )?;
+    let imported = space.import(&["just"])?;
+    assert!(imported.status.success(), "{imported:?}");
+    let called = space.tool("deploy", r#"{"region":"eu"}"#)?;
+    assert!(!called.status.success(), "{called:?}");
+    assert!(called.stdout.is_empty(), "the recipe never ran: {called:?}");
+    let complaint = String::from_utf8(called.stderr)?;
+    assert!(
+        complaint.contains("deploy") && complaint.contains("env"),
+        "the refusal names the recipe and the omitted computed default: {complaint}"
     );
     Ok(())
 }
