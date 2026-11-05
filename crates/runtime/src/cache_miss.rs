@@ -32,7 +32,6 @@ const HOUR_MS: u64 = 60 * 60 * 1000;
 /// Pseudo-gaps added to the short band: one pause early in a short session counts for a third
 /// of its gaps rather than a half.
 const SHORT_PSEUDO_GAPS: f64 = 2.0;
-const SWITCH_WINDOW_MS: u64 = 30 * 60 * 1000;
 const DRILL_HOLD_MS: u64 = HOUR_MS;
 /// Consecutive unexplained requests that wrote the prompt and read nothing back, on one route.
 const ZERO_READ_WRITES: u32 = 4;
@@ -76,12 +75,6 @@ impl MissCause {
     }
 }
 
-/// The upstream the fold pinned and how long for: the host its cache reads came from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Pin {
-    pub upstream: String,
-    pub until: u64,
-}
 struct Request {
     route: String,
     prompt: u64,
@@ -120,9 +113,6 @@ pub struct MissTracker {
     reuse: std::collections::VecDeque<(u64, u64)>,
     reuse_announced: bool,
     notice: Option<String>,
-    switch_misses: Vec<u64>,
-    reading: Option<String>,
-    pin: Option<Pin>,
     zero_read_writes: u32,
     /// When the tail mark is written again, and the route it was suspended on.
     tail_suspended: Option<(u64, String)>,
@@ -226,6 +216,8 @@ impl MissTracker {
             .is_some_and(|last| last.route != request.route)
         {
             self.reuse.clear();
+            self.zero_read_writes = 0;
+            self.tail_suspended = None;
         }
         let cause = self
             .last
@@ -283,33 +275,25 @@ impl MissTracker {
         cause
     }
 
-    /// Invariant: a switch or a gap explains its own miss, so only an unexplained run moves the
-    /// marks: two switches pin the reading host an hour, four zero-read writes rest the tail.
+    /// Invariant: only an unexplained run on a route whose tail is being probed moves the mark.
     fn escalate(&mut self, request: &Request, cause: Option<MissCause>, read: u64) {
         let at = request.at;
-        self.switch_misses
-            .retain(|miss| at.saturating_sub(*miss) <= SWITCH_WINDOW_MS);
-        if cause == Some(MissCause::UpstreamSwitch) {
-            self.switch_misses.push(at);
-        }
         if read > 0
-            && let Some(upstream) = request.upstream.clone()
+            && self
+                .tail_suspended
+                .as_ref()
+                .is_some_and(|(_, route)| route == &request.route)
         {
-            self.reading = Some(upstream);
+            self.tail_suspended = None;
         }
-        let pinned = self.pin.as_ref().is_some_and(|pin| at < pin.until);
-        if !pinned
-            && self.switch_misses.len() >= 2
-            && let Some(upstream) = self.reading.clone()
-        {
-            self.pin = Some(Pin {
-                upstream,
-                until: at.saturating_add(DRILL_HOLD_MS),
-            });
-            self.switch_misses.clear();
-        }
-        let zero_read =
-            read == 0 && request.write > 0 && cause.is_some_and(MissCause::is_unexplained);
+        let suspended = self
+            .tail_suspended
+            .as_ref()
+            .is_some_and(|(until, route)| route == &request.route && at < *until);
+        let zero_read = !suspended
+            && read == 0
+            && request.write > 0
+            && cause.is_some_and(MissCause::is_unexplained);
         self.zero_read_writes = if zero_read {
             self.zero_read_writes.saturating_add(1)
         } else {
@@ -349,6 +333,7 @@ impl MissTracker {
         self.last = None;
         self.reuse.clear();
         self.zero_read_writes = 0;
+        self.tail_suspended = None;
     }
 
     /// What the fold advises; `None` before a first request and after a compaction.
@@ -360,7 +345,6 @@ impl MissTracker {
             last_prompt: last.prompt,
             growth: self.growth,
             gaps: self.gaps,
-            pin: self.pin.clone(),
             tail_suspended: self.tail_suspended.clone(),
         })
     }
@@ -371,7 +355,7 @@ impl MissTracker {
     }
 }
 
-/// The fold's advice for the next request: the TTL, the upstream to prefer, the tail mark.
+/// The fold's advice for the next request: the TTL and the moving tail mark.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheAdvice {
     pub last_start: u64,
@@ -379,7 +363,6 @@ pub struct CacheAdvice {
     pub last_prompt: u64,
     pub growth: Option<u64>,
     pub gaps: [u32; 3],
-    pub pin: Option<Pin>,
     pub tail_suspended: Option<(u64, String)>,
 }
 
@@ -395,19 +378,11 @@ fn tokens_f64(count: u64) -> f64 {
 }
 
 impl CacheAdvice {
-    /// The upstream to prefer at `now`, once two switches inside the window pinned one.
-    pub fn pin(&self, now: u64) -> Option<&str> {
-        self.pin
-            .as_ref()
-            .filter(|pin| now < pin.until)
-            .map(|pin| pin.upstream.as_str())
-    }
-
-    /// Whether the request at `now` writes a moving tail mark.
-    pub fn tail(&self, now: u64) -> bool {
+    /// Whether `route`'s request at `now` writes a moving tail mark.
+    pub fn tail(&self, now: u64, route: &str) -> bool {
         self.tail_suspended
             .as_ref()
-            .is_none_or(|(until, _)| now >= *until)
+            .is_none_or(|(until, suspended)| suspended != route || now >= *until)
     }
 
     /// The TTL whose expected cost over this request and the next is lower, at `model`'s own

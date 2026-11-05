@@ -27,8 +27,6 @@ pub struct OpenAiOptions {
     pub session_id: Option<String>,
     pub proxy: Option<crate::request::ProxyConfig>,
     pub routing: Option<Value>,
-    /// The upstream the session ledger pinned: a router is asked for that host first (#748).
-    pub pin: Option<String>,
     pub extra_headers: Vec<(String, String)>,
     /// A stored OAuth credential is on the wire (D191): a 401 names `yi login`.
     pub oauth: bool,
@@ -45,7 +43,7 @@ pub fn routing_params(model: &Model, options: &OpenAiOptions, schema: bool) -> O
     if !model.base_url.contains("openrouter.ai") {
         return None;
     }
-    let mut routing = crate::request::pin_routing(options.routing.clone(), options.pin.as_deref());
+    let mut routing = options.routing.clone();
     if schema {
         // Invariant: a schema only reaches a host that takes `response_format`; the rest ignore it.
         let object = routing.get_or_insert_with(|| json!({}));
@@ -368,8 +366,12 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     // its own prefix and no explicit breakpoint is known to be accepted (design §11).
     if model.base_url.contains("openrouter.ai") {
         let breakpoints = Breakpoints::build(
-            &CachePolicy::of(model, context.cache_ttl, context.cache_ttl)
-                .with_tail(context.cache_tail),
+            &CachePolicy::of(
+                model,
+                context.cache_ttl,
+                context.cache_ttl,
+                context.cache_tail,
+            ),
             &history,
             context.reuse,
             context.shared_through,

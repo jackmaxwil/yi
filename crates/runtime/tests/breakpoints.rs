@@ -197,7 +197,7 @@ fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError>
         Engine::Breakpoint { hour: true, .. } => (case.stable.max(case.ttl), case.ttl),
         _ => (Ttl::Min5, Ttl::Min5),
     };
-    let policy = CachePolicy::new(case.engine, case.stable, case.ttl);
+    let policy = CachePolicy::new(case.engine, case.stable, case.ttl, ctx.cache_tail);
     let breakpoints = Breakpoints::build(&policy, &ctx.messages, case.reuse, case.shared);
     let marks: Vec<_> = breakpoints.marks().collect();
     for mark in &marks {

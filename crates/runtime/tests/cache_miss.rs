@@ -575,58 +575,57 @@ fn the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes() -> Result<
     Ok(())
 }
 
-/// Dies with a pin after one switch: two switch misses pin the reading host for an hour.
-#[test]
-fn an_upstream_pin_needs_two_switch_misses_inside_half_an_hour() -> Result<(), Box<dyn Error>> {
-    let minute = 60_000;
-    let mut tracker = MissTracker::default();
-    let mut after = Vec::new();
-    for entry in [
-        request(CLAUDE, (100, 40_000, 0), 0, "Amazon Bedrock")?,
-        request(CLAUDE, (40_100, 0, 0), minute, "Google Vertex")?,
-        request(CLAUDE, (100, 40_000, 0), 2 * minute, "Google Vertex")?,
-        request(CLAUDE, (40_100, 0, 0), 3 * minute, "Amazon Bedrock")?,
-    ] {
-        tracker.observe_entry(&entry);
-        let advice = tracker.advice().ok_or("no advice after a request")?;
-        after.push(advice.pin(4 * minute).map(str::to_owned));
-    }
-    assert_eq!(
-        after,
-        [None, None, None, Some("Google Vertex".to_owned())],
-        "one switch explains its own miss; the second pins the host that read the entry"
-    );
-    let advice = tracker.advice().ok_or("no advice after a request")?;
-    assert_eq!(
-        advice.pin(64 * minute),
-        None,
-        "a pin holds an hour, no longer"
-    );
-    Ok(())
-}
-
 /// Dies with the tail written: four zero-read writes rest the mark, which returns after an hour.
 #[test]
 fn four_zero_read_writes_stop_the_tail_mark_for_an_hour() -> Result<(), Box<dyn Error>> {
     let second = 1000;
+    let route = format!("{}/{}", CLAUDE.0, CLAUDE.1);
     let mut tracker = MissTracker::default();
     let mut tails = Vec::new();
-    for n in 0..5u64 {
+    for n in 0..9u64 {
         let at = n * second;
         tracker.observe_entry(&request(CLAUDE, (0, 0, 40_000), at, "Amazon Bedrock")?);
         tails.push(
             tracker
                 .advice()
                 .ok_or("no advice after a request")?
-                .tail(at + second),
+                .tail(at + second, &route),
         );
     }
     assert_eq!(
         tails,
-        [true, true, true, true, false],
+        [true, true, true, true, false, false, false, false, false],
         "the fourth unexplained zero-read write suspends the mark, not the third"
     );
     let advice = tracker.advice().ok_or("no advice after a request")?;
-    assert!(advice.tail(4 * second + 3_600_000), "the mark is re-probed");
+    assert!(
+        advice.tail(4 * second + 3_600_000, &route),
+        "requests during the suspension must not push the re-probe later"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_suspended_tail_applies_only_to_the_route_that_earned_it() -> Result<(), Box<dyn Error>> {
+    let started = yi_session::now_ms();
+    let mut tracker = MissTracker::default();
+    for n in 0..5u64 {
+        tracker.observe_entry(&request(
+            CLAUDE,
+            (0, 0, 40_000),
+            started + n * 1000,
+            "Amazon Bedrock",
+        )?);
+    }
+    let provider = yi_runtime::provider::ProviderStream::new(None);
+    provider.set_cache_advice(tracker.advice());
+    let claude = claude_at(0.05)?;
+    let mut glm = claude.clone();
+    glm.id = GLM.1.to_owned();
+    assert!(!yi_loop::run::StreamFn::cache_tail(&provider, &claude));
+    assert!(
+        yi_loop::run::StreamFn::cache_tail(&provider, &glm),
+        "one route's suspension must not strip another route's tail mark"
+    );
     Ok(())
 }

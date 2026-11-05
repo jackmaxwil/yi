@@ -596,7 +596,7 @@ async fn stream_assistant_response<S: StreamFn>(
         } else {
             yi_types::model::Ttl::Min5
         },
-        cache_tail: reuse == yi_types::model::Reuse::Loop && stream.cache_tail(model),
+        cache_tail: stream.cache_tail(model),
     };
     drop(preparing);
 

@@ -295,8 +295,8 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
                 context.cache_ttl
             },
             context.cache_ttl,
-        )
-        .with_tail(context.cache_tail),
+            context.cache_tail,
+        ),
         &history,
         context.reuse,
         context.shared_through,

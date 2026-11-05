@@ -323,25 +323,6 @@ fn cache_field(text: &str) -> Option<&'static str> {
     CACHE_FIELDS.into_iter().find(|field| text.contains(field))
 }
 
-/// A router's provider order for the pinned upstream, by the slug its display name spells.
-pub fn pin_routing(routing: Option<Value>, pin: Option<&str>) -> Option<Value> {
-    let Some(pin) = pin else {
-        return routing;
-    };
-    let mut routing = routing;
-    let object = routing.get_or_insert_with(|| serde_json::json!({}));
-    if !object.is_object() {
-        *object = serde_json::json!({});
-    }
-    if let Some(object) = object.as_object_mut() {
-        object.insert(
-            "order".to_owned(),
-            serde_json::json!([pin.to_lowercase().replace(' ', "-")]),
-        );
-    }
-    routing
-}
-
 /// What a request dropped when a 400 named a cache field, for its reply's record.
 #[derive(Default)]
 pub struct Stripped(std::cell::Cell<Option<&'static str>>);
@@ -389,6 +370,10 @@ pub fn send_stripping_cache(
     let started = std::time::Instant::now();
     let agent = stream_agent(proxy.and_then(|config| config.proxy_for(host_of(url))));
     let mut bare: Option<crate::breakpoints::Encoded> = None;
+    let mut serialized = {
+        let _span = yi_types::trace::span("ai.serialize");
+        body.to_string()
+    };
     let mut attempt: u32 = 0;
     loop {
         let mut request = agent
@@ -398,10 +383,6 @@ pub fn send_stripping_cache(
         for (name, value) in headers {
             request = request.set(name, value);
         }
-        let serialized = {
-            let _span = yi_types::trace::span("ai.serialize");
-            bare.as_ref().unwrap_or(body).to_string()
-        };
         let sending = yi_types::trace::span("ai.http_send")
             .arg("attempt", attempt)
             .arg("bytes", serialized.len());
@@ -428,6 +409,12 @@ pub fn send_stripping_cache(
                 {
                     stripped.set(field);
                     bare = Some(body.without(&CACHE_FIELDS));
+                    if let Some(bare) = &bare {
+                        serialized = {
+                            let _span = yi_types::trace::span("ai.serialize");
+                            bare.to_string()
+                        };
+                    }
                     announce(
                         on_retry,
                         attempt.saturating_add(1),
@@ -701,54 +688,13 @@ pub fn record_stripped(output: &mut AgentMessage, stripped: &Stripped) {
     }
 }
 
-/// The cache field a 400 refused, kept once on the reply that came back without it.
-pub fn note_stripped(output: &mut AgentMessage, field: &str) {
-    if let AgentMessage::Assistant {
-        diagnostics,
-        timestamp,
-        ..
-    } = output
-    {
-        let mut details = serde_json::Map::new();
-        details.insert("field".to_owned(), Value::from(field));
-        diagnostics.get_or_insert_with(Vec::new).push(
-            yi_types::message::AssistantMessageDiagnostic {
-                diagnostic_type: "cache_stripped".to_owned(),
-                timestamp: *timestamp,
-                error: None,
-                details: Some(details),
-            },
-        );
-    }
-}
-
-pub fn note_resend(output: &mut AgentMessage, first_error: &str) {
-    if let AgentMessage::Assistant {
-        diagnostics,
-        timestamp,
-        ..
-    } = output
-    {
-        let mut details = serde_json::Map::new();
-        details.insert("resends".to_owned(), Value::from(1u32));
-        diagnostics.get_or_insert_with(Vec::new).push(
-            yi_types::message::AssistantMessageDiagnostic {
-                diagnostic_type: "stream_resent".to_owned(),
-                timestamp: *timestamp,
-                error: Some(yi_types::message::DiagnosticErrorInfo {
-                    name: None,
-                    message: first_error.to_owned(),
-                    stack: None,
-                    code: None,
-                }),
-                details: Some(details),
-            },
-        );
-    }
-}
-
-/// The upstream an OpenRouter turn ran on, kept once: every chunk names it, and so does the record.
-pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
+fn push_diagnostic(
+    output: &mut AgentMessage,
+    kind: &str,
+    key: &str,
+    value: Value,
+    error: Option<yi_types::message::DiagnosticErrorInfo>,
+) {
     if let AgentMessage::Assistant {
         diagnostics,
         timestamp,
@@ -756,18 +702,44 @@ pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
     } = output
     {
         let notes = diagnostics.get_or_insert_with(Vec::new);
-        if notes.iter().any(|note| note.diagnostic_type == "upstream") {
+        if kind == "upstream" && notes.iter().any(|note| note.diagnostic_type == kind) {
             return;
         }
         let mut details = serde_json::Map::new();
-        details.insert("provider".to_owned(), Value::from(upstream));
+        details.insert(key.to_owned(), value);
         notes.push(yi_types::message::AssistantMessageDiagnostic {
-            diagnostic_type: "upstream".to_owned(),
+            diagnostic_type: kind.to_owned(),
             timestamp: *timestamp,
-            error: None,
+            error,
             details: Some(details),
         });
     }
+}
+
+/// The cache field a 400 refused, kept once on the reply that came back without it.
+pub fn note_stripped(output: &mut AgentMessage, field: &str) {
+    push_diagnostic(output, "cache_stripped", "field", Value::from(field), None);
+}
+
+pub fn note_resend(output: &mut AgentMessage, first_error: &str) {
+    let error = yi_types::message::DiagnosticErrorInfo {
+        name: None,
+        message: first_error.to_owned(),
+        stack: None,
+        code: None,
+    };
+    push_diagnostic(
+        output,
+        "stream_resent",
+        "resends",
+        Value::from(1u32),
+        Some(error),
+    );
+}
+
+/// The upstream an OpenRouter turn ran on, kept once: every chunk names it, and so does the record.
+pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
+    push_diagnostic(output, "upstream", "provider", Value::from(upstream), None);
 }
 
 pub fn fail_message(output: &mut AgentMessage, text: &str) -> crate::EventOut {
@@ -958,4 +930,48 @@ pub(crate) fn transport_cause(transport: &ureq::Transport) -> String {
         .map(|source| format!(": {source}"))
         .unwrap_or_default();
     format!("{}{message}{source}", transport.kind())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+
+    use serde_json::json;
+
+    #[test]
+    fn a_retry_reuses_the_serialized_request_body() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let server = std::thread::spawn(move || -> std::io::Result<()> {
+            for status in [
+                "HTTP/1.1 429 Too Many Requests\r\nretry-after-ms: 0\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            ] {
+                let (mut stream, _) = listener.accept()?;
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request)?;
+                stream.write_all(status.as_bytes())?;
+            }
+            Ok(())
+        });
+        let body = crate::breakpoints::Encoded::provider_prefix(
+            json!({"messages": []}),
+            "messages",
+            Vec::new(),
+        );
+        crate::breakpoints::reset_serializations();
+        let response = super::send_with_retry(
+            &format!("http://127.0.0.1:{port}/v1/messages"),
+            &[],
+            &body,
+            None,
+            None,
+            &|_| {},
+        )
+        .map_err(|error| format!("request failed: {error}"))?;
+        let _ = response.into_string();
+        server.join().map_err(|_| "server thread panicked")??;
+        assert_eq!(crate::breakpoints::serializations(), 1);
+        Ok(())
+    }
 }

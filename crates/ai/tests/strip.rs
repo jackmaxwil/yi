@@ -70,6 +70,55 @@ fn marked_body() -> Encoded {
     )
 }
 
+#[test]
+fn stripping_keeps_fields_inside_tool_schemas_and_payloads() -> TestResult {
+    let body = Encoded::provider_prefix(
+        json!({
+            "prompt_cache_key": "affinity",
+            "tools": [{"input_schema": {
+                "properties": {"session_id": {"type": "string"}, "cache": {"type": "boolean"}},
+                "required": ["session_id", "cache"]
+            }}],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "input": {"session_id": "keep", "cache_control": "keep"}}
+                ]}
+            ]
+        }),
+        "messages",
+        Vec::new(),
+    );
+    let stripped = body
+        .without(&["prompt_cache_key", "cache_control", "session_id", "cache"])
+        .into_value();
+    assert!(stripped.get("prompt_cache_key").is_none());
+    assert_eq!(
+        stripped.pointer("/messages/0/content/0/cache_control"),
+        None,
+        "the encoder's mark must be removed"
+    );
+    assert_eq!(
+        stripped.pointer("/tools/0/input_schema/properties/session_id/type"),
+        Some(&json!("string"))
+    );
+    assert_eq!(
+        stripped.pointer("/tools/0/input_schema/properties/cache/type"),
+        Some(&json!("boolean"))
+    );
+    assert_eq!(
+        stripped.pointer("/messages/1/content/0/input/session_id"),
+        Some(&json!("keep"))
+    );
+    assert_eq!(
+        stripped.pointer("/messages/1/content/0/input/cache_control"),
+        Some(&json!("keep"))
+    );
+    Ok(())
+}
+
 fn url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/v1/messages")
 }

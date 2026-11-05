@@ -318,9 +318,10 @@ impl StreamFn for ProviderStream {
         })
     }
 
-    fn cache_tail(&self, _model: &Model) -> bool {
+    fn cache_tail(&self, model: &Model) -> bool {
+        let route = format!("{}/{}", model.provider, model.id);
         self.advice()
-            .is_none_or(|advice| advice.tail(yi_session::now_ms()))
+            .is_none_or(|advice| advice.tail(yi_session::now_ms(), &route))
     }
 }
 
@@ -328,11 +329,6 @@ impl ProviderStream {
     /// The fold's latest advice, cloned: the loop asks once per request, never in a hot path.
     fn advice(&self) -> Option<crate::cache_miss::CacheAdvice> {
         self.cache_advice.lock().ok().and_then(|held| held.clone())
-    }
-
-    fn pinned_upstream(&self) -> Option<String> {
-        let advice = self.advice()?;
-        advice.pin(yi_session::now_ms()).map(str::to_owned)
     }
 }
 
@@ -408,7 +404,6 @@ impl ProviderStream {
             session_id: self.session_id.clone(),
             proxy: self.proxy.clone(),
             routing: self.routing.clone(),
-            pin: self.pinned_upstream(),
             stop: Some(signal.cut_flag()),
             extra_headers: openai_extra(model, &credential),
             oauth,
