@@ -107,6 +107,7 @@ const METHOD_AWAITED: &str = "next: rlm.run is a method, not a coroutine — cal
 const LISTING_NAME: &str =
     "next: list_subagents() entries expose session_name; RLMSpawnHandle.name is the spawn handle";
 const CHILD_FINISHED: &str = "next: await rlm.result('porter', schema=…) validates the answer host-side; the child stays addressable for follow-ups";
+const LARGE_PRINT: &str = "next: open(path,'w').write(var) in the cell writes a variable to a file without printing it or re-typing it through write";
 const COMPACTED_ON_DISK: &str = "next: the window holds a summary plus recent turns; compact.recall(\"needle\") then rlm.fetch(\"history://<id>/<entry>\") pulls what the summary cites as (#entry)";
 const COMPACTED_IN_MEMORY: &str = "next: the window holds a summary plus recent turns; compact.recall(\"needle\") pulls entry ids the summary cites as (#entry)";
 
@@ -139,6 +140,10 @@ fn every_line_rendered_today_renders_from_the_graph() -> TestResult {
     assert_eq!(
         affordance::next("ipython", &["listing_name_missed"], ""),
         LISTING_NAME
+    );
+    assert_eq!(
+        affordance::next("ipython", &["large_print"], ""),
+        LARGE_PRINT
     );
     assert_eq!(
         affordance::next("rlm.run", &["child_state(finished)"], "porter"),
