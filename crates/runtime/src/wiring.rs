@@ -182,6 +182,11 @@ impl RuntimeWiring {
                 Some(self.family_dir()).filter(|dir| crate::tools::unwalled(&self.wall, dir));
             sandbox.spared.extend(board);
         }
+        // Invariant: a contained member's kernel writes no board the root unpickles from, so
+        // D240's grant (kernel_profile) is cancelled here by a deny that outranks it.
+        if self.wall.contained() {
+            sandbox.deny_write.push(self.family_dir());
+        }
         Some(sandbox)
     }
 
@@ -339,42 +344,7 @@ fn wire_fetch(
     let handler = Arc::clone(&resolver);
     registry.register("fetch", move |payload| {
         let resolver = Arc::clone(&handler);
-        Box::pin(async move {
-            let raw = payload
-                .str_of("url")
-                .ok_or_else(|| "fetch requires a \"url\" argument".to_owned())?
-                .to_owned();
-            let url: yi_types::url::Url = raw
-                .parse()
-                .map_err(|error: yi_types::url::UrlError| format!("{raw}: {error}"))?;
-            let page = crate::fetch::Page::from_payload(&payload, "fetch")?;
-            // a family member asks for the object; the owner dills it to the family dir (D164).
-            if payload.bool_of("object") == Some(true) {
-                if page.is_some() {
-                    return Err(
-                        "fetch pages text; drop \"object\" to page a kernel:// read".to_owned()
-                    );
-                }
-                let dump = Arc::clone(&resolver);
-                let (path, bytes) = tokio::task::spawn_blocking(move || dump.dump_kernel(&url))
-                    .await
-                    .map_err(|error| format!("fetch task failed: {error}"))?
-                    .map_err(|error| error.to_string())?;
-                let mut reply = Map::new();
-                reply.insert("url".to_owned(), Value::String(raw));
-                reply.insert(
-                    "path".to_owned(),
-                    Value::String(path.to_string_lossy().into_owned()),
-                );
-                reply.insert("bytes".to_owned(), Value::from(bytes));
-                return Ok(reply);
-            }
-            let fetched = tokio::task::spawn_blocking(move || resolver.fetch_page(&url, page))
-                .await
-                .map_err(|error| format!("fetch task failed: {error}"))?
-                .map_err(|error| error.to_string())?;
-            Ok(fetched.into_reply(page.is_some()))
-        })
+        Box::pin(async move { crate::fetch::serve(&resolver, &payload).await })
     });
     crate::history::register_grep(registry, session.store_handle(), &wiring.wall);
     if let Some(dir) = wiring.sessions_dir.clone().filter(|_| wiring.depth == 0) {

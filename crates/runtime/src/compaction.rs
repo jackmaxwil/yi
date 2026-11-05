@@ -774,6 +774,10 @@ impl Compactor {
         };
         let (composed, details, retained_tail, elision) = match summary {
             Ok(text) => {
+                let text = match inputs.as_deref() {
+                    Some(inputs) => yi_context::mark_unmatched_quotes(&text, inputs),
+                    None => text,
+                };
                 let (composed, details) =
                     compose_summary(&text, &prepared.file_ops, &prepared.view);
                 (
