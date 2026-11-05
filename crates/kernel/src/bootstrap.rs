@@ -13,7 +13,7 @@ const PYTHON_VERSION: &str = "3.11";
 /// Incident: host replies ride ipykernel internals (`kernel.control_handlers`), unpinned.
 pub(crate) const IPYKERNEL_REQUIREMENT: &str = "ipykernel>=7,<8";
 pub(crate) const STATE_SNAPSHOT_REQUIREMENT: &str = "dill";
-pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 14] = [
+pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 15] = [
     "requests",
     "httpx",
     "pyyaml",
@@ -25,11 +25,12 @@ pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 14] = [
     "beautifulsoup4",
     "lxml",
     "pydantic",
+    "tyro",
     "firecrawl-anydoc>=0.2.4,<0.3",
     "pdf-inspector>=1.19,<2",
     "openpyxl",
 ];
-const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 14] = [
+const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 15] = [
     "requests",
     "httpx",
     "yaml",
@@ -41,6 +42,7 @@ const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 14] = [
     "bs4",
     "lxml",
     "pydantic",
+    "tyro",
     "anydoc",
     "pdf_inspector",
     "openpyxl",
@@ -1212,6 +1214,10 @@ mod tests {
         assert!(root.join("yi_runtime").join("src").join("rlm").is_dir());
         assert!(root.join("skills").is_dir());
         assert!(!root.join("yi_runtime").join("tests").exists());
+        assert!(
+            !root.join("yi_runtime").join("uv.lock").exists(),
+            "the embed carries no lockfile nothing reads"
+        );
         assert_ne!(
             root, fallback,
             "the compile-time path never serves an installed binary"

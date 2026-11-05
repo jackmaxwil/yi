@@ -4,9 +4,11 @@
 pub mod bootstrap;
 pub mod client;
 pub mod connection;
+mod date;
 pub mod framing;
+mod install;
+pub use install::{pinned, tarball, uv as uv_install};
 mod lock;
-pub mod pinned;
 mod probe;
 pub(crate) mod pump;
 pub mod reduce;
@@ -14,8 +16,6 @@ pub mod reduce;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 pub mod snapshot;
-pub mod tarball;
-pub mod uv_install;
 mod venv;
 
 // Generous backstop for a kernel alive but wedged: crashes surface in one 25ms poll and warm
