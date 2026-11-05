@@ -93,7 +93,10 @@ def selfcheck(off=""):
     budgets = dict.fromkeys(COMMANDS, 10.0)
     errs = []
     v1 = {"results": [{"min": 1.0}]}
-    v2 = {"schema_version": 2, "results": [{"min": 1.0, "summary": {"time_wall_clock": {"min": 2.0}}}]}
+    v2 = {
+        "schema_version": 2,
+        "results": [{"min": 1.0, "summary": {"time_wall_clock": {"min": 2.0}}}],
+    }
     if minimum_seconds(v1) != 1.0 or minimum_seconds(v2) != 2.0:
         errs.append("hyperfine v1 or v2 minimum was not read")
     with tempfile.TemporaryDirectory() as tmp:
