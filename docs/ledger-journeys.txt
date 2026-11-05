@@ -4,11 +4,16 @@ pure loop + event enum | `interrupt::an_abort_during_the_cut_drain_returns_at_on
 pure loop + event enum | `pump_stop::an_abort_stops_the_provider_pump_at_the_next_event`
 pure loop + event enum | `loop_events::a_400_body_ends_the_turn_with_no_retry_and_no_steer`
 pure loop + event enum | `openrouter::an_aborted_turn_is_settled_from_the_record`
+pure loop + event enum | `openrouter::the_second_request_carries_the_reply_reasoning_details_byte_for_byte`
+pure loop + event enum | `openrouter::the_tool_call_keeps_geminis_thought_signature_on_the_next_request`
+pure loop + event enum | `openai_responses::responses_params_are_not_chat_completions`
 entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
+context P1–P19; prefix-aligned P7 | `primitives::a_demoted_brief_names_what_was_kept_the_cap_and_the_read_that_restores_it` (T0)
+context P1–P19; prefix-aligned P7 | `compaction_faux::a_kept_tail_over_the_ceiling_compacts_once_not_on_every_request` (T1)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_summary_quote_the_addressed_message_lacks_is_marked_unverified`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compaction_floors_a_host_notice_and_keeps_the_waking_letter`
 context P1–P19; prefix-aligned P7 | `primitives::each_host_notice_row_dies_once_read_and_an_unregistered_kind_survives`
@@ -103,6 +108,7 @@ kernel tool calls (`yi.tools`) | `kernel_tools::a_console_cell_running_while_the
 kernel tool calls (`yi.tools`) | `kernel_tools::a_program_gets_whole_values_and_edits_a_line_the_view_never_showed`
 kernel tool calls (`yi.tools`) | `kernel_tools::every_tool_hands_a_program_its_typed_value`
 dill snapshot | `snapshot_e2e::session_dir_snapshot_revives_through_the_service`
+dill snapshot | `snapshot_e2e::post_compaction_sync_reports_only_the_models_names`
 heartbeats: clock subscriptions | `serve_daemon::workers_do_not_lose_heartbeats_or_tear_the_job_ledger` (T2)
 heartbeats: clock subscriptions | `schedule_e2e::a_heartbeat_due_mid_compaction_is_deferred`
 heartbeats: clock subscriptions | `schedule_e2e::a_rearming_block_does_not_hide_a_sibling_coming_due`
@@ -205,6 +211,7 @@ behavior baseline gate (micro-eval ratchet) | `behavior::behavior_cassettes_repl
 `get_context` orientation packet | `orient::packet_is_byte_stable_across_two_runs_on_one_tree`
 `get_context` orientation packet | `orient::skeletons_rank_the_file_defining_the_symbol_first`
 `get_context` orientation packet | `orient::the_task_map_names_ripwires_own_cuts`
+`get_context` orientation packet | `request_budget::every_deferred_guide_is_one_read_away`
 loud caps on model-facing text | `primitives::a_source_past_its_budget_is_cut_on_a_char_and_names_the_budget`
 loud caps on model-facing text | `primitives::a_project_instruction_file_over_its_budget_names_what_it_kept`
 loud caps on model-facing text | `primitives::outstanding_errors_past_their_cap_keep_the_newest_and_count_the_rest`
@@ -584,6 +591,7 @@ TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_sea
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
 fetch: one addressable read path | `kernel_across_sessions::a_read_of_a_busy_kernel_gives_up_within_its_deadline`
+kernel + ipython + rlm() subagents | `tools::tests::a_large_cell_result_names_the_file_write_one_liner` (T0)
 fetch: one addressable read path | `kernel_sandbox::a_parent_kernel_loads_no_pickle_a_contained_child_wrote`
 fetch: one addressable read path | `kernel_sandbox::a_contained_childs_kernel_creates_no_board_file`
 spec (harness-run requirements check) | `todo_coupling::a_red_spec_refuses_the_stop_and_names_the_requirement`
