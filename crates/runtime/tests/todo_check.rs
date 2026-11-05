@@ -266,3 +266,168 @@ fn a_start_whose_check_is_not_a_string_is_refused_not_dropped() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn a_container_check_is_not_probed_on_the_host() -> TestResult {
+    let (root, session) = session("container-probe")?;
+    let checker = yi_runtime::goal::Checker::new(
+        None,
+        None,
+        yi_runtime::wall::Wall {
+            container: Some("yi-image".to_owned()),
+            ..yi_runtime::wall::Wall::default()
+        },
+    );
+    let tool = TodoTool::new(store_for(&session)).with_checker(checker);
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd)?;
+    call(&tool, &cwd, json!({"op": "set", "list": "- [ ] ship it"}));
+    let (error, text) = call(
+        &tool,
+        &cwd,
+        json!({"op": "start", "label": "ship it", "check": "yidog-image-only --check"}),
+    );
+    assert!(!error, "{text}");
+    let check = yi_types::todo::RowCheck::of(&row(&session, "ship it")?).ok_or("no check")?;
+    assert_eq!(check.command, "yidog-image-only --check");
+    Ok(())
+}
+
+fn drop_red(tool: &TodoTool, cwd: &Path) {
+    call(tool, cwd, json!({"op": "set", "list": "- [ ] ship it"}));
+    call(
+        tool,
+        cwd,
+        json!({"op": "start", "label": "ship it", "check": "false"}),
+    );
+    call(tool, cwd, json!({"op": "done", "label": "ship it"}));
+    call(
+        tool,
+        cwd,
+        json!({"op": "drop", "label": "ship it", "reason": "out of scope"}),
+    );
+}
+
+#[test]
+fn a_dropped_red_row_can_be_removed() -> TestResult {
+    let (root, session) = session("drop-rm")?;
+    let tool = TodoTool::new(store_for(&session));
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd)?;
+    drop_red(&tool, &cwd);
+    let (error, text) = call(&tool, &cwd, json!({"op": "rm", "label": "ship it"}));
+    assert!(!error, "{text}");
+    assert!(row(&session, "ship it").is_err());
+    Ok(())
+}
+
+#[test]
+fn a_dropped_red_row_can_be_omitted_and_is_not_reported_as_open() -> TestResult {
+    let (root, session) = session("drop-set")?;
+    let tool = TodoTool::new(store_for(&session));
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd)?;
+    drop_red(&tool, &cwd);
+    let list = latest_record(&session).ok_or("no record")?.list;
+    let stopped = yi_runtime::todo::coupling::intercept_text(1, &list);
+    assert!(!stopped.contains("still red"), "{stopped}");
+    let (error, text) = call(&tool, &cwd, json!({"op": "set", "list": "- [ ] fresh"}));
+    assert!(!error, "{text}");
+    assert!(row(&session, "ship it").is_err());
+    Ok(())
+}
+
+#[test]
+fn a_done_scope_does_not_rerun_a_terminal_rows_check() -> TestResult {
+    let (root, session) = session("terminal-check")?;
+    let tool = TodoTool::new(store_for(&session));
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd)?;
+    call(
+        &tool,
+        &cwd,
+        json!({"op": "set", "list": "- [ ] checked\n- [ ] plain"}),
+    );
+    call(
+        &tool,
+        &cwd,
+        json!({"op": "start", "label": "checked", "check": "test -s out.txt"}),
+    );
+    std::fs::write(cwd.join("out.txt"), b"built")?;
+    call(&tool, &cwd, json!({"op": "done", "label": "checked"}));
+    std::fs::remove_file(cwd.join("out.txt"))?;
+    let (error, text) = call(
+        &tool,
+        &cwd,
+        json!({"op": "done", "phase": "Tasks", "evidence": "`true` exit 0"}),
+    );
+    assert!(!error, "{text}");
+    assert!(!text.contains("has not passed"), "{text}");
+    let checked = row(&session, "checked")?;
+    let last = yi_types::todo::RowCheck::of(&checked)
+        .ok_or("no check")?
+        .last;
+    assert!(last.is_green(), "{}", last.as_str());
+    assert_eq!(
+        checked.evidence.map(|evidence| evidence.to_string()),
+        Some("check `test -s out.txt` passed".to_owned())
+    );
+    assert_eq!(
+        yi_types::plan::doc::TodoStateName::of(&row(&session, "plain")?.state),
+        yi_types::plan::doc::TodoStateName::Done
+    );
+    Ok(())
+}
+
+#[test]
+fn done_evidence_names_the_command_that_ran() -> TestResult {
+    let (root, session) = session("evidence-race")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd)?;
+    call(&tool, &cwd, json!({"op": "set", "list": "- [ ] ship it"}));
+    call(
+        &tool,
+        &cwd,
+        json!({"op": "start", "label": "ship it", "check": "true"}),
+    );
+    let pending = Arc::new(std::sync::Mutex::new(None));
+    let next = Arc::clone(&pending);
+    store.set_resync(Arc::new(move |_| {
+        next.lock().ok().and_then(|mut list| list.take())
+    }));
+    let next = Arc::clone(&pending);
+    store.on_change(Arc::new(move |list| {
+        let green = list.items().any(|item| {
+            item.label.as_str() == "ship it"
+                && !item.state.is_terminal()
+                && yi_types::todo::RowCheck::of(item).is_some_and(|check| check.last.is_green())
+        });
+        if !green {
+            return;
+        }
+        let mut changed = list.clone();
+        changed.for_each_mut(|item| {
+            if item.label.as_str() == "ship it" {
+                yi_types::todo::RowCheck {
+                    command: "printf forged".to_owned(),
+                    last: yi_types::todo::CheckLast::green(),
+                }
+                .put(item);
+            }
+        });
+        if let Ok(mut slot) = next.lock() {
+            *slot = Some(changed);
+        }
+    }));
+    let (error, text) = call(&tool, &cwd, json!({"op": "done", "label": "ship it"}));
+    assert!(!error, "{text}");
+    assert_eq!(
+        row(&session, "ship it")?
+            .evidence
+            .map(|evidence| evidence.to_string()),
+        Some("check `true` passed".to_owned())
+    );
+    Ok(())
+}

@@ -578,6 +578,7 @@ impl TodoTool {
             Target::All => list.items().collect(),
         };
         (rows.into_iter())
+            .filter(|item| !item.state.is_terminal())
             .filter_map(|item| {
                 super::check::command_of(item).map(|command| (item.label.clone(), command))
             })
@@ -591,7 +592,7 @@ impl TodoTool {
             Op::Start {
                 check: Some(command),
                 ..
-            } => match super::check::refused(command, &context.cwd) {
+            } => match super::check::refused(command, &context.cwd, &self.checker) {
                 Some(reason) => Err(TodoError::Check { reason }.into()),
                 None => Ok(None),
             },
@@ -601,18 +602,14 @@ impl TodoTool {
                     return Ok(None);
                 }
                 let mut red: Option<String> = None;
-                for (label, command) in rows {
-                    let ran = super::check::run(
-                        &command,
-                        &context.cwd,
-                        &context.cancelled,
-                        &self.checker,
-                    )
-                    .map_err(|reason| TodoError::Check { reason })?;
+                for (label, command) in &rows {
+                    let ran =
+                        super::check::run(command, &context.cwd, &context.cancelled, &self.checker)
+                            .map_err(|reason| TodoError::Check { reason })?;
                     let green = ran.green;
                     self.store.apply(
                         Op::MarkCheck {
-                            label,
+                            label: label.clone(),
                             last: ran.last,
                         },
                         None,
@@ -627,7 +624,7 @@ impl TodoTool {
                 match red {
                     None => {
                         *evidence = Some(
-                            (self.commands_for(target).into_iter())
+                            (rows.into_iter())
                                 .map(|(_, command)| format!("check `{command}` passed"))
                                 .collect::<Vec<_>>()
                                 .join("; "),

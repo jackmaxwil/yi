@@ -2,10 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::model::{ForcedTool, ToolChoice};
-use yi_types::plan::doc::{BlockedOn, Todo, TodoState, TodoStateName};
+use yi_types::plan::doc::{BlockedOn, TodoState, TodoStateName};
 use yi_types::todo::{RowCheck, TodoInterceptRecord, TodoList};
 
-use super::{Op, Target, TodoStore, text, tool};
+use super::{TodoStore, text, tool};
 use crate::goal::StoreHandle;
 use crate::plan::loop_coupling::gate::eager_init;
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
@@ -357,6 +357,7 @@ const ASK_USER: &str =
 pub fn intercept_text(rung: u8, list: &TodoList) -> String {
     let moves = open_moves(list);
     let reds: Vec<String> = (list.items())
+        .filter(|item| !item.state.is_terminal())
         .filter_map(|item| {
             let check = RowCheck::of(item)?;
             (!check.last.is_green()).then(|| format!("still red: {}", check.command))
@@ -546,47 +547,6 @@ pub struct Options {
 
 /// The ladder's last rung: the family reads its typed signal as `stuck`.
 const LET_GO: &str = "let go";
-
-/// Interactive sessions check at `answer`: a green row closes with its evidence, a red stays open
-/// and names itself in the answer's run end.
-fn sweep_checks(todos: &TodoStore, checker: &crate::goal::Checker) {
-    let Ok(cwd) = std::env::current_dir() else {
-        return;
-    };
-    let cancel: yi_tools::CancelFlag = Arc::new(|| false);
-    let open: Vec<Todo> = todos
-        .list()
-        .items()
-        .filter(|item| !item.state.is_terminal())
-        .cloned()
-        .collect();
-    for item in open {
-        let Some(check) = RowCheck::of(&item) else {
-            continue;
-        };
-        let Ok(ran) = super::check::run(&check.command, &cwd, &cancel, checker) else {
-            continue;
-        };
-        let label = item.label.clone();
-        let green = ran.green;
-        let _recorded = todos.apply(
-            Op::MarkCheck {
-                label: label.clone(),
-                last: ran.last,
-            },
-            None,
-        );
-        if green {
-            let _closed = todos.apply(
-                Op::Done {
-                    target: Target::Label(label),
-                    evidence: Some(format!("check `{}` passed", check.command)),
-                },
-                None,
-            );
-        }
-    }
-}
 
 fn record_intercept(store: &StoreHandle, rung: u8, reason: &str, fingerprint: &str, total: u32) {
     let Some(session) = store() else {
@@ -795,9 +755,6 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
     let printed = session.environment_handle();
     let cycle = Arc::new(Mutex::new(rehydrate(&store)));
     let deliver = session.advisory_hook();
-    let checker = std::env::current_dir()
-        .ok()
-        .map(|cwd| session.checker(&cwd));
 
     let on_prompt: Arc<PromptChoiceFn> = prompt_hook(
         Arc::clone(&cycle),
@@ -869,11 +826,6 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             }
             if called(snapshot.tool_results, "ask_user") {
                 return inner.as_ref().and_then(|inner| inner(snapshot));
-            }
-            if called(snapshot.tool_results, "answer")
-                && let Some(checker) = &checker
-            {
-                sweep_checks(&todos, checker);
             }
             let Ok(mut cycle) = cycle.lock() else {
                 return None;

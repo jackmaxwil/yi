@@ -17,8 +17,8 @@ pub struct Ran {
     pub view: String,
 }
 
-pub fn refused(command: &str, cwd: &Path) -> Option<String> {
-    crate::goal::probe(command, cwd)
+pub fn refused(command: &str, cwd: &Path, checker: &crate::goal::Checker) -> Option<String> {
+    checker.probe(command, cwd)
 }
 
 /// Invariant: a check runs in a cleared environment like a goal's, so a green here means the
@@ -57,7 +57,7 @@ pub(super) fn survive(prior: &TodoList, merged: &TodoList) -> Result<(), super::
         };
         let label = item.label.to_string();
         let Some(row) = merged.items().find(|row| row.label == item.label) else {
-            if stored.last.is_green() {
+            if item.state.is_terminal() || stored.last.is_green() {
                 continue;
             }
             return Err(super::TodoError::CheckNotPassed {
@@ -83,6 +83,7 @@ pub(super) fn keeps_reds(list: &TodoList, target: &super::Target) -> Result<(), 
     let red = |item: &Todo| {
         RowCheck::of(item)
             .filter(|check| !check.last.is_green())
+            .filter(|_| !item.state.is_terminal())
             .map(|check| super::TodoError::CheckNotPassed {
                 label: item.label.to_string(),
                 command: check.command,
