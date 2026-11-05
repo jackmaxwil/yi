@@ -150,7 +150,10 @@ async fn child_kernel_answer(role: &str, tools: Option<&str>) -> TestResult {
     // D164: the same variable as an object, dilled by the child's own kernel.
     let object: yi_types::url::Url = "kernel://helper/answer".parse()?;
     let dumper = Arc::clone(&resolver);
-    let (path, bytes) = tokio::task::spawn_blocking(move || dumper.dump_kernel(&object)).await??;
+    let dumped = tokio::task::spawn_blocking(move || dumper.dump_kernel(&object)).await??;
+    let Some((path, bytes)) = dumped else {
+        return Err("the helper may write the board".into());
+    };
     assert_eq!(path, family.join("helper.answer.dill"));
     assert!(bytes > 0 && path.is_file(), "{path:?} {bytes}");
     Ok(())
