@@ -5,7 +5,7 @@ set -euo pipefail
 
 releases=https://github.com/jackmaxwil/yi/releases
 # Invariant: the one line of allowed_signers, which yi update compiles in; a release is signed by it.
-signer='jackmaxwil-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICRKvW82jaXOFg8jkpg7ZHj8YkZ5TKQr9U1bU1ygJiAj'
+signer='jackmaxwil-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAaFfxFxxkIpL0TuZcvkcLpzT164hwIaCbzyFnVkAMX7'
 
 usage() {
   cat <<'EOF'
