@@ -71,7 +71,8 @@ impl Lane {
             return Err(error);
         }
         let branch = self.branch.as_str().to_owned();
-        self.pool.detach(self.slot, None)?;
+        self.pool
+            .detach(self.slot, None, super::reap::Handback::Deleted)?;
         let _kept_only_by_its_own_name = git(&self.pool.repo, &["branch", "-q", "-D", &branch]);
         self.pool.clear_session(self.slot)
     }
