@@ -1,4 +1,5 @@
 ---
+version: 0.936.0
 issue: Closes #1759
 ledger~: context P1–P19; prefix-aligned P7 | the `<yi_compact_view>` summary, `history.grep` recall | the `<yi_compact_view>` summary, whose every cut names kept of total, the cap's name and value and the call that reads the rest back (`primitives::a_demoted_brief_names_what_was_kept_the_cap_and_the_read_that_restores_it`, `primitives::a_span_stored_without_a_count_is_never_summed_as_zero`; the brief row `BRIEF_LINE_CAP 120`, the demoted-id rows `EARLIER_CAP 24` with their line counts, a count a stored span never had read as `or more`, and the no-summary marker's kept-of-total, window and `history://self/since/0`), `history.grep` recall
 ledger~: context P1–P19; prefix-aligned P7 | `[reclaimed: …]` line once cutting | `[reclaimed: …]` line naming the rule's lever (`reclaim.keep_turns`), the request it cut at and the `read("history://self/<entry>")` that restores it, once cutting

@@ -1,4 +1,5 @@
 ---
+version: 0.937.0
 issue: Closes #1525
 growth: +211 the reasoning carry: `crates/ai/src/reasoning.rs` split out of `openai.rs`, whose 1,082 production lines were past the file ceiling, plus the per-index details accumulator, the signature envelope and the two wire helpers; weighed for deletion: a `reasoningDetails` field on `Content::Thinking` (45 construction sites across the workspace for one wire), a second encoding of the same block signature (field name as JSON, already the plain name), and keeping the details only as prose (loses the signature the next tool turn is refused without)
 raise: crate ai +208, crate types +6, tests +227, comments +11
