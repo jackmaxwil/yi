@@ -14,6 +14,7 @@ pub use yi_types::json_salvage;
 pub mod leak;
 pub mod openai;
 pub mod openai_responses;
+pub(crate) mod reasoning;
 pub mod recommend;
 pub mod refresh;
 pub mod request;
