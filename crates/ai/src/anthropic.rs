@@ -144,6 +144,7 @@ fn convert_messages(messages: &[Cow<'_, AgentMessage>]) -> (Vec<Value>, Vec<Opti
                             thinking,
                             thinking_signature,
                             redacted,
+                            ..
                         } => {
                             if redacted == &Some(true) {
                                 if let Some(signature) = thinking_signature {
@@ -533,6 +534,8 @@ impl Mapper {
                                     .to_owned(),
                             ),
                             redacted: None,
+                            reasoning_field: None,
+                            reasoning_details: None,
                         },
                     );
                     self.partial_json.push(None);
@@ -549,6 +552,8 @@ impl Mapper {
                                 .and_then(Value::as_str)
                                 .map(str::to_owned),
                             redacted: Some(true),
+                            reasoning_field: None,
+                            reasoning_details: None,
                         },
                     );
                     self.partial_json.push(None);

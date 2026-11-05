@@ -3,7 +3,7 @@ use std::error::Error;
 use serde_json::json;
 use yi_context::details::FILE_LIST_CAP;
 use yi_context::{
-    Attributed, BRIEF_LINE_CHARS, BriefLine, Bytes, CompiledView, FileOps, KEY_ROWS,
+    Attributed, BRIEF_LINE_CHARS, BriefLine, Bytes, CompiledView, EARLIER_CAP, FileOps, KEY_ROWS,
     OUTSTANDING_CAP, Settings, Tokens, attribute_child_usage, compile_view, compose_summary,
     context_tokens, convert_to_llm, drop_internal, estimate_context, fit, internal_source,
     mark_unmatched_quotes, prepare_compaction, project, retain_floor, select_cut,
@@ -848,7 +848,7 @@ fn compose_summary_persists_the_view_for_the_next_round_to_roll() -> TestResult 
             id: Some("m1".to_owned()),
             text: "tool: read → 4 chars".to_owned(),
         }],
-        earlier: vec!["(#a..#b)".to_owned()],
+        earlier: vec!["(#a..#b, 2 lines)".to_owned()],
         ..CompiledView::default()
     };
     let (_, details) = compose_summary("## Goal\nPort", &FileOps::default(), &view);
@@ -993,8 +993,93 @@ fn earlier_index_names_the_demoted_span() -> TestResult {
     assert_eq!(view.brief.len(), 120);
     assert_eq!(view.earlier.len(), 1);
     assert_eq!(
-        view.earlier[0], "(#t0..#t4)",
-        "demoted lines collapse to one index line with exact ids"
+        view.earlier[0], "(#t0..#t4, 5 lines)",
+        "demoted lines collapse to one index line with exact ids and their count"
+    );
+    Ok(())
+}
+
+/// Dies with the brief cap and the earlier cap demoting lines to an id span with no word of
+/// how many lines went, which cap cut them, or the call that reads them back.
+#[test]
+fn a_demoted_brief_names_what_was_kept_the_cap_and_the_read_that_restores_it() -> TestResult {
+    let ok = |from: usize, to: usize| -> Vec<Attributed> {
+        (from..to)
+            .map(|index| att(&format!("t{index}"), tool_result(&format!("ok {index}"))))
+            .collect()
+    };
+    let first = compile_view(&ok(0, 125), None);
+    let rendered = first.render();
+    assert!(
+        rendered.contains("[\u{2026} 120 of 125 brief lines, the newest (BRIEF_LINE_CAP 120); the rest: id spans below (more than EARLIER_CAP 24 merge the oldest); read(\"history://self/since/0\")]\n(#t0..#t4, 5 lines)"),
+        "{rendered}"
+    );
+    let mut view = first;
+    for round in 0..=EARLIER_CAP {
+        view = compile_view(
+            &ok(1000 * (round + 1), 1000 * (round + 1) + 121),
+            Some(&view),
+        );
+    }
+    assert_eq!(view.earlier.len(), EARLIER_CAP, "{:?}", view.earlier);
+    let demoted: usize = view
+        .earlier
+        .iter()
+        .map(|line| {
+            line.rsplit_once(", ")
+                .map_or("0", |(_, n)| n.trim_end_matches(" lines)"))
+        })
+        .map(|n| n.parse::<usize>().unwrap_or(0))
+        .sum();
+    assert_eq!(
+        demoted,
+        5 + ((EARLIER_CAP + 1) * 121),
+        "merging the oldest spans past EARLIER_CAP keeps every line they counted: {:?}",
+        view.earlier
+    );
+    assert!(
+        view.earlier[0].contains(", 247 lines)"),
+        "the merged line is the sum of the spans it took in: {:?}",
+        view.earlier
+    );
+    assert!(
+        view.earlier[0].starts_with("(#t0..#"),
+        "the merged span still opens at the first demoted id: {:?}",
+        view.earlier
+    );
+    Ok(())
+}
+
+/// Dies with a span stored before counts existed read as zero lines, so the cut row claimed
+/// nothing was demoted and a merge wrote that undercount back as a definite total.
+#[test]
+fn a_span_stored_without_a_count_is_never_summed_as_zero() -> TestResult {
+    let extra = serde_json::json!({
+        "brief": [{"id": "m1", "text": "tool: read"}],
+        "earlier": ["(#a..#b)", "(#c..#d, 3 lines)"],
+    });
+    let extra = extra.as_object().ok_or("not an object")?;
+    let view = yi_context::view_from_extra(extra).ok_or("view not restored")?;
+    let rendered = view.render();
+    assert!(
+        rendered.contains("1 of 4 or more brief lines"),
+        "an unknown count is a floor, not a total: {rendered}"
+    );
+    let mut view = view;
+    view.earlier = (0..=EARLIER_CAP)
+        .map(|n| {
+            if n == 0 {
+                "(#a..#b)".to_owned()
+            } else {
+                format!("(#x{n}..#y{n}, 2 lines)")
+            }
+        })
+        .collect();
+    let merged = compile_view(&[], Some(&view));
+    assert_eq!(
+        merged.earlier[0], "(#a..#y1)",
+        "a merge with an unknown count writes no count: {:?}",
+        merged.earlier
     );
     Ok(())
 }

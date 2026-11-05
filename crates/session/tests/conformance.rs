@@ -266,6 +266,8 @@ fn grep_skips_thinking_and_centers_long_snippets_on_the_needle() -> TestResult {
                 thinking: "needle hidden in thinking".to_owned(),
                 thinking_signature: None,
                 redacted: None,
+                reasoning_field: None,
+                reasoning_details: None,
             });
         }
         session.append_entry(

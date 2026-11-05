@@ -12,6 +12,7 @@ use zeromq::ZmqMessage;
 
 use crate::bootstrap::{BootstrapOptions, ProgressFn, ensure_kernel_python};
 use crate::connection::{has_resolved_ports, make_connection, random_hex, read_connection_info};
+pub use crate::date::civil_from_days;
 use crate::framing::{build_message, encode};
 use crate::reduce::CellState;
 use crate::{
@@ -211,22 +212,6 @@ pub(crate) fn now_iso() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
-/// Hinnant civil-from-days, shared with the runtime scheduler (§15.2 cron math).
-pub fn civil_from_days(days: u64) -> (u64, u64, u64) {
-    // Howard Hinnant's civil-from-days, unsigned since the epoch is 1970.
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z % 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let adjusted_year = if month <= 2 { year + 1 } else { year };
-    (adjusted_year, month, day)
-}
-
 /// Incident: ipykernel imports debugpy after IOPub is up, debugpy's `platform.processor()` forks a
 /// child that never exits under Rosetta, and `kernel_info` times out; a failed import is debugging off.
 fn shadow_debugpy(
@@ -260,7 +245,10 @@ fn spawn_kernel_process(
         .args(["-m", "ipykernel_launcher", "-f"])
         .arg(connection_path)
         // Incident: every cell, Yi's own included, landed in the user's ~/.ipython history.
-        .arg("--HistoryManager.enabled=False")
+        .args([
+            "--HistoryManager.enabled=False",
+            "--InteractiveShell.cache_size=0",
+        ])
         // ipykernel's parent poller exits the kernel if this pid dies
         // (covers SIGKILL of the owner).
         .env("JPY_PARENT_PID", std::process::id().to_string())
@@ -799,7 +787,7 @@ impl KernelManager {
         let result = self.execute_inner(code, options).await;
         drop(span);
         if !internal {
-            self.after_user_cell(&result);
+            self.after_user_cell(code, &result);
         }
         result
     }
@@ -862,7 +850,7 @@ impl KernelManager {
         let content = json!({
             "code": code,
             "silent": false,
-            "store_history": true,
+            "store_history": !options.internal,
             "user_expressions": {},
             "allow_stdin": false,
             // The kernel aborts every request queued behind a failed one; Yi's own cell, left
@@ -1010,7 +998,7 @@ impl KernelManager {
         let generation = inner.start_generation.load(Ordering::SeqCst);
         // Final namespace flush while the kernel is live, bounded so a wedged kernel cannot
         // hang dispose; the debounced on-disk copy is the fallback past that bound.
-        if inner.snapshot.is_some() && self.is_running() && inner.checkpoints.behind() {
+        if inner.snapshot.is_some() && self.is_running() && inner.checkpoints.flush_owed() {
             inner.clear_snapshot_timer();
             let deadline = std::time::Duration::from_millis(SNAPSHOT_DISPOSE_TIMEOUT_MS);
             let _ = tokio::time::timeout(deadline, self.snapshot_state()).await;
