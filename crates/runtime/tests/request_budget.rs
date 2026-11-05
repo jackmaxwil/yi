@@ -819,6 +819,9 @@ async fn role_bodies(
         Workspace::Bare => PermissionMode::Yolo,
         Workspace::Lane | Workspace::Main => PermissionMode::Auto,
     };
+    if matches!(workspace, Workspace::Bare) {
+        upstream::git(&ws, &["init", "-q", "-b", "main"])?;
+    }
     let broker = std::sync::Arc::new(yi_runtime::PermissionBroker::new(
         mode,
         ws.clone(),
