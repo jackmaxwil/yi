@@ -1,10 +1,13 @@
 use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
+use yi_tools::cut_row;
 use yi_tools::hashline::input::Patch;
 use yi_types::compaction::CompactionDetails;
 use yi_types::kernel::{NESTED_CALLS, NESTED_READS_DROPPED, NESTED_READS_KEPT, NestedCall};
 use yi_types::message::{AgentMessage, Content};
+
+pub const FILE_LIST_CAP: usize = 100;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileOps {
@@ -118,17 +121,33 @@ pub fn compute_file_lists(file_ops: &FileOps) -> (Vec<String>, Vec<String>) {
     (read_files, modified_files)
 }
 
+fn capped_rows(files: &[String], what: &str, tool: &str) -> Vec<String> {
+    let mut rows: Vec<String> = files.iter().take(FILE_LIST_CAP).cloned().collect();
+    if files.len() > FILE_LIST_CAP {
+        let next = format!("grep(pattern=\"{tool}\", path=\"history://self\")");
+        rows.push(cut_row(
+            FILE_LIST_CAP,
+            files.len(),
+            what,
+            "FILE_LIST_CAP",
+            FILE_LIST_CAP,
+            &next,
+        ));
+    }
+    rows
+}
+
 pub fn format_file_operations(
     read_files: &[String],
     modified_files: &[String],
     reads_dropped: u64,
 ) -> String {
     let mut sections = Vec::new();
-    let mut read_rows = read_files.to_vec();
+    let mut read_rows = capped_rows(read_files, "read files", "read");
     if reads_dropped > 0 {
         read_rows.push(format!(
             "[… {} read files listed; {reads_dropped} more read calls from cells are not, and their paths were not kept: a cell keeps {NESTED_READS_KEPT} distinct read rows (NESTED_READS_KEPT); the cells that made them: grep(pattern=\"yi.tools\", path=\"history://self\")]",
-            read_files.len()
+            read_files.len().min(FILE_LIST_CAP)
         ));
     }
     if !read_rows.is_empty() {
@@ -140,7 +159,7 @@ pub fn format_file_operations(
     if !modified_files.is_empty() {
         sections.push(format!(
             "<modified-files>\n{}\n</modified-files>",
-            modified_files.join("\n")
+            capped_rows(modified_files, "modified files", "edit|write").join("\n")
         ));
     }
     if sections.is_empty() {
