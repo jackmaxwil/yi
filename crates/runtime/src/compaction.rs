@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yi_context::{
-    Preparation, Settings, Tokens, compose_summary, drop_internal, estimate_context,
+    CompiledView, Preparation, Settings, Tokens, compose_summary, drop_internal, estimate_context,
     estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
     serialize_conversation, should_compact,
 };
@@ -611,7 +611,10 @@ impl Compactor {
         // The marker rides twice: in the summary and where the dropped messages sat.
         let line = format!("[{}]", "#".repeat(96));
         let widest = format!("{earlier}\n\n{line}");
-        let (summary_room, _) = compose_summary(&widest, &prepared.file_ops, &prepared.view);
+        // Incident: charging the whole-cut view here ate the room of every recent tool step. The
+        // view rides only in what the kept tail leaves spare.
+        let bare = CompiledView::default();
+        let (summary_room, _) = compose_summary(&widest, &prepared.file_ops, &bare);
         let cost = |index: usize| wide(estimate_message(&messages[index]));
         let room = [&loop_request.system_prompt, &tools, &summary_room, &line]
             .into_iter()
@@ -629,8 +632,10 @@ impl Compactor {
         // The run's opening rides in the kept tail when it fits, else it is kept ahead of it.
         let mut cut = fit(room);
         let run = run.filter(|run| *run < cut);
+        let mut room = room;
         if let Some(run) = run {
-            cut = fit(room.saturating_sub(cost(run)));
+            room = room.saturating_sub(cost(run));
+            cut = fit(room);
         }
         let mut pinned: Vec<usize> = first.into_iter().chain(run).collect();
         pinned.sort_unstable();
@@ -659,7 +664,13 @@ impl Compactor {
         } else {
             format!("{earlier}\n\n{marker}")
         };
-        let (summary, _) = compose_summary(&body, &prepared.file_ops, &prepared.view);
+        let spare = (cut..messages.len())
+            .map(cost)
+            .fold(room, Tokens::saturating_sub);
+        let (bare_summary, _) = compose_summary(&body, &prepared.file_ops, &bare);
+        let (full, _) = compose_summary(&body, &prepared.file_ops, &prepared.view);
+        let extra = text_tokens(&full).saturating_sub(text_tokens(&bare_summary));
+        let summary = if extra <= spare { full } else { bare_summary };
         Some((summary, drop_internal(&tail), elision))
     }
 
