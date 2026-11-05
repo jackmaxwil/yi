@@ -32,8 +32,8 @@ def scratch():
     return root
 
 
-def minimum_seconds(result):
-    if "min" in result:
+def minimum_seconds(result, schema_version=None):
+    if schema_version != 2 and "min" in result:
         return result["min"]
     return result["summary"]["time_wall_clock"]["min"]
 
@@ -69,8 +69,9 @@ def errors(bin_path, budgets, runs=50, off="", env=None):
                 diagnostic = run.stderr.strip()
                 errs.append(f"{args}: hyperfine exit {run.returncode}: {diagnostic[-300:] if off == 'stderr' else diagnostic}")
                 continue
-            result = json.loads(out.read_text())["results"][0]
-            min_ms = minimum_seconds(result) * 1000
+            exported = json.loads(out.read_text())
+            result = exported["results"][0]
+            min_ms = minimum_seconds(result, exported.get("schema_version")) * 1000
             report.append(f"{args}: {min_ms:.2f} ms / {max_ms:.1f} ms")
             if min_ms > max_ms:
                 errs.append(f"{args}: {min_ms:.2f} ms > {max_ms} ms")
