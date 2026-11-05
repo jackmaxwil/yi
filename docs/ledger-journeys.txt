@@ -207,6 +207,7 @@ behavior baseline gate (micro-eval ratchet) | `behavior::behavior_cassettes_repl
 `get_context` orientation packet | `orient::packet_is_byte_stable_across_two_runs_on_one_tree`
 `get_context` orientation packet | `orient::skeletons_rank_the_file_defining_the_symbol_first`
 `get_context` orientation packet | `orient::the_task_map_names_ripwires_own_cuts`
+`get_context` orientation packet | `request_budget::every_deferred_guide_is_one_read_away`
 loud caps on model-facing text | `primitives::a_source_past_its_budget_is_cut_on_a_char_and_names_the_budget`
 loud caps on model-facing text | `primitives::a_project_instruction_file_over_its_budget_names_what_it_kept`
 loud caps on model-facing text | `primitives::outstanding_errors_past_their_cap_keep_the_newest_and_count_the_rest`
