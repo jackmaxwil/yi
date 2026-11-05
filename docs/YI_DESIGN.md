@@ -205,8 +205,9 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D352).
 - Reclaim runs inside the run's `convert_to_llm`, before compaction is ever due: a tool result
   at least 1,200 chars long and 5 requests old (never `ask_user`, `plan`, `todo`, or the newest
-  `read` of a file the session edited, by the `[path#TAG]` headers the tools print) is cut once the tokens dropped × requests so far beat ten reads of the
-  tokens after the first cut, or the cache lapsed; at least 20,000 tokens, on every route whatever its price.
+  `read` of a file the session edited, by the `[path#TAG]` headers the tools print) is cut once the
+  tokens dropped × requests so far beat ten reads of the tokens after the first cut, or the cache
+  lapsed; at least 2,000 tokens, on every route whatever its price.
   A `custom{reclaim}` entry names the cut results, which render from then on as one
   `[reclaimed: … get it: read("history://self/<entry>")]` line; the stored results never change.
 - `annotate` writes `custom{annotation}`: `pin` keeps the newest result whose call contains

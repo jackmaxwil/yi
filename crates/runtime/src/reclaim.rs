@@ -11,9 +11,7 @@ use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 
 pub(crate) const KEEP_TURNS: u64 = 5;
 /// Below this many tokens a cut's rewrite and its notice cost more than the reads it saves.
-const MIN_DROPPED: u64 = 20_000;
-/// A lapsed cache owes the rewrite anyway, so only the notice has to be earned.
-const MIN_LAPSED: u64 = 2_000;
+const MIN_DROPPED: u64 = 2_000;
 /// A cut rewrites the cached prefix after it, which costs as many tokens as this many cache reads.
 const REWRITE_READS: u64 = 10;
 const MIN_RESULT_CHARS: usize = 1_200;
@@ -385,9 +383,6 @@ pub(crate) fn decide(
             .filter_map(|index| sizes.get(*index))
             .map(|size| size.saturating_sub(PLACEHOLDER_TOKENS))
             .fold(0, u64::saturating_add);
-        if dropped < MIN_LAPSED {
-            return None;
-        }
         let rewritten = sizes
             .get(first..)
             .unwrap_or_default()
@@ -456,7 +451,7 @@ fn reason(
         caches && now.saturating_sub(*at) > if hour { HOUR_MS } else { FIVE_MINUTES_MS }
     });
     if lapsed {
-        return Some("expired");
+        return (dropped >= MIN_DROPPED).then_some("expired");
     }
     // An hour-cache write costs twice a five-minute one.
     let hour = replies
@@ -973,6 +968,30 @@ mod tests {
         Ok(())
     }
 
+    /// A warm cache still cuts in the original 2,000-token band, with or without cache reads.
+    #[test]
+    fn a_warm_cache_or_no_cache_cuts_above_two_thousand_tokens() -> Fallible {
+        let mut model = opus()?;
+        model.cost.input = serde_json::Number::from(0u64);
+        model.cost.cache_read = serde_json::Number::from(0u64);
+        model.cost.cache_write = serde_json::Number::from(0u64);
+        for cache_read in [500, 0] {
+            let mut messages = with_usage(17, |usage| usage.cache_read = cache_read);
+            for message in &mut messages {
+                if let AgentMessage::ToolResult { content, .. } = message {
+                    *content = vec![Content::Text {
+                        text: "build output line\n".repeat(70),
+                        text_signature: None,
+                    }];
+                }
+            }
+            let now = 60_000 * 16 + 1_000;
+            let record = decide(&messages, &Cut::default(), &model, now).ok_or("no cut")?;
+            assert_eq!(record.reason, "breakeven");
+        }
+        Ok(())
+    }
+
     #[test]
     fn an_hour_cache_waits_twice_as_long_for_its_rewrite() -> Fallible {
         let model = opus()?;
@@ -993,12 +1012,7 @@ mod tests {
         model.cost.input = serde_json::Number::from(0u64);
         model.cost.cache_read = serde_json::Number::from(0u64);
         model.cost.cache_write = serde_json::Number::from(0u64);
-        let mut messages = bash_session(30);
-        for message in &mut messages {
-            if let AgentMessage::Assistant { usage, .. } = message {
-                usage.cache_read = 500;
-            }
-        }
+        let mut messages = with_usage(30, |usage| usage.cache_read = 500);
         if let Some(AgentMessage::ToolResult { content, .. }) = messages.get_mut(2) {
             content.push(Content::Image {
                 data: "aGk=".to_owned(),
