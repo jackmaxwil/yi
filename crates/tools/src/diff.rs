@@ -169,13 +169,6 @@ pub fn patch(pre: &str, post: &str, path: &Path) -> GitPatch {
     EditScript::between(pre, post).patch(path)
 }
 
-pub fn changed_after_lines(pre: &str, post: &str) -> Vec<u64> {
-    if pre == post {
-        return Vec::new();
-    }
-    EditScript::between(pre, post).changed_after_lines()
-}
-
 pub fn shown_after_lines(pre: &str, post: &str) -> Vec<u64> {
     EditScript::between(pre, post).shown_after_lines()
 }
@@ -367,22 +360,38 @@ fn lcs_script<'a>(before: &[&'a str], after: &[&'a str]) -> Vec<(Op, &'a str)> {
 mod tests {
     use std::path::Path;
 
-    use super::{EditScript, changed_after_lines, line_map, patch, shown_after_lines};
+    use super::EditScript;
 
     const BEFORE: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\n";
     const AFTER: &str = "one\nTWO\nthree\nfour\nsix\nseven\neight\n";
 
     #[test]
-    fn one_script_answers_every_consumer_the_same_way() {
+    fn one_script_renders_the_patch_and_each_line_view() {
         let script = EditScript::between(BEFORE, AFTER);
         let path = Path::new("/tmp/f.rs");
-        assert_eq!(script.patch(path), patch(BEFORE, AFTER, path));
         assert_eq!(
-            script.changed_after_lines(),
-            changed_after_lines(BEFORE, AFTER)
+            script.patch(path).as_str(),
+            concat!(
+                "--- a//tmp/f.rs\n",
+                "+++ b//tmp/f.rs\n",
+                "@@ -1,7 +1,7 @@\n",
+                " one\n",
+                "-two\n",
+                "+TWO\n",
+                " three\n",
+                " four\n",
+                "-five\n",
+                " six\n",
+                " seven\n",
+                "+eight\n",
+            )
         );
-        assert_eq!(script.shown_after_lines(), shown_after_lines(BEFORE, AFTER));
-        assert_eq!(script.line_map(), line_map(BEFORE, AFTER));
+        assert_eq!(script.changed_after_lines(), vec![2, 5, 7]);
+        assert_eq!(script.shown_after_lines(), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(
+            script.line_map(),
+            vec![Some(1), None, Some(3), Some(4), None, Some(5), Some(6)]
+        );
     }
 
     #[test]
@@ -391,7 +400,18 @@ mod tests {
         assert!(script.is_unchanged());
         assert!(script.patch(Path::new("/tmp/f.rs")).as_str().is_empty());
         assert!(script.changed_after_lines().is_empty());
-        assert_eq!(script.line_map(), line_map(BEFORE, BEFORE));
+        assert_eq!(
+            script.line_map(),
+            vec![
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(4),
+                Some(5),
+                Some(6),
+                Some(7)
+            ]
+        );
     }
 
     #[test]

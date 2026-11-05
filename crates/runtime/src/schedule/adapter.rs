@@ -331,9 +331,6 @@ fn poll(
 /// Emits on a change of exit status, not per output line: a check is a level, red or green,
 /// and a line stream would re-send the same log on every run of an unchanged check.
 fn exec(command: &str, cwd: &Path, checker: &crate::goal::Checker) -> Value {
-    if let Err(refused) = checker.guard(command, cwd) {
-        return json!({"ok": false, "output": refused});
-    }
     let run = crate::goal::ShellCheck::new(command, cwd, checker)
         .within(EXEC_TIMEOUT_MS)
         .run();
@@ -514,5 +511,29 @@ fn take(channel: &Channel, line: &str) -> Option<Value> {
 fn landed(channel: &Channel, appended: &Appended) {
     if !matches!(appended, Appended::Duplicate) {
         super::shared::poke(channel.path());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::exec;
+
+    #[test]
+    fn an_exec_check_runs_each_shell_hook_once() -> Result<(), Box<dyn Error>> {
+        let scratch = crate::scratch::Scratch::new("exec-hook-once")?;
+        let home = scratch.join("home");
+        let marker = scratch.join("calls");
+        std::fs::create_dir_all(home.join(".claude"))?;
+        let hook = format!("printf x >> {}", marker.display());
+        let settings = serde_json::json!({"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":hook}]}]}});
+        std::fs::write(home.join(".claude/settings.json"), settings.to_string())?;
+        let hooks =
+            crate::claude_hooks::Hooks::load_from(&scratch, Some(&home), &scratch.join("managed"));
+        let checker = crate::goal::Checker::from_hooks(Some(hooks));
+        assert_eq!(exec("true", &scratch, &checker)["ok"], true);
+        assert_eq!(std::fs::read_to_string(&marker)?, "x");
+        Ok(())
     }
 }

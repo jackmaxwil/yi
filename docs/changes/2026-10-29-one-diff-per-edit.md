@@ -1,11 +1,11 @@
 ---
 issue: Closes #1532
-growth: +379 one line-diff builder replaces four copies per edit; four runtime helpers and two hashline unquoters fold into one each, and the rest is the tests that hold them.
-raise: tests +413
+growth: +427 one line-diff builder replaces four copies per edit; four runtime helpers and two hashline unquoters fold into one each, and the rest is the tests that hold them.
+raise: tests +463
 raise: crate ai +6
-raise: crate runtime +158
-raise: crate tools +237
-raise: comments +15
+raise: crate runtime +179
+raise: crate tools +242
+raise: comments +14
 ledger~: `get_context` orientation packet | r; skeletons ranked by `symbol`, then change heat, then name | r that counts only the layers the call asked for, a layer it did not ask for saying `not asked:` rather than counting as absent; skeletons ranked by `symbol`, then change heat, then name, and reading a declaration word one indent level in, so an `impl`'s methods and a class's defs reach the model
 ---
 A 2,000-line edit paid the same line diff four times: once for the rendered patch, once for the changed lines, once for the line map, and once for the ripwire regions. `EditScript` is now built once per `(before, after)` pair, carried on the section's result, and read by all four, so the quadratic table is computed once. A snapshot's text is an `Arc<str>`, so the clones an edit's reply makes are pointers, and the snapshot lock is released before the syntax checker spawns instead of being held across it.

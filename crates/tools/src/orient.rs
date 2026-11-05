@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
+use crate::hashline::blocks::{INDENT_LEVEL, indent_width};
 use crate::process::{OUTPUT_CAP, host_command, run_captured};
 use crate::tool::{Tool, ToolContext, ToolKind, ToolOutput, text_output};
 
@@ -506,28 +507,10 @@ pub(crate) fn is_decl(line: &str) -> bool {
     DECL_HEADS.iter().any(|head| trimmed.starts_with(head))
 }
 
-/// One indent level, a tab counted as four columns: an `impl` method or a class's method shows.
-const ONE_LEVEL: usize = 4;
-
-fn indent_width(line: &str) -> usize {
-    line.chars()
-        .take_while(|space: &char| space.is_whitespace())
-        .map(|space| match space {
-            '\t' => ONE_LEVEL,
-            _ => 1,
-        })
-        .sum()
-}
-
-fn is_head(line: &str) -> bool {
-    let head = line.trim_start();
-    DECL_HEADS.iter().any(|prefix| head.starts_with(prefix))
-}
-
 pub(crate) fn skeleton(text: &str, cap: usize) -> (Vec<String>, usize) {
     let mut heads: Vec<String> = text
         .lines()
-        .filter(|line| indent_width(line) <= ONE_LEVEL && is_head(line))
+        .filter(|line| indent_width(line) <= INDENT_LEVEL && is_decl(line))
         .map(decl_head)
         .collect();
     let total = heads.len();

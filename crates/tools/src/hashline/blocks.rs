@@ -73,10 +73,12 @@ pub fn indent_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
     Some(BlockSpan { start: line, end })
 }
 
-fn indent_width(line: &str) -> usize {
+pub(crate) const INDENT_LEVEL: usize = 4;
+
+pub(crate) fn indent_width(line: &str) -> usize {
     line.bytes()
         .take_while(|byte| matches!(byte, b' ' | b'\t'))
-        .map(|byte| if byte == b'\t' { 4 } else { 1 })
+        .map(|byte| if byte == b'\t' { INDENT_LEVEL } else { 1 })
         .sum()
 }
 
