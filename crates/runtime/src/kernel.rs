@@ -229,7 +229,8 @@ pub(crate) fn kernel_profile(
 ) -> yi_tools::Sandbox {
     // ~/.yi stays read-only: the MCP session store is the host's alone (D296).
     let mut profile = sandbox.clone();
-    // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
+    // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling,
+    // granted here and withdrawn from a contained member by the deny `session_sandbox` adds.
     profile
         .writable
         .extend(family_dir.map(std::path::Path::to_path_buf));
@@ -840,6 +841,15 @@ impl KernelService {
         self.variable_cell(name, dump_variable_code(name, path))
             .await
             .map(|reply| reply.map(|(_, chars)| u64::try_from(chars).unwrap_or(u64::MAX)))
+    }
+
+    /// Invariant: the parent loads a member's pickle only from a member whose own kernel may
+    /// write the board it was dumped onto, so this is the one answer both ends ask.
+    pub fn writes_board(&self) -> bool {
+        match (&self.options.sandbox, &self.options.family_dir) {
+            (Some(sandbox), Some(board)) => !sandbox.deny_write.contains(board),
+            _ => true,
+        }
     }
 
     async fn variable_cell(
