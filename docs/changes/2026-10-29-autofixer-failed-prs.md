@@ -1,4 +1,5 @@
 ---
+version: 0.932.0
 issue: Closes #1873
 ---
 Seven open PRs carried `autofix:failed` and the comment beside it named nothing a person could act

@@ -1,4 +1,5 @@
 ---
+version: 0.930.0
 issue: Closes #1578
 raise: crate kernel +113, tests +134, comments +8
 ---
