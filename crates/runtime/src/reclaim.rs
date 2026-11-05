@@ -502,7 +502,7 @@ fn render(
         let rule = match find(&cut.discards, message) {
             Some(()) => format!("{who} discarded it"),
             None => format!(
-                "results older than {} requests are cut once dropping them costs less than resending them",
+                "results older than {} requests (reclaim.keep_turns) are cut once dropping them costs less than resending them",
                 crate::levers::get().reclaim_keep_turns
             ),
         };
@@ -877,7 +877,7 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(
             first,
-            "[reclaimed: bash `cargo build -p crate0` → none of 9990 chars kept; results older than 5 requests are cut once dropping them costs less than resending them (cut at request 10); get it: read(\"history://self/e-17\")]"
+            "[reclaimed: bash `cargo build -p crate0` → none of 9990 chars kept; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them (cut at request 10); get it: read(\"history://self/e-17\")]"
         );
         let kept = shown
             .get(12)

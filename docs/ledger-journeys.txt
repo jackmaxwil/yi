@@ -4,11 +4,15 @@ pure loop + event enum | `interrupt::an_abort_during_the_cut_drain_returns_at_on
 pure loop + event enum | `pump_stop::an_abort_stops_the_provider_pump_at_the_next_event`
 pure loop + event enum | `loop_events::a_400_body_ends_the_turn_with_no_retry_and_no_steer`
 pure loop + event enum | `openrouter::an_aborted_turn_is_settled_from_the_record`
+pure loop + event enum | `openrouter::the_second_request_carries_the_reply_reasoning_details_byte_for_byte`
+pure loop + event enum | `openrouter::the_tool_call_keeps_geminis_thought_signature_on_the_next_request`
+pure loop + event enum | `openai_responses::responses_params_are_not_chat_completions`
 entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
+context P1–P19; prefix-aligned P7 | `primitives::a_demoted_brief_names_what_was_kept_the_cap_and_the_read_that_restores_it` (T0)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_kept_tail_over_the_ceiling_compacts_once_not_on_every_request` (T1)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_summary_quote_the_addressed_message_lacks_is_marked_unverified`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compaction_floors_a_host_notice_and_keeps_the_waking_letter`

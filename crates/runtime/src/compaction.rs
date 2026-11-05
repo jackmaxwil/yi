@@ -1,8 +1,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub use yi_context::Tokens;
 use yi_context::{
-    CompiledView, Preparation, Settings, Tokens, compose_summary, drop_internal, estimate_context,
+    CompiledView, Preparation, Settings, compose_summary, drop_internal, estimate_context,
     estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
     serialize_conversation, should_compact,
 };
@@ -41,6 +42,8 @@ pub struct Replacement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Elision {
     pub messages: usize,
+    pub total: usize,
+    pub window: Tokens,
 }
 
 /// One text for the user's notice, the summary's line and the marker where the messages sat.
@@ -50,8 +53,12 @@ impl std::fmt::Display for Elision {
         write!(
             formatter,
             "[compaction elided {} earlier message{plural} from the model's view: summary failed; \
-             the transcript keeps them]",
-            self.messages
+             kept {} of {} (context_window {} tokens); the transcript keeps them: \
+             read(\"history://self/since/0\")]",
+            self.messages,
+            self.total.saturating_sub(self.messages),
+            self.total,
+            self.window.0
         )
     }
 }
@@ -639,26 +646,29 @@ impl Compactor {
         }
         let mut pinned: Vec<usize> = first.into_iter().chain(run).collect();
         pinned.sort_unstable();
+        let mut tail: Vec<AgentMessage> = pinned
+            .iter()
+            .map(|index| messages[*index].clone())
+            .collect();
+        tail.extend_from_slice(&messages[cut..]);
+        let mut tail = drop_internal(&tail);
+        let dropped = (start..cut)
+            .filter(|index| !pinned.contains(index))
+            .filter(|index| !matches!(messages[*index], AgentMessage::Custom { .. }))
+            .count();
         let elision = Elision {
-            messages: (start..cut)
-                .filter(|index| !pinned.contains(index))
-                .filter(|index| !matches!(messages[*index], AgentMessage::Custom { .. }))
-                .count(),
+            total: tail.len().saturating_add(dropped),
+            window,
+            messages: dropped,
         };
         if elision.messages == 0 {
             return None;
         }
         let marker = elision.to_string();
-        let mut tail: Vec<AgentMessage> = pinned
-            .iter()
-            .map(|index| messages[*index].clone())
-            .collect();
-        tail.push(AgentMessage::host_note(
-            COMPACTION_NOTICE,
-            marker.clone(),
-            0,
-        ));
-        tail.extend_from_slice(&messages[cut..]);
+        tail.insert(
+            pinned.len().min(tail.len()),
+            AgentMessage::host_note(COMPACTION_NOTICE, marker.clone(), 0),
+        );
         let body = if earlier.is_empty() {
             marker
         } else {
@@ -671,7 +681,7 @@ impl Compactor {
         let (full, _) = compose_summary(&body, &prepared.file_ops, &prepared.view);
         let extra = text_tokens(&full).saturating_sub(text_tokens(&bare_summary));
         let summary = if extra <= spare { full } else { bare_summary };
-        Some((summary, drop_internal(&tail), elision))
+        Some((summary, tail, elision))
     }
 
     /// The loop's request plus the directive, a cache read on its model (§7). A failed summary
