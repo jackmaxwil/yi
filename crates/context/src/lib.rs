@@ -30,7 +30,9 @@ pub use prepare::{
     Preparation, VALUES_CARRIED_CAP, compose_summary, keep_values, prepare_compaction,
 };
 pub use project::{project, project_attributed};
-pub use serialize::{KEY_HEAD_CHARS, KEY_ROWS, serialize_conversation, user_key};
+pub use serialize::{
+    KEY_HEAD_CHARS, KEY_ROWS, mark_unmatched_quotes, serialize_conversation, user_key,
+};
 pub use view::{
     Attributed, BRIEF_LINE_CAP, BRIEF_LINE_CHARS, BriefLine, CompiledView, EARLIER_CAP,
     OUTSTANDING_CAP, compile_view, view_extra, view_from_extra,
