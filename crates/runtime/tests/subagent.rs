@@ -231,6 +231,7 @@ async fn a_child_cannot_spawn_with_a_smaller_wall_than_its_parent() -> TestResul
         deny_read: vec!["/repo/secrets".into()],
         deny_url: vec!["kernel://".to_owned()],
         container: None,
+        isolated: false,
     };
     family.host.set_grant(held.clone(), None);
     family
@@ -245,6 +246,45 @@ async fn a_child_cannot_spawn_with_a_smaller_wall_than_its_parent() -> TestResul
     );
     assert_eq!(built[1].wall.deny_write, held.deny_write);
     assert_eq!(built[1].wall.deny_url, ["plan://", "kernel://"]);
+    Ok(())
+}
+
+/// Dies with the spawn's own isolation assigned over `Wall::under`'s, or a container left out of
+/// it: a contained child's plain child writes the board, and the root unpickles what it put.
+#[tokio::test]
+async fn an_isolated_parents_unisolated_child_stays_contained() -> TestResult {
+    let (_bare_root, bare) = family("yi-lease-unisolated")?;
+    bare.host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("bare"))]))?;
+    let plain = bare.built.lock().map_err(|_| "poisoned")?[0]
+        .wall
+        .contained();
+    assert!(!plain, "a plain child of a root keeps the board");
+    let (_root, walled) = family("yi-lease-isolated")?;
+    let held = yi_runtime::Wall {
+        isolated: true,
+        ..yi_runtime::Wall::default()
+    };
+    walled.host.set_grant(held, None);
+    walled
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("bare"))]))?;
+    let built = walled.built.lock().map_err(|_| "poisoned")?;
+    assert!(built[0].wall.contained(), "{:?}", built[0].wall);
+    let (_boxed_root, boxed) = family("yi-lease-container")?;
+    let held = yi_runtime::Wall {
+        container: Some("alpine".to_owned()),
+        ..yi_runtime::Wall::default()
+    };
+    boxed.host.set_grant(held, None);
+    boxed
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("bare"))]))?;
+    let child = &boxed.built.lock().map_err(|_| "poisoned")?[0].wall;
+    assert!(
+        child.contained(),
+        "a container's child is contained: {child:?}"
+    );
     Ok(())
 }
 
