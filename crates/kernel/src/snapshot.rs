@@ -39,21 +39,48 @@ fn py_path(path: &Path) -> String {
     py_str(&path.to_string_lossy())
 }
 
+/// Names the runtime bootstrap binds on every start; a snapshot or a listing of them is noise.
+fn always_skip() -> String {
+    let fixed = [
+        "rlm",
+        "mcp",
+        "asyncio",
+        "fetch",
+        "bash",
+        "yi",
+        "In",
+        "Out",
+        "get_ipython",
+        "exit",
+        "quit",
+        "open",
+    ];
+    let skills = crate::bootstrap::PYTHON_SKILLS.map(|(name, _)| name);
+    let names: Vec<&str> = fixed.into_iter().chain(skills).collect();
+    serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// `cells` is `None` for a full pass; otherwise a variable no cell could change, unchanged in
+/// (id, type, size) and sharing no id with one that could, keeps its last blob.
 pub fn build_snapshot_code(
     out_path: &Path,
     max_bytes: u64,
     max_variable_bytes: u64,
-    prune_oversized: bool,
+    cells: Option<&[String]>,
 ) -> String {
     let out = py_path(out_path);
     let marker = py_str(RESULT_MARKER);
-    let prune = if prune_oversized { "True" } else { "False" };
+    let skip = always_skip();
+    let cells = match cells {
+        Some(cells) => serde_json::to_string(cells).unwrap_or_else(|_| "None".to_owned()),
+        None => "None".to_owned(),
+    };
     // All builtins are sourced via the locally-imported _b alias so the helper
     // keeps working even when the user namespace shadows names like list/open.
     let blobs = py_path(&blobs_dir_for(out_path));
     format!(
         r#"def _yi_snapshot_state():
-    import builtins as _b, hashlib, io, json, os, sys
+    import builtins as _b, hashlib, io, json, os, sys, types
     try:
         import dill
     except _b.Exception as _err:
@@ -68,9 +95,8 @@ pub fn build_snapshot_code(
         ip = None
     ns = ip.user_ns if ip is not None else _b.globals()
     hidden = _b.set(_b.getattr(ip, "user_ns_hidden", {{}}) or {{}}) if ip is not None else _b.set()
-    # rlm, mcp, and asyncio are re-created by the kernel bootstrap on every
-    # start; never snapshot them.
-    always_skip = {{"rlm", "mcp", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}}
+    always_skip = _b.set({skip})
+    blobs = {blobs}
 
     class SnapshotSizeLimitExceeded(_b.Exception):
         pass
@@ -85,21 +111,65 @@ pub fn build_snapshot_code(
                 raise SnapshotSizeLimitExceeded()
             return io.BytesIO.write(self, chunk)
 
+    def touched_names(cells, ns, ip):
+        if cells is None:
+            return None
+        import ast
+        pure = {{"print", "len", "repr", "str", "int", "float", "bool", "type", "isinstance",
+                 "sorted", "sum", "min", "max", "list", "dict", "set", "tuple", "range",
+                 "enumerate", "zip", "any", "all", "abs", "round", "id", "hash", "format"}}
+        names = _b.set()
+        flags = ast.PyCF_ONLY_AST | ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
+        for cell in cells:
+            try:
+                source = ip.transform_cell(cell) if ip is not None else cell
+                tree = _b.compile(source, "<cell>", "exec", flags)
+            except _b.Exception:
+                # Invariant: a cell that does not compile ran nothing, so it changed no name.
+                continue
+            for node in ast.walk(tree):
+                if _b.isinstance(node, ast.Name) and not _b.isinstance(node.ctx, ast.Load):
+                    names.add(node.id)
+                elif _b.isinstance(node, (ast.Global, ast.Nonlocal)):
+                    names.update(node.names)
+                elif _b.isinstance(node, (ast.Attribute, ast.Subscript)) and _b.isinstance(node.value, ast.Name):
+                    names.add(node.value.id)
+                elif _b.isinstance(node, ast.Call):
+                    called = node.func
+                    if _b.isinstance(called, ast.Name):
+                        names.add(called.id)
+                        if called.id in pure and called.id not in ns:
+                            continue
+                    for arg in node.args + [keyword.value for keyword in node.keywords]:
+                        arg = arg.value if _b.isinstance(arg, ast.Starred) else arg
+                        if _b.isinstance(arg, ast.Name):
+                            names.add(arg.id)
+        for name in _b.list(names):
+            if _b.isinstance(ns.get(name), types.FunctionType):
+                names.update(ns[name].__code__.co_names)
+        return names
+
+    def memo_of(attr):
+        found = _b.getattr(ip, attr, None) if ip is not None else None
+        if found is None:
+            found = {{}}
+            if ip is not None:
+                _b.setattr(ip, attr, found)
+        return found
+
     payload = {{}}
+    reused = {{}}
+    seen_of = {{}}
     skipped = []
-    oversized = []
     # ponytail: keyed by id, type and getsizeof, which an in-place edit of a list, dict or
-    # instance leaves unchanged, so such a variable stays skipped until rebound; a prune
-    # re-measures rather than trust it.
-    over_cap = _b.getattr(ip, "_yi_snapshot_over_cap", None) if ip is not None else None
-    if over_cap is None:
-        over_cap = {{}}
-        if ip is not None:
-            ip._yi_snapshot_over_cap = over_cap
+    # instance leaves unchanged, so such a variable stays skipped or reused until rebound.
+    over_cap = memo_of("_yi_snapshot_over_cap")
+    last = memo_of("_yi_snapshot_last")
     for name in [name for name in over_cap if name not in ns]:
         del over_cap[name]
+    mentioned = touched_names({cells}, ns, ip)
+    touched = _b.set() if mentioned is None else {{_b.id(ns[name]) for name in mentioned if name in ns}}
     total = 0
-    identify_oversized = {prune}
     for name in _b.list(ns.keys()):
         # Skip internals (dunder/underscore), IPython-injected names, and live
         # handles. A name matching a builtin (e.g. "list") is a user shadow worth
@@ -111,34 +181,43 @@ pub fn build_snapshot_code(
             seen = (_b.id(value), _b.type(value), sys.getsizeof(value))
         except _b.Exception:
             seen = None
-        if seen is not None and not identify_oversized and over_cap.get(name) == seen:
+        if seen is not None and over_cap.get(name) == seen:
             skipped.append({{"name": name, "reason": "exceeds per-variable snapshot size cap"}})
-            oversized.append(name)
+            continue
+        prior = last.get(name)
+        if (
+            mentioned is not None
+            and seen is not None
+            and name not in mentioned
+            and _b.id(value) not in touched
+            and prior is not None
+            and prior[0] == seen
+            and total + prior[2] <= {max_bytes}
+            and os.path.exists(os.path.join(blobs, prior[1] + ".pkl"))
+        ):
+            reused[name] = prior
+            total += prior[2]
             continue
         remaining = {max_bytes} - total
-        buffer_limit = {max_variable_bytes} if identify_oversized else _b.min({max_variable_bytes}, remaining)
-        buffer = SnapshotBuffer(buffer_limit)
+        buffer = SnapshotBuffer(_b.min({max_variable_bytes}, remaining))
         # Modules are pickled by reference and re-imported on restore.
         try:
             dill.dump(value, buffer)
             blob = buffer.getvalue()
             over_cap.pop(name, None)
         except SnapshotSizeLimitExceeded:
-            if not identify_oversized and remaining < {max_variable_bytes}:
+            if remaining < {max_variable_bytes}:
                 skipped.append({{"name": name, "reason": "exceeds aggregate snapshot size cap"}})
             else:
                 skipped.append({{"name": name, "reason": "exceeds per-variable snapshot size cap"}})
-                oversized.append(name)
                 if seen is not None:
                     over_cap[name] = seen
             continue
         except _b.Exception as _err:
             skipped.append({{"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]}})
             continue
-        if total + _b.len(blob) > {max_bytes}:
-            skipped.append({{"name": name, "reason": "exceeds aggregate snapshot size cap"}})
-            continue
         payload[name] = blob
+        seen_of[name] = seen
         total += _b.len(blob)
 
     def fresh(path, mode):
@@ -150,7 +229,6 @@ pub fn build_snapshot_code(
         return os.fdopen(os.open(path, flags, 0o600), mode)
 
     os.makedirs(os.path.dirname({out}), exist_ok=True)
-    blobs = {blobs}
     os.makedirs(blobs, exist_ok=True)
 
     def durable(path, data):
@@ -177,7 +255,7 @@ pub fn build_snapshot_code(
 
     # Each variable is a content-named blob written once; the index is the commit point, so a
     # cell that changed one small name rewrites one small file, not the whole namespace.
-    index = {{}}
+    index = {{name: prior[1] for name, prior in reused.items()}}
     try:
         for name, blob in payload.items():
             digest = hashlib.blake2b(blob, digest_size=16).hexdigest()
@@ -193,6 +271,11 @@ pub fn build_snapshot_code(
             raise
         _b.print({marker} + json.dumps({{"error": "write failed: " + _b.str(_err)}}))
         return
+    last.clear()
+    last.update(reused)
+    for name, blob in payload.items():
+        if seen_of[name] is not None:
+            last[name] = (seen_of[name], index[name], _b.len(blob))
     keep = {{digest + ".pkl" for digest in index.values()}}
     for entry in os.listdir(blobs):
         if entry not in keep:
@@ -201,29 +284,8 @@ pub fn build_snapshot_code(
             except _b.Exception:
                 pass
 
-    bytes_written = _b.sum(_b.len(blob) for blob in payload.values())
-    saved = _b.sorted(payload.keys())
-    pruned = _b.sorted(name for name in oversized if name in ns) if identify_oversized else []
-    pruned_ids = {{_b.id(ns[name]) for name in pruned}}
-    while True:
-        try:
-            for name in pruned:
-                if name in ns:
-                    del ns[name]
-            output_cache = ns.get("Out")
-            if _b.isinstance(output_cache, _b.dict):
-                for key in _b.list(output_cache.keys()):
-                    if _b.id(output_cache[key]) in pruned_ids:
-                        del output_cache[key]
-            for name in hidden:
-                if name in ns and _b.id(ns[name]) in pruned_ids:
-                    del ns[name]
-            break
-        except _b.KeyboardInterrupt:
-            # Deletion is idempotent. Finish the short critical section so a
-            # snapshot timeout cannot leave only some purge candidates live.
-            continue
-    _b.print({marker} + json.dumps({{"saved": saved, "skipped": skipped, "pruned": pruned, "bytes": bytes_written}}))
+    saved = _b.sorted(index.keys())
+    _b.print({marker} + json.dumps({{"saved": saved, "skipped": skipped, "bytes": total}}))
 
 
 try:
@@ -295,6 +357,7 @@ finally:
 /// Never raises.
 pub fn build_list_names_code() -> String {
     let marker = py_str(RESULT_MARKER);
+    let skip = always_skip();
     format!(
         r#"def _yi_list_state_names():
     import builtins as _b, json
@@ -305,7 +368,7 @@ pub fn build_list_names_code() -> String {
         ip = None
     ns = ip.user_ns if ip is not None else _b.globals()
     hidden = _b.set(_b.getattr(ip, "user_ns_hidden", {{}}) or {{}}) if ip is not None else _b.set()
-    always_skip = {{"rlm", "mcp", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}}
+    always_skip = _b.set({skip})
     names = []
     for name in _b.list(ns.keys()):
         if name.startswith("_") or name in hidden or name in always_skip:
@@ -359,19 +422,53 @@ pub fn parse_list_names(stdout: &str) -> Option<Vec<String>> {
     )
 }
 
+/// The cells this many apart get a full pass, which catches a mutation no cell's text named.
+const FULL_SNAPSHOT_EVERY: u64 = 20;
+
 /// User cells run against the count the last written checkpoint had seen: a dispose whose
 /// checkpoint already holds every cell re-serialized the whole namespace for nothing.
 #[derive(Default)]
 pub(crate) struct Checkpoints {
     cells: AtomicU64,
     saved: AtomicU64,
+    full_at: AtomicU64,
     /// The last snapshot left a name out (over a cap, or unpicklable).
     lossy: std::sync::atomic::AtomicBool,
+    /// Invariant: an incremental pass committed since the last full one, so blobs it reused
+    /// may miss a mutation no cell named; the dispose flush owes a full pass.
+    partial: std::sync::atomic::AtomicBool,
+    sources: std::sync::Mutex<Vec<String>>,
 }
 
 impl Checkpoints {
     pub(crate) fn behind(&self) -> bool {
         self.saved.load(Ordering::SeqCst) < self.cells.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn flush_owed(&self) -> bool {
+        self.behind() || self.partial.load(Ordering::SeqCst)
+    }
+
+    fn sources(&self) -> Vec<String> {
+        self.sources
+            .lock()
+            .map(|sources| sources.clone())
+            .unwrap_or_default()
+    }
+
+    /// Invariant: a cell's source leaves only once a pass that read it committed; an aborted
+    /// debounce pass must leave it for the next one.
+    fn forget(&self, count: usize) {
+        if let Ok(mut held) = self.sources.lock() {
+            let count = count.min(held.len());
+            held.drain(..count);
+        }
+    }
+
+    fn record(&self, code: &str) {
+        if let Ok(mut held) = self.sources.lock() {
+            held.push(code.to_owned());
+        }
     }
 }
 
@@ -384,9 +481,13 @@ impl KernelManager {
     }
 
     /// A cell that ran at all may have bound names, failed or not; a clean one checkpoints.
-    pub(crate) fn after_user_cell(&self, result: &Result<ExecuteResult, ExecuteError>) {
+    pub(crate) fn after_user_cell(&self, code: &str, result: &Result<ExecuteResult, ExecuteError>) {
         let Ok(result) = result else { return };
-        self.inner.checkpoints.cells.fetch_add(1, Ordering::SeqCst);
+        let checkpoints = &self.inner.checkpoints;
+        if self.inner.snapshot.is_some() {
+            checkpoints.record(code);
+        }
+        checkpoints.cells.fetch_add(1, Ordering::SeqCst);
         if result.status == ExecuteStatus::Ok {
             self.schedule_snapshot();
         }
@@ -401,7 +502,7 @@ impl KernelManager {
         let task = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(debounce)).await;
             let manager = KernelManager { inner };
-            let _ = manager.capture_snapshot(true, false).await;
+            let _ = manager.capture_snapshot(true).await;
         });
         if let Ok(mut timer) = self.inner.snapshot_timer.lock() {
             if let Some(previous) = timer.take() {
@@ -414,47 +515,40 @@ impl KernelManager {
     /// Persist the namespace now (final flush path). Best-effort: `None` on
     /// any failure, with a diagnostic in the kernel stderr tail.
     pub async fn snapshot_state(&self) -> Option<KernelSnapshotResult> {
-        self.capture_snapshot(false, false).await
+        self.capture_snapshot(false).await
     }
 
-    /// Persist the namespace, then remove variables above the per-variable cap
-    /// from the live namespace (post-compaction RAM relief, design §9).
-    pub async fn prune_oversized_variables(&self) -> Option<KernelSnapshotResult> {
-        self.capture_snapshot(true, true).await
-    }
-
-    async fn capture_snapshot(
-        &self,
-        bounded: bool,
-        prune_oversized: bool,
-    ) -> Option<KernelSnapshotResult> {
+    async fn capture_snapshot(&self, bounded: bool) -> Option<KernelSnapshotResult> {
         let config = self.inner.snapshot.clone()?;
         if !self.is_running() {
             return None;
         }
-        let _span = yi_types::trace::span("kernel.snapshot").arg("prune", prune_oversized);
-        let seen = self.inner.checkpoints.cells.load(Ordering::SeqCst);
+        let checkpoints = &self.inner.checkpoints;
+        let seen = checkpoints.cells.load(Ordering::SeqCst);
+        let full = !bounded
+            || seen.saturating_sub(checkpoints.full_at.load(Ordering::SeqCst))
+                >= FULL_SNAPSHOT_EVERY;
+        let _span = yi_types::trace::span("kernel.snapshot").arg("full", full);
+        if full {
+            // Invariant: an attempt, not a commit, moves this; else a full pass that outruns the
+            // debounce bound makes every later pass full, and each one times out too.
+            checkpoints.full_at.fetch_max(seen, Ordering::SeqCst);
+        }
+        let sources = checkpoints.sources();
         let code = build_snapshot_code(
             &config.path,
             config.max_bytes.unwrap_or(DEFAULT_SNAPSHOT_MAX_BYTES),
             config
                 .max_variable_bytes
                 .unwrap_or(DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES),
-            prune_oversized,
+            (!full).then_some(sources.as_slice()),
         );
         let result = self
             .execute_internal(&code, bounded.then_some(SNAPSHOT_EXECUTION_TIMEOUT_MS))
             .await;
-        match result {
+        let parsed = match result {
             Ok(result) if result.status == ExecuteStatus::Ok => {
-                let parsed = parse_snapshot_result(&result.stdout, &config.path);
-                if let Some(parsed) = &parsed {
-                    let checkpoints = &self.inner.checkpoints;
-                    checkpoints.saved.fetch_max(seen, Ordering::SeqCst);
-                    let lossy = !parsed.skipped.is_empty();
-                    checkpoints.lossy.store(lossy, Ordering::SeqCst);
-                }
-                parsed
+                parse_snapshot_result(&result.stdout, &config.path)
             }
             Ok(result) => {
                 let timed_out = result.status == ExecuteStatus::Aborted;
@@ -470,7 +564,16 @@ impl KernelManager {
                     .diagnostic(&format!("state snapshot error: {error}"));
                 None
             }
+        };
+        if let Some(parsed) = &parsed {
+            checkpoints.forget(sources.len());
+            checkpoints.saved.fetch_max(seen, Ordering::SeqCst);
+            checkpoints.partial.store(!full, Ordering::SeqCst);
+            checkpoints
+                .lossy
+                .store(!parsed.skipped.is_empty(), Ordering::SeqCst);
         }
+        parsed
     }
 
     /// Revive a snapshotted namespace. Call after start() and before the runtime bootstrap,
@@ -667,7 +770,7 @@ mod tests {
             Path::new("/tmp/out.dill"),
             DEFAULT_SNAPSHOT_MAX_BYTES,
             DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES,
-            false,
+            None,
         );
         assert!(code.contains("268435456"), "aggregate cap must be inlined");
         assert!(

@@ -89,7 +89,7 @@ pub struct IpythonTool {
     pub contained: bool,
 }
 
-fn shell_cell(code: &str) -> Option<String> {
+pub fn shell_cell(code: &str) -> Option<String> {
     let trimmed = code.trim_start();
     if let Some(body) = trimmed.strip_prefix("%%bash") {
         return Some(body.trim_start_matches(['\r', '\n']).to_owned());
